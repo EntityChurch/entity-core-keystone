@@ -1,0 +1,83 @@
+# CI — entity-core-protocol-swift (peer #7) conformance gates.
+#
+# Authored at S5 (PHASE-S5 §"CI config"). Runs the green gates entirely inside the pinned
+# `swift-toolchain` Podman image. The build/test gates are sealed-offline (`--network=none`)
+# because `Package.resolved` is committed and the deps (swift-crypto + the explicit-pinned
+# transitive swift-asn1) are pre-resolved in the image; the Go `validate-peer` oracle is a
+# CGO_ENABLED=0 ELF that runs in the same image sharing one loopback.
+#
+# DELIBERATELY NOT WIRED TO ANY REMOTE/CD. There is no deploy step, no registry push, no
+# package publish — `/entity-rosetta` never publishes (lifecycle §Publishing); the operator
+# decides. This file documents the reproducible offline gate; whether/where it actually runs
+# (this peer's standalone repo's CI, or a keystone-wide CI home) is an operator/arch decision.
+# It is committed for reviewability, not because a runner is attached.
+#
+# Assumptions when wired: the runner has Podman, the `swift-toolchain:latest` image is built
+# (containers/swift-toolchain/Containerfile) with deps pre-resolved, and the oracle ELF +
+# reference peer are vendored to output/s4-oracles/ (rebuild per status/CONFORMANCE-REPORT.md
+# §Reproduce). Paths below assume the keystone repo root is the checkout root.
+
+name: swift-conformance
+
+on:
+  push:
+    paths:
+      - 'protocol-generator/swift/**'
+      - 'protocol-generator/shared/spec-data/**'
+      - 'protocol-generator/shared/test-vectors/**'
+  pull_request:
+    paths:
+      - 'protocol-generator/swift/**'
+  workflow_dispatch: {}
+
+# No deploy/publish permissions — read-only.
+permissions:
+  contents: read
+
+env:
+  IMAGE: entity-core-keystone/swift-toolchain:latest
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The toolchain image is built from containers/swift-toolchain/Containerfile (deps
+      # pre-resolved so the build is offline) and the oracle ELF + reference peer rebuilt from
+      # entity-core-go per the CONFORMANCE-REPORT runbook. In a standalone-repo lift-out these
+      # become a `podman build` + an oracle-vendor step (or a pre-built image pulled from a
+      # trusted internal registry); kept explicit, not assumed.
+      - name: Verify toolchain image + oracle present
+        run: |
+          podman image exists "$IMAGE" || { echo "::error::build $IMAGE from containers/swift-toolchain/Containerfile first"; exit 1; }
+          test -x output/s4-oracles/validate-peer || { echo "::error::vendor the validate-peer oracle ELF (CONFORMANCE-REPORT.md §Reproduce)"; exit 1; }
+
+      # Gate 1 — release build (sealed offline; Package.resolved committed).
+      - name: swift build -c release
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            -w /work/protocol-generator/swift "$IMAGE" swift build -c release
+
+      # Gate 2 — unit tests: S2 codec 69/69 + 25 selftests + the A-SW-009 53-type byte-diff.
+      - name: swift test (codec 69/69 + selftests + 53-type byte-diff)
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            -w /work/protocol-generator/swift "$IMAGE" swift test
+
+      # Gate 3 — S4 live-peer validate-peer --profile core (must stay 0 FAIL). The Swift peer
+      # + the Go oracle ELF run together in the image over loopback. CONFORMANCE=1 enables the
+      # §7a conformance handlers (--validate). run-s4.sh writes status/CONFORMANCE-REPORT.json;
+      # we assert summary.failed == 0 (the green gate).
+      - name: validate-peer --profile core (0 FAIL)
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            -e CONFORMANCE=1 "$IMAGE" sh /work/protocol-generator/swift/run-s4.sh
+          python3 - <<'PY'
+          import json, sys
+          s = json.load(open("protocol-generator/swift/status/CONFORMANCE-REPORT.json"))["summary"]
+          print("summary:", s)
+          if s.get("failed", 1) != 0:
+              print("::error::validate-peer core has FAILs — gate not green"); sys.exit(1)
+          PY

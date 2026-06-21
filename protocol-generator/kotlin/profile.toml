@@ -1,0 +1,286 @@
+# entity-core-protocol-kotlin — Language Profile
+#
+# A "REACH" peer (Android-native / JVM-Kotlin ecosystem coverage), per
+# research/RELEASE-READINESS.md §2: corroboration-only — the language-axis
+# spec-discovery well is largely dry (the JVM idiom was already exercised by the
+# Java peer #7), so this peer is built for ECOSYSTEM REACH, not expected to
+# surface new spec defects. Log anything that does anyway.
+#
+# Authored FRESH in S1 from the V7 spec (spec-data/v7.75) + Kotlin/JVM ecosystem
+# research. The Java peer (protocol-generator/java/) is the direct JVM analog and
+# the single most relevant model — but Kotlin is authored as an INDEPENDENT peer,
+# not "Java in Kotlin syntax": the codec is HAND-ROLLED native Kotlin (NOT interop
+# into the Java peer's codec — see [codec].strategy + arch/PROFILE-RATIONALE.md
+# §"Codec strategy decision", the headline S1 call the operator deferred to S1),
+# and the idiom axes are Kotlin-native (sealed-class Result error model + coroutine
+# async + data classes + when-exhaustive dispatch), distinct from Java's
+# checked-exception / platform-thread / record idiom. Where a value matches the
+# Java peer it is by independent arrival from V7 + the shared JVM substrate (same
+# JDK SunEC crypto, same JVM byte[] aliasing seam, same no-native-unsigned trap),
+# NOT by inheritance.
+#
+# Profile authority (S6): the agent MUST use the values declared here. A "TBD"
+# value is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "kotlin"
+name              = "Kotlin / JVM"
+tier              = "reach"                    # Android/JVM ecosystem-reach peer; corroboration-only on the spec-discovery axis (JVM idiom saturated by Java #7). High-signal-IF-found, like any mainstream stack.
+package_name      = "entity-core-protocol-kotlin"  # keystone peer id. Maven coordinates use reverse-DNS (see [publishing]); package ids cannot hyphenate.
+runtime           = "kotlin-toolchain"         # references containers/kotlin-toolchain/Containerfile (Temurin JDK 21 LTS + pinned Kotlin compiler + pinned Gradle)
+
+[codec]
+# STRATEGY: NATIVE, HAND-ROLLED (the headline S1 decision; see arch/PROFILE-RATIONALE.md).
+# The slate flagged the choice as "interop into the Java peer's codec OR hand-roll
+# (profile)" and the operator deferred it to S1. RULING: hand-roll a native Kotlin
+# ECF codec. Rationale (full version in the rationale doc):
+#   * INDEPENDENCE/KEYSTONE-THESIS: interop-into-Java is essentially "Java in Kotlin
+#     syntax" — it proves nothing independent of the existing Java peer (cf. C++
+#     decision D1: an FFI/interop peer that just reuses another impl "proves nothing
+#     independent"; the keystone's no-trench-coat principle). The whole point of a
+#     peer is an INDEPENDENT READER of V7. Reuse collapses Kotlin and Java to one
+#     reading and zeroes the corroboration value that is this peer's entire mandate.
+#   * EFFORT IS BOUNDED: the A-005 finding (re-confirmed seven+ times across the
+#     cohort, incl. Java) is that NO JVM CBOR library gives ECF's canonical
+#     guarantees — length-FIRST-then-lexicographic map-key ordering (≠ RFC-8949 §4.2
+#     bytewise), the shortest-float incl. f16 ladder, recursive major-type-6 tag
+#     rejection, raw-byte fidelity — so even the Java peer HAND-ROLLED its codec. A
+#     Kotlin hand-roll is therefore not "more work than the easy path"; the easy
+#     library path does not exist for EITHER language. The marginal cost over
+#     interop is real but modest, and it is the cost of the independence the peer
+#     exists to provide.
+#   * IDIOM REACH: a hand-rolled Kotlin codec exercises Kotlin-native shapes
+#     (ByteArray + UByte/ULong unsigned types since Kotlin 1.5, sealed-class value
+#     nodes, when-exhaustive decode ladder) — genuine Kotlin/Android ecosystem reach,
+#     not a thin syntax veneer over Java bytecode.
+# ffi remains the documented fallback if a spike ever fails (NOT expected — the JVM
+# closes the full floor + agility natively). Spike at S2 start (PHASE-S1 mandate):
+# push the map_keys + float v7.71 vectors through the hand-rolled encoder before the
+# full build — the load-bearing canonical risk (length-then-lex ordering +
+# shortest-float f16). See SPEC-AMBIGUITY-LOG A-KT-001.
+strategy          = "native"
+# CBOR: hand-rolled canonical encoder/decoder (EcfCodec / CanonicalCbor in
+# src/main/kotlin/.../codec/). No JVM CBOR library (jackson-dataformat-cbor,
+# com.upokecenter.cbor, co.nstant.in.cbor, kotlinx.serialization-cbor) gives ECF
+# canonicality — kotlinx.serialization's CBOR format is general/RFC-8949 and does
+# NOT implement ECF's length-first map-key ordering or the f16 shortest-float ladder.
+# Encoder writes into a growable ByteArray (or okio-free java.io.ByteArrayOutputStream);
+# decoder is index-walking over ByteArray. Kotlin's UByte/ULong (stable since 1.5)
+# carry the uint64 head-form range natively without the Long.compareUnsigned dance
+# Java/C# needed — a small Kotlin-native ergonomic win on the number axis (see idiom).
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native" }
+# Ed25519: JDK native (java.security, JEP 339, JDK 15+), called directly from Kotlin
+# (Kotlin/JVM has zero-overhead Java interop — java.security is just a Kotlin import).
+# KeyPairGenerator/Signature with the "Ed25519" algorithm + the EdEC key classes
+# (NamedParameterSpec.ED25519, EdECPrivateKeySpec/EdECPublicKeySpec). RFC-8032
+# deterministic by the algorithm. ZERO third-party dependency — the SunEC provider
+# ships with the JDK. seed->pubkey via EdECPrivateKeySpec + KeyFactory; sign/verify
+# via Signature.getInstance("Ed25519"). Raw 32-byte pubkey extraction (y-coordinate
+# + sign bit) confirmed at S2 — identical seam to the Java peer (A-KT-002).
+ed25519_library   = { name = "jdk-sunec", version = "JDK 21 (java.security Ed25519)", api = "java.security.{Signature,KeyPairGenerator,KeyFactory}/Ed25519 + EdEC* specs (via Kotlin/JVM interop)" }
+# Ed448 (crypto-agility HIGHER BAR, v7.67): same TWO native-ish JVM routes the Java
+# peer documented, inherited via the shared JDK:
+#   (a) JDK SunEC ALSO provides Ed448 natively (NamedParameterSpec.ED448, same
+#       Signature("Ed448") surface) — so, like Java/CL/Elixir/Haskell and UNLIKE
+#       OCaml (A-OC-002 C-ABI) / Zig (A-ZIG-002 gap), the JVM closes the agility bar
+#       with NO third-party dependency for the SIGNATURE primitive; AND
+#   (b) BouncyCastle (bcprov-jdk18on) provides Ed448 + SHA-384 in pure-managed Java
+#       (callable from Kotlin) as an INDEPENDENT cross-check / fallback.
+# DEFAULT POSITION (matches Java): Ed448 via JDK SunEC (dependency-light); core build
+# stays BouncyCastle-FREE. BouncyCastle is an OPT-IN agility cross-check / fallback.
+# Decide SunEC-vs-BC for the agility corpus at S2 after the raw-key-encoding spike.
+# Ed448 agility itself is a DEFERRED higher-bar (reach peer: floor first); the FLOOR
+# (Ed25519 + SHA-256) is the v0.1 target. See SPEC-AMBIGUITY-LOG A-KT-002.
+ed448_library     = { name = "jdk-sunec (default) / BouncyCastle (opt-in cross-check)", version = "JDK 21 Ed448 / bcprov-jdk18on 1.80", strategy = "native-default-bc-optin-deferred", api = "Signature/Ed448 (SunEC) | org.bouncycastle Ed448 (opt-in)" }
+sha256_source     = "java.security.MessageDigest (SHA-256 floor; SHA-384 also in-box for agility — both SunMessageDigest, no dep; via Kotlin/JVM interop)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (~80 lines, src/main/kotlin/.../codec/Base58.kt); dodges a Gradle dep + pin
+varint_handling   = "native"                  # multicodec-style LEB128 (§7.3) inline impl; the multikey format/key/hash-type varints
+
+[error_model]
+# DELIBERATE idiom — and the PRIMARY axis on which Kotlin diverges from the Java peer
+# (Java chose CHECKED exceptions; Kotlin has NO checked exceptions). Kotlin's
+# idiomatic recoverable-error seam is a SEALED-CLASS Result / Either type: codec and
+# protocol decode failures return a sealed `EcfResult<T>` (Ok / Err) or are modeled
+# as a sealed `EntityError` hierarchy matched EXHAUSTIVELY by `when` (the compiler
+# enforces exhaustiveness over a sealed type — the static-rigor analogue of OCaml's
+# `result` match, Zig's error union, and Java's checked exceptions, reached via
+# Kotlin's own mechanism). This is the Kotlin-native point in the error-model design
+# space and the main reason this peer is NOT "Java in Kotlin syntax". Exceptions stay
+# reserved for truly unrecoverable programmer errors (IllegalStateException /
+# IllegalArgumentException), the Kotlin convention. Protocol-status failures map a
+# sealed `EntityError` variant -> status code (400 non_canonical_ecf / 401 / 403 /
+# 413 payload_too_large / 400 chain_depth_exceeded) at the dispatcher boundary.
+style             = "result"                  # "exceptions" | "result" | "either" | "errno" | "tagged_tuple" | "conditions" | "error_union"
+result_type       = "sealed-class"            # Kotlin `sealed class EcfResult<out T> { Ok ; Err }` + `sealed class EntityError`; exhaustive `when` (compiler-enforced)
+checked           = false                      # Kotlin has NO checked exceptions; the sealed Result IS the compiler-enforced handling seam (exhaustive `when` over the sealed hierarchy)
+base_error        = "EntityError"             # sealed class; root of the protocol/codec error hierarchy (a value, not a thrown exception, on the recoverable path)
+error_hierarchy = [
+    "sealed class EntityError",
+    "  sealed class CodecError : EntityError",
+    "    NonCanonicalEcf",
+    "    TruncatedInput",
+    "    TagRejected",
+    "    DuplicateKey",
+    "  sealed class CryptoError : EntityError",
+    "    BadSeed",
+    "    UnsupportedKeyType",
+    "    UnsupportedContentHashFormat",
+    "  sealed class ProtocolError : EntityError",
+    "    AuthenticationFailed",
+    "    AuthorizationDenied",
+    "    PayloadTooLarge",          # 413 (§4.10a)
+    "    ChainDepthExceeded",       # 400 (§4.10b)
+    "  sealed class TransportError : EntityError",
+]
+
+[async]
+# DELIBERATE idiom decision — Kotlin's HEADLINE concurrency feature is COROUTINES
+# (kotlinx.coroutines: structured concurrency, suspend functions, Dispatchers). NOT
+# exercised by the codec (S2 is pure/synchronous). For the §4.8/§6.11 inbound-
+# concurrent-with-outbound requirement (N6/N7 reentrancy) and §7b concurrency gate,
+# the core peer uses structured coroutines: one coroutine per connection on
+# Dispatchers.IO (or a launched supervisorScope), with a reader coroutine demuxing
+# EXECUTE_RESPONSE by request_id via a thread-safe map of CompletableDeferred<T>
+# (the coroutine analogue of Java's CompletableFuture / OCaml's per-thread demux).
+# This is the Kotlin-NATIVE concurrency shape and the second axis where the peer
+# diverges from Java (Java = platform/virtual threads; Kotlin = coroutines over a
+# thread pool). §7b store-safety: coroutine confinement (single-threaded store
+# dispatcher / Mutex around the store) gives the structured-concurrency store-race
+# discipline (cf. the §7b taxonomy: actor-isolation OR transactional OR manual; the
+# coroutine Mutex/confined-dispatcher route is the manual-but-structured shape).
+# Public surface: BOTH a blocking facade (runBlocking-backed, for non-coroutine
+# callers) AND native `suspend` functions (the idiomatic Kotlin/Android surface).
+# kotlinx.coroutines is the ONE first-party Kotlin runtime dep the peer takes (JetBrains
+# vendor channel, ubiquitous; pinned + >=30-day). See A-KT-003.
+style             = "coroutines"              # "sync" | "task" | "threaded" | "virtual-threads" | "coroutines"
+default_surface   = "suspend"                 # idiomatic Kotlin surface is `suspend fun`; codec itself is pure/blocking
+blocking_facade   = "runBlocking"             # a blocking facade for Java/non-coroutine consumers (runBlocking { ... })
+primitive         = "kotlinx.coroutines (structured concurrency, Dispatchers.IO) over the JVM thread pool"
+request_demux     = "ConcurrentHashMap<requestId, CompletableDeferred<T>>"  # reentrant request_id correlation; N7
+store_safety      = "single-threaded store dispatcher / Mutex-guarded store (§7b structured-concurrency discipline)"
+
+[naming]
+# Kotlin-native conventions (Kotlin Coding Conventions, kotlinlang.org). Largely
+# overlaps Java (camelCase methods/properties, PascalCase types, UPPER_SNAKE
+# top-level consts) but with Kotlin specifics: properties not getter methods;
+# file-level functions allowed; one-or-more types per file (file name = main type or
+# domain when multiple).
+type_names        = "PascalCase"              # classes/interfaces/data classes/objects/enums/sealed: Entity, ContentHash, PeerId, EntityError
+function_names    = "camelCase"               # functions/methods: contentHash(), signAndVerify(), encodeEcf()
+property_names    = "camelCase"               # properties + locals + parameters: contentHash, peerId, formatCode
+constant_names    = "UPPER_SNAKE_CASE"        # `const val` / top-level `val` constants: MAX_MESSAGE_SIZE, DEFAULT_TIMEOUT
+package_names     = "lowercase.dotted"        # reverse-DNS lowercase, no underscores: org.entitycore.protocol, ...protocol.codec
+enum_constants    = "UPPER_SNAKE_CASE"        # enum members: KeyType.ED25519, HashFormat.SHA_256
+file_names        = "PascalCase.kt"           # file named for its primary type; Kotlin allows multiple types/file (e.g. sealed hierarchy in one file)
+
+[build]
+build_tool        = "gradle"                  # Gradle with the KOTLIN DSL (build.gradle.kts) — THE idiomatic Kotlin/Android build tool (kotlin-gradle-plugin is first-party JetBrains). Chosen over Maven because Gradle+Kotlin-DSL is the ecosystem norm for Kotlin (Android Studio, JetBrains tooling, every kotlinx library) — Maven (the Java peer's choice) would read as un-idiomatic here. Reproducible/offline via the Gradle wrapper + a pinned distribution + `--offline`.
+build_command     = "gradle --offline --no-daemon build"           # deps pre-fetched into the image's gradle caches at build time; --offline + --no-daemon for reproducible container builds
+test_command      = "gradle --offline --no-daemon test"            # kotlin.test on JUnit 5 platform
+pack_command      = "gradle --offline --no-daemon jar"             # produces the jar; publish is the optional S5 registry step
+wrapper           = "gradlew (pinned distribution in gradle/wrapper/gradle-wrapper.properties)"  # the Gradle wrapper pins the EXACT Gradle version for reproducibility
+
+[layout]
+project_file      = "build.gradle.kts"        # Gradle Kotlin-DSL build script (+ settings.gradle.kts)
+src_dir           = "src/main/kotlin/"        # standard Gradle/Kotlin layout
+test_dir          = "src/test/kotlin/"        # kotlin.test tests + conformance harness
+resources_dir     = "src/test/resources/"     # conformance fixture vectors mounted here
+group_id          = "org.entitycore"          # reverse-DNS group (Maven coordinate)
+artifact_id       = "entity-core-protocol-kotlin"  # Maven artifact id (hyphens allowed in artifactId, unlike package names)
+root_package      = "org.entitycore.protocol" # Kotlin root package
+
+[publishing]
+registry          = "Maven Central"           # the JVM registry (Sonatype Central Portal) — Kotlin libraries publish to Maven Central like any JVM artifact
+registry_url      = "https://central.sonatype.com/"
+group_id          = "org.entitycore"          # reverse-DNS coordinate (publishing requires a verified namespace; placeholder until claimed)
+artifact_id       = "entity-core-protocol-kotlin"
+package_id        = "org.entitycore:entity-core-protocol-kotlin"  # full Maven coordinate
+publish_plugin    = "maven-publish (Gradle) + signing"  # the Gradle maven-publish + signing plugins; vanilla-Gradle (no third-party publish plugin) to keep the supply chain minimal
+license_expression = "Apache-2.0"
+repository_url     = ""                        # TBD on first publish (namespace verification gates Central publish; logged A-KT-005)
+developers         = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default; the JVM/Kotlin ecosystem is Apache-2.0-leaning (Kotlin itself is Apache-2.0; kotlinx.* are Apache-2.0; Android core is Apache-2.0), so the repo default IS the ecosystem norm — no override.
+
+[testing]
+# kotlin.test (org.jetbrains.kotlin:kotlin-test) running on the JUnit 5 platform —
+# THE idiomatic Kotlin test surface (a thin Kotlin assertion layer over a JUnit
+# backend; first-party JetBrains). This is the test-path registry dependency; like
+# the Java peer's JUnit-5 stance, taking the de-facto ecosystem standard (test-scope
+# only, never shipped in the artifact) is the low-surprise idiomatic choice — but it
+# is pinned exactly + >=30-day. The conformance harness is a kotlin.test test that
+# loads the normative fixture and asserts byte-identity.
+framework         = "kotlin.test (on the JUnit 5 / Jupiter platform)"
+kotlin_test_version = "matches kotlin compiler (1.9.25) — kotlin-test is versioned with the compiler"
+junit_platform_version = "5.11.4"             # JUnit 5 platform backend for kotlin.test; test-scope only
+
+[documentation]
+kdoc              = true                       # /** */ KDoc on public surfaces
+doc_tool          = "dokka"                    # Dokka (JetBrains) is the Kotlin doc generator (the javadoc analogue); OPTIONAL S5-only; not a runtime/test dep — defer wiring to S5 to keep the build minimal
+
+[container]
+base_image        = "entity-core-keystone/kotlin-toolchain:latest"
+build_in_container = true
+# --network=none honored: the core build is JDK-only crypto (Ed25519 + SHA-256 +
+# coroutines) + the hand-rolled codec; Gradle deps (Kotlin stdlib, kotlinx-coroutines,
+# kotlin-test, optional BouncyCastle) are pre-fetched into the image's gradle caches
+# at container BUILD time, so the dev loop builds fully offline with `gradle --offline`.
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/kotlin entity-core-keystone/kotlin-toolchain:latest gradle --offline --no-daemon test"
+
+[idiom]
+# Hints that don't fit elsewhere. Kotlin-native shapes — where this peer reads as
+# Kotlin a Kotlin/Android dev would write, NOT translated Java.
+data_classes_for_value_types = true           # Kotlin `data class` for immutable value-shaped types (ContentHash, PeerId, Entity) — auto equals/hashCode/copy; the Kotlin analogue of Java records / C# records
+sealed_classes               = true           # `sealed class` / `sealed interface` for closed hierarchies (ECF value nodes, message types, EntityError) — exhaustive `when` (no else branch needed; compiler-checked)
+exhaustive_when              = true           # `when` over sealed types is exhaustiveness-checked by the compiler — the codec/dispatch/error ladders rely on it (the Kotlin static-exhaustiveness seam)
+prefer_immutable             = true           # `val` over `var`; immutable data classes; read-only collection interfaces (List not MutableList) on public surfaces
+unsigned_types               = true           # Kotlin UByte / UShort / UInt / ULong (stable since 1.5) carry the uint64 ECF head-form range NATIVELY — no Long.compareUnsigned / toUnsignedString dance (the Java/C# trap); a Kotlin-native ergonomic win on the number axis. NOTE: ULong wire-emit still hand-checks the canonical shortest head-form; unsigned type only removes the signedness-comparison footgun.
+nullable_via_type            = true           # Kotlin null-safety in the TYPE SYSTEM (`T?` vs `T`) — absent values are `T?`, the compiler enforces null-handling; no java.util.Optional needed (the Kotlin idiom)
+no_byte_array_aliasing       = true           # JVM `ByteArray` is MUTABLE + aliasable (same seam as Java byte[]) — NEVER expose an internal ByteArray by reference; copyOf() on get/set. The shared-JVM footgun the immutable-data-structure peers (OCaml/Elixir/Haskell) avoid; Kotlin's `val` does NOT make a ByteArray's CONTENTS immutable.
+extension_functions          = true           # Kotlin extension functions for ergonomic codec helpers (e.g. `ByteArray.toBase58()`, `ByteArray.toHexLower()`) — idiomatic Kotlin, keeps value types clean
+companion_object_factories   = true           # `companion object` factory functions (e.g. `PeerId.fromPublicKey(...)`, `ContentHash.of(...)`) — the Kotlin static-factory idiom
+hex_lowercase                = true           # ALL external hex rendering MUST be lowercase to match the Go oracle (hex.EncodeToString) + cohort — the A-CL-009 lesson applied proactively. Kotlin: use `"%02x".format(b)` or a lowercase hex table, NEVER uppercase `%02X`.
+target_jvm                   = "21"           # jvmTarget = "21" (the pinned LTS); Kotlin/JVM bytecode target
+kotlin_language_version      = "1.9"           # apiVersion/languageVersion 1.9 (the pinned compiler line)
+
+[deps]
+# Exact pins (S11). Mirrored in containers/kotlin-toolchain/Containerfile.
+# SUPPLY-CHAIN SCOPE (per the project's S11 clarification): the JDK toolchain
+# (Temurin/Adoptium) + the Kotlin compiler + Gradle distribution are REVIEWED VENDOR
+# CHANNELS (Adoptium; JetBrains; Gradle Inc.) — the >=30-day AGE floor RELAXES for
+# the toolchain itself, but the EXACT version pin (+ verified checksum) still stands
+# for reproducibility. Maven-Central-pulled LIBRARY deps (kotlinx-coroutines,
+# kotlin-test, JUnit platform, optional BouncyCastle) are registry-pulled with no
+# human gate, so they get the >=30-day discipline with full force.
+#
+# CORE RUNTIME DEPS: the Kotlin stdlib + kotlinx-coroutines-core. The §9.1 floor
+# crypto (Ed25519 + SHA-256) AND the agility signature (Ed448 + SHA-384) are all in
+# the JDK (SunEC + SunMessageDigest); CBOR + base58 + varint are hand-rolled. So the
+# only NON-stdlib runtime dep is kotlinx-coroutines (the concurrency primitive) — a
+# heavier supply-chain position than Java's literal ZERO, but the cost of the
+# coroutine idiom, which is the Kotlin-native concurrency model (a deliberate S6
+# trade: idiom over absolute minimalism, justified because coroutines ARE how Kotlin
+# does concurrency and a thread-only Kotlin peer would read as un-idiomatic Java).
+jdk               = "Temurin 21.0.10+7"        # LTS; released 2026-01-21 (~143d at authoring 2026-06-18 — clears >=30-day comfortably; reviewed vendor channel, age floor relaxed, exact pin for repro). SHARED with the Java toolchain image. JDK 21 = the LTS Kotlin targets.
+kotlin            = "1.9.25"                    # Kotlin compiler + stdlib + kotlin-test. 1.9.25 released 2024-11-13 (~19mo old — far over the >=30-day floor). The 1.9 LINE is the conservative, stable, Android-default line; 2.0/2.1 (K2 compiler) are newer and 2.1.x is within the cool-down at authoring — explicitly NOT picked. JetBrains is a reviewed channel but kotlin-test/stdlib are Maven-Central-pulled → >=30-day applies → met. Exact pin for repro.
+kotlinx_coroutines = "1.8.1"                    # kotlinx-coroutines-core 1.8.1, released 2024-05-21 (~13mo — far over the floor). The structured-concurrency runtime. Registry-pulled (Maven Central) → >=30-day applies → met. CORE runtime dep (the one non-stdlib runtime dep). NOTE: 1.9.0 (2024-07) + 1.10.x are newer; 1.8.1 is the conservative aged pin compatible with Kotlin 1.9.25.
+junit_platform    = "5.11.4"                    # JUnit 5 (Jupiter) platform — the kotlin.test backend. Released 2024-12 (~18mo). TEST-SCOPE only (never shipped). Registry-pulled → >=30-day applies → met.
+bouncycastle      = "1.80"                      # bcprov-jdk18on 1.80, released 2025-01-14 (~17mo). OPT-IN agility cross-check / fallback ONLY; the CORE build is BouncyCastle-FREE (JDK SunEC covers Ed25519+Ed448; SunMessageDigest covers SHA-256+384). Registry-pulled → >=30-day → met. NOTE: BC 1.84 (2026-05-16) is UNDER the floor — explicitly NOT picked; 1.80 matches the Java peer's aged pin.
+gradle            = "8.10.2"                    # the build tool; Gradle 8.10.2 released 2024-09-23 (~9mo). Pinned via the wrapper distribution + verified distribution sha256. Reviewed channel (Gradle Inc.) — exact pin for repro, age floor relaxed; chosen as a well-aged 8.x that supports JDK 21 + Kotlin 1.9.
+
+[spec]
+v7_version_pinned = "7.75"                     # latest spec-data SNAPSHOT available (protocol-generator/shared/spec-data/v7.75/); profile + codec derive from it. (Live spec/oracle HEAD is v7.77 with a byte-UNCHANGED core floor v7.75->v7.77 — the v7.77 delta is all extension + V8-naming; this peer derives the protocol surface from the v7.75 snapshot and re-runs against the current oracle, per the cohort convention.)
+codec_corpus      = "v0.8.0"                    # ECF corpus (test-vectors/v0.8.0 — the latest stamped vector set); ENTITY-CBOR-ENCODING.md is byte-identical v7.71->v7.75 (label 1.5, SHA-verified upstream per the cohort), so the v0.8.0 corpus is valid at v7.75.
+# PEER_ID CONSTRUCTION (A-KT-004, corroborates A-OC-007 / A-ZIG-001 / A-CL-002 /
+# A-JAVA-004 — now reconciled in the v7.73 body, but the profile still PINS the
+# correct form proactively): derive the Ed25519 peer_id from the §1.5 v7.65
+# CANONICAL-FORM TABLE (spec-data/v7.75 line 459: key_type=0x01 Ed25519 ->
+# hash_type=0x00 identity-multihash, digest = RAW public_key bytes, "The digest IS
+# the public_key (v7.64)"), NOT the legacy SHA-256 form (hash_type=0x01). The §1.5
+# Wire-acceptance carve-out (Amendment 4) makes SHA-256 at most a DECODE compat form,
+# never the CONSTRUCTION form. v7.73 E1 already reconciled §7.4 to defer to the §1.5
+# table, so on v7.75 there is no longer a contradiction to surface — but baking the
+# §1.5 form into the profile proactively dodges the 401 identity_mismatch handshake
+# failure that S2's opaque-digest corpus would NOT catch (it only blows up at the S4
+# handshake). Corroboration-only on v7.75; logged A-KT-004.

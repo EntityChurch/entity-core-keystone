@@ -1,0 +1,317 @@
+# entity-core-protocol-ada — Language Profile
+#
+# Peer #10 (canonical order; parallel cohort with the C peer). Authored FRESH in S1
+# from the V7 spec-data/v7.75 snapshot + Ada/GNAT ecosystem research — NOT ported
+# from the C#/TS/OCaml/Elixir/Zig/Common-Lisp/Java/Swift/Haskell profiles. Ada is the
+# SAFETY-CRITICAL / STRONG-TYPING peer, and it brings the two most-DISTANT idiom axes
+# remaining in the batch — neither exercised by any prior peer:
+#   1. CONCURRENCY = Ada TASKS + PROTECTED OBJECTS + RENDEZVOUS (a first-class
+#      language concurrency model). Prior cohort used: BEAM actors, STM, green threads,
+#      raw OS threads, virtual threads, goroutines, cooperative async — NONE used a
+#      protected-object / rendezvous model. The §4.8 data-race-safe store maps NATURALLY
+#      onto a protected object (mutual-exclusion + condition-synchronization in the
+#      language, no library), making this the centerpiece concurrency finding.
+#   2. DESIGN-BY-CONTRACT = Pre/Post/Type_Invariant/Predicate aspects (Ada 2012+),
+#      compiler/runtime-checked. The static-rigor analogue of Zig's error sets and
+#      Java's checked exceptions, reached through a contract mechanism no prior peer
+#      had. SPARK formal proof is OUT OF SCOPE for v0.1 (noted, not used); the contract
+#      ASPECTS are used.
+# Plus a STRONG-TYPING consequence that is load-bearing here: §1.1 entity `data` is an
+# ARBITRARY ECF value (NOT necessarily a map) — Ada's strong typing makes "model `data`
+# as a discriminated/variant type, not a map" a pointed, must-get-right decision
+# (A-JAVA-010 inherited; see [data_model] + arch/PROFILE-RATIONALE.md).
+#
+# Expectation (honest): the spec-discovery well is DRY — 8+ independent prior peers
+# found no new defect on the v7.75 surface. The bar is a clean, complete, correct S1
+# profile that lets S2–S5 reach 576 · 0 FAIL · 89 skip GREEN. Ada's tasking/rendezvous
+# + design-by-contract are the most distant idioms in the batch, so IF anything new
+# surfaces it most plausibly comes from here — logged honestly if real (gravy, not the
+# goal). Where a value matches a prior peer it is by INDEPENDENT ARRIVAL from V7 + the
+# Ada/GNAT toolchain, not inheritance.
+#
+# Profile authority (S6): the agent MUST use the values declared here. A "TBD" value is
+# logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase. There are NO TBD/
+# deferred values in this profile.
+
+[language]
+id                = "ada"
+name              = "Ada (2012/2022, GNAT)"
+tier              = "peer-10"                  # safety-critical / strong-typing — distant idiom: tasking+protected-objects+rendezvous concurrency, design-by-contract. Canonical peer #10 (parallel with C).
+package_name      = "entity-core-protocol-ada"  # keystone peer id. Alire crate name uses lowercase-with-underscores (see [publishing]); Ada library unit = Entity_Core.Protocol (Ada identifiers are case-insensitive, underscore-separated).
+runtime           = "ada-toolchain"            # references containers/ada-toolchain/Containerfile (Fedora 43 distro GNAT / gcc-gnat 15.2.1)
+
+[codec]
+# strategy: NATIVE (native crypto via a libsodium C binding, hand-rolled canonical CBOR).
+# Same A-005 pattern every prior native peer hit, in two halves:
+#  1. NO Ada CBOR library gives ECF canonicality. There is no mature canonical-CBOR Ada
+#     library at all (the Ada ecosystem is small); even a general-CBOR Ada lib would
+#     still leave the ECF-specific guarantees — RFC-7049 length-FIRST then lexicographic
+#     map-key ordering on ENCODED key bytes (DIFFERS from RFC-8949 §4.2 bytewise),
+#     shortest-float incl. f16, recursive major-type-6 tag rejection, full uint64/nint
+#     range, raw-byte fidelity — entirely to the peer (the reality-check-on-native rule,
+#     PHASE-S1-PROFILE). So hand-rolling the canonical layer is the faithful AND simpler
+#     path. Ada's strong typing + Interfaces.Unsigned_8/Stream_Element_Array make a tight
+#     byte-walking encoder/decoder idiomatic.
+#  2. Crypto is NOT native to Ada's stdlib (no Ed25519/SHA-256 in the predefined library).
+#     Sourced via a libsodium binding over Ada's strong C interop (Interfaces.C /
+#     pragma Import) — Ed25519 + SHA-256 for the §9.1 floor. libsodium is already in the
+#     base image (libsodium-devel). This is the cleanest, most-audited crypto source for
+#     Ada (a thin, well-typed binding, not a re-implementation).
+# `ffi` (consume libentitycore_codec over the C-ABI) is the documented fallback and is
+# NOT expected — the canonical CBOR hand-roll is small and well-understood across 9 prior
+# peers, and the libsodium binding already gives native crypto, so a full FFI codec buys
+# nothing here. Spike at S2 start (PHASE-S1 mandate): push the map_keys + float v7.71
+# vectors through the hand-rolled encoder + assert byte-identity BEFORE the full build
+# (the load-bearing canonical risk — length-then-lex ordering + shortest-float f16).
+strategy          = "native"
+# CBOR: hand-rolled canonical encoder/decoder (Entity_Core.Codec.Cbor). Encoder appends
+# to a growable byte buffer (Ada.Streams.Stream_Element_Array or a Bounded/Unbounded
+# byte vector); decoder is index-walking over a Stream_Element_Array slice. Canonical
+# rules owned in-code (length-then-lex map ordering, shortest-int/shortest-float ladder,
+# definite lengths, tag rejection). No Ada CBOR dependency.
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native" }
+# Ed25519: libsodium via Interfaces.C binding (crypto_sign_* / crypto_sign_detached /
+# crypto_sign_verify_detached / crypto_sign_seed_keypair). RFC-8032 deterministic by the
+# algorithm. The binding is a thin Ada spec over the libsodium C ABI (pragma Import,
+# Convention => C). seed(32B)->keypair via crypto_sign_seed_keypair; raw 32-byte public
+# key is returned directly by libsodium (NO point-extraction step needed — contrast the
+# JDK EdEC point-encoding wrinkle the Java peer flagged).
+ed25519_library   = { name = "libsodium (C binding)", version = "1.0.22-1.fc43", api = "Interfaces.C binding: crypto_sign_seed_keypair / crypto_sign_detached / crypto_sign_verify_detached" }  # S2 CORRECTION: was "1.0.20"; fedora:43 ships ONLY libsodium-1.0.22-1.fc43 (rpm -q verified). crypto_sign_*/crypto_hash_sha256 byte-identical between 1.0.20 and 1.0.22 — pin-hygiene fix, conformance-neutral.
+# Ed448 (crypto-agility HIGHER bar, v7.67): libsodium does NOT provide Ed448. The agility
+# corpus (KEY-TYPE-ED448-1, SHA-384) is therefore NOT reachable from the libsodium binding
+# alone — the SAME gap OCaml (A-OC-002, sourced over the C-ABI) and Zig (A-ZIG-002, flat
+# gap) hit. DEFAULT POSITION for v0.1: §9.1 CORE FLOOR (Ed25519 + SHA-256) only, which is
+# fully covered by libsodium; the Ed448/SHA-384 agility higher bar is DEFERRED, and when
+# taken it comes via the libentitycore_codec C-ABI agility surface (the OCaml precedent)
+# or an openssl curve448 binding (openssl-devel is in the base image; the C peer's likely
+# route too) — NOT from libsodium. SHA-384 IS available from libsodium (crypto_hash_sha384
+# exists in libsodium? NO — libsodium ships SHA-256 + SHA-512 only; SHA-384 would come from
+# OpenSSL). Recorded as the deferred agility decision in A-ADA-002. The core floor is
+# UNAFFECTED — it needs only Ed25519 + SHA-256, both in libsodium.
+ed448_library     = { name = "deferred (C-ABI agility surface or OpenSSL curve448)", version = "n/a-for-core-floor", strategy = "defer-to-agility-overlay", note = "libsodium has no Ed448; §9.1 core floor does not need it (A-ADA-002)" }
+# SHA-256: libsodium crypto_hash_sha256 (same binding). The §9.1 floor content_hash is
+# SHA-256 only. (SHA-384, needed only for the v7.67 agility higher bar, is NOT in
+# libsodium — it would come from OpenSSL/openssl-devel when the agility overlay is built;
+# deferred with Ed448. A-ADA-002.)
+sha256_source     = "libsodium crypto_hash_sha256 (C binding)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (~80 lines, src/.../Codec/Base58); dodges an Alire dep + pin
+varint_handling   = "native"                  # multicodec-style LEB128 (§7.3) inline impl; the multikey format/key/hash-type varints. Ada Interfaces.Unsigned_64 + shift/mask.
+
+[data_model]
+# A-JAVA-010 INHERITED + made POINTED by Ada's strong typing (the load-bearing model
+# decision for this peer). §1.1 entity `data` is an ARBITRARY ECF VALUE — NOT necessarily
+# a map. A map-only model passes S2/S3 green then 500s on the FIRST scalar-data entity at
+# the live S4 gate (the silent-500 trap). Ada's strong, static typing makes this decision
+# especially consequential: `data` MUST be modeled as a GENERAL ECF VALUE from the start —
+# a DISCRIMINATED RECORD / tagged-type variant over the ECF value space (uint, nint,
+# bytes, text, array, map, bool, null, float, simple, tag-as-rejected), NOT an
+# Ada.Containers map. The codec's ECF value type is this discriminated type; an entity's
+# `data` field is one of these values. Modeling it as a map would be a TYPE-LEVEL mistake
+# the compiler would happily accept and that only the live oracle would catch.
+ecf_value_model   = "discriminated-record-variant"   # tagged/variant type over the full ECF value space; data is a general ECF value, NOT map-only
+entity_data_is_arbitrary_ecf = true                  # §1.1: data is any ECF value (scalar/array/map/...), NOT necessarily a map (A-JAVA-010)
+
+[error_model]
+# DELIBERATE idiom: Ada EXCEPTIONS + DESIGN-BY-CONTRACT aspects. Ada's idiomatic error
+# mechanism is the EXCEPTION (raise/exception handler), with user-defined exceptions per
+# failure class — the C#-family shape, but PAIRED with Ada's distinctive seam:
+# DESIGN-BY-CONTRACT (Pre/Post/Type_Invariant/Predicate aspects, Ada 2012+) enforced by
+# the compiler/runtime. Contracts guard the INTERNAL invariants (a ContentHash is exactly
+# 32 bytes; a canonical buffer is well-formed; a peer_id is a valid multihash) — a
+# compiler/runtime-checked rigor seam NO prior peer exercised (the static analogue of
+# Zig's error sets + Java's checked exceptions, via a different mechanism). PROTOCOL-status
+# failures (400 non_canonical_ecf / 401 / 403 / 413 / 400 chain_depth_exceeded) map an
+# exception subtype -> status code at the dispatcher boundary. Codec-decode failures raise
+# a Codec_Error; crypto failures raise a Crypto_Error; protocol auth/authz raise the
+# protocol exceptions. (SPARK formal proof is OUT OF SCOPE for v0.1 — noted; the contract
+# ASPECTS are used as runtime-checked guards, not discharged as proofs.)
+style             = "exceptions"              # "exceptions" | "result" | "either" | "errno" | "tagged_tuple" | "conditions" | "error_union"
+contracts         = "aspects"                 # Pre/Post/Type_Invariant/Predicate aspects (Ada 2012+) guard internal invariants — runtime-checked, NOT SPARK-proven for v0.1
+spark             = "out-of-scope-v0.1"       # SPARK formal proof deferred; contract aspects used as runtime guards only
+base_exception    = "Entity_Core_Error"
+exception_hierarchy = [
+    "Entity_Core_Error",
+    "  Codec_Error",
+    "    Non_Canonical_Ecf_Error",
+    "    Truncated_Input_Error",
+    "    Tag_Rejected_Error",
+    "    Duplicate_Key_Error",
+    "  Crypto_Error",
+    "    Bad_Seed_Error",
+    "    Unsupported_Key_Type_Error",
+    "    Unsupported_Content_Hash_Format_Error",
+    "  Protocol_Error",
+    "    Authentication_Error",
+    "    Authorization_Error",
+    "    Chain_Depth_Exceeded_Error",
+    "    Payload_Too_Large_Error",
+    "  Transport_Error",
+]
+
+[concurrency]
+# THE STANDOUT IDIOM AXIS for this peer — a concurrency model NO prior peer used.
+# Ada has FIRST-CLASS, in-language concurrency: TASKS (the unit of concurrency),
+# PROTECTED OBJECTS (data + the operations that serialize access to it, with
+# condition-synchronization via entry barriers), and the RENDEZVOUS (synchronous
+# task-to-task entry calls). This is structurally distinct from every prior cohort
+# shape (BEAM actors, STM, green threads, raw threads, virtual threads, goroutines,
+# cooperative async).
+# §4.8 DATA-RACE-SAFE STORE: maps NATURALLY onto a PROTECTED OBJECT — the content store +
+#   tree index live inside a protected object (or sharded protected objects); reads are
+#   protected functions, writes are protected procedures. Mutual exclusion is enforced by
+#   the LANGUAGE (no lock to forget, no map to race) — the protected object IS the
+#   data-race-safety guarantee §4.8 demands. This is the cleanest store-safety story in
+#   the cohort: the two store-race fall-over bugs that drove §4.8 into the floor
+#   (Zig/CL, v7.75) are STRUCTURALLY unrepresentable behind a protected object.
+# §4.9 RESILIENCE / §6.11 reentrancy: one TASK per connection (or a bounded task pool with
+#   a request queue); request_id<->continuation correlation via a protected-object demux
+#   map. Inbound-concurrent-with-outbound (N6/N7) is the natural Ada task shape.
+# COOPERATIVE-POOL / NO-BLOCKING-SYSCALL caveat: Ada tasks are typically mapped to OS
+#   threads by GNAT's runtime, so a blocking socket read in one task does NOT stall others
+#   (unlike a single cooperative pool) — but the brief's "no blocking syscalls on a
+#   cooperative pool" still applies if a bounded pool is used: keep socket I/O per-task or
+#   non-blocking. TCP_NODELAY is set on accepted sockets (the Zig finding — disable Nagle
+#   so small EXECUTE_RESPONSE frames flush promptly). Codec (S2) is pure/synchronous;
+#   concurrency enters at the peer (S3). Final S3 shape (one-task-per-conn vs bounded pool)
+#   decided at S3; protected-object store is fixed now.
+style             = "tasks-protected-objects-rendezvous"  # Ada in-language: tasks + protected objects + rendezvous — no prior peer's shape
+store_safety      = "protected-object"        # §4.8 store + tree index behind a protected object (language-enforced mutual exclusion) — the cleanest §4.8 story in the cohort
+default_surface   = "sync-codec"              # codec (S2) is pure/synchronous; tasks/protected objects enter at the peer (S3)
+demux             = "protected-object map"    # request_id<->continuation correlation (N7) via a protected-object map
+tcp_nodelay       = true                      # set TCP_NODELAY on accepted sockets (Nagle off) — small-frame flush; the Zig §7b finding
+no_blocking_on_cooperative_pool = true        # if a bounded task pool is used, keep socket I/O per-task / non-blocking (cooperative-pool caveat)
+
+[naming]
+# Ada-native conventions. Ada identifiers are CASE-INSENSITIVE; the idiomatic rendering
+# (GNAT / Ada Quality & Style Guide) is Mixed_Case_With_Underscores for identifiers and
+# package/type names, UPPER_CASE for nothing special (Ada has no screaming-snake idiom —
+# constants are Mixed_Case too). Differs from every prior peer's casing.
+type_names        = "Mixed_Case_With_Underscores"   # types/records/tagged-types: Content_Hash, Peer_Id, Entity, Ecf_Value
+subprogram_names  = "Mixed_Case_With_Underscores"   # procedures/functions: Content_Hash, Sign_And_Verify, Encode_Ecf
+variable_names    = "Mixed_Case_With_Underscores"   # variables + parameters: Content_Hash, Peer_Id, Format_Code
+constant_names    = "Mixed_Case_With_Underscores"   # constants: Max_Message_Size, Default_Timeout (Ada has NO screaming-snake idiom — unlike Java/C)
+package_names     = "Mixed_Case_With_Underscores"   # hierarchical: Entity_Core, Entity_Core.Protocol, Entity_Core.Codec
+enum_literals     = "Mixed_Case_With_Underscores"   # enumeration literals: Ed25519, Sha_256 (Ada enum literals are case-insensitive identifiers)
+file_names        = "lowercase-dotted"              # GNAT default: entity_core-protocol.ads / .adb (unit name lowercased, '.' -> '-')
+# HEX-CASE (A-CL-009 lesson applied PROACTIVELY — load-bearing for Ada): all external
+# string/byte hex rendering MUST be LOWERCASE to match the Go oracle (hex.EncodeToString)
+# and the cohort. Ada's hex builtins DEFAULT DIFFERENTLY: Integer'Image / the 16#..#
+# based-literal form and the common "%02X"-style Ada.Text_IO.Integer_IO output produce
+# UPPERCASE (A-F). The §3.4/§3.5 tree-path keys (system/signature/{hash},
+# system/capability/revocations/{hash}) and §6.9a policy paths are CASE-SENSITIVE string
+# keys keyed by lowercase hex; an uppercase hex helper passes Ada-to-Ada loopback but
+# 404s against the lowercase oracle (EXACTLY the A-CL-009 trap, which CL hit because its
+# `~x` defaulted uppercase — the CL log explicitly names Ada hex builtins as the same
+# risk). PIN: the codec's hex helper MUST emit lowercase a-f explicitly (a custom
+# nibble->char table, NOT Integer'Image / Integer_IO with Base => 16).
+hex_case          = "lowercase"               # MUST emit lowercase a-f; Ada hex builtins default UPPERCASE — pin explicitly (A-CL-009 / A-ADA-003)
+
+[build]
+# GPRBuild (gprbuild) + a GNAT project file (.gpr) is the idiomatic, toolchain-native Ada
+# build system (the gcc-gnat companion build driver; Alire's `alr build` wraps it). Chosen
+# over Alire-as-the-build-driver to keep the container OFFLINE + dependency-minimal: the
+# core peer has NO Alire crate dependencies (crypto = libsodium C binding, CBOR/base58/
+# varint hand-rolled), so gprbuild against a committed .gpr needs no registry resolve at
+# all — the dnf-installed GNAT + gprbuild + libsodium-devel from the Fedora 43 image are
+# the whole toolchain. Alire (`alr`) is noted as the ecosystem package manager but is NOT
+# required for the core build (A-ADA-004).
+build_tool        = "gprbuild"
+project_file      = "entity_core_protocol.gpr"
+build_command     = "gprbuild -P entity_core_protocol.gpr -p"      # -p create object/exec dirs; build against the committed .gpr, fully offline
+test_command      = "gprbuild -P entity_core_protocol.gpr -p && ./bin/run_tests"  # build + run the test/conformance harness binary (AUnit-free; hand-rolled runner, see [testing])
+clean_command     = "gprclean -P entity_core_protocol.gpr"
+
+[layout]
+project_file      = "entity_core_protocol.gpr"  # GNAT project file
+src_dir           = "src/"                      # .ads (spec) + .adb (body) units
+test_dir          = "tests/"                    # conformance harness + unit tests (hand-rolled runner)
+obj_dir           = "obj/"                       # gprbuild object dir (gitignored)
+bin_dir           = "bin/"                       # built executables (test runner, smoke peer)
+root_package      = "Entity_Core"               # Ada root library unit; Entity_Core.Protocol, Entity_Core.Codec, ...
+
+[publishing]
+# Alire (the Ada Library Repository) is the Ada package registry — the crates.io/Hex
+# analogue. Publishing is the OPTIONAL S5 step. The crate name is lowercase-with-
+# underscores (Alire convention). Core build does NOT depend on Alire (see [build]); Alire
+# is the DISTRIBUTION channel only.
+registry          = "Alire"
+registry_url      = "https://alire.ada.dev/"
+crate_name        = "entity_core_protocol"      # Alire crate id (lowercase_with_underscores)
+package_id        = "entity_core_protocol"
+license_expression = "Apache-2.0"               # SPDX; Alire crates carry an SPDX license field
+repository_url     = ""                          # TBD on first publish (Alire crate index submission gates publish; logged A-ADA-005)
+authors            = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default. The Ada/FSF-GNAT ecosystem is GPL-with-runtime-exception-leaning for the COMPILER, but the repo default Apache-2.0 stands for the GENERATED PEER (the toolchain license does not bind the output). No override.
+
+[testing]
+# Hand-rolled test/conformance runner (a small Ada main that loads the normative fixture
+# vectors, runs the codec/crypto/peer assertions, and asserts byte-identity), rather than
+# AUnit. Rationale: AUnit is the Ada xUnit framework BUT it is a separate Alire crate /
+# library dep; the cohort's dependency-minimization stance (Zig/OCaml/CL hand-rolled their
+# test harness to avoid even a test-framework dep) applies cleanly here, and the
+# conformance harness is fundamentally "load fixture -> assert bytes" which needs no
+# framework. Keeps the container Alire-free. The runner is a gprbuild-built executable
+# (bin/run_tests) invoked by the dev loop.
+framework         = "hand-rolled"             # small Ada test main; loads fixtures, asserts byte-identity — no AUnit dep (cohort dependency-minimization stance)
+aunit             = "not-used"                # AUnit (the Ada xUnit) is the ecosystem standard but is an extra Alire dep; hand-rolled keeps the container dep-free (A-ADA-004)
+
+[documentation]
+gnatdoc           = true                       # gnatdoc-style doc comments on public package specs (.ads) for later S5 documentation generation
+doc_comments      = "ads-spec-headers"         # public surface documented in the .ads spec files (the Ada convention)
+
+[container]
+base_image        = "entity-core-keystone/ada-toolchain:latest"
+build_in_container = true                       # AUTHORED at S1, NOT built (S1 boundary). Built at S2.
+# --network=none is honored fully: the core toolchain is the Fedora 43 DISTRO packages
+# (gcc-gnat + gprbuild + libsodium-devel), all dnf-installed at image BUILD time. There are
+# NO Alire crate deps for the core peer (crypto = libsodium binding, CBOR/base58/varint
+# hand-rolled), so the dev loop runs gprbuild fully offline under --network=none with no
+# registry resolve at all — the lightest-supply-chain story in the cohort alongside
+# Zig/Elixir/Java (achieved via the distro toolchain + a system libsodium).
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/ada entity-core-keystone/ada-toolchain:latest gprbuild -P entity_core_protocol.gpr -p"
+
+[idiom]
+# Hints that don't fit elsewhere.
+strong_typing            = true                # distinct types for distinct concepts (Content_Hash, Peer_Id are NOT bare byte arrays — named types with Type_Invariant on length)
+discriminated_records    = true                # the ECF value space is a discriminated record (variant) over the ECF value kinds — the [data_model] decision
+design_by_contract       = true                # Pre/Post/Type_Invariant/Predicate aspects guard invariants (runtime-checked; SPARK proof out-of-scope v0.1)
+protected_objects        = true                # §4.8 store + demux behind protected objects (language-enforced mutual exclusion)
+tasks                    = true                # one-task-per-connection (or bounded pool) concurrency; rendezvous/protected-entry synchronization
+stream_element_array     = true                # wire bytes are Ada.Streams.Stream_Element_Array / Interfaces.Unsigned_8 — NOT String (avoid char-encoding ambiguity)
+no_unsigned_trap         = false               # Ada HAS modular (unsigned) integer types (Interfaces.Unsigned_64) — full uint64 head-form range is NATIVE (NO C#/Java ulong trap; an Ada advantage)
+hex_lowercase_pinned     = true                # custom nibble->char hex (lowercase) — never Integer'Image / Integer_IO Base=>16 (uppercase) — A-CL-009 / A-ADA-003
+ada_version              = "2012"              # Ada 2012 is the floor for the contract aspects (Pre/Post/Type_Invariant); Ada 2022 features used where GNAT 15.2 supports them and they help
+c_interop                = "Interfaces.C"      # libsodium binding via Interfaces.C + pragma Import (Convention => C) — Ada's strong, typed C interop
+
+[deps]
+# Exact pins (S11). All ≥30 days old at authoring (2026-06-14, so all released before
+# ~2026-05-15). SUPPLY-CHAIN SCOPE: the toolchain is the FEDORA 43 DISTRO CHANNEL (a
+# reviewed vendor channel — Fedora's packaging/review process, the OS-package analogue of
+# the .NET/Temurin feeds), so the exact NVR pin stands for reproducibility and the age
+# floor is comfortably cleared by the distro release dates anyway. There are NO
+# registry-pulled (Alire) deps for the core peer.
+#
+# CORE RUNTIME DEPS: libsodium (system shared library, C binding) — the ONLY runtime dep,
+# and it is a system library in the base image, audited + universal. CBOR + base58 +
+# varint are hand-rolled. No Alire crates.
+# Exact NVRs captured at the S2 build (2026-06-14) by `rpm -q` inside the built image
+# (/opt/ada-toolchain-versions.txt). S2 CORRECTIONS vs the S1 draft: gcc-gnat/gcc were
+# `-2.fc43` (draft guess) but the real Fedora 43 release at S2-build time is `-7.fc43`;
+# libsodium was "1.0.20" but fedora:43 ships ONLY 1.0.22-1.fc43.
+gnat              = "gcc-gnat-15.2.1-7.fc43"   # GNAT (FSF GCC-Ada). GCC 15.2 released 2025-08-08 upstream (~10 months old). Distro channel; exact NVR pin for repro. Ada 2012/2022 + full contract-aspect support. (S2: was 15.2.1-2.fc43; real release -7.fc43.)
+gcc               = "gcc-15.2.1-7.fc43"        # C compiler (links the libsodium binding; gnatlink driver). Same upstream release as gcc-gnat.
+gprbuild          = "gprbuild-25.0.0-5.fc43"   # the GNAT project build driver; dnf-installed from the Fedora 43 repo alongside gcc-gnat. Exact NVR captured at S2 from the image's dnf metadata.
+make              = "make-4.4.1-11.fc43"       # build helper (used by gprbuild's external builders where invoked).
+libsodium         = "libsodium-1.0.22-1.fc43"  # crypto: Ed25519 + SHA-256. Fedora 43 ships ONLY 1.0.22-1.fc43 (already in containers/base). System shared lib via Interfaces.C binding. NO Ed448/SHA-384 (agility-overlay-only; A-ADA-002). (S2 CORRECTION: was "1.0.20"; conformance-neutral — high-level crypto_sign_*/crypto_hash_sha256 are byte-identical 1.0.20↔1.0.22.)
+libsodium_devel   = "libsodium-devel-1.0.22-1.fc43"  # headers for the Interfaces.C binding.
+openssl_devel     = "openssl-devel-3.5.4-3.fc43"     # present for the DEFERRED agility overlay (Ed448/SHA-384 via OpenSSL; A-ADA-002). NOT used by the core floor.
+fedora            = "43"                        # base image OS; the toolchain channel. Matches containers/base/Containerfile.
+# NO Alire crates. NO CBOR/base58/varint/test-framework packages — all hand-rolled in-repo.
+
+[spec]
+v7_version_pinned = "7.75"                     # spec-data/v7.75 (the latest snapshot; Ada derives this surface independently, spec-first). The current-state menu (peer_id §1.5 / hex-case / 401-403 / A-JAVA-010 / 400-chain-depth / resource_bounds / concurrency) verified directly in spec-data/v7.75 at S1.
+codec_corpus      = "v0.8.0"                     # ECF corpus; ENTITY-CBOR-ENCODING.md is byte-stable across v7.71->v7.75 (no wire-format change in the v7.72-75 folds; the cohort SHA-verified this), so the v0.8.0 corpus (latest test-vectors snapshot) is valid at v7.75.
+conformance_gate  = "validate-peer --profile core = 576 · 0 FAIL · 89 skip"  # the canonical core gate at v7.75 (includes the concurrency + resource_bounds categories)
+conformance_scaffolding = "guide-conformance-7a-7b"  # §7a validate handlers + §7b concurrency/resilience gate come from GUIDE-CONFORMANCE.md + the generator menu (NOT spec-data); Ada picks them up at S3/S4.

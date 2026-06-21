@@ -1,0 +1,149 @@
+# type_system core-vs-extension classification — v7.71 oracle, 150 demanded types
+#
+# Source of demand: entity-core-go types.RegisterCoreTypes + connect/tree handler
+#   types == validate-peer runTypeSystem registry == compare-types generateLocalTypes.
+#   Rendered byte-exact to test-vectors/v0.8.0/type-registry-vectors-v1.{cbor,diag}
+#   (150 entries) by protocol-generator/shared/tools/dump-type-registry.
+#
+# Ruling basis (user): a CORE protocol peer publishes core + operational
+#   + the type-system BOOTSTRAP only. Extensions bring their own types+handlers+
+#   functionality when installed; the registry grows as extensions are added. The
+#   *type extension* (validation/merging) is NOT a core requirement. Publishing a
+#   type *shape* != implementing the extension. See memory: type-registry-core-vs-extension,
+#   type-registry-render-design.
+#
+# G4 (refined, escalate to arch): RegisterCoreTypes conflates all extension vocab
+#   AND the type-extension into its "ratified-core" floor. The 97 extension types
+#   below over-fail a correct core peer; exclude from the core verdict (same as the
+#   handlers-extension exclusions). Only system/substitute/* is already provisional
+#   (WARN) oracle-side; the other 93 are hard FAILs that must be excluded.
+
+# =====================================================================
+# CORE — the C# core peer renders + publishes these (target: byte-exact PASS): 53
+# =====================================================================
+## primitives (8)
+  primitive/any
+  primitive/bool
+  primitive/bytes
+  primitive/float
+  primitive/int
+  primitive/null
+  primitive/string
+  primitive/uint
+## structural roots + envelopes (5)
+  entity
+  core/entity
+  core/envelope
+  system/envelope
+  system/protocol/envelope
+## identity / hash / signature (4)
+  system/hash
+  system/peer
+  system/peer-id
+  system/signature
+## protocol surface (6)
+  system/protocol/connect/authenticate
+  system/protocol/connect/hello
+  system/protocol/error
+  system/protocol/execute
+  system/protocol/execute/response
+  system/protocol/resource-target
+## capability (12)  [multi-granter = multisig core primitive M2, core since v7.71]
+  system/capability/grant
+  system/capability/grant-entry
+  system/capability/id-scope
+  system/capability/path-scope
+  system/capability/request
+  system/capability/revocation
+  system/capability/revoke-request
+  system/capability/delegate-request
+  system/capability/delegation-caveats
+  system/capability/policy-entry
+  system/capability/token
+  system/capability/multi-granter
+## handler machinery (6)
+  system/handler
+  system/handler/interface
+  system/handler/manifest
+  system/handler/operation-spec
+  system/handler/register-request
+  system/handler/register-result
+## tree (5)
+  system/tree/get-request
+  system/tree/put-request
+  system/tree/listing
+  system/tree/listing-entry
+  system/tree/path
+## type-system BOOTSTRAP only (3)  [the self-describing minimum, §2.6/§4.4]
+  system/type
+  system/type/field-spec
+  system/type/name
+## operational (4)
+  system/bounds            # execution bounds (visited/budget), core §
+  system/resource-limits   # cap-token resource limits, core
+  system/delivery-spec     # referenced by core protocol/execute (ExecuteData); core-operational
+  system/deletion-marker   # canonical deletion marker, core
+
+# BLURRY / confirm with arch (kept CORE for now, flag in escalation):
+#   - system/delivery-spec: also referenced by subscription/continuation (extensions);
+#     core-classified because ExecuteData references it. Confirm.
+#   - system/capability/{delegate-request,revoke-request,policy-entry}: core cap
+#     management vs a capability-management extension? Kept core (cap chains core §5).
+#   - system/deletion-marker: confirm deletion is core (PROPOSAL-DELETION-MARKERS).
+
+# =====================================================================
+# EXTENSION — core peer must NOT publish; exclude from core verdict: 97
+# =====================================================================
+## COMPUTE extension — bare compute/* top-level namespace (TYPE-SYSTEM §2.7) (20)
+  compute/apply  compute/arithmetic  compute/closure  compute/compare
+  compute/construct  compute/error  compute/field  compute/if  compute/index
+  compute/lambda  compute/length  compute/let  compute/literal  compute/logic
+  compute/lookup/hash  compute/lookup/scope  compute/lookup/tree
+  compute/numeric-cast  compute/result  compute/scope
+## COMPUTE operational args (system/compute/*) (8)
+  system/compute/filter-args  system/compute/fold-args
+  system/compute/install-request  system/compute/install-result
+  system/compute/map-args  system/compute/scope-binding
+  system/compute/store-args  system/compute/subgraph
+## CLOCK extension (9)
+  system/clock/compare-params  system/clock/compare-result  system/clock/config
+  system/clock/hlc  system/clock/logical  system/clock/state  system/clock/tick
+  system/clock/timestamp  system/clock/vector
+## CONTENT extension (3)
+  system/content/blob  system/content/chunk  system/content/descriptor
+## CONTINUATION extension (9)
+  system/continuation  system/continuation/abandon-request
+  system/continuation/advance-request  system/continuation/install-result
+  system/continuation/join  system/continuation/resume-request
+  system/continuation/suspended  system/continuation/transform
+  system/continuation/transform-op
+## DURABILITY extension (exploratory) (3)
+  system/durability-advertisement  system/durability-request  system/durability-result
+## QUERY extension (7)
+  system/query/allowances  system/query/constraints  system/query/expression
+  system/query/field-predicate  system/query/index-config  system/query/match
+  system/query/result
+## SUBSCRIPTION extension (5)
+  system/subscription  system/subscription/cancel  system/subscription/limits
+  system/subscription/redirect  system/subscription/request
+## INBOX extension (2)
+  system/protocol/inbox/delivery  system/protocol/inbox/notification
+## STORAGE-SUBSTITUTE (already provisional/WARN oracle-side) (4)
+  system/substitute/endpoint  system/substitute/snapshot-manifest
+  system/substitute/source  system/substitute/try-request
+## TRANSPORT profile (1)
+  system/peer/transport/http-poll
+## TYPE EXTENSION — validation + merging (user: "not a requirement for core") (26)
+  system/type/constraint/format  system/type/constraint/max
+  system/type/constraint/max_count  system/type/constraint/max_length
+  system/type/constraint/min  system/type/constraint/min_count
+  system/type/constraint/min_length  system/type/constraint/not_one_of
+  system/type/constraint/one_of  system/type/constraint/pattern
+  system/type/constraint/type_pattern  system/type/constraint/validate-request
+  system/type/constraint/validate-result
+  system/type/validate-request  system/type/validate-result  system/type/violation
+  system/type/adopt-request  system/type/compare-request  system/type/compare-result
+  system/type/compatibility-report  system/type/compatible-request
+  system/type/converge-request  system/type/field-comparison
+  system/type/field-incompatibility  system/type/reconcile-request
+  system/type/reconcile-result

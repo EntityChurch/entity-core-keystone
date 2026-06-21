@@ -1,0 +1,112 @@
+# BEAM toolchain image — builds the native Elixir peer
+# (entity-core-protocol-elixir) per protocol-generator/elixir/profile.toml.
+# Mirrors containers/ocaml-toolchain + containers/node24 + containers/dotnet9.
+#
+# S1: builds run in this container, not on the host.
+# S11: pin the toolchain to versions >= 30 days old. The core peer has ZERO
+#      runtime Hex dependencies, so there are no library pins to mirror here —
+#      crypto is OTP stdlib `:crypto`, CBOR/base58/varint are hand-rolled,
+#      ExUnit is stdlib. The only pins are the OTP + Elixir toolchain itself.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Both >= 30 days old at 2026-06-13:
+#   Erlang/OTP 27.3.4 (2025-05-08, ~13mo) — SOURCE-BUILT against system OpenSSL
+#                                            3.x (the Ed25519 + Ed448 + SHA-2
+#                                            backend for `:crypto`).
+#   Elixir     1.18.4 (2025-08-04, ~10mo) — PRECOMPILED-for-OTP-27 release zip
+#                                            (Elixir is BEAM bytecode; the zip is
+#                                            reproducible, no compile needed).
+# Why source-build OTP instead of `dnf install erlang`: fedora:43 stock erlang is
+# OTP 26.x and distro exact-NVR pins get GC'd from the stable repo (the node24
+# reproducibility lesson). A pinned source tarball + system OpenSSL is the
+# reproducible, Ed448-capable path. Re-verify SHA + dates on any re-pin.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (heavy: the OTP source build is ~10-15 min):
+#   podman build -t entity-core-keystone/beam:latest \
+#     -f containers/beam/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# Build deps for OTP from source + the system OpenSSL that backs `:crypto`'s
+# EdDSA (ed25519 + ed448) and SHA-2. ncurses for the erl shell; unzip for the
+# precompiled Elixir release; perl is used by the OTP build.
+RUN dnf install -y \
+        gcc gcc-c++ make autoconf automake \
+        openssl-devel ncurses-devel zlib-devel \
+        perl unzip tar xz findutils which \
+        git curl ca-certificates \
+    && dnf clean all
+
+# ── Erlang/OTP 27.3.4 — source build against system OpenSSL 3.x ──────────────
+# Slim configure: no GUI (wx/observer/debugger), no Java/ODBC. --with-ssl picks
+# up the system OpenSSL, which is what provides ed25519/ed448/sha2 to crypto.
+# --enable-deterministic-build aids reproducibility.
+ARG OTP_VERSION=27.3.4
+RUN curl -fsSL -o /tmp/otp_src.tar.gz \
+        "https://github.com/erlang/otp/releases/download/OTP-${OTP_VERSION}/otp_src_${OTP_VERSION}.tar.gz" \
+    && mkdir -p /tmp/otp_src \
+    && tar -xzf /tmp/otp_src.tar.gz -C /tmp/otp_src --strip-components=1 \
+    && cd /tmp/otp_src \
+    && ./configure \
+        --prefix=/opt/otp \
+        --with-ssl \
+        --without-wx --without-observer --without-debugger --without-et \
+        --without-javac --without-odbc \
+        --enable-deterministic-build \
+    && make -j"$(nproc)" \
+    && make install \
+    && cd / && rm -rf /tmp/otp_src /tmp/otp_src.tar.gz
+ENV PATH=/opt/otp/bin:$PATH
+
+# Verify the EdDSA backend is live (ed25519 + ed448 must both be present). Fails
+# the build loudly if OpenSSL didn't wire EdDSA into crypto.
+RUN erl -noshell -eval \
+      'PK = crypto:supports(public_keys), \
+       true = lists:member(eddsa, PK), \
+       Curves = crypto:supports(curves), \
+       true = lists:member(ed25519, Curves), \
+       true = lists:member(ed448, Curves), \
+       io:format("crypto EdDSA OK: ed25519+ed448 present~n"), \
+       halt(0).' \
+    || (echo "FATAL: OTP crypto lacks ed25519/ed448 — check OpenSSL --with-ssl" && exit 1)
+
+# ── Elixir 1.18.4 — precompiled-for-OTP-27 release ───────────────────────────
+ARG ELIXIR_VERSION=1.18.4
+RUN curl -fsSL -o /tmp/elixir.zip \
+        "https://github.com/elixir-lang/elixir/releases/download/v${ELIXIR_VERSION}/elixir-otp-27.zip" \
+    && mkdir -p /opt/elixir \
+    && unzip -q /tmp/elixir.zip -d /opt/elixir \
+    && rm -f /tmp/elixir.zip
+ENV PATH=/opt/elixir/bin:$PATH
+
+# UTF-8 locale: the fedora minimal base reports latin1 native name encoding, which
+# Elixir warns about and which can corrupt unicode atoms/filenames. Pin C.UTF-8
+# and force the VM's filename encoding to utf8 (+fnu) so the dev loop is clean.
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    ELIXIR_ERL_OPTIONS=+fnu
+
+# ── Shared, HOME-independent MIX_HOME/HEX_HOME ───────────────────────────────
+# Put Hex + rebar under /opt so they resolve regardless of the runtime UID/HOME
+# (the rootless-userns mount maps the host user in; a HOME-relative .mix would be
+# unreadable). The core peer needs NO deps to compile/test, but Hex+rebar are
+# pre-installed at BUILD time (network available) so the dev loop can run fully
+# offline with --network=none. world-readable so any runtime UID can use them.
+ENV MIX_HOME=/opt/mix \
+    HEX_HOME=/opt/hex
+RUN mkdir -p /opt/mix /opt/hex \
+    && mix local.hex --force \
+    && mix local.rebar --force \
+    && chmod -R a+rX /opt/otp /opt/elixir /opt/mix /opt/hex
+
+# Pin a default mix env that doesn't try to reach the network at compile time.
+ENV MIX_ENV=dev
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="beam-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.otp="27.3.4"
+LABEL org.entity-core-keystone.elixir="1.18.4"
+
+CMD ["/bin/bash"]

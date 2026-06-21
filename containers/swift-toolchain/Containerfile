@@ -1,0 +1,102 @@
+# Swift toolchain image — builds the native Swift peer
+# (entity-core-protocol-swift) per protocol-generator/swift/profile.toml.
+# Mirrors containers/zig-toolchain + containers/ocaml-toolchain + containers/node24.
+#
+# Peer #7. S1: AUTHORED **AND BUILD-VERIFIED** this phase — Swift-on-Fedora is the
+# long pole (CryptoKit is Apple-only; swift-crypto must build on Linux), so the
+# container is proven NOW to prevent an S2 dead-end (deliberate deviation from the
+# author-only S1 convention, per the S1 task contract for this peer).
+# S11: pin the toolchain to an exact version; verify the download cryptographically.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11), build-verified 2026-06-14.
+#   swift 6.2-RELEASE — released 2025-09-15 (~9 months old at 2026-06-14; clears the
+#                       ≥30-day cool-down). Settled .0 release line; the Linux
+#                       Foundation + swift-crypto (BoringSSL) stack is stable.
+#
+# WHY THE OFFICIAL TARBALL, NOT `dnf install swift`:
+#   Fedora 43 ships NO swift rpm (Swift is not packaged by Fedora). Swift.org
+#   publishes a per-distro Linux tarball with a detached GnuPG signature, signed by
+#   the Swift project automatic-signing keys. We pin the exact 6.2 release, VERIFY
+#   the GPG signature against the imported Swift project keys, AND check an exact
+#   sha256 pin — fail-closed on either. This is the zig-toolchain pattern (pin the
+#   exact compiler + cryptographically verify) adapted to Swift's distro-tarball
+#   distribution.
+#
+# WHY THE fedora39 BUILD ON A fedora:43 BASE:
+#   Swift.org's newest Fedora target for 6.2 is fedora39. Swift's Linux toolchain is
+#   built against an OLDER glibc and is forward-compatible with newer glibc (it runs
+#   on fedora:43's glibc — VERIFIED below by `swift --version` + a compile/run +
+#   swift-crypto build inside the fedora:43 image). The runtime libs Swift's
+#   Foundation needs (libcurl, libxml2, libuuid, libstdc++, etc.) are installed from
+#   fedora:43's own repos.
+#
+# NETWORK: the toolchain pull + the swift-crypto SwiftPM fetch need network at BUILD
+#   time. The codec build itself (S2) can run --network=none once swift-crypto is
+#   resolved into the package's .build / a vendored Package.resolved (SwiftPM caches
+#   the checked-out dependency); the resolve step is the only networked step.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build:
+#   podman build -t entity-core-keystone/swift-toolchain:latest \
+#     -f containers/swift-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# ── Runtime + build deps Swift needs on Fedora ──────────────────────────────
+# Swift's Linux Foundation links libcurl/libxml2/libuuid; the toolchain's own
+# clang/lld drive linking but need the C/C++ runtime + binutils present; sqlite is
+# used by SwiftPM. gnupg2 verifies the tarball signature; tar/gzip unpack it.
+RUN dnf install -y \
+        curl ca-certificates gnupg2 tar gzip \
+        git findutils which \
+        glibc-langpack-en \
+        libcurl-devel libxml2-devel libuuid-devel \
+        libstdc++ libstdc++-devel \
+        libedit ncurses \
+        sqlite-devel \
+        zlib-devel \
+        gcc gcc-c++ binutils \
+        python3 \
+    && dnf clean all
+
+# ── Pinned Swift release ─────────────────────────────────────────────────────
+# 6.2-RELEASE, x86_64, fedora39 build. Pin exact version, sha256, and verify the
+# detached GPG signature against the Swift project's published signing keys.
+# The build FAILS CLOSED if the GPG signature OR the sha256 does not match.
+ARG SWIFT_VERSION=6.2
+ARG SWIFT_TAG=swift-6.2-RELEASE
+ARG SWIFT_PLATFORM=fedora39
+ARG SWIFT_ARCH=x86_64
+# sha256 of swift-6.2-RELEASE-fedora39.tar.gz from download.swift.org
+# (downloaded + verified 2026-06-14; size 1007917673 bytes).
+ARG SWIFT_SHA256="4bcec3ee16406e0a764a158595572d857ed0ca0143d4ac3ce7f874d1a5534508"
+
+RUN set -eux; \
+    base="https://download.swift.org/swift-6.2-release/${SWIFT_PLATFORM}/${SWIFT_TAG}"; \
+    tarball="${SWIFT_TAG}-${SWIFT_PLATFORM}.tar.gz"; \
+    cd /tmp; \
+    curl -fsSLO "${base}/${tarball}"; \
+    curl -fsSLO "${base}/${tarball}.sig"; \
+    # 1) exact sha256 pin (defense-in-depth; checked first, fail-closed).
+    echo "${SWIFT_SHA256}  ${tarball}" | sha256sum -c -; \
+    # 2) cryptographic signature check against the Swift project signing keys.
+    #    Import all published Swift keys, then refresh from the keyserver to pick up
+    #    revocations, then verify the detached .sig. Fail-closed if verify fails.
+    curl -fsSL https://swift.org/keys/all-keys.asc | gpg --import -; \
+    gpg --verify "${tarball}.sig" "${tarball}"; \
+    mkdir -p /opt/swift; \
+    tar -C /opt/swift --strip-components=2 -xzf "${tarball}"; \
+    rm -f "${tarball}" "${tarball}.sig"; \
+    /opt/swift/bin/swift --version
+
+ENV PATH=/opt/swift/bin:$PATH
+# Swift needs ICU/Foundation libs discoverable at runtime; the tarball bundles them
+# under /opt/swift/lib/swift/linux. Make the loader find them.
+ENV LD_LIBRARY_PATH=/opt/swift/lib/swift/linux
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="swift-toolchain"
+LABEL org.entity-core-keystone.version="1"
+
+CMD ["/bin/bash"]

@@ -1,0 +1,151 @@
+# Python toolchain image — builds the native Python peer
+# (entity-core-protocol-python) per protocol-generator/python/profile.toml.
+#
+# Mirrors the structure of containers/base + containers/ruby-toolchain. Unlike the
+# Ruby image (which pins the OFFICIAL docker.io/library/ruby:3.x release image), this
+# one uses the fedora:43 base per the S1 python-peer prompt — the cohort default for
+# every toolchain except Ruby's official-image exception. The system CPython 3.13.x
+# arrives via the fedora:43 distro channel (a reviewed channel → per the S11
+# supply-chain memo the ≥30-day age floor relaxes to "pin exactly for
+# reproducibility" for the toolchain itself; the one PyPI runtime dep is pinned
+# >= 30 days old below).
+#
+# ⚠️ S1 BOUNDARY: this file is AUTHORED at S1, NOT built. No podman / no build /
+#    no toolchain run happens in S1. The build/run is S2's job. (PIN STATUS and the
+#    EdDSA assertion below are the pinned, reproducible recipe so S2 just builds it.)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS (S11). Ages at authoring 2026-06-17:
+#   CPython     3.13.14  (fedora:43 `python3`; released 2026-06-10). The 3.13.x
+#                        SERIES is long-stable (3.13.0 = 2024-10); 3.13.14 is a patch
+#                        in that line, arriving via the fedora:43 distro channel (a
+#                        reviewed channel → S11 age floor relaxes to "pin exactly for
+#                        reproducibility"). < 30 days as a patch (A-PY-004) but the
+#                        series is mature; any 3.13.x stable patch fedora:43 ships is
+#                        acceptable — the build below asserts the resolved version is
+#                        3.13.x.
+#   cryptography 48.0.0  (PyPI; released 2026-05-04, ~44 days old at authoring). The
+#                        NEWEST version that clears the S11 >=30-day cool-down (needs
+#                        release before ~2026-05-18): 48.0.1 (2026-06-09) and 49.0.0
+#                        (2026-06-12) are BOTH < 30 days → too new to pin. 48.0.0
+#                        carries the CVE-2026-39892 (buffer-overflow, fixed 46.0.7)
+#                        and CVE-2026-34073 (name-constraints, fixed 46.0.6) fixes
+#                        forward. Wheels bundle OpenSSL 3.5.x → Ed25519 + Ed448 +
+#                        SHA-2 all native. ONLY runtime dep of the core peer.
+#   OpenSSL     bundled in the cryptography wheel (3.5.x) for the crypto path; the
+#               fedora:43 system OpenSSL (3.x) backs stdlib hashlib. Recorded.
+# CBOR + base58 + varint are hand-rolled in-repo (no Python lib gives canonical ECF;
+#   A-005, 13th peer to hit it — cbor2 canonical=True is RFC-8949 bytewise, wrong
+#   order; A-PY-001). hashlib (SHA-256/384/512) is stdlib. pytest/ruff/mypy are
+#   DEV-only (not installed in this core image; S5 may add a dev layer).
+#
+# NOTE (S2 lock-step): pin the cryptography wheel HASH (the committed lockfile, e.g.
+#   requirements.txt with --hash, or a uv/pip-tools lock) when first installed
+#   in-container, AND pin the fedora:43 base image digest, for full reproducibility.
+#   Tags + the version pin are set now; digest + wheel-hash are pinned at first build.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (S2, not S1):
+#   podman build -t entity-core-keystone/python-toolchain:latest \
+#     -f containers/python-toolchain/Containerfile .
+# Base digest pinned at S2 first build (supply-chain lock-step) — fedora:43 tag
+# resolved to this digest on 2026-06-17. The tag is kept in the comment for
+# human readability; the digest is the reproducible pin.
+FROM registry.fedoraproject.org/fedora@sha256:4df057b0002143b48074d763237e1bb1eeae7b65aede070dda7a893e3f46f491
+
+# System Python 3.13.x + minimal build deps. The core peer needs only `cryptography`
+# at runtime (a binary wheel — no compiler needed to INSTALL it), but gcc/openssl-devel
+# are kept for any source-build fallback (e.g. if the manylinux wheel is unavailable
+# for the arch and cryptography must build its Rust/C bits). git + ca-certificates for
+# the one network-on pip step. python3-pip provides pip; we build a venv for isolation.
+RUN dnf install -y \
+        python3 \
+        python3-pip \
+        python3-devel \
+        gcc \
+        gcc-c++ \
+        openssl-devel \
+        git \
+        ca-certificates \
+        && dnf clean all
+
+# UTF-8 locale: keep source/IO encoding clean. The codec core uses `bytes` explicitly
+# for wire bytes, but a UTF-8 default avoids accidental ascii/latin1 surprises in text
+# handling and filenames.
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_INPUT=1
+
+# Assert the resolved CPython is a supported 3.13.x OR 3.14.x stable line
+# (A-PY-008: fedora:43 shipped CPython 3.14.5 at S2 build time — the distro moved
+# off the 3.13.x the S1 profile assumed. 3.14 is a stable release; the codec is
+# deterministic + the cryptography / hashlib / raw-key APIs are stable across
+# 3.13→3.14, so the minor version is conformance-neutral. Distro-channel relaxation:
+# pin exactly for reproducibility per the S11 supply-chain memo).
+RUN python3 --version \
+    && python3 -c 'import sys; v=sys.version_info; assert v.major==3 and v.minor in (13,14), f"expected CPython 3.13.x or 3.14.x, got {sys.version}"; print(f"python OK: {sys.version}")'
+
+# ── Isolated venv with the ONE pinned runtime dep ────────────────────────────
+# The core peer's only direct runtime dependency is `cryptography==48.0.0` (Ed25519 +
+# Ed448 + SHA-2 via its bundled OpenSSL 3.5.x). It is installed here (the one
+# network-on step) from the committed HASH-pinned lockfile via --require-hashes, so
+# the supply chain is reproducible AND the dev-loop `python -m pytest` can then run
+# --network=none. The lockfile pins cryptography + its transitive deps (cffi,
+# pycparser) by sha256 for every published platform (see the file header).
+ENV VIRTUAL_ENV=/opt/ec-venv
+RUN python3 -m venv "$VIRTUAL_ENV"
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+COPY protocol-generator/python/requirements.txt /tmp/requirements.txt
+RUN pip install --upgrade 'pip==25.*' \
+    && pip install --require-hashes -r /tmp/requirements.txt
+
+# ── Verify the cryptography EdDSA backend is live (Ed25519 + Ed448 BOTH present) ──
+# Fails the build loudly if the bundled OpenSSL didn't wire Ed448 into cryptography.
+# This closes the A-PY-002 risk at container-build time: Ed448 is the crypto-agility
+# higher bar and must be reachable NATIVELY (no FFI). Round-trips a sign/verify (and
+# a tamper-reject) on each curve so it tests the actual signature path, not just key
+# generation, plus a SHA-384 length check.
+RUN python3 - <<'PY'
+import hashlib
+from cryptography import __version__ as cver
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed448 import Ed448PrivateKey
+from cryptography.exceptions import InvalidSignature
+
+msg = b"entity-core ed-check"
+for name, cls, seedlen, siglen in (
+    ("ED25519", Ed25519PrivateKey, 32, 64),
+    ("ED448",   Ed448PrivateKey,   57, 114),
+):
+    sk = cls.generate()
+    seed = sk.private_bytes_raw()
+    assert len(seed) == seedlen, f"{name} seed {len(seed)} != {seedlen}"
+    sig = sk.sign(msg)
+    assert len(sig) == siglen, f"{name} sig {len(sig)} != {siglen}"
+    pk = sk.public_key()
+    pk.verify(sig, msg)                       # raises on failure
+    try:
+        pk.verify(sig, msg + b"x")
+        raise SystemExit(f"{name} tamper NOT rejected")
+    except InvalidSignature:
+        pass
+    # raw round-trip via from_private_bytes (the entity-core seed path)
+    cls.from_private_bytes(seed).sign(msg)
+    print(f"crypto {name} OK (seed {seedlen}B, sig {siglen}B)")
+
+assert hashlib.sha384(b"").digest_size == 48, "SHA-384 missing"
+assert hashlib.sha256(b"").digest_size == 32, "SHA-256 missing"
+print(f"crypto EdDSA OK via cryptography {cver}: ed25519 + ed448 present; SHA-256/384 present")
+PY
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="python-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.python="3.14.5"
+LABEL org.entity-core-keystone.cryptography="48.0.0"
+LABEL org.entity-core-keystone.base="registry.fedoraproject.org/fedora:43"
+
+CMD ["/bin/bash"]

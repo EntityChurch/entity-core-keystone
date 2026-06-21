@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  entity-core-protocol-java — Maven project descriptor (peer #7, Java/JVM).
+
+  Authored at S2. The CORE peer has ZERO runtime dependencies: Ed25519/Ed448 +
+  SHA-256/384 come from the JDK (SunEC + SunMessageDigest); CBOR (canonical ECF),
+  base58, and the multicodec LEB128 varint are hand-rolled in src/main/java.
+
+  TEST scope only:
+    - JUnit 5 (Jupiter) 5.11.4  — the conformance harness framework.
+    - BouncyCastle bcprov-jdk18on 1.80 — OPT-IN agility cross-check (provided
+      scope, never shipped). The core build stays BouncyCastle-free.
+
+  Build runs in the java-toolchain container, fully offline (`mvn -o`) — deps are
+  pre-fetched into the image ~/.m2 at container build time.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>org.entitycore</groupId>
+  <artifactId>entity-core-protocol</artifactId>
+  <!-- S5: release line 0.1.0-pre. Maven's version grammar supports a SemVer-style
+       qualifier directly (unlike ASDF, which forced Common Lisp to carry the -pre
+       marker in the CHANGELOG only — A-CL-010), so the pre-release line is idiomatic
+       here. Promotes to 0.1.0 when (a) S4 fully green [met] AND (b) >=1 external
+       consumer confirms it works [not yet met]. Tracks V7 spec-data v7.72 + the
+       v7.73/v7.74 peer-surface closeout; codec corpus v0.8.0. See CHANGELOG.md. -->
+  <version>0.1.0-pre</version>
+  <packaging>jar</packaging>
+
+  <name>entity-core-protocol-java</name>
+  <description>Entity Core Protocol V7 — native Java core peer (keystone peer #7, 9th byte-compatible impl).</description>
+  <url>https://github.com/entity-core/entity-core-keystone</url>
+
+  <licenses>
+    <license>
+      <name>Apache-2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
+  <developers>
+    <developer>
+      <name>Entity Core Protocol contributors</name>
+    </developer>
+  </developers>
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <junit.version>5.11.4</junit.version>
+    <surefire.version>3.5.2</surefire.version>
+    <bouncycastle.version>1.80</bouncycastle.version>
+  </properties>
+
+  <dependencies>
+    <!-- JUnit 5 (Jupiter) — test-scope only; conformance + selftest harness. -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- BouncyCastle — OPT-IN agility cross-check ONLY. provided scope so it is
+         on the test classpath but never bundled; the core build is BC-free. -->
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcprov-jdk18on</artifactId>
+      <version>${bouncycastle.version}</version>
+      <scope>provided</scope>
+      <optional>true</optional>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>${surefire.version}</version>
+      </plugin>
+    </plugins>
+  </build>
+</project>

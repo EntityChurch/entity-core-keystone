@@ -1,0 +1,4 @@
+# Build output — regenerated in-container per S1. Lockfile IS committed (S11).
+node_modules/
+dist/
+*.tsbuildinfo

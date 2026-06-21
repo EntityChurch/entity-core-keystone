@@ -1,0 +1,97 @@
+# CI — entity-core-protocol-ada (peer #10) conformance gates.
+#
+# Authored at S5 (PHASE-S5 §"CI config"), mirroring the Zig/Swift/Haskell cohort pattern.
+# Runs the green gates entirely inside the pinned `ada-toolchain` Podman image, sealed-offline
+# (`--network=none`): the peer has NO Alire crate dependencies so gprbuild fetches nothing at
+# build time (GNAT + gprbuild + libsodium are baked into the image), and the Go `validate-peer`
+# oracle is a CGO_ENABLED=0 ELF that runs in the same image sharing one loopback.
+#
+# DELIBERATELY NOT WIRED TO ANY REMOTE/CD. There is no deploy step, no registry push, no
+# `alr publish` — `/entity-rosetta` never publishes (lifecycle §Publishing); the operator
+# decides. This file documents the reproducible offline gate; whether/where it actually runs
+# (this peer's standalone repo's CI, or a keystone-wide CI home) is an operator/arch decision
+# (see status/ARCHITECTURE-REVIEW.md §Publishing-options). It is committed for reviewability,
+# not because a runner is attached.
+#
+# Assumptions when wired: the runner has Podman, the `ada-toolchain:latest` image is built
+# (containers/ada-toolchain/Containerfile) and the oracle ELF is vendored to
+# output/s4-oracles/validate-peer from entity-core-go @ b30a589 (the v7.75 cohort baseline;
+# rebuild per status/CONFORMANCE-REPORT.md §Oracle-provenance — the `62044c5` scorecard label
+# is off-by-one, A-ADA-013). Paths below assume the keystone repo root is the checkout root.
+
+name: ada-conformance
+
+on:
+  push:
+    paths:
+      - 'protocol-generator/ada/**'
+      - 'protocol-generator/shared/spec-data/**'
+      - 'protocol-generator/shared/test-vectors/**'
+  pull_request:
+    paths:
+      - 'protocol-generator/ada/**'
+  workflow_dispatch: {}
+
+# No deploy/publish permissions — read-only.
+permissions:
+  contents: read
+
+env:
+  IMAGE: entity-core-keystone/ada-toolchain:latest
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The toolchain image is built from containers/ada-toolchain/Containerfile and the
+      # oracle ELF rebuilt from entity-core-go @ b30a589 per the CONFORMANCE-REPORT runbook. In
+      # a standalone-repo lift-out these become a `podman build` + an oracle-vendor step (or a
+      # pre-built image pulled from a trusted internal registry); kept explicit, not assumed.
+      - name: Verify toolchain image + oracle present
+        run: |
+          podman image exists "$IMAGE" || { echo "::error::build $IMAGE from containers/ada-toolchain/Containerfile first"; exit 1; }
+          test -x output/s4-oracles/validate-peer || { echo "::error::vendor the validate-peer oracle ELF (CONFORMANCE-REPORT.md §Oracle-provenance, entity-core-go @ b30a589)"; exit 1; }
+
+      # Gate 0 — build (gprbuild against the committed .gpr, fully offline; -gnata keeps the
+      # design-by-contract Pre/Post/Type_Invariant aspects live, -gnatwa = all warnings).
+      - name: gprbuild (offline)
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            -w /work/protocol-generator/ada "$IMAGE" \
+            gprbuild -P entity_core_protocol.gpr -p
+
+      # Gate 1 — S2 codec wire-conformance (must stay 69/69 + the KAT self-tests), sealed offline.
+      - name: run-s2 codec (69/69)
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            "$IMAGE" sh /work/protocol-generator/ada/run-s2.sh
+
+      # Gate 2 — S3 two-direction loopback smoke against the Go reference (must stay GREEN).
+      - name: run-s3 loopback smoke
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            "$IMAGE" sh /work/protocol-generator/ada/run-s3.sh
+
+      # Gate 3 — S4 live-peer validate-peer --profile core (must stay 0 FAIL). The peer + the
+      # Go oracle ELF run together in the image over loopback, --network=none. run-s4.sh writes
+      # status/CONFORMANCE-REPORT.json; we assert summary.failed == 0 (the green gate).
+      - name: validate-peer --profile core (0 FAIL)
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            "$IMAGE" sh /work/protocol-generator/ada/run-s4.sh
+          python3 - <<'PY'
+          import json, sys
+          s = json.load(open("protocol-generator/ada/status/CONFORMANCE-REPORT.json"))["summary"]
+          print("summary:", s)
+          if s.get("failed", 1) != 0:
+              print("::error::validate-peer core has FAILs — gate not green"); sys.exit(1)
+          PY
+
+      # Gate 4 — origination-core (§6.11 reentry over real two-peer TCP, Go entity-peer): 3/3.
+      - name: origination-core (reentry 3/3)
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            "$IMAGE" sh /work/protocol-generator/ada/run-origination-core.sh

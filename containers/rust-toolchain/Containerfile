@@ -1,0 +1,83 @@
+# Rust toolchain image — builds the GENERATED Rust protocol peer
+# (protocol-generator/rust, the crate `entity-core-protocol-rust`) per
+# protocol-generator/rust/profile.toml. Mirrors containers/swift-toolchain +
+# containers/zig-toolchain + containers/ocaml-toolchain + containers/ghc-toolchain
+# (every native peer gets its own *-toolchain image).
+#
+# ⚠️ DISTINCT from containers/cargo/Containerfile. That image exists for the FFI
+# CODEC (ffi-generator/c-abi/entity-core-codec-ffi-rust -> libentitycore_codec). This
+# image is for the protocol PEER, kept separate so the peer build is independent of the
+# FFI codec's image and the clean-room boundary stays crisp.
+#
+# Peer slot: the Rust generated peer (a clean-room reimplementation distinct from the
+# hand-written siblings entity-core-rust + entity-core-codec-ffi-rust).
+#
+# S1: AUTHORED this phase, **NOT built** (S1 for this peer is author-only — no podman,
+#     no build, no toolchain execution). Build/verify happens at S2 (codec spike).
+# S11: pin the toolchain to exact versions. The rust/cargo toolchain comes through
+#     fedora dnf — a REVIEWED DISTRO CHANNEL — so the >=30-day age floor relaxes to
+#     "pin exactly for reproducibility" (the supply-chain memo). The crate pins
+#     (ed25519-dalek 2.2.0 @ 2025-07-09, sha2 0.10.9 @ 2025-04-30) DO get the >=30-day
+#     discipline and live in the committed Cargo.lock (authored at S2), each verified
+#     >=30 days old. Prefer pinning the base image by digest for full repro on rebuild.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11, distro-channel -> pin-for-repro). Author-only at S1;
+#   re-verify the exact NVR + re-pin deliberately at the S2 build (the NVR below is
+#   what containers/cargo/Containerfile pinned at its 2026-06-07 authoring — the same
+#   fedora:43 rust/cargo build; confirm `dnf list rust cargo` at build time and update
+#   if fedora:43 has moved, keeping the pin exact).
+#
+#   rust  1.96.0-1.fc43   — fedora:43 distro build (reviewed channel; pin-for-repro)
+#   cargo 1.96.0-1.fc43   — fedora:43 distro build (reviewed channel; pin-for-repro)
+#
+#   S2 RE-PIN (2026-06-17): the S1-authored pin 1.95.0-5.fc43 has aged out of the
+#   fedora:43 repos entirely — `dnf list --showduplicates rust cargo` now serves only
+#   1.90.0-1.fc43 (base `fedora` repo) and 1.96.0-1.fc43 (`updates`). Re-pinned to the
+#   current `updates` NVR 1.96.0-1.fc43 (freshest reviewed distro build) per the S11
+#   distro-channel pin-for-repro rule. The crate pins (Cargo.lock) are UNAFFECTED and
+#   keep the >=30-day registry discipline independently.
+#
+# NOTE (glibc, mirrors the cargo image's R5 note): a glibc-linked artifact won't load
+#   on hosts older than this base's glibc. The core peer is a normal Rust binary/lib,
+#   not a cdylib, so this only matters for a SHIPPED release artifact (rebuild on an
+#   old-glibc / manylinux-style base for distribution). fedora:43 is fine for
+#   development + conformance.
+#
+# NETWORK: the one-time `cargo fetch` of the small registry closure (ed25519-dalek +
+#   sha2 + transitive: curve25519-dalek 4.1.3, signature, ed25519, digest) needs
+#   network at first build. After Cargo.lock is committed + the .cargo cache populated,
+#   `cargo build --offline` / podman `--network=none` runs fully offline (the codec
+#   spike at S2 verifies this). Only 2 direct registry deps — small closure.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (at S2, NOT S1):
+#   podman build -t entity-core-keystone/rust-toolchain:latest \
+#     -f containers/rust-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# rust + cargo from the distro (reviewed channel, pinned NVR for repro); gcc/cc is the
+# linker Rust needs + the C toolchain for the FUTURE opt-in Ed448-FFI seam (extern "C"
+# against libentitycore_codec) — present now so the agility S-phase needs no image
+# change. git for any source operations the build expects.
+# clippy + rustfmt are the profile's hard lint floor (`cargo clippy -D warnings &&
+# cargo fmt --check`). On fedora they are SEPARATE rpms from rust/cargo (not bundled),
+# pinned to the same NVR (distro-channel pin-for-repro).
+RUN dnf install -y \
+        rust-1.96.0-1.fc43 \
+        cargo-1.96.0-1.fc43 \
+        clippy-1.96.0-1.fc43 \
+        rustfmt-1.96.0-1.fc43 \
+        gcc \
+        git \
+    && dnf clean all
+
+# Keep cargo's registry/cache on a mountable path so the conformance loop (run many
+# times) doesn't refetch crates. Mount a volume at /cargo. CARGO_NET_OFFLINE is left
+# unset here so the first fetch works; pass --offline (or --network=none) once
+# Cargo.lock is committed + the cache is warm.
+ENV CARGO_HOME=/cargo \
+    CARGO_TERM_COLOR=never \
+    RUSTFLAGS=""
+
+WORKDIR /work

@@ -1,0 +1,32 @@
+# pkg-config template for entity-core-protocol-c (peer #10).
+#
+# Rendered by `make install` (and bundled by `make dist`): the @PREFIX@/@VERSION@
+# placeholders are substituted with the install PREFIX and the Makefile VERSION,
+# producing the installed `entity-core-protocol.pc` consumed via:
+#
+#     pkg-config --cflags --libs entity-core-protocol
+#
+# C has no central package registry; this .pc + the source tarball ARE the
+# distribution surface (distro packaging / vendoring consume them). See README
+# §Distribution and status/PHASE-S5.md §Operator-handoff.
+#
+# Note on libsodium (A-C-006): the shared .so links the system libsodium.so, so
+# `Requires.private: libsodium` carries that runtime dependency for the .so consumer
+# path. The static .a links libsodium statically and is self-contained; a consumer
+# doing a fully-static link should add `pkg-config --static` to pull libsodium in.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: entity-core-protocol
+Description: Entity Core protocol (V7) core peer — native C11/POSIX codec + crypto (Ed25519 + SHA-256)
+URL: https://github.com/entity-systems/entity-core-keystone
+Version: @VERSION@
+Requires.private: libsodium
+Cflags: -I${includedir}
+Libs: -L${libdir} -lentity_core_protocol
+Libs.private: -lpthread

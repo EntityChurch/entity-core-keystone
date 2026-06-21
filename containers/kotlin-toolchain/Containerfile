@@ -1,0 +1,190 @@
+# Kotlin (JVM) toolchain image — builds the native Kotlin peer
+# (entity-core-protocol-kotlin) per protocol-generator/kotlin/profile.toml.
+# Mirrors containers/java-toolchain (shared Temurin JDK base) but with the pinned
+# Kotlin compiler + Gradle distribution + Kotlin-DSL build path.
+#
+# S1: AUTHORED ONLY — NOT built this phase (S1 is research/authoring; the toolchain
+#     is provisioned at S2). Builds run in this container, not on the host.
+# S11: pin every toolchain to an exact version; verify downloads cryptographically.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Ages at authoring 2026-06-18:
+#   Temurin JDK   21.0.10+7  (2026-01-21, ~143d) — the LTS toolchain. SHARED with
+#                                                   the java-toolchain image. JDK 21
+#                                                   is the LTS Kotlin 1.9 targets.
+#                                                   Temurin/Adoptium is a REVIEWED
+#                                                   VENDOR CHANNEL (the .NET-feed
+#                                                   analogue): the >=30-day AGE floor
+#                                                   RELAXES for the JDK, but the EXACT
+#                                                   version pin + a verified sha256
+#                                                   still stand for repro + integrity.
+#   Kotlin        1.9.25 (2024-11-13, ~19mo)     — compiler (kotlin-compiler-*.zip) +
+#                                                   stdlib + kotlin-test. The 1.9 line
+#                                                   is the conservative stable Android-
+#                                                   default line; the 2.x K2 compiler
+#                                                   is newer and 2.1.x is within the
+#                                                   cool-down — NOT picked. JetBrains
+#                                                   is a reviewed channel, but the
+#                                                   Maven-Central kotlin-test/stdlib
+#                                                   artifacts are registry-pulled →
+#                                                   >=30-day applies → met (~19mo).
+#   Gradle        8.10.2 (2024-09-23, ~9mo)      — the build tool. Pinned via the
+#                                                   distribution zip + a verified
+#                                                   sha256. Reviewed channel (Gradle
+#                                                   Inc.) — exact pin for repro, age
+#                                                   floor relaxed. A well-aged 8.x that
+#                                                   supports JDK 21 + Kotlin 1.9.
+#   kotlinx-      1.8.1 (2024-05-21, ~13mo)      — the structured-concurrency runtime;
+#   coroutines                                      the one NON-stdlib RUNTIME dep.
+#                                                   Maven-Central → >=30-day → met.
+#   JUnit         5.11.4 (2024-12, ~18mo)        — kotlin.test JUnit-5 backend, TEST-
+#   platform                                        SCOPE only, never shipped. >=30-day
+#                                                   → met. Pre-fetched into the gradle
+#                                                   caches at BUILD time so the dev
+#                                                   loop runs `gradle --offline`.
+#   BouncyCastle  bcprov-jdk18on 1.80 (2025-01,  — OPT-IN agility cross-check /
+#                 ~17mo)                            fallback ONLY. The CORE build is
+#                                                   BouncyCastle-FREE (JDK SunEC covers
+#                                                   Ed25519+Ed448; SunMessageDigest
+#                                                   covers SHA-256+384). >=30-day → met.
+#                                                   (BC 1.84 of 2026-05-16 ~33d — newer
+#                                                   than needed — NOT picked.)
+# CORE RUNTIME DEPS: Kotlin stdlib + kotlinx-coroutines-core (the coroutine idiom).
+# Crypto (Ed25519 + Ed448 + SHA-256 + SHA-384) is all in the JDK. CBOR (canonical
+# ECF), base58, and the multicodec-style LEB128 varint are hand-rolled in-repo (no
+# JVM lib gives canonical ECF; the A-005 pattern — see PROFILE-RATIONALE.md).
+#
+# WHY THE OFFICIAL TARBALLS, NOT `dnf install`:
+#   Fedora 43's java/kotlin/gradle packages track the distro's current builds, not
+#   the exact pinned versions this peer targets. We pin the exact Temurin LTS, the
+#   exact Kotlin compiler, and the exact Gradle distribution, and VERIFY each against
+#   its published sha256, rather than take whatever the distro channel carries. This
+#   is the java/zig/ocaml-toolchain pattern (pin the exact compiler + verify).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (S2):
+#   podman build -t entity-core-keystone/kotlin-toolchain:latest \
+#     -f containers/kotlin-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps: download/verify/unpack tooling only.
+RUN dnf install -y \
+        curl ca-certificates tar gzip unzip \
+        git findutils which \
+    && dnf clean all
+
+# ── Pinned Temurin JDK 21 LTS (SHARED with java-toolchain) ───────────────────
+# 21.0.10+7, x64-linux. Pin the exact version + the verified sha256. The build
+# FAILS CLOSED if the fetched tarball does not match the digest. The sha256 below
+# is the value published in the Adoptium release API for
+#   OpenJDK21U-jdk_x64_linux_hotspot_21.0.10_7.tar.gz
+# (the same digest the java-toolchain image verifies; Adoptium is the reviewed
+# vendor channel — re-confirm against the .sha256.txt asset on first build if desired).
+ARG JDK_TAG=jdk-21.0.10%2B7
+ARG JDK_FILE=OpenJDK21U-jdk_x64_linux_hotspot_21.0.10_7.tar.gz
+ARG JDK_SHA256=ea3b9bd464d6dd253e9a7accf59f7ccd2a36e4aa69640b7251e3370caef896a4
+
+RUN set -eux; \
+    url="https://github.com/adoptium/temurin21-binaries/releases/download/${JDK_TAG}/${JDK_FILE}"; \
+    cd /tmp; \
+    curl -fsSLO "${url}"; \
+    echo "${JDK_SHA256}  ${JDK_FILE}" | sha256sum -c -; \
+    mkdir -p /opt/jdk; \
+    tar -C /opt/jdk --strip-components=1 -xzf "${JDK_FILE}"; \
+    rm -f "${JDK_FILE}"; \
+    /opt/jdk/bin/java -version
+
+ENV JAVA_HOME=/opt/jdk
+ENV PATH=/opt/jdk/bin:$PATH
+
+# ── Pinned Kotlin compiler 1.9.25 ────────────────────────────────────────────
+# The standalone Kotlin compiler distribution (kotlin-compiler-${VER}.zip) from the
+# JetBrains/kotlin GitHub releases. Pin the exact version + verified sha256. The
+# build FAILS CLOSED on mismatch.
+#   KOTLIN_SHA256 is a SENTINEL authored at S1 — S1 does NOT fetch/build (phase
+#   boundary), so the real digest is filled at the S2 build from the .sha256 asset
+#   published alongside kotlin-compiler-1.9.25.zip on
+#   https://github.com/JetBrains/kotlin/releases/tag/v1.9.25
+# (Mirrors the zig/maven sentinel pattern; see A-KT-006.)
+ARG KOTLIN_VERSION=1.9.25
+# Verified at S2 (2026-06-18): downloaded kotlin-compiler-1.9.25.zip from the
+# JetBrains/kotlin v1.9.25 release and confirmed sha256sum == the .sha256 asset.
+ARG KOTLIN_SHA256=6ab72d6144e71cbbc380b770c2ad380972548c63ab6ed4c79f11c88f2967332e
+RUN set -eux; \
+    url="https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip"; \
+    cd /tmp; \
+    curl -fsSLO "${url}"; \
+    if [ "${KOTLIN_SHA256}" = "REPLACE_WITH_VERIFIED_SHA256_AT_S2" ]; then \
+        echo "FATAL: KOTLIN_SHA256 sentinel — fill the real sha256 from the JetBrains/kotlin v1.9.25 release .sha256 asset at S2 before trusting this image"; \
+        exit 1; \
+    fi; \
+    echo "${KOTLIN_SHA256}  kotlin-compiler-${KOTLIN_VERSION}.zip" | sha256sum -c -; \
+    unzip -q "kotlin-compiler-${KOTLIN_VERSION}.zip" -d /opt; \
+    rm -f "kotlin-compiler-${KOTLIN_VERSION}.zip"; \
+    /opt/kotlinc/bin/kotlinc -version 2>&1 | head -1
+
+ENV PATH=/opt/kotlinc/bin:$PATH
+
+# ── Pinned Gradle 8.10.2 ─────────────────────────────────────────────────────
+# The Gradle binary distribution. Pin the exact version + verified sha256 (Gradle
+# publishes a .sha256 alongside each distribution on services.gradle.org). The
+# build FAILS CLOSED on mismatch. (The in-repo project ALSO ships a Gradle wrapper
+# pinning this same version in gradle/wrapper/gradle-wrapper.properties +
+# distributionSha256Sum, so the build is double-pinned: the image gradle AND the
+# wrapper agree on 8.10.2.)
+#   GRADLE_SHA256 is a SENTINEL authored at S1 — filled at S2 from
+#   https://services.gradle.org/distributions/gradle-8.10.2-bin.zip.sha256
+# (A-KT-006.)
+ARG GRADLE_VERSION=8.10.2
+# Verified at S2 (2026-06-18) against services.gradle.org/.../gradle-8.10.2-bin.zip.sha256.
+ARG GRADLE_SHA256=31c55713e40233a8303827ceb42ca48a47267a0ad4bab9177123121e71524c26
+RUN set -eux; \
+    url="https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"; \
+    cd /tmp; \
+    curl -fsSLO "${url}"; \
+    if [ "${GRADLE_SHA256}" = "REPLACE_WITH_VERIFIED_SHA256_AT_S2" ]; then \
+        echo "FATAL: GRADLE_SHA256 sentinel — fill the real sha256 from services.gradle.org/...gradle-8.10.2-bin.zip.sha256 at S2 before trusting this image"; \
+        exit 1; \
+    fi; \
+    echo "${GRADLE_SHA256}  gradle-${GRADLE_VERSION}-bin.zip" | sha256sum -c -; \
+    unzip -q "gradle-${GRADLE_VERSION}-bin.zip" -d /opt; \
+    rm -f "gradle-${GRADLE_VERSION}-bin.zip"; \
+    ln -s "/opt/gradle-${GRADLE_VERSION}/bin/gradle" /usr/local/bin/gradle; \
+    gradle --version
+
+ENV GRADLE_HOME=/opt/gradle-8.10.2
+ENV GRADLE_USER_HOME=/root/.gradle
+
+# ── Pre-fetch the pinned Gradle deps into the image gradle caches (build-time net) ─
+# After this layer the image needs NO network: the dev loop runs `gradle --offline`
+# under --network=none and Gradle resolves the Kotlin stdlib, kotlinx-coroutines,
+# kotlin-test, the JUnit-5 platform (+ the opt-in BouncyCastle) from the local caches.
+# The pre-fetch uses a tiny throwaway Kotlin-DSL project whose dependencies are
+# EXACTLY the pinned versions (mirrors protocol-generator/kotlin/profile.toml [deps]).
+# A real `gradle build` + `gradle test` over a trivial kotlin.test test seeds the
+# kotlin compiler artifacts AND the JUnit-5 test-runtime providers into the caches
+# (the providers resolve lazily at test-execution time, not at dependency-resolution
+# time — the java-toolchain learned this with surefire). Authored at S1; runs at S2.
+#   - org.jetbrains.kotlin:kotlin-stdlib:1.9.25        (runtime)
+#   - org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1   (runtime)
+#   - org.jetbrains.kotlin:kotlin-test-junit5:1.9.25   (test)
+#   - org.junit.jupiter:junit-jupiter:5.11.4           (test platform)
+#   - org.bouncycastle:bcprov-jdk18on:1.80             (OPT-IN agility cross-check)
+COPY containers/kotlin-toolchain/prefetch /tmp/prefetch
+RUN set -eux; \
+    cd /tmp/prefetch; \
+    gradle --no-daemon build test \
+        || { echo "FATAL: prefetch build failed — the pinned deps did not resolve"; exit 1; }; \
+    # explicitly seed the opt-in BouncyCastle agility cross-check jar too
+    gradle --no-daemon -q resolveBouncyCastle || true; \
+    rm -rf /tmp/prefetch/build /tmp/prefetch/.gradle
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="kotlin-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.jdk="temurin-21.0.10+7"
+LABEL org.entity-core-keystone.kotlin="1.9.25"
+LABEL org.entity-core-keystone.gradle="8.10.2"
+
+CMD ["/bin/bash"]

@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "_comment": "A named operator identity (hex content-hash of its system/peer entity) granted wide admin over the local namespace; everyone else falls to the discovery floor. Replace the grantee with a real 66-hex-char identity hash.",
+      "grantee": "0000000000000000000000000000000000000000000000000000000000000000ab",
+      "grants": [
+        {
+          "handlers": { "include": ["*"] },
+          "resources": { "include": ["*"] },
+          "operations": { "include": ["*"] },
+          "peers": { "include": ["self"] }
+        }
+      ]
+    },
+    {
+      "grantee": "default",
+      "grants": [
+        {
+          "handlers": { "include": ["system/tree"] },
+          "resources": { "include": ["system/type/*", "system/handler/*"] },
+          "operations": { "include": ["get"] }
+        },
+        {
+          "handlers": { "include": ["system/capability"] },
+          "resources": { "include": [] },
+          "operations": { "include": ["request"] }
+        }
+      ]
+    }
+  ]
+}

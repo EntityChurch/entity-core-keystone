@@ -1,0 +1,12 @@
+(executables
+ (names conformance selftest type_registry)
+ (libraries entitycore_codec str unix threads.posix))
+
+; Crypto-agility byte-verification harness. Separate stanza + EC_AGILITY guard so
+; it (and the FFI link to libentitycore_codec) is only built by run-agility.sh,
+; keeping the core build/conformance loop FFI-free. See src/agility/dune.
+(executable
+ (name agility)
+ (enabled_if
+  (= %{env:EC_AGILITY=0} 1))
+ (libraries entitycore_agility))

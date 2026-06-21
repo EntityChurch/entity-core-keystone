@@ -1,0 +1,290 @@
+# entity-core-protocol-python — Language Profile
+#
+# Python peer (CPython). CLEAN-ROOM clone of the core protocol — distinct from the
+# hand-written sibling reference impl `entity-core-py`. Like the Go peer (which has
+# the hand-written sibling `entity-core-go` AND is the oracle's language), Python's
+# whole value is being an INDEPENDENT reimplementation from spec: NO source under
+# `entity-core-py` was opened, copied, or referenced while authoring this profile or
+# any deliverable. Derived purely from V7 (pinned spec-data/v7.75) + the keystone
+# shared/lifecycle contracts + the cohort's LANGUAGE-NEUTRAL sibling profiles
+# (csharp / typescript / go / ruby for FIELD-SCHEMA only, not spec interpretation).
+# Where a value matches a prior peer it is by independent arrival; the idiom seams
+# (exceptions, snake_case, GIL-aware threading, PEP-440 packaging) are Python's.
+#
+# Idiom analog = Ruby (dynamic / duck-typed, exceptions, arbitrary-precision int,
+# stdlib-or-near-stdlib native crypto reaching Ed25519+Ed448). Structural analog =
+# Go (clean-room peer for a language that ALSO has a hand-written sibling). Framing
+# (per the cohort's same-as-sibling honesty caveat): the value is ADOPTION (a
+# pip-installable spec-derived peer for the largest dynamic-language community) +
+# an INDEPENDENCE CHECK ON THE GENERATOR — NOT a fresh well of spec discovery (the
+# discovery well is dry per the 8-peer synthesis; the productive integer/float/
+# crypto/string/dispatch axes are saturated).
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value is
+# logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase. No field is TBD.
+
+[language]
+id                = "python"
+name              = "Python (CPython)"
+tier              = "peer-python"               # dynamic/scripting axis (shares the idiom family with Ruby/Elixir); clean-room sibling of entity-core-py. See arch/PROFILE-RATIONALE.md.
+package_name      = "entity-core-protocol-python"  # keystone peer id; PyPI dist name is idiomatic kebab → see [publishing]
+runtime           = "python-toolchain"          # references containers/python-toolchain/Containerfile (AUTHORED this phase, not built — S1 boundary)
+
+[codec]
+# strategy: NATIVE. The A-005 pattern holds a 13th time — no Python CBOR library
+# gives ECF's canonical guarantees out of the box, so the canonical layer is
+# hand-rolled regardless of what sits underneath; crypto is native-full-agility via
+# the `cryptography` library (OpenSSL backend), which reaches BOTH Ed25519 AND Ed448
+# + the SHA-2 family — so the crypto-agility HIGHER BAR needs no FFI (the Elixir /
+# Haskell / Ruby native-full-agility result, replicated on a 4th native-crypto
+# substrate). ffi remains the documented fallback but is not expected to be needed.
+strategy          = "native"
+# CBOR: HAND-ROLLED canonical encoder/decoder (entity_core/_cbor.py). Survey:
+#   - `cbor2` (agronholm, C-accelerated, the de-facto Python CBOR lib): mature,
+#     audited-ish, widely used. Offers `dumps(obj, canonical=True)` — BUT its
+#     "canonical" mode targets RFC-8949 §4.2 *bytewise* key ordering, which is the
+#     WRONG order for ECF (length-then-lex on ENCODED key bytes = RFC-7049 length-
+#     first ≠ RFC-8949 bytewise). It also does NOT enforce shortest-float minimality
+#     on DECODE, does NOT recursively reject major-type-6 tags on DECODE returning
+#     400 non_canonical_ecf (§6.3), and decodes tags into Python objects rather than
+#     rejecting them. So it gives NONE of the ECF decode-side contract and the WRONG
+#     encode-side map order.
+#   - `cbor` (pure-Python, abandoned), `cbor-diag` (diagnostic only): not candidates.
+# None gives the full ECF contract (length-then-lex map order on ENCODED key bytes,
+# shortest-float incl. f16, recursive tag-6 rejection on DECODE, full uint64/nint
+# range, raw-byte `data` fidelity N4). Hand-rolling is both faithful and simpler
+# than bending cbor2 (which fights the length-first rule AND the decode-side
+# canonicality checks). Python makes this pleasant: arbitrary-precision `int` (NO
+# uint64 head-form native-int trap — the BEAM/Ruby result, see [idiom]) and
+# `bytes`/`bytearray`/`memoryview` byte buffers make the byte-level cursor clean.
+# Spike the `map_keys` + `float` vectors at S2 before the full build (the load-
+# bearing codec risk). See SPEC-AMBIGUITY-LOG A-PY-001.
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native", notes = "cbor2 canonical=True is RFC-8949 bytewise (WRONG order for ECF length-first) + no decode-side float-min / tag-6-reject; no Python lib does ECF" }
+# Ed25519: `cryptography` (pyca/cryptography) — cryptography.hazmat.primitives.
+# asymmetric.ed25519. Native, OpenSSL-backed (audited), the de-facto Python crypto
+# library. Surface:
+#   from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+#       Ed25519PrivateKey, Ed25519PublicKey)
+#   sk  = Ed25519PrivateKey.from_private_bytes(seed32)   # entity-core PEM = b64(32B seed)
+#   sig = sk.sign(msg)                                    # 64-byte, deterministic (RFC-8032)
+#   pk  = sk.public_key(); pk.verify(sig, msg)            # raises InvalidSignature on fail
+#   seed = sk.private_bytes_raw(); pub = pk.public_bytes_raw()  # 32-byte raw keys
+# Deterministic by construction (Ed25519 / RFC-8032 — no RNG in signing), so the
+# crypto-library version is conformance-neutral (the C# F10 lesson). private_bytes_raw
+# / public_bytes_raw require cryptography >= 35 (we pin 48.0.0). Exact spelling
+# confirmed in-container at S2 (A-PY-003).
+ed25519_library   = { name = "cryptography (pyca)", version = "48.0.0", api = "ed25519.Ed25519PrivateKey.from_private_bytes / sign / public_key().verify / private_bytes_raw / public_bytes_raw" }
+# Ed448 (crypto-agility HIGHER BAR, v7.67 / §1.5 key_type 0x02): NATIVE via the SAME
+# `cryptography` library — cryptography.hazmat.primitives.asymmetric.ed448 exposes
+# Ed448 (57-byte seed, 114-byte sig, PureEdDSA) through the identical raw-key path
+# (Ed448PrivateKey.from_private_bytes(seed57) / sign / public_key().verify /
+# private_bytes_raw / public_bytes_raw). NO FFI, no opt-in sub-library, no second
+# crypto source — the Haskell/Ruby native-full-agility headline (contrast OCaml
+# A-OC-002 / Zig A-ZIG-002 / Go A-GO-002, which had no native Ed448 and DEFERRED to
+# hybrid-FFI). cryptography's wheels bundle OpenSSL 3.5.x → Ed448 is built in. Byte-
+# verify against the agility corpus at S2; flag if the bundled OpenSSL lacks Ed448
+# (A-PY-002 — the manylinux wheels ship it, the container build asserts it).
+ed448_library     = { name = "cryptography (pyca)", version = "48.0.0", strategy = "native", api = "ed448.Ed448PrivateKey.from_private_bytes / sign / public_key().verify" }
+# SHA-256 (content_hash floor) + SHA-384/512 (agility hashing): stdlib `hashlib`
+# (hashlib.sha256/sha384/sha512) — native, NO dependency, OpenSSL-backed in CPython.
+# Note Ed448's internal hash is SHAKE256 (handled by OpenSSL inside PureEdDSA — NOT
+# a separately-invoked digest); the §HASH-FORMAT SHA-384 agility path is the content-
+# hash family, independent of the signature curve.
+sha256_source     = "stdlib hashlib (sha256/sha384/sha512) — native, no dependency; SHA-384 agility hashing native"
+base58_library    = "hand-rolled"               # Bitcoin alphabet, encode+decode (entity_core/_base58.py); no PyPI dep (dodges a dep + pin). ~60 lines.
+varint_handling   = "native"                    # multicodec-style LEB128 (§1.5/§7.3) inline impl, entity_core/_varint.py; key_type/hash_type/format-code framing. Own the non-minimal-varint rejection.
+
+[error_model]
+# Python-idiomatic: EXCEPTIONS (raise / except) — the canonical Python fallible
+# surface. An `Exception`-rooted hierarchy under `EntityCoreError`, mirroring the
+# C#/TS/Ruby exception trees in SHAPE while reading as Python (PascalCase ...Error
+# class names, `raise CodecError("...")`). This is the dynamic-language exception
+# idiom (distinct from Elixir's tagged tuples / OCaml's result / Zig's error unions /
+# Go's (T, error)). Decode-path violations raise CodecError subclasses; the peer
+# except-maps protocol faults to the §5.2a / §6.12 status codes at the dispatch
+# boundary.
+style             = "exceptions"                # "exceptions" | "result" | "either" | "errno" | "tagged_tuple"
+base_exception    = "EntityCoreError"           # (Exception) — the root of the package's hierarchy
+exception_hierarchy = [
+    "EntityCoreError",                          # (Exception)
+    "  CodecError",                             # CBOR / canonicalization / decode faults (non_canonical_ecf etc.)
+    "    NonCanonicalEcfError",                 # 400 non_canonical_ecf (§6.3 tag / Rule violation)
+    "    TruncatedError",                       # short read on decode
+    "  ProtocolError",
+    "    HelloFailedError",
+    "    AuthenticationError",
+    "  TransportError",
+    "    RecvTimeoutError",
+    "    ConnectionBrokenError",
+    "    WireProtocolError",                    # avoids the TS ProtocolErrorError stutter (A-003 precedent)
+]
+# Status mapping (grounded in spec, NOT oracle / NOT entity-core-py): 400
+# non_canonical_ecf (§6.3 tag / Rule violation), 400 chain_depth_exceeded
+# (§4.10(b) — NOT 403), 401 identity_mismatch / unresolvable_grantee carve-out
+# (§4.6 / §5.2), 403 capability_denied default (§5.2 AUTHZ_DENY), 413
+# payload_too_large (§4.10(a)). See [auth] + [resource_bounds].
+
+[async]
+# DELIBERATE idiom + an honest GIL accounting (the point of this peer's concurrency
+# axis, mirroring Ruby's GVL accounting). CPython has a Global Interpreter Lock: the
+# `threading` module gives real OS threads with a preemptive scheduler, but only ONE
+# thread executes Python bytecode at a time. CRUCIALLY the GIL is RELEASED during
+# blocking IO (socket recv/send/accept) AND inside the `cryptography`/`hashlib` C
+# extensions, so a THREAD-PER-CONNECTION peer is genuinely concurrent for an IO-bound
+# workload (§4.8/§4.9): while one thread blocks in recv, others run. The entity-core
+# peer is IO-bound (frame shuffling + occasional crypto), NOT CPU-bound, so the GIL
+# is ADEQUATE for the §7b concurrency gate — no worker pools / asyncio / free-threaded
+# build needed to clear it.
+#   asyncio is the popular Python alternative and a clean fit for §6.11 reentrant
+#   demux, but it would (a) make the public codec/crypto APIs async-colored when they
+#   are pure-CPU/sync, and (b) diverge the peer-loop idiom from the threaded cohort
+#   shape (Ruby/OCaml reader-thread + condvar). Threading keeps the codec SYNC and
+#   matches the cohort's reentrancy pattern. asyncio noted as the alternative idiom;
+#   threading chosen at core. (CPython 3.13 free-threaded/no-GIL build is the true-
+#   parallel escape hatch — NOT used at core; noted.)
+style             = "threaded"                  # "sync" | "asyncio" | "threaded" | "processes"
+concurrency_model = "thread-per-connection"     # one threading.Thread per accepted socket; GIL released on blocking IO + crypto C-ext
+default_surface   = "sync"                       # public codec/crypto APIs are synchronous (pure-CPU); the peer loop is thread-driven
+store_safety      = "lock-guarded"              # shared store behind a threading.Lock/RLock; §3.9 CAS is a single critical section (§4.8 data-race-safe). The GIL does NOT make compound read-then-write atomic — explicit Lock still required (the Ruby GVL lesson; a thread can be preempted between read and write).
+request_demux     = "request_id-map + condition" # §6.11 reentrant demux: pending {request_id => waiter}, threading.Condition wakeup (the threaded-peer shape, same as OCaml/Ruby reader-thread + condvar)
+tcp_nodelay       = true                         # §7b: set TCP_NODELAY (socket.IPPROTO_TCP/TCP_NODELAY) on every socket — Nagle/delayed-ACK is the small-frame req/resp killer (Zig lesson 62s→1.9s; applies regardless of language)
+parallelism_note  = "asyncio = alternative IO-concurrency idiom (not used at core); CPython 3.13+ free-threaded build = true-parallel escape hatch (experimental) — NOT used at core"
+
+[naming]
+# Python-native conventions (PEP 8).
+class_names       = "PascalCase"                # classes: Cbor, PeerId, Peer, EntityCoreError
+function_names    = "snake_case"                # functions + methods: content_hash, sign_and_verify, encode_canonical
+variable_names    = "snake_case"                # locals + attributes + params: peer_id, data_bytes
+constant_names    = "SCREAMING_SNAKE_CASE"      # module constants: DEFAULT_TIMEOUT, MAX_CHAIN_DEPTH, MAX_PAYLOAD_BYTES
+module_names      = "snake_case"                # modules: _cbor.py, peer_id.py, content_hash.py (leading _ for internal-only modules)
+package_name_py   = "entity_core"               # the importable package: `import entity_core` (snake_case — PEP 8 packages)
+private_prefix    = "_"                          # single leading underscore for module/attr internals (PEP 8 weak-internal); __ name-mangling avoided
+
+[build]
+build_tool        = "hatchling"                 # PEP 517 build backend via `python -m build`; pyproject.toml-driven (modern stdlib-adjacent default; no setup.py)
+build_command     = "python -m build --wheel"   # produces the wheel (PEP 517 frontend `build` + `hatchling` backend)
+test_command      = "python -m pytest"          # pytest is the ecosystem standard; dev-only dep (NOT a runtime dep) — see [testing]
+lint_command      = "python -m ruff check ."    # ruff = the modern fast linter/formatter; dev-only, deferred to S5 (don't pull silently at core)
+typecheck_command = "python -m mypy entity_core"  # optional static typing gate (PEP 484 hints); dev-only, S5
+pack_command      = "python -m build"           # sdist + wheel
+
+[layout]
+# Modern src-layout (PEP 517/518), pyproject.toml-driven, NO setup.py.
+project_file      = "pyproject.toml"            # the single manifest (build-system + project metadata + tool config)
+src_dir           = "src/entity_core/"          # src-layout (import only the installed package, not the repo cwd — avoids the import-shadowing footgun)
+package           = "entity_core"               # the importable package (entity_core/__init__.py exports the public API)
+test_dir          = "tests/"                     # pytest suites + conformance harness
+host_module       = "src/entity_core/host.py"   # S4 conformance host / oracle driver (a `python -m entity_core.host` entry point), reusable per-language pattern
+internal_layout   = "_cbor.py / _base58.py / _varint.py" # leading-underscore internal modules; public surface re-exported from __init__.py
+
+[publishing]
+registry          = "pypi"
+registry_url      = "https://pypi.org"
+# PyPI normalizes dist names (PEP 503): the kebab `entity-core-protocol-python` and
+# any case/underscore variant normalize to the same project. We keep the dist name
+# `entity-core-protocol-python` (matches the keystone peer id directly — unlike
+# Ruby/Elixir which dropped the redundant `-ruby`/`_elixir`; PyPI dist names commonly
+# carry the language is implicit, but keeping the full keystone id is unambiguous and
+# the import package `entity_core` is already language-implicit). Availability /
+# squatting checked at S5 before first publish.
+package_id        = "entity-core-protocol-python"  # PyPI dist name (PEP 503-normalized to entity-core-protocol-python)
+import_package    = "entity_core"               # `import entity_core`
+# PEP 440 version: 0.1.0 (a FINAL pre-1.0 release, NOT a pre-release tag). Rationale:
+# the cohort parks first publishes at "0.1.0-pre"-style markers, but PEP 440's
+# pre-release spelling is `0.1.0rc1` / `0.1.0a1` / `0.1.0b1` / `.devN`, and a bare
+# `0.1.0` already signals "early, unstable, pre-1.0" under SemVer (0.x = no API
+# stability promise) WITHOUT installer-resolution surprises (pip excludes pre-
+# releases by default, so a `0.1.0rc1` would NOT install via `pip install
+# entity-core-protocol-python` without `--pre` — a footgun for the adoption goal).
+# So a final `0.1.0` is the correct PEP-440 spelling of "0.x early peer": installable
+# by default, honestly pre-stable via the 0-major. If a true release-candidate gate
+# is wanted before 0.1.0, use `0.1.0rc1`; default is the final `0.1.0`.
+version           = "0.1.0"
+license_expression = "Apache-2.0"
+repository_url    = ""                            # TBD on first publish (publish-time field, not a build blocker)
+authors           = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"                # S9 repo default. Python itself is PSF-licensed and the ecosystem is MIT/BSD/Apache-mixed with no mandate — keep the safe Apache-2.0 default (explicit patent grant).
+
+[testing]
+# pytest is the de-facto Python test ecosystem standard. UNLIKE Ruby (Minitest) /
+# Go (testing) / Elixir (ExUnit), Python's stdlib `unittest` exists but pytest is so
+# dominant it is the idiomatic choice — and it is a DEV-ONLY dependency (not shipped
+# in the wheel's runtime deps), so the runtime dep story stays minimal (the core peer
+# ships ONE runtime dep: `cryptography`; everything else — CBOR/base58/varint hand-
+# rolled, hashlib/threading/socket stdlib — is in-repo or stdlib). The conformance
+# harness is a pytest suite asserting byte-identity against the normative fixtures; a
+# thin `python -m entity_core.host` entry point is the standalone oracle driver for
+# validate-peer / wire-conformance at S4.
+framework         = "pytest"                    # dev-only dep; stdlib `unittest` is the zero-dep fallback if pytest is ever disallowed
+standalone_runner = "python -m entity_core.host"  # S4 oracle-driver entry point
+property_testing  = "hypothesis (optional, dev-only)"  # if fuzz/property wanted; not pulled at core
+
+[container]
+base_image        = "entity-core-keystone/python-toolchain:latest"  # built from containers/python-toolchain/Containerfile (AUTHORED this phase, NOT built — S1 boundary)
+build_in_container = true
+network_policy    = "pull-once-then-offline"    # the ONE runtime dep (`cryptography` wheel) is installed in one network-on image-build step; subsequent dev-loop runs are --network=none. CBOR/base58/varint hand-rolled; hashlib/threading/socket stdlib.
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/python entity-core-keystone/python-toolchain:latest sh -c 'pip install --no-build-isolation -e . && python -m pytest'"
+containerfile_decision = "authored-new"          # NO existing containers/python*/ — authored containers/python-toolchain/Containerfile (fedora:43 base per S1)
+
+[idiom]
+# Hints that don't fit elsewhere — the dynamic/scripting-axis specifics.
+prefer_exceptions        = true                 # fallible surfaces raise EntityCoreError subclasses; except-map at the dispatch boundary
+native_bignum            = true                 # Python `int` is arbitrary-precision → NO uint64/int64 head-form native-int trap (the OCaml int63 / C# ulong / TS bigint trap). Head-form carrier is just an `int` (the BEAM/Ruby result, replicated — 3rd arbitrary-precision peer). Watch: encode the uint/nint HEAD FORM explicitly (5/9-byte head selection), not Python's unbounded int — the wire form is fixed-width per the major-type head.
+bytes_not_str            = true                 # wire bytes are `bytes`/`bytearray`/`memoryview`, NEVER `str` in the codec core (the Ruby ASCII-8BIT / TS Uint8Array / C# byte-span discipline). str is text (UTF-8 only at the entity-string boundary per the native type system).
+data_is_arbitrary_ecf    = true                 # §1.1 entity `data` = arbitrary ECF value, NOT necessarily a dict (A-JAVA-010). Duck-type it: `data` is "whatever ECF value decodes" — do NOT assume dict. Carry as pre-encoded bytes / a general decoded value.
+frozen_dataclasses       = true                 # prefer `@dataclass(frozen=True, slots=True)` for value-shaped types (envelope, cap-token); slots for memory + attribute-typo safety. NamedTuple where a tuple shape is natural.
+type_hints               = true                 # PEP 484 type hints on the public surface (`-> bytes`, `peer_id: bytes`); mypy-checkable. Improves the adoption/SDK story; dev-only check.
+no_monkeypatch_stdlib    = true                 # the codec must NOT depend on monkey-patching stdlib; keep it self-contained + portable
+explicit_head_form       = true                 # CBOR int head-form: select the SHORTEST head (0/1/2/4/8 extra bytes) per Rule 1 on ENCODE, and REJECT non-shortest on DECODE (Rule 1 enforced on receive) — Python's unbounded int makes this an explicit width choice, not a native-type byproduct.
+
+[resource_bounds]
+# §4.10 (v7.75 floor MUSTs) — recorded at S1 so the peer layer (S3+) gets the codes
+# right. NOT enforced in S1 (profile-only phase). Values are INFORMATIVE recommended
+# defaults per the v7.75 MANIFEST ("enforce a finite declared bound + reject over-
+# limit cleanly", never "pick this number").
+max_chain_depth   = 64                           # §4.10(b): a delegation chain deeper than this → 400 chain_depth_exceeded (MUST be 400, NOT 403). ~15-line structural pre-check (walk parents, no sig work) called BEFORE the per-link authz walk; an UNREACHABLE parent stays 403 (not a depth fault). Net-new for the whole cohort in v7.75.
+max_payload_bytes = 16777216                     # §4.10(a): 16 MiB default → over-limit → 413 payload_too_large (MUST).
+admission_codes   = ["413 payload_too_large", "400 chain_depth_exceeded", "503/429 connection-admission (SHOULD, external-layer carve-out)"]  # §6.12 / §4.10(c)
+
+[auth]
+# §5.2 / §5.2a verdict-to-status (cohort convergence; folded normative in v7.73 E2).
+# Recorded at S1 for the peer layer (S3+).
+verdict_trichotomy = "401 (unauthenticated) / 403 (authenticated-but-unauthorized) / 401 (unresolvable-identity)"  # ALLOW / AUTH_DENY / AUTHZ_DENY → 401/403/401
+
+[bootstrap]
+# Latest cohort conventions baked in so later phases inherit them (per the S1 brief).
+# NOT built in S1 (profile-only) — these are PLANNED S3 surface, recorded now.
+persistent_identity = "--name NAME"             # PLANNED S3: loads the peer's Ed25519 identity from ~/.entity/peers/NAME/keypair (entity-core PEM = base64 of a 32-byte seed). Matches the Go entity-peer / peer-manager convention + the cohort-wide --name standardization (2026-06-15). Enables the multisig accept-path (valid_2of3_peer_signed_accepted) to run, not env-skip.
+seed_policy       = "shared/seed-policy convention"  # PLANNED S3: §6.9a peer-authority bootstrap per protocol-generator/shared/seed-policy/ — self owner-cap (detached-signature shape) + default discovery floor at L0; --owner-identity / --seed-policy CLI; with_owner_identity/with_seed_policy builder. --debug-open-grants = degenerate default→* (removed v7.75).
+multisig          = "genuine §3.6 K-of-N"       # PLANNED S3: real k-of-n at root — granter union (system/hash | {signers, threshold} map, root-only) → verify_multisig_root = §3.6 M3 structure (root-only, n>=2, 2<=threshold<=n, distinct signers) BEFORE sig counting (precedence 25), then §5.5 M6 (local in signers) + M4 (DISTINCT-signer valid-sig count >= threshold). Multi-sig is root-only (off-root denies); single-sig path byte-identical (strict superset). Accept-path UNIT TEST required (the rejection-only oracle can't cover it).
+
+[deps]
+# Exact pins (S11). The core peer ships exactly ONE runtime dependency
+# (`cryptography`); everything else is stdlib (hashlib/threading/socket/struct) or
+# hand-rolled (CBOR/base58/varint). Dev-only tools (pytest/ruff/mypy) are NOT runtime
+# deps and are pinned in the [tool] dev-extra at S2.
+#
+# cryptography 48.0.0 — released 2026-05-04 (44 days old at 2026-06-17 authoring;
+#   clears the S11 >=30-day cool-down, which requires release before ~2026-05-18).
+#   The NEWEST version that clears the floor: 48.0.1 (2026-06-09) and 49.0.0
+#   (2026-06-12) are BOTH < 30 days old → too new, NOT pinnable per S11. 48.0.0
+#   carries the CVE-2026-39892 fix (buffer-overflow, fixed 46.0.7) and CVE-2026-34073
+#   fix (name-constraints, fixed 46.0.6) forward (both predate 48.0.0). Wheels bundle
+#   OpenSSL 3.5.x → Ed25519 + Ed448 + SHA-2 all native. Minimum Python 3.9 (we run
+#   3.13). EdDSA is deterministic (RFC-8032) → the crypto version is conformance-
+#   neutral. Pin the wheel HASH at S2 (the committed lockfile, per the brief).
+cryptography      = "48.0.0"                     # ONLY runtime dep; OpenSSL-backed Ed25519 + Ed448 + SHA-2; release 2026-05-04
+python            = "3.13.14"                    # CPython 3.13.14, released 2026-06-10. NOTE: < 30 days old at authoring (A-PY-004). The 3.13.x SERIES is mature (3.13.0 = 2024-10); 3.13.14 is a patch in a long-stable line and arrives via the fedora:43 distro channel (a reviewed channel → the S11 age floor relaxes to "pin exactly for reproducibility" per the supply-chain memo, as for Go's golang-1.25.10). If fedora:43 ships an older 3.13.x patch, that patch is acceptable (any 3.13.x). Recorded + flagged A-PY-004.
+# (no other runtime deps — single-dep core peer)
+
+[spec]
+v7_version_pinned = "7.75"                       # spec read for profile + peer = spec-data/v7.75 (latest available SHA-pinned verbatim V7 snapshot; full ENTITY-CORE-PROTOCOL-V7.md body present). §4.8 store-safety + §4.9 resilience + §4.10 resource_bounds are floor MUSTs; §9.0 enumerates concurrency + resource_bounds.
+codec_corpus      = "v7.75"                       # ENTITY-CBOR-ENCODING (label 1.5) + ENTITY-NATIVE-TYPE-SYSTEM (4.2.1) — byte-identical v7.73->v7.75 per MANIFEST, so the wire is stable. peer-id §1.5 canonical-form (hash_type=0x00 identity-multihash, digest = raw pubkey for <=32B keys) per A-SW-008 erratum (§9.1 now cites §1.5); the stale §7.4 SHA256(pubkey) skeleton is SUPERSEDED.
+conformance_profile = "core"                      # validate-peer --profile core target (oracle entity-core-go e8524ed at latest cohort run = 665 total · 0 FAIL; the v7.75-stamp baseline was 576/0F/89skip @ 62044c5). The clean-room rule permits BYTE-validation against the oracle at S4, NOT reading its SOURCE while building. Multisig accept-path (valid_2of3_peer_signed_accepted) needs --name persistent identity to run, not env-skip.
+oracle_commit     = "e8524ed"                     # recorded for S4 byte-validation only (latest cohort oracle, ahead of the v7.75 stamp 62044c5). Single-peer run-s4 honest-SKIPs the reference-peer-gated §10.2 origination-core; runs via run-origination-core.sh.
+# Like the Ruby/Go peers (and UNLIKE peers #1-8, built against v7.74 + folded
+# proposal text), Python derives S1/S2/S3 against the COMPLETE v7.75 snapshot — the
+# register/outbound/emit/owner-cap/§7a peer surface AND the §4.8/§4.9/§4.10 substrate
+# floor are all present as ratified spec text. No A-ELX-001-style snapshot-lag caveat.

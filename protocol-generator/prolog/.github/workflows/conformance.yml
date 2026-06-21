@@ -1,0 +1,85 @@
+# CI — entity-core-protocol-prolog (the cohort's first logic-programming peer) conformance gates.
+#
+# Authored at S5 (PHASE-S5 §"CI config"), matching the Zig peer #4 / Haskell / Swift cohort
+# pattern. Runs the three green gates entirely inside the pinned `prolog-toolchain` Podman image,
+# sealed-offline (`--network=none`): the C-ABI codec lib + the SWI foreign shim are byte-built by
+# run-s2.sh inside the image (nothing is fetched at build time), and the Go `validate-peer` oracle
+# is a CGO_ENABLED=0 ELF that runs in the same image sharing one loopback.
+#
+# DELIBERATELY NOT WIRED TO ANY REMOTE/CD. There is no deploy step, no registry push, no pack
+# publish — `/entity-rosetta` never publishes (lifecycle §Publishing); the operator decides. This
+# file documents the reproducible offline gate; whether/where it actually runs (this peer's
+# standalone repo's CI, or a keystone-wide CI home) is an operator/arch decision (see
+# status/ARCHITECTURE-REVIEW.md §Publishing-options). It is committed for reviewability, not
+# because a runner is attached. (A committed CI *workflow* is otherwise deferred cohort-wide —
+# common-lisp/ruby have none; zig/haskell/swift carry this same offline-gate pattern.)
+#
+# Assumptions when wired: the runner has Podman, the `prolog-toolchain:latest` image is built
+# (containers/prolog-toolchain/Containerfile) and the oracle ELFs are vendored to
+# output/s4-oracles/ (rebuild per status/CONFORMANCE-REPORT.md §Reproduce). Paths below assume the
+# keystone repo root is the checkout root.
+
+name: prolog-conformance
+
+on:
+  push:
+    paths:
+      - 'protocol-generator/prolog/**'
+      - 'protocol-generator/shared/spec-data/**'
+      - 'protocol-generator/shared/test-vectors/**'
+  pull_request:
+    paths:
+      - 'protocol-generator/prolog/**'
+  workflow_dispatch: {}
+
+# No deploy/publish permissions — read-only.
+permissions:
+  contents: read
+
+env:
+  IMAGE: entity-core-keystone/prolog-toolchain:latest
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The toolchain image is built from containers/prolog-toolchain/Containerfile and the oracle
+      # ELFs rebuilt from entity-core-go @75c532e per the CONFORMANCE-REPORT runbook. In a
+      # standalone-repo lift-out these become a `podman build` + an oracle-vendor step (or a
+      # pre-built image pulled from a trusted internal registry); kept explicit, not assumed.
+      - name: Verify toolchain image + oracle present
+        run: |
+          podman image exists "$IMAGE" || { echo "::error::build $IMAGE from containers/prolog-toolchain/Containerfile first"; exit 1; }
+          test -x output/s4-oracles/validate-peer || { echo "::error::vendor the validate-peer oracle ELF (CONFORMANCE-REPORT.md §Reproduce)"; exit 1; }
+
+      # Gate 1 — S2 FFI codec wire-conformance (must stay 69/69) + crypto KAT (10/10), sealed
+      # offline. run-s2.sh byte-builds libentitycore_codec.so + the SWI foreign shim, then runs
+      # the 69-vector corpus + the Ed25519/Ed448/SHA KAT pins through the foreign codec.
+      - name: S2 — codec 69/69 + KAT 10/10
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z -w /work \
+            "$IMAGE" protocol-generator/prolog/run-s2.sh
+
+      # Gate 2 — S3 type-registry 53/53 byte-identical + two-peer loopback smoke 11/11.
+      - name: S3 — type-registry 53/53 + smoke 11/11
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z -w /work \
+            "$IMAGE" protocol-generator/prolog/run-s3.sh
+
+      # Gate 3 — S4 live-peer validate-peer --profile core (must stay 0 FAIL). The SWI host + the
+      # Go oracle ELF run together in the image over loopback, --network=none. run-s4.sh writes
+      # status/CONFORMANCE-REPORT.json; we assert summary.failed == 0 (the green gate).
+      - name: S4 — validate-peer --profile core (0 FAIL)
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z -w /work -e ORACLE_TIMEOUT=300s \
+            "$IMAGE" protocol-generator/prolog/run-s4.sh
+          python3 - <<'PY'
+          import json, sys
+          s = json.load(open("protocol-generator/prolog/status/CONFORMANCE-REPORT.json"))["summary"]
+          print("summary:", s)
+          if s.get("failed", 1) != 0:
+              print("::error::validate-peer core has FAILs — gate not green"); sys.exit(1)
+          PY

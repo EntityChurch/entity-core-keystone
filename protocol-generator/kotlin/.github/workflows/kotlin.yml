@@ -1,0 +1,94 @@
+# CI — entity-core-protocol-kotlin (REACH peer; JVM/Kotlin axis) conformance gates.
+#
+# Authored at S5 (PHASE-S5 §"CI config"). Runs the green gates entirely inside the pinned
+# `kotlin-toolchain` Podman image, sealed-offline (`--network=none`): the Gradle deps
+# (kotlin-stdlib, kotlinx-coroutines, kotlin-test, JUnit 5, opt-in BouncyCastle) are pre-fetched
+# into the image's gradle caches at container BUILD time + the resolved graph is pinned in the
+# committed gradle.lockfile, so every `gradle --offline --no-daemon` run is reproducible offline.
+# The Go `validate-peer` oracle is a CGO_ENABLED=0 ELF that runs in the same image sharing one
+# loopback.
+#
+# DELIBERATELY NOT WIRED TO ANY REMOTE/CD. There is no deploy step, no `gradle publish`, no
+# registry push — `/entity-rosetta` never publishes (lifecycle §Publishing); the operator
+# decides. This file documents the reproducible offline gate; whether/where it actually runs
+# (this peer's standalone repo's CI, or a keystone-wide CI home) is an operator/arch decision
+# (PHASE-S5 §Operator-handoff). It is committed for reviewability, not because a runner is
+# attached. Read-only permissions; no deploy/publish.
+#
+# Assumptions when wired: the runner has Podman, the `kotlin-toolchain:latest` image is built
+# (containers/kotlin-toolchain/Containerfile, deps pre-fetched), and the oracle ELF + reference
+# peer are vendored to output/s4-oracles/ via tools/oracle-bootstrap.sh (tools/oracle-pin.env
+# pins ref e8524ed + core_gate_sha256; rebuild per status/CONFORMANCE-REPORT.md §Provenance).
+# Paths below assume the keystone repo root is the checkout root.
+
+name: kotlin-conformance
+
+on:
+  push:
+    paths:
+      - 'protocol-generator/kotlin/**'
+      - 'protocol-generator/shared/spec-data/**'
+      - 'protocol-generator/shared/test-vectors/**'
+  pull_request:
+    paths:
+      - 'protocol-generator/kotlin/**'
+  workflow_dispatch: {}
+
+# No deploy/publish permissions — read-only.
+permissions:
+  contents: read
+
+env:
+  IMAGE: entity-core-keystone/kotlin-toolchain:latest
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The toolchain image is built from containers/kotlin-toolchain/Containerfile (Gradle deps
+      # pre-fetched so the build is offline) and the oracle ELF rebuilt from entity-core-go at the
+      # pinned ref per tools/oracle-bootstrap.sh. In a standalone-repo lift-out these become a
+      # `podman build` + an oracle-vendor step (or a pre-built image pulled from a trusted internal
+      # registry); kept explicit, not assumed.
+      - name: Verify toolchain image + oracle present
+        run: |
+          podman image exists "$IMAGE" || { echo "::error::build $IMAGE from containers/kotlin-toolchain/Containerfile first"; exit 1; }
+          test -x output/s4-oracles/validate-peer || { echo "::error::vendor the validate-peer oracle ELF (tools/oracle-bootstrap.sh; CONFORMANCE-REPORT.md §Provenance)"; exit 1; }
+
+      # Gate 1 — build (sealed offline; gradle.lockfile committed, deps pre-fetched into the image).
+      - name: gradle build (offline)
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            -w /work/protocol-generator/kotlin "$IMAGE" gradle --offline --no-daemon build -x test
+
+      # Gate 2 — unit tests: the S2 69/69 codec corpus + Ed25519 KATs + the 53-type byte-diff +
+      # the two-peer loopback smoke. Offline.
+      - name: gradle test (codec 69/69 + KATs + 53-type byte-diff + smoke)
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            -w /work/protocol-generator/kotlin "$IMAGE" gradle --offline --no-daemon test
+
+      # Gate 3 — S4 live-peer validate-peer --profile core (must stay 0 FAIL). The Kotlin peer +
+      # the Go oracle ELF run together in the image over loopback, --network=none. run-s4.sh writes
+      # status/CONFORMANCE-REPORT.json; assert summary.failed == 0 (the green gate).
+      - name: validate-peer --profile core (0 FAIL)
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            "$IMAGE" sh /work/protocol-generator/kotlin/run-s4.sh
+          python3 - <<'PY'
+          import json, sys
+          s = json.load(open("protocol-generator/kotlin/status/CONFORMANCE-REPORT.json"))["summary"]
+          print("summary:", s)
+          if s.get("failed", 1) != 0:
+              print("::error::validate-peer core has FAILs — gate not green"); sys.exit(1)
+          PY
+
+      # Gate 4 — §10.2 origination-core (reference-peer-gated): 3/3 incl dispatch_outbound_reentry
+      # over real two-peer TCP (Kotlin A-role, Go entity-peer --open-access B-role, shared loopback).
+      - name: origination-core (3/3, dispatch_outbound_reentry)
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            "$IMAGE" sh /work/protocol-generator/kotlin/run-origination-core.sh

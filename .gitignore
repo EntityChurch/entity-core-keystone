@@ -1,0 +1,79 @@
+# Per-machine podman resource-cap overrides (RESOURCE-CAPS.md §4a) — never committed.
+# caps.local.mk → Makefile (image builds); caps.local.sh → run-scripts (tools/podman-caps.sh).
+caps.local.mk
+caps.local.sh
+
+# Build output
+**/output/
+**/target/
+**/bin/
+# …but the OCaml peer uses bin/ as a dune SOURCE dir (the conformance host), not a
+# compiled-binary dir — keep its source tracked (build artifacts live in _build/).
+!protocol-generator/ocaml/bin/
+!protocol-generator/ocaml/bin/**
+# …same for the generated Rust peer: src/bin/ is the cargo binary-target SOURCE dir
+# (the wire-conformance harness), not a compiled-binary dir (those live in target/).
+!protocol-generator/rust/src/bin/
+!protocol-generator/rust/src/bin/**
+# …and the COBOL peer keeps its host entrypoint SOURCE in bin/ (bin/host.cob — the
+# S4 conformance host's PROGRAM-ID, compiled by `make host` into build/host, not a
+# committed binary). Un-ignore the source so the entrypoint is tracked.
+!protocol-generator/cobol/bin/
+!protocol-generator/cobol/bin/**
+**/obj/
+**/build/
+**/dist/
+**/dist-native/
+
+# Containers
+*.tar
+*.tar.gz
+
+# .NET
+**/*.csproj.user
+**/.vs/
+
+# Rust
+# Default library convention ignores Cargo.lock, but S11 requires committed
+# lockfiles for reproducibility — un-ignore the codec FFI impls (they ARE the
+# pinned-dependency deliverables).
+**/Cargo.lock
+!ffi-generator/c-abi/entity-core-codec-ffi-rust/Cargo.lock
+# The generated Rust protocol peer is a binary-bearing deliverable — S11 requires
+# the full transitive closure committed (curve25519-dalek held at 4.1.3).
+!protocol-generator/rust/Cargo.lock
+
+# Cargo registry/build cache (the mountable CARGO_HOME used by the conformance loop) —
+# a local artifact, never committed.
+.cargo-cache/
+
+# Node
+**/node_modules/
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/.venv/
+
+# JVM
+**/*.class
+
+# Gradle (Kotlin peer) — transient build cache / daemon state. The build dir is
+# already covered by **/build/ above; the gradle.lockfile (S11 pinned deps) IS
+# committed and must NOT be ignored.
+**/.gradle/
+
+# OCaml / dune
+**/_build/
+**/*.install
+**/.merlin
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db

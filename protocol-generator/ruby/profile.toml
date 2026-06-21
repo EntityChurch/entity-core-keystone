@@ -1,0 +1,217 @@
+# entity-core-protocol-ruby — Language Profile
+#
+# Peer #12 (Ruby). First DYNAMIC / DUCK-TYPED / SCRIPTING peer — Elixir is
+# dynamic-on-BEAM, but Ruby's blocks/mixins/metaprogramming/open-classes are a
+# distinct idiom axis (MRI/CRuby + the GVL). Authored FRESH in S1 from the V7
+# spec (pinned spec-data/v7.75) + Ruby-ecosystem research — NOT ported from a
+# sibling peer. Where a field matches a prior peer it is by independent arrival;
+# the idiom seams (open classes, blocks, exceptions, GVL-aware threading)
+# deliberately differ. Studied the csharp reference + the elixir/typescript
+# dynamic-idiom siblings for FIELD SCHEMA only (config structure), not spec
+# interpretation.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value
+# is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "ruby"
+name              = "Ruby (MRI / CRuby)"
+tier              = "peer-12"                 # dynamic/scripting axis — first of its class (see arch/PROFILE-RATIONALE.md)
+package_name      = "entity-core-protocol-ruby"  # peer id (keystone naming); RubyGems id is idiomatic snake_case — see [publishing]
+runtime           = "ruby-toolchain"          # references containers/ruby-toolchain/Containerfile
+
+[codec]
+# strategy: NATIVE. The A-005 pattern holds a 12th time — no Ruby CBOR gem gives
+# ECF's canonical guarantees out of the box, so the canonical layer is
+# hand-rolled regardless; crypto is native via stdlib `openssl` (OpenSSL 3.x
+# backend), which reaches BOTH Ed25519 AND Ed448 + the SHA-2 family — so the
+# crypto-agility HIGHER BAR needs no FFI (the Elixir/Haskell native-full-agility
+# result, replicated on a 3rd native-crypto substrate: Ruby stdlib openssl).
+# ffi remains the documented fallback but is not expected to be needed.
+strategy          = "native"
+# CBOR: HAND-ROLLED canonical encoder/decoder (lib/entity_core/cbor.rb). Survey:
+#   - `cbor` gem (cabo/cbor-ruby, C ext): fast, but no canonical/deterministic
+#     mode — emits insertion-order maps, no shortest-float, accepts tags.
+#   - `cbor-canonical` gem (cabo): adds `to_canonical_cbor` = RFC-7049 §3.9
+#     LENGTH-FIRST ordering — which IS ECF's ordering (the right axis!) — but it
+#     is encode-only, does NOT minimize floats (Rule 4), does NOT reject
+#     major-type-6 tags recursively on DECODE, and layers on the `cbor` C ext.
+#   - `cbor-diag` / `cbor-deterministic`: `cbor-deterministic` targets RFC-8949
+#     §4.2 bytewise ordering — the WRONG order for ECF (length-first ≠ bytewise).
+# None gives the full ECF contract (length-then-lex map order on ENCODED key
+# bytes, shortest-float incl. f16, recursive tag-6 rejection on decode, full
+# uint64/nint range, raw-byte `data` fidelity N4). Hand-rolling is both faithful
+# and simpler than bending a library that fights the length-first rule. Ruby's
+# arbitrary-precision Integer (no uint64 head-form native-int trap — like the
+# BEAM) and `String#b`/ASCII-8BIT byte strings make the byte-level codec clean.
+# Spike the `map_keys` + `float` vectors at S2 before the full build.
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native", notes = "no Ruby gem does ECF length-first + shortest-float + tag-6-reject; cbor-canonical is the closest (RFC-7049 length-first) but encode-only & no float-min" }
+# Ed25519: stdlib `openssl` (OpenSSL 3.x backend). Native, audited (OpenSSL),
+# ships with MRI — no gem dependency, no libsodium/RbNaCl. Generic PKey surface:
+#   priv = OpenSSL::PKey.generate_key("ED25519")          # or .new from raw
+#   sig  = priv.sign(nil, msg)                            # PureEdDSA: digest=nil
+#   ok   = pub.verify(nil, sig, msg)
+#   seed = priv.raw_private_key ; pk = priv.raw_public_key  # 32-byte raw keys
+# raw_private_key/raw_public_key + PKey.generate_key("ED25519") require the
+# bundled openssl gem >= 3.0 (Ruby 3.4 bundles openssl 3.x). Deterministic by
+# construction (Ed25519 / RFC-8032 property — no RNG in signing). Exact spelling
+# + raw-key availability confirmed in-container at S2 (A-RUBY-003).
+ed25519_library   = { name = "stdlib-openssl", version = "bundled with Ruby 3.4.x (openssl gem 3.x)", api = "OpenSSL::PKey.generate_key/sign(nil,..)/verify(nil,..)/raw_{private,public}_key" }
+# Ed448 (crypto-agility HIGHER BAR, v7.67 / §1.5 key_type 0x02): NATIVE via the
+# SAME stdlib `openssl` — OpenSSL 3.x exposes Ed448 (57-byte seed, 114-byte sig,
+# PureEdDSA, digest=nil) through the identical generic PKey path
+# (PKey.generate_key("ED448"), sign(nil,..)/verify(nil,..), raw_{private,public}_key).
+# No FFI, no opt-in sub-library, no second crypto source — the Elixir headline
+# (vs OCaml's hybrid-FFI Ed448, A-OC-002), replicated on Ruby. Byte-verify
+# against the agility corpus at S2; flag if the bundled OpenSSL build lacks Ed448
+# (A-RUBY-002 — fedora/debian OpenSSL 3.x ships it, but confirm in-container).
+ed448_library     = { name = "stdlib-openssl", version = "bundled with Ruby 3.4.x (OpenSSL 3.x)", strategy = "native", api = "OpenSSL::PKey.generate_key(\"ED448\")/sign(nil,..)/verify(nil,..)" }
+# SHA-256 (content_hash floor) + SHA-384/512 (agility hashing): stdlib `digest`
+# (Digest::SHA256/SHA384/SHA512) AND/OR stdlib `openssl` (OpenSSL::Digest). Both
+# native, no gem. Note: Ed448's internal hash is SHAKE256 (handled by OpenSSL
+# inside PureEdDSA — NOT a separately-invoked digest); the SHA-384 agility path
+# is the §HASH-FORMAT content-hash family, independent of the signature curve.
+sha256_source     = "stdlib digest (Digest::SHA256/SHA384/SHA512) + OpenSSL::Digest — native, no gem"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (lib/entity_core/base58.rb); no gem (dodges a dep + pin)
+varint_handling   = "native"                  # LEB128 inline impl (N1), lib/entity_core/varint.rb; multikey format-code/key-type/hash-type framing
+
+[error_model]
+# Ruby-idiomatic: EXCEPTIONS (raise / rescue) — the canonical Ruby fallible
+# surface. A StandardError-rooted hierarchy under EntityCore::Error, mirroring
+# the C#/TS exception trees in SHAPE while reading as Ruby (PascalCase class
+# names, `raise EntityCore::CodecError, "..."`). This is the dynamic-language
+# exception idiom (distinct from Elixir's tagged tuples / OCaml's result /
+# Zig's error unions). Decode-path violations (non-canonical, truncated, tag-6)
+# raise CodecError subclasses; the peer rescue-maps protocol faults to the §5.2a
+# / §6.12 status codes at the dispatch boundary.
+style             = "exceptions"              # "exceptions" | "result" | "either" | "errno" | "tagged_tuple"
+base_exception    = "EntityCore::Error"       # < StandardError (NOT < Exception — stays rescuable by bare `rescue`)
+exception_hierarchy = [
+    "EntityCore::Error",                      # < StandardError
+    "  EntityCore::CodecError",               # CBOR / canonicalization / decode faults
+    "  EntityCore::ProtocolError",
+    "    EntityCore::HelloFailedError",
+    "    EntityCore::AuthenticationError",
+    "  EntityCore::TransportError",
+    "    EntityCore::RecvTimeoutError",
+    "    EntityCore::ConnectionBrokenError",
+    "    EntityCore::WireProtocolError",       # avoids the TS ProtocolErrorError stutter (A-003 precedent)
+]
+
+[async]
+# DELIBERATE idiom + an honest GVL accounting (the point of this peer's
+# concurrency axis). MRI/CRuby has a Global VM Lock: native OS threads exist
+# (Thread) and the scheduler is preemptive, but only ONE thread runs Ruby
+# bytecode at a time. CRUCIALLY the GVL is RELEASED during blocking IO (socket
+# read/write/accept, and OpenSSL C calls), so a THREAD-PER-CONNECTION peer is
+# genuinely concurrent for an IO-bound workload (§4.8/§4.9): while one thread
+# blocks in recv, others run. This is adequate for the §7b gate — the peer is
+# IO-bound, not CPU-bound. A Mutex-guarded shared store is data-race-safe UNDER
+# the GVL (the GVL alone does NOT make compound read-then-write atomic — explicit
+# Mutex/Monitor still required for §3.9 CAS and the §4.8 store, see [idiom]).
+# Ractors are the TRUE-PARALLEL alternative (no GVL between Ractors) but impose a
+# share-nothing object model that fights the shared-store design and is still
+# "experimental" — NOT used; noted as the parallelism escape hatch.
+style             = "threaded"                # "sync" | "task" | "async-await" | "callbacks" | "threaded" | "processes"
+concurrency_model = "thread-per-connection"   # one Ruby Thread per accepted socket; GVL released on blocking IO
+default_surface   = "sync"                     # public codec/crypto APIs are synchronous (pure-CPU); the peer loop is thread-driven
+store_safety      = "mutex-guarded"           # shared store behind a Mutex/Monitor; §3.9 CAS is a single critical section (§4.8 data-race-safe)
+request_demux     = "request_id-map + condvar" # §6.11 reentrant demux: pending {request_id => waiter}, ConditionVariable wakeup (the threaded-peer shape)
+tcp_nodelay       = true                       # §7b: set TCP_NODELAY on every socket — Nagle/delayed-ACK is the small-frame req/resp killer (Zig lesson)
+parallelism_note  = "Ractors = true-parallel escape hatch (no shared GVL), but share-nothing fights the shared store + still experimental → NOT used at core"
+
+[naming]
+# Ruby-native conventions.
+class_names       = "PascalCase"              # classes + modules: EntityCore::Cbor, EntityCore::PeerId, EntityCore::Peer
+method_names      = "snake_case"              # methods: content_hash, sign_and_verify, encode_canonical
+variable_names    = "snake_case"              # locals + ivars (@peer_id) + params: peer_id, data_bytes
+constant_names    = "SCREAMING_SNAKE_CASE"    # constants: DEFAULT_TIMEOUT, MAX_CHAIN_DEPTH, MAX_PAYLOAD_BYTES
+predicate_suffix  = "?"                        # boolean methods: valid?, canonical?
+bang_suffix       = "!"                        # in-place / raising-variant methods where idiomatic: encode!
+file_names        = "snake_case"              # cbor.rb, peer_id.rb (lib/entity_core/<file>.rb)
+module_namespace  = "EntityCore"              # top namespace; nested EntityCore::Cbor, EntityCore::Peer, ...
+
+[build]
+build_tool        = "bundler"                 # Bundler + Rake; gemspec-driven
+build_command     = "bundle install --local && bundle exec rake build"  # gem build via rake/bundler
+test_command      = "bundle exec rake test"   # Minitest (stdlib-shipped) — see [testing]
+deps_command      = "bundle install --local"  # offline after one pull (vendored); core peer has ZERO runtime gem deps
+pack_command      = "gem build entity_core_protocol.gemspec"
+lint_tool         = "none-at-core"            # RuboCop is the ecosystem standard but a dev-only dep; deferred to S5 (don't pull silently)
+
+[layout]
+# Standard Bundler/gem layout.
+gemspec_file      = "entity_core_protocol.gemspec"
+gemfile           = "Gemfile"
+src_dir           = "lib/"                     # lib/entity_core/ — the EntityCore::* classes; lib/entity_core.rb entrypoint
+test_dir          = "test/"                    # Minitest suites + conformance harness
+exe_dir           = "exe/"                     # optional CLI host / oracle driver (S4) — `exe/entity-core-peer`
+gem_name          = "entity_core_protocol"     # RubyGems id (snake_case)
+lib_module        = "EntityCore"
+require_path      = "entity_core"              # `require "entity_core"`
+
+[publishing]
+registry          = "rubygems"
+registry_url      = "https://rubygems.org"
+# RubyGems ids are idiomatic snake_case; a gem is implicitly Ruby, so the
+# redundant `_ruby` suffix is dropped (mirrors the Elixir Hex-id reasoning). Peer
+# id (keystone naming) stays `entity-core-protocol-ruby`. Confirm
+# availability/squatting at S5 before first publish; fall back to
+# `entity_core_protocol_ruby` if taken.
+package_id        = "entity_core_protocol"
+license_expression = "Apache-2.0"
+repository_url    = ""                          # TBD on first publish
+authors           = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default. Ruby itself is Ruby-license/BSD-2; the gem ecosystem is MIT-heavy with no mandate — keep the safe Apache-2.0 default (explicit patent grant).
+
+[testing]
+# Minitest ships WITH Ruby (stdlib) — using it adds NO gem dependency, so it is
+# simultaneously the ecosystem-standard-enough choice AND honors dep
+# minimization (the Elixir/ExUnit + TS/node:test situation: zero added dep).
+# RSpec is more popular but is a heavyweight gem dependency — declined at core
+# (log if ever wanted). The conformance harness is a Minitest suite that loads
+# the normative fixtures and asserts byte-identity; a thin `exe/` script is the
+# standalone oracle driver for validate-peer / wire-conformance at S4.
+framework         = "minitest"                # stdlib; zero added dependency
+standalone_runner = "exe-script"              # optional thin oracle-driver entry point (S4)
+
+[container]
+base_image        = "entity-core-keystone/ruby-toolchain:latest"
+build_in_container = true
+network_policy    = "pull-once-then-offline"  # deps vendored in one network-on step; subsequent runs --network=none. Core peer has ZERO runtime gem deps, so even that is minimal.
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/ruby entity-core-keystone/ruby-toolchain:latest sh -c 'bundle install --local && bundle exec rake test'"
+
+[idiom]
+# Hints that don't fit elsewhere — the dynamic/scripting-axis specifics.
+prefer_exceptions        = true               # fallible surfaces raise EntityCore::Error subclasses; rescue at the dispatch boundary
+frozen_string_literal    = true               # `# frozen_string_literal: true` magic comment in every file (perf + immutability hygiene)
+byte_strings_ascii_8bit  = true               # wire bytes are ASCII-8BIT (BINARY) Strings via String#b / force_encoding; NEVER UTF-8 for the codec core
+native_bignum            = true               # Ruby Integer is arbitrary-precision → NO uint64/int64 head-form native-int trap (the OCaml int63 / C# ulong / TS bigint trap). Head-form carrier is just an Integer (the BEAM result, replicated).
+blocks_for_iteration     = true               # use blocks/each/map idiomatically; the decoder is a byte-cursor over an ASCII-8BIT String
+duck_typing              = true               # model entity `data` as a GENERAL ECF VALUE, not a Hash — A-JAVA-010 (duck-typing makes this natural: data is "whatever ECF value"; do NOT assume Hash)
+data_is_arbitrary_ecf    = true               # §1.1 entity `data` = arbitrary ECF value (NOT necessarily a map) — matters from S2 for the codec model
+open_classes_caution     = true               # Ruby allows monkey-patching core classes; the codec must NOT depend on refinements/monkey-patches to stdlib (keep it self-contained + portable)
+struct_or_data_for_values = true              # prefer `Data.define(...)` (Ruby 3.2+ immutable value objects) for value-shaped types (envelope, cap-token); Struct where mutation needed
+
+[resource_bounds]
+# §4.10 (v7.75 floor MUSTs) — recorded at S1 so the peer layer (S3+) gets the
+# codes right. NOT enforced in S1 (profile-only phase).
+max_chain_depth   = 64                         # §4.10(b): a delegation chain deeper than this → 400 chain_depth_exceeded (MUST be 400, NOT 403). ~15-line structural pre-check (walk parents, no sig work) called BEFORE the per-link authz walk; an UNREACHABLE parent stays 403 (not a depth fault). Net-new for the whole cohort in v7.75.
+max_payload_bytes = 16777216                   # §4.10(a): 16 MiB default → over-limit → 413 payload_too_large (MUST).
+admission_codes   = ["413 payload_too_large", "400 chain_depth_exceeded", "503/429 connection-admission (SHOULD, external-layer carve-out)"]  # §6.12 / §4.10(c)
+
+[auth]
+# §5.2 / §5.2a verdict-to-status (5-peer convergence; folded normative in v7.73 E2).
+# Recorded at S1 for the peer layer (S3+).
+verdict_trichotomy = "401 (unauthenticated) / 403 (authenticated-but-unauthorized) / 401 (unresolvable-identity)"  # ALLOW / AUTH_DENY / AUTHZ_DENY → 401/403/401
+
+[spec]
+v7_version_pinned = "7.75"                     # spec-data/v7.75/ — the current snapshot (full ENTITY-CORE-PROTOCOL-V7.md present). §4.8 store-safety + §4.9 resilience + §4.10 resource_bounds are floor MUSTs; §9.0 enumerates concurrency + resource_bounds.
+codec_corpus      = "v7.75"                    # ENTITY-CBOR-ENCODING.md (label 1.5) + ENTITY-NATIVE-TYPE-SYSTEM.md (4.2.1) are byte-identical across v7.73→v7.75 (SHA-verified in MANIFEST), so the codec is wire-stable. peer-id §1.5 canonical-form (hash_type=0x00 identity-multihash, digest = raw pubkey for <=32B keys) per A-SW-008 erratum (§9.1 now cites §1.5); the stale §7.4 SHA256(pubkey) skeleton is SUPERSEDED.
+# Unlike peers #1-8 (built against v7.74 + folded proposal text for the
+# peer-surface), Ruby derives S1/S2/S3 against the COMPLETE v7.75 snapshot — the
+# register/outbound/emit/owner-cap/§7a peer surface AND the §4.8/§4.9/§4.10
+# substrate floor are all present as ratified spec text. No A-ELX-001-style
+# snapshot-lag caveat applies to this peer.

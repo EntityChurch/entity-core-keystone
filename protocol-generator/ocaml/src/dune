@@ -1,0 +1,4 @@
+(library
+ (name entitycore_codec)
+ (public_name entity-core-protocol-ocaml)
+ (libraries digestif mirage-crypto-ec mirage-crypto-rng unix threads.posix))

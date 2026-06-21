@@ -1,0 +1,162 @@
+# Common Lisp toolchain image — builds the native Common Lisp peer
+# (entity-core-protocol-common-lisp) per
+# protocol-generator/common-lisp/profile.toml.
+# Mirrors containers/beam (source-built toolchain) + containers/ocaml-toolchain.
+#
+# S1: builds run in this container, not on the host. (Authored at S1 — NOT built
+#     at S1; the build/run is S2's job. This file is the pinned recipe.)
+# S11: pin the toolchain + every dependency to an exact version. The ≥30-day age
+#      floor applies with full force to the registry-channel package (ironclad,
+#      via the pinned Quicklisp dist); it relaxes for the reviewed source channel
+#      (SBCL's own source tarball) but the exact version pin still stands for
+#      reproducibility.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Ages at authoring 2026-06-13:
+#   SBCL          2.6.4   (2026-04-29, ~45d) — SOURCE-BUILT from the pinned
+#                                              source tarball + verified checksum.
+#                                              2.6.5 (2026-05-29) is only ~15d old
+#                                              — under the floor — so 2.6.4 is the
+#                                              pick. SBCL is a reviewed source
+#                                              channel: age floor relaxed for the
+#                                              toolchain, exact pin kept for repro.
+#   ironclad      0.61    (2024-08-20, ~22mo) — the ONLY third-party runtime dep
+#                                              (crypto: Ed25519, Ed448, SHA-256,
+#                                              SHA-384, all pure-Lisp). Far over the
+#                                              floor. Pulled at BUILD time via a
+#                                              pinned Quicklisp dist, then run
+#                                              fully offline (--network=none).
+#   Quicklisp dist 2026-01 (~5mo)            — used ONLY at build time to resolve
+#                                              ironclad 0.61 + its deps (nibbles,
+#                                              alexandria). Pinned for repro; not a
+#                                              runtime dependency.
+#   ASDF + UIOP                              — bundled inside SBCL; no separate pin.
+# CBOR + base58 + varint are hand-rolled in-repo (no CL lib gives canonical ECF;
+# A-005). The test harness is hand-rolled (no FiveAM/rove dependency).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (the SBCL source build is the heavy step):
+#   podman build -t entity-core-keystone/common-lisp-toolchain:latest \
+#     -f containers/common-lisp-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# Build deps for SBCL-from-source + fetching the pinned Quicklisp dist.
+#   sbcl  — bootstrap host compiler (SBCL is written in Lisp; building 2.6.4 from
+#           source needs an existing Lisp; fedora's stock sbcl is the host, and is
+#           discarded after the pinned 2.6.4 is installed).
+#   zstd/bzip2/tar — unpack the SBCL source tarball.
+#   libzstd-devel — SBCL 2.6.4 --fancy builds with core compression (coreparse.c
+#                   #includes <zstd.h>); the runtime link needs the dev headers,
+#                   not just the zstd CLI. (S2 build fix, 2026-06-13.)
+#   gcc/make — SBCL's C runtime + GC.
+#   git — Quicklisp/ASDF discovery convenience.
+RUN dnf install -y \
+        sbcl \
+        gcc make \
+        bzip2 tar xz zstd libzstd-devel findutils which \
+        git curl ca-certificates \
+    && dnf clean all
+
+# ── SBCL 2.6.4 — source build, bootstrapped by the stock fedora sbcl ─────────
+# Pinned source tarball from SourceForge + a verified SHA-256. (Replace the
+# checksum with the value verified against sbcl.org's published signature at
+# build time — see A-CL-006; the build MUST fail closed if it does not match.)
+ARG SBCL_VERSION=2.6.4
+# A-CL-006 RESOLVED (S2, 2026-06-13): SHA-256 verified by direct download of the
+# official SourceForge release tarball (SBCL's canonical distribution channel;
+# release is also GPG-signed at .../sbcl-2.6.4-crhodes.asc). bz2 integrity-checked
+# and unpacks to sbcl-2.6.4/. The build fails closed if the fetched tarball does
+# not match this digest.
+ARG SBCL_SHA256=3ba53e654b60feb7c4f50466199d6d5260f2661c711ba22d4b770b655400d57b
+RUN curl -fsSL -o /tmp/sbcl-src.tar.bz2 \
+        "https://downloads.sourceforge.net/project/sbcl/sbcl/${SBCL_VERSION}/sbcl-${SBCL_VERSION}-source.tar.bz2" \
+    && echo "${SBCL_SHA256}  /tmp/sbcl-src.tar.bz2" | sha256sum -c - \
+    && mkdir -p /tmp/sbcl-src \
+    && tar -xjf /tmp/sbcl-src.tar.bz2 -C /tmp/sbcl-src --strip-components=1 \
+    && cd /tmp/sbcl-src \
+    && sh make.sh --fancy --xc-host='sbcl --dynamic-space-size 4096 --lose-on-corruption --disable-ldb --disable-debugger' \
+    && sh install.sh --prefix=/opt/sbcl \
+    && cd / && rm -rf /tmp/sbcl-src /tmp/sbcl-src.tar.bz2
+ENV PATH=/opt/sbcl/bin:$PATH \
+    SBCL_HOME=/opt/sbcl/lib/sbcl
+
+# Drop the bootstrap host compiler so the image carries only the pinned 2.6.4.
+RUN dnf remove -y sbcl && dnf clean all
+
+# Verify the pinned SBCL is the one on PATH and ASDF is bundled. NOTE: `require`
+# must run in a SEPARATE --eval before any form that references the ASDF package,
+# because the reader resolves `asdf:...` symbols at read time — before an --eval in
+# the same form executes. (S2 build fix, 2026-06-13.)
+RUN sbcl --non-interactive \
+      --eval '(require :asdf)' \
+      --eval '(progn (format t "SBCL ~a~%" (lisp-implementation-version)) \
+                     (format t "ASDF ~a~%" (asdf:asdf-version)) \
+                     (unless (string= (lisp-implementation-version) "2.6.4") \
+                       (error "SBCL version pin mismatch")))'
+
+# ── ironclad 0.61 via a pinned Quicklisp dist — build-time only, run offline ──
+# Quicklisp is fetched once (network available), pinned to the 2026-01 dist, and
+# used ONLY to install ironclad 0.61 + its deps (nibbles, alexandria) into a
+# shared, world-readable ASDF source registry under /opt. After this layer the
+# image needs NO network: the dev loop runs with --network=none and ASDF resolves
+# ironclad from the on-disk systems. (See A-CL-004 for the dist-pin mechanics; if
+# the 2026-01 dist does not carry exactly ironclad-0.61, pin the dist that does
+# and re-stamp this header — the build asserts the resolved version below.)
+ENV QUICKLISP_HOME=/opt/quicklisp
+ARG QL_DIST_VERSION=2026-01-01
+RUN curl -fsSL -o /tmp/quicklisp.lisp "https://beta.quicklisp.org/quicklisp.lisp" \
+    && sbcl --non-interactive \
+         --load /tmp/quicklisp.lisp \
+         --eval "(quicklisp-quickstart:install :path \"${QUICKLISP_HOME}/\")" \
+         --eval "(ql-dist:install-dist \"http://beta.quicklisp.org/dist/quicklisp/${QL_DIST_VERSION}/distinfo.txt\" :replace t :prompt nil)" \
+         --eval "(ql:quickload :ironclad)" \
+         --eval "(let ((url (ql-dist:archive-url (ql-dist:release \"ironclad\")))) \
+                   (format t \"ironclad archive ~a~%\" url) \
+                   (unless (search \"ironclad-v0.61\" url) \
+                     (error \"ironclad version pin mismatch: ~a (expected v0.61)\" url)))" \
+    && rm -f /tmp/quicklisp.lisp \
+    && chmod -R a+rX /opt/sbcl /opt/quicklisp
+
+# Make Quicklisp's installed systems discoverable by plain ASDF at runtime, so the
+# offline dev loop does not need Quicklisp itself — ASDF finds ironclad on disk.
+# (sbclrc loads quicklisp setup if present; harmless offline since the dist is
+# already materialized.)
+RUN mkdir -p /opt/sbcl/etc \
+    && printf '%s\n' \
+        '#-quicklisp' \
+        '(let ((ql (merge-pathnames "setup.lisp" #p"/opt/quicklisp/")))' \
+        '  (when (probe-file ql) (load ql)))' \
+        > /opt/sbcl/etc/sbclrc \
+    && chmod a+r /opt/sbcl/etc/sbclrc
+ENV SBCL_USERINIT=/opt/sbcl/etc/sbclrc
+
+# Sanity: load ironclad offline-style (no network) and confirm the agility crypto
+# primitives the profile relies on are present. Fails the build loudly otherwise.
+RUN sbcl --non-interactive \
+      --eval "(require :asdf)" \
+      --eval "(load #p\"/opt/quicklisp/setup.lisp\")" \
+      --eval "(ql:quickload :ironclad :silent t)" \
+      --eval "(flet ((rt (curve seedlen siglen) \
+                       (let* ((seed (make-array seedlen :element-type '(unsigned-byte 8) :initial-element 0)) \
+                              (priv (ironclad:make-private-key curve :x seed)) \
+                              (msg  (ironclad:ascii-string-to-byte-array \"x\")) \
+                              (sig  (ironclad:sign-message priv msg)) \
+                              (y    (getf (ironclad:destructure-private-key priv) :y)) \
+                              (pub  (ironclad:make-public-key curve :y y))) \
+                         (assert (= (length sig) siglen)) \
+                         (assert (ironclad:verify-signature pub msg sig))))) \
+                (rt :ed25519 32 64) \
+                (rt :ed448   57 114) \
+                (ironclad:digest-sequence :sha256 (ironclad:ascii-string-to-byte-array \"x\")) \
+                (ironclad:digest-sequence :sha384 (ironclad:ascii-string-to-byte-array \"x\")) \
+                (format t \"ironclad crypto OK: ed25519(64)+ed448(114) sign/verify + sha256/sha384~%\"))" \
+    || (echo "FATAL: ironclad lacks an expected primitive — check the pinned dist/version" && exit 1)
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="common-lisp-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.sbcl="2.6.4"
+LABEL org.entity-core-keystone.ironclad="0.61"
+
+CMD ["/bin/bash"]

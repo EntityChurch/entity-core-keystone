@@ -1,0 +1,29 @@
+# .NET 9 toolchain image — builds the native C# peer (entity-core-protocol-csharp)
+# per protocol-generator/csharp/profile.toml. Mirrors containers/cargo +
+# containers/c-toolchain.
+#
+# S1: builds run in this container, not on the host.
+#
+# PIN NOTE (S11 scope): the .NET SDK comes through fedora's reviewed dnf channel,
+# so the ≥30-day-old "cool-down" floor does NOT apply here — that floor is for
+# packages pulled straight from ecosystem registries with no human gate (NuGet,
+# PyPI, npm, crates.io). For the C# peer that means the NuGet deps
+# (System.Formats.Cbor, NSec.Cryptography, xUnit, a base58 lib) DO get the
+# ≥30-day discipline; the SDK does not. We still pin the exact NVR for
+# reproducibility (re-pin deliberately on rebuild; prefer a base-image digest pin
+# for full repro). 9.0.10x supports net9.0 + C# 13 (profile language_version 13.0).
+FROM registry.fedoraproject.org/fedora:43
+
+# .NET 9 SDK, exact NVR. Pulls the matching 9.0 runtime + host as dependencies.
+RUN dnf install -y dotnet-sdk-9.0-9.0.117-1.fc43 && dnf clean all
+
+# Keep NuGet's package cache on a mountable path so repeated dev-loop runs don't
+# refetch packages (the conformance loop runs this many times). Mount a volume at
+# /nuget. Quiet, non-interactive CLI for clean conformance logs.
+ENV NUGET_PACKAGES=/nuget \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_NOLOGO=1 \
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
+    DOTNET_CLI_HOME=/tmp
+
+WORKDIR /work

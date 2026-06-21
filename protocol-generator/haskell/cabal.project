@@ -1,0 +1,26 @@
+-- cabal.project — entity-core-protocol-haskell (peer #8).
+--
+-- The dependency closure is pinned via the committed cabal.project.freeze,
+-- DERIVED FROM Stackage LTS 23.27 (GHC 9.8.4, published 2025-07-06). A single
+-- dated snapshot pins the whole transitive closure ≥30 days old in one
+-- build-tested set (the S11 supply-chain answer to per-dep age audit; see
+-- PROFILE-RATIONALE + A-HS-005). The pinned index-state freezes the Hackage
+-- index so a warm-store rebuild is fully deterministic + offline-able.
+
+packages: .
+
+-- Pin the Hackage index. The container's cabal store only carries the freshly
+-- fetched HEAD snapshot (incremental index), so the index-state records the
+-- resolve timestamp; the EXACT closure is frozen by the `constraints` below +
+-- the committed cabal.project.freeze (the authoritative S11 lockfile). The
+-- profile (S6) authorizes crypton 1.0.4 — pinned exactly here so a newer index
+-- cannot float the resolver onto a later crypton.
+index-state: 2026-06-14T11:08:48Z
+
+-- Exact dependency pins (S6 profile authority + S11 lockfile). The crypton/
+-- memory/basement trio is the LTS 23.27 set; the rest are GHC-9.8.4-bundled.
+constraints:
+    crypton ==1.0.4
+  , memory ==0.18.0
+  , basement ==0.0.16
+

@@ -1,0 +1,322 @@
+# entity-core-protocol-php — Language Profile
+#
+# A RELEASE "REACH" peer (web-backend ubiquity), built in the prerelease six-peer
+# slate (research/RELEASE-READINESS.md §2 row 2). PHP is CORROBORATION-ONLY by
+# design: the 8-peer synthesis found the spec-discovery well dry on language axes,
+# and the dynamic/scripting axis was already exercised by Ruby (#12). PHP is NOT
+# expected to surface a new spec defect — its value is REACH (the enormous
+# web-backend / WordPress / Laravel / Symfony ecosystem can pull a native peer)
+# and exercising the generator against PHP IDIOM (the 64-bit-signed-int head-form
+# trap, ext-sodium crypto, exceptions, a stream_select single-thread event loop in
+# a runtime with no native threads). Anything genuinely new is logged honestly
+# (A-PHP-NNN); it is gravy, not the goal.
+#
+# Authored FRESH in S1 from the V7 spec (pinned spec-data/v7.75) + PHP-ecosystem
+# research — NOT ported from a sibling peer. The CLOSEST analog is the Ruby peer
+# (protocol-generator/ruby/) — the other dynamic/scripting peer, same exceptions
+# error model, same hand-rolled-canonical-CBOR reality — but PHP is DELIBERATELY a
+# DISTINCT idiom point: PHP has NO arbitrary-precision native Integer (Ruby's int
+# is bignum; PHP's is 64-bit SIGNED, so the uint64 head-form carrier IS a real
+# trap here — the OCaml int63 / C# ulong / TS bigint family, NOT the Ruby/BEAM
+# free pass), NO native threads in the standard runtime (so concurrency is a
+# stream_select event loop, NOT Ruby's thread-per-connection), and Ed448 is a GAP
+# (ext-sodium has Ed25519 only — NOT Ruby's native-full-agility-via-openssl). Where
+# a value matches a prior peer it is by independent arrival; the idiom seams
+# deliberately differ.
+#
+# Profile authority (S6): the agent MUST use the values declared here. A "TBD"
+# value is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+# (No TBDs below.)
+
+[language]
+id                = "php"
+name              = "PHP 8.3"
+tier              = "reach"                    # release slate "reach" peer — web-backend ubiquity coverage; corroboration-only (discovery well dry; dynamic axis saturated by Ruby #12). High-signal-IF-found, like any mainstream stack.
+package_name      = "entity-core-protocol-php" # keystone peer id. Composer/Packagist uses vendor/package coordinates (see [publishing]).
+runtime           = "php-toolchain"            # references containers/php-toolchain/Containerfile — AUTHORED this phase (NOT built; S1 boundary).
+
+[codec]
+# strategy: NATIVE hand-roll — DECISION (research/RELEASE-READINESS.md §2 row 2),
+# ALREADY MADE and BINDING. NOT FFI for the codec. The A-005 pattern holds for an
+# Nth language: NO PHP CBOR library gives ECF's canonical guarantees out of the
+# box, so the canonical layer is hand-rolled regardless of any library underneath;
+# meanwhile crypto is native via ext-sodium (Ed25519 + SHA-256). So `native` is
+# correct on both halves. `ffi` (ext-ffi → libentitycore_codec) stays the
+# DOCUMENTED FALLBACK for the CODEC, but is NOT the chosen path — and is the
+# ACTUAL route for the Ed448 AGILITY HIGHER BAR only (see ed448_library). The four
+# hard ECF requirements no PHP CBOR library gives for free:
+#  (a) shortest-float / float16 minimization with the four exact specials
+#      (F9 7E00 NaN / F9 7C00 +Inf / F9 FC00 -Inf / F9 8000 -0.0); minimize by
+#      double->float->half re-decode-and-compare. (Highest bug-density code in the
+#      peer — every native peer.) PHP `pack`/`unpack` have NO half-float code
+#      (only `g`/`G`/`e`/`E` f32/f64) — hand-assemble f16 from the binary64 bits
+#      (the Ruby A-RUBY-006 shape).
+#  (b) RFC-7049 LENGTH-FIRST then bytewise (CTAP2) map-key ordering — DIFFERS from
+#      RFC-8949 §4.2 bytewise ordering (the trap the general libs fall into).
+#  (c) recursive major-type-6 (tag) rejection at ANY nesting depth -> 400 non_canonical_ecf.
+#  (d) byte-exact raw-slice round-trip + the full uint64/nint head-form range
+#      (the [2^63, 2^64-1] band — THE PHP carrier trap; see [idiom].uint64_carrier).
+# Surveyed PHP CBOR libs and REJECTED for the core codec (A-PHP-001):
+#  - `spomky-labs/cbor-php` (the de-facto PHP CBOR lib): general RFC-8949; does NOT
+#    do ECF length-FIRST map ordering, no shortest-float minimization, accepts
+#    tags. Not ECF-exact (the slate's "cbor-php not ECF-exact" note).
+#  - `2tvenom/CBOREncode`, `lukasoppermann/php-cbor`, etc.: smaller/general, same
+#    gaps. None implements ECF determinism.
+# So a library buys almost nothing and adds a Composer dep + pin. Hand-rolling
+# `src/Cbor.php` (a byte-cursor decoder over a binary `string`, a string-builder
+# encoder) is both faithful AND idiom-exercising. Spike the map_keys + float
+# vectors at S2 start (PHASE-S1 mandate) BEFORE the full build — the load-bearing
+# canonical risk (length-then-lex ordering + shortest-float f16 + the uint64 band).
+strategy          = "native"
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native", notes = "spomky-labs/cbor-php is general RFC-8949 (no ECF length-first order, no shortest-float, accepts tags) — not ECF-exact (A-005); hand-roll src/Cbor.php" }
+# Ed25519 + SHA-256: ext-sodium (libsodium, BUNDLED in PHP since 7.2 — a CORE
+# extension, NOT a PECL/Composer dep). RFC-8032 deterministic detached signing:
+#   $kp   = sodium_crypto_sign_seed_keypair($seed32);       // seed -> keypair
+#   $sk   = sodium_crypto_sign_secretkey($kp);              // 64-byte expanded sk
+#   $pk   = sodium_crypto_sign_publickey($kp);              // 32-byte pubkey
+#   $sig  = sodium_crypto_sign_detached($msg, $sk);         // 64-byte sig
+#   $ok   = sodium_crypto_sign_verify_detached($sig, $msg, $pk);
+# Ed25519 is deterministic by construction (RFC-8032; no RNG in signing) -> the
+# crypto-library version is conformance-neutral (the C# F10 lesson). ext-sodium is
+# audited (libsodium), ships WITH PHP (zero Composer/PECL dep), and is the §9.1
+# floor crypto in full. SHA-256 via the stdlib `hash('sha256', $bytes, true)`
+# (binary output) — ALSO bundled, no dep.
+ed25519_library   = { name = "ext-sodium", version = "bundled with PHP 8.3 (libsodium core ext)", api = "sodium_crypto_sign_seed_keypair / sodium_crypto_sign_detached / sodium_crypto_sign_verify_detached / sodium_crypto_sign_{public,secret}key" }
+# Ed448 (crypto-agility HIGHER bar, key_type 0x02 / SHA-384 content_hash 0x01 —
+# NOT the §9.1 floor): KNOWN GAP -> the slate fixes "gap → FFI/defer". ext-sodium
+# has NO Ed448 (libsodium ships Ed25519 + the SHA-2 family + ML-KEM/SHA-3, but NO
+# Ed448/Ed448-Goldilocks — the same libsodium gap C / C++ / Zig hit). PHP's stdlib
+# has no other EdDSA source (no openssl Ed448 binding in ext-openssl). RULING for
+# v0.1: DEFER (Ed25519 + SHA-256 floor is the shipped self-contained peer — like
+# OCaml/C#/C++/Zig/Swift). When/if agility enters scope, the documented PHP route
+# is the HYBRID FFI path (the slate's "FFI" half): ext-ffi (bundled in PHP 7.4+)
+# binds the sibling `libentitycore_codec` C-ABI v1.1 Ed448 family
+# (ec_ed448_seed_to_pubkey / ec_ed448_sign / ec_ed448_verify + ec_sha384) — the
+# OCaml hybrid-FFI shape (A-OC-002), scoped to an OPT-IN agility surface so the
+# shipped floor peer stays FFI-free. SHA-384 (agility hashing) would come from
+# stdlib `hash('sha384', ...)` natively (PHP hash() HAS SHA-384 — only the Ed448
+# SIGNATURE is the FFI piece). See SPEC-AMBIGUITY-LOG A-PHP-002.
+ed448_library     = { name = "DEFERRED (FFI when agility lands)", version = "none", strategy = "gap-defer-then-hybrid-ffi", note = "ext-sodium has no Ed448; DEFER for v0.1 (floor = Ed25519+SHA-256, self-contained). Agility route: ext-ffi → libentitycore_codec C-ABI v1.1 ec_ed448_* (OCaml hybrid-FFI shape), opt-in so the floor peer stays FFI-free; SHA-384 itself is native via hash('sha384')." }
+sha256_source     = "stdlib hash('sha256', $bytes, true) — bundled, no dep (also hash('sha384'/'sha512') native for the agility hashing family; ext-sodium also has sodium_crypto_generichash but the content_hash floor is SHA-256 via hash())"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (src/Base58.php); a dep for something this small is pure liability (same call every native peer made). wire-conformance confirms it. NOTE: base58 needs uint math over arbitrary-size byte strings — use the same GMP/byte-string carrier as the codec (no native bignum), see [idiom].uint64_carrier.
+varint_handling   = "native"                  # multicodec-style LEB128 (§1.5/§7.3) inline impl (src/Varint.php); the multikey key_type / hash_type / format-code varints. Codes 0-127 are a single byte (all currently-allocated codes), so a 1-byte fast path + a general loop with its own minimality rejection.
+
+[error_model]
+# Ruby-analogous but PHP-native: EXCEPTIONS (throw / try-catch) — the canonical PHP
+# fallible surface. A hierarchy rooted at a package base extending PHP's \Exception
+# (which implements \Throwable), mirroring the C#/TS/Ruby exception trees in SHAPE
+# while reading as PHP (PascalCase class names under a namespace, typed catch).
+# Decode-path violations (non-canonical, truncated, tag-6) throw CodecException
+# subclasses; the peer catch-maps protocol faults to the §5.2a / §6.12 status codes
+# at the dispatch boundary. This is the dynamic-language exception idiom (distinct
+# from Elixir's tagged tuples / OCaml's result / Zig's error unions / C++'s
+# std::expected). PHP 7+ also has \Error (engine/programmer errors, e.g.
+# \TypeError) under \Throwable — RESERVED for programmer error, NOT protocol flow.
+style             = "exceptions"              # "exceptions" | "result" | "either" | "errno" | "tagged_tuple"
+base_exception    = "EntityCore\\EntityCoreException"  # extends \Exception (implements \Throwable) — catchable by `catch (\Exception)` / `catch (\Throwable)`; NOT \Error (that is reserved for engine/programmer faults)
+exception_hierarchy = [
+    "EntityCore\\EntityCoreException",        # extends \Exception
+    "  EntityCore\\CodecException",           # CBOR / canonicalization / decode faults
+    "    EntityCore\\NonCanonicalEcfException",
+    "    EntityCore\\TruncatedInputException",
+    "    EntityCore\\TagRejectedException",
+    "  EntityCore\\ProtocolException",
+    "    EntityCore\\AuthenticationException",
+    "    EntityCore\\AuthorizationException",
+    "    EntityCore\\PayloadTooLargeException",   # 413 (§4.10a)
+    "    EntityCore\\ChainDepthExceededException", # 400 (§4.10b)
+    "  EntityCore\\TransportException",
+    "    EntityCore\\WireProtocolException",      # avoids a ProtocolErrorError stutter (A-003 precedent)
+]
+
+[async]
+# DELIBERATE idiom + an honest runtime accounting (the PHP concurrency axis, and a
+# genuinely DISTINCT shape from every prior peer). Standard PHP (the bundled
+# php-cli SAPI) has NO native userland threads: ext-pthreads is dead, ext-parallel
+# exists only on ZTS (thread-safe) builds + is a non-core dep, and the web-SAPI
+# model is process-per-request (irrelevant for a long-lived peer). So the
+# dependency-free, idiomatic PHP concurrency primitive for a multi-connection
+# socket server is a SINGLE-THREAD NON-BLOCKING EVENT LOOP over `stream_select()`
+# with non-blocking stream sockets (stream_socket_server / stream_socket_accept /
+# stream_set_blocking($s, false)). This is how dependency-free PHP socket servers
+# (and the runtime under ReactPHP/Amp before their abstractions) are built.
+#   * §4.8 store-safety: TRIVIALLY satisfied — a single-thread event loop has NO
+#     data races by construction (cooperative, one handler runs at a time; the
+#     §3.9 CAS put is just a sequential read-then-write — no lock needed, the
+#     structural-safety route in the §7b taxonomy, like the actor/STM peers but
+#     via single-threadedness). This is the CLEANEST store-safety story in the
+#     cohort: there is literally no concurrency to race.
+#   * §6.11 reentrant demux (N6/N7): a pending {request_id => deferred-state} map
+#     in the single event loop; an outbound EXECUTE registers a waiter, the reader
+#     callback resolves it when the EXECUTE_RESPONSE frame arrives on the same
+#     connection — no thread/condvar, just loop-driven state.
+#   * §4.9 resilience under load: one slow/broken connection cannot block others
+#     BECAUSE every socket is non-blocking and multiplexed via stream_select — a
+#     blocking recv is impossible (the trap Swift hit with a cooperative pool is
+#     structurally absent). A per-handler exception is caught at the loop boundary
+#     so one bad frame never tears down the loop (§4.9 no-crash floor).
+#   * §7b concurrency gate: the loop interleaves multiple connections; TCP_NODELAY
+#     MUST be set on every socket (the Zig Nagle/delayed-ACK small-frame lesson —
+#     set via stream_context with 'socket' => ['tcp_nodelay' => true], or a
+#     setsockopt via ext-sockets fd if needed).
+# CAVEAT (honest): a single-thread event loop is NOT parallel — CPU-bound work (a
+# burst of signature verifies) serializes. For an IO-bound protocol peer this is
+# adequate (the same honest accounting as Ruby's GVL note, but PHP's is even
+# simpler — no GVL subtlety, just one thread). True parallelism escape hatches
+# (pcntl_fork process-per-connection, ext-parallel on a ZTS build, or an event
+# extension like ext-ev/ext-event) are NOTED but NOT used at core.
+style             = "event-loop"              # "sync" | "task" | "async-await" | "callbacks" | "threaded" | "event-loop" | "processes"
+concurrency_model = "single-thread stream_select event loop"  # non-blocking sockets multiplexed by stream_select(); no native threads
+default_surface   = "sync"                     # public codec/crypto APIs are synchronous (pure-CPU); the peer loop is event-driven
+store_safety      = "single-thread (no races by construction)"  # §4.8 trivially safe — one handler runs at a time; §3.9 CAS is a sequential read-then-write, no lock
+request_demux     = "request_id-map in the event loop"  # §6.11 reentrant demux: pending {request_id => waiter-state}, resolved by the reader callback (no thread/condvar — loop-driven)
+tcp_nodelay       = true                       # §7b: set TCP_NODELAY on every socket — Nagle/delayed-ACK is the small-frame req/resp killer (Zig lesson). stream_context 'socket'=>['tcp_nodelay'=>true].
+parallelism_note  = "no native threads in std PHP (ext-pthreads dead; ext-parallel = ZTS-only non-core dep). True-parallel escape hatch = pcntl_fork process-per-connection or ext-parallel — NOTED, NOT used at core (single-thread loop is §7b-adequate for an IO-bound peer)."
+
+[naming]
+# PHP-native conventions (PSR-1 / PSR-12 + PSR-4 autoloading).
+class_names       = "PascalCase"              # classes/interfaces/enums/traits: EntityCore\Cbor, EntityCore\PeerId, EntityCore\Peer
+method_names      = "camelCase"               # methods: contentHash(), signAndVerify(), encodeCanonical() (PSR-1)
+property_names    = "camelCase"               # properties + params + locals: $peerId, $dataBytes (PSR-1/PSR-12)
+constant_names    = "SCREAMING_SNAKE_CASE"    # class consts: DEFAULT_TIMEOUT, MAX_CHAIN_DEPTH, MAX_PAYLOAD_BYTES (PSR-1)
+function_names    = "camelCase"               # free functions (rare; prefer static methods): not used much — methods carry the API
+namespace_root    = "EntityCore"              # top namespace; PSR-4 mapped to src/ (EntityCore\Cbor -> src/Cbor.php)
+namespace_sep     = "backslash"               # PHP namespace separator is `\` (EntityCore\Codec\...)
+file_names        = "PascalCase.php"          # PSR-4: one class per file, file named for the class (Cbor.php, PeerId.php)
+enum_cases        = "PascalCase"              # PHP 8.1 enum cases: KeyType::Ed25519, HashFormat::Sha256 (PascalCase case names, idiomatic)
+
+[build]
+# Composer is the universal PHP build/dependency/autoload tool (the slate decision).
+# The core peer has ZERO runtime Composer dependencies (crypto = ext-sodium core
+# ext; CBOR/base58/varint hand-rolled; SHA = stdlib hash()), so `composer install`
+# resolves only the dev/test tooling and wires PSR-4 autoload.
+build_tool        = "composer"                # Composer (dependency mgr + PSR-4 autoload generator); the "build" is autoload-dump (no compile step — PHP is interpreted)
+build_command     = "composer install --no-interaction --prefer-dist && composer dump-autoload --optimize"
+test_command      = "composer test"          # -> vendor/bin/phpunit (see [testing]); the conformance harness is a PHPUnit suite
+deps_command      = "composer install --no-interaction --no-dev"  # core peer has ZERO runtime deps; --no-dev for the shipped surface
+pack_command      = "composer archive"       # Composer/Packagist publishes from a git tag (no compiled artifact); `composer archive` makes a dist tarball
+lint_tool         = "none-at-core"           # php-cs-fixer / phpcs (PSR-12) + phpstan/psalm are the ecosystem standards but dev-only deps; deferred to S5 (don't pull silently)
+
+[layout]
+# Standard Composer / PSR-4 layout.
+composer_file     = "composer.json"
+src_dir           = "src/"                    # PSR-4 EntityCore\ -> src/ ; the EntityCore\* classes (Cbor.php, PeerId.php, Peer.php, ...)
+test_dir          = "tests/"                  # PHPUnit suites + conformance harness
+bin_dir           = "bin/"                    # the CLI host / oracle driver (S4) — bin/entity-core-peer (a php executable script)
+namespace_root    = "EntityCore"             # PSR-4 root namespace
+package_name      = "entity-core/protocol"   # Composer vendor/package coordinate (see [publishing])
+autoload          = "psr-4"                   # { "autoload": { "psr-4": { "EntityCore\\": "src/" } } }
+
+[publishing]
+registry          = "packagist"              # Composer's default registry (packagist.org)
+registry_url      = "https://packagist.org"
+# Composer coordinates are `vendor/package` (lowercase, hyphen-separated). Peer id
+# (keystone naming) stays `entity-core-protocol-php`; the Packagist coordinate is
+# `entity-core/protocol` (a package is implicitly PHP; the redundant `-php` suffix
+# is dropped — mirrors the Ruby/Elixir registry-id reasoning). Confirm
+# vendor-namespace availability/squatting at S5 before first publish.
+package_id        = "entity-core/protocol"   # vendor/package
+license_expression = "Apache-2.0"            # composer.json "license": "Apache-2.0" (SPDX)
+repository_url    = ""                        # TBD on first publish (Packagist submits a public VCS URL)
+authors           = "Entity Core Protocol contributors"
+# Pre-release version: Composer/SemVer accepts the SemVer-dash `0.1.0-pre` natively
+# (unlike RubyGems' dotted `0.1.0.pre` / CL's ASDF) — no version-grammar surprise.
+# Packagist resolves it as a pre-release that needs an explicit stability flag
+# (minimum-stability "dev" or a "@dev"/"@alpha" constraint) to install, which is
+# the correct behavior for an unpromoted peer. See [idiom].minimum_stability.
+prerelease_version = "0.1.0-pre"
+
+[license]
+generated_outputs = "Apache-2.0"             # S9 default. PHP itself is the PHP License (BSD-style); the Composer/Packagist ecosystem is MIT-heavy with no mandate — keep the safe Apache-2.0 default (explicit patent grant). ext-sodium/libsodium is ISC (Apache-compatible).
+
+[testing]
+# PHPUnit is the de-facto PHP test framework (the ecosystem standard; what every
+# PHP project uses). It is a DEV-ONLY Composer dependency (never shipped in the
+# runtime surface), so taking the de-facto standard here is the low-surprise
+# idiomatic choice (the Java/JUnit + Kotlin/kotlin.test stance) — pinned exactly +
+# >=30-day. The conformance harness is a PHPUnit test that loads the normative
+# fixture vectors and asserts byte-identity against the corpus; a thin bin/ script
+# is the standalone oracle driver for validate-peer / wire-conformance at S4.
+framework         = "phpunit"                 # dev-only; the PHP ecosystem standard
+standalone_runner = "bin-script"             # bin/entity-core-peer — the oracle-driver / host entry point (S4)
+
+[container]
+base_image        = "entity-core-keystone/php-toolchain:latest"
+build_in_container = true
+# --network=none honored: the core peer is ext-sodium + stdlib hash() + the
+# hand-rolled codec only (all bundled with PHP), so the conformance build/run is
+# fully offline. Composer's ONLY job is dev/test tooling (PHPUnit) + autoload —
+# pre-installed into the image at build time (the one network-on step), so dev-loop
+# runs are --network=none.
+network_policy    = "pull-once-then-offline"  # PHPUnit + autoload vendored in one network-on build step; subsequent runs --network=none. Core peer has ZERO runtime Composer deps.
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/php entity-core-keystone/php-toolchain:latest sh -c 'composer install --no-interaction && composer test'"
+
+[idiom]
+# Hints that don't fit elsewhere — the PHP-native shapes + the head-form trap.
+strict_types             = true               # `declare(strict_types=1);` at the top of EVERY file — PHP's opt-in strict scalar type checking; non-negotiable for a wire codec (no silent int<->string<->float coercion)
+typed_properties         = true               # PHP 7.4+ typed properties + PHP 8 constructor promotion + return types everywhere; the codec/value types are fully typed
+readonly_value_objects   = true               # PHP 8.1 `readonly` properties (and 8.2 `readonly class`) for immutable value objects (Envelope, CapToken, ContentHash, PeerId) — the records/data-class analogue
+enums_php81              = true               # PHP 8.1 backed enums for closed vocabularies (KeyType: int, HashFormat: int, message-type tags) — the exhaustive-set seam
+binary_strings           = true               # PHP `string` IS a byte string (binary-safe; length in BYTES via strlen()) — NO separate bytes type needed; the codec works directly on binary strings (use strlen/substr/ord/chr/pack/unpack, NOT mb_* which is multibyte-aware). The PHP analogue of Ruby's ASCII-8BIT discipline: NEVER route wire bytes through mb_string functions.
+# *** THE SINGLE MOST IMPORTANT CODEC-CORRECTNESS DECISION (A-PHP-003) ***
+# PHP `int` is 64-bit SIGNED on 64-bit builds (PHP_INT_MAX = 2^63-1). PHP has NO
+# native arbitrary-precision integer (unlike Ruby's bignum / the BEAM) — a literal
+# beyond PHP_INT_MAX silently becomes a FLOAT (lossy!). So the CBOR uint64 head-form
+# in the [2^63, 2^64-1] band CANNOT be carried in a native int. CARRIER DECISION:
+# carry CBOR integer head-form values as GMP objects (ext-gmp, bundled in the image)
+# across the WHOLE integer range so there is ONE uniform path (no int/GMP branching
+# bug surface), and expose a clean accessor; OR — the lighter-weight, zero-extra-ext
+# alternative — keep values that FIT in a signed 64-bit int as native `int` and
+# carry ONLY the [2^63, 2^64-1] band as a decimal `string` (the JSON-bigint shape).
+# RULING: use GMP uniformly for head-form integer values inside the codec (clean,
+# one path; ext-gmp is in the toolchain image), and emit/compare via GMP so the
+# canonical shortest head-form is computed without ever touching a lossy float.
+# CRITICAL: NEVER let a uint64 >= 2^63 round-trip through a PHP float (lossy past
+# 2^53) or a native int (overflow->float). pack('J')/unpack('J') (64-bit BE) is the
+# wire primitive; for the >= 2^63 band, build the 8 bytes from the GMP value
+# (gmp_export / manual byte extraction), NOT from an int cast. This is the OCaml
+# A-OC-001/F7 trap re-derived on a 3rd signed-int substrate (after OCaml int63 and
+# C# ulong/TS bigint). Spike the int.10/15/16/17 [2^63, 2^64-1] vectors at S2.
+uint64_carrier           = "gmp"              # ext-gmp (bundled in image) carries CBOR integer head-form across the full uint64/nint range; native int overflows to float past 2^63 (lossy) — GMP is the safe carrier. (Alt: native-int-plus-decimal-string for the high band; GMP chosen for one uniform path.)
+no_float_for_ints        = true               # NEVER carry a uint64 through a PHP float (lossy > 2^53) or let an int literal overflow to float; head-form math is GMP-only
+pack_unpack_be           = true               # wire integers via pack('J',..)/unpack('J',..) (64-bit BE) for the <2^63 path; the >=2^63 band assembles 8 bytes from the GMP value (gmp_export), never an int cast
+f16_handroll             = true               # PHP pack/unpack have NO half-float ('g'=f32, 'G'=f64, 'e'/'E' machine-endian f32/f64) — hand-assemble f16 from the binary64 bits: unpack('J', pack('G',$f)) -> check exponent in [-14,15] + low mantissa bits zero -> assemble 16-bit half (the Ruby A-RUBY-006 ladder). NaN/+Inf/-Inf/-0.0 take their fixed Rule 4a f16 bytes.
+hex_lowercase            = true               # ALL address-space tree-path hex (§3.4/§3.5) lowercase: bin2hex() is lowercase by default in PHP — PIN it (never strtoupper); the A-CL-009 lesson applied proactively. bin2hex/hex2bin are the byte<->hex primitives.
+data_is_arbitrary_ecf    = true               # §1.1 entity `data` = an ARBITRARY ECF value (NOT necessarily a map/array) — model it as a general decoded ECF value (a typed Value union or carry pre-encoded bytes), NEVER assume an array (the A-JAVA-010 silent-500 trap)
+minimum_stability        = "dev"              # composer.json "minimum-stability": "dev" + "prefer-stable": true so the parked 0.1.0-pre pre-release version installs (SemVer-dash works natively in Composer — no RubyGems-style dotted rewrite)
+php_version_constraint   = ">=8.3"            # composer.json "require": { "php": ">=8.3", "ext-sodium": "*", "ext-gmp": "*" } — declares the ext-sodium (crypto) + ext-gmp (uint64 carrier) core-extension requirements explicitly
+
+[resource_bounds]
+# §4.10 (v7.75 floor MUSTs) — recorded at S1 so the peer layer (S3+) gets the
+# codes right. NOT enforced in S1 (profile-only phase).
+max_chain_depth   = 64                         # §4.10(b): a delegation chain deeper than this → 400 chain_depth_exceeded (MUST be 400, NOT 403). ~15-line structural pre-check (walk parents, no sig work) called BEFORE the per-link authz walk; an UNREACHABLE parent stays 403 (not a depth fault). Net-new for the whole cohort in v7.75 — inherit it.
+max_payload_bytes = 16777216                   # §4.10(a): 16 MiB default → over-limit → 413 payload_too_large (MUST).
+admission_codes   = ["413 payload_too_large", "400 chain_depth_exceeded", "503/429 connection-admission (SHOULD, external-layer carve-out)"]  # §6.12 / §4.10(c)
+
+[auth]
+# §5.2 / §5.2a verdict-to-status (cohort convergence; folded normative in v7.73 E2).
+# Recorded at S1 for the peer layer (S3+).
+verdict_trichotomy = "401 (unauthenticated) / 403 (authenticated-but-unauthorized) / 401 (unresolvable-identity)"  # ALLOW / AUTH_DENY / AUTHZ_DENY → 401/403/401
+
+[spec]
+v7_version_pinned = "7.75"                     # spec read for profile + peer: spec-data/v7.75 (the latest STAMPED snapshot; MANIFEST pins V7 7.75 with the FULL ENTITY-CORE-PROTOCOL-V7.md body). Per the cohort convention the core floor is byte-stable v7.75->v7.77 (the v7.77 delta is extension + V8-naming), so deriving the peer from v7.75 + gating against the current oracle is the established pattern. No A-ELX-001-style snapshot-lag caveat — v7.75 is a complete snapshot (the register/outbound/emit/owner-cap/§7a peer surface AND the §4.8/§4.9/§4.10 substrate floor are all ratified text).
+codec_corpus      = "v0.8.0"                    # ECF corpus; ENTITY-CBOR-ENCODING.md + ENTITY-NATIVE-TYPE-SYSTEM.md are byte-stable v7.71->v7.75 (the v7.75 MANIFEST SHA-confirms CBOR + type-system unchanged from v7.74; the cohort SHA-verified the window). Agility (Ed448/SHA-384) corpus gated on A-PHP-002 (deferred — Ed25519+SHA-256 floor only at v0.1).
+conformance_scaffolding = "guide-conformance-7a-7b" # §7a validate handlers + §7b concurrency gate come from GUIDE-CONFORMANCE.md + the keystone generator menu at S3/S4 — NOT from the spec-data snapshot (the v7.74/v7.75 MANIFEST flags this split). A spec-first peer reading only spec-data would otherwise miss them and fail S4.
+# CURRENT-STATE FLOOR this peer inherits (PRE-RESOLVED in PROFILE-RATIONALE +
+# SPEC-AMBIGUITY-LOG so S3 does not re-burn — corroboration-only, all ratified in
+# v7.75):
+#  - peer_id: §1.5 canonical-form table, hash_type=0x00 identity-multihash, RAW
+#    pubkey for Ed25519 (NOT the stale §7.4 SHA-256 skeleton). Nth spec-first arrival.
+#  - tree-path hex: lowercase bin2hex (§3.4/§3.5; A-CL-009). PHP bin2hex is
+#    lowercase by default; pinned in [idiom].hex_lowercase.
+#  - §5.2 trichotomy: 401 authn / 403 authz / 401 unresolvable (§5.2a verdict table).
+#  - §1.1 entity `data` is an ARBITRARY ECF value (NOT necessarily a map) — model
+#    it as a general decoded value from the start (the A-JAVA-010 silent-500 trap).
+#  - resource_bounds (§4.10, CORE-gating): r1 413 payload_too_large (16 MiB
+#    default); r2 over-deep delegation -> 400 chain_depth_exceeded (MUST be 400,
+#    NOT 403; default 64; the ~15-line §4.10(b) structural pre-check BEFORE the
+#    authz walk); r3 connection flood -> 503/close or honest WARN.
+#  - concurrency (§7b, CORE-gating): 5/5; data-race-safe store (§4.8 -> single
+#    thread, no races by construction), resilience under load (§4.9 -> non-blocking
+#    multiplexed sockets), TCP_NODELAY, §6.11 reentrancy via the loop's request_id map.
+target_oracle     = "entity-core-go validate-peer --profile core (the cohort core gate; current head anchors v7.77, uniform 665 / 0 FAIL across the 17-peer matrix as of 2026-06-19)" # the canonical core gate this peer must reach GREEN at S4; the orchestrator pins the exact clean go commit at S4

@@ -1,0 +1,42 @@
+# entity-core-keystone base image
+#
+# Fedora 43 base layered with shared tooling every per-language toolchain image
+# builds on. Per-language images (containers/dotnet9/, containers/node24/, etc.)
+# FROM this image and add their specific SDK + dependencies.
+#
+# Build:
+#   podman build -t entity-core-keystone/base:latest -f containers/base/Containerfile .
+
+FROM fedora:43
+
+# Shared tools every language workflow needs
+RUN dnf install -y \
+        git \
+        curl \
+        wget \
+        ca-certificates \
+        gnupg2 \
+        make \
+        which \
+        gcc \
+        gcc-c++ \
+        pkgconfig \
+        openssl-devel \
+        libsodium-devel \
+        python3 \
+        python3-pip \
+        jq \
+        && dnf clean all
+
+# Conformance oracles — pulled in at language-image layer
+# (validate-peer + wire-conformance built from entity-core-go)
+# Each language Containerfile adds these via either COPY --from or a build step.
+
+# Workdir convention
+WORKDIR /work
+
+# Sentinel: confirms image built from this Containerfile
+LABEL org.entity-core-keystone.role="base"
+LABEL org.entity-core-keystone.version="1"
+
+CMD ["/bin/bash"]

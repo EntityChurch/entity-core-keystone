@@ -1,0 +1,133 @@
+# entity-core-protocol-ocaml — Language Profile
+#
+# Peer #3. Authored FRESH in S1 from the V7 spec + OCaml ecosystem research —
+# NOT ported from the C#/TS profiles (the spec-tightness experiment: OCaml is a
+# distant idiom chosen to re-probe V7, so its choices are derived independently;
+# see arch/PROFILE-RATIONALE.md and the kickoff handoff). Where a field happens
+# to match C#/TS it is by independent arrival, not inheritance — and the idiom
+# seams (error model, async, naming) deliberately differ.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value
+# is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "ocaml"
+name              = "OCaml"
+tier              = "peer-3"                 # elevated from LANDSCAPE T5 (arch pick 2026-06-11)
+package_name      = "entity-core-protocol-ocaml"   # opam package id
+runtime           = "ocaml-toolchain"        # references containers/<runtime>/Containerfile
+
+[codec]
+# strategy: NATIVE. LANDSCAPE defaulted OCaml to ffi, but the S1 spike proved a
+# native hand-rolled canonical encoder reaches 69/69 byte-identical (the A-005
+# pattern both prior native peers hit: a faithful ECF codec must own the
+# canonical layer anyway, so a CBOR library buys little). ffi remains the
+# documented fallback if the agility/Ed448 gap forces it.
+strategy          = "native"
+# CBOR: hand-rolled canonical encoder/decoder (src/cbor.ml). No opam CBOR library
+# (`cbor` 0.5, `cborl`, `orsetto`, `decoders-cbor`) offers ECF's guarantees —
+# length-then-lex map ordering, shortest-float incl. f16, recursive major-type-6
+# tag rejection, full uint64/nint range. Decided by spike, not assumption.
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native" }
+# Ed25519: mirage-crypto-ec — pure-OCaml-over-fiat-C, audited, no libsodium dep.
+ed25519_library   = { name = "mirage-crypto-ec", version = "2.1.0" }
+# Ed448 (crypto-agility higher bar, v7.67): RESOLVED via hybrid FFI (A-OC-002
+# option (a)). mirage-crypto-ec 2.1.0 has no Ed448 (mirage/mirage-crypto#112)
+# and OCaml has no BouncyCastle-equivalent, so key_type 0x02 is sourced from
+# libentitycore_codec over the C-ABI v1.1 (ec_ed448_{seed_to_pubkey,sign,verify}).
+# Ed25519 + SHA-256/384 stay native; Ed448 is the ONLY FFI primitive. Scoped to
+# the OPT-IN entitycore_agility sub-library (src/agility/) so the shipped
+# Ed25519+SHA-256 peer stays self-contained and FFI-free. Does NOT affect the
+# 69-vector ECF floor. Byte-verified 25/25 vs the agility corpus (run-agility.sh).
+ed448_library     = { name = "entitycore_agility (FFI: libentitycore_codec)", strategy = "ffi-hybrid", c_abi_version = "1.1" }
+sha256_source     = "digestif 1.3.0 (SHA256 + SHA384 for agility)"
+base58_library    = "hand-rolled"            # Bitcoin alphabet, encode+decode (src/base58.ml); no opam dep
+varint_handling   = "native"                 # LEB128 inline impl (N1), src/varint.ml
+
+[error_model]
+# DELIBERATE idiom divergence from C#/TS (both "exceptions"). OCaml-native is
+# `('a, error) result` with a polymorphic-variant error type. Decode-path tag
+# rejection is the one internal exception (Cbor.Decode_error), caught at the
+# module boundary and mapped to a result/error — exceptions stay internal.
+style             = "result"                 # "exceptions" | "result" | "either" | "errno"
+error_type        = "polymorphic_variant"    # [ `Non_canonical_ecf | `Truncated | `Bad_seed | ... ]
+internal_exception = "Cbor.Decode_error"     # internal only; never escapes a public result-returning fn
+
+[async]
+# DELIBERATE idiom decision (the OCaml analogue of C#-Task / TS-Promise). Choice:
+# eio (OCaml 5 effects-based, direct-style structured concurrency). Rationale: the
+# N6/N7 reentrancy invariants (inbound processing concurrent with outbound
+# dispatch; reentrant request_id demux) map naturally onto eio fibers + switches
+# in direct style, without monadic plumbing. Validated at S3, NOT S2 (the codec
+# is pure/synchronous). Lwt is the conservative fallback if eio's transport story
+# proves thin at S3. See A-OC-003.
+style             = "eio"                    # "sync" | "lwt" | "async" | "eio" | "effects"
+default_surface   = "direct"                 # direct-style fibers; no monadic (>>=) surface
+sync_shim         = "eio_main-wrapper"        # Eio_main.run entrypoint for sync consumers
+
+[naming]
+# OCaml-native conventions (differ from C# PascalCase / TS camelCase).
+type_names        = "lower_snake_case"       # types: entity, content_hash, peer_id
+value_names       = "lower_snake_case"       # values/functions: content_hash, sign_and_verify
+module_names      = "Upper_snake_case"       # modules: Cbor, Peer_id, Content_hash
+variant_names     = "Upper_snake_case"       # constructors: Uint, Text, Non_canonical_ecf
+file_names        = "lower_snake_case"       # cbor.ml, peer_id.ml (one module per file)
+
+[build]
+build_tool        = "dune"
+build_command     = "dune build"
+test_command      = "dune exec test/conformance.exe -- <fixture.cbor>"
+pack_command      = "dune build @install"    # opam/dune package install rules
+
+[layout]
+project_file      = "dune-project"
+src_dir           = "src/"                   # library: entitycore_codec
+test_dir          = "test/"                  # conformance harness + selftest
+lib_name          = "entitycore_codec"
+
+[publishing]
+registry          = "opam"
+registry_url      = "https://opam.ocaml.org"
+package_id        = "entity-core-protocol-ocaml"
+license_expression = "Apache-2.0"
+repository_url    = ""                        # TBD on first publish
+authors           = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"             # S9 default; OCaml ecosystem is mixed (ISC/BSD/MIT common in the mirage sphere) but does not strongly mandate — keep the safe default
+
+[testing]
+# Hand-rolled harness (test/conformance.ml + test/selftest.ml), no test-framework
+# dependency — honoring the dependency-minimization stance. The ecosystem standard
+# is `alcotest`; it can be layered later for a richer S5 report without changing
+# the codec. The conformance harness loads the normative fixture and checks
+# byte-identity directly (the fixture carries its own cross-blessed bytes).
+framework         = "hand-rolled"
+alcotest_optional = true
+
+[container]
+base_image        = "entity-core-keystone/ocaml-toolchain:latest"
+build_in_container = true
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/ocaml entity-core-keystone/ocaml-toolchain:latest sh -c 'eval $(opam env --switch=ec-ocaml) && dune build'"
+
+[idiom]
+# Hints that don't fit elsewhere.
+prefer_result_over_exn   = true              # public surfaces return result; no exception-as-control-flow
+prefer_immutable         = true              # records + variants; Bytes.t only inside encoders
+mli_interfaces           = true              # author .mli for every public module (S3/S5; codec mlis added before S5)
+ocaml_version            = "5.2.1"
+warnings_as_errors       = true              # dune dev profile treats warnings as errors
+
+[deps]
+# Exact pins (S11; all >= 30 days old at 2026-06-11). Mirrored in
+# containers/ocaml-toolchain/Containerfile.
+ocaml             = "5.2.1"                   # 2024
+dune              = "3.23.1"                  # May 2025
+digestif          = "1.3.0"                   # Apr 2025
+mirage_crypto     = "2.1.0"                   # 17 Mar 2026 (~86d)
+mirage_crypto_ec  = "2.1.0"                   # 17 Mar 2026
+mirage_crypto_rng = "2.1.0"                   # 17 Mar 2026 (S3 keygen; deterministic signing needs no RNG)
+
+[spec]
+v7_version_pinned = "7.72"                   # spec read for profile + peer
+codec_corpus      = "v0.8.0"                  # ECF corpus; ENTITY-CBOR-ENCODING.md + ENTITY-NATIVE-TYPE-SYSTEM.md are byte-identical v7.71->v7.72 (SHA-verified), so the v0.8.0 corpus is valid at v7.72. F12/v7.73 nonce-echo fold is a PEER (§4.6) concern, not codec — resync at S3.

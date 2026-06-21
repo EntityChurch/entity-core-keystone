@@ -1,0 +1,163 @@
+# entity-core-protocol-lean — Language Profile
+#
+# Peer #10 (taken ahead of Prolog, user call). The PROOF-VECTOR peer: a conformant
+# core peer (Track A) AND machine-checked proofs of protocol invariants (Track B).
+# Authored in S1 from spec-data/v7.75 + Lean-as-prover research, NOT ported from a
+# prior peer. S1 sub-phases 1a/1b/1c are documented in research/stewardship/:
+#   EXPLORATION-LEAN-AS-PROOF-VECTOR-2026-06-14.md   (1a — Lean's proving model)
+#   LEAN-1B-PROVABILITY-LEDGER-2026-06-14.md         (1b — what's provable + findings)
+#   (1c spikes live in protocol-generator/lean/spikes/, all GREEN — see below)
+#
+# Profile authority (S6): the agent MUST use the values declared here. A "TBD" blocks
+# the dependent phase + is logged in SPEC-AMBIGUITY-LOG.md. The only deferred value is
+# Ed448 (crypto-agility higher bar, A-LEAN-CRYPTO) — deferred with rationale, does NOT
+# touch the Ed25519/SHA-256 floor.
+#
+# THE DEFINING FACT (1a finding #1): Lean has NO extraction gap. A pure total `def`
+# is BOTH the thing proven AND the compiled code. So the codec + capability verdict
+# are written as pure Lean, proved, and called by the running peer — "prove the model,
+# run the model" (stance 1). Effectful shell (transport/store/crypto) is unproven.
+
+[language]
+name = "lean"
+display_name = "Lean 4"
+version = "4.29.1"               # S11: released 2026-04-14, ~2mo old. Pinned in lean-toolchain.
+toolchain = "elan v4.2.3 (sha256-pinned) -> Lean 4.29.1; Lake 5.0.0 (bundled)"
+paradigm = "dependently-typed functional + proof assistant (one language, two roles)"
+
+[codec]
+# strategy: NATIVE, pure-Lean, and PROVEN. The A-005 pattern, 7-for-7: a faithful ECF
+# codec must own the canonical layer (length-then-lex map-key ordering on encoded key
+# bytes, shortest-float incl. f16 minimization, recursive major-type-6 tag-reject on
+# decode, full uint64/nint range, raw-byte fidelity) — no Lean CBOR lib gives ECF's
+# guarantees, and a pure-Lean codec is the proof surface for T1/T2/T3.
+#
+# CRITICAL float constraint (1a finding #2, 1b T3): Lean `Float` is OPAQUE — the kernel
+# cannot reduce or reason about it. The codec's float path MUST be PURE BIT ARITHMETIC
+# over UInt16/32/64, with `Float.toBits`/`Float.ofBits` the ONLY `Float` contact. This
+# is both the shortest-float minimization mechanism AND what makes T3 provable. NaN ->
+# F9 7E00 and -0.0 -> F9 8000 are explicit normalizations (ECF Rule 4a) => encode is a
+# normal-form map, not an injection, on floats (1b T1 precondition).
+#
+# Map model: maps carry a structural no-duplicate-key invariant (ECF Rule 5 by
+# construction) + canonical (length-then-lex) ordering derived at encode (Rule 2).
+#
+# decode totality: defined by well-founded recursion on unconsumed-input length
+# (every CBOR item consumes >=1 byte); §10.2 depth<=64 + §5.1 16MiB are runtime guards.
+
+[crypto]
+# strategy: FFI-HYBRID via libentitycore_codec (C-ABI), NOT native. Lean has NO mature
+# audited native Ed25519/Ed448 and no BouncyCastle-equivalent — the OCaml/Zig gap, not
+# the Swift/Haskell native-availability case. Ed25519 + SHA-256/384 sourced over the
+# C-ABI (ec_ed25519_*, ec_sha256/384). 1c crypto-FFI spike PROVED this GREEN:
+# SHA-256("abc") == FIPS KAT, Ed25519 keygen+sign+verify round-trip, linked the rust
+# cdylib (ec_impl_info = "rust 0.1.0 / ecf-c-abi 1.1"). FFI mechanism: C shim bridging
+# Lean's ByteArray ABI (@& borrow + lean_sarray_cptr/size, lean_alloc_sarray out) to
+# the C-ABI byte-pointer functions; Lake `extern_lib` + `moreLinkArgs -lentitycore_codec`.
+# CRYPTO IS UNPROVABLE AND THAT IS THE SPEC'S OWN BOUNDARY (1b §3): @[extern] doesn't
+# reduce, so signature properties are axiomatic; V7 cites Ed25519 but does not define
+# the curve. Prove the protocol, trust the primitive.
+# SHA-256 pure-Lean reimplementation (provable, cross-checked vs FFI) = deferred stretch.
+ed25519_library = "libentitycore_codec (C-ABI v1.1) via @[extern] shim"
+ed448_library = "DEFERRED (A-LEAN-CRYPTO) — same C-ABI ec_ed448_* when agility in scope"
+
+[error_model]
+# Lean idiom: pure core returns `Option`/`Except ε`; effectful shell is `IO` (= `EIO
+# IO.Error`). `throw`/`try`-`catch` in IO; no exceptions in the pure proven core (a
+# total function can't throw — which is part of why the verdict/codec are provable).
+style = "Except/Option in the pure core; EIO (IO) in the effectful shell"
+
+[memory]
+# Lean 4 uses reference counting with in-place reuse (FBIP), NOT tracing GC. This is a
+# 2nd RC discipline in the cohort after Swift's ARC — but Lean's is automatic/implicit
+# (no value-vs-reference-type choice). Not a manual-ownership axis (cf. Zig). The pure
+# core is immutable-data; the store uses IO.Ref/Std.Mutex.
+model = "reference counting + FBIP reuse (automatic, immutable-by-default core)"
+
+[async]
+# OS THREAD POOL, not green threads (1a finding #3). TCP is FFI + blocking-only (no
+# stdlib networking). §7b posture (PROVEN by the 1c transport spike): each connection
+# served on a DEDICATED thread (IO.asTask .dedicated) so blocking accept/recv never
+# starves the compute pool — the OCaml-stdlib-threads posture, NOT the Swift
+# cooperative-pool/blocking-syscall trap. Store-safety primitive = Std.Mutex
+# (Std.Sync.Mutex; old IO.Mutex deprecated). 1c transport spike: real two-peer
+# loopback echo + dedicated-thread server + Std.Mutex counter, all GREEN.
+style = "blocking IO on dedicated threads (Task pool); Std.Mutex for shared store state"
+
+[naming]
+# Lean idiom: types/structures/namespaces UpperCamelCase; defs/fields lowerCamelCase;
+# theorems lower_snake or lowerCamel (mathlib uses snake for lemmas). Files match the
+# module path (EntityCore/Codec.lean -> EntityCore.Codec).
+types = "UpperCamelCase"
+functions = "lowerCamelCase"
+theorems = "snake_case (mathlib lemma convention) for Track-B proofs"
+
+[build]
+system = "Lake 5.0.0 (bundled with Lean 4.29.1)"
+manifest = "lake-manifest.json committed (S11); lean-toolchain pins the compiler"
+notes = "FFI build pattern validated in 1c: target -> buildO (C shim) -> extern_lib (buildStaticLib) -> lean_exe moreLinkArgs. inputTextFile/getLeanIncludeDir/nameToStaticLib all correct for Lake 5.0."
+
+[layout]
+# Two Lake targets so the SHIPPING peer stays mathlib-free (1a finding #4):
+src = "src/EntityCore/        # the peer (codec, capability, transport, store, host)"
+proofs = "proofs/EntityCore/Proofs/   # Track B — separate target, mathlib dep lives HERE only"
+spikes = "spikes/{prove-vs-run,crypto-ffi,transport}/   # S1/1c, all GREEN (kept as regression seeds)"
+
+[publishing]
+# Lake package + Reservoir (the Lean package index). Apache-2.0 (S9). Park pre-release
+# until conformance + the formalization report land, per the cohort S5 convention.
+registry = "Reservoir (Lean package index) via Lake"
+version = "0.1.0-pre (parked until S4 PASS + FORMALIZATION-REPORT)"
+
+[license]
+spdx = "Apache-2.0"             # S9 default; Lean ecosystem has no strong MIT-only norm forcing override.
+
+[testing]
+# Lean #guard / native test exes for behavioral tests; the ECF conformance harness
+# (Appendix E vectors) for S2; validate-peer --profile core for S4. Track B proofs are
+# their own gate: `lake build` of the proofs/ target = the proofs check (a sorry or a
+# failed proof fails the build). `#print axioms` guards against accidental sorry.
+unit = "Lean native test exes + #guard"
+conformance = "ECF Appendix-E vectors (S2); validate-peer --profile core + origination-core (S4)"
+
+[container]
+# containers/lean-toolchain/ — BUILT + verified 2026-06-14 (1c). fedora:43 + pinned
+# elan v4.2.3 (sha256 fail-closed) + Lean 4.29.1. Deviation from author-only S1:
+# build-verified now (Lean-on-Fedora long pole, Swift precedent). S4 oracle pull (go
+# validate-peer/entity-peer) deferred to S4 entry.
+image = "entity-core-keystone/lean-toolchain:latest"
+
+[idiom]
+# Dependent types for well-formedness (stance 3): encode entity/envelope/chain
+# invariants in types (Subtype/indexed families) so malformed states are
+# unconstructable — constrains the pure core's inputs by construction. The prove-vs-run
+# cut: codec + verdict are stance-1 (proven AND run); transport/store/crypto unproven.
+
+[deps]
+# SHIPPING peer: Batteries at most (Init/Std ship with the toolchain). NO mathlib.
+# PROOFS target: mathlib (List.Lex, LinearOrder, order/list lemmas). Both pinned S11
+# in lake-manifest.json at S2/S3. Crypto: libentitycore_codec (C-ABI, in-repo).
+runtime = "Init/Std (toolchain); Batteries (pinned, if needed)"
+proofs = "mathlib (pinned, proofs/ target ONLY)"
+ffi = "libentitycore_codec (ffi-generator/c-abi) for Ed25519/Ed448/SHA"
+
+[spec]
+version = "v7.75"
+snapshot = "protocol-generator/shared/spec-data/v7.75/ (V7 057dc8eb…)"
+
+# ── Track B: the proof vector (unique to this peer) ──────────────────────────
+[proofs_track]
+# The dual-track deliverable. Sharpened 5-theorem set (1b §6); nothing locked — swaps
+# allowed as proofs reveal what's clean (user call). prove-vs-run stance = HYBRID.
+stance = "stance-1 (prove the running pure core: codec + verdict); stance-3 types for the data model; effectful shell unproven"
+deliverable = "status/FORMALIZATION-REPORT.md — per-theorem outcome + spec consequence (NEW keystone artifact type)"
+# Headline theorems (S2: T1-T3 with the codec; S3: T4-T5 with the peer):
+t1 = "codec normal-form/idempotence: Canonical(b) -> encode(decode b) = b; encode always canonical. (headline > raw injectivity; precondition = the Canonical/WF predicate)"
+t2 = "map-key order is a strict total order + encode emits sorted (supporting lemma)"
+t3 = "shortest-float minimality at the BIT level (UInt) + Rule-4a specials"
+t4 = "verifyChain FACTORS as a pure fn of (chain, included, localPeer, now); determinism is the free corollary"
+t5 = "attenuation monotone (leaf authority ⊆ root) via per-link granter-frame subset-transitivity + depth-bound terminates (proves the shipped 400 chain_depth pre-check sound)"
+# Findings the proofs surface (1b) — verify-against-existing-logs in S4 before arch:
+findings = "A-LEAN-1 (now() sampled per-link §5.5 vs §5.10 deterministic verdict); A-LEAN-2 (revocation: §5.10 Layer-1 vs §5.1 reads local mutable tree); A-LEAN-3 (§5.6 scope_subset frame stale vs §5.5a Amendment-1, likely known); A-LEAN-4 (matches_pattern-as-subset transitivity — the T5a crux)"
+# Stance on the unprovable (user-directed, see memory lean-proof-vs-spec-stance):
+policy = "build the peer first; prove what's feasible; don't force infeasible proofs; can't-prove-as-written may rise to a spec change but only AFTER the peer works + proofs validated; NEVER block/weaken Track A conformance"

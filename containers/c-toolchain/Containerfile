@@ -1,0 +1,44 @@
+# C toolchain image — builds the codec C-ABI C implementation
+# (ffi-generator/c-abi/entity-core-codec-ffi-c) into libentitycore_codec.*
+# plus the conformance harness.
+#
+# S1: builds run in this container, not on the host. Mirrors containers/cargo.
+# S11: pin every package to a version >= 30 days old. The exact NVRs below are
+#      what fedora:43 shipped at authoring (2026-06-07); re-verify the >=30-day
+#      age + re-pin deliberately on rebuild, and prefer pinning the base image by
+#      digest for full repro.
+#
+# libsodium PIN NOTE (S6 + S11): research/evaluations/ffi-c.md pinned libsodium
+# 1.0.21 (2025-01-06). fedora:43's repos ship ONLY 1.0.22-1.fc43 (ChangeLog
+# 2026-04-10, i.e. ~2 months old at authoring -> clears the 30-day floor).
+# 1.0.22 is a strict superset of 1.0.21 (adds ML-KEM / SHA-3; the high-level
+# crypto_sign_* / crypto_hash_sha256 we use are unchanged and produce identical
+# bytes -> conformance-neutral). CVE-2025-69277 is in the low-level
+# crypto_core_ed25519_is_valid_point validator we do NOT call. This is a
+# deliberate, reviewed re-pin off the eval's interim 1.0.21 -> 1.0.22-1.fc43;
+# logged in research/stewardship/SPEC-FINDINGS-LOG.md.
+#
+# NOTE (R5): a glibc shared object won't load on hosts older than this base's
+# glibc. For a *shipped* release artifact, rebuild on an old-glibc
+# (manylinux-style) base. fedora:43 is fine for development + conformance.
+FROM registry.fedoraproject.org/fedora:43
+
+# CMake + C11 toolchain; libsodium static archive + headers (we statically and
+# privately link libsodium into the artifact per spec sec.7 + ffi-c.md).
+# Pinned NVRs (S11): what fedora:43 shipped at authoring (2026-06-07). Re-verify
+# the >=30-day age + re-pin deliberately on rebuild; prefer base-image digest pin.
+RUN dnf install -y \
+        cmake-3.31.11-1.fc43 \
+        gcc-15.2.1-7.fc43 \
+        libasan-15.2.1-7.fc43 \
+        libubsan-15.2.1-7.fc43 \
+        libsodium-1.0.22-1.fc43 \
+        libsodium-static-1.0.22-1.fc43 \
+        libsodium-devel-1.0.22-1.fc43 \
+        make-1:4.4.1-11.fc43 \
+        binutils-2.45.1-4.fc43 \
+    && dnf clean all
+
+ENV CMAKE_COLOR_DIAGNOSTICS=OFF
+
+WORKDIR /work

@@ -1,0 +1,161 @@
+# entity-core-protocol-zig — Language Profile
+#
+# Peer #4. Authored FRESH in S1 from the V7 spec + Zig ecosystem research —
+# NOT ported from the C#/TS/OCaml profiles. Zig is a *distant idiom* peer (the
+# OCaml-style spec-tightness probe carried into a systems language with NO GC,
+# explicit allocators, error unions, and comptime): every choice below is derived
+# independently from V7 + Zig capabilities. Where a field happens to match a prior
+# peer it is by independent arrival, not inheritance — and the idiom seams (no GC /
+# allocator threading, error-union error model, comptime) deliberately differ from
+# every prior peer.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value is
+# logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "zig"
+name              = "Zig"
+tier              = "peer-4"                  # distant-idiom systems peer (no-GC / allocator / comptime probe)
+package_name      = "entity-core-protocol-zig"
+runtime           = "zig-toolchain"           # references containers/<runtime>/Containerfile
+
+[codec]
+# strategy: NATIVE. Same A-005 pattern OCaml/C#/TS hit — a faithful ECF codec must
+# own the canonical layer (length-then-lex map ordering, shortest-float incl. f16,
+# recursive major-type-6 tag rejection, full uint64/nint range) regardless of any
+# CBOR library underneath, so a library buys almost nothing. Zig's std.crypto ships
+# audited Ed25519 + SHA-2 in-tree (zero external deps), which makes native the
+# strictly lighter path: the whole peer is std-only. ffi remains the documented
+# fallback if a spike ever fails (it is not expected to). Spike to run at S2 start:
+# push the map_keys + float test-vectors through the hand-rolled encoder before the
+# full build — cheap insurance per PHASE-S1-PROFILE.
+strategy          = "native"
+# CBOR: hand-rolled canonical encoder/decoder (src/cbor.zig). Zig has NO std CBOR;
+# third-party Zig CBOR packages are immature/unaudited and none offer ECF's
+# guarantees. Hand-rolling is both the faithful and the simpler path (the OCaml
+# A-005 finding, re-confirmed for Zig). comptime lets the encoder dispatch on the
+# CBOR major type / Zig value type at compile time with zero runtime reflection cost.
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native" }
+# Ed25519: Zig std.crypto.sign.Ed25519 — in std, audited, RFC-8032-deterministic
+# signing (KeyPair.sign(msg, null) needs no RNG; keygen uses std.crypto.random).
+# Pinned by toolchain version (std ships with the compiler) — no separate package.
+ed25519_library   = { name = "std.crypto.sign.Ed25519", version = "zig-0.15.1-std" }
+# Ed448 (crypto-agility seam, v7.67): NOT in Zig std (std.crypto has Ed25519 but no
+# Ed448), and no mature audited pure-Zig Ed448 exists. Same native gap OCaml hit
+# (A-OC-002) and C# routed around via BouncyCastle — Zig has no managed-crypto
+# equivalent. DEFERRED — see SPEC-AMBIGUITY-LOG A-ZIG-002. Does NOT affect the
+# ECF/Ed25519 conformance floor. Likely shape when agility is in scope: hybrid
+# native-Ed25519 + FFI-Ed448 (consume libentitycore_codec for the Ed448 family only).
+ed448_library     = { name = "DEFERRED", version = "none" }
+sha256_source     = "std.crypto.hash.sha2.Sha256 (in std; Sha384/Sha512 also present for agility)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (src/base58.zig); not in std
+varint_handling   = "native"                  # multicodec-style LEB128 (§7.3) inline impl, src/varint.zig
+
+[error_model]
+# DELIBERATE idiom divergence from every prior peer. Zig-native is the *error union*
+# (`!T` / `error{...}` sets) — neither exceptions (C#/TS) nor a result ADT (OCaml).
+# Errors are values returned via `try`/`catch`, a tagged error set the compiler
+# checks for exhaustiveness; no exceptions exist in the language. Codec/decode
+# failures are members of a `CodecError` error set; protocol-status failures (the
+# 400 non_canonical_ecf / 401 / 403 surface) map an error-set tag → status code at
+# the module boundary.
+style             = "error_union"             # "exceptions" | "result" | "either" | "errno" | "error_union"
+error_set         = "CodecError"              # error{NonCanonicalEcf, Truncated, TagRejected, DuplicateKey, BadSeed, UnsupportedKeyType, UnsupportedHashFormat, ...}
+allocator_failure = "error.OutOfMemory"       # allocation is fallible and explicit — every alloc site is a `try`; OOM is a first-class error union member, never a panic
+
+[memory]
+# Zig-SPECIFIC section (no prior peer has it). Zig has NO garbage collector; memory
+# is managed via explicit std.mem.Allocator passed by the caller. This is the single
+# biggest idiom seam vs C#/TS/OCaml (all GC'd).
+gc                = false
+allocator_threading = "explicit"             # every API that allocates takes an `allocator: std.mem.Allocator` param
+encode_buffer     = "caller-provided-or-arena" # encoder writes into a caller buffer or an arena; codec owns no global state
+decode_ownership  = "caller-frees"            # decoded structures borrow/own per a documented ownership contract; no hidden GC
+default_test_allocator = "std.testing.allocator" # leak-checking allocator in tests — catches every un-freed alloc (free correctness is a first-class conformance concern here, unlike GC'd peers)
+
+[async]
+# DELIBERATE idiom decision; NOT exercised by the codec (S2 is pure/synchronous).
+# Zig's async story is in flux: the pre-0.15 colorless `async`/`await`/`suspend`
+# was removed and a new std.Io-based concurrency model is landing across 0.15/0.16
+# ("Writergate" reworked the I/O interfaces). For the core peer the §4.8/§6.11
+# inbound-concurrent-with-outbound requirement is met by OS threads (std.Thread,
+# in std, zero deps) — one reader thread per connection demuxing EXECUTE_RESPONSE
+# by request_id, mirroring the OCaml S3 stdlib-threads decision (A-OC-003 revised).
+# Revisit if/when handler-initiated outbound (origination) enters scope. See
+# A-ZIG-003.
+style             = "threaded"                # "sync" | "threaded" | "evented" | "io-async"
+default_surface   = "blocking"                # codec + core peer are blocking/synchronous; threads provide concurrency
+primitive         = "std.Thread"              # in std; std.Thread.Mutex for write serialization on a shared conn
+
+[naming]
+# Zig-native conventions (differ from C# PascalCase / TS camelCase / OCaml snake).
+type_names        = "PascalCase"              # types (incl. structs returned by functions): Entity, ContentHash, PeerId
+function_names    = "camelCase"               # functions: contentHash, signAndVerify, encodeEcf
+variable_names    = "snake_case"              # locals/fields: content_hash, peer_id, format_code
+constant_names    = "snake_case"              # const values: max_message_size (NOT screaming-snake; Zig idiom)
+file_names        = "snake_case"              # cbor.zig, peer_id.zig, content_hash.zig (one logical unit per file)
+error_names       = "PascalCase"              # error-set members: NonCanonicalEcf, TagRejected (Zig errors are PascalCase)
+
+[build]
+build_tool        = "zig build"               # build.zig + build.zig.zon; no external build system
+build_command     = "zig build"
+test_command      = "zig build test"          # zig's in-language test runner (`test \"...\" {}` blocks)
+pack_command      = "zig build"               # produces the static lib artifact; publish = git tag + build.zig.zon
+
+[layout]
+project_file      = "build.zig"               # plus build.zig.zon (package manifest)
+src_dir           = "src/"                    # library root: src/root.zig (module entry)
+test_dir          = "src/"                    # Zig idiom: tests live in-file alongside code; conformance harness in src/conformance.zig
+lib_name          = "entitycore_codec"
+module_root       = "src/root.zig"            # the public module surface re-exported here
+
+[publishing]
+# Zig has no central package registry (no crates.io/npm equivalent). Packages are
+# fetched by URL + hash from build.zig.zon. "Publishing" = a git tag consumers pin
+# by commit hash in their own build.zig.zon (decentralized, hash-pinned by design).
+registry          = "build.zig.zon"           # decentralized; URL + content hash, no central index
+registry_url      = ""                        # n/a — consumers fetch from the repo URL directly
+package_id        = "entity_core_protocol_zig" # build.zig.zon name (Zig identifiers: snake_case, no hyphens)
+license_expression = "Apache-2.0"
+repository_url    = ""                         # TBD on first publish
+authors           = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default; Zig itself is MIT, ecosystem is mixed (MIT-leaning) but does not mandate — keep the safe Apache-2.0 default (explicit patent grant)
+
+[testing]
+# Zig's built-in test runner (no framework dependency — `test "name" { ... }` blocks
+# compiled and run by `zig build test`). Honors the dependency-minimization stance
+# natively: the conformance harness is a Zig test file (src/conformance.zig) that
+# loads the normative fixture and asserts byte-identity. std.testing.allocator runs
+# under every test → leak detection is automatic (a Zig-specific conformance bonus).
+framework         = "zig-test"                # in-language; no external test framework
+leak_checking     = true                      # std.testing.allocator fails the test on any leak
+
+[container]
+base_image        = "entity-core-keystone/zig-toolchain:latest"
+build_in_container = true
+# --network=none is honored: the peer is std-only (no build.zig.zon network fetch),
+# so the codec builds fully offline once the toolchain image exists.
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/zig entity-core-keystone/zig-toolchain:latest zig build test"
+
+[idiom]
+# Hints that don't fit elsewhere.
+prefer_error_union_over_panic = true          # public surfaces return `!T`; panic only for true unreachable/programmer-error
+prefer_comptime_dispatch      = true          # encode/decode dispatch on type at comptime (zero runtime reflection)
+explicit_allocator_everywhere = true          # no hidden allocation; allocator is always a parameter
+no_undefined_behavior         = true          # build in Debug/ReleaseSafe for conformance (bounds + overflow checks on); ReleaseFast only after green
+defer_for_cleanup             = true          # `defer`/`errdefer` for deterministic free on every path
+zig_version                   = "0.15.1"
+std_only                      = true          # the core peer pulls ZERO third-party packages — std.crypto + std covers crypto, hashing, threads, testing
+
+[deps]
+# Exact pins (S11). Zig std ships WITH the compiler, so the single pin is the
+# toolchain version — there are no registry-pulled package deps for the core peer.
+# Mirrored in containers/zig-toolchain/Containerfile.
+zig               = "0.15.1"                   # released 2025-08 (~10 months old at 2026-06-13; clears the S11 30-day floor). Settled point release; std.crypto Ed25519 + SHA-2 stable. NOTE: 0.15.x is the "Writergate" std.Io reader/writer rework — a transport (S3) seam, not a codec one.
+# (no third-party packages — std_only = true)
+
+[spec]
+v7_version_pinned = "7.72"                    # spec read for profile + peer (latest available spec-data)
+codec_corpus      = "v0.8.0"                   # ECF corpus; ENTITY-CBOR-ENCODING.md + ENTITY-NATIVE-TYPE-SYSTEM.md are byte-identical v7.71->v7.72 (per the OCaml SHA-verified finding), so the v0.8.0 corpus is valid at v7.72. Agility (Ed448/SHA-384) gated on A-ZIG-002.

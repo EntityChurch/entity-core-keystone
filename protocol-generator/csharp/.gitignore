@@ -1,0 +1,6 @@
+# Build outputs — regenerated in-container per S1. Lockfiles ARE committed (S11).
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user

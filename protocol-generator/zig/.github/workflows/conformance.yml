@@ -1,0 +1,83 @@
+# CI — entity-core-protocol-zig (peer #4) conformance gates.
+#
+# Authored at S5 (PHASE-S5 §"CI config"). Runs the three green gates entirely inside the
+# pinned `zig-toolchain` Podman image, sealed-offline (`--network=none`): the peer is
+# std-only so nothing is fetched at build time, and the Go `validate-peer` oracle is a
+# CGO_ENABLED=0 ELF that runs in the same image sharing one loopback.
+#
+# DELIBERATELY NOT WIRED TO ANY REMOTE/CD. There is no deploy step, no registry push, no
+# package publish — `/entity-rosetta` never publishes (lifecycle §Publishing); the operator
+# decides. This file documents the reproducible offline gate; whether/where it actually runs
+# (this peer's standalone repo's CI, or a keystone-wide CI home) is an operator/arch decision
+# (see status/ARCHITECTURE-REVIEW.md §Publishing-options). It is committed for reviewability,
+# not because a runner is attached.
+#
+# Assumptions when wired: the runner has Podman, the `zig-toolchain:latest` image is built
+# (containers/zig-toolchain/Containerfile) and the oracle ELF is vendored to
+# output/s4-oracles/validate-peer (rebuild per status/CONFORMANCE-REPORT.md §Reproduce).
+# Paths below assume the keystone repo root is the checkout root.
+
+name: zig-conformance
+
+on:
+  push:
+    paths:
+      - 'protocol-generator/zig/**'
+      - 'protocol-generator/shared/spec-data/**'
+      - 'protocol-generator/shared/test-vectors/**'
+  pull_request:
+    paths:
+      - 'protocol-generator/zig/**'
+  workflow_dispatch: {}
+
+# No deploy/publish permissions — read-only.
+permissions:
+  contents: read
+
+env:
+  IMAGE: entity-core-keystone/zig-toolchain:latest
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The toolchain image is built from containers/zig-toolchain/Containerfile and the
+      # oracle ELF rebuilt from entity-core-go per the CONFORMANCE-REPORT runbook. In a
+      # standalone-repo lift-out these become a `podman build` + an oracle-vendor step (or a
+      # pre-built image pulled from a trusted internal registry); kept explicit, not assumed.
+      - name: Verify toolchain image + oracle present
+        run: |
+          podman image exists "$IMAGE" || { echo "::error::build $IMAGE from containers/zig-toolchain/Containerfile first"; exit 1; }
+          test -x output/s4-oracles/validate-peer || { echo "::error::vendor the validate-peer oracle ELF (CONFORMANCE-REPORT.md §Reproduce)"; exit 1; }
+
+      # Gate 1 — unit tests (leak-checked under std.testing.allocator), sealed offline.
+      - name: zig build test
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            -w /work/protocol-generator/zig "$IMAGE" zig build test
+
+      # Gate 2 — S2 codec wire-conformance (must stay 69/69, sealed offline).
+      - name: zig build conformance (69/69)
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            -w /work/protocol-generator/zig "$IMAGE" \
+            zig build conformance -- \
+              /work/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+
+      # Gate 3 — S4 live-peer validate-peer --profile core (must stay 0 FAIL). The peer +
+      # the Go oracle ELF run together in the image over loopback, --network=none. run-s4.sh
+      # writes status/CONFORMANCE-REPORT.json; we assert summary.failed == 0 (the green gate).
+      - name: validate-peer --profile core (0 FAIL)
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            "$IMAGE" sh /work/protocol-generator/zig/run-s4.sh
+          python3 - <<'PY'
+          import json, sys
+          s = json.load(open("protocol-generator/zig/status/CONFORMANCE-REPORT.json"))["summary"]
+          print("summary:", s)
+          if s.get("failed", 1) != 0:
+              print("::error::validate-peer core has FAILs — gate not green"); sys.exit(1)
+          PY

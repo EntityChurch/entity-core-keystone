@@ -1,0 +1,67 @@
+# OCaml toolchain image — builds the native OCaml peer
+# (entity-core-protocol-ocaml) per protocol-generator/ocaml/profile.toml.
+# Mirrors containers/node24 + containers/dotnet9 + containers/cargo.
+#
+# S1: builds run in this container, not on the host.
+# S11: pin the toolchain + every opam dependency to a version >= 30 days old.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). An exploratory first pass installed the candidate
+# libraries at "latest compatible"; opam resolved the versions below, which are
+# now pinned EXACTLY here (the node24 story: discover, then pin). Every pin is
+# >= 30 days old at 2026-06-11:
+#   ocaml 5.2.1 (2024) · dune 3.23.1 (May 2025) · digestif 1.3.0 (Apr 2025)
+#   mirage-crypto{,-ec,-rng} 2.1.0 (17 Mar 2026, ~86d). Re-verify on re-pin.
+# CBOR + base58 are hand-rolled in-repo (no opam lib gives canonical ECF; A-005).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build:
+#   podman build -t entity-core-keystone/ocaml-toolchain:latest \
+#     -f containers/ocaml-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps: opam + a C toolchain (mirage-crypto/digestif/zarith compile C),
+# gmp-devel for zarith bignums, plus opam's own build helpers. libsodium-devel is
+# pulled for parity with base (not used by the native crypto path; mirage-crypto
+# is pure-OCaml-over-fiat-C, no libsodium).
+RUN dnf install -y \
+        opam gcc make m4 patch unzip bzip2 tar xz diffutils findutils which \
+        gmp-devel pkgconfig libffi-devel openssl-devel \
+        git curl ca-certificates rsync \
+    && dnf clean all
+
+# Pinned compiler switch. OCaml 5.2.1 (2024-11) — well over the S11 30-day floor,
+# stable, has multicore effects available for the later async (S3) decision.
+# Sandboxing disabled: opam's bubblewrap sandbox needs nested user namespaces
+# that rootless `podman build` does not grant.
+ENV OPAMROOT=/opt/opam \
+    OPAMYES=1 \
+    OPAMCONFIRMLEVEL=unsafe-yes
+RUN opam init --bare --disable-sandboxing --no-setup --yes \
+    && opam switch create ec-ocaml 5.2.1 \
+    && opam clean -a
+
+# Codec libraries, pinned exactly (S11).
+#   digestif         — SHA-256 / SHA-384 (content_hash + agility hashing)
+#   mirage-crypto-ec — Ed25519 sign/verify/keygen (Ed448 NOT supported, issue #112)
+#   mirage-crypto-rng — RNG for key generation (S3 peer identity; deterministic
+#                       Ed25519 signing needs no RNG)
+#   dune             — build system
+# mirage-crypto 2.x dropped the zarith/gmp dependency. CBOR + base58 are
+# hand-rolled in-repo (no opam lib gives canonical ECF; A-005 pattern).
+RUN eval $(opam env --switch=ec-ocaml) \
+    && opam install --yes \
+        dune.3.23.1 digestif.1.3.0 \
+        mirage-crypto.2.1.0 mirage-crypto-ec.2.1.0 mirage-crypto-rng.2.1.0 \
+    && opam list --short --columns=name,version > /opt/opam-resolved-versions.txt 2>&1 || true \
+    && opam clean -a
+
+ENV PATH=/opt/opam/ec-ocaml/bin:$PATH \
+    OPAM_SWITCH_PREFIX=/opt/opam/ec-ocaml
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="ocaml-toolchain"
+LABEL org.entity-core-keystone.version="1"
+
+CMD ["/bin/bash"]

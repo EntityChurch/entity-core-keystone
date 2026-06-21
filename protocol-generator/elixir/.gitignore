@@ -1,0 +1,13 @@
+# Mix / OTP build artifacts (also covered by the repo-root **/_build/).
+/_build/
+/cover/
+/deps/
+/doc/
+erl_crash.dump
+*.ez
+
+# escript output (mix escript.build → ./entity_core_protocol)
+/entity_core_protocol
+
+# Hex package build artifact (mix hex.build → entity_core_protocol-<version>.tar)
+/entity_core_protocol-*.tar

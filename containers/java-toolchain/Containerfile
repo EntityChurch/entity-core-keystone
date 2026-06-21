@@ -1,0 +1,165 @@
+# Java (JVM) toolchain image — builds the native Java peer
+# (entity-core-protocol-java) per protocol-generator/java/profile.toml.
+# Mirrors containers/dotnet9 + containers/ocaml-toolchain + containers/zig-toolchain.
+#
+# S1: AUTHORED ONLY — not built this phase (S1 is research/authoring; the toolchain
+#     is provisioned at S2). Builds run in this container, not on the host.
+# S11: pin the toolchain to an exact version; verify the download cryptographically.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Ages at authoring 2026-06-13:
+#   Temurin JDK   21.0.10+7  (2026-01-21, ~143d) — the LTS toolchain. JDK 21 (not
+#                                                   17) is required for pattern-
+#                                                   matching-for-switch GA (JEP 441)
+#                                                   + virtual-threads GA (JEP 444),
+#                                                   both load-bearing for the peer's
+#                                                   idiom. Temurin/Adoptium is a
+#                                                   REVIEWED VENDOR CHANNEL (the
+#                                                   .NET-feed analogue): the ≥30-day
+#                                                   age floor RELAXES for the JDK,
+#                                                   but the EXACT version pin + a
+#                                                   verified sha256 still stand for
+#                                                   reproducibility + integrity.
+#                                                   (21.0.11+10 of 2026-04-23 is the
+#                                                   newer LTS patch; 21.0.10 is the
+#                                                   conservative well-aged pick.)
+#   Maven         3.9.9                          — the build tool; pinned, reviewed
+#                                                   channel.
+#   JUnit         5.11.4 (2024-12, ~18mo)        — TEST-SCOPE only, never shipped.
+#                                                   Registry-pulled → ≥30-day floor
+#                                                   applies → met. Pre-fetched into
+#                                                   ~/.m2 at BUILD time so the dev
+#                                                   loop runs `mvn -o` offline.
+#   BouncyCastle  bcprov-jdk18on 1.80 (2025-01,  — OPT-IN agility cross-check /
+#                 ~17mo)                            fallback ONLY. The CORE build is
+#                                                   BouncyCastle-FREE (JDK SunEC
+#                                                   covers Ed25519+Ed448; SunMessage-
+#                                                   Digest covers SHA-256+384).
+#                                                   Registry-pulled → ≥30-day → met.
+#                                                   (BC 1.84 of 2026-05-16 is ~28d —
+#                                                   UNDER the floor — NOT picked.)
+# CORE RUNTIME DEPS: ZERO. Ed25519 + Ed448 + SHA-256 + SHA-384 are all in the JDK.
+# CBOR (canonical ECF), base58, and the multicodec-style LEB128 varint are hand-
+# rolled in-repo (no JVM lib gives canonical ECF; the A-005 pattern).
+#
+# WHY THE OFFICIAL TEMURIN TARBALL, NOT `dnf install java`:
+#   Fedora 43's java packages track the distro's current OpenJDK, not the exact
+#   Temurin 21.0.10+7 the peer is pinned to. We pin the exact Temurin LTS release
+#   and VERIFY it against the sha256 published in the Adoptium release API, rather
+#   than take whatever the distro channel currently carries. This is the zig/ocaml-
+#   toolchain pattern (pin the exact compiler + verify) adapted to the JDK.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (S2):
+#   podman build -t entity-core-keystone/java-toolchain:latest \
+#     -f containers/java-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps: download/verify/unpack tooling only. The JDK bundles its own runtime;
+# Maven is fetched as a pinned binary tarball below.
+RUN dnf install -y \
+        curl ca-certificates tar gzip \
+        git findutils which \
+    && dnf clean all
+
+# ── Pinned Temurin JDK 21 LTS ────────────────────────────────────────────────
+# 21.0.10+7, x64-linux. Pin the exact version + the verified sha256. The build
+# FAILS CLOSED if the fetched tarball does not match the digest.
+# The sha256 below is the value published in the Adoptium release API for
+#   OpenJDK21U-jdk_x64_linux_hotspot_21.0.10_7.tar.gz
+# (verified at S1 against api.adoptium.net/v3 — Adoptium is the reviewed vendor
+# channel; re-confirm against the .sha256.txt asset on first build if desired).
+ARG JDK_VERSION=21.0.10+7
+ARG JDK_TAG=jdk-21.0.10%2B7
+ARG JDK_FILE=OpenJDK21U-jdk_x64_linux_hotspot_21.0.10_7.tar.gz
+ARG JDK_SHA256=ea3b9bd464d6dd253e9a7accf59f7ccd2a36e4aa69640b7251e3370caef896a4
+
+RUN set -eux; \
+    url="https://github.com/adoptium/temurin21-binaries/releases/download/${JDK_TAG}/${JDK_FILE}"; \
+    cd /tmp; \
+    curl -fsSLO "${url}"; \
+    echo "${JDK_SHA256}  ${JDK_FILE}" | sha256sum -c -; \
+    mkdir -p /opt/jdk; \
+    tar -C /opt/jdk --strip-components=1 -xzf "${JDK_FILE}"; \
+    rm -f "${JDK_FILE}"; \
+    /opt/jdk/bin/java -version
+
+ENV JAVA_HOME=/opt/jdk
+ENV PATH=/opt/jdk/bin:$PATH
+
+# ── Pinned Apache Maven 3.9.9 ────────────────────────────────────────────────
+# Apache Maven binary tarball (reviewed-channel build tool; exact pin for repro).
+# sha512 is published on the Apache dist mirror alongside the tarball
+# (apache-maven-3.9.9-bin.tar.gz.sha512). MAVEN_SHA512 is a SENTINEL authored at
+# S1 — S1 does NOT fetch/build (phase boundary), so the real digest is filled at
+# the S2 build from downloads.apache.org/maven/maven-3/3.9.9/binaries/...sha512.
+# The build FAILS CLOSED until the sentinel is replaced. (Mirrors the zig-toolchain
+# ZIG_SHA256 sentinel pattern; see A-JAVA-006.)
+ARG MAVEN_VERSION=3.9.9
+# Verified at S2 (2026-06-13) against the published .sha512 on BOTH
+# downloads.apache.org and archive.apache.org/dist (byte-identical) for
+# apache-maven-3.9.9-bin.tar.gz. Build fails closed on mismatch. (A-JAVA-006 resolved.)
+ARG MAVEN_SHA512=a555254d6b53d267965a3404ecb14e53c3827c09c3b94b5678835887ab404556bfaf78dcfe03ba76fa2508649dca8531c74bca4d5846513522404d48e8c4ac8b
+# NOTE (S2): dlcdn.apache.org only mirrors CURRENT releases — 3.9.9 has rolled off
+# it (404) now that 3.9.x advanced. archive.apache.org/dist is the permanent,
+# checksum-stable archive (the .sha512 above matches both). Use the archive so the
+# pinned version stays fetchable for reproducible builds.
+RUN set -eux; \
+    url="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz"; \
+    cd /tmp; \
+    curl -fsSLO "${url}"; \
+    if [ "${MAVEN_SHA512}" = "REPLACE_WITH_VERIFIED_SHA512_AT_S2" ]; then \
+        echo "FATAL: MAVEN_SHA512 sentinel — fill the real sha512 from the Apache dist .sha512 file at S2 before trusting this image"; \
+        exit 1; \
+    fi; \
+    echo "${MAVEN_SHA512}  apache-maven-${MAVEN_VERSION}-bin.tar.gz" | sha512sum -c -; \
+    mkdir -p /opt/maven; \
+    tar -C /opt/maven --strip-components=1 -xzf "apache-maven-${MAVEN_VERSION}-bin.tar.gz"; \
+    rm -f "apache-maven-${MAVEN_VERSION}-bin.tar.gz"; \
+    /opt/maven/bin/mvn -version
+
+ENV MAVEN_HOME=/opt/maven
+ENV PATH=/opt/maven/bin:$PATH
+
+# ── Pre-fetch the pinned Maven deps into the image ~/.m2 (build-time network) ──
+# After this layer the image needs NO network: the dev loop runs `mvn -o`
+# (offline) under --network=none and Maven resolves JUnit (+ the opt-in
+# BouncyCastle) from the local repository. The pre-fetch uses a tiny pom whose
+# dependencies are EXACTLY the pinned versions; `dependency:go-offline` populates
+# /root/.m2. (Authored at S1; runs at the S2 build. The exact deps mirror
+# protocol-generator/java/profile.toml [deps].)
+#   - org.junit.jupiter:junit-jupiter:5.11.4        (test-scope; JUnit 5)
+#   - org.apache.maven.plugins:maven-surefire-plugin:3.5.2
+#   - org.bouncycastle:bcprov-jdk18on:1.80          (OPT-IN agility cross-check)
+COPY containers/java-toolchain/prefetch-pom.xml /tmp/prefetch/pom.xml
+RUN set -eux; \
+    cd /tmp/prefetch; \
+    mvn -B -q dependency:go-offline \
+        org.apache.maven.plugins:maven-dependency-plugin:3.8.1:resolve-plugins \
+        -Dmaven.repo.local=/root/.m2/repository; \
+    # surefire resolves its JUnit-platform PROVIDER (+ junit-platform-launcher)
+    # LAZILY at test-execution time, not via go-offline. Run a real `mvn test`
+    # over a trivial JUnit 5 test here (network up) so those provider artifacts land
+    # in ~/.m2 — otherwise `mvn -o test` fails offline. (S2 fix; mirrors how the
+    # other JVM-adjacent toolchains seed the test provider into the image.)
+    mkdir -p src/test/java; \
+    printf '%s\n' \
+      'import org.junit.jupiter.api.Test;' \
+      'import static org.junit.jupiter.api.Assertions.assertTrue;' \
+      'class PrefetchSmokeTest { @Test void ok() { assertTrue(true); } }' \
+      > src/test/java/PrefetchSmokeTest.java; \
+    mvn -B -q test -Dmaven.repo.local=/root/.m2/repository; \
+    # explicitly seed the opt-in BouncyCastle agility cross-check jar too
+    mvn -B -q org.apache.maven.plugins:maven-dependency-plugin:3.8.1:get \
+        -Dartifact=org.bouncycastle:bcprov-jdk18on:1.80 \
+        -Dmaven.repo.local=/root/.m2/repository || true; \
+    rm -rf /tmp/prefetch/target /tmp/prefetch/src
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="java-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.jdk="temurin-21.0.10+7"
+LABEL org.entity-core-keystone.maven="3.9.9"
+
+CMD ["/bin/bash"]

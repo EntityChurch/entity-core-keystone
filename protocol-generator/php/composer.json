@@ -1,0 +1,34 @@
+{
+    "name": "entity-core/protocol",
+    "description": "entity-core-protocol-php — a native PHP core protocol peer (V7 Layers 0-4). Hand-rolled canonical ECF codec; ext-sodium Ed25519 + stdlib SHA-256/384; GMP uint64 head-form carrier.",
+    "type": "library",
+    "license": "Apache-2.0",
+    "keywords": ["entity-core", "cbor", "ecf", "ed25519", "protocol", "peer"],
+    "authors": [
+        { "name": "Entity Core Protocol contributors" }
+    ],
+    "require": {
+        "php": ">=8.3",
+        "ext-sodium": "*",
+        "ext-gmp": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "11.2.0"
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "autoload": {
+        "psr-4": { "EntityCore\\": "src/" }
+    },
+    "autoload-dev": {
+        "psr-4": { "EntityCore\\Tests\\": "tests/" }
+    },
+    "bin": ["bin/peer"],
+    "scripts": {
+        "test": "phpunit"
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true
+    }
+}

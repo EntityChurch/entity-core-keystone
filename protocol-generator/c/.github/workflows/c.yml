@@ -1,0 +1,83 @@
+# CI — entity-core-protocol-c (peer #10) conformance gates.
+#
+# Authored at S5 (PHASE-S5 §"CI config"). Runs the green gates entirely inside the pinned
+# `c-toolchain` Podman image, sealed-offline (`--network=none`): the peer is libsodium +
+# hand-rolled code only (libsodium is pre-installed in the image, so nothing is fetched at
+# build time), and the Go `validate-peer` oracle is a CGO_ENABLED=0 ELF that runs in the
+# same image sharing one loopback. Each run-s*.sh wraps its own `podman run` (unlike the
+# Zig workflow, which wraps the script in podman) — so the steps below invoke the scripts
+# directly on a Podman-capable runner.
+#
+# DELIBERATELY NOT WIRED TO ANY REMOTE/CD. There is no deploy step, no registry push, no
+# package publish — `/entity-rosetta` never publishes (lifecycle §Publishing); the operator
+# decides. C has no central registry anyway (publishing is `make dist` + pkg-config). This
+# file documents the reproducible offline gate; whether/where it actually runs (this peer's
+# standalone repo's CI, or a keystone-wide CI home) is an operator/arch decision (see
+# status/ARCHITECTURE-REVIEW.md §Publishing-options). It is committed for reviewability, not
+# because a runner is attached.
+#
+# Assumptions when wired: the runner has Podman, the `c-toolchain:latest` image is built
+# (containers/c-toolchain/Containerfile) and the oracle ELF is vendored to
+# output/s4-oracles/validate-peer (rebuild per status/CONFORMANCE-REPORT.md §Reproduce at
+# the v7.75 cohort baseline b30a589). Paths below assume the keystone repo root is the
+# checkout root.
+
+name: c-conformance
+
+on:
+  push:
+    paths:
+      - 'protocol-generator/c/**'
+      - 'protocol-generator/shared/spec-data/**'
+      - 'protocol-generator/shared/test-vectors/**'
+  pull_request:
+    paths:
+      - 'protocol-generator/c/**'
+  workflow_dispatch: {}
+
+# No deploy/publish permissions — read-only.
+permissions:
+  contents: read
+
+env:
+  IMAGE: entity-core-keystone/c-toolchain:latest
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The toolchain image is built from containers/c-toolchain/Containerfile and the
+      # oracle ELF rebuilt from entity-core-go per the CONFORMANCE-REPORT runbook. In a
+      # standalone-repo lift-out these become a `podman build` + an oracle-vendor step (or a
+      # pre-built image pulled from a trusted internal registry); kept explicit, not assumed.
+      - name: Verify toolchain image + oracle present
+        run: |
+          podman image exists "$IMAGE" || { echo "::error::build $IMAGE from containers/c-toolchain/Containerfile first"; exit 1; }
+          test -x protocol-generator/c/output/s4-oracles/validate-peer || { echo "::error::vendor the validate-peer oracle ELF (CONFORMANCE-REPORT.md §Reproduce, b30a589)"; exit 1; }
+
+      # Gate 1 — S2 codec wire-conformance (must stay 69/69) + self-tests, built + run under
+      # ASan/LSan/UBSan (a leak/UAF/overflow/UB is a test failure). Sealed offline.
+      - name: make test (codec 69/69, ASan/LSan/UBSan)
+        run: sh protocol-generator/c/run-s2.sh
+
+      # Gate 2 — S4 live-peer validate-peer --profile core (must stay 0 FAIL). The peer +
+      # the Go oracle ELF run together in the image over loopback, --network=none. run-s4.sh
+      # writes status/CONFORMANCE-REPORT.json; we assert summary.failed == 0 (the green gate).
+      - name: validate-peer --profile core (0 FAIL)
+        run: |
+          sh protocol-generator/c/run-s4.sh
+          python3 - <<'PY'
+          import json, sys
+          s = json.load(open("protocol-generator/c/status/CONFORMANCE-REPORT.json"))["summary"]
+          print("summary:", s)
+          if s.get("failed", 1) != 0:
+              print("::error::validate-peer core has FAILs — gate not green"); sys.exit(1)
+          PY
+
+      # Gate 3 — §6.11 origination-core reentry over real two-peer TCP (3/3) against the Go
+      # entity-peer reference. Sealed offline.
+      - name: origination-core reentry (3/3)
+        run: sh protocol-generator/c/run-origination-core.sh

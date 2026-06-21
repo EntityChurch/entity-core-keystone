@@ -1,0 +1,16 @@
+{
+  "_comment": "The degenerate `default -> *` policy — the explicit, conformant replacement for the DEPRECATED --debug-open-grants flag (v7.74 §6.9a.4; removed v7.75). Every authenticating identity receives a wide-open admin grant covering both the local namespace (bare *) and any peer's namespace (/*/*). Use ONLY to drive the validate-peer grant-gated surface; NEVER a production default.",
+  "version": 1,
+  "entries": [
+    {
+      "grantee": "default",
+      "grants": [
+        {
+          "handlers": { "include": ["*"] },
+          "resources": { "include": ["*", "/*/*"] },
+          "operations": { "include": ["*"] }
+        }
+      ]
+    }
+  ]
+}

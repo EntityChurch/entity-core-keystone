@@ -1,0 +1,34 @@
+--  Entity_Core.Protocol — parent of the peer-machinery layer (S3).
+--
+--  The peer (V7 Layers 1-4 + foundation) sits ON TOP of the S2 codec
+--  (Entity_Core.Codec.*) + crypto (Entity_Core.Crypto). The codec stays a pure,
+--  synchronous unit; concurrency enters HERE, expressed in the Ada idiom the
+--  profile fixes:
+--
+--    * the §4.8 content store + tree index live behind a PROTECTED OBJECT
+--      (Entity_Core.Protocol.Store) — mutual exclusion is enforced by the
+--      LANGUAGE, so the store-race fall-overs that drove §4.8 into the floor
+--      (Zig/CL, v7.75) are STRUCTURALLY unrepresentable here. This is the
+--      headline concurrency finding of the peer (profile [concurrency]).
+--    * one TASK per accepted connection (Entity_Core.Protocol.Transport) reads
+--      frames, demuxes EXECUTE_RESPONSE replies through a PROTECTED-OBJECT
+--      request_id map (§6.11 / N7), and dispatches each inbound EXECUTE — inbound
+--      stays concurrent with outbound (§4.8 / N6) because each connection's task
+--      runs on its own GNAT OS thread (no cooperative-pool starvation; §7b).
+--    * the verdict logic (Entity_Core.Protocol.Capability) carries DESIGN-BY-
+--      CONTRACT aspects (Pre/Post) where they earn it — the Ada rigor seam.
+--
+--  Children:
+--    .Cbor_Util  — map/array builders + typed field reads + lowercase hex
+--    .Entity     — materialized {type, data, content_hash} (§1.1/§3.4)
+--    .Envelope   — the §3.1 envelope (root + included)
+--    .Identity   — seed -> peer_id / system/peer / sign / verify (L1)
+--    .Store      — the §4.8 protected-object content store + tree index
+--    .Capability — the §5 verdict core (L3)
+--    .Wire       — §1.6 framing + EXECUTE / EXECUTE_RESPONSE builders (L2)
+--    .Handlers   — handler contract + the MUST handlers + §6.5 dispatch (the brain)
+--    .Transport  — TCP listener + dialer + connection tasks + demux (L4)
+--    .Host       — standalone host main (--port / --seed / --validate ...)
+package Entity_Core.Protocol is
+   pragma Pure;
+end Entity_Core.Protocol;

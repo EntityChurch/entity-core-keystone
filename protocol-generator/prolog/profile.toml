@@ -1,0 +1,265 @@
+# entity-core-protocol-prolog — Language Profile
+#
+# EXPERIMENTAL PROBE (logic / declarative paradigm). Authored FRESH in S1 from the
+# V7 spec + SWI-Prolog ecosystem research — NOT ported from the prior peers'
+# profiles. Prolog is the FIRST logic-programming peer: Horn-clause resolution,
+# unification, backtracking search, the cut, and a relational (not functional, not
+# imperative) program model. This is the most paradigm-distant probe attempted so
+# far — further from the substrate than even Common Lisp (peer #6), because the
+# core computation model (SLD-resolution over a clause database) is not obviously a
+# match for byte-exact framed-TCP binary I/O.
+#
+# *** THE EXPERIMENTAL QUESTION THIS PROFILE EXISTS TO ANSWER ***
+# Can byte-exact framed-TCP binary I/O + canonical CBOR be expressed in SWI-Prolog
+# WITHOUT so much imperative scaffolding that the "idiom" is gone? S1's job is to
+# author the full set honestly and then make a candid go/defer call. The profile
+# below is authored as if S2 will proceed (so the assessment rests on real design
+# work, not hand-waving), but arch/PROFILE-RATIONALE.md carries the honest
+# "does this idiom map?" verdict — read it alongside this file. See A-PL-001.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value is
+# logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "prolog"
+name              = "SWI-Prolog"
+tier              = "experimental-probe"      # not a committed cohort slot; a paradigm probe (logic programming)
+package_name      = "entity-core-protocol-prolog"  # keystone peer id
+runtime           = "prolog-toolchain"        # references containers/<runtime>/Containerfile (SWI-Prolog image)
+
+[codec]
+# strategy: NATIVE (primitives + crypto native), with a documented FFI fallback.
+# The two halves, assessed in S1 (verify the exact predicate signatures at S2 —
+# swipl is not runnable under the S1 no-build boundary, so library *availability*
+# is asserted from SWI-Prolog documentation and flagged A-PL-002 for S2 confirm):
+#   (1) Crypto: SWI-Prolog ships `library(crypto)` (the `ssl` pack / bundled
+#       extension, backed by the system OpenSSL). It provides ed25519_* helpers
+#       (ed25519_new_key / ed25519_sign / ed25519_verify) on modern OpenSSL-3
+#       builds, plus crypto_data_hash/3 for SHA-256/384/512. So the §9.1 floor
+#       (Ed25519 + SHA-256) is reachable natively IF the in-container OpenSSL is
+#       v3+ and library(crypto) exposes the ed25519 predicates (A-PL-002 gates this
+#       at S2). Ed448 (agility higher bar) availability via library(crypto) is
+#       LESS certain — see ed448_library below; FFI is the documented fallback,
+#       mirroring OCaml A-OC-002 / Zig A-ZIG-002.
+#   (2) CBOR: no SWI-Prolog CBOR pack gives ECF canonicality — the A-005 pattern
+#       every prior native peer hit (6/6). Hand-roll the canonical layer regardless.
+# Net: like the CL/Elixir/Zig native peers, the only third-party RUNTIME concern is
+# crypto (here via the bundled library(crypto)/OpenSSL, not a pack); CBOR + base58 +
+# varint are hand-rolled in-repo. ffi remains the documented fallback (and is the
+# MORE LIKELY landing zone for this peer than for the others — see RATIONALE
+# "does this idiom map?" — both for Ed448 and, if the declarative codec spike at S2
+# proves too imperative, possibly for the whole codec via the C-ABI).
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │ REVISED AT S2 (2026-06-15) — strategy flipped native → FFI. EMPIRICAL.    │
+# │ The S2 spike RAN and passed 20/20 byte-exact (float 14/14, map_keys 6/6): │
+# │ no engine wall. But two facts decided the codec path:                     │
+# │  (1) library(crypto) in swipl 9.2.9 exports NO ed25519_* predicates at    │
+# │      all (existence_error) — not just the expected Ed448 gap. The WHOLE   │
+# │      signature floor is an FFI obligation (A-PL-002 RESOLVED NEGATIVE).   │
+# │  (2) shortest-float is ~112 lines of pure IEEE-754 bit arithmetic, zero   │
+# │      DCG idiom (A-PL-004). It works, but it's floor scaffolding.          │
+# │ DECISION (operator, 2026-06-15): this is exactly what FFI is for. Let the │
+# │ C-ABI (libentitycore_codec) own canonical CBOR + crypto; let Prolog own   │
+# │ the RELATIONAL CORE — capability-chain reconciliation (§5.5), the §5.2    │
+# │ auth/authz trichotomy as clause heads, dispatch, the §3.9 store as the    │
+# │ clause DB, message-queue reactivity. SHA stays native (library(crypto)    │
+# │ crypto_data_hash works). Goal = SHOW THE PROTOCOL EXPRESSES AS LOGIC, not │
+# │ performance. See status/HANDOFF-PROLOG-REVIVAL.md for the full runbook.   │
+# └──────────────────────────────────────────────────────────────────────────┘
+strategy          = "ffi"   # was "native"; flipped at S2 — see banner above
+# CBOR: hand-rolled canonical encoder/decoder (src/cbor.pl). No SWI CBOR pack offers
+# ECF's guarantees — length-then-lex map-key ordering on ENCODED key bytes,
+# shortest-float ladder (f16/f32/f64 minimisation), recursive major-type-6 tag
+# rejection, full uint64/nint range. SWI has NATIVE UNBOUNDED INTEGERS (GMP
+# bignums), so the full uint64/nint range is carried with NO special-casing — the
+# same advantage CL/Elixir noted, distinct from OCaml int63 / C# ulong / TS bigint /
+# Zig u64-trap. Encoder: DCG (definite-clause grammar) over a list/difference-list of
+# byte codes — the declarative-idiomatic way to describe a binary grammar in Prolog;
+# whether the DCG stays idiomatic under canonical-ordering + shortest-float is THE
+# S1 risk (A-PL-001 / A-PL-004). Decoder: phrase/3 over a code list with the binary
+# stream read into a code list first. Spike the map_keys + float vectors at S2.
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native", impl = "DCG over byte-code lists (phrase/2,3)" }
+# Ed25519: library(crypto) — SWI-Prolog's bundled crypto extension over system
+# OpenSSL. Predicates (to byte-verify at S2, A-PL-002): ed25519_new_key/1 (or
+# crypto_generate_key), ed25519_sign/4, ed25519_verify/4. Seed->pubkey: derive the
+# public key from the 32-byte seed via the EVP_PKEY ed25519 path. If the bundled
+# library(crypto) lacks the ed25519_* predicates on the pinned image's OpenSSL,
+# the FFI fallback (C-ABI ec_ed25519_*) is the documented route (A-PL-003).
+ed25519_library   = { name = "library(crypto)", version = "swipl-bundled (OpenSSL-3 backed)", api = "ed25519_{new_key,sign,verify} | crypto_data_hash" }
+# Ed448 (crypto-agility HIGHER BAR, v7.67): UNCERTAIN via library(crypto). OpenSSL-3
+# implements Ed448, but SWI's library(crypto) historically exposed ed25519 helpers
+# without a guaranteed ed448 wrapper. STRATEGY = ffi-fallback-likely: source Ed448
+# over the C-ABI (libentitycore_codec, ec_ed448_{seed_to_pubkey,sign,verify}),
+# scoped to an OPT-IN agility module so the shipped Ed25519+SHA-256 floor peer stays
+# self-contained — EXACTLY the OCaml A-OC-002 hybrid shape, and corroborating the
+# Zig A-ZIG-002 / OCaml finding that "a second managed crypto provider" does not
+# generalize to languages without a BouncyCastle-equivalent. If S2 confirms
+# library(crypto)+OpenSSL-3 exposes Ed448 directly (an `evp_*` generic-key path),
+# this collapses to native; logged A-PL-003, resolved at S2.
+ed448_library     = { name = "entitycore_agility (FFI: libentitycore_codec) OR library(crypto) if OpenSSL-3 Ed448 exposed", version = "C-ABI 1.1", strategy = "ffi-hybrid-likely", api = "ec_ed448_{seed_to_pubkey,sign,verify} | evp generic-key Ed448" }
+# SHA-256 (content_hash floor) + SHA-384 (agility hashing): library(crypto)
+# crypto_data_hash/3 with algorithm(sha256) / algorithm(sha384). Native, bundled,
+# OpenSSL-backed — the most certain crypto surface (A-PL-002 confirms only the exact
+# option spelling, not availability).
+sha256_source     = "library(crypto) crypto_data_hash/3 (algorithm(sha256) + algorithm(sha384) for agility)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (src/base58.pl); no pack
+varint_handling   = "native"                  # LEB128 multikey varint (N1, §7.3), src/varint.pl — DCG-described
+
+[error_model]
+# DELIBERATE idiom — the logic-programming error story is a TWO-LEVEL split that no
+# prior peer had, and it is the cleanest paradigm seam Prolog offers:
+#   (1) FAILURE (the predicate fails / backtracks) for the IN-BAND "this does not
+#       hold" outcomes — the relational analogue of a boolean/Option. A decode that
+#       does not unify with a valid ECF term simply FAILS.
+#   (2) throw/catch ISO EXCEPTIONS (error(Formal, Context) terms) for the
+#       OUT-OF-BAND hard rejects — non-canonical input, truncated input, tag-6
+#       rejection, bad seed — where silent failure would be wrong (the caller must
+#       distinguish "not present" from "malformed"). This matches the ISO Prolog
+#       convention: type_error/2, domain_error/2, and a custom
+#       entity_core_error(Kind, Detail) formal term family.
+# The codec public surface THROWS on N2/N3 violations (hard reject, no backtracking
+# recovery — a non-canonical encoding must not silently "fail and try another
+# clause"); it FAILS only for genuine "this term is not that" relational queries.
+# This is the Prolog-native analogue of CL conditions / OCaml result / Zig error-
+# unions / exceptions — and the failure-vs-exception boundary is itself a probe of
+# whether any spec error-path wants relational failure vs a thrown term (A-PL-006).
+style             = "failure+exceptions"      # "exceptions" | "result" | "either" | "errno" | "tagged_tuple" | "conditions" | "failure+exceptions"
+exception_family  = "error(entity_core_error(Kind,Detail), Context)"  # ISO error/2 formal-term convention
+leaf_kinds        = "non_canonical_ecf | truncated_input | tag_rejected | bad_seed | unsupported_content_hash_format | unsupported_key_type"
+failure_surface   = "decode-as-relation predicates FAIL (backtrackable) for 'not that term'; THROW for malformed (N2/N3 hard reject)"
+det_discipline    = "codec entry points are deterministic (cut / once/1 / det) — NO unintended backtracking across the wire boundary; a wire encode is a function, not a choice point"
+
+[async]
+# DELIBERATE idiom decision — the Prolog analogue of C#-Task / TS-Promise /
+# OCaml-eio / Elixir-processes / CL-sb-thread / Zig-std.Thread. SWI-Prolog has REAL
+# OS THREADS via library(thread) (thread_create/3, message queues, mutexes) — they
+# are native preemptive OS threads, NOT green threads or coroutines. For a
+# --profile core peer the N6/N7 reentrancy invariants (inbound concurrent with
+# outbound dispatch; reentrant request_id demux; §6.11 reentry) are satisfied by
+# ONE NATIVE THREAD PER CONNECTION plus a request_id -> message-queue correlation
+# table — the same one-thread-per-conn shape CL/OCaml/Zig converged on. SWI message
+# queues (thread_send_message/thread_get_message) are the idiomatic correlation
+# primitive (cleaner than a raw condvar). §7b store model: the §4.8 data-race-safe
+# store is a thread-safe predicate database — SWI offers assertz/retract under an
+# IMPLICIT per-predicate lock (logical-update view), but a multi-step
+# read-modify-write needs an EXPLICIT with_mutex/2 critical section to be race-safe
+# (the Zig/CL store-race lesson — A-PL-007). TCP_NODELAY set on the accepted stream
+# (tcp_setopt or setsockopt via socket lib). No blocking syscall holds a shared
+# lock. See A-PL-007.
+style             = "native-threads"          # "sync" | "native-threads" | "green-threads" | "actor"
+threading_lib     = "library(thread)"         # SWI native OS threads; thread_create/3 + message queues + mutexes
+request_demux     = "request_id -> message_queue table (thread_send_message / thread_get_message)"  # reentrant request_id correlation; see N7
+store_model       = "thread-safe predicate DB (assertz/retract, logical-update view) + with_mutex/2 for multi-step RMW"  # §4.8 store-safety; A-PL-007
+tcp_nodelay       = true                       # set on accepted streams (§7b); tcp_setopt(Socket, nodelay(true))
+
+[naming]
+# SWI-Prolog-native conventions — differ from every prior peer. Prolog has a HARD
+# lexical rule (not a style choice): an identifier starting UPPERCASE or `_` is a
+# VARIABLE; an atom/functor MUST start lowercase (or be quoted). So:
+predicate_names   = "snake_case"              # functors/predicates: content_hash, sign_and_verify, peer_id/2 (lowercase-mandatory)
+predicate_arity   = "name/arity"              # predicates referenced as name/arity: encode_cbor/2, decode_cbor/2
+variable_names    = "PascalCase or _Leading"  # logic variables MUST start uppercase or _ : Bytes, PubKey, _Ignored (LANGUAGE-ENFORCED, not style)
+atom_names        = "snake_case atoms"        # constants are atoms: max_depth, identity_multihash, ed25519 (NOT a +earmuff+ form — Prolog has no constant keyword; atoms ARE the constants)
+module_names      = "snake_case"              # modules: entity_core, entity_core_cbor (module/2 directive)
+file_names        = "snake_case.pl"           # cbor.pl, peer_id.pl, base58.pl (one logical module per file)
+dcg_nonterminals  = "snake_case//arity"       # DCG rules use //arity: cbor_value//1, varint//1 (the binary-grammar idiom)
+
+[build]
+# SWI-Prolog has no compile gate (dynamically loaded clause DB); "build" is loading
+# the modules + a smoke consult. No central build tool like cargo/dotnet — the
+# ecosystem norm is a load file (load.pl / a Makefile) + the `pack` system for
+# distribution. Dependency-minimization stance: hand-rolled test harness, no pack
+# dependency beyond the bundled library(crypto)/library(socket)/library(thread).
+build_tool        = "swipl (consult/load file)"   # no separate build system; modules are consulted
+build_command     = "swipl -g 'use_module(library(entity_core))' -g halt"   # load smoke (loads = the build for a clause DB)
+test_command      = "swipl -g run_conformance_tests -t halt -l test/run_conformance.pl"  # hand-rolled harness; byte-identity asserts
+pack_command      = "swipl -g 'pack_install(.)' -t halt"   # SWI pack build (S5); local .pl tree -> pack archive
+
+[layout]
+# SWI-Prolog `pack` layout convention.
+pack_file         = "pack.pl"                 # SWI pack metadata (name/version/author/requires) — the .asd/Cargo.toml analogue
+prolog_dir        = "prolog/"                 # SWI pack convention: library sources live under prolog/ (entry modules)
+src_dir           = "prolog/"                 # the entity_core modules (cbor.pl, peer_id.pl, ...) — SWI packs put code in prolog/
+test_dir          = "test/"                   # conformance harness + selftest
+module_name       = "entity_core"             # primary module
+entry_point       = "prolog/entity_core.pl"   # re-export module (the pack entry)
+
+[publishing]
+# SWI-Prolog's distribution channel is the `pack` system (pack_install, the
+# https://www.swi-prolog.org/pack/list registry). Publishing = host a git repo with
+# a pack.pl + tagged release; the registry indexes the git URL. The de-facto norm,
+# analogous to Quicklisp for CL (git-indexed, not a binary registry like NuGet).
+registry          = "swi-prolog-pack"         # the SWI-Prolog community pack registry
+registry_url      = "https://www.swi-prolog.org/pack/list"
+package_id        = "entity_core_protocol"    # the pack name submitted to the registry
+license_expression = "Apache-2.0"
+repository_url    = ""                         # TBD on first publish (same as OCaml/Elixir/CL)
+maintainers       = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default. SWI-Prolog itself is BSD-2; the pack ecosystem is license-mixed with no mandate — keep the Apache-2.0 default (explicit patent grant).
+
+[testing]
+# Hand-rolled harness (test/run_conformance.pl + test/selftest.pl) — NO test-pack
+# dependency, honoring the dependency-minimization stance (the OCaml/CL/Zig
+# precedent declining the ecosystem-standard framework for the same reason). SWI
+# ships library(plunit) (the ecosystem-standard unit test framework) IN THE BASE
+# install — so plunit is "free" (no extra dep) and MAY be layered for a richer S5
+# report; the conformance harness itself loads the normative fixture and checks
+# byte-identity directly. plunit is bundled, so using it costs no supply-chain.
+framework         = "hand-rolled"
+plunit_optional   = true                      # library(plunit) ships with SWI (no dep); layerable at S5 for a richer report
+
+[container]
+base_image        = "entity-core-keystone/prolog-toolchain:latest"
+build_in_container = true
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/prolog entity-core-keystone/prolog-toolchain:latest sh -c 'swipl -g run_conformance_tests -t halt -l test/run_conformance.pl'"
+
+[idiom]
+# Logic-programming hints that don't fit elsewhere. These are the paradigm seams.
+dcg_binary_grammar      = true                # the headline idiom: CBOR/varint described as DCG (definite-clause grammars) over byte-code lists — the declarative way to specify a binary wire format. THE probe: does canonical ECF (ordering + shortest-float) survive the DCG idiom, or collapse to imperative phrase/imperative-arithmetic glue? (A-PL-004)
+unification_decode      = true                # decode = unify the byte stream against a CBOR-term pattern; the natural Prolog "parse" is unification + backtracking
+native_bignum           = true                # SWI integers are unbounded GMP bignums — NO uint64/int64 head-form native-int trap (matches CL/Elixir; vs OCaml int63 / C# ulong / TS bigint / Zig u64). The head-form carrier is just an integer.
+det_codec               = true                # codec entry points are DETERMINISTIC (once/1, cut) — an encode/decode is a function, not a backtrackable relation; uncontrolled backtracking across the wire is a correctness bug (A-PL-005)
+ground_terms_on_wire    = true                # wire data are GROUND terms (no unbound variables cross the boundary); reject partial/unbound on encode
+code_lists_for_bytes    = true                # bytes are lists of integer codes 0..255 (the SWI idiom; or strings/codes); read via read_string/get_byte on type(binary) streams. The "octet vector" analogue. ASSESS: code-list O(n) append vs difference-lists for the encoder (A-PL-004)
+binary_stream_io        = true                # framed-TCP I/O uses set_stream(S, type(binary)) + get_byte/put_byte/read_string — the IMPERATIVE seam where the logic idiom is thinnest (A-PL-001 core risk)
+case_sensitive_atoms    = true                # Prolog atoms are case-EXACT (unlike CL's upcasing reader); keep external string/byte data case-exact (lowercase %02x hex for §3.4/§3.5 tree-paths — A-CL-009 settled)
+no_compile_gate         = true                # dynamic clause DB; NO static type/coverage check — correctness rests entirely on the conformance corpus (the CL dynamic-typing caveat, sharper here)
+swipl_version           = "9.2.9"             # see [deps]
+
+[deps]
+# Exact pins (S11). Toolchain pins mirrored in
+# containers/prolog-toolchain/Containerfile. The third-party RUNTIME surface is
+# library(crypto) (bundled with SWI, backed by the in-image OpenSSL) — NOT a
+# separately-pinned pack. CBOR/base58/varint are hand-rolled; the harness is
+# hand-rolled (library(plunit) is bundled, optional). Ed448, if not exposed by the
+# bundled library(crypto), comes over the C-ABI (libentitycore_codec, pinned
+# separately at the FFI layer) — A-PL-003.
+swipl             = "9.2.9"                    # SWI-Prolog 9.2.9 — a STABLE-series release. 2024-09 (~21 months at authoring 2026-06-14) — far over the S11 30-day floor. The 9.2.x line is the LTS/stable branch (even minor = stable in SWI's scheme); 9.3.x is the development branch and is NOT used. Verify the exact patch tag ships in fedora:43 or source-build (A-PL-008). Source-built or distro-packaged in-container for reproducibility.
+openssl           = "image-provided (fedora:43 openssl 3.x)"  # library(crypto) links the system OpenSSL; the agility/Ed25519 surface depends on it being OpenSSL-3 (A-PL-002). fedora:43 ships OpenSSL 3.x. Recorded at build.
+# library(crypto), library(socket), library(thread), library(dcg/basics),
+# library(plunit) all ship INSIDE the SWI-Prolog distribution — no separate pin
+# (version = whatever swipl 9.2.9 bundles, recorded at build). The C-ABI FFI lib
+# (if Ed448 needs it) is pinned at the ffi-generator layer, not here.
+
+[spec]
+v7_version_pinned = "7.75"                     # latest spec-data SNAPSHOT available (now a real snapshot — header reads "Version: 7.75"); profile + codec derive from it. Newer than CL's v7.72 read.
+codec_corpus      = "v7.75"                    # ECF corpus at the pinned snapshot; confirm ENTITY-CBOR-ENCODING.md SHA at S2 (no wire-format change v7.71->v7.75 expected, but verify rather than assume — A-PL-009)
+oracle_commit     = "75c532e"                  # go oracle commit for S4; target --profile core = 576 total · 0 FAIL · 89 skip (recorded now for S4)
+# PEER_ID CONSTRUCTION (A-PL-010, corroborates A-ZIG-001 / A-OC-007 / A-CL-002):
+# derive the Ed25519 peer_id from the §1.5 v7.65 CANONICAL-FORM TABLE — hash_type =
+# 0x00 identity-multihash, digest = the RAW public-key bytes (no hash, for the ≤32B
+# Ed25519 pubkey) — and IGNORE the stale §7.4 / §1.5-line-436 SHA256(pubkey)
+# skeleton. CONFIRMED in spec-data/v7.75: §1.5 line 459 declares Ed25519 -> 0x00
+# identity-multihash, "The digest IS the public_key (v7.64)"; line 446-447 confirm
+# "digest = public_key (raw 32 bytes)". v7.73 E1 already RECONCILED §7.4 to defer to
+# the §1.5 table — so on the v7.75 snapshot this is no longer even a contradiction,
+# just a settled fact baked in proactively to avoid the S4 handshake debug cycle
+# that Zig/OCaml burned. peer_id wire form = Base58(key_type || hash_type || digest).
+# COHORT-SETTLED TRAPS pre-resolved here (do not re-burn): lowercase %02x hex for
+# §3.4/§3.5 tree-paths (A-CL-009); §5.2 401/403/401-unresolvable trichotomy;
+# entity `data` is an arbitrary ECF value NOT necessarily a map (A-JAVA-010);
+# §4.10 chain-depth pre-check -> 400 chain_depth_exceeded (depth 64), 16 MiB -> 413
+# payload_too_large; §7b store-race-safety + TCP_NODELAY + no blocking syscalls on
+# the cooperative path.

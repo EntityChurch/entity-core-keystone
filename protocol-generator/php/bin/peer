@@ -1,0 +1,88 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Standalone S4-ready host: boots a peer on a localhost port and prints a
+ * `LISTENING <port>` line so a harness can scrape the bound port, then runs the
+ * single-thread {@see EntityCore\EventLoop} forever. Flags:
+ *
+ *   --port N               bind port (0 = auto, the default)
+ *   --seed B               seed byte (repeated 32×) for a deterministic identity
+ *   --name NAME            load a persistent Ed25519 identity from the standard
+ *                          on-disk location ~/.entity/peers/NAME/keypair (the
+ *                          entity-core PEM keypair: base64 of a 32-byte seed
+ *                          between BEGIN/END ENTITY PRIVATE KEY lines — the Go
+ *                          entity-peer --name / peer-manager convention). Lets the
+ *                          validator's multisig accept-path probe co-sign AS the
+ *                          peer (crypto.LookupKeypairByPeerID).
+ *   --debug-open-grants    degenerate [default → *] admin seed (non-conformant, F27)
+ *   --validate             bootstrap the §7a system/validate/* conformance handlers
+ *
+ * The §7a handlers are OFF by default (a standing dispatch-outbound originator must
+ * never ship live); --validate opts in (the keystone cohort mechanism).
+ */
+
+require __DIR__ . '/../vendor/autoload.php';
+
+use EntityCore\Identity;
+use EntityCore\KeyType;
+use EntityCore\Peer;
+use EntityCore\Transport;
+
+/** Load the 32-byte Ed25519 seed from ~/.entity/peers/NAME/keypair (PEM body). */
+function loadSeedFromName(string $name): string
+{
+    $home = \getenv('HOME');
+    if ($home === false || $home === '') {
+        $home = '/root';
+    }
+    $path = "{$home}/.entity/peers/{$name}/keypair";
+    $raw = @\file_get_contents($path);
+    if ($raw === false) {
+        \fwrite(\STDERR, "error: --name {$name}: cannot read {$path}\n");
+        exit(2);
+    }
+    $body = '';
+    foreach (\preg_split('/\r?\n/', $raw) ?: [] as $line) {
+        if ($line === '' || \str_starts_with($line, '-')) {
+            continue;
+        }
+        $body .= \trim($line);
+    }
+    $seed = \base64_decode($body, true);
+    if ($seed === false || \strlen($seed) !== 32) {
+        $got = $seed === false ? 'invalid base64' : \strlen($seed) . ' bytes';
+        \fwrite(\STDERR, "error: --name {$name}: expected a 32-byte seed, got {$got}\n");
+        exit(2);
+    }
+    return $seed;
+}
+
+$port = 0;
+$seedByte = 1;
+$name = null;
+$openGrants = false;
+$validate = false;
+$argvv = $argv;
+\array_shift($argvv);
+for ($i = 0; $i < \count($argvv); $i++) {
+    switch ($argvv[$i]) {
+        case '--port': $port = (int) ($argvv[++$i] ?? '0'); break;
+        case '--seed': $seedByte = (int) ($argvv[++$i] ?? '1'); break;
+        case '--name': $name = $argvv[++$i] ?? null; break;
+        case '--debug-open-grants': $openGrants = true; break;
+        case '--validate': $validate = true; break;
+        default: /* ignore unknown flags for forward-compat */ break;
+    }
+}
+
+$seed = $name !== null ? loadSeedFromName($name) : \str_repeat(\chr($seedByte & 0xff), 32);
+$peer = Peer::create($seed, $openGrants, $validate);
+$transport = Transport::withLoop();
+[$listener, $bound] = $transport->startListener($peer, $port);
+\fwrite(\STDOUT, "LISTENING {$bound}\n");
+\fwrite(\STDOUT, "PEER {$peer->localPeer}\n");
+\fflush(\STDOUT);
+$transport->loop()->runForever();

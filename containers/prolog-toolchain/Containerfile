@@ -1,0 +1,147 @@
+# SWI-Prolog toolchain image — builds the EXPERIMENTAL logic-paradigm peer
+# (entity-core-protocol-prolog) per protocol-generator/prolog/profile.toml.
+# Mirrors the structure of containers/common-lisp-toolchain + containers/base.
+#
+# EXPERIMENTAL PROBE: this peer is a logic-programming paradigm probe. S1's
+# verdict (arch/PROFILE-RATIONALE.md "Does this idiom map?") leans DEFER — this
+# Containerfile is the pinned recipe so that IF the narrow-GO path is taken (gated
+# on an S2 codec spike), the build is reproducible. It is AUTHORED at S1, NOT built
+# (S1 boundary: no podman, no build, no toolchain run). The build/run is S2's job.
+#
+# S11: pin the toolchain + every dependency to an exact version. SWI-Prolog is a
+#      reviewed source channel (swi-prolog.org / its GitHub release tags), so the
+#      ≥30-day age floor relaxes for the toolchain itself but the exact version pin
+#      stands for reproducibility. library(crypto) links the IMAGE's OpenSSL — a
+#      distro-provided system library (fedora:43 = OpenSSL 3.x), recorded at build.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Ages at authoring 2026-06-14:
+#   SWI-Prolog    9.2.9  (2024-09, ~21mo) — the STABLE/LTS branch (even minor =
+#                                           stable in SWI's scheme; 9.3.x is
+#                                           development and is NOT used). Far over
+#                                           the floor. Preference: distro package
+#                                           from fedora:43 if it IS a 9.2.x stable
+#                                           patch; else source-build the pinned tag.
+#                                           A-PL-008: confirm fedora:43's swi-prolog
+#                                           patch at first build; any 9.2.x stable
+#                                           patch is acceptable — the build asserts
+#                                           the resolved version is 9.2.x.
+#   OpenSSL       image-provided (3.x)    — fedora:43 system OpenSSL. library(crypto)
+#                                           links it; Ed25519 + SHA-256/384 surface
+#                                           depends on it being v3 (A-PL-002). Ed448
+#                                           via library(crypto) is UNCERTAIN — FFI
+#                                           fallback over the C-ABI if absent
+#                                           (A-PL-003). Recorded at build.
+#   library(crypto/socket/thread/dcg/plunit)  — bundled INSIDE the SWI distribution;
+#                                           no separate pin (version = whatever
+#                                           swipl 9.2.9 bundles, recorded at build).
+# CBOR + base58 + varint are hand-rolled in-repo (no SWI pack gives canonical ECF;
+# A-005, 7th peer to hit it). The test harness is hand-rolled (library(plunit) is
+# bundled + optional, no extra dep).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (S2, not S1):
+#   podman build -t entity-core-keystone/prolog-toolchain:latest \
+#     -f containers/prolog-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps. Preference order for SWI-Prolog itself:
+#   (1) the fedora:43 `swi-prolog` package IF it is a 9.2.x stable patch — simplest,
+#       distro-reviewed, links the system OpenSSL automatically; OR
+#   (2) a source build of the pinned 9.2.9 tag (the commented block below) if the
+#       distro package is off the 9.2.x stable line.
+# openssl + openssl-devel: library(crypto) links OpenSSL 3.x (Ed25519/SHA + maybe
+#   Ed448). The -devel headers are needed if SWI is source-built against OpenSSL.
+# gcc/gcc-c++/cmake/make: build the C-ABI codec (libentitycore_codec) via its
+#   CMake AND compile the SWI foreign-predicate shim with swipl-ld -shared.
+# swipl-ld + SWI-Prolog.h ship in the swi-prolog package (S2 confirmed:
+#   /usr/bin/swipl-ld, /usr/lib64/swipl/include/SWI-Prolog.h) — no -devel pkg.
+# libsodium-static + libsodium-devel: the C-ABI CMake STATICALLY + PRIVATELY links
+#   libsodium into libentitycore_codec.{so,a} (CMakeLists find_library libsodium.a +
+#   sodium.h). Without these the C-ABI build FATALs ("sodium.h not found").
+# pkgconfig: cmake/sodium discovery.
+RUN dnf install -y \
+        swi-prolog \
+        openssl openssl-devel \
+        gcc gcc-c++ cmake make pkgconfig \
+        libsodium-static libsodium-devel \
+        git curl ca-certificates findutils which glibc-langpack-en \
+    && dnf clean all
+
+# S2 spike finding: swipl rejects argv it cannot represent in the current locale.
+# The default container locale (C / POSIX) cannot represent non-ASCII bytes in a
+# `-g 'goal'` string and FATALs ("current locale cannot represent argv[..]").
+# Pin a UTF-8 locale so goal strings (and any non-ASCII data) load cleanly.
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# ── Verify the SWI-Prolog pin + the bundled libraries the profile relies on ──
+# A-PL-008: assert the resolved swipl is on the 9.2.x STABLE line. If the fedora:43
+# package is NOT 9.2.x, replace the `dnf install swi-prolog` above with the
+# source-build block at the bottom of this file and re-run.
+RUN swipl --version \
+    && swipl -q -g '( current_prolog_flag(version, V), \
+                      Major is V // 10000, Minor is (V // 100) mod 100, \
+                      format("SWI-Prolog version flag: ~w (~w.~w.x)~n", [V, Major, Minor]), \
+                      ( Major =:= 9, Minor =:= 2 \
+                        -> true \
+                        ;  ( format(user_error, "FATAL: swipl not on the 9.2.x stable line~n", []), \
+                             halt(1) ) ) )' \
+                  -g halt
+
+# A-PL-002 (RESOLVED at S2 spike, 2026-06-14): confirm library(crypto) loads and
+# exposes the HASH floor (SHA-256 + SHA-384 via crypto_data_hash/3) — this is the
+# only crypto floor reachable natively in swipl 9.2.9. EMPIRICAL FINDING: this
+# library(crypto) exports NO ed25519_*/ed448_* predicates at all (only ecdsa_*,
+# rsa_*, hashing/HKDF, crypto_curve_* — and the curve API rejects ed25519 by name).
+# So the §9.1 SIGNATURE floor (Ed25519 sign/verify) is NOT native and MUST come over
+# the C-ABI FFI (A-PL-002 negative; A-PL-003 Ed448 likewise). The build asserts the
+# HASH floor only and REPORTS the signature primitives' absence (FFI obligation)
+# without failing — there is no native signature path to fail-closed against.
+RUN swipl -q -g '( use_module(library(crypto)), \
+                   crypto_data_hash("x", H256, [algorithm(sha256)]), \
+                   crypto_data_hash("x", H384, [algorithm(sha384)]), \
+                   format("crypto_data_hash sha256/sha384 OK (~w / ~w)~n", [H256, H384]), \
+                   ( catch( ( ed25519_new_key(_P), format("UNEXPECTED: ed25519 present~n", []) ), \
+                            _E25, format("ed25519 NOT in library(crypto) -- signature floor is an FFI obligation (A-PL-002)~n", []) ) ), \
+                   ( catch( ( ed448_new_key(_P448), format("UNEXPECTED: ed448 present~n", []) ), \
+                            _E448, format("ed448 NOT in library(crypto) -- FFI fallback per A-PL-003~n", []) ) ) )' \
+                -g halt \
+    || (echo "FATAL: library(crypto) HASH floor (sha256/sha384) unavailable on this image OpenSSL" && exit 1)
+
+# A-PL: confirm the bundled libraries the codec/transport/test layers need are all
+# present in the distribution (no pack install required).
+RUN swipl -q -g '( use_module(library(socket)), \
+                   use_module(library(thread)), \
+                   use_module(library(dcg/basics)), \
+                   use_module(library(plunit)), \
+                   format("bundled libs OK: socket + thread + dcg/basics + plunit~n", []) )' \
+                -g halt
+
+# ── (FALLBACK PATH, commented) Source-build SWI-Prolog 9.2.9 ─────────────────
+# Use ONLY if fedora:43's swi-prolog package is off the 9.2.x stable line (A-PL-008).
+# Pin the exact release tag + a verified checksum (fill SWIPL_SHA256 at first build;
+# fail closed if it does not match — the A-CL-006 discipline). Build deps:
+# cmake, gcc-c++, libedit-devel, gmp-devel, openssl-devel, zlib-devel, ncurses-devel,
+# libuuid-devel, libarchive-devel, libyaml-devel, pcre2-devel (the SWI cmake build set).
+#   ARG SWIPL_VERSION=9.2.9
+#   ARG SWIPL_SHA256=<fill-and-verify-at-build>   # fail closed on mismatch
+#   RUN dnf install -y cmake gcc-c++ libedit-devel gmp-devel zlib-devel \
+#           ncurses-devel libuuid-devel libarchive-devel libyaml-devel pcre2-devel \
+#       && curl -fsSL -o /tmp/swipl.tar.gz \
+#            "https://github.com/SWI-Prolog/swipl-devel/releases/download/V${SWIPL_VERSION}/swipl-${SWIPL_VERSION}.tar.gz" \
+#       && echo "${SWIPL_SHA256}  /tmp/swipl.tar.gz" | sha256sum -c - \
+#       && mkdir -p /tmp/swipl && tar -xzf /tmp/swipl.tar.gz -C /tmp/swipl --strip-components=1 \
+#       && cd /tmp/swipl && mkdir build && cd build \
+#       && cmake -DCMAKE_INSTALL_PREFIX=/opt/swipl .. \
+#       && make -j"$(nproc)" && make install \
+#       && cd / && rm -rf /tmp/swipl /tmp/swipl.tar.gz
+#   ENV PATH=/opt/swipl/bin:$PATH
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="prolog-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.swipl="9.2.9"
+LABEL org.entity-core-keystone.experimental="logic-paradigm-probe"
+
+CMD ["/bin/bash"]

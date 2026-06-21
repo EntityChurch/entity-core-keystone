@@ -1,0 +1,63 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Standalone host for the Ruby peer (the S4 oracle driver target). Boots a
+# RESPONDER peer that binds 127.0.0.1:<port> and serves the §6.5 dispatch chain
+# over real loopback TCP, so the Go `validate-peer` oracle can drive it. Prints
+# a single readiness line once it is LISTENING, then blocks forever (the oracle
+# does its run, then the harness kills the host).
+#
+#   exe/entity-core-peer --port 7777 [--debug-open-grants] [--validate]
+#
+#   --port N              listen port (127.0.0.1); 0 = auto (printed)
+#   --debug-open-grants   default-grant the wide-open admin scope (= grant-gated
+#                         categories reach their surfaces); §4.4-restricted
+#                         discovery floor otherwise.
+#   --validate            bootstrap the §7a system/validate/* conformance
+#                         handlers (echo + dispatch-outbound). OFF by default
+#                         (dispatch-outbound is a standing outbound seam).
+#   --seed HEX            32-byte identity seed as hex (default: 0x11 * 32, the
+#                         cohort responder seed — peer_id byte-stable).
+
+require "optparse"
+
+require_relative "../lib/entity_core"
+
+port = 7777
+open_grants = false
+conformance = false
+seed_hex = nil
+
+OptionParser.new do |o|
+  o.banner = "usage: entity-core-peer --port N [--debug-open-grants] [--validate]"
+  o.on("--port N", Integer, "listen port (127.0.0.1); 0 = auto") { |n| port = n }
+  o.on("--debug-open-grants", "default-grant the wide-open admin scope") { open_grants = true }
+  o.on("--validate", "bootstrap §7a system/validate/* conformance handlers") { conformance = true }
+  o.on("--seed HEX", "32-byte identity seed (hex)") { |h| seed_hex = h }
+end.parse!(ARGV)
+
+seed =
+  if seed_hex
+    [seed_hex].pack("H*").b
+  else
+    (0x11.chr * 32).b
+  end
+
+# Make stdout line-buffered so the readiness line reaches the harness immediately.
+$stdout.sync = true
+
+peer = EntityCore::Peer.create(seed, open_grants: open_grants, conformance: conformance)
+listener = EntityCore::Transport.start_listener(peer, port)
+
+# The readiness line the harness waits on (the oracle dials once it sees this).
+puts "LISTENING 127.0.0.1:#{listener.port} peer=#{peer.local_peer} " \
+     "open_grants=#{open_grants} validate=#{conformance}"
+
+# Exit immediately on signal. We deliberately do NOT call listener.close from the
+# trap: closing the server socket out from under the accept-loop thread that is
+# blocked in the C `accept(2)` CFUNC can segfault MRI (Thread#kill racing a
+# blocking CFUNC). The harness tears down the whole container after the oracle
+# run, so a hard exit is the correct, race-free shutdown here.
+%w[INT TERM].each { |s| Signal.trap(s) { exit!(0) } }
+
+sleep

@@ -1,0 +1,125 @@
+# Canonical-docs declaration — the publishable doc surface the content leaf
+# ingests for the keystone domain ([internal] CANONICAL-DOCS-FORMAT.md).
+# Only docs at NON-scrubbed paths are listed: the release builder drops
+# **/HANDOFF*, *REVIEW*, *EXPLORATION*, PROPOSAL-*, RESPONSE-*, STATUS*,
+# WORKSTREAMS.md, .claude/, CLAUDE.md — so the canonical surface (conformance
+# matrix + research diagnostics) lives under names that survive the cut. The
+# internal STATUS.md / WORKSTREAMS.md are intentionally NOT declared (ephemeral
+# steward planning, honest absence per ADR-0012); the project's workstream shape
+# is conveyed by the README's three-arms section.
+
+[project]
+name   = "Entity Core Keystone"
+slug   = "entity-core-keystone"
+repo   = "entity-core-keystone"
+github = "https://github.com/EntityChurch/entity-core-keystone"
+intro  = """
+The keystone of the Entity Core arch: a generator that emits a full core
+protocol peer (entity-core-protocol-<lang>) for any target language from the V7
+spec, plus a language-agnostic codec C-ABI. The cohort is 21 generated core
+peers, each passing the validate-peer --profile core conformance gate with 0
+FAIL on one current oracle — see the conformance matrix for the per-peer
+transparency contract (spec version, oracle commit, codec/crypto strategy,
+known gaps). Honest scope: these peers are generated, so they share a generation
+lineage — the strong claim is spec-forced convergence across 21 different
+languages/runtimes, not 21 independently-authored code bases (ADR-0012). This is
+a 0.8 pre-release surface: solid and oracle-pinned on the tested core profile,
+still evolving as new languages and spec amendments run through the generator.
+"""
+
+# ── Overview ────────────────────────────────────────────────────────────────
+[[doc]]
+path  = "README.md"
+title = "entity-core-keystone — overview, build, honest independence"
+blurb = "What the keystone is, the three arms (protocol-generator / ffi-generator / research), the make+podman bare-host build, and the precise independence framing."
+group = "Overview"
+
+# ── Conformance ─────────────────────────────────────────────────────────────
+[[doc]]
+path  = "CONFORMANCE-MATRIX.md"
+title = "Conformance & Status Matrix"
+blurb = "The adopter transparency contract: every generated peer's spec version, oracle commit, --profile core result, codec strategy, crypto floor, and known gaps."
+group = "Conformance"
+
+[[doc]]
+path  = "research/diagnostics/validate-peer-usage.md"
+title = "validate-peer — the harness contract"
+blurb = "How the live-peer conformance oracle is invoked and read: categories, profiles, SKIP-vs-FAIL semantics."
+group = "Conformance"
+
+[[doc]]
+path  = "research/diagnostics/conformance-invariants.md"
+title = "Conformance Invariants — bug-class playbook (N1–N8)"
+blurb = "The V7 invariants the generator enforces at design time, pinned from the bug classes that bit the reference implementations."
+group = "Conformance"
+
+# ── Research ────────────────────────────────────────────────────────────────
+[[doc]]
+path  = "research/LANDSCAPE.md"
+title = "Language landscape & per-language survey"
+blurb = "Tiers, library choices, codec strategy, and discovery-axis analysis across the candidate language set."
+group = "Research"
+
+[[doc]]
+path  = "research/diagnostics/oracle-vendoring-policy.md"
+title = "Oracle vendoring policy"
+blurb = "When and why the validate-peer oracle is re-vendored, and how conformance totals move without any verdict changing."
+group = "Research"
+
+# Research-arm durable docs: the arm is a public surface (the validation
+# narrative + cross-impl evidence). The dated stewardship handoffs / session
+# notes / milestone reviews stay dropped (correct); these are the durable
+# reference + cross-impl evidence.
+[[doc]]
+path  = "research/README.md"
+title = "Research arm — index & roles"
+blurb = "The stewardship arm: the knowledge base + escalation hub, what each research doc is for, and who owns it (stewards/operators/architecture)."
+group = "Research"
+
+[[doc]]
+path  = "research/stewardship/SPEC-FINDINGS-LOG.md"
+title = "Spec & pipeline findings log"
+blurb = "The cross-language register of non-language-specific findings surfaced by keystone work — spec-level gaps escalated to architecture and keystone-internal pipeline defects, with current disposition."
+group = "Research"
+
+[[doc]]
+path  = "research/evaluations/csharp.md"
+title = "Evaluation — C#"
+blurb = "Pre-implementation deep-dive (CBOR + Ed25519 + build-system audit) grounding the C# profile choices. Reproducible audit trail."
+group = "Research"
+
+[[doc]]
+path  = "research/evaluations/typescript.md"
+title = "Evaluation — TypeScript"
+blurb = "Pre-implementation deep-dive grounding the TypeScript profile choices. Reproducible audit trail."
+group = "Research"
+
+[[doc]]
+path  = "research/evaluations/ffi-rust.md"
+title = "Evaluation — FFI (Rust impl)"
+blurb = "Pre-implementation deep-dive for the Rust implementation of the codec C-ABI."
+group = "Research"
+
+[[doc]]
+path  = "research/evaluations/ffi-c.md"
+title = "Evaluation — FFI (C impl)"
+blurb = "Pre-implementation deep-dive for the C implementation of the codec C-ABI."
+group = "Research"
+
+[[doc]]
+path  = "research/architecture-reviews/README.md"
+title = "Architecture reviews — what & why"
+blurb = "What the per-language architecture-review logs are (running records of the composition each generated peer built and why) and how they feed cross-language analysis."
+group = "Research"
+
+[[doc]]
+path  = "research/architecture-reviews/csharp.md"
+title = "Architecture review — C#"
+blurb = "The running record of architecture decisions, friction, and deviations for the C# generated peer — cross-impl convergence evidence."
+group = "Research"
+
+[[doc]]
+path  = "research/architecture-reviews/typescript.md"
+title = "Architecture review — TypeScript"
+blurb = "The running record of architecture decisions, friction, and deviations for the TypeScript generated peer."
+group = "Research"

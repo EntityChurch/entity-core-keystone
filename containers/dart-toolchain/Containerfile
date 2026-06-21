@@ -1,0 +1,126 @@
+# Dart toolchain image — builds the native Dart peer
+# (entity-core-protocol-dart / pub package entity_core_protocol) per
+# protocol-generator/dart/profile.toml.
+#
+# This is a PURE DART package (a console/library peer), NOT a Flutter app — Flutter is the
+# consuming reach AUDIENCE, not a build dependency. So the image needs only the Dart SDK
+# (the `dart` tool: pub / compile / test / analyze), NOT the Flutter SDK.
+#
+# Peer: Dart (release "reach" peer #4 in the prerelease six-peer slate —
+# research/RELEASE-READINESS.md §2 row 4). Codec = NATIVE hand-roll (slate decision, NOT FFI,
+# NOT the `cbor` pub package); crypto = cryptography_plus (pure-Dart Ed25519 floor) +
+# package:crypto (SHA-256 floor); Ed448 deferred (no maintained pure-Dart Ed448 — FFI route
+# documented, not v0.1). The headline codec call is the BigInt uint64 head-form carrier
+# (web/dart2js 53-bit-int trap; see profile [idiom].integer_carrier + A-DART-006).
+#
+# S1: AUTHORED, NOT BUILT. This Containerfile is written in the S1 (profile) phase but the
+# image is NOT built and no podman/toolchain runs in S1 (S1 boundary). The first build
+# happens at S2.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# S11 (supply-chain). PIN STATUS at authoring 2026-06-19:
+#   Dart SDK   3.11.6 (2026-05-05, ~45d)  — the SDK. The 3.11 line is the conservative
+#                                            pick; 3.12.x (2026-05-26, ~24d) is UNDER the
+#                                            >=30-day floor and NOT picked. Fetched as the
+#                                            dart-lang OFFICIAL release zip + a verified
+#                                            sha256 — a REVIEWED VENDOR CHANNEL (Google/
+#                                            dart-lang reviewed build pipeline): the
+#                                            >=30-day AGE floor RELAXES for the SDK, but
+#                                            the EXACT version pin + verified sha256 stand
+#                                            for repro/integrity (and the age is met anyway).
+#   cryptography_plus 2.7.0                — the MAINTAINED community fork (the original
+#                                            `cryptography` is stalled — repo moved to
+#                                            emz-hanauer/dart-cryptography). Pure-Dart
+#                                            Ed25519 floor. pub.dev registry-pulled →
+#                                            >=30-day applies WITH FULL FORCE. VERIFY the
+#                                            2.7.0 publish date is >=30d at the S2 build;
+#                                            if too new, pin the latest aged 2.x + log it.
+#   crypto     3.0.6                       — first-party Dart-team SHA-256 package; long-
+#                                            stable (well over >=30d); BSD-3.
+#   package:test 1.25.15                   — first-party Dart-team test runner; DEV-scope
+#                                            ONLY (never shipped). >=30-day applied + met.
+#                                            VERIFY publish date >=30d at S2.
+# CORE RUNTIME DEPS: cryptography_plus (Ed25519) + crypto (SHA-256). The canonical ECF
+# codec, base58, and the multicodec-style LEB128 varint are hand-rolled in-repo (no pub
+# lib gives canonical ECF — the A-005 pattern; see PROFILE-RATIONALE.md).
+#
+# WHY THE OFFICIAL SDK TARBALL, NOT `dnf install`:
+#   fedora:43's repos do NOT carry a current Dart SDK. We pin the exact dart-lang release
+#   zip and VERIFY it against its published sha256, rather than take a distro build. This
+#   is the kotlin/zig/java-toolchain pattern (pin the exact compiler + verify the digest).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (S2):
+#   podman build -t entity-core-keystone/dart-toolchain:latest \
+#     -f containers/dart-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps: download/verify/unpack tooling. The Dart SDK is otherwise self-contained.
+# nodejs is included ONLY to RUN the `dart compile js` output for the web-int round-trip
+# smoke (A-DART-006: prove the BigInt uint64 head-form carrier does not 53-bit-truncate
+# under dart2js/web). It is a TEST-TIME JS runtime, not a build/runtime dep of the peer.
+RUN dnf install -y \
+        curl ca-certificates unzip \
+        git findutils which \
+        glibc \
+        nodejs \
+    && dnf clean all
+
+# ── Pinned Dart SDK 3.11.6 (x64 linux) ───────────────────────────────────────
+# The dart-lang official SDK zip from storage.googleapis.com (the canonical release
+# channel). Pin the exact version + a verified sha256. The build FAILS CLOSED if the
+# fetched zip does not match the digest.
+#   DART_SHA256 is a SENTINEL authored at S1 — S1 does NOT fetch/build (phase boundary),
+#   so the real digest is filled at the S2 build from the published checksum:
+#     https://storage.googleapis.com/dart-archive/channels/stable/release/3.11.6/sdk/dartsdk-linux-x64-release.zip.sha256sum
+#   (Mirrors the kotlin/gradle/zig sentinel pattern; see A-DART-011.)
+ARG DART_VERSION=3.11.6
+# Filled at S2 from the dart-archive published checksum:
+#   .../release/3.11.6/sdk/dartsdk-linux-x64-release.zip.sha256sum
+ARG DART_SHA256=ea0ff2396ea5af402ba3598a9139a0f4b1b3471d9d7e834882d1559622760add
+RUN set -eux; \
+    url="https://storage.googleapis.com/dart-archive/channels/stable/release/${DART_VERSION}/sdk/dartsdk-linux-x64-release.zip"; \
+    cd /tmp; \
+    curl -fsSLO "${url}"; \
+    if [ "${DART_SHA256}" = "REPLACE_WITH_VERIFIED_SHA256_AT_S2" ]; then \
+        echo "FATAL: DART_SHA256 sentinel — fill the real sha256 from the dart-archive .sha256sum for 3.11.6 at S2 before trusting this image"; \
+        exit 1; \
+    fi; \
+    echo "${DART_SHA256}  dartsdk-linux-x64-release.zip" | sha256sum -c -; \
+    unzip -q "dartsdk-linux-x64-release.zip" -d /opt; \
+    rm -f "dartsdk-linux-x64-release.zip"; \
+    /opt/dart-sdk/bin/dart --version
+
+ENV DART_HOME=/opt/dart-sdk
+ENV PATH=/opt/dart-sdk/bin:$PATH
+# Keep the pub cache inside the image so the dev loop runs fully offline after the prefetch.
+ENV PUB_CACHE=/opt/pub-cache
+
+# ── Pre-fetch the pinned pub deps into PUB_CACHE (build-time net) ─────────────
+# After this layer the image needs NO network: the dev loop runs `dart pub get --offline`
+# under --network=none and pub resolves cryptography_plus + crypto + package:test (and
+# their transitives) from the local PUB_CACHE. The prefetch uses a tiny throwaway package
+# whose dependencies are EXACTLY the pinned versions (mirrors
+# protocol-generator/dart/profile.toml [deps]). A real `dart pub get` populates the cache.
+# Authored at S1; runs at S2.
+#   dependencies:      cryptography_plus: 2.7.1   crypto: 3.0.6
+#   dev_dependencies:  test: 1.25.15
+# NOTE (S2 sentinel resolution): the profile pinned cryptography_plus 2.7.0, but that
+# version does NOT exist on pub.dev — the 2.x line publishes 2.7.1 (2024-10-24, ~602d,
+# clears >=30d). Re-pinned to 2.7.1 and logged (A-DART-002 / A-DART-012).
+COPY containers/dart-toolchain/prefetch /tmp/prefetch
+RUN set -eux; \
+    cd /tmp/prefetch; \
+    dart pub get \
+        || { echo "FATAL: prefetch pub get failed — the pinned deps did not resolve"; exit 1; }; \
+    # also resolve dev_dependencies so package:test's transitive providers are cached
+    dart pub get --no-precompile || true; \
+    rm -rf /tmp/prefetch/.dart_tool
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="dart-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.dart="3.11.6"
+
+CMD ["/bin/bash"]

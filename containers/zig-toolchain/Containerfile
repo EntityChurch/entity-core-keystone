@@ -1,0 +1,91 @@
+# Zig toolchain image — builds the native Zig peer
+# (entity-core-protocol-zig) per protocol-generator/zig/profile.toml.
+# Mirrors containers/ocaml-toolchain + containers/node24 + containers/dotnet9.
+#
+# S1: AUTHORED ONLY — not built this phase (S1 is research/authoring; the toolchain
+#     is provisioned at S2). Builds run in this container, not on the host.
+# S11: pin the toolchain to an exact version; verify the download cryptographically.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11).
+#   zig 0.15.1 — released 2025-08 (~10 months old at 2026-06-13; clears the ≥30-day
+#                cool-down). Settled point release; std.crypto Ed25519 + SHA-2 stable.
+# The core peer is std-ONLY: std.crypto provides Ed25519 + SHA-256/384, std provides
+# threads + the test runner. CBOR (canonical ECF), base58, and the multicodec-style
+# LEB128 varint are hand-rolled in-repo (no Zig lib gives canonical ECF; the A-005
+# pattern). There are NO third-party Zig packages to pin.
+#
+# WHY THE OFFICIAL TARBALL, NOT `dnf install zig`:
+#   Fedora 43 ships a `zig` rpm, but as 0.16.0 (updates-testing) — not the 0.15.1 the
+#   codec is designed against. We pin the exact 0.15.1 official release and VERIFY it
+#   with minisign against the Zig project's published public key, rather than take
+#   whatever the distro channel currently carries. This is the ocaml-toolchain pattern
+#   (pin the exact compiler) adapted to Zig's single-binary distribution.
+#
+# REQUIRED before building (fill in at S2 from ziglang.org/download + the .minisig):
+#   - ZIG_SHA256:    sha256 of zig-linux-x86_64-0.15.1.tar.xz (from ziglang.org)
+#   - the .tar.xz.minisig is fetched alongside and verified with the pinned pubkey.
+# Both the tarball and its .minisig are published at ziglang.org/download/0.15.1/.
+# The Zig minisign public key is the well-known project key (pinned below); re-verify
+# it out-of-band on first provision. Leaving ZIG_SHA256 as a sentinel keeps an
+# unverified image from building silently.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (S2, once ZIG_SHA256 is filled):
+#   podman build -t entity-core-keystone/zig-toolchain:latest \
+#     -f containers/zig-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps: download + verification tooling only. Zig is a self-contained
+# toolchain (it bundles its own C compiler/linker — no gcc needed to build Zig
+# code), so the layer is deliberately thin.
+RUN dnf install -y \
+        curl ca-certificates tar xz minisign \
+        git findutils which \
+    && dnf clean all
+
+# ── Pinned Zig release ───────────────────────────────────────────────────────
+# 0.15.1, x86_64-linux. Pin the exact version, the expected sha256, and the Zig
+# project's minisign public key. The build FAILS CLOSED if either the signature or
+# the sha256 does not match.
+ARG ZIG_VERSION=0.15.1
+ARG ZIG_ARCH=x86_64
+# Zig's published minisign public key (project signing key). Re-verify out-of-band.
+ARG ZIG_MINISIGN_PUBKEY="RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U"
+# Pinned sha256 of zig-x86_64-linux-0.15.1.tar.xz from ziglang.org/download/index.json
+# (verified at S2, 2026-06-13). size 53734456.
+ARG ZIG_SHA256="c61c5da6edeea14ca51ecd5e4520c6f4189ef5250383db33d01848293bfafe05"
+
+RUN set -eux; \
+    base="https://ziglang.org/download/${ZIG_VERSION}"; \
+    # 0.14+ naming is arch-before-os: zig-<arch>-linux-<version>.tar.xz
+    tarball="zig-${ZIG_ARCH}-linux-${ZIG_VERSION}.tar.xz"; \
+    cd /tmp; \
+    curl -fsSLO "${base}/${tarball}"; \
+    curl -fsSLO "${base}/${tarball}.minisig"; \
+    # 1) cryptographic signature check against the pinned project pubkey.
+    #    Use the inline -P form: minisign's -p FILE form requires a 2-line
+    #    pubkey file (untrusted-comment header + base64 key); a bare base64
+    #    line fails to load ("Error while loading the public key file").
+    #    -P takes the raw base64 key directly — no file format to get wrong.
+    minisign -V -P "${ZIG_MINISIGN_PUBKEY}" -m "${tarball}"; \
+    # 2) exact sha256 pin (defense-in-depth; skipped only while the S1 sentinel stands)
+    if [ "${ZIG_SHA256}" != "REPLACE_WITH_PINNED_SHA256_AT_S2" ]; then \
+        echo "${ZIG_SHA256}  ${tarball}" | sha256sum -c -; \
+    else \
+        echo "WARNING: ZIG_SHA256 sentinel — fill the real digest at S2 before trusting this image"; \
+        exit 1; \
+    fi; \
+    mkdir -p /opt/zig; \
+    tar -C /opt/zig --strip-components=1 -xf "${tarball}"; \
+    rm -f "${tarball}" "${tarball}.minisig"; \
+    /opt/zig/zig version
+
+ENV PATH=/opt/zig:$PATH
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="zig-toolchain"
+LABEL org.entity-core-keystone.version="1"
+
+CMD ["/bin/bash"]

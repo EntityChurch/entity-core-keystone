@@ -1,0 +1,237 @@
+# entity-core-protocol-java — Language Profile
+#
+# Peer #7 (canonical order). Authored FRESH in S1 from the V7 spec + Java/JVM
+# ecosystem research — NOT ported from the C#/TS/OCaml/Elixir/Zig/Common-Lisp
+# profiles. Java is the MAINSTREAM OO/static idiom: classes + interfaces, checked
+# exceptions, the JVM threading model, a managed GC, and a vendor-curated stdlib
+# (java.security / java.util). The expectation is a LOW-FRICTION port ("it's just
+# Java") — the idiom axes Java exercises (static single-dispatch OO, checked
+# exceptions, JVM threads) are largely SATURATED by the prior peers, so the
+# spec-refinement yield is expected to be SMALLER than the distant idioms (Zig /
+# Common Lisp). BUT: any NEW finding from a mainstream stack is HIGH-signal,
+# because mainstream stacks rarely surface gaps — a defect a "boring" language hits
+# is one almost everyone hits. Where a field matches a prior peer it is by
+# independent arrival from V7 + the JVM, not inheritance.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value is
+# logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "java"
+name              = "Java / JVM"
+tier              = "peer-7"                  # mainstream OO/static idiom — saturated axes, high-signal-if-found probe; canonical peer #7
+package_name      = "entity-core-protocol-java"   # keystone peer id. Maven coordinates use reverse-DNS (see [publishing]); Java packages cannot hyphenate.
+runtime           = "java-toolchain"          # references containers/java-toolchain/Containerfile (Temurin JDK 21 LTS)
+
+[codec]
+# strategy: NATIVE. Same A-005 pattern every prior native peer hit — a faithful ECF
+# codec must own the canonical layer (length-then-lex map-key ordering on ENCODED
+# key bytes, shortest-float incl. f16, recursive major-type-6 tag rejection, full
+# uint64/nint range) regardless of any CBOR library underneath, so a library buys
+# almost nothing and adds a registry dependency + pin. The JDK provides Ed25519 +
+# SHA-256 natively (JDK 15+ Ed25519, java.security.MessageDigest SHA-256), so the
+# §9.1 conformance floor needs ZERO third-party deps. ffi remains the documented
+# fallback if a spike ever fails (it is not expected to). Spike at S2 start: push
+# the map_keys + float v7.71 vectors through the hand-rolled encoder before the full
+# build — cheap insurance per PHASE-S1-PROFILE (the load-bearing canonical risk).
+strategy          = "native"
+# CBOR: hand-rolled canonical encoder/decoder (EcfCodec / CanonicalCbor in
+# src/main/java/.../codec/). The JVM CBOR libraries (jackson-dataformat-cbor,
+# com.upokecenter.cbor, co.nstant.in.cbor) are general-CBOR / RFC-8949-deterministic
+# at best and NONE give ECF's guarantees — ECF's RFC-7049 length-FIRST then
+# lexicographic map-key ordering DIFFERS from RFC-8949 §4.2 bytewise ordering, plus
+# the shortest-float (incl. f16) ladder, recursive major-type-6 tag rejection, and
+# raw-byte fidelity are all yours to enforce regardless. Hand-rolling is the
+# faithful AND simpler path (the A-005 finding, re-confirmed for the JVM). Encoder
+# writes into a ByteArrayOutputStream / byte[]; decoder is index-walking over byte[].
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native" }
+# Ed25519: JDK native (java.security, JEP 339, JDK 15+). KeyPairGenerator/Signature
+# with the "Ed25519" algorithm + the EdEC key classes (NamedParameterSpec.ED25519,
+# EdECPrivateKeySpec/EdECPublicKeySpec). RFC-8032 deterministic by the algorithm.
+# Zero third-party dependency — the SunEC provider ships with the JDK. seed->pubkey
+# via EdECPrivateKeySpec + KeyFactory; sign/verify via Signature.getInstance("Ed25519").
+# Exact key-encoding (the raw 32-byte pubkey is the y-coordinate with a sign bit;
+# extract via EdECPublicKey.getPoint() / encoded-form parsing) confirmed at S2.
+ed25519_library   = { name = "jdk-sunec", version = "JDK 21 (java.security Ed25519)", api = "java.security.{Signature,KeyPairGenerator,KeyFactory}/Ed25519 + EdEC* specs" }
+# Ed448 (crypto-agility HIGHER BAR, v7.67): TWO native-ish routes on the JVM, and
+# this is the headline crypto-axis finding for Java:
+#   (a) JDK SunEC ALSO provides Ed448 natively (NamedParameterSpec.ED448, same
+#       Signature("Ed448") surface as Ed25519) — so unlike OCaml (A-OC-002 C-ABI)
+#       and Zig (A-ZIG-002 gap), the JVM closes the agility bar with NO third-party
+#       dependency at all for the SIGNATURE primitive; AND
+#   (b) BouncyCastle (bcprov-jdk18on) provides Ed448 + SHA-384 in pure-managed Java
+#       as an INDEPENDENT crypto source — a free cross-check against SunEC (the C#
+#       BouncyCastle precedent, A-009), and the route to use if a SunEC Ed448 edge
+#       (raw-key encoding, provider availability) bites at S2.
+# DEFAULT POSITION: Ed448 via JDK SunEC (dependency-light, like CL/Elixir's native
+# Ed448 — but via the vendor stdlib, not a pure-lang lib). BouncyCastle stays an
+# OPT-IN agility cross-check / fallback, mirroring OCaml's opt-in entitycore_agility
+# sub-lib stance — the CORE build stays BouncyCastle-FREE (JDK covers the floor AND
+# the agility signature). Decide SunEC-vs-BC for the agility corpus at S2 after the
+# raw-key-encoding spike. See SPEC-AMBIGUITY-LOG A-JAVA-002.
+ed448_library     = { name = "jdk-sunec (default) / BouncyCastle (opt-in cross-check)", version = "JDK 21 Ed448 / bcprov-jdk18on 1.80", strategy = "native-default-bc-optin", api = "Signature/Ed448 (SunEC) | org.bouncycastle Ed448 (opt-in)" }
+sha256_source     = "java.security.MessageDigest (SHA-256 floor; SHA-384 also in-box for agility — both SunMessageDigest, no dep)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (~80 lines, src/main/java/.../codec/Base58.java); dodges a Maven dep + pin
+varint_handling   = "native"                  # multicodec-style LEB128 (§7.3) inline impl; the multikey format/key/hash-type varints
+
+[error_model]
+# DELIBERATE idiom: Java's CHECKED-EXCEPTION hierarchy — the mainstream-OO error
+# model, the nearest cousin to C#'s unchecked exceptions but with a distinct seam:
+# the codec-decode failures are CHECKED (a subclass of a checked EntityCoreException),
+# so the COMPILER forces callers to handle a malformed-input path — the static-OO
+# analogue of Zig's compiler-checked error sets and OCaml's result, reached via
+# Java's own mechanism. (Truly unrecoverable programmer errors stay unchecked /
+# RuntimeException.) Protocol-status failures (400 non_canonical_ecf / 401 / 403)
+# map an exception subtype -> status code at the dispatcher boundary. This differs
+# from C#/TS unchecked exceptions, OCaml result, Elixir tagged-tuple, Zig error
+# union, and CL conditions — the checked-vs-unchecked split is the Java seam.
+style             = "exceptions"              # "exceptions" | "result" | "either" | "errno" | "tagged_tuple" | "conditions" | "error_union"
+checked           = true                      # codec/protocol failures are CHECKED exceptions (compiler-enforced handling); programmer errors stay unchecked
+base_exception    = "EntityCoreException"     # checked, extends java.lang.Exception
+exception_hierarchy = [
+    "EntityCoreException (checked)",
+    "  EntityCodecException",
+    "    NonCanonicalEcfException",
+    "    TruncatedInputException",
+    "    TagRejectedException",
+    "    DuplicateKeyException",
+    "  EntityCryptoException",
+    "    BadSeedException",
+    "    UnsupportedKeyTypeException",
+    "    UnsupportedContentHashFormatException",
+    "  EntityProtocolException",
+    "    AuthenticationException",
+    "    AuthorizationException",
+    "  EntityTransportException",
+]
+
+[async]
+# DELIBERATE idiom decision; NOT exercised by the codec (S2 is pure/synchronous).
+# Java's concurrency primitive is the platform THREAD (java.lang.Thread +
+# java.util.concurrent). For the §4.8/§6.11 inbound-concurrent-with-outbound
+# requirement (N6/N7 reentrancy), the core peer uses one thread per connection
+# (a reader thread demuxing EXECUTE_RESPONSE by request_id via a
+# ConcurrentHashMap<requestId, CompletableFuture/SynchronousQueue>), mirroring the
+# OCaml/Zig/CL stdlib-threads decision (A-OC-003-revised). The public async surface
+# is BLOCKING + a CompletableFuture<T> variant for async consumers (the Java
+# analogue of C#'s Task / TS's Promise). JDK 21 virtual threads (Project Loom,
+# JEP 444 GA in 21) make one-thread-per-connection cheap and are the recommended
+# carrier; revisit if handler-initiated outbound (origination) enters scope.
+# See A-JAVA-003.
+style             = "threaded"                # "sync" | "task" | "threaded" | "virtual-threads"
+default_surface   = "blocking"                # codec + core peer are blocking/synchronous; threads provide concurrency
+async_surface     = "CompletableFuture"       # CompletableFuture<T> variant for async consumers (the Task/Promise analogue)
+primitive         = "java.lang.Thread (virtual threads, JEP 444 GA in JDK 21) + java.util.concurrent"
+request_demux     = "ConcurrentHashMap<requestId, future>"  # reentrant request_id correlation; N7
+
+[naming]
+# Java-native conventions (differ from C# PascalCase-members / TS camelCase /
+# OCaml snake / Zig mixed / CL lisp-case).
+type_names        = "PascalCase"              # classes/interfaces/records/enums: Entity, ContentHash, PeerId
+method_names      = "camelCase"               # methods: contentHash(), signAndVerify(), encodeEcf()
+field_names       = "camelCase"               # fields + locals + parameters: contentHash, peerId, formatCode
+constant_names    = "UPPER_SNAKE_CASE"        # static final constants: MAX_MESSAGE_SIZE, DEFAULT_TIMEOUT (Java idiom — unlike C#/Zig)
+package_names     = "lowercase.dotted"        # reverse-DNS lowercase: org.entitycore.protocol, ...protocol.codec
+enum_constants    = "UPPER_SNAKE_CASE"        # enum members: KeyType.ED25519, HashFormat.SHA_256
+file_names        = "PascalCase.java"         # one public type per file: ContentHash.java, PeerId.java
+
+[build]
+build_tool        = "maven"                   # mvn — the most-ubiquitous JVM build/dependency tool; reproducible, offline-after-resolve. (Gradle is the alternative; Maven chosen for its simpler offline/repro story + minimal moving parts, matching the dependency-minimization stance.)
+build_command     = "mvn -o -B clean package"          # -o offline (deps pre-fetched into the image at build time), -B batch
+test_command      = "mvn -o -B test"                   # JUnit 5 via surefire
+pack_command      = "mvn -o -B package"                # produces the jar artifact; deploy is the optional S5 registry step
+
+[layout]
+project_file      = "pom.xml"                 # Maven project descriptor
+src_dir           = "src/main/java/"          # standard Maven layout
+test_dir          = "src/test/java/"          # JUnit 5 tests + conformance harness
+resources_dir     = "src/test/resources/"     # conformance fixture vectors mounted here
+group_id          = "org.entitycore"          # reverse-DNS group
+artifact_id       = "entity-core-protocol"    # Maven artifact id
+root_package      = "org.entitycore.protocol" # Java root package
+
+[publishing]
+registry          = "Maven Central"           # the JVM registry (Sonatype OSSRH / Central Portal)
+registry_url      = "https://central.sonatype.com/"
+group_id          = "org.entitycore"          # reverse-DNS coordinate (publishing requires a verified namespace; placeholder until claimed — see repository_url)
+artifact_id       = "entity-core-protocol"
+package_id        = "org.entitycore:entity-core-protocol"  # full Maven coordinate
+license_expression = "Apache-2.0"
+repository_url     = ""                        # TBD on first publish (namespace verification gates Central publish; logged A-JAVA-005)
+developers         = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default; the JVM ecosystem is Apache-2.0-leaning (Apache projects, Maven Central norm), so the repo default is also the ecosystem norm — no override.
+
+[testing]
+# JUnit 5 (Jupiter) — THE JVM test-framework standard. This is the ONE registry
+# dependency the conformance/test path takes (test-scope only, not a runtime dep):
+# unlike the OCaml/Zig/CL peers which hand-rolled to avoid even a test-framework dep,
+# the JVM's JUnit 5 is so ubiquitous + vendor-reviewed-adjacent (the de-facto
+# standard) that taking it is the idiomatic, low-surprise choice, and it is
+# test-scope (never shipped). Still pinned exactly + ≥30-day. The conformance harness
+# is a JUnit test that loads the normative fixture and asserts byte-identity.
+framework         = "JUnit 5 (Jupiter)"
+junit_version     = "5.11.4"                   # test-scope only; pinned (see [deps])
+surefire_version  = "3.5.2"                    # maven-surefire-plugin, test runner
+
+[documentation]
+javadoc           = true                       # /** */ Javadoc on public surfaces
+javadoc_plugin    = "maven-javadoc-plugin"     # for later S5 documentation generation
+
+[container]
+base_image        = "entity-core-keystone/java-toolchain:latest"
+build_in_container = true
+# --network=none honored: the core build is JDK-only (Ed25519 + SHA-256 + threads
+# all in the JDK); Maven deps (JUnit test-scope, optional BouncyCastle) are
+# pre-fetched into the image's local ~/.m2 repo at container BUILD time, so the dev
+# loop builds fully offline with `mvn -o`.
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/java entity-core-keystone/java-toolchain:latest mvn -o -B test"
+
+[idiom]
+# Hints that don't fit elsewhere.
+records_for_value_types  = true               # Java 16+ `record` for value-shaped immutable types (ContentHash, PeerId, Entity) — the Java analogue of C# records
+sealed_interfaces        = true               # sealed interfaces + permits for closed type hierarchies (message types, ECF value nodes) — exhaustive switch (JDK 21 pattern matching)
+pattern_matching_switch  = true               # JDK 21 switch pattern matching (JEP 441 GA) for the codec/dispatch ladders — exhaustive over sealed types
+prefer_immutable         = true               # immutable value types; defensive-copy byte[] at the boundary (Java arrays are mutable — the codec must copy in/out, a Java-specific footgun vs the GC'd-but-immutable peers)
+nullable_via_optional    = true               # java.util.Optional<T> for absent values on the public surface; @Nullable annotations internal
+no_byte_array_aliasing   = true               # NEVER expose an internal byte[] by reference (callers can mutate it); clone on get/set — Java's mutable-array seam
+target_release           = "21"               # javac --release 21 (the pinned LTS)
+java_version             = "21"               # Temurin 21 LTS
+checked_decode_exceptions = true              # decode failures are CHECKED — compiler forces malformed-input handling (the static-OO error-rigor seam)
+
+[deps]
+# Exact pins (S11). Mirrored in containers/java-toolchain/Containerfile.
+# SUPPLY-CHAIN SCOPE (per the project's S11 clarification): the JDK toolchain is a
+# REVIEWED VENDOR CHANNEL (Eclipse Adoptium / Temurin, like Microsoft's .NET feed),
+# so the ≥30-day AGE floor RELAXES for the JDK itself — but the EXACT version pin
+# still stands for reproducibility. Maven Central deps (JUnit, the optional
+# BouncyCastle) are REGISTRY-pulled with no human gate, so they get the ≥30-day
+# discipline with full force.
+#
+# CORE RUNTIME DEPS: ZERO. The §9.1 floor (Ed25519 + SHA-256) AND the agility
+# signature (Ed448 + SHA-384) are all in the JDK (SunEC + SunMessageDigest). CBOR +
+# base58 + varint are hand-rolled. This makes the core peer's runtime dependency
+# count ZERO — matching Elixir/Zig's lightest-in-cohort supply-chain position, but
+# via a mainstream vendor stdlib.
+jdk               = "Temurin 21.0.10+7"        # LTS; released 2026-01-21 (~143 days old at 2026-06-13 — clears the ≥30-day floor comfortably even though, as a reviewed vendor channel, the age floor is relaxed). 21.0.11+10 (2026-04-23, ~51d) is the newer LTS patch but 21.0.10 is the conservative well-aged pick. Exact pin stands for repro.
+junit           = "5.11.4"                     # JUnit 5 (Jupiter), released 2024-12 (~18 months old — well over the floor). TEST-SCOPE only (never shipped in the artifact). Registry-pulled → ≥30-day applies → met.
+surefire        = "3.5.2"                       # maven-surefire-plugin, released 2024-11 (~19 months) — build-plugin, test path only.
+bouncycastle    = "1.80"                        # bcprov-jdk18on 1.80, released 2025-01-14 (~17 months old — far over the ≥30-day floor). OPT-IN agility cross-check / fallback ONLY; the CORE build is BouncyCastle-FREE (JDK SunEC covers Ed25519+Ed448, SunMessageDigest covers SHA-256+384). Registry-pulled → ≥30-day applies → met. NOTE: BC 1.84 (2026-05-16, ~28d) is UNDER the floor — explicitly NOT picked; 1.80 is the conservative aged pin.
+maven           = "3.9.9"                       # the build tool itself; bundled into the toolchain image (reviewed-channel — exact pin for repro, age floor relaxed)
+
+[spec]
+v7_version_pinned = "7.72"                     # latest spec-data SNAPSHOT available; profile + codec derive from it
+codec_corpus      = "v0.8.0"                    # ECF corpus; ENTITY-CBOR-ENCODING.md + ENTITY-NATIVE-TYPE-SYSTEM.md are byte-identical v7.71->v7.72 (SHA-verified upstream per the cohort), so the v0.8.0 corpus is valid at v7.72.
+# PEER-LAYER SPEC SKEW (A-JAVA-001, corroborates A-CL-001): spec HEAD is v7.74
+# (folded), but spec-data snapshots stop at v7.72. The v7.73 (nonce-echo §4.6) and
+# v7.74 (register/outbound/emit/owner-cap §6.13/§6.9a + §7a conformance handlers)
+# folds are PEER-LAYER (S3+), not codec — so S1/S2 are unaffected. Resync the peer
+# layer to the v7.74 surface at S3 (mirror the cohort builds), and escalate the
+# missing v7.73/v7.74 spec-data snapshot to arch (S2 ownership).
+# PEER_ID CONSTRUCTION (A-JAVA-004, corroborates A-ZIG-001 / A-OC-007 / A-CL-002 —
+# the FOURTH spec-first peer): derive the Ed25519 peer_id from the §1.5 v7.65
+# CANONICAL-FORM TABLE (line 448: hash_type=0x00 identity multihash, digest = RAW
+# public key bytes), NOT the stale §7.4 / §1.5-line-436 skeleton (lines 436/3561:
+# SHA256(public_key), hash_type=0x01). The §7.4 pseudocode is STALE and fails the
+# authenticate identity-binding handshake (401 identity_mismatch).

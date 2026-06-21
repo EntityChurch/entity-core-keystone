@@ -1,0 +1,59 @@
+# alire.toml — Alire crate manifest for entity-core-protocol-ada (peer #10).
+#
+# Authored at S5 (PHASE-S5 §"Package metadata"). Alire (the Ada Library Repository,
+# https://alire.ada.dev/) is Ada's package registry — the crates.io / Hex analogue, and
+# the OPTIONAL S5 distribution channel only. The CORE BUILD does NOT depend on Alire: the
+# peer has NO Alire crate dependencies (crypto = the libsodium Interfaces.C binding; CBOR,
+# Base58, and the LEB128 varint are hand-rolled in-repo), so `gprbuild -P
+# entity_core_protocol.gpr` builds fully offline against the committed .gpr with no
+# registry resolve at all (profile [build]; A-ADA-004). This manifest is the DISTRIBUTION
+# wrapper; `alr build` wraps the same gprbuild.
+#
+# NOT PUBLISHED. `alr publish` requires an Alire community crate-index submission (a PR to
+# the alire-index repo), which sets the concrete `origin`/`repository_url` — a one-time
+# operator step that gates the first publish, deferred per A-ADA-005 (the same shape as
+# Java's Maven Central namespace gate, A-JAVA-005). `/entity-rosetta` never publishes
+# (lifecycle §Publishing); the operator decides. This file is committed for reviewability,
+# not because a publish is attached.
+
+name = "entity_core_protocol"
+description = "Entity Core Protocol (V7 v7.75) — native Ada core protocol peer: canonical-CBOR (ECF) codec, Ed25519 identity + signatures, capability authorization, tasks + protected-object store."
+
+# Release LINE is 0.1.0-pre — parked pre-release pending arch v0.1 sign-off + a first
+# external Ada consumer (the S5 promotion gate). Alire's `version` accepts the SemVer-style
+# pre-release qualifier directly (unlike ASDF's dotted-integer-only field, A-CL-010), so the
+# `-pre` marker is carried here idiomatically and matches CHANGELOG.md / README.md.
+version = "0.1.0-pre"
+
+authors   = ["Entity Core Protocol contributors"]
+maintainers = ["Entity Core Protocol contributors <noreply@entitycore.invalid>"]
+maintainers-logins = []   # set on Alire crate-index submission (A-ADA-005)
+licenses  = "Apache-2.0"  # SPDX; profile [publishing].license_expression
+website   = "https://github.com/entity-systems/entity-core-keystone"
+tags      = ["protocol", "cbor", "ecf", "ed25519", "crypto", "peer", "entity-core"]
+
+# The committed GNAT project is the build entry point; `alr build` wraps gprbuild against it.
+project-files = ["entity_core_protocol.gpr"]
+
+# NO crate dependencies — the core peer is self-contained Ada + a system libsodium link.
+# (Documented explicitly so a reviewer sees the lightest-supply-chain posture; the libsodium
+# dependency is a SYSTEM shared library linked via -lsodium, not an Alire crate.)
+[depends-on]
+# (intentionally empty — no Alire crates; see the header note + profile [deps])
+
+# Toolchain floor: GNAT with Ada 2012/2022 contract-aspect support (Pre/Post/Type_Invariant).
+# Built/verified against gcc-gnat-15.2.1 (GNAT FSF 15.2) + gprbuild 25.0.0 (Fedora 43 distro
+# channel; S11 pins in CHANGELOG.md / arch/PROFILE-RATIONALE.md).
+[gpr-set-externals]
+# (none — the .gpr is self-configuring; -gnata keeps the design-by-contract aspects live)
+
+# System dependency note (informational; Alire models OS packages via `gpr-externals` /
+# system crates where available, but the canonical pin is the committed .gpr's `-lsodium`
+# link + the S11 NVR pin libsodium-1.0.22-1.fc43). The runtime needs system libsodium present.
+
+[origin]
+# TBD on first publish — set by the Alire crate-index submission (A-ADA-005). The crate
+# source is the keystone repo subtree protocol-generator/ada/ today; a standalone-repo lift
+# (S10, deferred cohort-wide) would point this at the per-language sibling repo. Left
+# unset/empty deliberately: `alr publish` populates it, the pipeline does not.
+url = ""

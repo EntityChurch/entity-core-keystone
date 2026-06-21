@@ -1,0 +1,17 @@
+# Go toolchain image — builds keystone-local Go tooling (the interim codec
+# oracle) and, when needed, entity-core-go binaries (validate-peer,
+# wire-conformance) for conformance.
+#
+# S1: builds run in this container, not on the host.
+# S11: pin the toolchain to a version >= 30 days old. golang 1.25.x is required
+#      (entity-core-go/core/go.mod declares `go 1.25.0`). The exact NVR below is
+#      what fedora:43 shipped at authoring; re-verify the >=30-day age when you
+#      rebuild, and prefer pinning the base image by digest for full repro.
+FROM registry.fedoraproject.org/fedora:43
+
+RUN dnf install -y golang-1.25.10 git && dnf clean all
+
+ENV GOTOOLCHAIN=local \
+    GOFLAGS=-mod=mod
+
+WORKDIR /work

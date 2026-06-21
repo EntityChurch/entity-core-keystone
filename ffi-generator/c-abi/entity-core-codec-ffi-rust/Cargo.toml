@@ -1,0 +1,40 @@
+[package]
+name = "entity-core-codec-ffi-rust"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Rust implementation of the Entity Codec C-ABI (libentitycore_codec)"
+publish = false
+
+[lib]
+# Same artifact name as the C impl (spec §2.1); provenance via ec_impl_info().
+name = "entitycore_codec"
+# cdylib + staticlib = the shipped ABI artifacts (spec §7); rlib lets the
+# first-pass conformance harness (src/bin) link the safe api module directly.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+# Pins per research/evaluations/ffi-rust.md — all >=30 days old at pin time (S11).
+# Exact "=" pins; Cargo.lock committed.
+#
+# FIRST-PASS NOTE: the decoder is hand-rolled here (decode.rs). ffi-rust.md's
+# decided stack uses `minicbor` 2.2.1 as a decode tokenizer/validator only
+# (never trusted to produce output); wiring it is the next decode-path step.
+# The load-bearing decision — hand-written canonical *encoder* — is unchanged.
+[dependencies]
+ed25519-dalek = { version = "=2.2.0", features = ["rand_core"] }  # NOT 3.0-rc (R2); rand_core → OsRng keygen
+sha2          = "=0.10.9"     # SHA-256 + SHA-384 (agility 0x01); stay off 0.11 (R4)
+bs58          = "=0.5.1"      # Bitcoin alphabet default
+half          = "=2.4.1"      # shortest-float (f16)
+rand          = "=0.8.5"      # OsRng for ec_ed25519_keygen / ec_ed448_keygen (R2: OS CSPRNG, not ThreadRng)
+# Crypto-agility (C-ABI v1.1, v7.67 Phase 2). Exact pins MATCH the reference
+# cohort (entity-core-rust, byte-locked 2026-06-09) so Ed448 RFC-8032 output is
+# produced by the same RustCrypto stack the agility fixtures were locked against
+# — removes a byte-identity variable. The 30-day-age scrutiny (S11) applied
+# there carries; ed448-goldilocks is a documented pre-release pin (the only
+# maintained RustCrypto Ed448 signer). See research/evaluations/ffi-rust.md
+# agility addendum.
+ed448-goldilocks = "=0.14.0-pre.13"  # Ed448 sign/verify/seed→pubkey (key_type 0x02)
+ed448            = "=0.5.0"          # Ed448 signature/key newtypes (goldilocks surface)
+
+[profile.release]
+panic = "unwind"   # MUST stay unwind so catch_unwind works at the FFI boundary (R6)

@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Maven dependency pre-fetch POM for the java-toolchain image.
+
+  Purpose: at container BUILD time (network available), `mvn dependency:go-offline`
+  against this POM populates the image's local ~/.m2 repository with EXACTLY the
+  pinned dependency + plugin versions the entity-core-protocol-java peer uses, so
+  the dev loop runs `mvn -o` (offline) under a sealed network (network=none).
+
+  Pins MUST match protocol-generator/java/profile.toml [deps]:
+    * org.junit.jupiter:junit-jupiter        5.11.4   (test-scope; JUnit 5)
+    * maven-surefire-plugin                  3.5.2     (test runner)
+    * org.bouncycastle:bcprov-jdk18on        1.80      (OPT-IN agility cross-check)
+
+  The CORE peer build has ZERO runtime dependencies — Ed25519/Ed448/SHA-256/384 are
+  all JDK SunEC + SunMessageDigest; CBOR/base58/varint are hand-rolled. BouncyCastle
+  is opt-in (agility cross-check only); the core build is BouncyCastle-free.
+
+  This is the build-recipe fixture, NOT the peer's real pom.xml (authored at S2/S3).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>org.entitycore</groupId>
+  <artifactId>entity-core-protocol-prefetch</artifactId>
+  <version>0.0.0</version>
+  <packaging>jar</packaging>
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <junit.version>5.11.4</junit.version>
+    <surefire.version>3.5.2</surefire.version>
+    <bouncycastle.version>1.80</bouncycastle.version>
+  </properties>
+
+  <dependencies>
+    <!-- JUnit 5 (Jupiter) — test-scope only; the conformance harness framework. -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- BouncyCastle — OPT-IN agility cross-check / fallback ONLY.
+         The core build is BouncyCastle-free (JDK SunEC covers Ed25519+Ed448).
+         Pre-fetched so an opt-in agility cross-check can run offline at S2. -->
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcprov-jdk18on</artifactId>
+      <version>${bouncycastle.version}</version>
+      <scope>test</scope>
+      <optional>true</optional>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>${surefire.version}</version>
+      </plugin>
+    </plugins>
+  </build>
+</project>

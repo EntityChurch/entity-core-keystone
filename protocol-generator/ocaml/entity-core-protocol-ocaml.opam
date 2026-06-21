@@ -1,0 +1,34 @@
+# Hand-written opam manifest (NOT dune-generated) so the S11 dependency pins are
+# explicit and reviewable in one place. Package is parked at 0.1.0-pre and is NOT
+# published — see status/PHASE-S5.md for the publish runbook + promotion gate.
+opam-version: "2.0"
+name: "entity-core-protocol-ocaml"
+version: "0.1.0-pre"
+synopsis: "Native-OCaml core protocol peer for the Entity Core protocol (V7)"
+description: """
+A pure-OCaml peer for the Entity Core protocol (ENTITY-CORE-PROTOCOL-V7): canonical-CBOR
+(ECF) codec, Ed25519 identity and deterministic signatures, capability authorization with
+chain attenuation, and the handshake/dispatch machinery — no FFI, no libsodium, no C
+bindings. Peer #3, generated spec-first by the entity-core-keystone /entity-rosetta
+pipeline. Conformant to validate-peer --profile core. Tracks V7 v7.72 + v7.73 closeout.
+Ed448 / crypto-agility higher bar is not yet supported (no conformant native OCaml Ed448).
+"""
+maintainer: "Entity Core Protocol contributors"
+authors: "Entity Core Protocol contributors"
+license: "Apache-2.0"
+# S10: per-language sibling repo deferred; these point at the keystone monorepo until
+# lift-out. Set concretely before opam-repository submission (PHASE-S5 §6.3).
+homepage: "https://example.invalid/entity-core-keystone"     # TBD — provisional
+dev-repo: "git+https://example.invalid/entity-core-keystone.git"  # TBD — provisional
+bug-reports: "https://example.invalid/entity-core-keystone/issues"  # TBD — provisional
+# S11: exact pins, all ≥30 days old at pin time. Re-pinning is deliberate + reviewed.
+depends: [
+  "ocaml" {= "5.2.1"}
+  "dune" {= "3.23.1"}
+  "digestif" {= "1.3.0"}
+  "mirage-crypto-ec" {= "2.1.0"}
+  "mirage-crypto-rng" {= "2.1.0"}
+]
+build: [
+  ["dune" "build" "-p" name "-j" jobs]
+]

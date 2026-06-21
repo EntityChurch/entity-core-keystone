@@ -1,0 +1,176 @@
+/
+  ECF Conformance Vectors — v1 corpus (LOCKED)
+  Spec:       ENTITY-CBOR-ENCODING.md v1.5, Appendix E
+  Guide:      GUIDE-CONFORMANCE.md (the cross-impl publication procedure)
+  Status:     LOCKED. All `encode_equal` `canonical` fields filled from the
+              cross-impl 3-way byte-equality round (71/71 PASS).
+              `decode_reject` `canonical` fields were
+              authored directly (wire bytes the decoder MUST reject).
+
+  Format:     CBOR diagnostic notation, RFC 8949 §8. The sibling
+              `conformance-vectors-v1.cbor` is the canonical-ECF-encoded
+              build artifact (the binary file impls load).
+
+  Categories: see Appendix E §E.1. Class A (canonical encoding) +
+              Class B (protocol-surface conformance).
+
+  Comment markers in this file use the RFC 8949 §8 `/ comment /` form.
+/
+
+[
+
+  / ─────────────────────────────────────────────────────────────────────── /
+  / CLASS A — canonical encoding                                            /
+  / ─────────────────────────────────────────────────────────────────────── /
+
+  / float — Rule 4 minimization (f16 / f32 / f64 boundaries), Rule 4a       /
+  / special floats. Initial seed: 14 vectors from Python's W2 verification  /
+  / battery. cbor2's                                                        /
+  / C-extension was non-conformant for large-magnitude f16-representable    /
+  / values at ≥ 2^15 magnitudes; this battery locks in the conformance.    /
+
+  { "id": "float.1",  "description": "f16: 0.0",                                                "kind": "encode_equal", "input": 0.0,                "canonical": h'f90000' },
+  { "id": "float.2",  "description": "f16: -0.0",                                               "kind": "encode_equal", "input": -0.0,               "canonical": h'f98000' },
+  { "id": "float.3",  "description": "f16: 1.0",                                                "kind": "encode_equal", "input": 1.0,                "canonical": h'f93c00' },
+  { "id": "float.4",  "description": "f16: 1.5",                                                "kind": "encode_equal", "input": 1.5,                "canonical": h'f93e00' },
+  { "id": "float.5",  "description": "f16 special: +inf",                                       "kind": "encode_equal", "input": Infinity,           "canonical": h'f97c00' },
+  { "id": "float.6",  "description": "f16 special: -inf",                                       "kind": "encode_equal", "input": -Infinity,          "canonical": h'f9fc00' },
+  { "id": "float.7",  "description": "f16 special: nan (canonical: 0x7e00 payload)",            "kind": "encode_equal", "input": NaN,                "canonical": h'f97e00' },
+  { "id": "float.8",  "description": "f16 large: 2^15 = 32768.0 (smallest 'large' f16)",        "kind": "encode_equal", "input": 32768.0,            "canonical": h'f97800' },
+  { "id": "float.9",  "description": "f16 large: 65472.0 (one step below max f16)",             "kind": "encode_equal", "input": 65472.0,            "canonical": h'f97bfe' },
+  { "id": "float.10", "description": "f16 large: 65504.0 (max normal f16)",                     "kind": "encode_equal", "input": 65504.0,            "canonical": h'f97bff' },
+  { "id": "float.11", "description": "f16 large: -65504.0 (negative max normal f16)",           "kind": "encode_equal", "input": -65504.0,           "canonical": h'f9fbff' },
+  { "id": "float.12", "description": "non-f16: 65503.0 — must encode as f32 (not f16)",         "kind": "encode_equal", "input": 65503.0,            "canonical": h'fa477fdf00' },
+  { "id": "float.13", "description": "non-f16: 100000.0 — must encode as f32",                  "kind": "encode_equal", "input": 100000.0,           "canonical": h'fa47c35000' },
+  { "id": "float.14", "description": "non-f16-or-f32: 1.1 — must encode as f64",                "kind": "encode_equal", "input": 1.1,                "canonical": h'fb3ff199999999999a' },
+
+  / int — major-type 0/1 minimization at boundaries. Each canonical encoded /
+  / int MUST use the shortest argument length that encodes the value (per  /
+  / RFC 8949 §4.2.1 Rule 1).                                                /
+
+  { "id": "int.1",  "description": "uint at boundary: 0",                                       "kind": "encode_equal", "input": 0,                  "canonical": h'00' },
+  { "id": "int.2",  "description": "uint at boundary: 23 (last single-byte)",                   "kind": "encode_equal", "input": 23,                 "canonical": h'17' },
+  { "id": "int.3",  "description": "uint at boundary: 24 (first 1-byte-arg)",                   "kind": "encode_equal", "input": 24,                 "canonical": h'1818' },
+  { "id": "int.4",  "description": "uint at boundary: 255 (last 1-byte-arg)",                   "kind": "encode_equal", "input": 255,                "canonical": h'18ff' },
+  { "id": "int.5",  "description": "uint at boundary: 256 (first 2-byte-arg)",                  "kind": "encode_equal", "input": 256,                "canonical": h'190100' },
+  { "id": "int.6",  "description": "uint at boundary: 65535 (last 2-byte-arg)",                 "kind": "encode_equal", "input": 65535,              "canonical": h'19ffff' },
+  { "id": "int.7",  "description": "uint at boundary: 65536 (first 4-byte-arg)",                "kind": "encode_equal", "input": 65536,              "canonical": h'1a00010000' },
+  { "id": "int.8",  "description": "uint at boundary: 4294967295 (last 4-byte-arg)",            "kind": "encode_equal", "input": 4294967295,         "canonical": h'1affffffff' },
+  { "id": "int.9",  "description": "uint at boundary: 4294967296 (first 8-byte-arg)",           "kind": "encode_equal", "input": 4294967296,         "canonical": h'1b0000000100000000' },
+  { "id": "int.10", "description": "uint at boundary: 9223372036854775807 (max signed i64)",    "kind": "encode_equal", "input": 9223372036854775807,"canonical": h'1b7fffffffffffffff' },
+  { "id": "int.11", "description": "negative int: -1 (first nint)",                             "kind": "encode_equal", "input": -1,                 "canonical": h'20' },
+  { "id": "int.12", "description": "negative int: -24 (last single-byte nint)",                 "kind": "encode_equal", "input": -24,                "canonical": h'37' },
+  { "id": "int.13", "description": "negative int: -25 (first 1-byte-arg nint)",                 "kind": "encode_equal", "input": -25,                "canonical": h'3818' },
+  { "id": "int.14", "description": "negative int: -256 (last 1-byte-arg nint)",                 "kind": "encode_equal", "input": -256,               "canonical": h'38ff' },
+
+  / map_keys — RFC 8949 §4.2.1 deterministic key ordering: by encoded       /
+  / length ascending, then lexicographically (byte-wise) ascending. Covers /
+  / pure-text, pure-byte, and mixed key types.                              /
+
+  { "id": "map_keys.1", "description": "single text key — trivial",                                                       "kind": "encode_equal", "input": {"a": 1},                                                          "canonical": h'a1616101' },
+  { "id": "map_keys.2", "description": "text keys sort by encoded length first: 'z' before 'aa'",                         "kind": "encode_equal", "input": {"aa": 2, "z": 1},                                                 "canonical": h'a2617a0162616102' },
+  { "id": "map_keys.3", "description": "same-length text keys sort lexicographically: 'a' before 'b'",                    "kind": "encode_equal", "input": {"b": 2, "a": 1},                                                  "canonical": h'a2616101616202' },
+  { "id": "map_keys.4", "description": "boundary: text keys at length 23 vs 24 (length-prefix change)",                   "kind": "encode_equal", "input": {"aaaaaaaaaaaaaaaaaaaaaaaa": 24, "aaaaaaaaaaaaaaaaaaaaaaa": 23}, "canonical": h'a27761616161616161616161616161616161616161616161611778186161616161616161616161616161616161616161616161611818' },
+  { "id": "map_keys.5", "description": "byte-string keys: byte-keys sort relative to text-keys per §4.2.1 deterministic", "kind": "encode_equal", "input": {h'6b6579': 2, "text_key": 1},                                     "canonical": h'a2436b65790268746578745f6b657901' },
+  { "id": "map_keys.6", "description": "identical-prefix text keys: 'aa' before 'aaa' (length, then lex)",                "kind": "encode_equal", "input": {"aaa": 2, "aa": 1},                                               "canonical": h'a2626161016361616102' },
+
+  / length — definite-length encoding only. Canonical MUST be definite-     /
+  / length for every container kind (RFC 8949 §4.2.1 Rule 3). This         /
+  / category confirms the *absence* of indefinite-length headers (0x5f,     /
+  / 0x7f, 0x9f, 0xbf) in any canonical output.                              /
+
+  { "id": "length.1", "description": "empty array",                                              "kind": "encode_equal", "input": [],                                                          "canonical": h'80' },
+  { "id": "length.2", "description": "empty map",                                                "kind": "encode_equal", "input": {},                                                          "canonical": h'a0' },
+  { "id": "length.3", "description": "empty text string",                                        "kind": "encode_equal", "input": "",                                                          "canonical": h'60' },
+  { "id": "length.4", "description": "empty byte string",                                        "kind": "encode_equal", "input": h'',                                                         "canonical": h'40' },
+  { "id": "length.5", "description": "array at boundary: 23 elements",                           "kind": "encode_equal", "input": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22], "canonical": h'97000102030405060708090a0b0c0d0e0f10111213141516' },
+  { "id": "length.6", "description": "array at boundary: 24 elements (1-byte length argument)",  "kind": "encode_equal", "input": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23],"canonical": h'9818000102030405060708090a0b0c0d0e0f1011121314151617' },
+  { "id": "length.7", "description": "byte string at boundary: 23 bytes",                        "kind": "encode_equal", "input": h'00010203040506070809101112131415161718192021',                  "canonical": h'5600010203040506070809101112131415161718192021' },
+  { "id": "length.8", "description": "text string at boundary: 24 chars (1-byte length arg)",    "kind": "encode_equal", "input": "abcdefghijklmnopqrstuvwx",                                  "canonical": h'78186162636465666768696a6b6c6d6e6f707172737475767778' },
+
+  / primitive — bool, null, primitive boundaries. Canonical encoders MUST   /
+  / emit the single-byte forms 0xf4 (false), 0xf5 (true), 0xf6 (null);     /
+  / undefined (0xf7) is NOT used in ECF.                                    /
+
+  { "id": "primitive.1", "description": "null bare",                                              "kind": "encode_equal", "input": null,                                              "canonical": h'f6' },
+  { "id": "primitive.2", "description": "bool: true",                                             "kind": "encode_equal", "input": true,                                              "canonical": h'f5' },
+  { "id": "primitive.3", "description": "bool: false",                                            "kind": "encode_equal", "input": false,                                             "canonical": h'f4' },
+  { "id": "primitive.4", "description": "single-key map with null value",                         "kind": "encode_equal", "input": {"value": null},                                   "canonical": h'a16576616c7565f6' },
+  { "id": "primitive.5", "description": "single-key map with bool values mixed (false then true)","kind": "encode_equal", "input": {"a": true, "b": false},                           "canonical": h'a26161f56162f4' },
+  { "id": "primitive.6", "description": "single-key map with empty string and empty bytes",       "kind": "encode_equal", "input": {"s": "", "b": h''},                               "canonical": h'a2616240617360' },
+
+  / nested — composite shapes exercising deep nesting and mixed types,      /
+  / including the entity carrier shape ({type, data}) and the envelope     /
+  / carrier shape (root + included). Class B builds on this.               /
+
+  { "id": "nested.1", "description": "two-level map nesting",                                     "kind": "encode_equal", "input": {"outer": {"inner": 1}},                          "canonical": h'a1656f75746572a165696e6e657201' },
+  { "id": "nested.2", "description": "three-level: {outer: {inner: {deep: 1}}}",                  "kind": "encode_equal", "input": {"outer": {"inner": {"deep": 1}}},                "canonical": h'a1656f75746572a165696e6e6572a1646465657001' },
+  { "id": "nested.3", "description": "entity carrier shape: {type, data} with multi-field data",  "kind": "encode_equal", "input": {"type": "test/v1", "data": {"a": 1, "b": "two"}}, "canonical": h'a26464617461a261610161626374776f647479706567746573742f7631' },
+  { "id": "nested.4", "description": "hash-keyed inner map (envelope-included-like)",             "kind": "encode_equal", "input": {"included": {h'0001020304050607080910111213141516171819202122232425262728293031': 1}}, "canonical": h'a168696e636c75646564a15820000102030405060708091011121314151617181920212223242526272829303101' },
+
+  / tag_reject — §6.3 rejection vectors. canonical bytes ARE the wire input /
+  / to feed the decoder; the decoder MUST reject (typical error code:      /
+  / 400 non_canonical_ecf). The encoder MUST NOT produce these.            /
+
+  / tag_reject.1: wrapper {type, data} with tag-0 (datetime) at data.ts.    /
+  / Wire bytes: a2 64 t y p e 67 t e s t / v 1 64 d a t a a1 62 t s c0 74  /
+  /             "2026-06-06T12:00:00Z" (20 char string).                   /
+  { "id": "tag_reject.1", "description": "tag 0 (datetime) in data field — MUST reject", "kind": "decode_reject", "canonical": h'a2647479706567746573742f7631646461746161316274736374323032362d30362d30365431323a30303a30305a' },
+
+  / tag_reject.2: tag-1 (epoch timestamp) wrapping a uint at data.ts.       /
+  { "id": "tag_reject.2", "description": "tag 1 (epoch ts) in data field — MUST reject", "kind": "decode_reject", "canonical": h'a2647479706567746573742f7631646461746161316274731a661fa680' },
+
+  / tag_reject.3: tag-37 (UUID) wrapping a 16-byte bstr at data.id.         /
+  { "id": "tag_reject.3", "description": "tag 37 (UUID) in data field — MUST reject", "kind": "decode_reject", "canonical": h'a2647479706567746573742f7631646461746161316269643350112233445566778899aabbccddeeff' },
+
+  / tag_reject.4: tag 55799 (self-described CBOR magic) wrapping a wire     /
+  / frame — explicitly forbidden in §6.3.                                   /
+  { "id": "tag_reject.4", "description": "tag 55799 (self-describe) on wire frame — MUST reject", "kind": "decode_reject", "canonical": h'd9d9f7a0' },
+
+  / tag_reject.5: nested tag inside included entity data (deep rejection). /
+  / outer envelope { root: {...}, included: { hash: { type, data: {ts:    /
+  / tag-0("2026-06-06T12:00:00Z")} } } }                                   /
+  { "id": "tag_reject.5", "description": "tag 0 nested in included entity data — MUST reject", "kind": "decode_reject", "canonical": h'a26472 6f6f74a2647479706567746573742f7631646461746160 68696e636c75646564 a158210000000000000000000000000000000000000000000000000000000000000001a2647479706567746573742f7631646461746161316274736374323032362d30362d30365431323a30303a30305a' },
+
+  / ─────────────────────────────────────────────────────────────────────── /
+  / CLASS B — protocol-surface conformance                                   /
+  / ─────────────────────────────────────────────────────────────────────── /
+
+  / content_hash — construction varint(format_code) || SHA256(ECF({type,    /
+  / data})). For these vectors the `input` is the entity {type, data} to    /
+  / hash; the `canonical` bytes are the produced content_hash bytes        /
+  / (varint prefix + 32-byte digest).                                       /
+
+  { "id": "content_hash.1", "description": "empty entity: {type: 'system/empty', data: {}} — pins the empty-data boundary; SUPERSEDES Appendix A.1 empty_map (F5)", "kind": "encode_equal", "input": {"type": "system/empty", "data": {}}, "canonical": h'005f3139e342f5ef35c1e0eb3140c4511c469d604979d20542bc2ab92fd0ca396b' },
+  { "id": "content_hash.2", "description": "single-field data — exercises text-key ECF inside the hash input", "kind": "encode_equal", "input": {"type": "test/v1", "data": {"value": 42}}, "canonical": h'0095fecc27f633079ab9a4a7f97c740f617228f2eaae88b6958ae69b2ba73089eb' },
+  { "id": "content_hash.3", "description": "multi-field data spanning map-key sort rules (length-then-lex)", "kind": "encode_equal", "input": {"type": "test/v1", "data": {"z": 1, "a": 2, "bb": 3, "aaa": 4}}, "canonical": h'005bcc32d21d8f15bd937ed3edb3841b94d8522c1e04abee1d34b6693ca259623f' },
+  { "id": "content_hash.4", "description": "synthetic format_code ≥ 0x80 — exercises multi-byte varint prefix (forward-compat). Input includes a 'format_code' override; impls that don't yet support arbitrary codes report unsupported rather than emit wrong bytes.", "kind": "encode_equal", "input": {"type": "test/v1", "data": {"x": 1}, "format_code": 128}, "canonical": h'800156ff4f3e492cb56a12ace2f0724de332c50e00efa5ff9b0c8edf1898bb9a0329' },
+
+  / peer_id — construction Base58(varint(key_type) || varint(hash_type) ||  /
+  / digest). Input: the abstract components. Canonical: the Base58-encoded /
+  / peer-id string, ECF-encoded as a CBOR text string. Verifies the        /
+  / format/parse round-trip surface (§1.2 / §7.3).                          /
+
+  { "id": "peer_id.1", "description": "standard Ed25519 + SHA256: key_type=0x01, hash_type=0x01, all-zero digest", "kind": "encode_equal", "input": {"key_type": 1, "hash_type": 1, "digest": h'0000000000000000000000000000000000000000000000000000000000000000'}, "canonical": h'782e324b4d3151465a6a4342333857566243464d50366442696a3933447650345456394a4a363961436a6b46696f4675' },
+  { "id": "peer_id.2", "description": "standard Ed25519 + SHA256: key_type=0x01, hash_type=0x01, ascending digest 0x00..0x1f", "kind": "encode_equal", "input": {"key_type": 1, "hash_type": 1, "digest": h'000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'}, "canonical": h'782e324b4d31523947464857626e6e69396b5a71464565724e4b676276546f667a376e35486d38704537666955426438' },
+  { "id": "peer_id.3", "description": "synthetic key_type ≥ 0x80 (multi-byte varint) — exercises forward-compat varint encoding in peer-id prefix", "kind": "encode_equal", "input": {"key_type": 128, "hash_type": 1, "digest": h'000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'}, "canonical": h'7830446d6e6b527a696b54564559624a6136357541736161684636527a457776514a385767743346544d565a6e3856594874' },
+
+  / signature — deterministic Ed25519 sign/verify per RFC 8032. Input:     /
+  / the seed (32 bytes) + the entity to sign. Canonical: the 64-byte        /
+  / Ed25519 signature over the canonical-ECF-encoded entity. Ed25519 is    /
+  / deterministic, so a fixed seed + fixed message produces a fixed sig.   /
+
+  { "id": "signature.1", "description": "deterministic seed = all-zero; sign a minimal entity", "kind": "encode_equal", "input": {"seed": h'0000000000000000000000000000000000000000000000000000000000000000', "entity": {"type": "test/v1", "data": {"x": 1}}}, "canonical": h'3f0b5d06636ea267199dc27eb20d8c9b37684d681adc5be43be465819ad643e3b152e5c024bf67ce862699fe439462d7852b029cb125cd917d12a3151529230c' },
+  { "id": "signature.2", "description": "deterministic seed = all-0xff; sign an entity with multi-field data (exercises canonical key sort prior to signing)", "kind": "encode_equal", "input": {"seed": h'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', "entity": {"type": "test/v1", "data": {"z": 1, "a": 2}}}, "canonical": h'5f2c844db214da6be4ab4b43a2b6af909abb9b31f1bdc676411f73148cc449f986f21427bffa6b5d20321cabd4120662a026cf6a37d8e4f64edc578f2dfeb00d' },
+  { "id": "signature.3", "description": "deterministic seed = ascending 0x00..0x1f; sign a nested entity (exercises canonical encoding through the hash input)", "kind": "encode_equal", "input": {"seed": h'000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f', "entity": {"type": "test/v1", "data": {"outer": {"inner": 1}}}}, "canonical": h'8819be383b4ac36020c8426cc616a9464b3aad9b2ccb0286dd70803160329645b75f9d4936cc3510c897a9bbb5dd11c3712c56fb4f333c4a0f00e6b85445f30a' },
+
+  / envelope — system/envelope/v1 carrier shape. Input: a small envelope    /
+  / with a root entity and a single included signature entity. Canonical:  /
+  / the canonical ECF encoding of the full envelope. Verifies map-key      /
+  / sort under the envelope shape and by-content-hash lookup of included  /
+  / entities from refs in the root.                                        /
+
+  { "id": "envelope.1", "description": "minimal envelope: root only, empty included", "kind": "encode_equal", "input": {"root": {"type": "test/v1", "data": {"x": 1}}, "included": {}}, "canonical": h'a264726f6f74a26464617461a1617801647479706567746573742f763168696e636c75646564a0' },
+  { "id": "envelope.2", "description": "envelope with root + one included signature entity (hash-keyed included map)", "kind": "encode_equal", "input": {"root": {"type": "test/v1", "data": {"signed_by": h'00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff'}}, "included": {h'00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff': {"type": "system/signature/v1", "data": {"sig": h'00'}}}}, "canonical": h'a264726f6f74a26464617461a1697369676e65645f6279582000112233445566778899aabbccddeeff00112233445566778899aabbccddeeff647479706567746573742f763168696e636c75646564a1582000112233445566778899aabbccddeeff00112233445566778899aabbccddeeffa26464617461a163736967410064747970657373797374656d2f7369676e61747572652f7631' }
+
+]

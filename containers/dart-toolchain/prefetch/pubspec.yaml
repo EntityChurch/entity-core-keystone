@@ -1,0 +1,24 @@
+# Throwaway prefetch package — its ONLY purpose is to populate the image's PUB_CACHE
+# with the EXACTLY-pinned deps from protocol-generator/dart/profile.toml [deps], so the
+# dev loop runs fully offline (`dart pub get --offline` under --network=none).
+# NOT the peer; not published. Authored at S1, resolved at the S2 container build.
+name: entity_core_protocol_prefetch
+description: Prefetch-only package to seed the pinned pub deps into PUB_CACHE (not the peer).
+version: 0.0.0
+publish_to: none
+
+environment:
+  # Matches the pinned Dart SDK 3.11.6 line (Dart 3 sealed classes + patterns + records).
+  sdk: '^3.6.0'
+
+dependencies:
+  # CORE RUNTIME — pinned exact (S11). cryptography_plus = pure-Dart Ed25519 floor
+  # (maintained fork of the stalled `cryptography`); crypto = first-party SHA-256 floor.
+  # NOTE: profile pinned 2.7.0, which does NOT exist on pub.dev; the aged 2.x release is
+  # 2.7.1 (2024-10-24, ~602d >= 30d). Re-pinned at S2 + logged (A-DART-012). Pinned exact.
+  cryptography_plus: 2.7.1
+  crypto: 3.0.6
+
+dev_dependencies:
+  # DEV-scope only (never shipped) — the first-party package:test runner.
+  test: 1.25.15

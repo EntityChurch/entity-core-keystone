@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "grantee": "default",
+      "grants": [
+        {
+          "handlers": { "include": ["system/tree"] },
+          "resources": { "include": ["system/type/*", "system/handler/*"] },
+          "operations": { "include": ["get"] }
+        },
+        {
+          "handlers": { "include": ["system/capability"] },
+          "resources": { "include": [] },
+          "operations": { "include": ["request"] }
+        }
+      ]
+    }
+  ]
+}

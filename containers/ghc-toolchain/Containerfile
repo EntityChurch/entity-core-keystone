@@ -1,0 +1,118 @@
+# GHC (Haskell) toolchain image — builds the native Haskell peer
+# (entity-core-protocol-haskell) per protocol-generator/haskell/profile.toml.
+# Mirrors containers/swift-toolchain + containers/zig-toolchain + containers/ocaml-toolchain.
+#
+# Peer #8. S1: AUTHORED **AND BUILD-VERIFIED** this phase — GHC-on-Fedora is the
+# long pole (Fedora ships no GHC 9.8.4; the bindist must `./configure && make install`
+# on fedora:43's glibc, and crypton compiles C and must resolve), so the container is
+# proven NOW to prevent an S2 dead-end (deliberate deviation from the author-only S1
+# convention, per the S1 task contract for this peer).
+# S11: pin the toolchain to exact versions; verify every download cryptographically.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11), build-verified 2026-06-14.
+#   GHC 9.8.4          — released 2024-12-02 (~18 months old; clears the ≥30-day
+#                        cool-down). The GHC-9.8 LTS series; the resolver Stackage LTS
+#                        23.27 is built against exactly 9.8.4 (so the whole dependency
+#                        snapshot is coherent against this compiler).
+#   cabal-install 3.14.2.0 — released 2025-04-07 (~14 months old; clears the floor).
+#   crypton 1.0.4      — released 2025-03-30; the version Stackage LTS 23.27
+#                        (published 2025-07-06, ~11 months old) pins. Resolved at S2 via
+#                        a committed cabal.project.freeze derived from the LTS 23.27 set —
+#                        a SINGLE dated snapshot pins the whole transitive closure ≥30 days
+#                        old, sidestepping the SwiftPM transitive-age trap (A-SW-005).
+#
+# WHY THE OFFICIAL BINDIST TARBALL, NOT `dnf install ghc` AND NOT bare `ghcup`:
+#   Fedora 43 ships no `ghc` 9.8.4 (and a distro GHC is whatever the channel carries,
+#   not a pin we control). ghcup is the idiomatic installer but drives its own networked,
+#   GPG-verified metadata indirection; we instead pin the EXACT GHC 9.8.4 fedora33 bindist
+#   + cabal-install 3.14.2.0 fedora33 tarballs and verify each against an exact sha256 from
+#   the published downloads.haskell.org SHA256SUMS — fail-closed on mismatch. This is the
+#   zig/swift "official tarball + pinned sha256, fail-closed" discipline adapted to GHC's
+#   ./configure-bindist distribution. (downloads.haskell.org also publishes SHA256SUMS.sig
+#   detached GPG signatures; the sha256 pin is the primary gate here, GPG is the documented
+#   defense-in-depth follow-on — see PROFILE-RATIONALE.)
+#
+# WHY THE fedora33 BINDIST ON A fedora:43 BASE:
+#   GHC's newest Fedora target for 9.8.4 is fedora33. GHC's Linux bindist is built against
+#   an OLDER glibc and is forward-compatible with newer glibc (it runs on fedora:43 — VERIFIED
+#   below by `ghc --version` + a compile/run + the crypton build inside the fedora:43 image).
+#   The runtime libs GHC needs (gmp, libffi, ncurses) are installed from fedora:43's own repos.
+#
+# NETWORK: the toolchain pull + the one-time Hackage/cabal dependency resolve (crypton et al.)
+#   need network at BUILD time. The codec build itself (S2) can run --network=none once the
+#   dependencies are resolved + the cabal store is populated (cabal.project.freeze committed);
+#   the resolve step is the only networked step.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build:
+#   podman build -t entity-core-keystone/ghc-toolchain:latest \
+#     -f containers/ghc-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# ── Runtime + build deps GHC + crypton need on Fedora ────────────────────────
+# GHC bindist: needs gmp (Integer), libffi (FFI), ncurses (ghci), and a C
+# toolchain (gcc/make) to ./configure && make install the bindist + to compile
+# the C cbits in crypton (and GHC's own runtime linking). xz/tar unpack the
+# tarballs; gnupg2 is present for the documented SHA256SUMS.sig defense-in-depth.
+# perl is used by GHC's install scripts; gmp-devel/libffi-devel/ncurses-devel give
+# the headers + the unversioned .so symlinks GHC's bindist configure looks for.
+RUN dnf install -y \
+        curl ca-certificates gnupg2 tar xz \
+        git findutils which perl \
+        gcc gcc-c++ make binutils \
+        gmp gmp-devel \
+        libffi libffi-devel \
+        ncurses ncurses-devel \
+        zlib zlib-devel \
+        glibc-langpack-en \
+    && dnf clean all
+
+ENV LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8
+
+# ── Pinned GHC 9.8.4 (fedora33 bindist) ──────────────────────────────────────
+# Pin exact version + exact sha256 (from downloads.haskell.org/ghc/9.8.4/SHA256SUMS,
+# verified 2026-06-14). Fail-closed if the sha256 does not match.
+ARG GHC_VERSION=9.8.4
+ARG GHC_BINDIST=ghc-9.8.4-x86_64-fedora33-linux.tar.xz
+ARG GHC_SHA256="5f03d48f118abd30aee37d8bcddc1d7012193ff205b15121807ecd979c4cf947"
+
+RUN set -eux; \
+    cd /tmp; \
+    curl -fsSLO "https://downloads.haskell.org/ghc/${GHC_VERSION}/${GHC_BINDIST}"; \
+    echo "${GHC_SHA256}  ${GHC_BINDIST}" | sha256sum -c -; \
+    tar -xf "${GHC_BINDIST}"; \
+    cd "ghc-${GHC_VERSION}-x86_64-unknown-linux"; \
+    ./configure --prefix=/opt/ghc/${GHC_VERSION}; \
+    make install; \
+    cd /tmp; \
+    rm -rf "ghc-${GHC_VERSION}-x86_64-unknown-linux" "${GHC_BINDIST}"; \
+    /opt/ghc/${GHC_VERSION}/bin/ghc --version
+
+ENV PATH=/opt/ghc/9.8.4/bin:$PATH
+
+# ── Pinned cabal-install 3.14.2.0 (fedora33 static-ish bindist) ──────────────
+# Pin exact version + exact sha256 (from downloads.haskell.org/~cabal/
+# cabal-install-3.14.2.0/SHA256SUMS, verified 2026-06-14). Fail-closed on mismatch.
+ARG CABAL_VERSION=3.14.2.0
+ARG CABAL_TARBALL=cabal-install-3.14.2.0-x86_64-linux-fedora33.tar.xz
+ARG CABAL_SHA256="8d211976661d0f5dfbcacf8bf87958f67c7a833a9eb6e114cbce09af6be136d7"
+
+RUN set -eux; \
+    cd /tmp; \
+    curl -fsSLO "https://downloads.haskell.org/~cabal/cabal-install-${CABAL_VERSION}/${CABAL_TARBALL}"; \
+    echo "${CABAL_SHA256}  ${CABAL_TARBALL}" | sha256sum -c -; \
+    mkdir -p /opt/cabal/bin; \
+    tar -C /opt/cabal/bin -xf "${CABAL_TARBALL}" cabal; \
+    rm -f "${CABAL_TARBALL}"; \
+    /opt/cabal/bin/cabal --version
+
+ENV PATH=/opt/cabal/bin:$PATH
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="ghc-toolchain"
+LABEL org.entity-core-keystone.version="1"
+
+CMD ["/bin/bash"]

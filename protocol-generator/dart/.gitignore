@@ -1,0 +1,20 @@
+# Dart build/cache artifacts. pubspec.lock IS committed (the authoritative,
+# reproducible dependency set for `dart pub get --offline`).
+#
+# bin/ is the IDIOMATIC Dart source location for the host entrypoint
+# (profile [layout].bin_dir = "bin/"; bin/peer.dart is the S4 AOT host SOURCE,
+# not a compiled artifact). The meta-repo root .gitignore has a broad `**/bin/`
+# rule (for compiled binary dirs); un-ignore this package's source bin/ so the
+# host entrypoint is tracked. The AOT-compiled exe is produced at S4 build time
+# into the image / a build dir, not committed.
+!bin/
+!bin/*.dart
+.dart_tool/
+.packages
+build/
+build-s4/
+doc/api/
+*.js
+*.js.map
+*.js.deps
+.web_smoke_out.js

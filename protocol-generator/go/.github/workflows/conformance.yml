@@ -1,0 +1,91 @@
+# CI — entity-core-protocol-go (clean-room peer) conformance gates.
+#
+# Authored at S5 (PHASE-S5 §"CI config"). Runs the green gates entirely inside the pinned
+# `entity-core-keystone/go:latest` Podman image, sealed-offline (`--network=none`): the peer
+# is stdlib-only (go.sum empty) so nothing is fetched at build time, and the Go
+# `validate-peer` oracle is a CGO_ENABLED=0 ELF that runs in the same image sharing one
+# loopback.
+#
+# DELIBERATELY NOT WIRED TO ANY REMOTE/CD. There is no deploy step, no registry push, no
+# package publish — `/entity-rosetta` never publishes (lifecycle §Publishing); the operator
+# decides. This file documents the reproducible offline gate; whether/where it actually runs
+# (this peer's standalone repo's CI, or a keystone-wide CI home) is an operator/arch decision
+# (see status/ARCHITECTURE-REVIEW.md §Publishing-options). It is committed for reviewability,
+# not because a runner is attached.
+#
+# CLEAN-ROOM NOTE: Go IS the oracle's own language. The oracle ELF is the conformance TOOL
+# (built from entity-core-go 75c532e in an isolated temp dir, NEVER read as source while
+# building the peer). The peer is byte-VALIDATED against it, not derived from it.
+#
+# Assumptions when wired: the runner has Podman, the `go:latest` image is built
+# (containers/go/Containerfile) and the oracle ELF is vendored to
+# output/s4-oracles/validate-peer (rebuild per status/CONFORMANCE-REPORT.md §Reproduce).
+# Paths below assume the keystone repo root is the checkout root; the Go module root is
+# protocol-generator/go/src (where go.mod lives).
+
+name: go-conformance
+
+on:
+  push:
+    paths:
+      - 'protocol-generator/go/**'
+      - 'protocol-generator/shared/spec-data/**'
+      - 'protocol-generator/shared/test-vectors/**'
+  pull_request:
+    paths:
+      - 'protocol-generator/go/**'
+  workflow_dispatch: {}
+
+# No deploy/publish permissions — read-only.
+permissions:
+  contents: read
+
+env:
+  IMAGE: entity-core-keystone/go:latest
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The toolchain image is built from containers/go/Containerfile and the oracle ELF
+      # rebuilt from entity-core-go per the CONFORMANCE-REPORT runbook. In a standalone-repo
+      # lift-out these become a `podman build` + an oracle-vendor step (or a pre-built image
+      # pulled from a trusted internal registry); kept explicit, not assumed.
+      - name: Verify toolchain image + oracle present
+        run: |
+          podman image exists "$IMAGE" || { echo "::error::build $IMAGE from containers/go/Containerfile first"; exit 1; }
+          test -x output/s4-oracles/validate-peer || { echo "::error::vendor the validate-peer oracle ELF (CONFORMANCE-REPORT.md §Reproduce)"; exit 1; }
+
+      # Gate 1 — gofmt + go vet clean (the Go lint floor), sealed offline.
+      - name: gofmt + go vet (clean)
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            -w /work/protocol-generator/go/src "$IMAGE" \
+            sh -c 'go vet ./... && test -z "$(gofmt -l .)"'
+
+      # Gate 2 — unit + integration tests: S2 69/69 codec vectors + the §9.5 53-type byte-diff
+      # (TestCoreTypeRegistryByteIdentical) + the S3 11/11 loopback smoke. Stdlib-only ⇒ offline.
+      - name: go test ./... (codec 69/69 + registry 53/53 + smoke 11/11)
+        run: |
+          podman run --rm --network=none -v "$PWD":/work:Z \
+            -w /work/protocol-generator/go/src "$IMAGE" go test ./...
+
+      # Gate 3 — S4 live-peer validate-peer --profile core (must stay 0 FAIL). The peer + the
+      # Go oracle ELF run together in the image over loopback, --network=none. run-s4.sh writes
+      # status/CONFORMANCE-REPORT.json; we assert summary.failed == 0 (the green gate).
+      - name: validate-peer --profile core (0 FAIL)
+        run: |
+          podman run --rm --network=none \
+            -v "$PWD/protocol-generator":/work/protocol-generator:Z \
+            -v "$PWD/output/s4-oracles":/work/output/s4-oracles:Z \
+            -e GOWORK=off "$IMAGE" sh /work/protocol-generator/go/run-s4.sh
+          python3 - <<'PY'
+          import json, sys
+          s = json.load(open("protocol-generator/go/status/CONFORMANCE-REPORT.json"))["summary"]
+          print("summary:", s)
+          if s.get("failed", 1) != 0:
+              print("::error::validate-peer core has FAILs — gate not green"); sys.exit(1)
+          PY

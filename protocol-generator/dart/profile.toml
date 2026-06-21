@@ -1,0 +1,295 @@
+# entity-core-protocol-dart — Language Profile
+#
+# A RELEASE "REACH" peer (Flutter cross-platform mobile / Dart ecosystem coverage),
+# per research/RELEASE-READINESS.md §2 row 4: corroboration-only — the language-axis
+# spec-discovery well is dry (the 8-peer synthesis saturated the language axes; the
+# static-typed-with-null-safety + async/Future idiom space is already exercised by
+# Kotlin, TypeScript, and C#), so this peer is built for ECOSYSTEM REACH (a Dart/Flutter
+# developer can pull a native, pub.dev peer), NOT to surface new spec defects. Log
+# anything that does anyway (A-DART-NNN); it is gravy, not the goal.
+#
+# Authored FRESH in S1 from the V7 spec (spec-data/v7.75) + Dart/Flutter ecosystem
+# research. The CLOSEST analogs are KOTLIN (sealed-class Result error model, static
+# null-safety, the hand-rolled-codec ruling) and TYPESCRIPT (the uint64/web-number trap
+# solved with a wide integer carrier; promise/Future async; the consumable-data-library
+# browser-portability angle). Dart is authored as an INDEPENDENT reader of V7 — where a
+# value matches Kotlin/TS it is by independent arrival from V7 + the shared
+# static-typed/null-safe/async idiom substrate, NOT by inheritance.
+#
+# Profile authority (S6): the agent MUST use the values declared here. A "TBD" value is
+# logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase. (No TBDs below.)
+
+[language]
+id                = "dart"
+name              = "Dart 3 (Flutter / Dart VM)"
+tier              = "reach"                    # Flutter cross-platform mobile / Dart ecosystem-reach peer; corroboration-only on the spec-discovery axis (static-null-safe-async idiom saturated by Kotlin/TS/C#). High-signal-IF-found, like any mainstream stack.
+package_name      = "entity_core_protocol"     # pub.dev package name — Dart package names are lowercase_with_underscores (NOT hyphenated); the keystone peer id is entity-core-protocol-dart, the pub.dev name is entity_core_protocol. See [publishing].
+runtime           = "dart-toolchain"           # references containers/dart-toolchain/Containerfile — AUTHORED this phase (NOT built; S1 boundary). fedora:43 base + the pinned Dart SDK tarball (NOT Flutter — the peer is a pure Dart console/library package; Flutter is the consuming reach audience, not a build dep).
+
+[codec]
+# STRATEGY: NATIVE, HAND-ROLLED ECF (the slate decision, row 4: "hand-roll ECF (cbor pkg
+# not ECF)"). NOT FFI for the codec. Rationale (full version in arch/PROFILE-RATIONALE.md):
+#   * The `cbor` pub package (and `cbor_codec`) implement general RFC-8949 CBOR and do NOT
+#     give ECF's canonical guarantees: ECF requires RFC-7049 LENGTH-FIRST then bytewise
+#     (CTAP2) map-key ordering (≠ RFC-8949 §4.2 bytewise), the shortest-float incl. f16
+#     ladder, recursive major-type-6 (tag) rejection at any depth, and raw-byte fidelity.
+#     This is the A-005 pattern re-confirmed across the WHOLE cohort (C#, TS, OCaml, Elixir,
+#     Zig, CL, Swift, Haskell, Java, Kotlin, C++): no CBOR library gives ECF canonicality —
+#     so EVERY native peer hand-rolled the canonical layer regardless. A Dart hand-roll is
+#     therefore NOT "more work than an easy library path"; the easy path does not exist.
+#   * INDEPENDENCE/KEYSTONE-THESIS: a hand-rolled Dart codec is a genuinely independent
+#     reader of ENTITY-CBOR-ENCODING — it CAN disagree with the other peers, which is what
+#     gives this reach peer its corroboration value. The "no trench-coat" principle (C++ D1):
+#     an FFI-only peer that just calls libentitycore_codec proves nothing independent of the
+#     existing C/Rust codec. The codec MUST be native Dart.
+#   * IDIOM REACH: a hand-rolled Dart codec exercises Dart-native shapes (Uint8List/ByteData
+#     buffers, sealed-class ECF value nodes with exhaustive switch-expression pattern matching,
+#     a sealed Result error channel) — genuine Dart/Flutter ecosystem reach, not a veneer.
+# ffi (consume libentitycore_codec via dart:ffi) remains the DOCUMENTED FALLBACK only if the
+# S2 codec spike fails (NOT expected). Spike at S2 start (PHASE-S1 mandate): push the
+# map_keys + float v7.71 vectors through the hand-rolled encoder/decoder BEFORE the full
+# build — the load-bearing canonical risk (length-then-lex ordering + shortest-float f16).
+# See SPEC-AMBIGUITY-LOG A-DART-001.
+strategy          = "native"
+# CBOR: hand-rolled canonical encoder/decoder (lib/src/codec/ecf.dart). Encoder writes into a
+# growable BytesBuilder / Uint8List; decoder is an index-walking reader over a Uint8List view
+# (ByteData for fixed-width big-endian head reads). No `cbor` pub package (general RFC-8949,
+# no ECF length-first ordering, no f16 shortest-float ladder, no recursive tag-reject).
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native" }
+# Ed25519 + the §9.1 FLOOR crypto: `cryptography_plus` (the MAINTAINED community fork of the
+# stalled `cryptography` package — see arch/PROFILE-RATIONALE.md + A-DART-002). PURE-DART
+# Ed25519 (RFC-8032 deterministic) — the deciding factor is SELF-CONTAINMENT across ALL Flutter
+# targets (iOS / Android / web / WASM / desktop) with NO native .so/.dylib to bundle or
+# platform-channel to wire (the reach audience IS Flutter mobile). seed->keypair via
+# Ed25519().newKeyPairFromSeed(seed); raw 32-byte public-key extraction via SimplePublicKey.bytes;
+# sign/verify via Ed25519().sign / .verify. Pinned exact + >=30-day (registry-pulled → full force).
+ed25519_library   = { name = "cryptography_plus", version = "2.7.1", api = "Ed25519().newKeyPairFromSeed / .sign / .verify; SimplePublicKey.bytes for raw 32-byte pubkey", impl = "pure-Dart (self-contained on every Flutter target; no native lib)" }   # was 2.7.0 in S1; 2.7.0 does not exist on pub.dev (the 2.x line is 2.7.1, ~602d ≥30d) — reconciled to the working pin at S3 (A-DART-012). lockfile/pubspec/prefetch all 2.7.1.
+# SHA-256 (the §9.1 content_hash_format=0x00 floor): the FIRST-PARTY Dart-team `crypto` package
+# (package:crypto, the `sha256` convert sink). Ubiquitous, pure-Dart, browser+native, the Dart
+# ecosystem standard hash lib. Used for SHA-256 ONLY (the floor); cryptography_plus ALSO ships
+# Sha256 but `crypto` is the lower-surface, lower-churn, Dart-team-maintained choice for the bare
+# hash. NOTE: peer_id is NOT a SHA-256 of the pubkey (§1.5 identity-multihash, raw pubkey) — see
+# [spec]; SHA-256 is for content_hash over the entity's ECF bytes.
+sha256_library    = { name = "crypto", version = "3.0.6", api = "sha256.convert(bytes).bytes (first-party Dart-team package)" }
+# Ed448 (crypto-agility HIGHER bar, key_type 0x02 / SHA-384 content_hash 0x01 — NOT the §9.1
+# floor): KNOWN GAP -> FFI-or-DEFER (per the slate row 4: "gap -> FFI/defer"). cryptography_plus
+# has NO Ed448 (Ed25519/X25519/ECDSA/RSA + the SHA-2 family, but no Ed448-Goldilocks), and there
+# is no maintained pure-Dart Ed448. Same native gap C/Zig/OCaml/Rust/C++ hit and Swift deferred.
+# v0.1 core is Ed25519 + SHA-256 ONLY (the §9.1 floor), fully covered by cryptography_plus + crypto,
+# so the gap does NOT touch the conformance floor. WHEN/IF agility enters scope: the
+# dependency-lightest Dart route is dart:ffi to the sibling entity-core-codec-ffi-c agility .so
+# (C-ABI v1.1 already vendored a self-contained openssl curve448 for its Ed448 family) — but FFI
+# breaks the pure-Dart self-containment (a native lib per Flutter target), so DEFER is the v0.1
+# default and FFI is the documented agility route, NOT a v0.1 path. SHA-384 (agility) is in
+# cryptography_plus (Sha384) so the hash half of agility is pure-Dart-reachable; only the Ed448
+# SIGNATURE is the gap. See SPEC-AMBIGUITY-LOG A-DART-003.
+ed448_library     = { name = "DEFERRED (FFI route documented)", version = "none", strategy = "gap-defer-or-ffi", note = "no maintained pure-Dart Ed448; cryptography_plus has none. Core = Ed25519+SHA-256 (pure-Dart, self-contained). Agility route when it lands: dart:ffi to entity-core-codec-ffi-c (vendored curve448) — but that breaks pure-Dart self-containment, so DEFER for v0.1. SHA-384 (agility hash) IS in cryptography_plus." }
+sha256_source     = "package:crypto sha256 (SHA-256 floor; SHA-384 for agility is in cryptography_plus Sha384 — deferred with Ed448)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (~80 lines long-division, lib/src/codec/base58.dart); a dep for something this small is pure liability (same call C/Rust/C#/Go/Kotlin/C++ made). wire-conformance confirms it.
+varint_handling   = "native"                  # multicodec-style LEB128 (§1.5/§7.3) inline impl (lib/src/codec/varint.dart); the multikey key_type / hash_type / format-code varints. Codes 0-127 are a single byte (all currently-allocated codes); 1-byte fast path + a general loop with minimality rejection.
+
+[error_model]
+# DELIBERATE idiom — Dart 3 SEALED CLASSES + EXHAUSTIVE SWITCH-EXPRESSION PATTERN MATCHING
+# enable a Kotlin-style sealed Result / sealed error hierarchy (Dart 3.0+, 2023). Codec and
+# protocol decode failures return a sealed `EcfResult<T>` (Ok / Err) or are modeled as a sealed
+# `EntityError` hierarchy matched EXHAUSTIVELY by a `switch` EXPRESSION (Dart's compiler reports
+# non-exhaustive switches over a sealed type — the static-rigor analogue of Kotlin's sealed `when`,
+# OCaml's `result` match, Zig's error union, and C++'s std::expected). This is the Dart-3-native
+# point in the error-model design space. EXCEPTIONS stay reserved for truly unrecoverable
+# programmer errors (StateError / ArgumentError, the Dart convention) and are caught at the
+# per-connection task boundary so one bad connection never crashes the peer (§4.9 no-crash floor) —
+# NEVER for protocol flow. Protocol-status failures map a sealed `EntityError` variant -> wire
+# status code (400 non_canonical_ecf / 401 / 403 / 413 payload_too_large / 400 chain_depth_exceeded)
+# at the dispatcher boundary. (Contrast: TypeScript chose plain exceptions — Dart could too, but
+# Dart 3 sealed classes make the Result idiom first-class and statically-exhaustive, which is the
+# distinct idiom point this peer occupies; see A-DART-004.)
+style             = "result"                  # "exceptions" | "result" | "either" | "errno" | "tagged_tuple" | "conditions" | "error_union" — here "result" = a Dart-3 sealed-class Result, exhaustive switch-expression.
+result_type       = "sealed-class"            # Dart 3 `sealed class EcfResult<T> { Ok ; Err }` + `sealed class EntityError`; exhaustive `switch` EXPRESSION (compiler reports non-exhaustive over a sealed type)
+checked           = false                      # Dart has NO checked exceptions; the sealed Result IS the static handling seam (exhaustive switch over the sealed hierarchy)
+base_error        = "EntityError"             # sealed class; root of the protocol/codec error hierarchy (a value, not a thrown exception, on the recoverable path)
+error_hierarchy = [
+    "sealed class EntityError",
+    "  sealed class CodecError extends EntityError",
+    "    NonCanonicalEcf",
+    "    TruncatedInput",
+    "    TagRejected",
+    "    DuplicateKey",
+    "    NonMinimalInt",
+    "    NonCanonicalFloat",
+    "  sealed class CryptoError extends EntityError",
+    "    BadSeed",
+    "    UnsupportedKeyType",
+    "    UnsupportedContentHashFormat",
+    "  sealed class ProtocolError extends EntityError",
+    "    AuthenticationFailed",       # 401 (§5.2a)
+    "    AuthorizationDenied",        # 403 (§5.2a)
+    "    PayloadTooLarge",            # 413 (§4.10a)
+    "    ChainDepthExceeded",         # 400 (§4.10b)
+    "  sealed class TransportError extends EntityError",
+]
+
+[async]
+# DELIBERATE idiom — Dart's HEADLINE concurrency model is async/await over Future<T> +
+# single-threaded EVENT LOOP per isolate, with ISOLATES (no shared memory; message-passing) for
+# true parallelism. Closest to TypeScript's Promise (Future == Promise) but with isolates as the
+# parallelism story (vs TS workers / Kotlin coroutines / Java threads). NOT exercised by the codec
+# (S2 is pure/synchronous — encode/decode are sync, like TS's sync codec). For the §4.8/§6.11
+# inbound-concurrent-with-outbound requirement (N6/N7 reentrancy) and the §7b concurrency gate:
+# the core peer runs ONE event-loop isolate driving the dispatch, with each connection handled by
+# async Stream<List<int>> socket reads; a reader future demuxes EXECUTE_RESPONSE by request_id via
+# a Map<int, Completer<T>> (the Future analogue of Kotlin's CompletableDeferred / Java's
+# CompletableFuture / OCaml's per-thread demux). §7b STORE-SAFETY (the §7b taxonomy: actor-isolation
+# OR transactional OR manual): Dart's single-threaded event loop per isolate gives store-safety
+# STRUCTURALLY — within one isolate there is NO preemption, so a synchronous critical section over
+# the store map is atomic by construction (no data race possible without an `await` mid-section);
+# this is the EVENT-LOOP-CONFINEMENT shape (akin to Node/TS's single-threaded loop), the cleanest
+# §4.8 story in the cohort alongside the actor-isolation peers (Elixir/Swift). The A-C-009
+# atomic-refcount finding (no-GC shared-entity race) is N/A: Dart is GC'd AND single-threaded per
+# isolate, so shared entities are never concurrently mutated across threads (the same reason the
+# other GC'd peers never hit A-C-009). TCP_NODELAY MUST still be set on every connection socket
+# (Socket.setOption(SocketOption.tcpNoDelay, true)) — the Zig §7b throughput finding applies
+# regardless of the concurrency model. See A-DART-005.
+style             = "future"                  # "sync" | "task" | "threaded" | "virtual-threads" | "coroutines" | "promise" | "future" — Dart Future<T> + async/await; isolates for parallelism
+default_surface   = "async"                   # transport/peer APIs return Future<T> / Stream<T>; the idiomatic Dart surface is async/await
+codec_surface     = "sync"                    # codec encode/decode is pure-CPU synchronous (no Future) — like TS/C#/Kotlin; isolates not needed for the codec
+primitive         = "Future<T> / Stream<T> + async/await on the per-isolate event loop; Isolate for parallelism (not needed for --profile core)"
+request_demux     = "Map<int, Completer<T>>"  # reentrant request_id correlation; N7 — the reader future completes the waiting Completer by request_id
+store_safety      = "event-loop-confinement (single-threaded isolate; a sync critical section over the store is atomic by construction — §4.8 structural)"
+tcp_nodelay       = true                       # MANDATORY on every connection socket (Socket.setOption(SocketOption.tcpNoDelay, true)) — §7b throughput (the Zig Nagle finding)
+
+[naming]
+# Dart-native conventions (Effective Dart / the dart format + linter). PascalCase types,
+# lowerCamelCase members, lowercase_with_underscores libraries + file names + package name,
+# SCREAMING_CAPS deprecated in favor of lowerCamelCase even for constants (Dart style: constants
+# are lowerCamelCase, NOT UPPER_SNAKE — a Dart-specific divergence from Kotlin/Java).
+type_names        = "PascalCase"              # classes / mixins / enums / extensions / typedefs: Entity, ContentHash, PeerId, EntityError, EcfValue
+member_names      = "lowerCamelCase"          # methods / fields / top-level functions / parameters / locals: contentHash(), signAndVerify(), peerId, formatCode
+constant_names    = "lowerCamelCase"          # Dart STYLE: constants are lowerCamelCase (e.g. `const maxMessageSize = ...`), NOT UPPER_SNAKE — the Effective-Dart divergence from JVM langs. enum members likewise lowerCamelCase.
+enum_constants    = "lowerCamelCase"          # enum members: KeyType.ed25519, HashFormat.sha256 (Dart enum-member style, NOT UPPER_SNAKE)
+library_names     = "lowercase_with_underscores"  # library + import directives: entity_core_protocol, entity_core_protocol.codec
+file_names        = "lowercase_with_underscores.dart"  # ecf.dart, content_hash.dart, peer_id.dart, base58.dart, varint.dart, canonical_cbor.dart (NEVER PascalCase files — the Dart convention)
+hex_case          = "lowercase"               # ALL external hex rendering MUST be lowercase to match the Go oracle (hex.EncodeToString) + cohort — the A-CL-009 lesson applied proactively. Dart: `b.toRadixString(16).padLeft(2, '0')` lowercase by default; NEVER toUpperCase(). Pinned.
+
+[build]
+# BUILD/PACKAGE TOOL = the Dart SDK's built-in `dart` tool + pub (pub.dev). `dart pub get`
+# resolves the lockfile (pubspec.lock, COMMITTED); `dart compile` / `dart test` / `dart pub publish`.
+# This is THE idiomatic Dart toolchain (single first-party tool, like cargo/go) — no Gradle/Make
+# ceremony. Reproducible/offline via a COMMITTED pubspec.lock + `dart pub get --offline` against a
+# pre-populated pub cache (deps pre-fetched into the image's PUB_CACHE at container BUILD time).
+build_tool        = "dart"                    # the first-party Dart SDK tool (dart pub / dart compile / dart test) — the cargo/go analogue for Dart
+package_manager   = "pub"                     # pub.dev; pubspec.yaml manifest + pubspec.lock (COMMITTED, authoritative for `dart pub get --offline`)
+build_command     = "dart pub get --offline && dart analyze --fatal-infos"   # resolve from the pre-populated pub cache; analyze with the linter as a build gate
+test_command      = "dart test"               # the first-party `package:test` runner (the Dart ecosystem standard)
+pack_command      = "dart pub publish --dry-run"  # validates the package; the real publish is the optional S5 registry step
+compile_aot       = "dart compile exe bin/peer.dart"  # the conformance host is an AOT-compiled native exe (bin/peer.dart) for the S4 validate-peer gate (fast startup, no JIT warmup)
+
+[layout]
+project_file      = "pubspec.yaml"            # the pub manifest (+ pubspec.lock committed)
+lib_dir           = "lib/"                    # public library: lib/entity_core_protocol.dart (the export barrel); private impl under lib/src/
+src_dir           = "lib/src/"                # implementation (codec/, crypto/, protocol/, transport/) — NOT exported directly; the barrel re-exports the public surface
+bin_dir           = "bin/"                    # bin/peer.dart — the conformance host / CLI entry (AOT-compiled for S4)
+test_dir          = "test/"                   # package:test tests + the conformance harness (loads the normative fixture, asserts byte-identity)
+package_name      = "entity_core_protocol"    # pub package name (lowercase_with_underscores)
+public_library    = "lib/entity_core_protocol.dart"  # the export barrel (the public API surface)
+
+[publishing]
+registry          = "pub.dev"                 # THE Dart/Flutter package registry (the slate row-4 packaging decision)
+registry_url      = "https://pub.dev/"
+package_id        = "entity_core_protocol"    # pub.dev package name (lowercase_with_underscores; hyphens NOT allowed in pub names — the keystone peer id entity-core-protocol-dart maps to this)
+license_expression = "Apache-2.0"
+repository_url     = ""                        # TBD on first publish (pubspec `repository:` field; publishing requires a verified pub.dev publisher — the optional S5 step)
+publisher          = ""                        # TBD — pub.dev verified publisher namespace (e.g. entitycore.org), claimed at first publish (A-DART-007)
+authors            = "Entity Core Protocol contributors"
+parked_version     = "0.1.0-pre"              # the parked pre-release version (matches the cohort's 0.1.0-pre convention); pubspec `version:` field
+
+[license]
+generated_outputs = "Apache-2.0"             # S9 default; the Dart/Flutter ecosystem is BSD-3/Apache-2.0-leaning (the Dart SDK is BSD-3-Clause; Flutter is BSD-3; package:crypto + package:test are BSD-3; cryptography_plus is Apache-2.0). The repo Apache-2.0 default (explicit patent grant) is compatible with the ecosystem norm — no override.
+
+[testing]
+# package:test — THE idiomatic Dart test framework (first-party Dart-team package, the ecosystem
+# standard; `dart test`). The conformance harness is a package:test test that loads the normative
+# fixture vectors and asserts byte-identity against the corpus. package:test is a DEV dependency
+# (dev_dependencies in pubspec.yaml; never shipped in the published package). Pinned exact + >=30-day.
+# (No alternative considered — package:test IS the Dart standard, like cargo test / go test; it is
+# first-party and the low-surprise idiomatic choice.)
+framework         = "package:test"
+test_version      = "1.25.15"                 # package:test — first-party Dart-team; DEV-scope only. Pinned exact + >=30-day (see [deps]).
+conformance_harness = "test/conformance_test.dart loads the v0.8.0 corpus + asserts byte-identity; bin/peer.dart is the live S4 validate-peer host (AOT exe)"
+
+[documentation]
+doc_comments      = true                       # /// dartdoc comments on public surfaces (the Dart doc-comment convention)
+doc_tool          = "dart doc"                 # the first-party Dart doc generator; OPTIONAL S5-only; not a runtime/test dep
+
+[container]
+base_image        = "entity-core-keystone/dart-toolchain:latest"
+build_in_container = true
+reuse_existing     = false                     # NEW Containerfile authored (containers/dart-toolchain/Containerfile); no existing dart-toolchain. fedora:43 base + the pinned Dart SDK tarball (the dart-lang official release zip, verified sha256 — NOT fedora dnf, which does not carry a current Dart SDK; the kotlin/zig/java pin-the-tarball pattern).
+network_policy     = "pull-once-then-offline"  # deps (cryptography_plus, crypto, package:test + transitives) are pre-fetched into the image's PUB_CACHE in ONE network-on build step (`dart pub get`); all subsequent dev-loop runs are --network=none with `dart pub get --offline`. The user's hard supply-chain requirement (the TS/npm offline-after-one-pull pattern).
+# --network=none honored after the prefetch layer: the core build is the pinned SDK + the
+# pre-populated PUB_CACHE; the codec/base58/varint are hand-rolled in-repo; Ed25519 + SHA-256 come
+# from the pre-fetched pub packages.
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/dart entity-core-keystone/dart-toolchain:latest sh -c 'dart pub get --offline && dart test'"
+
+[idiom]
+# Hints that don't fit elsewhere. Dart-native shapes — where this peer reads as Dart a
+# Dart/Flutter dev would write, NOT translated Kotlin/TS.
+sealed_classes               = true           # Dart 3 `sealed class` for closed hierarchies (ECF value nodes, message types, EntityError) — exhaustive `switch` EXPRESSION (compiler reports non-exhaustive; no default needed) — the Dart-3 static-exhaustiveness seam (the Kotlin-sealed-when analogue)
+pattern_matching             = true           # Dart 3 patterns + switch EXPRESSIONS over sealed types for the codec/dispatch/error ladders — the static-rigor seam
+null_safety                  = true           # Dart SOUND null-safety in the TYPE SYSTEM (`T?` vs `T`, late, `!`) — absent values are `T?`, the analyzer enforces null-handling. The static-typed-null-safe idiom Dart shares with Kotlin/TS-strict.
+immutable_value_types        = true           # `final` fields + `const` constructors for value-shaped types (ContentHash, PeerId, Entity); override == / hashCode (or use a small value-equality helper). The Dart immutable-value idiom (no `data class` keyword; final-fields + const-ctor + explicit ==).
+uint8list_for_bytes          = true           # Uint8List (typed-data) everywhere for wire bytes (NOT List<int>) — the Dart performant byte-buffer; ByteData for big-endian fixed-width head reads. Uint8List IS mutable + aliasable (the JVM byte[] seam analogue) — NEVER expose an internal Uint8List by reference; copy on get/set (the no-byte-array-aliasing discipline). Dart `final` makes the REFERENCE immutable, not the contents.
+# INTEGER / uint64 HEAD-FORM CARRIER — THE single most important codec-correctness decision (see
+# arch/PROFILE-RATIONALE.md + A-DART-006). Dart `int` is 64-bit on the NATIVE VM (full uint64 head
+# range representable as a possibly-negative 64-bit int, like Java/Kotlin's signed Long), BUT maps
+# to a JS number (53-bit integer precision) under dart2js / dart compile js / the WEB platform —
+# uint64 near 2^63 LOSES PRECISION on web (the cohort A-OC-001 / F7 trap; TS solved it with bigint).
+# RULING (the TS-bigint lesson, applied): the codec carries the FULL uint64/nint head-form range
+# via Dart's arbitrary-precision `BigInt` AT THE HEAD-FORM BOUNDARY — int.10/15/16/17 / the
+# [2^63, 2^64-1] band decode to BigInt, and the canonical shortest-head-form emit is computed over
+# BigInt. Small ints stay `int` for ergonomics, but ANY value that could exceed the safe-int range
+# (2^53 on web, or to be safe the full uint64 surface) is BigInt-backed. This makes the codec
+# WEB-SAFE (dart2js/WASM) as well as native-correct — the Flutter-web reach matters (Flutter
+# targets web). NEVER carry a uint64-range head value in a bare `int` (the silent-truncation trap
+# on web). The `fixnum` package (strict 64-bit Int64) was considered and REJECTED: BigInt is
+# first-party (dart:core), zero-dep, and covers the full uint64 range exactly without a registry dep.
+integer_carrier              = "BigInt"        # FULL uint64/nint head-form range via dart:core BigInt (web-safe AND native-correct); bare `int` only for values provably within the safe range. The R1/F7 safe rule, Dart edition.
+bigint_for_64bit             = true            # non-negotiable for the head-form carrier (web 53-bit truncation trap; A-DART-006)
+extension_methods            = true            # Dart extension methods for ergonomic codec helpers (e.g. `Uint8List.toBase58()`, `int.toHexLower()`) — idiomatic Dart, keeps value types clean
+named_constructors_factories = true           # named + factory constructors (e.g. `PeerId.fromPublicKey(...)`, `ContentHash.of(...)`) — the Dart static-factory idiom (vs Kotlin companion objects)
+hex_lowercase                = true            # ALL external hex rendering MUST be lowercase to match the Go oracle (hex.EncodeToString) + cohort (A-CL-009). Dart `toRadixString(16).padLeft(2,'0')` is lowercase by default; NEVER `.toUpperCase()`. Pinned.
+no_byte_array_aliasing       = true            # Uint8List is MUTABLE + aliasable — defensive-copy bytes in/out of value types; never expose an internal Uint8List by reference (the JVM byte[] seam; Dart `final` does not make Uint8List contents immutable)
+dart_language_version        = "3.6"           # the language version targeted (`environment: sdk: '^3.6.0'` in pubspec) — Dart 3 sealed classes + patterns + records available since 3.0; 3.6 is the pinned floor (matches the pinned SDK line)
+
+[deps]
+# Exact pins (S11). Mirrored in containers/dart-toolchain/Containerfile prefetch.
+# SUPPLY-CHAIN SCOPE (per the project's S11 clarification): the Dart SDK is fetched as the
+# dart-lang OFFICIAL release tarball (a REVIEWED VENDOR CHANNEL — Google/dart-lang's reviewed build
+# pipeline + a verified sha256): the >=30-day AGE floor RELAXES for the SDK itself, but the EXACT
+# version pin (+ verified checksum) still stands for reproducibility. pub.dev-pulled LIBRARY deps
+# (cryptography_plus, crypto, package:test + transitives) are registry-pulled with no human gate, so
+# they get the >=30-day discipline with FULL FORCE (the npm/PyPI/crates.io tier).
+#
+# CORE RUNTIME DEPS: cryptography_plus (Ed25519 floor) + crypto (SHA-256 floor). The canonical CBOR
+# codec, base58, and the LEB128 varint are all hand-rolled in-repo (no pub dep — the A-005 pattern).
+# package:test is DEV-scope only (never shipped). cryptography_plus pulls a small transitive set
+# (e.g. typed_data, crypto, ffi-free pure-Dart) — pinned via the COMMITTED pubspec.lock.
+dart_sdk          = "3.11.6"                   # the Dart SDK. 3.11.6 released 2026-05-05 (~45d at authoring 2026-06-19 → clears the >=30-day floor; the 3.11 line is the conservative pick — 3.12.x (2026-05-26, ~24d) is UNDER the floor and NOT picked). dart-lang official tarball + verified sha256; reviewed vendor channel (age floor relaxes, exact pin for repro — and met anyway).
+cryptography_plus = "2.7.1"                    # the MAINTAINED community fork of the stalled `cryptography` package (repo moved to emz-hanauer/dart-cryptography for lack of upstream maintenance — A-DART-002). Pure-Dart Ed25519 (floor) + Sha384 (agility hash). Apache-2.0. Registry-pulled (pub.dev) → >=30-day applies. RECONCILED AT S2/S3: the S1 pin 2.7.0 does NOT exist on pub.dev (the 2.x line tops out at 2.7.1, published 2024-10-24, ~602d ≥30d — clears the floor); re-pinned to 2.7.1 (lockfile + pubspec + prefetch + this profile text all 2.7.1). See A-DART-012. The ONE non-stdlib crypto runtime dep that is NOT first-party.
+crypto            = "3.0.6"                    # the FIRST-PARTY Dart-team `crypto` package — SHA-256 floor (sha256.convert). 3.0.6 is a long-stable release (well over >=30d). BSD-3. Registry-pulled but first-party Dart-team (still >=30-day-applied + met). DEV+RUNTIME (sha256 is a runtime dep).
+test            = "1.25.15"                    # package:test — first-party Dart-team test runner. DEV-scope ONLY (never shipped in the published package). Registry-pulled, first-party; >=30-day applied + met. PIN-DATE TO VERIFY AT S2 (sentinel: confirm >=30d; if too new pin the latest aged 1.25.x).
+# (no other registry deps — the codec, base58, varint, and conformance harness are all hand-rolled
+# in-repo; cryptography_plus's transitive deps are locked in the committed pubspec.lock)
+
+[spec]
+v7_version_pinned = "7.75"                     # latest spec-data SNAPSHOT (protocol-generator/shared/spec-data/v7.75/); profile + codec derive from it. Live spec/oracle HEAD is v7.77 with a byte-UNCHANGED core floor v7.75->v7.77 (the v7.77 delta is all extension + V8-naming); derive the protocol surface from the v7.75 snapshot + re-run against the current oracle, per the cohort convention (A-DART-008).
+codec_corpus      = "v0.8.0"                    # ECF corpus (test-vectors/v0.8.0 — the latest stamped vector set); ENTITY-CBOR-ENCODING.md is byte-identical v7.71->v7.75 (label 1.5, SHA-verified upstream per the cohort), so the v0.8.0 corpus is valid at v7.75.
+conformance_scaffolding = "guide-conformance-7a-7b"  # §7a validate handlers + §7b concurrency gate come from GUIDE-CONFORMANCE.md + the keystone generator menu at S3/S4 — NOT from the spec-data snapshot (the v7.74/v7.75 MANIFEST flags this split). A spec-first peer reading only spec-data would miss them and fail S4 (A-DART-009).
+# PEER_ID CONSTRUCTION (A-DART-010, corroborates A-OC-007 / A-ZIG-001 / A-CL-002 / A-JAVA-004 /
+# A-KT-004 / A-CPP P1): derive the Ed25519 peer_id from the §1.5 v7.65 CANONICAL-FORM TABLE
+# (spec-data/v7.75: key_type=0x01 Ed25519 -> hash_type=0x00 identity-multihash, digest = RAW
+# public_key bytes, "The digest IS the public_key (v7.64)"), NOT the legacy SHA-256 form
+# (hash_type=0x01). On v7.75 the §7.4-vs-§1.5 contradiction is ALREADY reconciled (v7.73 E1), so
+# this is corroboration-only — but baking the §1.5 form in proactively dodges the 401
+# identity_mismatch handshake failure that S2's opaque-digest corpus would NOT catch (it only blows
+# up at the S4 handshake). peer_id = Base58(varint(0x01) || varint(0x00) || public_key).
+target_oracle     = "entity-core-go validate-peer --profile core (the cohort core gate; current head anchors v7.77 @ e8524ed, uniform 665 / 0 FAIL across the 19-peer matrix). The orchestrator pins the exact clean go commit at S4."

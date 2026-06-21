@@ -1,0 +1,276 @@
+# entity-core-protocol-c — Language Profile
+#
+# Peer #10 (canonical order; the LAST untried memory axis). Authored FRESH in S1
+# from the V7 spec (spec-data/v7.75) + C/POSIX ecosystem research — NOT ported from
+# the C#/TS/OCaml/Elixir/Zig/Common-Lisp/Swift/Haskell/Java profiles. C is the
+# PROCEDURAL / MANUAL-MEMORY / FFI-lingua-franca idiom: no GC, no language runtime,
+# explicit malloc/free with ZERO safety rails (the Zig memory axis WITHOUT the
+# allocator-as-parameter discipline or the ReleaseSafe overflow trap), a RETURN-CODE
+# error model (the inverse of Java's checked exceptions — errors are out-params +
+# status ints, never unwound), and POSIX pthreads concurrency. There is no stdlib
+# crypto and no stdlib CBOR, so the "minimize dependencies" tension is realest here:
+# crypto MUST be a pinned external library (libsodium) and the entire canonical codec
+# is hand-rolled. The idiom value is BREADTH (no prior peer exercises raw manual
+# memory + return-code errors + a mandatory single crypto dep), not new spec findings
+# — the discovery well is dry (9 prior peers found no v7.75-surface defect). Where a
+# field matches a prior peer it is by independent arrival from V7 + POSIX, not
+# inheritance.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value is
+# logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase. (No TBDs below.)
+
+[language]
+id                = "c"
+name              = "C (C11 / POSIX)"
+tier              = "peer-10"                 # procedural / manual-memory / return-code idiom — the last untried memory axis (raw malloc/free, no safety rails); breadth probe, low-yield-discovery
+package_name      = "entity-core-protocol-c"  # keystone peer id. C has no central registry; "packaging" = a versioned source tarball + pkg-config + a static/shared lib (see [publishing]).
+runtime           = "c-toolchain"             # references containers/c-toolchain/Containerfile — ALREADY EXISTS (from ffi-generator work); REUSED, not authored fresh
+
+[codec]
+# strategy: NATIVE. The same A-005 pattern every prior native peer hit — a faithful
+# ECF codec must OWN the canonical layer regardless of any CBOR library underneath:
+# (a) shortest-float / float16 minimization with exact specials, (b) RFC-7049
+# length-FIRST then bytewise (CTAP2) map-key ordering — which DIFFERS from RFC-8949
+# §4.2 bytewise ordering, (c) recursive major-type-6 (tag) rejection anywhere, (d)
+# byte-exact raw-slice round-trip, (e) full uint64/nint head-form range. No C CBOR
+# library gives these for free (see [codec].cbor_library note), so a library buys
+# almost nothing and adds a build/pin dependency — hand-rolling is the faithful AND
+# simpler path. This is ALSO exactly the decision the EXISTING C FFI codec impl
+# (entity-core-codec-ffi-c / research/evaluations/ffi-c.md) made for the same reasons,
+# so the C peer's codec re-walks a proven C path. `ffi` (consume libentitycore_codec,
+# the C-ABI codec) is the documented fallback if a spike ever fails — but for C it is
+# also a NON-fallback option worth noting: the FFI codec IS C, so "consume it" would
+# be linking a sibling C static lib rather than a foreign-language bridge. We choose
+# NATIVE hand-roll for the peer (idiom breadth: the point is to write the canonical C
+# codec, not link a pre-built one), and keep the FFI .a as a free cross-check oracle.
+# Spike at S2 start (PHASE-S1 mandate): push the map_keys + float v7.71 vectors through
+# the hand-rolled encoder before the full build — the load-bearing canonical risk
+# (length-then-lex ordering + shortest-float f16; float minimization is the highest
+# bug-density code in the whole peer per ffi-c.md).
+strategy          = "native"
+# CBOR: hand-rolled canonical encoder/decoder (src/ecf.c + ecf.h — encode+decode in
+# one translation unit, per ffi-c.md). C has NO stdlib CBOR. The C CBOR libraries do
+# not give ECF's guarantees: libcbor (0.13.0) is a DOM-tree allocator that obscures
+# raw-byte fidelity and is not determinism-focused; tinycbor is the closest (streaming,
+# low-level) but tags / float-min / CTAP2 ordering are still the caller's job and its
+# 0.5->0.6->7.0 churn is a pin risk; QCBOR targets dCBOR determinism but ONLY in its
+# 2.x ALPHA (no stable release -> fails the S11 >=30-day-stable pin). So a library
+# buys nothing here. Decoder is index-walking over the input buffer and returns EXACT
+# byte slices (no copy in the hot path); encoder writes into a caller-provided buffer
+# or a grow-on-demand buffer the caller frees. Reject major-type-6 by failing in the
+# decode major-type dispatch. Float specials hardcoded (F9 7E00 NaN / F9 7C00 +Inf /
+# F9 FC00 -Inf / F9 8000 -0.0); minimize by double->float->half re-decode-and-compare.
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native" }
+# Ed25519: libsodium crypto_sign_* (RFC-8032 deterministic detached signing via
+# crypto_sign_detached / crypto_sign_verify_detached; seed->keypair via
+# crypto_sign_seed_keypair). libsodium is the ONE third-party runtime dependency and
+# is profile-AUTHORIZED here (S6) + S11-pinned. C has no stdlib crypto; libsodium is
+# the audited, statically-linkable, single-source-of-SHA-256-AND-Ed25519 choice (the
+# ffi-c.md decision, re-confirmed for the peer). Linked statically + privately so the
+# artifact is self-contained and an embedder linking their own libsodium does not
+# collide (-fvisibility=hidden + localized libsodium symbols).
+ed25519_library   = { name = "libsodium", version = "1.0.22-1.fc43", api = "crypto_sign_seed_keypair / crypto_sign_detached / crypto_sign_verify_detached" }
+# Ed448 (crypto-agility HIGHER bar, v7.67 — NOT the §9.1 floor): libsodium has NO
+# Ed448 (it ships Ed25519 + the SHA-2 family + ML-KEM/SHA-3 as of 1.0.22, but no
+# Ed448 / Ed448-Goldilocks). Same native gap Zig (A-ZIG-002) and OCaml (A-OC-002) hit
+# and Swift deferred (A-SW-001). For C there are TWO honest routes, both deferred from
+# the v0.1 CORE (which is Ed25519 + SHA-256 ONLY): (a) OpenSSL/libcrypto, which DOES
+# provide Ed448 (EVP_PKEY_ED448) + SHA-384 — but it is a HEAVY, broad-surface dep that
+# fights the minimize-dependencies stance; or (b) the EXISTING C FFI agility path —
+# entity-core-codec-ffi-c (C-ABI v1.1) already vendored a SELF-CONTAINED openssl
+# curve448 for its Ed448 family (see memory v770-resync), so the peer could link that
+# sibling C static lib for the Ed448 family ONLY (the OCaml hybrid-FFI shape, but
+# C-to-C = a plain static link, not a foreign bridge). DEFAULT POSITION: DEFER Ed448;
+# if/when agility enters this peer's scope, route (b) (link the sibling FFI agility .a)
+# is the dependency-lightest fit. Does NOT touch the Ed25519 + SHA-256 conformance
+# floor. See SPEC-AMBIGUITY-LOG A-C-001.
+ed448_library     = { name = "DEFERRED", version = "none", note = "OpenSSL EVP_PKEY_ED448 or the sibling entity-core-codec-ffi-c agility .a (vendored curve448) when agility lands; core is Ed25519-only" }
+sha256_source     = "libsodium crypto_hash_sha256 (SHA-256 floor; crypto_hash_sha512 also present; SHA-384 for agility would need OpenSSL/libcrypto — NOT in libsodium, deferred with Ed448)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (~40 lines long-division, src/base58.c); a dep for something this small is pure liability (ffi-c.md). wire-conformance confirms it.
+varint_handling   = "native"                  # multicodec-style LEB128 (§7.3) inline impl (src/varint.c); the multikey key_type / hash_type / format-code varints. Codes 0-127 are a single byte (all currently-allocated codes), so 1-byte fast path + a general loop.
+
+[error_model]
+# DELIBERATE idiom — the cohort's RETURN-CODE / out-parameter error model, the
+# functional INVERSE of Java's checked exceptions and a distinct point from Zig's
+# error-union (Zig errors are language values the compiler checks for exhaustiveness;
+# C status codes are plain ints with NO compiler enforcement that a caller checks
+# them — the discipline is convention + review, the rawest error model in the cohort).
+# Every fallible function returns an `ec_status` int (0 == EC_OK, negative == a
+# specific failure enum) and writes its result through an out-pointer; the caller MUST
+# check the return before using the out-param. NO setjmp/longjmp, NO errno-smuggling
+# for protocol errors (errno is reserved for libc syscall failures only). Codec/decode
+# failures are EC_ERR_* members of the status enum; protocol-status failures (the
+# 400 non_canonical_ecf / 401 / 403 / 413 / 400 chain_depth_exceeded surface) map a
+# status enum value -> wire status code at the dispatcher boundary. Memory-ownership
+# is part of the contract: every function that allocates documents who frees (the
+# manual-memory seam — see [memory]).
+style             = "errno"                   # "exceptions" | "result" | "either" | "errno" | "error_union" | "tagged_tuple" | "conditions" — here "errno" = the C return-code/out-param model (status int + out-pointer), NOT libc errno
+return_convention = "status-int-plus-outparam" # int ec_status return (0=OK, <0=error enum); result written through an out-pointer; caller checks before use
+status_enum       = "ec_status"               # enum { EC_OK=0, EC_ERR_NON_CANONICAL_ECF, EC_ERR_TRUNCATED, EC_ERR_TAG_REJECTED, EC_ERR_DUPLICATE_KEY, EC_ERR_BAD_SEED, EC_ERR_UNSUPPORTED_KEY_TYPE, EC_ERR_UNSUPPORTED_HASH_FORMAT, EC_ERR_OOM, EC_ERR_CHAIN_DEPTH_EXCEEDED, EC_ERR_PAYLOAD_TOO_LARGE, EC_ERR_AUTHN, EC_ERR_AUTHZ, ... }
+no_exceptions     = true                      # C has none; no setjmp/longjmp for control flow either
+allocation_failure = "EC_ERR_OOM"             # malloc returns NULL on failure -> propagate EC_ERR_OOM up the status chain; every alloc site checks (no allocation is infallible, like Zig's error.OutOfMemory but unenforced by the compiler)
+
+[memory]
+# C-SPECIFIC section (shared in spirit with Zig's [memory], but C has NO safety rails:
+# no allocator-as-parameter discipline enforced by the language, no ReleaseSafe bounds/
+# overflow trap, no defer/errdefer). This is the single biggest idiom seam and the
+# reason the C peer is worth building — it is the ONLY peer with fully manual,
+# unguarded malloc/free. Memory-correctness is a FIRST-CLASS conformance concern here.
+gc                = false
+allocator         = "malloc/free (libc)"      # the standard allocator; no custom allocator threading required for a --profile core peer
+ownership_model   = "documented-caller-frees" # every API that allocates documents the ownership contract in its header comment; caller frees with the matching ec_*_free()
+free_discipline   = "goto-cleanup"            # idiomatic C error-path cleanup: single cleanup label per function, goto on error, free in reverse-alloc order (the C analogue of Zig defer/errdefer)
+decode_zero_copy  = true                      # the decoder returns EXACT byte slices INTO the caller's input buffer (no copy in the hot path); the input buffer MUST outlive the decoded view (documented borrow contract)
+leak_tooling      = "valgrind + ASan/LSan"    # tests run under AddressSanitizer + LeakSanitizer (and/or valgrind) so an un-freed alloc or a use-after-free is a TEST FAILURE — the manual-memory analogue of Zig's std.testing.allocator leak check
+hardening         = "-fsanitize=address,undefined for tests; -D_FORTIFY_SOURCE=2 -fstack-protector-strong for release" # UBSan catches the overflow/UB that C, unlike Zig ReleaseSafe, will not trap by default
+
+[concurrency]
+# DELIBERATE idiom; NOT exercised by the codec (S2 is pure/synchronous). C's portable
+# concurrency primitive is POSIX threads (pthreads) — the manual analogue of the
+# OCaml/Zig/CL/Java stdlib-threads decision (A-OC-003-revised). For the §4.8/§4.9/§6.11
+# / §7b concurrency gate (now CORE-gating, 5/5): ONE reader thread per connection
+# demuxing EXECUTE_RESPONSE by request_id, plus a data-race-safe content store.
+# STORE-SAFETY MECHANISM (the §4.8 data-race requirement — Zig/CL each had to add this
+# at the §7b gate, A from concurrency-gate memory): the shared content store is guarded
+# by a pthread_rwlock_t (many concurrent readers, exclusive writer) — reads dominate
+# the dispatch path, so an rwlock beats a plain mutex; a pthread_mutex_t is the simpler
+# fallback if rwlock contention is never the bottleneck. NO blocking syscalls on a
+# cooperative path (each connection has its own thread, so a blocking recv only blocks
+# that connection's thread — the Swift §7b "dedicated thread for blocking I/O" finding
+# applied structurally). TCP_NODELAY MUST be set on every connection socket (the Zig
+# §7b finding: Nagle/delayed-ACK on small req/resp frames was THE throughput killer;
+# 343ms/cycle churn is the Nagle signature). Write-serialize each shared connection
+# socket with a per-connection pthread_mutex_t.
+style             = "threaded"                # "sync" | "task" | "threaded" | "virtual-threads" — POSIX threads
+primitive         = "pthreads (pthread_create / pthread_rwlock_t / pthread_mutex_t / pthread_cond_t)"
+default_surface   = "blocking"                # codec + core peer are blocking/synchronous; threads provide concurrency (one reader thread per connection)
+store_safety      = "pthread_rwlock_t"        # §4.8 data-race-safe store: many-reader/one-writer rwlock guarding the content store (mutex fallback)
+request_demux     = "hashtable<request_id, condvar-slot>" # reentrant request_id correlation (N7); the reader thread signals the waiting dispatch via a pthread_cond_t slot
+tcp_nodelay       = true                      # MANDATORY on every connection socket (§7b throughput; the Zig Nagle finding)
+
+[naming]
+# C-native conventions: snake_case throughout, with a project prefix to namespace the
+# (flat, no-namespace) C global symbol space. Differs from every prior peer's casing
+# (no PascalCase types — C structs are snake_case; the `ec_` prefix is the namespace).
+type_names        = "snake_case_t"            # typedef'd structs/enums: ec_entity, ec_content_hash, ec_peer_id (trailing _t for typedefs)
+function_names    = "snake_case"              # ec_entity_content_hash(), ec_sign_detached(), ec_ecf_encode() — all prefixed ec_ (the namespace)
+variable_names    = "snake_case"             # locals/fields: content_hash, peer_id, format_code
+constant_names    = "UPPER_SNAKE_CASE"        # #define / enum constants: EC_MAX_MESSAGE_SIZE, EC_OK, EC_ERR_OOM (the C idiom)
+enum_constants    = "UPPER_SNAKE_CASE"        # EC_KEY_TYPE_ED25519, EC_HASH_FORMAT_SHA256
+file_names        = "snake_case"              # ecf.c, peer_id.c, content_hash.c, base58.c, varint.c (one logical unit per file pair .c/.h)
+symbol_prefix     = "ec_ / EC_"               # ALL exported symbols carry the ec_ (funcs/types) / EC_ (macros/enums) prefix — C has a flat global namespace; the prefix IS the module boundary, and exported via -fvisibility=hidden + explicit EC_API export macro
+hex_case          = "lowercase"               # %02x (lowercase) for ALL address-space tree-path hex (§3.4/§3.5) — see [idiom].hex_lowercase; A-CL-009
+
+[build]
+build_tool        = "make"                    # plain GNU make (project convention: build/orchestration via make; avoid cmake-the-meta-tool where make suffices). NOTE: the EXISTING c-toolchain container drives the FFI codec via CMake; for the PEER a hand-written Makefile is the lighter, dependency-minimal fit and matches the repo's make convention. CMake remains available in the image if a generator step later wants it.
+build_command     = "make"                    # -> libentity_core_protocol.a + .so + the conformance harness binary
+test_command      = "make test"               # builds + runs the conformance harness (corpus byte-identity) under ASan/LSan
+pack_command      = "make dist"               # produces the versioned source tarball + the static/shared lib + pkg-config (.pc) — see [publishing]
+cc                = "gcc"                      # gcc-15.2.1 (in the c-toolchain image); clang is wire-equivalent and used for the ASan/UBSan test pass if preferred
+std               = "c11"                      # -std=c11 -pedantic -Wall -Wextra -Werror (widest reach across embedding toolchains, per ffi-c.md)
+
+[layout]
+project_file      = "Makefile"
+src_dir           = "src/"                    # ecf.c/.h, base58.c/.h, varint.c/.h, content_hash.c/.h, peer_id.c/.h, crypto.c/.h, store.c/.h, dispatch.c/.h, transport.c/.h
+include_dir       = "include/"                # the public header: include/entity_core/protocol.h (the single umbrella public header)
+test_dir          = "test/"                   # conformance harness (test/conformance.c) + unit tests; loads the normative fixture and asserts byte-identity
+lib_name          = "entity_core_protocol"    # libentity_core_protocol.a + libentity_core_protocol.so
+public_header     = "include/entity_core/protocol.h"
+
+[publishing]
+# C has NO central package registry (no crates.io/npm/Maven). "Publishing" = a
+# versioned SOURCE tarball (the autotools/Make convention) carrying a static + shared
+# lib and a pkg-config (.pc) file, consumed by downstream via system package managers
+# (distro packaging) or vendoring. Mirrors Zig's decentralized stance.
+registry          = "source-tarball + pkg-config"  # no central index; distro packagers / vendoring consume the tarball
+registry_url      = ""                         # n/a — no central C registry
+package_id        = "entity-core-protocol-c"   # tarball / pkg-config name
+pkg_config_name   = "entity-core-protocol"     # the installed .pc file -> `pkg-config --cflags --libs entity-core-protocol`
+license_expression = "Apache-2.0"
+repository_url     = ""                         # TBD on first publish
+authors            = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"               # S9 default; C ecosystem is license-mixed (no dominant norm). libsodium is ISC (permissive, Apache-compatible — statically linkable into an Apache-2.0 artifact). Keep the safe Apache-2.0 default (explicit patent grant).
+
+[testing]
+# No external test framework — a hand-rolled C test harness (the dependency-
+# minimization stance, matching Zig/OCaml/CL "hand-roll even the test runner"). The
+# conformance harness (test/conformance.c) loads the normative fixture vectors and
+# asserts byte-identity against the corpus; a tiny assert-and-count driver reports
+# pass/fail. Built + run under AddressSanitizer + LeakSanitizer so memory bugs are
+# test failures (the manual-memory conformance bonus — see [memory].leak_tooling).
+framework         = "hand-rolled"              # in-repo assert/expect macros + a counting main(); no Unity/Check/CMocka dependency
+leak_checking      = true                      # ASan/LSan (or valgrind) under `make test` — un-freed alloc / UAF / overflow = test failure
+
+[container]
+# REUSED, NOT authored. containers/c-toolchain/Containerfile ALREADY EXISTS (built for
+# the ffi-generator C codec work). It provides EVERYTHING the C PEER needs for the
+# Ed25519 + SHA-256 core: gcc-15.2.1, make-4.4.1, cmake-3.31.11, binutils-2.45.1, and
+# libsodium-1.0.22-1.fc43 (runtime + static + devel). NO new package is required for
+# the core floor. NOTE for S2+: the ASan/UBSan test pass needs libasan/libubsan — on
+# fedora:43 these ship WITH gcc (gcc-15.2.1 pulls them), so no Containerfile edit is
+# expected; if a separate `libasan`/`libubsan` NVR turns out to be needed it is a tiny
+# "add at S2" item (PHASE-S1.md records this). Ed448 agility (deferred) would need
+# OpenSSL-devel OR the sibling FFI agility .a — also an "add at S2/agility" item, NOT
+# in the core image. S1 boundary: the container is NOT edited or built here.
+base_image        = "entity-core-keystone/c-toolchain:latest"
+build_in_container = true
+reuse_existing     = true                      # containers/c-toolchain/Containerfile is REUSED as-is for the core floor; no new Containerfile authored
+# --network=none is honored: the core peer is libsodium + hand-rolled code only, and
+# libsodium is pre-installed in the image, so the build is fully offline.
+dev_loop           = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/c entity-core-keystone/c-toolchain:latest make test"
+
+[idiom]
+# Hints that don't fit elsewhere.
+manual_memory                 = true           # explicit malloc/free, no GC, no allocator-as-param; goto-cleanup on error paths; documented caller-frees ownership
+zero_copy_decode              = true           # decoder returns slices into the input buffer; input must outlive the view
+opaque_handles                = true           # public header exposes opaque struct pointers + ec_* funcs; no internal struct layout leaks across the ABI (only stdint + buffers, like the canonical entitycore_codec.h)
+no_symbol_leak                = true           # -fvisibility=hidden; export only the ec_* ABI via an EC_API macro; localize libsodium's symbols so an embedder's own libsodium does not collide (ffi-c.md symbol hygiene)
+native_uint64                 = true           # C has native uint64_t -> the §1.5/§7.3 head-form maps DIRECTLY (no ulong/int63 special-casing like C#/OCaml; the cleanest int story alongside Zig). Use uint64_t throughout; watch signed-overflow UB (UBSan on in tests).
+hex_lowercase                 = true           # printf("%02x") is NATURALLY lowercase in C (good — avoids the A-CL-009 uppercase trap by default), but PIN it explicitly: NEVER %02X for any address-space tree-path hex (§3.4/§3.5)
+defensive_bounds              = true           # bounds-check every buffer access in the decoder (C will not; an off-by-one is UB/overflow, not a trap) — the decoder validates length before every read
+c11_no_vla                    = true           # avoid VLAs (stack-overflow / unbounded-attacker-controlled-size risk); fixed buffers or heap with explicit size checks
+c_version                     = "c11"
+
+[deps]
+# Exact pins (S11). The ONLY third-party runtime dependency is libsodium; everything
+# else (CBOR / base58 / varint / the test harness) is hand-rolled in-repo. The
+# toolchain (gcc/make/cmake/binutils) comes through fedora's reviewed dnf channel.
+#
+# SUPPLY-CHAIN SCOPE (per the project's S11 clarification): packages pulled through a
+# REVIEWED DISTRO CHANNEL (fedora dnf) get the EXACT-version pin for reproducibility
+# but the >=30-day AGE floor RELAXES (the distro has its own security review). All the
+# pins below come via fedora:43 dnf, so they are the reviewed-channel tier. There are
+# NO registry-pulled (crates.io/npm/PyPI-style) ecosystem deps in this peer at all —
+# the C peer has the simplest supply chain in the cohort by construction (one audited
+# C lib + the toolchain, both via the reviewed distro channel).
+libsodium         = "1.0.22-1.fc43"            # the ONE crypto dep (Ed25519 + SHA-256 + SHA-512). fedora:43's repos ship ONLY 1.0.22-1.fc43 (ChangeLog 2026-04-10, ~2 months old at 2026-06-14 -> clears the >=30-day floor anyway); a strict superset of the eval's interim 1.0.21 (adds ML-KEM/SHA-3; the high-level crypto_sign_* / crypto_hash_sha256 we use are byte-identical -> conformance-neutral). CVE-2025-69277 is in the low-level crypto_core_ed25519_is_valid_point validator we do NOT call. Reviewed distro channel -> exact pin for repro, age floor relaxed (but met). Statically + privately linked (-fvisibility=hidden + symbol localization). Already in the c-toolchain image.
+gcc               = "15.2.1-7.fc43"            # C11 compiler; pulls libasan/libubsan for the sanitizer test pass. Reviewed distro channel (exact pin for repro).
+make              = "4.4.1-11.fc43"            # GNU make — the build driver. Reviewed distro channel.
+cmake             = "3.31.11-1.fc43"           # present in the image (drives the FFI codec); the PEER uses make, but cmake is available. Reviewed distro channel.
+binutils          = "2.45.1-4.fc43"            # ld/objcopy (objcopy for libsodium symbol localization). Reviewed distro channel.
+# (no registry-pulled ecosystem packages — the codec, base58, varint, and test harness are all hand-rolled in-repo)
+
+[spec]
+v7_version_pinned = "7.75"                     # spec read for profile + peer: spec-data/v7.75 (the current snapshot; MANIFEST pins V7 7.75, the version named in the input). NOTE: the verbatim ENTITY-CORE-PROTOCOL-V7.md body's own changelog header still reads "Version: 7.73" (the snapshot is a byte-for-byte copy whose internal changelog top entry is dated; MANIFEST.md is authoritative for the snapshot's version = 7.75). Recorded so S2/S3 are not confused by the in-file header. (A-C-002.)
+codec_corpus      = "v0.8.0"                    # ECF corpus; ENTITY-CBOR-ENCODING.md + ENTITY-NATIVE-TYPE-SYSTEM.md are byte-stable across v7.71->v7.75 (the cohort SHA-verified this window; the v7.73 §4.7 construct-vs-decode erratum + the v7.67 large-uint int.15/16/17 additions are the only deltas, both reflected in the v0.8.0 corpus already used by the 9-peer matrix). Agility (Ed448/SHA-384) corpus gated on A-C-001.
+conformance_scaffolding = "guide-conformance-7a-7b" # §7a validate handlers + §7b concurrency gate come from GUIDE-CONFORMANCE.md + the keystone generator menu at S3/S4 — NOT from the spec-data snapshot (the v7.74/v7.75 MANIFEST flags this split). A spec-first peer reading only spec-data would otherwise miss them and fail S4. (A-C-003.)
+# CURRENT-STATE FLOOR this peer inherits (from the keystone menu; folded into
+# PROFILE-RATIONALE + SPEC-AMBIGUITY-LOG as PRE-RESOLVED so S3 does not re-burn them):
+#  - peer_id: §1.5 canonical-form table, hash_type=0x00, RAW pubkey for Ed25519 (NOT
+#    the stale §7.4 SHA-256 skeleton). Verified in spec-data/v7.75 line 459 + 3905.
+#  - tree-path hex: lowercase %02x (§3.4/§3.5). C printf("%02x") is lowercase by
+#    default; pinned in [idiom].hex_lowercase.
+#  - §5.2 trichotomy: 401 authn / 403 authz / 401 unresolvable (§5.2a verdict table).
+#  - §1.1 entity `data` is an ARBITRARY ECF value (NOT necessarily a map) — model it
+#    as a general ECF value from the start (the A-JAVA-010 silent-500 trap).
+#  - resource_bounds (§4.10, CORE-gating): r1 413 payload_too_large / clean close
+#    (16 MiB default); r2 over-deep delegation -> 400 chain_depth_exceeded (MUST be
+#    400, NOT 403; default 64; the ~15-line §4.10(b) structural pre-check walks parents
+#    with NO sig work, max=64, BEFORE the authz walk); r3 connection flood -> 503/close
+#    or honest WARN.
+#  - concurrency (§7b, CORE-gating): 5/5; data-race-safe store (§4.8 -> rwlock),
+#    resilience under load (§4.9), no blocking syscalls on a cooperative pool (one
+#    thread per connection sidesteps it), TCP_NODELAY.
+target_oracle     = "entity-core-go validate-peer --profile core (576 total · 0 FAIL · 89 skip)" # the canonical core gate this peer must reach GREEN at S4

@@ -1,0 +1,242 @@
+# entity-core-protocol-haskell — Language Profile
+#
+# Peer #8. Authored FRESH in S1 from the V7 spec-data/v7.74 snapshot + Haskell
+# ecosystem research — NOT ported from the C#/TS/OCaml/Zig/Elixir/CL/Swift profiles.
+# Haskell is a COVERAGE / ROBUSTNESS peer (the cohort is at diminishing spec-discovery
+# returns — the wire-touching axes integer/float/crypto/string are saturated). It is the
+# biggest UNREPRESENTED idiom family: pure-functional, LAZY-by-default, monadic-IO.
+# (OCaml is strict + impure ML — genuinely different.) Its real probes:
+#   1. Idiomatic pure / monadic-IO translation (the code must read as Haskell a Haskeller
+#      would write — an `IO` boundary, typeclasses, NOT transpiled OCaml).
+#   2. LAZY-EVALUATION CORRECTNESS in a byte-exact codec — thunk buildup / space leaks /
+#      strictness. The one place an *implementation* finding could surface (see [memory]).
+#   3. NATIVE Ed448 via `crypton` — a fresh crypto-availability data point (native FULL
+#      agility incl. Ed448; distinct from OCaml/Zig/Swift's Ed448 gap→FFI/defer).
+#   4. STM / GHC green threads for the §7b store-concurrency gate (a 3rd data-race-free
+#      shape after the Elixir/Swift actors).
+# Expected outcome: 573/0F like the cohort + FP-robustness proven + maybe one lazy-eval
+# impl finding. Still genuinely spec-first — any spec ambiguity hit is logged (lower odds,
+# not zero). Where a value matches a prior peer it is by independent arrival, not inheritance.
+#
+# Profile authority (S6): the agent MUST use the values declared here. A "TBD" value is
+# logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase. There are NO TBD/deferred
+# values in this profile — notably Ed448 is NATIVE (crypton), so the crypto-agility higher
+# bar is reachable, not deferred (the first peer for which it is).
+
+[language]
+id                = "haskell"
+name              = "Haskell"
+tier              = "peer-8"                  # coverage/robustness: pure-functional + lazy-eval + monadic-IO + native-full-agility
+package_name      = "entity-core-protocol-haskell"
+runtime           = "ghc-toolchain"           # references containers/ghc-toolchain/Containerfile
+
+[codec]
+# strategy: NATIVE. Same A-005 pattern every prior native peer hit (7-for-7): a faithful
+# ECF codec must OWN the canonical layer — length-then-lexicographic map-key ordering on
+# encoded key bytes (ENTITY-CBOR-ENCODING §2.2 Rule 2), shortest-float incl. f16
+# minimization (§2.2 Rule 4 + the special-value table), recursive major-type-6 tag
+# rejection on decode (§6.3 Option B), full uint64/nint range, raw-byte fidelity —
+# regardless of any CBOR library underneath, so a library buys almost nothing. `cborg`
+# (the mature Haskell CBOR lib LANDSCAPE pencilled in) is "deterministic-first" but does
+# NOT give ECF's exact guarantees (it cannot be trusted to emit ECF's shortest-float
+# ladder incl. f16 for every value, its map-key ordering is length-first but not over the
+# exact ENCODED key bytes ECF mandates, and §6.3 recursive tag-reject-on-decode is ECF
+# policy not a cborg mode). Crypto is native (crypton, audited C-backed) so native is the
+# strictly lighter path. ffi remains the documented fallback if a spike fails (not expected).
+# Spike to run at S2 start: push the map_keys + float test-vectors through the hand-rolled
+# encoder before the full build — cheap insurance per PHASE-S1-PROFILE. (S1 container spike
+# ALREADY PROVED crypton SHA-256/384 + Ed25519 + Ed448 build+run on the fedora:43 image —
+# see PHASE-S1.md; the codec spike is the S2 entry gate.)
+strategy          = "native"
+# CBOR: hand-rolled canonical ECF encoder/decoder (EntityCore.Codec.CBOR). The A-005
+# finding, re-confirmed for Haskell (8th confirmation). Zero CBOR dependency. The encoder
+# builds output in a STRICT Data.ByteString.Builder and forces it; the decoder is a strict
+# incremental parser over strict ByteString — see [memory] for the laziness discipline that
+# a byte-exact codec REQUIRES (Haskell's defining idiom seam, A-HS-002).
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native" }
+# Ed25519: crypton Crypto.PubKey.Ed25519 — audited C-backed, RFC-8032 deterministic
+# signing (Ed25519.sign sk pk msg needs no RNG; Ed25519.verify pk msg sig). 32-byte pubkey
+# (the §1.5 identity-form digest), 64-byte signature. One pinned Hackage dependency
+# (analogous to OCaml mirage-crypto / TS @noble / Swift swift-crypto). BUILD-PROVEN at S1.
+ed25519_library   = { name = "crypton Crypto.PubKey.Ed25519", version = "1.0.4" }
+# Ed448 (crypto-agility higher bar, v7.67 key_type 0x02): NATIVE via crypton
+# Crypto.PubKey.Ed448 — 57-byte pubkey, 114-byte signature, RFC-8032 deterministic.
+# *** This is the headline crypto data point: Haskell is the FIRST peer with NATIVE FULL
+# agility incl. Ed448. *** OCaml hit the Ed448 native gap (A-OC-002 → hybrid FFI), Zig
+# deferred (A-ZIG-002), Swift deferred (A-SW-001); CL had pure-Lisp Ed448 (ironclad).
+# crypton supplies Ed448 from the SAME audited C-backed library as Ed25519 — no FFI, no
+# separate dependency, no defer. BUILD-PROVEN at S1 (Ed448 sign/verify round-trip = True,
+# 57B pubkey / 114B sig). NOT deferred — the agility higher bar is reachable for this peer.
+ed448_library     = { name = "crypton Crypto.PubKey.Ed448", version = "1.0.4", strategy = "native" }
+# SHA-256 (content_hash floor) + SHA-384/SHA-512 (agility hashing) from crypton
+# Crypto.Hash: hashWith SHA256 / SHA384 / SHA512. Same dependency as Ed25519/Ed448 — no
+# separate pin. BUILD-PROVEN at S1 (sha256("hello") == 2cf24dba…9824 known digest; SHA-384
+# empty → 48 bytes). (base's bundled packages have no SHA-2; crypton is the idiomatic source.)
+sha256_source     = "crypton Crypto.Hash (SHA256; SHA384/SHA512 also present for agility)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode; not in crypton/base. peer_id (§7.4).
+varint_handling   = "native"                  # multicodec-style LEB128 (§7.3) inline impl; key_type/hash_type/format-code framing
+
+[error_model]
+# DELIBERATE Haskell-native split. The PURE codec is a total function returning
+# `Either CodecError a` — the pure-functional error ADT, threaded by `do`-notation in the
+# `Either` monad (or an explicit `ExceptT`/`Either` pipeline). This converges in SHAPE with
+# OCaml's `result` (same Either-like ADT — the error axis is low-yield, shown idiom-neutral
+# across peers), but it is arrived at independently as the Haskell idiom and is enforced
+# differently: the codec is a PURE function (no IO), so an error is a *value*, never a
+# thrown exception — there is nothing to catch in the codec layer. IO exceptions
+# (Control.Exception / throwIO / bracket) appear ONLY at the impure transport boundary (S3
+# sockets), never in the codec. Protocol-status failures (400 non_canonical_ecf / 401 / 403)
+# map a CodecError/verdict constructor → status code at the module boundary.
+style             = "either"                  # "exceptions" | "result" | "either" | "errno" | "error_union" | "throws"
+error_type        = "CodecError"              # data CodecError = NonCanonicalEcf | Truncated | TagRejected | DuplicateKey | BadSeed | UnsupportedKeyType | UnsupportedHashFormat | ... (deriving Eq, Show)
+pure_codec        = true                      # the codec is a total PURE function: Either CodecError a — no IO, no exceptions in the codec layer
+io_exceptions_at  = "transport-boundary-only" # Control.Exception / throwIO / bracket only at the S3 socket/IO edge; never in pure code
+
+[memory]
+# Haskell-SPECIFIC section (the LAZY-EVALUATION probe — the one axis where an
+# *implementation* finding can surface, and the reason peer #8's idiom family is worth
+# generating). Haskell is LAZY by default: every binding is a THUNK until forced. In a
+# byte-exact codec this is a hazard — a lazily-accumulated length/byte buffer can build a
+# space-leaking thunk chain, and (more dangerously for CORRECTNESS) a non-forced fold can
+# defer effects/ordering in ways that, while pure, blow the stack or mis-time strict
+# resource use. The codec DESIGN STANCE defeats laziness deliberately wherever bytes
+# accumulate or determinism matters:
+gc                = true                       # GHC has a tracing GC (generational, copying) — the 5th GC'd peer's memory model on the surface...
+lazy_by_default   = true                       # ...but the DEFINING seam is non-strict (lazy) evaluation, unique among all 8 peers
+bytes_type        = "Data.ByteString (strict)" # wire bytes are STRICT ByteString in the hot path — NOT lazy ByteString (which chunks + defers); the encoder emits via Data.ByteString.Builder then forces to a strict ByteString
+text_type         = "Data.Text (>=2.0, UTF-8 internal)" # text strings as Data.Text (text>=2.0 is UTF-8 internally); wire length = UTF-8 byte count via Data.Text.Encoding.encodeUtf8 (NOT Text length, which is code points)
+strictness        = "force-at-fold-boundaries" # BangPatterns / seq / $! / strict data fields (`!Field`) wherever bytes/lengths accumulate; the map-key sort + the byte-length fold + the digest input are forced; no lazy thunk reaches the wire
+strict_fields     = true                       # codec record/ADT fields are strict (`data Entity = Entity !ByteString !ByteString`) — StrictData pragma at S2 candidate; immutable + forced
+where_it_bites    = "encoder accumulation + map-key length sort + decode position threading" # the three places a thunk leak/space-leak or mis-forced ordering would surface in a byte-exact codec; the S2 watch-item
+deepseq_usage     = "NFData on decoded structures at the API edge" # force decoded entities fully (deepseq/force) before they cross into long-lived store state, so no thunk retains a large input buffer
+
+[concurrency]
+# DELIBERATE idiom decision; NOT exercised by the codec (S2 is pure/synchronous).
+# Haskell has GHC GREEN THREADS (forkIO — lightweight, M:N scheduled onto OS capabilities)
+# + STM (Control.Concurrent.STM, TVar — composable lock-free transactional memory) as the
+# headline concurrency story, with MVar as the simpler primitive. The §4.8/§6.11
+# inbound-concurrent-with-outbound requirement (peer S3) + §6.13b handler outbound closure
+# + the §7a dispatch-outbound REENTRY surface + the §7b store-concurrency gate are the
+# natural fit: the live store is a `TVar` (or a small set of TVars) mutated inside `atomically`
+# — STM gives a 3rd DATA-RACE-FREE shape after the Elixir actor (message-serialized) and
+# Swift actor (await-serialized). One green thread per connection (forkIO); request_id↔
+# continuation correlation via an `MVar`/`TVar` demux map. The `async` library (structured
+# concurrency: withAsync/race/concurrently) is the idiomatic wrapper. Codec (S2) is pure +
+# synchronous; concurrency enters at the peer (S3). Final S3 shape decided at S3.
+style             = "green-threads-stm"        # "sync" | "threaded" | "evented" | "async-await" | "green-threads-stm"
+default_surface   = "sync-codec"               # codec (S2) is pure/synchronous; concurrency enters at the peer (S3)
+primitive         = "STM (TVar) + forkIO"      # live store = TVar mutated in `atomically`; one forkIO green thread per connection
+structured        = "async library (withAsync/race/concurrently)" # idiomatic structured-concurrency wrapper for the S3 transport
+race_free_shape   = "STM-transactional"        # 3rd data-race-free store shape after Elixir-actor + Swift-actor; the §7b gate target
+
+[naming]
+# Haskell conventions.
+type_names        = "UpperCamelCase"           # types/data constructors/typeclasses: Entity, ContentHash, PeerId, CborValue, CodecError
+function_names    = "lowerCamelCase"           # functions/values: contentHash, signEntity, encodeEcf, derivePeerId
+variable_names    = "lowerCamelCase"           # locals/record fields: contentHash, peerId, formatCode
+constant_names    = "lowerCamelCase"           # top-level constants too (Haskell uses lowerCamelCase for CAF constants, NOT SCREAMING_SNAKE)
+constructor_names = "UpperCamelCase"           # data constructors: Uint, Text, NonCanonicalEcf (same namespace as types — leading uppercase)
+typeclass_names   = "UpperCamelCase"           # typeclasses: Encodable, Decodable (used sparingly; the codec is mostly concrete-typed)
+module_names      = "Hierarchical.UpperCamelCase" # EntityCore.Codec.CBOR, EntityCore.PeerId, EntityCore.ContentHash
+file_names        = "MatchModulePath"          # src/EntityCore/Codec/CBOR.hs for module EntityCore.Codec.CBOR (Cabal convention)
+
+[build]
+build_tool        = "cabal"                    # cabal-install + a .cabal file; cabal.project.freeze is the committed lockfile (S11)
+build_command     = "cabal build"
+test_command      = "cabal test"               # hspec via cabal test-suite; also `cabal run conformance` for the corpus harness
+pack_command      = "cabal sdist"              # Hackage source distribution tarball
+
+[layout]
+project_file      = "entity-core-protocol-haskell.cabal" # the package manifest (cabal-version: 3.0)
+cabal_project     = "cabal.project"            # the project file (packages: ., resolver pinning)
+freeze_file       = "cabal.project.freeze"     # COMMITTED — pins the FULL transitive closure to exact versions (S11 lockfile)
+src_dir           = "src/"                     # Cabal hs-source-dirs; modules under src/EntityCore/...
+test_dir          = "test/"                    # hspec spec + the conformance harness
+lib_name          = "entity-core-protocol-haskell" # the library component
+module_root       = "EntityCore"               # public module surface re-exported under EntityCore (EntityCore.Codec, EntityCore.PeerId, ...)
+
+[publishing]
+# Hackage is Haskell's central package registry (https://hackage.haskell.org). "Publishing"
+# = `cabal sdist` → `cabal upload` to Hackage with a semver version. Consumers depend by
+# `build-depends: entity-core-protocol-haskell ==0.1.*` and pin exactly via their own
+# cabal.project.freeze. Stackage (the curated LTS snapshot index) may later include it.
+registry          = "hackage"
+registry_url      = "https://hackage.haskell.org"
+package_id        = "entity-core-protocol-haskell"
+license_expression = "Apache-2.0"
+repository_url     = ""                          # TBD on first publish
+authors            = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"               # S9 default (explicit patent grant). The Haskell ecosystem is BSD-3-leaning (GHC + base are BSD-3)
+                                               #   but does NOT mandate it; Apache-2.0 (with its patent grant) is the repo default and stands. No S9-override case.
+
+[testing]
+# hspec — the de-facto idiomatic Haskell behavior-test framework (describe/it, the RSpec
+# analog), run by `cabal test`. Chosen over tasty (the other mainstream option: a test-tree
+# framework that can host HUnit/QuickCheck/hspec providers) and bare HUnit: hspec is the
+# single most-used standalone framework, reads cleanly for the corpus-table conformance
+# assertions, and is in the pinned Stackage LTS 23.27 set (clears S11 via the snapshot pin).
+# The conformance harness is an hspec spec (or a `cabal run conformance` executable) that
+# loads the normative v7.71 ECF fixture and asserts byte-identity on encode + correct
+# decode/reject. QuickCheck (property-based) is a STRONG fit for the lazy-eval/strictness
+# robustness probe (e.g. round-trip encode∘decode == id; no value forces a thunk leak) —
+# layered at S2 as a bonus, not the primary gate. (A-HS-004.)
+framework         = "hspec"                     # in Stackage LTS 23.27; `cabal test`. tasty/HUnit are the documented alternatives (A-HS-004).
+property_testing  = "quickcheck-optional"       # QuickCheck round-trip + strictness properties — strong lazy-eval-robustness fit; layered at S2, not the gate
+corpus_harness    = "hspec-or-exe-fixture-byte-identity" # loads the v7.71 ECF corpus, asserts byte-identical encode + correct decode/reject
+
+[container]
+base_image        = "entity-core-keystone/ghc-toolchain:latest"
+build_in_container = true                       # BUILT + spike-verified at S1 (ghc --version + crypton SHA256/384 + Ed25519 + Ed448 run; see PHASE-S1.md)
+# --network=none is honored AFTER the one-time Hackage resolve (the only networked step):
+# once cabal.project.freeze is committed + the cabal store is populated (deps compiled), the
+# COMPILED artifact runs fully offline (PROVEN at S1 — the built binary re-ran under
+# --network=none green). NOTE: `cabal build` itself still consults the remote package index
+# on a cold store; the offline S2 loop pre-populates the store on the networked resolve, then
+# builds against the committed freeze (`cabal build --offline` with a warm store + a pinned
+# index-state). See A-HS-005 for the cabal-offline mechanics finding.
+dev_loop          = "podman run --rm -v $PWD:/work:Z -w /work/protocol-generator/haskell entity-core-keystone/ghc-toolchain:latest cabal test"
+offline_after_resolve = true                    # resolve+compile once (network on) -> commit cabal.project.freeze + warm store -> compiled artifact runs --network=none
+
+[idiom]
+# Hints that don't fit elsewhere.
+pure_codec_no_io              = true            # the codec is pure (Either CodecError a); IO appears only at the S3 transport edge
+prefer_strict_bytestring      = true            # strict Data.ByteString on the wire path; NEVER lazy ByteString in the hot codec (chunking + thunks)
+force_at_accumulation         = true            # BangPatterns/seq/$!/strict fields wherever bytes or lengths accumulate (the lazy-eval discipline, A-HS-002)
+utf8_byte_view_for_wire       = true            # text-string CBOR length = UTF-8 byte count (Data.Text.Encoding.encodeUtf8), never Text length (code points); map-key sort over encoded bytes
+explicit_endianness           = true            # frame length is 4-byte big-endian (§1.6); use explicit Data.Bits / Builder big-endian, never host order
+no_partial_on_wire            = true            # no head/fromJust/!! on decoded/untrusted data; every wire access is a total checked Either
+warnings_as_errors            = true            # -Wall -Werror in the dev/test build profile (matches OCaml warnings_as_errors)
+language_pragmas              = "OverloadedStrings, BangPatterns, StrictData, LambdaCase, ScopedTypeVariables" # per-module as needed; StrictData is the lazy-eval-defeating default for codec ADTs
+ghc_version                   = "9.8.4"
+
+[deps]
+# Exact pins (S11). All ≥30 days old at authoring (2026-06-14). The dependency closure is
+# pinned via a committed cabal.project.freeze DERIVED FROM Stackage LTS 23.27 (GHC 9.8.4,
+# published 2025-07-06, ~11 months old) — a SINGLE dated snapshot pins the WHOLE transitive
+# closure ≥30 days old in one coherent, build-tested set, which is the cleanest answer to
+# the SwiftPM transitive-age trap (A-SW-005): no per-dep manual age audit, the snapshot date
+# IS the floor. Mirrored in containers/ghc-toolchain/Containerfile for the toolchain pins.
+ghc               = "9.8.4"                     # released 2024-12-02 (~18 months old; clears S11). GHC-9.8 LTS series; LTS 23.27 is built against exactly 9.8.4.
+cabal_install     = "3.14.2.0"                  # released 2025-04-07 (~14 months old; clears S11). The build/lockfile driver.
+resolver          = "lts-23.27"                 # Stackage LTS 23.27, GHC 9.8.4, published 2025-07-06 (~11 months old; clears S11). The dated snapshot that pins the closure.
+crypton           = "1.0.4"                     # released 2025-03-30 (~14 months old; clears S11). Ed25519 + Ed448 + SHA256/384/512. The version LTS 23.27 pins. BUILD-PROVEN at S1.
+memory            = "0.18.0"                    # crypton's ByteArray dep (resolved at S1). In LTS 23.27.
+basement          = "0.0.16"                    # crypton/memory transitive dep (resolved at S1). In LTS 23.27.
+bytestring        = "0.12.1.0"                  # GHC-9.8.4-bundled / LTS 23.27 — strict ByteString wire type (verified in-container at S1).
+text              = "lts-23.27-pinned"          # text>=2.0 (UTF-8-internal); exact version from the committed freeze (LTS 23.27 set) at S2.
+hspec             = "lts-23.27-pinned"          # test framework; exact version from the committed freeze (LTS 23.27 set) at S2.
+# NOTE: text/hspec exact patch versions are pinned by the cabal.project.freeze generated from
+# LTS 23.27 at S2 start (the snapshot fixes them); recorded here as snapshot-pinned, not TBD —
+# the freeze file is the authoritative lockfile and is committed (S11). No CBOR/base58/varint
+# packages — hand-rolled in-repo per [codec].
+
+[spec]
+v7_version_pinned = "7.74"                      # spec-data/v7.74 (the freshly-stamped snapshot; Haskell derives this surface independently, spec-first)
+codec_corpus      = "v0.8.0"                     # ECF corpus; ENTITY-CBOR-ENCODING.md is byte-stable across the v7.71->v7.74 line except the v7.73 E3
+                                                #   decode-side construct-vs-decode erratum paragraph (no wire change), so the v0.8.0 corpus is valid at
+                                                #   v7.74 (the same finding the OCaml/Zig/Swift peers SHA-verified). Agility (Ed448/SHA-384) corpus is
+                                                #   IN SCOPE for this peer (Ed448 is NATIVE — no A-SW-001-style gate).
+conformance_scaffolding = "guide-conformance-7a-7b" # §7a validate handlers + §7b concurrency gate come from GUIDE-CONFORMANCE.md + the generator menu,
+                                                #   NOT spec-data (per the v7.74 MANIFEST note) — Haskell picks them up at S3/S4. (A-HS-006.)

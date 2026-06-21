@@ -1,0 +1,22 @@
+; entitycore_agility — the opt-in crypto-agility higher-bar seam (V7 §1.2/§1.5,
+; v7.67). Ed25519 + SHA-256 + SHA-384 are native (in entitycore_codec / digestif);
+; Ed448 (key_type 0x02) is sourced from libentitycore_codec over the C-ABI v1.1
+; (A-OC-002 hybrid: no conformant native OCaml Ed448). This is a SEPARATE library
+; from the core peer so the shipped Ed25519+SHA-256 peer stays self-contained and
+; FFI-free; consumers that need the agility higher bar link this and the .so.
+;
+; Link/runtime: the build resolves -lentitycore_codec via LIBRARY_PATH and loads
+; it via LD_LIBRARY_PATH (both set by run-agility.sh, pointing at the prebuilt
+; self-contained C impl). The .so is byte-interchangeable with the Rust impl.
+; Guarded behind EC_AGILITY=1 so the default `dune build` (run-s4.sh, the dev
+; loop) stays FFI-free and needs no libentitycore_codec on the link path; only
+; run-agility.sh sets EC_AGILITY=1 + LIBRARY_PATH + LD_LIBRARY_PATH.
+(library
+ (name entitycore_agility)
+ (enabled_if
+  (= %{env:EC_AGILITY=0} 1))
+ (libraries entitycore_codec digestif)
+ (foreign_stubs
+  (language c)
+  (names ec_ffi_stubs))
+ (c_library_flags (-lentitycore_codec)))

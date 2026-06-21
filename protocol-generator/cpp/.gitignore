@@ -1,0 +1,16 @@
+# C++ build artifacts (reproducible from source via CMake+Ninja; never committed).
+# CMake out-of-tree build dirs: the default `build/` (covered repo-wide) plus the
+# S4 host build dir and any CMake/CTest scratch.
+build/
+build-*/
+CMakeFiles/
+CMakeCache.txt
+*.o
+*.a
+*.so
+*.so.*
+# CPack / dist artifacts (the source/binary package is built on demand, not committed)
+entity-core-protocol-cpp-*.tar.gz
+_CPack_Packages/
+# the vendored Go oracle ELF is gitignored (a local tool; provenance pinned in tools/oracle-pin.env)
+output/

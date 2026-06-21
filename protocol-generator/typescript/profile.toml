@@ -1,0 +1,144 @@
+# entity-core-protocol-typescript — Language Profile
+#
+# Peer #2. Derived from the csharp reference profile (peer #1) and adapted per
+# research/evaluations/typescript.md (S1). Every field documented inline.
+#
+# Profile authority: the agent MUST use the values declared here. If a value
+# is "TBD", the agent logs the gap in SPEC-AMBIGUITY-LOG.md and stops phase
+# execution awaiting research stewards. Version pins marked "(verify ≥30d at
+# S2)" are draft pins — confirm the release date clears the S11 30-day rule
+# in-container before locking the lockfile, and log any too-new in the log.
+
+[language]
+id                = "typescript"
+name              = "TypeScript / Node.js"
+tier              = "T1"
+package_name      = "entity-core-protocol-typescript"   # npm id; scoped form (@entity-core/protocol) is an S5/publish decision (A-002)
+runtime           = "node24"                # references containers/node24/Containerfile (Node 20 is EOL mid-2026 — not used)
+
+[codec]
+strategy          = "native"                # "native" | "ffi" | "interop". Native: cborg + @noble, no FFI on critical path.
+# cborg defaults are favorable for ECF: map keys sort LENGTH-FIRST then bytewise
+# (== CTAP2 == ECF rule; verify byte-exact vs map_keys.* in S2), smallest-float
+# on ENCODE, and tags REJECTED by default (N2 nearly free). Decode-side float
+# minimality is NOT enforced by cborg → hand-rolled decode check (R3). Integer
+# surface MUST be bigint end-to-end (R1) — number caps at 2^53.
+cbor_library      = { name = "cborg", version = "5.1.1", canonical_mode = "default-deterministic", notes = "length-first map sort; allowBigInt=true; tags rejected by default" }
+# Crypto: @noble (default — BROWSER-PORTABLE, pure-JS). @noble/curves gives BOTH
+# Ed25519 (floor) + Ed448 (agility family) from ONE package (vs C#'s NSec +
+# BouncyCastle); @noble/hashes gives SHA-2 (audited; March-2026 self-audit
+# covered ed25519/ed448). Raw-byte API (no DER ceremony), zero transitive deps,
+# PGP-signed. Browser-portability is the deciding factor (A-001) — the consumable
+# data-library use case. Provider is pluggable behind the agility seam; node:crypto
+# (zero-dep, Node-only) is the alternative if portability is ever dropped.
+crypto_provider   = "@noble"                # "@noble" (default, browser-portable) | "node:crypto" (Node-only, zero-dep alt). See A-001.
+ed25519_library   = { name = "@noble/curves", version = "2.2.0" }   # ed25519 floor; raw 32-byte keys, no DER
+ed448_library     = { name = "@noble/curves", version = "2.2.0" }   # ed448 agility family — SAME package (the seam is one dep here)
+sha256_library    = { name = "@noble/hashes", version = "2.2.0" }   # SHA-256 floor + SHA-384/512 agility; audited
+base58_library    = "hand-rolled"           # Bitcoin alphabet, ~80 lines (S2), pure-JS/browser-safe; dodges a dep. Alt: @scure/base 2.0.0 (0-dep, audited).
+varint_handling   = "native"                # LEB128 inline impl (N1), BigInt-backed for the >2^53 surface (R1)
+integer_model     = "always-bigint"         # int/uint decode to bigint ALWAYS (no silent number path) — the R1/F7 safe rule
+
+[error_model]
+style             = "exceptions"            # JS idiom: throw Error subclasses. Mirror C#'s hierarchy.
+base_exception    = "EntityCoreError"
+# NOTE: `class X extends Error` needs Object.setPrototypeOf(this, X.prototype) in
+# the constructor for `instanceof` to work reliably — apply in every subclass.
+exception_hierarchy = [
+    "EntityCoreError",
+    "  EntityCodecError",
+    "  EntityProtocolError",
+    "    HelloFailedError",
+    "    AuthenticationError",
+    "  EntityTransportError",
+    "    RecvTimeoutError",
+    "    ConnectionBrokenError",
+    "    ProtocolErrorError",   # naming TBD: avoid ProtocolErrorError stutter → likely "WireProtocolError" (A-003)
+]
+
+[async]
+style             = "promise"               # JS is Promise-native
+default_surface   = "promise"               # transport/peer APIs return Promise<T>; streaming uses AsyncIterable<T> / async generators
+codec_surface     = "sync"                  # codec encode/decode is pure-CPU synchronous (no Promise) — like C#
+sync_shim         = "none"                  # JS has no sync-over-async; do not provide blocking wrappers
+
+[naming]
+type_names        = "PascalCase"            # classes, interfaces, type aliases, enums: EntityEnvelope, ProtocolMessage
+member_names      = "camelCase"             # methods, properties, functions: contentHash, signAndVerify
+parameter_names   = "camelCase"             # parameters + locals: typeName, dataBytes
+constant_names    = "UPPER_SNAKE_CASE"      # true module-level constants: DEFAULT_TIMEOUT_MS. (module-private camelCase consts allowed.)
+enum_members      = "PascalCase"
+file_names        = "kebab-case"            # idiomatic Node/TS: canonical-cbor.ts, peer-connection.ts (NOT PascalCase files)
+
+[build]
+build_tool        = "npm"
+package_manager_lock = "package-lock.json"  # COMMITTED; npm ci is authoritative
+build_command     = "npm ci --offline && npx tsc -p tsconfig.json"
+test_command      = "node --test"           # node:test built-in runner
+pack_command      = "npm pack"
+
+[layout]
+package_manifest  = "package.json"
+tsconfig          = "tsconfig.json"
+src_dir           = "src/"
+test_dir          = "test/"
+dist_dir          = "dist/"                 # tsc output (compiled JS + .d.ts)
+samples           = "samples/"              # S4 conformance host lives here (reusable per-language pattern)
+
+[typescript]
+target            = "es2022"
+module            = "nodenext"
+module_resolution = "nodenext"
+strict            = true                     # the analogue of C# nullable-enable + TreatWarningsAsErrors
+extra_strict      = ["noUncheckedIndexedAccess", "exactOptionalPropertyTypes", "noImplicitOverride"]
+emit_declarations = true                     # ship .d.ts
+typescript_version = "5.x"                   # pin exact stable ≥30d at S2 (A-004); dev-dependency only
+module_format     = "esm"                    # ESM-only ("type":"module"); dual CJS deferred to S5
+
+[publishing]
+registry          = "npm"
+registry_url      = "https://registry.npmjs.org/"
+package_id        = "entity-core-protocol-typescript"
+license_expression = "Apache-2.0"
+repository_url    = ""                       # TBD on first publish
+authors           = "Entity Core Protocol contributors"
+provenance        = true                     # npm publish --provenance (S5) — supply-chain attestation
+
+[license]
+generated_outputs = "Apache-2.0"             # repo standard (S9); npm ecosystem tolerates Apache-2.0 fine
+
+[testing]
+framework         = "node:test"              # built-in — ZERO test-runner deps (vs xUnit's 3 nuget pins in C#)
+assertion         = "node:assert/strict"     # built-in
+# No external test framework. If snapshot/property testing is wanted later, log it (don't pull vitest/jest silently — S6).
+
+[documentation]
+doc_comments      = true                     # TSDoc /** */ on public surfaces
+api_reference_tool = "typedoc"               # S5 doc generation (dev-dep, deferred)
+
+[container]
+base_image        = "entity-core-keystone/node24:latest"
+build_in_container = true
+network_policy    = "pull-once-then-offline" # deps locked in one network-on build step; all subsequent runs --network=none (no registry egress). The user's hard requirement.
+dev_loop          = "podman run --rm --network=none -v $PWD:/work entity-core-keystone/node24:latest sh -c 'npm ci --offline && npx tsc'"
+
+[idiom]
+prefer_readonly          = true              # readonly fields / ReadonlyArray for value-shaped types (records analogue)
+prefer_discriminated_unions = true           # tagged unions for message/result variants
+no_any                   = true              # `any` is a finding; use `unknown` + narrowing
+uint8array_for_bytes     = true              # Uint8Array everywhere for wire bytes (NOT Buffer in the codec core — portability)
+bigint_for_64bit         = true              # see [codec].integer_model — non-negotiable (R1/F7)
+
+[interop]
+# Browser portability is a v1 LEAN (operator ruling): when comparing otherwise-close
+# options, prefer the browser-runnable one. Drives crypto → @noble (A-001) and bytes
+# → Uint8Array (not Buffer). The CODEC + crypto layers must be pure-JS/browser-safe
+# (the consumable-data-library use case). The TRANSPORT/peer layer stays Node
+# (node:net) — a browser build swaps transport (WebSocket/fetch); keep the codec
+# cleanly separable from transport so it lifts into a browser bundle untouched.
+browser_target_v1        = true              # codec+crypto browser-runnable; transport may stay Node
+embed_full_peer_v1       = true              # the TS deliverable IS a peer (Node), with a browser-portable codec core
+
+[spec]
+v7_version_pinned = "7.72"                   # spec-data/v7.72/ — adds §9.0 core profile + §9.5 53-type floor. Codec corpus byte-identical to 7.71.
+conformance_profile = "core"                 # runs validate-peer --profile core from day one (oracle at output/s4-oracles/, post-F21/F22)

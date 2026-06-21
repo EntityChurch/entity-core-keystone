@@ -1,0 +1,7 @@
+# SwiftPM build artifacts (reproducible from source; never committed).
+.build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+
+# Package.resolved is COMMITTED (S11 lockfile) — do NOT ignore it.

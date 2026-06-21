@@ -1,0 +1,210 @@
+# entity-core-protocol-go — Language Profile
+#
+# Go peer. Authored FRESH in S1 from the V7 spec (spec-data/v7.75) + the keystone
+# shared/lifecycle contracts + the cohort's language-neutral profiles (csharp /
+# typescript / zig) — NOT ported from any sibling and, critically, NOT read from
+# the entity-core-go ORACLE.
+#
+# ⚠️ CLEAN-ROOM PEER. Go *is* the reference oracle's language (entity-core-go).
+# This peer's entire value is being an INDEPENDENT reimplementation from the spec.
+# No source under entity-core-go was opened, copied, or referenced while authoring
+# this profile or any deliverable. See arch/PROFILE-RATIONALE.md "Clean-room
+# constraint" for the discipline and the honest limited-signal caveat (because the
+# idiom equals the oracle's, the spec-refinement signal is bounded; the value is
+# independent cross-check + idiom completeness, not novel spec discovery).
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value is
+# logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase. No field is TBD.
+
+[language]
+id                = "go"
+name              = "Go"
+tier              = "peer-go"                  # systems peer; native-codec, GC, goroutine concurrency. Same language family as the oracle (clean-room independence is the discipline, see rationale).
+package_name      = "entity-core-protocol-go"  # keystone peer id
+runtime           = "go"                       # references containers/go/Containerfile (REUSED, not authored — see [container])
+
+[codec]
+# strategy: NATIVE. Same A-005 pattern every prior native peer hit — a faithful
+# ECF codec must own the canonical layer (length-then-lex map ordering per
+# ENTITY-CBOR-ENCODING Rule 2, shortest-float incl. f16 per Rule 4/4a, definite
+# lengths per Rule 3, no-duplicate-keys per Rule 5, recursive major-type-6 tag
+# rejection per §6.3, full uint64/nint range) regardless of any CBOR library
+# underneath, so a library buys almost nothing. Go's stdlib ships audited
+# crypto/ed25519 + crypto/sha256 + crypto/sha512, so native is also the lighter
+# path: the core peer pulls ZERO third-party modules. ffi remains the documented
+# fallback (not expected). Spike at S2 start: push map_keys.* + float.* vectors
+# through the hand-rolled encoder before the full build (cheap insurance per
+# PHASE-S1-PROFILE).
+strategy          = "native"
+# CBOR: hand-rolled canonical encoder/decoder (internal/cbor). Go's stdlib has NO
+# CBOR. The well-known third-party lib fxamacker/cbor DOES offer a "Core
+# Deterministic" / CTAP2 canonical encode mode (length-then-lex map keys, shortest
+# int, smallest-float on ENCODE) and is the one credible candidate — but it is
+# REJECTED for the core codec for three reasons: (1) ECF needs guarantees the lib
+# does not give for free regardless — recursive major-type-6 tag rejection on
+# DECODE returning 400 non_canonical_ecf (§6.3), DECODE-side shortest-float
+# minimality checking (Rule 4 enforced on receive, not just emit), the exact
+# float16 special-value bytes (Rule 4a: NaN F9 7E00 / -0.0 F9 8000 / ±Inf), and
+# raw-byte fidelity for the arbitrary-ECF `data` field; (2) byte-exactness for a
+# content-addressing substrate is a thing this peer must OWN and prove vector-by-
+# vector, not delegate; (3) dependency-minimization (supply-chain stance) — a
+# hand-rolled ~600-line canonical codec dodges a registry module pin entirely.
+# If a future maintainer wants the lib, the bar is: prove it reproduces the
+# map_keys.*/float.*/tag_reject.* corpus byte-for-byte AND enforces decode-side
+# rejection — at which point it is doing what the hand-roll already does. See
+# SPEC-AMBIGUITY-LOG A-GO-001.
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native" }
+# Ed25519: Go stdlib crypto/ed25519 (FIPS-186-5 / RFC-8032). Deterministic signing
+# by construction (no RNG needed to sign; ed25519.Sign(privkey, msg)); keygen uses
+# crypto/rand. In-tree, maintained by the Go security team, no module dep. Pinned
+# by the toolchain version (stdlib ships with the compiler).
+ed25519_library   = { name = "crypto/ed25519 (stdlib)", version = "go-1.25.x-stdlib" }
+# Ed448 (crypto-agility seam, v7.67): NOT in Go stdlib, and golang.org/x/crypto
+# has NO Ed448 either (it ships ed25519-adjacent curves but not Ed448). This is the
+# SAME native gap Zig (A-ZIG-002) and OCaml (A-OC-002) hit — Go has no
+# BouncyCastle-equivalent pure-Go audited Ed448 in a reviewed channel. DEFERRED —
+# see SPEC-AMBIGUITY-LOG A-GO-002. Does NOT affect the ECF/Ed25519 conformance
+# floor (§9.1; the v7.75 --profile core target is Ed25519+SHA-256-only). Likely
+# shape when agility is in scope: hybrid native-Ed25519 + FFI-Ed448 (consume
+# libentitycore_codec for the Ed448 family only via cgo) — mirrors the Zig/OCaml
+# resolution. SHA-384 agility hashing IS native (crypto/sha512 provides SHA-384).
+ed448_library     = { name = "DEFERRED", version = "none" }
+sha256_source     = "crypto/sha256 (stdlib; content_hash floor). crypto/sha512 also present → SHA-384 agility hashing native."
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (internal/base58); not in stdlib. ~80 lines, dodges a module dep.
+varint_handling   = "native"                  # multicodec-style LEB128 (§1.5/§7.3) inline impl, internal/varint. (encoding/binary's varint is zigzag-different — own it.)
+
+[error_model]
+# Go-native idiom: explicit error returns (the result-style of the cohort taxonomy).
+# Functions return (T, error); the caller checks `if err != nil`. NO exceptions
+# (panic is for true programmer-error / unreachable only, never protocol flow).
+# Codec/decode failures are sentinel/typed errors in an internal error set;
+# protocol-status failures (the 400 non_canonical_ecf / 401 / 403 / 413 surface)
+# map a typed error → status code at the dispatcher boundary. Errors are wrapped
+# with %w (errors.Is / errors.As) so a caller can discriminate without string
+# matching — the Go analogue of an exhaustive error set / ADT verdict.
+style             = "result"                   # "exceptions" | "result" | "either" | "errno"  → Go = explicit (T, error) returns
+error_carrier     = "error interface"          # idiomatic Go `error`; sentinel errors (errors.New) + typed errors for discriminable cases
+discrimination    = "errors.Is / errors.As"    # %w-wrapped; callers branch via errors.Is(err, ErrNonCanonicalEcf) etc. — NOT string-compare
+sentinel_set      = "ErrNonCanonicalEcf, ErrTruncated, ErrTagRejected, ErrDuplicateKey, ErrBadSeed, ErrUnsupportedKeyType, ErrUnsupportedHashFormat, ErrChainDepthExceeded, ErrPayloadTooLarge, ..."
+panic_policy      = "programmer-error-only"    # panic only for unreachable/invariant violations; never for decode/protocol rejection
+# Status mapping (grounded in spec, NOT oracle): 400 non_canonical_ecf (§6.3 tag /
+# Rule-violation), 400 chain_depth_exceeded (§4.10(b) — NOT 403), 401
+# identity_mismatch / unresolvable_grantee carve-out (§4.6/§5.2), 403
+# capability_denied default (§5.2 AUTHZ_DENY), 413 payload_too_large (§4.10(a)).
+
+[concurrency]
+# Go-native: goroutines + channels. The §7b concurrency floor (v7.75 §4.8 store-
+# safety + §4.9 resilience, gated under --profile core) is met by one goroutine per
+# connection, with the EXECUTE_RESPONSE demux keyed by request_id over a per-conn
+# response-channel map. The shared content store (§4.8) MUST be data-race-safe under
+# concurrent dispatch — a sync.RWMutex-guarded store (read-mostly: resolve_peer /
+# resolve_capability are reads, binds are writes). This is a PRE-RESOLVED cohort
+# trap: Zig + Common-Lisp shipped unsynchronized stores that fell over under the
+# §7b T2.1 sustained-load probe (double-free / 500s) — Go starts with the store
+# mutex from S3, no race window.
+style             = "goroutines"               # "sync" | "threaded" | "goroutines" | "evented"
+default_surface   = "blocking"                 # codec (S2) is pure synchronous; the peer (S3) uses goroutines+channels for concurrency
+store_safety      = "sync.RWMutex"             # §4.8 data-race-safe store; read-mostly → RWMutex over plain Mutex. NON-NEGOTIABLE from S3 (Zig/CL store-race lesson).
+demux             = "request_id → channel map" # §6.11 inbound-concurrent-with-outbound; reader goroutine routes EXECUTE_RESPONSE by request_id
+tcp_nodelay       = true                       # PRE-RESOLVED: SetNoDelay(true) on every accepted/dialed conn. Nagle+delayed-ACK on small req/resp frames was THE §7b throughput killer for Zig (62s→1.9s). Go's net.TCPConn.SetNoDelay(true) — set it from day one.
+no_blocking_syscalls_on_pool = true            # goroutines are cheap + the runtime scheduler is non-blocking-aware, but avoid holding the store lock across I/O; copy-out under lock, write outside it.
+
+[naming]
+# Go-native conventions (gofmt-enforced; differ from C# PascalCase-members / TS
+# camelCase / Zig snake_case-vars). Exported vs unexported is the case axis.
+type_names        = "PascalCase"               # exported types: Entity, ContentHash, PeerID (initialisms ALL-CAPS: PeerID, ECF, not PeerId/Ecf)
+exported_funcs    = "PascalCase"               # exported funcs/methods: ContentHash, SignAndVerify, EncodeECF
+unexported_names  = "camelCase"                # package-private funcs/vars/fields: contentHash, peerID, formatCode
+constant_names    = "PascalCase/camelCase"     # Go uses MixedCaps for consts too (exported=Pascal, unexported=camel) — NOT screaming-snake (gofmt/Go idiom)
+file_names        = "snake_case"               # cbor.go, peer_id.go, content_hash.go (Go file convention; one logical unit per file; _test.go for tests)
+package_names     = "lowercase-single-word"    # short, lowercase, no underscores: cbor, base58, varint, entity (Go package-name idiom)
+initialisms       = "all-caps"                 # ID/ECF/CBOR/URL/TCP capitalized as units (PeerID, encodeECF) — Go style guide MUST
+
+[build]
+build_tool        = "go"                       # go toolchain (go build / go test); no external build system. go.mod is the manifest.
+build_command     = "go build ./..."
+test_command      = "go test ./..."            # go's built-in testing package (testing.T); table-driven tests are the idiom
+vet_command       = "go vet ./... && gofmt -l ."  # go vet + gofmt cleanliness as the lint floor (stdlib, no external linter)
+pack_command      = "go build ./..."           # "publishing" = a git tag a consumer pins in their go.mod (no central registry upload step)
+
+[layout]
+project_file      = "go.mod"                   # plus go.sum (empty for a zero-dep core peer)
+module_path       = "github.com/entity-core/entity-core-protocol-go"  # go module path (import-path-as-identity); repo URL TBD at publish — placeholder, NOT a TBD-blocking field
+src_layout        = "internal/ + root package" # public API at module root (package entitycore); codec internals under internal/{cbor,base58,varint} (internal/ = compiler-enforced encapsulation)
+cmd_dir           = "cmd/"                     # S4 conformance host (cmd/validate-host) + any peer binary live here (reusable per-language pattern)
+test_layout       = "_test.go alongside code"  # Go idiom: foo_test.go next to foo.go; conformance harness in a conformance_test.go / cmd host
+
+[publishing]
+# Go has no central package-upload registry (no crates.io/npm/NuGet equivalent).
+# "Publishing" = pushing a git tag; consumers `go get module@vX.Y.Z` and the
+# checksum is recorded in their go.sum + the public sum.golang.org transparency
+# log. Decentralized + checksum-pinned by design (a supply-chain-friendly property).
+registry          = "go-modules (git-tag)"     # decentralized; import-path = repo URL, version = git tag, checksum via go.sum + sum.golang.org
+registry_url      = ""                          # n/a — no central index; consumers fetch from the repo URL
+package_id        = "github.com/entity-core/entity-core-protocol-go"  # the module path
+license_expression = "Apache-2.0"
+repository_url    = ""                          # TBD on first publish (publish-time field, not a build blocker)
+authors           = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"               # S9 repo default. Go itself is BSD-3-Clause and the ecosystem is mixed; nothing mandates a license → keep the safe Apache-2.0 default (explicit patent grant).
+
+[testing]
+# Go's built-in `testing` package — ZERO test-framework dependency (the same
+# dep-minimization win Zig/Elixir/Node got natively). Table-driven subtests
+# (t.Run) are the idiom for vector corpora. The conformance harness loads the
+# normative fixture and asserts byte-identity in a *_test.go (or a cmd host for
+# the live validate-peer leg at S4).
+framework         = "testing (stdlib)"         # in-language; no external test framework (no testify in the core path — t.Errorf/t.Fatalf + table tests)
+assertion         = "stdlib (t.Errorf / reflect.DeepEqual / bytes.Equal)"  # bytes.Equal for wire-byte identity; reflect.DeepEqual for decoded structures
+property_testing  = "testing/quick (stdlib, optional)"  # if fuzz/property wanted; Go 1.18+ also has native `go test -fuzz` — both stdlib, no dep
+
+[documentation]
+doc_comments      = true                       # godoc // comments on exported surfaces (the Go convention: comment starts with the identifier name)
+api_reference_tool = "go doc / pkg.go.dev"     # native; no external doc tool needed (S5 doc generation)
+
+[container]
+# REUSE the existing containers/go/Containerfile — it is ADEQUATE for this peer
+# as-is. It is fedora:43 + golang-1.25.10 (via dnf, a REVIEWED DISTRO CHANNEL, so
+# the S11 ≥30-day age floor relaxes to "pin exactly for repro" per the supply-chain
+# memo) + git, with GOTOOLCHAIN=local + GOFLAGS=-mod=mod and WORKDIR /work. That is
+# exactly the toolchain a zero-dep stdlib-only core peer needs; nothing is missing.
+# entity-core-go's go.mod declares `go 1.25.0`, which the 1.25.10 patch satisfies.
+# Did NOT author a new Containerfile (the brief: reuse unless genuinely missing
+# something — it is not). One forward note for S2+: builds are stdlib-only, so the
+# container can run --network=none after the image exists (no module fetches);
+# GOFLAGS=-mod=mod is harmless for a zero-dep build (go.sum stays empty).
+base_image        = "entity-core-keystone/go:latest"   # built from containers/go/Containerfile (REUSED)
+build_in_container = true
+network_policy    = "offline-capable"          # zero third-party modules → builds fully offline once the image exists (--network=none honored)
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/go entity-core-keystone/go:latest go test ./..."
+containerfile_decision = "reused-existing"     # containers/go/Containerfile is adequate as-is; NOT re-authored
+
+[idiom]
+# Hints that don't fit elsewhere.
+explicit_error_returns        = true           # (T, error) everywhere on the public surface; no panic for protocol flow
+errors_wrap_with_w            = true           # fmt.Errorf("...: %w", err); discriminate via errors.Is/As, never string-match
+accept_interfaces_return_structs = true        # Go proverb; the codec takes io.Reader/io.Writer-shaped inputs where it helps, returns concrete types
+no_naked_panics               = true           # panic only for unreachable invariants; recover at goroutine boundaries so one bad conn never crashes the peer (§4.9 no-crash)
+table_driven_tests            = true           # conformance vectors → table-driven subtests (t.Run per vector)
+gofmt_clean                   = true           # gofmt + go vet clean is a hard gate (the Go community's universal floor)
+context_for_cancellation      = true           # context.Context threads cancellation/deadline through the transport (§6.11 deadlines) — the Go-native cancellation idiom
+uint64_native                 = true           # Go has native uint64/int64 → the §3.2 full uint/nint range (corpus int.10/15/16/17, the [2^63,2^64-1] band) maps directly onto uint64/int64 carriers; no BigInt ceremony (contrast TS F7) and no 63-bit trap (contrast OCaml A-OC-001). Watch the negative-int wire form: nint encodes -1-n, so the [-2^64,-1] band needs careful uint64-carrier arithmetic.
+go_version                    = "1.25.x"       # matches the container (golang-1.25.10) + entity-core-go's declared go 1.25.0 minimum
+stdlib_only                   = true           # the core peer pulls ZERO third-party modules — crypto/ed25519 + crypto/sha256 + crypto/sha512 + net + testing cover everything; CBOR/base58/varint hand-rolled
+
+[deps]
+# Exact pins (S11). Go's stdlib ships WITH the toolchain, so the single pin is the
+# toolchain version (mirrored in containers/go/Containerfile). There are NO
+# registry-pulled module deps for the core peer (go.sum stays empty). The toolchain
+# comes through fedora dnf — a REVIEWED DISTRO CHANNEL — so per the supply-chain
+# memo the ≥30-day age floor relaxes to "pin exactly for reproducibility"; the
+# 1.25.10 patch is a settled release regardless.
+go                = "1.25.10"                  # from containers/go/Containerfile (fedora golang-1.25.10, dnf/distro channel). Satisfies entity-core-go's `go 1.25.0` minimum.
+# (no third-party modules — stdlib_only = true; go.sum empty)
+
+[spec]
+v7_version_pinned = "7.75"                      # spec read for profile + peer = spec-data/v7.75 (latest available snapshot; SHA-pinned verbatim copy of authoritative V7)
+codec_corpus      = "v7.75"                     # ECF corpus from spec-data/v7.75; ENTITY-CBOR-ENCODING + ENTITY-NATIVE-TYPE-SYSTEM read at this version
+conformance_profile = "core"                    # validate-peer --profile core target = 576 total · 0 FAIL · 89 skip (oracle entity-core-go 75c532e, recorded for S4; the clean-room rule permits BYTE-validation against the oracle at S4, not reading its SOURCE while building)
+oracle_commit     = "75c532e"                   # recorded for S4 byte-validation only

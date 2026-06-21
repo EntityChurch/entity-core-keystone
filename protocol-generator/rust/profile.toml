@@ -1,0 +1,248 @@
+# entity-core-protocol-rust — Language Profile
+#
+# Rust peer. Authored FRESH in S1 from the V7 spec (spec-data/v7.75) + the keystone
+# shared/lifecycle contracts + the cohort's language-neutral profiles (csharp /
+# typescript / go / haskell) — NOT ported from any sibling and, critically, NOT read
+# from the entity-core-rust hand-written sibling nor the entity-core-codec-ffi-rust
+# FFI codec source.
+#
+# ⚠️ CLEAN-ROOM PEER. Rust is one of the few languages in the ecosystem that ALSO
+# has a hand-written reference sibling: `entity-core-rust` (a full hand-authored
+# peer) and `entity-core-codec-ffi-rust` (the FFI codec building libentitycore_codec).
+# This generated peer `entity-core-protocol-rust` is DISTINCT from both. Its entire
+# value is being an INDEPENDENT reimplementation from the spec. No source under
+# entity-core-rust or entity-core-codec-ffi-rust was opened, copied, grepped, or
+# referenced while authoring this profile or any deliverable. This mirrors the **go**
+# peer's situation exactly — Go also has a hand-written reference sibling
+# (entity-core-go, which is additionally the oracle), so the framing is the same:
+# **adoption value + independence cross-check on the generator, NOT spec discovery**
+# (the discovery well is dry per the 8-peer synthesis; v7.75 surface is tight). See
+# arch/PROFILE-RATIONALE.md "Clean-room constraint" for the discipline and the honest
+# limited-signal caveat.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value is
+# logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase. No field is TBD.
+
+[language]
+id                = "rust"
+name              = "Rust"
+tier              = "peer-systems-native"        # systems peer; no-GC, ownership/borrow, std + audited-crate crypto, async-capable. Has a hand-written reference sibling (entity-core-rust) — clean-room independence is the discipline, see rationale.
+package_name      = "entity-core-protocol-rust"  # keystone peer id (the cargo crate name; distinct from the sibling `entity-core-rust`)
+runtime           = "rust"                       # references containers/rust-toolchain/Containerfile (AUTHORED this phase — see [container])
+
+[codec]
+# strategy: NATIVE. The A-005 pattern every prior native peer (C#/TS/OCaml/Elixir/
+# Zig/CL/Swift/Haskell/Go) independently re-confirmed: a faithful ECF codec must OWN
+# the canonical layer regardless of any CBOR library, because ECF's guarantees are
+# stricter than any general library's "deterministic" mode:
+#   - Rule 2  : map keys sorted by ENCODED BYTE LENGTH, then lexicographically
+#               (RFC-7049 length-first ordering — DIFFERS from RFC-8949 §4.2
+#               plain-bytewise that many libs call "canonical": a real trap).
+#   - Rule 3  : definite lengths only.
+#   - Rule 4/4a: shortest-float incl. float16, exact special-value bytes
+#               (NaN F9 7E00 / -0.0 F9 8000 / +Inf F9 7C00 / -Inf F9 FC00),
+#               enforced on DECODE as well as encode (non-minimal float = non-canonical).
+#   - Rule 5  : no duplicate map keys (decode rejects).
+#   - §6.3    : recursive major-type-6 (tag) rejection at any nesting depth
+#               -> 400 non_canonical_ecf.
+#   - full uint64/nint range (the int.10/15/16/17 corpus, the [2^63, 2^64-1] band).
+#   - raw-byte fidelity for the arbitrary-ECF `data` field.
+# No surveyed Rust CBOR lib (ciborium, serde_cbor [deprecated], minicbor, cbor4ii)
+# gives these for free, and a faithful content-addressing substrate must OWN + prove
+# byte-exactness vector-by-vector, not delegate it. Rust ALSO has the cleanest native
+# crypto+integer story in the cohort (audited ed25519-dalek + sha2, native u64/i64/u128),
+# so native is also the LIGHTER path. ffi remains the documented fallback (not expected).
+# Spike at S2 start: push map_keys.* + float.* + tag_reject.* vectors through the
+# hand-rolled encoder/decoder before the full build (cheap insurance per PHASE-S1-PROFILE).
+strategy          = "native"
+# CBOR: hand-rolled canonical encoder/decoder (a `cbor` internal module). Rust's std
+# has NO CBOR. Surveyed third-party libs and REJECTED for the core codec (A-RUST-001):
+#   - `ciborium`  (CryptoCorrosion/enarx) — has a "canonical" mode but targets RFC-8949
+#     §4.2 bytewise ordering, NOT ECF's Rule-2 length-then-lex; no decode-side
+#     shortest-float minimality check; no recursive §6.3 tag rejection returning the
+#     specific 400 non_canonical_ecf; raw-byte `data` fidelity not guaranteed.
+#   - `serde_cbor` — DEPRECATED/unmaintained; non-starter on supply-chain grounds.
+#   - `minicbor` / `cbor4ii` — lean, but same canonical-layer gaps; would need the ECF
+#     enforcement hand-written ON TOP regardless, at which point the lib buys little.
+# Decision: hand-roll. ~600-line canonical codec, no serde dependency, no registry pin
+# for the codec core, byte-exactness owned + proven vector-by-vector. Bar for a future
+# maintainer to swap a lib in: prove it reproduces map_keys.*/float.*/tag_reject.*
+# byte-for-byte AND enforces decode-side rejection — i.e. doing what the hand-roll does.
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native" }
+# Ed25519: ed25519-dalek 2.2.0 (RustCrypto-adjacent, dalek-cryptography; the de-facto
+# audited pure-Rust Ed25519). Deterministic signing by construction (RFC-8032; no RNG
+# to sign), keygen via OsRng. Pin EXACTLY (S11) — 2.2.0 released 2025-07-09 (~11 months
+# old, clears the >=30-day registry cool-down). Pulls curve25519-dalek 4.1.3
+# (2024-06-18, stable; 4.2.0 was YANKED, 5.0.0 is pre-release only) + signature 2.x +
+# ed25519 2.x. The committed Cargo.lock (S2) pins the full transitive closure, each
+# >=30 days old.
+ed25519_library   = { name = "ed25519-dalek", version = "2.2.0", released = "2025-07-09", deterministic = true }
+# Ed448 (crypto-agility seam, key_type 0x02): NATIVE-FULL-AGILITY IS NOT CLEANLY
+# REACHABLE for Rust (UNLIKE Haskell's crypton). The RustCrypto `ed448-goldilocks`
+# crate's Ed448 *signing* API exists ONLY in the 0.14.0-pre PRERELEASE series
+# (0.14.0-pre.13 @ 2026-06-04, etc.) which (a) violates the S11 no-prerelease/pinned-
+# stable rule and (b) carries RustCrypto's own "code has NOT been audited — USE AT
+# YOUR OWN RISK" caveat; the latest STABLE ed448-goldilocks is 0.9.0 (2023, no signing
+# API). The third-party `ed448-goldilocks-plus` 0.16.0 (2025-03-14) IS stable + has
+# signing but is a single-maintainer fork, unaudited. So Rust matches the
+# Go/Zig/OCaml/Swift native-Ed448 GAP, NOT Haskell's native-full-agility. DEFERRED —
+# see SPEC-AMBIGUITY-LOG A-RUST-002. Does NOT affect the Ed25519+SHA-256 conformance
+# floor (§9.1; --profile core target is Ed25519+SHA-256 only). Likely shape when
+# agility is in scope: HYBRID native-Ed25519 + FFI-Ed448 (consume libentitycore_codec
+# for the Ed448 family only via Rust FFI/extern "C") — Rust's C-ABI FFI is first-class,
+# a natural fit; mirrors the Zig/OCaml/Go resolution. NOTE for that S-phase: the FFI
+# codec building libentitycore_codec is ITSELF a Rust crate (entity-core-codec-ffi-rust);
+# consuming it here is FFI-over-C-ABI like any other peer (we do NOT in-process link the
+# sibling Rust source — the clean-room boundary is preserved; provenance via ec_impl_info).
+ed448_library     = { name = "DEFERRED (hybrid-FFI planned)", version = "none" }
+sha256_source     = "sha2 0.10.9 (RustCrypto; released 2025-04-30, ~13 months old). SHA-256 = content_hash floor; the SAME crate provides SHA-384 -> agility hashing is NATIVE (sha2::Sha384). 0.10.x stable line chosen over the new 0.11.0 (2026-03-25) major; re-pin deliberately if 0.11 wanted."
+base58_library    = "hand-rolled"                # Bitcoin alphabet, encode+decode (internal base58 module); ~80 lines, dodges a registry pin. (bs58 crate considered, rejected for dep-minimization — same call C#/Go made.)
+varint_handling   = "native"                     # multicodec-style LEB128 (§1.5/§7.3) inline impl; own minimality rejection + multi-byte continuation. (no external leb128 crate.)
+
+[error_model]
+# Rust-native idiom: Result<T, E> with the `?` operator. This is the CANONICAL form of
+# the cohort taxonomy's "result" style (Go spells it (T, error); Rust spells it
+# Result<T, E> + ADT error enums + `?`). NO exceptions; `panic!` is for true
+# programmer-error / unreachable invariants ONLY, never protocol flow (and is caught at
+# the connection-task boundary via std::panic::catch_unwind / task isolation so one bad
+# conn never crashes the peer — the §4.9 no-crash floor). Codec/decode failures are an
+# error ENUM (`thiserror`-free, hand-written Display impl — dep-minimization) with one
+# variant per discriminable case; protocol-status failures (400/401/403/413) map a
+# typed error variant -> status code at the dispatcher boundary. Exhaustive match on the
+# error enum is Rust's analogue of an ADT verdict (the OCaml/Lean ADT shape, native here).
+style             = "result"                     # "exceptions" | "result" | "either" | "errno"  -> Rust = Result<T, E> + `?`
+error_carrier     = "enum (CodecError / ProtocolError)"  # hand-written error enums; exhaustive match discriminates — NOT string-compare, NOT downcast
+discrimination    = "exhaustive match on enum variants"  # `match err { CodecError::NonCanonicalEcf => .., .. }`
+sentinel_set      = "NonCanonicalEcf, Truncated, TagRejected, DuplicateKey, NonMinimalInt, NonMinimalFloat, BadSeed, UnsupportedKeyType, UnsupportedHashFormat, ChainDepthExceeded, PayloadTooLarge, IdentityMismatch, UnresolvableGrantee, CapabilityDenied"
+panic_policy      = "programmer-error-only"      # panic! only for unreachable/invariant violations; never for decode/protocol rejection. catch_unwind at the conn-task boundary.
+# Status mapping (grounded in spec, NOT oracle): 400 non_canonical_ecf (§6.3 tag /
+# Rule-violation), 400 chain_depth_exceeded (§4.10(b) — NOT 403; structural excess,
+# checked BEFORE the authz walk), 401 identity_mismatch / unresolvable_grantee carve-out
+# (§4.6/§5.2 + §5.2a trichotomy), 403 capability_denied default (§5.2 AUTHZ_DENY),
+# 413 payload_too_large (§4.10(a)).
+no_thiserror_no_anyhow = true                    # dep-minimization: hand-write the error enums + Display; do NOT pull thiserror/anyhow into the core peer (registry-pin avoidance; the error surface is small + fixed).
+
+[concurrency]
+# Rust-native concurrency posture. The §7b concurrency floor (v7.75 §4.8 store-safety +
+# §4.9 resilience, gated under --profile core) is met with std threads + a mutex-guarded
+# store; async (tokio) is an option but NOT required for the core peer and is REJECTED
+# for the default build on dep-minimization grounds (tokio is a large transitive
+# closure). Decision: std::thread + std::sync (blocking I/O, one thread per connection)
+# for the core peer; codec (S2) is pure synchronous.
+style             = "threaded"                   # "sync" | "threaded" | "goroutines" | "evented"  -> Rust core peer = std::thread + std::sync (NOT async/tokio for core; see [idiom].async_runtime)
+default_surface   = "blocking"                   # codec (S2) is pure synchronous; the peer (S3) uses std::thread per connection + blocking std::net
+store_safety      = "Mutex<HashMap> (or RwLock)" # §4.8 data-race-safe store. Rust's type system makes a shared-mutable store WITHOUT a lock a COMPILE ERROR (Send/Sync) — the store-race that bit Zig/CL at the §7b T2.1 probe is structurally unrepresentable here (the borrow checker is the gate). RwLock if read-mostly is profiled to matter; Mutex is the simple-correct default. NON-NEGOTIABLE from S3.
+demux             = "request_id -> channel map"  # §6.11 inbound-concurrent-with-outbound: a reader thread routes EXECUTE_RESPONSE by request_id over a per-conn mpsc/response map
+tcp_nodelay       = true                         # PRE-RESOLVED cohort trap: TcpStream::set_nodelay(true) on EVERY accepted/dialed conn. Nagle+delayed-ACK on small frames was THE §7b throughput killer for Zig (62s->1.9s). Set from day one.
+no_blocking_syscalls_on_pool = true              # thread-per-conn is the model (no bounded cooperative pool to starve — the Swift trap doesn't apply); discipline: never hold the store lock across I/O — copy-out under lock, write outside it.
+
+[naming]
+# Rust-native conventions (rustfmt + clippy enforced). snake_case dominates; the case
+# axis is type-vs-value, NOT exported-vs-unexported (that's `pub` in Rust, orthogonal to
+# case). Differs from Go (PascalCase exported) / C# (PascalCase members) / TS (camelCase).
+type_names        = "PascalCase"                 # types/traits/enums: Entity, ContentHash, PeerId, CodecError (NOTE: PeerId, NOT PeerID — Rust treats initialisms as words: Ecf, not ECF, in identifiers)
+function_names    = "snake_case"                 # fns + methods: content_hash, sign_and_verify, encode_ecf
+variable_names    = "snake_case"                 # locals/fields: peer_id, format_code, content_hash
+constant_names    = "SCREAMING_SNAKE_CASE"       # const/static: MAX_CHAIN_DEPTH, MAX_PAYLOAD_BYTES (Rust DOES use screaming-snake for consts — UNLIKE Go's MixedCaps)
+module_names      = "snake_case"                 # mod cbor; mod base58; mod peer_id; mod content_hash (file = module: cbor.rs, peer_id.rs)
+file_names        = "snake_case"                 # cbor.rs, peer_id.rs, content_hash.rs
+initialisms       = "treated-as-words"           # Rust idiom (clippy::upper_case_acronyms): PeerId / Ecf / Cbor / Url / Tcp — NOT PeerID/ECF/CBOR (the Go/C# style). A deliberate divergence.
+enum_variants     = "PascalCase"                 # CodecError::NonCanonicalEcf, Verdict::AuthzDeny
+
+[build]
+build_tool        = "cargo"                       # cargo (the Rust build system + package manager); Cargo.toml is the manifest, Cargo.lock the committed lockfile (S11 pins)
+build_command     = "cargo build --release"
+test_command      = "cargo test"                  # cargo's built-in test harness (#[test]); no external test framework needed
+vet_command       = "cargo clippy -- -D warnings && cargo fmt --check"  # clippy (deny warnings) + rustfmt cleanliness as the lint floor (both ship with the toolchain)
+pack_command      = "cargo package"               # builds the .crate publishable artifact; `cargo publish` is the (deferred) registry upload step
+
+[layout]
+project_file      = "Cargo.toml"                  # plus Cargo.lock (COMMITTED — this is a binary-bearing peer, lock the full closure per S11)
+crate_name        = "entity-core-protocol-rust"   # crates.io-style name; the lib crate (distinct from the sibling `entity-core-rust`)
+src_layout        = "src/lib.rs + src/<module>.rs" # public API at the crate root (lib.rs re-exports); codec internals in private modules (mod cbor/base58/varint, not `pub`). `pub(crate)` for crate-internal, no `internal/` dir convention (Rust uses module privacy)
+bin_dir           = "src/bin/ (or a workspace member)"  # S4 conformance host + any peer binary; `cargo run --bin <name>`
+test_layout       = "#[cfg(test)] mod tests inline + tests/ dir"  # unit tests inline (#[cfg(test)]), integration/conformance tests in tests/ (the Rust idiom); vector corpora as table-style #[test] iterations
+
+[publishing]
+# crates.io is the Rust registry. "Publishing" = `cargo publish` (an upload step,
+# DEFERRED per S10 all-source-in-repo-until-stabilization). Parked at 0.1.0-pre.
+registry          = "crates.io"
+registry_url      = "https://crates.io"
+package_id        = "entity-core-protocol-rust"
+version           = "0.1.0-pre"                   # pre-release marker; S5 packaging parks here (matches the cohort 0.1.0-pre convention)
+license_expression = "Apache-2.0"
+repository_url    = ""                             # TBD on first publish (publish-time field, not a build blocker)
+authors           = "Entity Core Protocol contributors"
+edition           = "2021"                         # Rust edition 2021 (stable, well-established; NOT 2024 which is newer/less settled — re-pin deliberately if 2024 wanted)
+
+[license]
+generated_outputs = "Apache-2.0"                  # S9 repo default. The Rust ecosystem norm is dual MIT/Apache-2.0, but the repo default Apache-2.0 (explicit patent grant) stands — S9 says profile MAY override for strong-MIT ecosystems; Rust's norm is dual (Apache-2.0 is half of it), so the default needs no override.
+
+[testing]
+framework         = "cargo test (std, #[test])"   # in-language; ZERO test-framework dependency (the dep-minimization win)
+assertion         = "assert_eq! / assert! (std)"  # byte-identity via assert_eq! on &[u8]; std macros only — no external assertion crate
+property_testing  = "proptest (OPTIONAL, deferred)"  # if fuzz/property wanted at S4+; NOT in the core dep set unless a phase needs it (then pin >=30d). cargo's built-in `cargo fuzz` is the other option.
+
+[documentation]
+doc_comments      = true                          # /// rustdoc on public surfaces (the Rust convention); #![deny(missing_docs)] candidate at S5
+api_reference_tool = "cargo doc / docs.rs"        # native; no external doc tool needed (S5 doc generation)
+
+[container]
+# AUTHORED this phase: containers/rust-toolchain/Containerfile (NOT built — S1 is
+# author-only for this peer; no podman/build/toolchain execution in S1). It is
+# fedora:43 + the distro rust/cargo NVR (a REVIEWED DISTRO CHANNEL, so the S11 >=30-day
+# age floor relaxes to "pin exactly for repro") + gcc (the cdylib/FFI linker, also
+# needed for the future Ed448-FFI seam). DISTINCT from the existing containers/cargo/
+# Containerfile, which exists for the FFI codec (entity-core-codec-ffi-rust) — this peer
+# gets its OWN toolchain image so the protocol-peer build is independent of the FFI
+# codec's image (clean-room separation + per-peer container convention, matching the
+# zig/swift/ocaml/haskell peers each having their own *-toolchain image).
+base_image        = "entity-core-keystone/rust-toolchain:latest"  # built from containers/rust-toolchain/Containerfile (AUTHORED, not built)
+build_in_container = true
+network_policy    = "offline-after-fetch"         # crates fetched once (network on) at first build -> Cargo.lock + vendored/.cargo cache committed-or-cached -> subsequent builds run --network=none. (3 registry crates: ed25519-dalek + sha2 + transitive; small closure.)
+dev_loop          = "podman run --rm -v $PWD:/work:Z -w /work/protocol-generator/rust entity-core-keystone/rust-toolchain:latest cargo test"
+containerfile_decision = "authored-new"           # NOT reusing containers/cargo (that's the FFI codec's); authored a peer-dedicated rust-toolchain image
+offline_after_fetch = true                        # `cargo fetch` once (network on) -> commit Cargo.lock -> `cargo build --offline` / --network=none thereafter
+
+[idiom]
+# Hints that don't fit elsewhere.
+result_and_question_mark = true                   # Result<T, E> + `?` everywhere on the fallible surface; no panic for protocol flow
+error_enums_not_strings  = true                   # hand-written error enums + exhaustive match; never string-match, never downcast Box<dyn Error> for control flow
+no_thiserror_no_anyhow   = true                   # dep-minimization — hand-write Display/Error impls (the error surface is small + fixed)
+borrow_checker_is_the_store_guard = true          # §4.8 store-safety is enforced by the type system (Send/Sync): an unsynchronized shared-mutable store is a COMPILE ERROR. The Zig/CL store-race is structurally unrepresentable — strongest store-safety story in the cohort.
+async_runtime            = "NONE (std::thread for the core peer)"  # tokio/async-std DELIBERATELY NOT pulled — large transitive closure vs the supply-chain stance; thread-per-conn + blocking std::net is sufficient for the §6.11/§7b surface. async is a future opt-in, logged A-RUST-003 (idiom note, not a blocker).
+u64_native               = true                   # native u64/i64 (and u128 if ever needed) -> the §3.2 full uint/nint range (corpus int.10/15/16/17, [2^63,2^64-1]) maps DIRECTLY onto u64/i64 — no BigInt ceremony (contrast TS F7), no 63-bit trap (contrast OCaml A-OC-001). nint encodes -1-n: the [-2^64,-1] band needs careful u64-carrier arithmetic on decode (same watch-item as Go).
+no_unsafe_in_core        = true                   # #![forbid(unsafe_code)] candidate for the codec+peer core (the Ed448-FFI seam, when built, is the ONE place `unsafe extern "C"` is unavoidable — isolated to that opt-in module).
+rustfmt_clippy_clean     = true                   # cargo fmt --check + cargo clippy -D warnings is the hard lint gate (the Rust community's universal floor)
+edition_2021             = true                    # edition 2021 (settled), not 2024
+
+[deps]
+# Exact pins (S11). The core peer's registry crates (ed25519-dalek + sha2 + their
+# transitive closure) get the >=30-day registry cool-down; the rust/cargo TOOLCHAIN
+# comes through fedora dnf (a reviewed distro channel) so its age floor relaxes to
+# "pin exactly for repro" (the NVR in containers/rust-toolchain/Containerfile). The
+# committed Cargo.lock (authored at S2) pins the FULL transitive closure exactly, each
+# >=30 days old. The values below are the direct-dep pins; transitive pins land in
+# Cargo.lock at S2.
+ed25519-dalek     = "2.2.0"                        # released 2025-07-09 (~11mo) — Ed25519 sign/verify/keygen, deterministic
+sha2              = "0.10.9"                        # released 2025-04-30 (~13mo) — SHA-256 (floor) + SHA-384 (agility, native)
+# transitive (pinned in Cargo.lock at S2, each verified >=30d): curve25519-dalek 4.1.3
+# (2024-06-18; 4.2.0 YANKED, 5.0 pre-release only), signature 2.x, ed25519 2.x, digest 0.10.x.
+# NO thiserror, NO anyhow, NO serde, NO tokio, NO bs58, NO ciborium (all hand-rolled /
+# avoided per dep-minimization). Core peer registry-dep count = 2 direct + small closure.
+rust_toolchain    = "fedora:43 distro rust/cargo (NVR pinned in containers/rust-toolchain/Containerfile; distro channel -> pin-for-repro)"
+
+[spec]
+v7_version_pinned = "7.75"                          # spec read for profile + peer = spec-data/v7.75 (latest available snapshot; SHA-pinned verbatim copy of authoritative V7)
+codec_corpus      = "v7.75"                          # ECF corpus from spec-data/v7.75; ENTITY-CBOR-ENCODING (1.5) + ENTITY-NATIVE-TYPE-SYSTEM (4.2.1) read at this version
+conformance_profile = "core"                         # validate-peer --profile core target. S4 validates this peer's OUTPUT BYTES against the go oracle (e8524ed per the brief / latest at S4) — the clean-room rule permits BYTE-validation against the oracle at S4, NOT reading its SOURCE while building.
+oracle_commit     = "e8524ed"                        # recorded for S4 byte-validation only (the brief's pinned oracle; re-pin to S4-current if newer)
+
+[surface]
+# Latest cohort conventions baked in so later phases (S3) inherit them — noted here as
+# PLANNED S3 surface, derived from V7 + the keystone seed-policy convention (NOT oracle
+# source). See SPEC-AMBIGUITY-LOG for any clause that needed a guess.
+persistent_identity = "--name NAME"                  # PLANNED S3: standardized peer startup surface. Loads the Ed25519 identity from ~/.entity/peers/NAME/keypair; entity-core PEM = base64 of a 32-byte seed. Matches the cohort `--name` standardization (multisig accept-path runs genuinely, not env-skipped). Persistent identity + peer-manager interop.
+multisig            = "genuine §3.6 K-of-N"          # PLANNED S3: real k-of-n (NOT vacuous fail-closed). Granter union (single system/hash | {signers, threshold} map, ROOT-ONLY); at the root run verifyMultiSigRoot = §3.6 M3 structure (root-only, n>=2, 2<=threshold<=n, distinct signers) BEFORE sig counting, then §5.5 M6 (local in signers) + M4 (DISTINCT-signer valid-sig count >= threshold — the K-of-N replay defense). Single-sig path byte-identical (strict superset). Accept-path unit test (2-of-3 -> ALLOW + M3/M4/M6 deny flips) is the direction the rejection-only oracle can't cover.
+seed_policy         = "keystone shared/seed-policy"  # PLANNED S3: §6.9a peer-authority bootstrap via the keystone cross-peer seed-policy convention (detached-signature self-owner cap at L0 + authenticate dual-form lookup union §4.4 floor). debug_open_grants = degenerate default->* (deprecated, removed in v7.75).
+conformance_handlers = "system/validate/* opt-in (--validate, OFF by default)"  # PLANNED S3/S4: §7a echo + dispatch-outbound conformance handlers, opt-in builder flag surfaced as host --validate, OFF by default; dispatch-outbound reentry over the inbound connection (§6.11), NOT a third-peer dial.

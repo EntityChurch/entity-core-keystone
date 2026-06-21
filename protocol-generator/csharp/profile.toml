@@ -1,0 +1,122 @@
+# entity-core-protocol-csharp — Language Profile
+#
+# First language profile, hand-authored by architecture as the reference example
+# for follow-on profiles. Every field documented inline — when authoring a new
+# language's profile.toml, copy this file and adapt.
+#
+# Profile authority: the agent MUST use the values declared here. If a value
+# is "TBD", the agent logs the gap in SPEC-AMBIGUITY-LOG.md and stops phase
+# execution awaiting research stewards.
+
+[language]
+id                = "csharp"
+name              = "C# / .NET"
+tier              = "T1"
+package_name      = "entity-core-protocol-csharp"   # NuGet id: "entity core protocol", C# impl. Code assembly/namespace = EntityCore.Protocol (NuGet ids may hyphenate; C# identifiers may not)
+runtime           = "dotnet9"               # references containers/<runtime>/Containerfile
+
+[codec]
+strategy          = "native"                # "native" | "ffi" | "interop"
+# canonical_mode Ctap2Canonical: confirmed empirically in S2 (2026-06-07) — it
+# reproduces the corpus's length-then-lex map ordering byte-for-byte (map_keys.*),
+# minimal ints, and definite lengths. `Strict` (the original draft) does NOT sort
+# map keys → was wrong (finding F4, now closed). NOTE: shortest-float (Rule 4) is
+# STILL hand-rolled regardless of mode — no .NET conformance mode does it (R1).
+cbor_library      = { name = "System.Formats.Cbor", version = "9.0.0", canonical_mode = "Ctap2Canonical" }
+# ed25519: NSec 23.4.0 (original draft) never released as stable — only 23.x
+# previews exist. Corrected to 25.4.0 (stable, 2025-04-26, net9-compatible,
+# pins libsodium 1.0.20.1; S11-clean). See SPEC-AMBIGUITY-LOG A-002.
+ed25519_library   = { name = "NSec.Cryptography", version = "25.4.0" }
+# ed448 (crypto-agility seam, v7.67): NSec/libsodium has no Ed448, so the second key
+# family comes from BouncyCastle (pure-managed, keeps the peer native-first; an
+# independent crypto source from libsodium → free cross-check). Byte-verified against
+# the v7.67 agility corpus (KEY-TYPE-ED448-1 + MATRIX-M2/M6). See SPEC-AMBIGUITY-LOG A-009.
+ed448_library     = { name = "BouncyCastle.Cryptography", version = "2.4.0" }
+sha256_source     = "System.Security.Cryptography.SHA256 (in-box)"
+base58_library    = "hand-rolled"           # Bitcoin alphabet, ~80 lines (S2); dodges a NuGet dep + pin (closes the eval Base58 gap)
+varint_handling   = "native"                # LEB128 inline impl (N1), multikey varints small
+
+[error_model]
+style             = "exceptions"            # "exceptions" | "result" | "either" | "errno"
+base_exception    = "EntityCoreException"
+exception_hierarchy = [
+    "EntityCoreException",
+    "  EntityCodecException",
+    "  EntityProtocolException",
+    "    HelloFailedException",
+    "    AuthenticationException",
+    "  EntityTransportException",
+    "    RecvTimeoutException",
+    "    ConnectionBrokenException",
+    "    ProtocolErrorException",
+]
+
+[async]
+style             = "task"                  # "sync" | "task" | "async-await" | "callbacks" | "threaded"
+default_surface   = "task"                  # public APIs return Task<T> / Task; streaming surfaces return IAsyncEnumerable<T>
+sync_shim         = "blocking-wrapper"      # provide .GetAwaiter().GetResult() shims for sync consumers
+
+[naming]
+type_names        = "PascalCase"            # public types: EntityEnvelope, ProtocolMessage
+member_names      = "PascalCase"            # public members: ContentHash, SignAndVerify
+parameter_names   = "camelCase"             # parameters + local variables: typeName, dataBytes
+constant_names    = "PascalCase"            # constants: DefaultTimeout (NOT screaming-snake)
+file_names        = "PascalCase"            # EntityEnvelope.cs (one public type per file)
+
+[build]
+build_tool        = "dotnet"
+build_command     = "dotnet build -c Release"
+test_command      = "dotnet test -c Release --no-build"
+pack_command      = "dotnet pack -c Release --no-build"
+
+[layout]
+solution_file     = "EntityCore.Protocol.sln"
+src_project       = "src/EntityCore.Protocol/EntityCore.Protocol.csproj"
+test_project      = "test/EntityCore.Protocol.Tests/EntityCore.Protocol.Tests.csproj"
+samples           = "samples/"
+
+[publishing]
+registry          = "NuGet"
+registry_url      = "https://api.nuget.org/v3/index.json"
+package_id        = "entity-core-protocol-csharp"
+license_expression = "Apache-2.0"
+repository_url    = ""                      # TBD on first publish
+authors           = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"            # defaults to repo standard; override here if ecosystem norm differs
+
+[testing]
+framework         = "xUnit"
+xunit_version     = "2.9.0"
+# Test-runner infra pins (S11-clean, added in S2 for a reproducible `dotnet test`):
+test_sdk_version  = "17.11.1"               # Microsoft.NET.Test.Sdk
+runner_version    = "2.8.2"                 # xunit.runner.visualstudio
+
+[documentation]
+xml_doc           = true                    # /// <summary> on public surfaces
+api_reference_tool = "docfx"                # for later S5 documentation generation
+
+[container]
+base_image        = "entity-core-keystone/dotnet9:latest"
+build_in_container = true
+dev_loop          = "podman run --rm -v $PWD:/work entity-core-keystone/dotnet9:latest dotnet build"
+
+[idiom]
+# Hints to the agent on idiom that doesn't fit elsewhere.
+records_for_value_types  = true             # prefer C# `record` for value-shaped types
+nullable_reference_types = true             # `#nullable enable` everywhere
+file_scoped_namespaces   = true             # `namespace EntityCore.Protocol;` not `namespace ... { ... }`
+target_framework         = "net9.0"
+language_version         = "13.0"
+treat_warnings_as_errors = true
+
+[interop]
+# Hints for the Avalonia consumer case
+shared_data_library_first = true            # v1 use case is consumption from .NET front-end over Go c-shared bridge
+embed_full_peer_v1        = false           # explicit: NOT embedding a peer in Avalonia v1
+
+[spec]
+v7_version_pinned = "7.71"                  # the V7 amendment this profile + generated peer targets
+# Resync history: 7.56 (S2/S3) → 7.71 (Block 3, crypto-agility seam + peer
+# canonicalization §7.65 + authz §3.3). Codec corpus byte-identical across the window.

@@ -1,0 +1,44 @@
+--  entity_core_protocol.gpr — GNAT project for entity-core-protocol-ada (S2 codec).
+--
+--  Builds the codec library sources (src/) and the hand-rolled conformance /
+--  test runners (tests/) into bin/. Crypto links libsodium (the only runtime
+--  dependency). Runtime checks (-gnata: assertions + Pre/Post/Type_Invariant
+--  contract aspects) are ON for the test build — the contract aspects are the
+--  Ada rigor seam and must be live to earn their place (profile [error_model]).
+
+project Entity_Core_Protocol is
+
+   for Source_Dirs use ("src", "tests");
+   for Object_Dir use "obj";
+   for Exec_Dir use "bin";
+
+   for Main use ("run_conformance.adb", "run_tests.adb", "host.adb", "smoke_s3.adb");
+
+   package Compiler is
+      for Default_Switches ("Ada") use
+        ("-g",
+         "-O2",
+         "-gnat2022",      --  Ada 2022 (contract aspects are Ada 2012+)
+         "-gnata",         --  enable assertions + Pre/Post/Type_Invariant checks
+         "-gnatwa",        --  all warnings ...
+         "-gnatwJ",        --  ... except obsolescent-feature (() aggregates are fine pre-2022 idiom)
+         "-gnatw.T",       --  ... and the static '-Length-postcondition note (the Post DOES use 'Result)
+         --  NOTE: -gnatVa (all validity checks) is deliberately NOT used: it
+         --  treats IEEE-754 special floats (NaN / +/-Inf, which the ECF float
+         --  corpus legitimately carries) as "invalid data" the moment a value
+         --  is produced via Unchecked_Conversion, raising Constraint_Error on
+         --  perfectly canonical wire bytes. Float specials are first-class in
+         --  ECF, so blanket float validity checking is wrong here.
+         "-fstack-check");
+   end Compiler;
+
+   package Linker is
+      --  libsodium: the sole runtime dependency (Ed25519 + SHA-256).
+      for Default_Switches ("Ada") use ("-lsodium");
+   end Linker;
+
+   package Builder is
+      for Default_Switches ("Ada") use ("-j0");  --  parallel build
+   end Builder;
+
+end Entity_Core_Protocol;

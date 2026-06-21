@@ -1,0 +1,221 @@
+# entity-core-protocol-swift — Language Profile
+#
+# Peer #7. Authored FRESH in S1 from the V7 spec-data/v7.74 snapshot + Swift
+# ecosystem research — NOT ported from the C#/TS/OCaml/Zig/Elixir/CL profiles.
+# Swift is a *genuinely-spec-first* peer on the freshly-pinned v7.74 surface, chosen
+# to probe two UNSATURATED discovery axes (per the six-peer synthesis):
+#   1. Swift `String`'s grapheme-cluster / NON-integer-indexable model — `.count` is
+#      grapheme clusters, NOT bytes; indexing is by `String.Index`, not `Int`. The
+#      CBOR text-string length + lexicographic map-key sort both MUST run on UTF-8
+#      bytes (`.utf8`), never on `String`. Highest fresh-yield axis (the A-CL-009
+#      hex-case finding proved the encoding/string axis is live).
+#   2. ARC (automatic reference counting) — Swift's 3rd distinct memory discipline
+#      after GC (C#/TS/OCaml/Elixir/CL) and manual/no-GC (Zig). Value-type (struct)
+#      vs reference-type (class) is a real codec design choice here.
+# Every value below is derived independently from v7.74 + Swift capabilities. Where a
+# field matches a prior peer it is by independent arrival, not inheritance.
+#
+# Profile authority (S6): the agent MUST use the values declared here. A "TBD" value
+# is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase. The only
+# deliberately-deferred value is Ed448 (crypto-agility higher bar; see A-SW-001) —
+# it is DEFERRED with rationale, not blank, and does NOT touch the Ed25519/SHA-256
+# conformance floor.
+
+[language]
+id                = "swift"
+name              = "Swift"
+tier              = "peer-7"                  # spec-first string/encoding + ARC-memory probe
+package_name      = "entity-core-protocol-swift"
+runtime           = "swift-toolchain"         # references containers/swift-toolchain/Containerfile
+
+[codec]
+# strategy: NATIVE. Same A-005 pattern every prior native peer hit (6-for-6): a
+# faithful ECF codec must OWN the canonical layer — length-then-lexicographic
+# map-key ordering on encoded key bytes (ENTITY-CBOR-ENCODING §2.2 Rule 2),
+# shortest-float incl. f16 minimization, recursive major-type-6 tag rejection on
+# decode (§4 "tags are not part of ECF"), full uint64/nint range, raw-byte fidelity
+# — regardless of any CBOR library underneath, so a library buys almost nothing.
+# Crypto is native (swift-crypto, audited, BoringSSL-backed) so native is the strictly
+# lighter path. ffi remains the documented fallback if a spike fails (not expected).
+# Spike to run at S2 start: push the map_keys + float test-vectors through the
+# hand-rolled encoder before the full build — cheap insurance per PHASE-S1-PROFILE.
+# (S1 container spike ALREADY PROVED swift-crypto SHA-256/SHA-384/Ed25519 build+run
+#  on the fedora:43 image — see PHASE-S1.md; the codec spike is the S2 entry gate.)
+strategy          = "native"
+# CBOR: hand-rolled canonical ECF encoder/decoder (Sources/.../CBOR). Swift has NO std
+# CBOR; SwiftCBOR and other Swift CBOR libs do NOT give ECF's guarantees (cannot
+# distinguish float 1.0 from int 1 by type, no length-then-lex key ordering, no
+# recursive tag-reject). The A-005 finding, re-confirmed for Swift. Zero CBOR dep.
+# CRITICAL Swift-specific constraint: text-string length is `String.utf8.count`
+# (UTF-8 BYTES), never `String.count` (grapheme clusters); map-key lexicographic
+# sort is over the ENCODED UTF-8 key bytes ([UInt8] comparison), never Swift
+# `String` ordering (which is Unicode-canonical/locale-sensitive). See A-SW-002.
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native" }
+# Ed25519: swift-crypto `Curve25519.Signing.PrivateKey`/`PublicKey`. The exact
+# CryptoKit API, audited, BoringSSL-backed, supported on Linux (CryptoKit itself is
+# Apple-platforms-only — see A-SW-003). RFC-8032 deterministic signing:
+# `try sk.signature(for: data)` needs no RNG; `pk.isValidSignature(sig, for: data)`.
+# rawRepresentation = 32-byte pubkey/seed (the §1.5 identity-form digest). One pinned
+# SwiftPM dependency (analogous to OCaml mirage-crypto / TS @noble). Pinned 3.14.0.
+ed25519_library   = { name = "swift-crypto Curve25519.Signing", version = "3.14.0" }
+# Ed448 (crypto-agility seam, v7.67 key_type 0x02): NOT exposed by swift-crypto /
+# BoringSSL (BoringSSL omits Ed448; CryptoKit has no Ed448 surface). Same native gap
+# OCaml hit (A-OC-002) + Zig deferred (A-ZIG-002). DEFERRED — see A-SW-001. Does NOT
+# affect the ECF/Ed25519 conformance floor. Likely shape when agility is in scope:
+# HYBRID native-Ed25519 + FFI-Ed448 (consume libentitycore_codec for the Ed448
+# family only, exactly the resolved OCaml A-OC-002 hybrid) — Swift's C interop is
+# first-class (a C system-library target / module map over entitycore_codec.h).
+ed448_library     = { name = "DEFERRED", version = "none" }
+# SHA-256 (content_hash floor) + SHA-384/SHA-512 (agility hashing) from swift-crypto:
+# `SHA256.hash(data:)`, `SHA384`, `SHA512`. Same dependency as Ed25519 — no separate
+# pin. (Foundation has no SHA-2; swift-crypto is the idiomatic source on Linux.)
+sha256_source     = "swift-crypto SHA256 (SHA384/SHA512 also present for agility)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode; not in std/swift-crypto. peer_id (§7.4).
+varint_handling   = "native"                  # multicodec-style LEB128 (§7.3) inline impl; key_type/hash_type/format-code framing
+
+[error_model]
+# Swift-native idiom: typed `throws` + `Error`-conforming error enum + do/catch.
+# This is Swift's primary error model (NOT exceptions in the C#/Java sense — `throws`
+# is a checked, typed, value-shaped control flow the compiler tracks; NOT panics).
+# Codec/decode failures throw a `CodecError` enum (cases: nonCanonicalECF, truncated,
+# tagRejected, duplicateKey, badSeed, unsupportedKeyType, unsupportedHashFormat, ...).
+# `Result<Success, Failure>` is reserved for STORED/async outcomes (completion values,
+# cached verdicts) per Swift idiom — not the primary codec return shape. Protocol-status
+# failures (400 non_canonical_ecf / 401 / 403) map an error case → status code at the
+# module boundary. Swift 6 typed throws (`throws(CodecError)`) MAY be used on the codec
+# surface for compiler-checked exhaustiveness (decided at S2; default to untyped throws
+# if typed-throws ergonomics fight the design — log if so).
+style             = "throws"                  # "exceptions" | "result" | "either" | "errno" | "error_union" | "throws"
+error_type        = "CodecError"              # Swift enum: Error, Equatable; one case per rejection condition
+result_usage      = "stored-and-async-only"   # Result<T,E> for stored/async outcomes; throws for the synchronous codec path
+typed_throws      = "preferred-if-clean"      # Swift 6 `throws(CodecError)`; fall back to untyped `throws` if it fights the design
+
+[memory]
+# Swift-SPECIFIC section (the ARC probe — 3rd memory discipline, after GC and no-GC).
+# Swift uses Automatic Reference Counting: reference types (`class`) are ARC-managed
+# (deterministic, non-tracing — refcount hits zero -> deinit runs); value types
+# (`struct`, `enum`) are copied/moved, no refcount. The codec DESIGN STANCE:
+gc                = false                      # ARC, not a tracing GC
+arc               = true
+default_aggregate = "struct"                  # Entity, ContentHash, PeerID, CBORValue, etc. are value types (struct/enum) —
+                                              #   copy semantics, no shared mutable state, no retain cycles possible, Sendable-friendly.
+                                              #   Matches the codec's pure/immutable data model; the idiomatic Swift default.
+reference_types_for = "long-lived-shared-mutable" # `class` only where identity/shared-mutable-state is intrinsic (e.g. a Peer
+                                              #   connection object, the live store) — at S3, not in the codec.
+bytes_type        = "[UInt8]"                 # raw bytes as [UInt8] (or Foundation Data at API edges); UTF-8 via String.utf8 ([UInt8] view)
+retain_cycle_risk = "audit-class-graphs-and-closures" # ARC leaks on reference cycles (class<->class, capturing closures); use weak/unowned.
+                                              #   Value-type-default codec is cycle-free by construction; the watch surface is S3 (Peer/conn graph).
+
+[async]
+# DELIBERATE idiom decision; NOT exercised by the codec (S2 is pure/synchronous).
+# Swift has first-class native async/await + structured concurrency + actors (Swift
+# 5.5+; Swift 6 strict concurrency / data-race checking by default). The codec is
+# synchronous + pure (value types, Sendable). The §4.8/§6.11 inbound-concurrent-with-
+# outbound requirement (peer S3) + the §6.13b handler outbound closure + the §7a
+# dispatch-outbound REENTRY surface are the natural fit for async/await + actors:
+# an `actor` owning per-connection state serializes mutation (the data-race-free
+# analog of OCaml's per-thread dispatch + mutex / Zig's std.Thread.Mutex), and
+# request_id<->continuation correlation uses `withCheckedThrowingContinuation` /
+# an async demux. Final S3 concurrency shape decided at S3; recorded idiom here.
+style             = "async-await"             # "sync" | "threaded" | "evented" | "async-await"
+default_surface   = "sync-codec"              # codec (S2) is blocking/synchronous + pure; async enters at the peer (S3)
+concurrency_primitive = "actor"               # actor for per-connection serialized state; async/await for I/O + reentry correlation
+strict_concurrency = true                     # Swift 6 data-race checking on; codec types are Sendable value types
+
+[naming]
+# Swift API Design Guidelines (swift.org/documentation/api-design-guidelines).
+type_names        = "UpperCamelCase"          # types/protocols/enums: Entity, ContentHash, PeerID, CBORValue, CodecError
+function_names    = "lowerCamelCase"          # funcs/methods: contentHash, signEntity, encodeECF, derivePeerID
+variable_names    = "lowerCamelCase"          # locals/properties: contentHash, peerID, formatCode
+constant_names    = "lowerCamelCase"          # constants too (Swift uses lowerCamelCase for `let` consts, NOT SCREAMING_SNAKE)
+enum_case_names   = "lowerCamelCase"          # enum cases: .nonCanonicalECF, .tagRejected, .ed25519
+acronym_style     = "uppercase-when-leading-else-camel" # API Design Guidelines: ID/URL/ECF uppercase as a unit — `PeerID` (type),
+                                              #   `peerID` (property, leading lowercased), `encodeECF`. Initialisms are NOT title-cased.
+file_names        = "UpperCamelCase"          # Swift idiom: file named after primary type — CBOR.swift, PeerID.swift, ContentHash.swift
+
+[build]
+build_tool        = "swiftpm"                 # Package.swift (SwiftPM); no external build system
+build_command     = "swift build -c release"
+test_command      = "swift test"              # XCTest via SwiftPM
+pack_command      = "swift build -c release"  # library product; "publish" = git tag consumers pin by URL+version (no central binary registry)
+
+[layout]
+project_file      = "Package.swift"           # SwiftPM manifest (swift-tools-version:6.0)
+resolved_file     = "Package.resolved"        # COMMITTED — locks swift-crypto + swift-asn1 by exact revision (S11 lockfile)
+src_dir           = "Sources/"                # SwiftPM convention: Sources/<TargetName>/
+target_name       = "EntityCoreProtocol"      # the library target/module (UpperCamelCase module name)
+lib_name          = "EntityCoreProtocol"      # imported as `import EntityCoreProtocol`
+test_dir          = "Tests/"                  # SwiftPM convention: Tests/<TargetName>Tests/ (XCTest)
+
+[publishing]
+# Swift has NO central binary package registry. SwiftPM resolves dependencies from
+# git URL + version tag (Swift Package Index is a discovery index over git, not a
+# binary host) — decentralized + git-tag-pinned by design, like crates/zig.
+# "Publishing" = a semver git tag consumers pin by URL + exact version in their
+# own Package.swift / Package.resolved.
+registry          = "swiftpm-git"             # decentralized; git URL + semver tag; Swift Package Index is discovery-only
+registry_url      = ""                        # n/a — consumers fetch from the repo URL directly
+package_id        = "entity-core-protocol-swift" # the repo/package name
+license_expression = "Apache-2.0"
+repository_url     = ""                        # TBD on first publish
+authors            = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default (explicit patent grant). Swift's own toolchain is Apache-2.0; the
+                                              #   ecosystem is Apache/MIT-mixed and does NOT mandate one — the Apache-2.0 default
+                                              #   stands (and matches Swift's own license, so it is also the ecosystem-norm choice).
+
+[testing]
+# XCTest is the bundled, zero-extra-dependency test framework shipped with the Swift
+# toolchain (Sources/XCTest, run by `swift test`). Chosen over swift-testing (the
+# newer macro-based framework): swift-testing IS bundled with Swift 6.2's toolchain
+# and is increasingly idiomatic, BUT XCTest is the longest-settled, dependency-free
+# default and keeps the supply-chain stance tight (no version to age-check beyond the
+# toolchain). The conformance harness is an XCTest case loading the normative fixture
+# and asserting byte-identity. Revisit swift-testing at S2 if its ergonomics clearly
+# win for the corpus-table tests (it is toolchain-bundled, so it clears S11 via the
+# toolchain pin) — logged as a non-blocking idiom note (A-SW-004).
+framework         = "xctest"                  # toolchain-bundled; `swift test`. swift-testing is the documented alternative (A-SW-004).
+corpus_harness    = "xctest-fixture-byte-identity" # loads the v7.71 ECF corpus, asserts byte-identical encode + correct decode/reject
+
+[container]
+base_image        = "entity-core-keystone/swift-toolchain:latest"
+build_in_container = true                     # BUILT + spike-verified at S1 (swift --version + swift-crypto SHA256/Ed25519 run; see PHASE-S1.md)
+# --network=none is honored AFTER the swift-crypto/swift-asn1 resolve (the only
+# networked step): once Package.resolved is committed + .build is populated (or deps
+# vendored), `swift build` runs fully offline. PROVEN at S1 (offline rebuild green).
+dev_loop          = "podman run --rm -v $PWD:/work:Z -w /work/protocol-generator/swift entity-core-keystone/swift-toolchain:latest swift test"
+offline_after_resolve = true                  # resolve once (network on) -> commit Package.resolved -> build/test --network=none
+
+[idiom]
+# Hints that don't fit elsewhere.
+prefer_value_types            = true          # struct/enum for codec data; class only for shared-mutable identity (S3 Peer/conn)
+prefer_throws_over_optional   = true          # decode failures THROW a typed CodecError, not return nil (Optional reserved for genuine absence)
+utf8_byte_view_for_wire       = true          # ALL wire length/ordering work uses String.utf8 ([UInt8]); never String.count / String ordering
+explicit_endianness           = true          # frame length is 4-byte big-endian (§1.6); use explicit bigEndian conversions, never host order
+sendable_codec                = true          # codec value types conform to Sendable (Swift 6 strict concurrency clean)
+no_force_unwrap_on_wire        = true         # never `!` force-unwrap on decoded/untrusted data; every wire access is a checked throw
+swift_version                 = "6.2"
+foundation_usage              = "edges-only"  # Foundation Data at API edges for ergonomics; core codec works in [UInt8] to stay portable + explicit
+
+[deps]
+# Exact pins (S11). All ≥30 days old at authoring (2026-06-14). Lockfile =
+# Package.resolved (committed). Mirrored in containers/swift-toolchain/Containerfile
+# for the toolchain pin.
+swift             = "6.2"                      # swift-6.2-RELEASE, released 2025-09-15 (~9 months old; clears S11). fedora39 tarball,
+                                               #   GPG + sha256 verified, runs on fedora:43 (build-proven at S1).
+swift_crypto      = "3.14.0"                   # released 2025-08-06 (~10 months old; clears S11). Curve25519.Signing (Ed25519) + SHA256/384/512.
+                                               #   Audited, BoringSSL-backed (BoringSSL VENDORED + compiled from source — no system OpenSSL crypto dep).
+swift_asn1        = "1.7.0"                    # released 2026-04-16 (~59 days old; clears S11). TRANSITIVE dep of swift-crypto — MUST be
+                                               #   pinned EXPLICITLY: SwiftPM auto-resolves to 1.7.1 (2026-06-08, ~6 days old) which VIOLATES
+                                               #   the S11 30-day floor. Explicit 1.7.0 pin verified to satisfy swift-crypto 3.14.0 at S1. See A-SW-005.
+# (no CBOR / base58 / varint packages — hand-rolled in-repo per [codec])
+
+[spec]
+v7_version_pinned = "7.74"                     # spec-data/v7.74 (the freshly-stamped snapshot; Swift derives this surface independently)
+codec_corpus      = "v0.8.0"                    # ECF corpus; ENTITY-CBOR-ENCODING.md is byte-stable across the v7.71->v7.74 line except the
+                                               #   v7.73 E3 decode-side construct-vs-decode erratum paragraph (no wire change), so the
+                                               #   v0.8.0 corpus is valid at v7.74 (same finding the OCaml/Zig peers SHA-verified). Agility
+                                               #   (Ed448/SHA-384) corpus gated on A-SW-001.
+conformance_scaffolding = "guide-conformance-7a-7b" # §7a validate handlers + §7b concurrency gate come from GUIDE-CONFORMANCE.md + the
+                                               #   generator menu, NOT spec-data (per the v7.74 MANIFEST note) — Swift picks them up at S3/S4.

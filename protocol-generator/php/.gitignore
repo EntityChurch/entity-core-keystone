@@ -1,0 +1,11 @@
+/vendor/
+/.phpunit.result.cache
+/composer.lock
+
+# bin/ here is the SOURCE host entrypoint (bin/peer), NOT a build-output dir. The
+# repo-root .gitignore has a blanket `**/bin/` (for compiled-output bin dirs);
+# re-include this source dir so the host is tracked + buildable from a fresh clone
+# (the OCaml `bin/host.ml`-untracked gotcha, applied proactively). The directory
+# must be un-ignored before the file within it.
+!/bin/
+!/bin/peer

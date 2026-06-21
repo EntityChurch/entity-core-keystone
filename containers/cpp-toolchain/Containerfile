@@ -1,0 +1,86 @@
+# C++ toolchain image — builds the native C++ peer
+# (entity-core-protocol-cpp) per protocol-generator/cpp/profile.toml.
+# Mirrors containers/c-toolchain (libsodium + binutils) but adds the C++ toolchain:
+# g++ / clang++ + the C++20 standard library (<expected>/<span>/<format>), CMake AS
+# THE BUILD SYSTEM (the slate decision, vs the C peer's plain make) + Ninja.
+#
+# Peer: C++ (release "reach" peer #3 in the prerelease six-peer slate —
+# research/RELEASE-READINESS.md §2). Codec = NATIVE hand-roll (decision D1, NOT FFI);
+# crypto = libsodium (Ed25519 + SHA-256); Ed448 deferred (libsodium gap).
+#
+# S1: AUTHORED, NOT BUILT. This Containerfile is written in the S1 (profile) phase but
+# the image is NOT built and no podman/toolchain runs in S1 (S1 boundary). The first
+# build happens at S2.
+#
+# S11 (supply-chain): pin every package to an exact NVR. All packages come through
+# fedora's REVIEWED dnf channel, so the >=30-day AGE floor RELAXES (the distro has its
+# own security review) — but pin exactly for reproducibility, and the libsodium pin is
+# >=30-day-old anyway. The exact NVRs below are what fedora:43 ships at authoring
+# (2026-06-18); re-verify the NVRs (especially clang/ninja, pinned to the current
+# fedora:43 build) and re-pin deliberately on the first S2 build. Prefer pinning the
+# base image by digest for full reproducibility at release.
+#
+# libsodium PIN NOTE (S6 + D1 + S11): the C++ peer keeps crypto on libsodium per D1.
+# fedora:43's repos ship libsodium 1.0.22-1.fc43 (ChangeLog 2026-04-10, ~2 months old
+# at authoring -> clears the 30-day floor). The high-level crypto_sign_* /
+# crypto_hash_sha256 the peer calls are stable + byte-identical across the 1.0.2x line
+# -> conformance-neutral. CVE-2025-69277 is in the low-level
+# crypto_core_ed25519_is_valid_point validator the peer does NOT call. We statically and
+# privately link libsodium into the artifact (-fvisibility=hidden + symbol localization)
+# per the C-peer precedent + spec sec.7.
+#
+# Ed448 (crypto-agility higher bar) is DEFERRED (libsodium has no Ed448) — so NO
+# openssl-devel / no FFI-agility .a is installed here (it is an "add at S2/agility" item,
+# not in the core image). The core floor is Ed25519 + SHA-256, fully covered by libsodium.
+#
+# NOTE (glibc portability, R5): a glibc shared object won't load on hosts older than this
+# base's glibc. For a *shipped* release artifact, rebuild on an old-glibc
+# (manylinux-style) base. fedora:43 is fine for development + conformance.
+FROM registry.fedoraproject.org/fedora:43
+
+# ── C++20 toolchain + CMake build system + libsodium ─────────────────────────
+# gcc-c++ (g++) is the primary C++20 compiler and ships libstdc++ with <expected>,
+# <span>, and <format>; libstdc++-devel provides the C++20 standard headers.
+# clang/clang-tools-extra is the SECOND compiler (the ASan/UBSan cross-check pass;
+# cross-compiler hygiene). cmake (the slate build system) + ninja-build (CMake's fast
+# generator backend). libasan/libubsan back the -fsanitize=address,undefined test pass
+# (they ship WITH gcc on fedora:43, but pin explicitly so the test pass is reproducible).
+# libsodium static + devel for the statically + privately linked crypto.
+# Pinned NVRs (S11): what fedora:43 ships at authoring (2026-06-18). Re-verify the exact
+# clang/ninja NVRs at the first S2 build and re-pin deliberately.
+# NVRs RESOLVED + PINNED at the first S2 build (2026-06-18, fedora:43 build cache
+# `aa03ca9219a8`): clang/clang-tools-extra/libcxx* = 21.1.8-4.fc43, ninja-build =
+# 1.13.1-4.fc43 (the S1 "verify-and-pin at S2" items, now exact). Reviewed distro
+# channel (S11): exact-pin for repro, ≥30-day age floor relaxed (and met).
+RUN dnf install -y \
+        gcc-c++-15.2.1-7.fc43 \
+        gcc-15.2.1-7.fc43 \
+        libstdc++-15.2.1-7.fc43 \
+        libstdc++-devel-15.2.1-7.fc43 \
+        libstdc++-static-15.2.1-7.fc43 \
+        clang-21.1.8-4.fc43 \
+        clang-tools-extra-21.1.8-4.fc43 \
+        libcxx-21.1.8-4.fc43 libcxx-devel-21.1.8-4.fc43 \
+        libcxxabi-21.1.8-4.fc43 libcxxabi-devel-21.1.8-4.fc43 \
+        libasan-15.2.1-7.fc43 \
+        libubsan-15.2.1-7.fc43 \
+        cmake-3.31.11-1.fc43 \
+        ninja-build-1.13.1-4.fc43 \
+        make-1:4.4.1-11.fc43 \
+        binutils-2.45.1-4.fc43 \
+        pkgconf-pkg-config \
+        libsodium-1.0.22-1.fc43 \
+        libsodium-static-1.0.22-1.fc43 \
+        libsodium-devel-1.0.22-1.fc43 \
+    && dnf clean all
+
+# Keep CMake/CTest output uncolored + deterministic in the container.
+ENV CMAKE_COLOR_DIAGNOSTICS=OFF
+ENV CMAKE_GENERATOR=Ninja
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="cpp-toolchain"
+LABEL org.entity-core-keystone.version="1"
+
+CMD ["/bin/bash"]

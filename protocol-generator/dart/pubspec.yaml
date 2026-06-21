@@ -1,0 +1,61 @@
+# entity-core-protocol-dart — the pub.dev package `entity_core_protocol`.
+#
+# A native, pure-Dart core protocol peer (V7 Layers 0–4). Codec = hand-rolled
+# canonical ECF (no `cbor` pub package — no library gives ECF canonicality);
+# crypto = cryptography_plus (pure-Dart Ed25519 floor) + package:crypto (SHA-256
+# floor). See profile.toml + arch/PROFILE-RATIONALE.md.
+#
+# Pins (S11): exact, mirrored in containers/dart-toolchain/prefetch/pubspec.yaml.
+# cryptography_plus re-pinned 2.7.0 -> 2.7.1 at S2 (2.7.0 does not exist on
+# pub.dev; 2.7.1 is the aged 2.x release, ~602d >= 30d). See A-DART-012.
+#
+# Version line: 0.1.0-pre — pub.dev's SemVer pre-release form (NOT a doc-only
+# marker; the pubspec `version:` field carries it directly, unlike the CMake /
+# ASDF dotted-numeric peers). Parked: documented + lint-clean, NOT published.
+# `dart pub publish --dry-run` is green; the real publish is the optional S5
+# operator step (verified pub.dev publisher namespace — A-DART-007).
+name: entity_core_protocol
+description: >-
+  A native pure-Dart peer of the Entity Core Protocol (V7 Layers 0-4): a
+  hand-rolled canonical ECF (CBOR) codec, content_hash, peer-id, and Ed25519
+  signatures. Self-contained on every Flutter target (no native lib).
+version: 0.1.0-pre
+
+# Publishing is the optional S5 operator step (verified pub.dev publisher
+# namespace — A-DART-007). `publish_to: none` is the parked-state guard: it
+# makes `dart pub get` / local use work while making an *accidental*
+# `dart pub publish` a no-op. NOTE: `dart pub publish --dry-run` ignores this
+# field and still runs the full pub.dev validation suite (used to prove the
+# package is well-formed). Remove this line at the real publish.
+publish_to: none
+
+# Cohort convention: repository/homepage point at the keystone home (or the
+# per-language sibling repo if the S10 lift-out is taken). pub.dev surfaces
+# these on the package page; documented here, finalized at publish (A-DART-007).
+repository: https://github.com/entity-core/entity-core-keystone
+homepage: https://github.com/entity-core/entity-core-keystone/tree/master/protocol-generator/dart
+documentation: https://github.com/entity-core/entity-core-keystone/tree/master/protocol-generator/dart/README.md
+issue_tracker: https://github.com/entity-core/entity-core-keystone/issues
+
+# pub.dev topics (lowercase, hyphen-joined, <= 5). Aids discovery.
+topics:
+  - protocol
+  - cbor
+  - cryptography
+  - networking
+
+environment:
+  # Consumer-facing MINIMUM SDK floor (Dart-3 sealed classes + patterns +
+  # records, available since 3.0; 3.6 is the pinned floor — see profile.toml
+  # `dart_language_version`). The peer is *built and certified* on the pinned
+  # SDK 3.11.6 (containers/dart-toolchain), but it only *requires* 3.6 of a
+  # consumer — a deliberately wide compatibility floor for the reach audience,
+  # not a hard pin to 3.11. (Caret `^3.6.0` admits 3.6.0 .. <4.0.0.)
+  sdk: '^3.6.0'
+
+dependencies:
+  cryptography_plus: 2.7.1 # pure-Dart Ed25519 floor (maintained fork; A-DART-002/012)
+  crypto: 3.0.6            # first-party Dart-team SHA-256 floor
+
+dev_dependencies:
+  test: 1.25.15            # first-party package:test runner (dev-scope only)

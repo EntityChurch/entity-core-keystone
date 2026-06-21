@@ -1,0 +1,28 @@
+# Rust/cargo toolchain image — builds the codec C-ABI Rust implementation
+# (ffi-generator/c-abi/entity-core-codec-ffi-rust) into libentitycore_codec.*
+# plus the conformance harness.
+#
+# S1: builds run in this container, not on the host.
+# S11: pin the toolchain to a version >= 30 days old. The exact NVR below is
+#      what fedora:43 shipped at authoring; re-verify the >=30-day age when you
+#      rebuild, and prefer pinning the base image by digest for full repro.
+#      Crate pins live in the committed Cargo.lock (>=30d each, see
+#      research/evaluations/ffi-rust.md).
+#
+# NOTE (R5, ffi-rust.md): a glibc cdylib won't load on hosts older than this
+# base's glibc. For a *shipped* release artifact, rebuild on an old-glibc
+# (manylinux-style) base. fedora:43 is fine for development + conformance.
+FROM registry.fedoraproject.org/fedora:43
+
+# rust + cargo from the distro; gcc/cc needed as the linker for cdylib/staticlib.
+# pkgconf + glibc-static help with fully-static staticlib consumers.
+# Pinned NVR (S11): what fedora:43 shipped at authoring (2026-06-07). Re-verify
+# the >=30-day age + re-pin deliberately on rebuild; prefer base-image digest pin.
+RUN dnf install -y rust-1.95.0-5.fc43 cargo-1.95.0-5.fc43 gcc && dnf clean all
+
+# Keep cargo's registry/cache on a mountable path so repeated runs don't refetch
+# crates (the conformance loop runs this many times). Mount a volume at /cargo.
+ENV CARGO_HOME=/cargo \
+    CARGO_TERM_COLOR=never
+
+WORKDIR /work

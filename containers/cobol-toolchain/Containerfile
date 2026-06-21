@@ -1,0 +1,34 @@
+# COBOL toolchain image — GnuCOBOL (cobc) on fedora:43.
+#
+# Purpose: the COBOL peer (entity-core-protocol-cobol) is an FFI-everything peer
+# — no native COBOL CBOR or crypto exists, so it consumes libentitycore_codec
+# over the codec C-ABI (ffi-generator/c-abi/spec/). GnuCOBOL compiles COBOL ->
+# C -> native via gcc, and its CALL ... USING BY REFERENCE/BY VALUE maps onto the
+# C ABI, so the same image both compiles COBOL and links the codec .so.
+#
+# S1: builds + conformance run in this container, not on the host.
+# S11: pin every package to a version that was >= 30 days old at authoring
+#      (2026-06-18). The NVRs below are what fedora:43 shipped then; re-verify the
+#      >=30-day age + re-pin deliberately on rebuild, and prefer pinning the base
+#      image by digest for full repro.
+#
+# GnuCOBOL PIN NOTE (S11): gnucobol-3.2-8.fc43 — buildtime 2025-07-24 (~11 months
+# old at authoring), well clear of the 30-day floor. Upstream GnuCOBOL 3.2 is the
+# 2022 stable line. The single `gnucobol` package provides cobc + cobcrun +
+# /usr/include/libcob.h (no separate -devel on fedora:43).
+FROM registry.fedoraproject.org/fedora:43
+
+# GnuCOBOL compiler + runtime, the C toolchain it lowers through, and the C-ABI
+# codec's link-time deps (libsodium present so a locally-built libentitycore_codec
+# resolves). Pinned NVRs (S11): what fedora:43 shipped at authoring (2026-06-18);
+# re-verify age + re-pin on rebuild.
+RUN dnf install -y \
+        gnucobol-3.2-8.fc43 \
+        gcc-15.2.1-7.fc43 \
+        make-1:4.4.1-11.fc43 \
+        binutils-2.45.1-4.fc43 \
+        libsodium-1.0.22-1.fc43 \
+        libsodium-devel-1.0.22-1.fc43 \
+    && dnf clean all
+
+WORKDIR /work

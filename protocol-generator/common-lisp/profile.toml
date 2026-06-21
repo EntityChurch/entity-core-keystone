@@ -1,0 +1,205 @@
+# entity-core-protocol-common-lisp — Language Profile
+#
+# Peer #5. Authored FRESH in S1 from the V7 spec + Common Lisp / SBCL ecosystem
+# research — NOT ported from the C#/TS/OCaml/Elixir profiles. Common Lisp is the
+# MOST DISTANT idiom chosen so far to re-probe V7: S-expression code-as-data,
+# CLOS multiple-dispatch + the metaobject protocol, the CONDITION/RESTART system
+# (richer than exceptions), image-based interactive development, dynamic typing
+# with optional declarations, and reader/compiler macros. Where a field happens
+# to match a prior peer it is by independent arrival, not inheritance — and the
+# idiom seams (error model = conditions, dispatch = CLOS, naming = lisp-case)
+# deliberately differ.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value
+# is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "common-lisp"
+name              = "Common Lisp"
+tier              = "peer-5"                  # LANDSCAPE had CL at LOW-MED backlog; arch elevated to a build slot (the distant-idiom probe continues)
+package_name      = "entity-core-protocol-common-lisp"  # keystone peer id
+runtime           = "common-lisp-toolchain"   # references containers/<runtime>/Containerfile (SBCL image)
+
+[codec]
+# strategy: NATIVE — and, like Elixir (peer #4), a FULLY-native story that reaches
+# the crypto-agility HIGHER BAR with no FFI. The two halves:
+#   (1) crypto is native pure-Common-Lisp via ironclad — Ed25519, Ed448, SHA-256
+#       AND SHA-384 are all implemented in-library. So the agility higher bar
+#       (Ed448 + SHA-384) needs NO FFI at all (contrast OCaml A-OC-002, which had
+#       to source Ed448 over the C-ABI; matches Elixir's native-Ed448 position,
+#       but via a pure-Lisp library rather than an OpenSSL NIF).
+#   (2) no Common Lisp CBOR library gives ECF canonicality — the A-005 pattern all
+#       four prior native peers hit — so the canonical layer is hand-rolled
+#       regardless. (`cl-cbor` and similar are sparse, unmaintained, and target
+#       general CBOR, not ECF's length-first ordering + float ladder + tag reject.)
+# Net: a core peer whose only third-party runtime dependency is ironclad (crypto);
+# CBOR + base58 + varint are hand-rolled in-repo. ffi remains the documented
+# fallback but is not expected to be needed for any tier of this peer.
+strategy          = "native"
+# CBOR: hand-rolled canonical encoder/decoder (src/cbor.lisp). No CL CBOR library
+# (`cl-cbor`, `cbor`) offers ECF's guarantees — length-then-lex map ordering,
+# shortest-float incl. f16, recursive major-type-6 tag rejection, full uint64/nint
+# range. CL has NATIVE bignums (arbitrary-precision integers), so the full uint64
+# range is carried with NO special-casing — same advantage Elixir noted, distinct
+# from OCaml int63 / C# ulong / TS bigint. Encoder builds an octet vector
+# ((unsigned-byte 8) simple-array); decoder is index-walking over the octet vector.
+# Decided by the S1 reasoning; spike at S2 against the map_keys + float vectors.
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native" }
+# Ed25519: ironclad — a pure-Common-Lisp cryptographic toolkit (sharplispers fork).
+# Native (no libsodium/OpenSSL dependency), provides ed25519 key generation, sign,
+# verify, and public-key derivation from a private key. seed->pubkey via
+# make-private-key/make-public-key; sign via ironclad:sign-message; verify via
+# ironclad:verify-signature. Exact symbol/signature confirmed against the
+# in-container ironclad at S2.
+ed25519_library   = { name = "ironclad", version = "0.61", api = "ironclad:{make-private-key,sign-message,verify-signature}/:ed25519" }
+# Ed448 (crypto-agility HIGHER BAR, v7.67): NATIVE via ironclad — ironclad
+# implements ed448 alongside ed25519 (src/public-key/ed448.lisp; both are
+# optimized per the 0.42 NEWS). This is the headline: like Elixir, NO FFI, NO
+# opt-in sub-library, NO hybrid — the agility corpus (KEY-TYPE-ED448-*,
+# HASH-FORMAT-SHA-384-*) is reachable from the default build. The distinction from
+# Elixir: Elixir's Ed448 comes from the OpenSSL NIF; CL's is a PURE-LISP impl.
+# RFC-8032 KAT byte-equality is the S2 acceptance gate before trusting it for the
+# 114-byte signature / peer-id vectors.
+ed448_library     = { name = "ironclad", version = "0.61", strategy = "native", api = "ironclad:{make-private-key,sign-message,verify-signature}/:ed448" }
+# SHA-256 (content_hash floor) + SHA-384 (agility hashing): ironclad digests
+# (ironclad:digest-sequence :sha256 / :sha384). Native, pure-Lisp.
+sha256_source     = "ironclad (digest-sequence :sha256 + :sha384 for agility)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (src/base58.lisp); no dep
+varint_handling   = "native"                  # LEB128 inline impl (N1), src/varint.lisp
+
+[error_model]
+# DELIBERATE idiom — the most expressive error model of the five peers: the
+# COMMON LISP CONDITION SYSTEM (conditions + handlers + restarts), a strict
+# superset of exceptions. This differs from C#/TS `exceptions`, OCaml `result`,
+# and Elixir `tagged_tuple`. Design: a condition hierarchy rooted at
+# `entity-core-error` (a `define-condition` subtype of `error`), with leaf
+# conditions `non-canonical-ecf`, `truncated-input`, `tag-rejected`, `bad-seed`,
+# `unsupported-content-hash-format`, `unsupported-key-type`, etc. Public codec
+# entry points SIGNAL these conditions (idiomatic CL: errors are signalled, not
+# returned). A `*-or-nil`/`ignore-errors`-wrapped convenience surface is provided
+# for callers who prefer value-return semantics (the CL analogue of bang-vs-tuple).
+# Restarts (e.g. `use-value`, `skip`) are offered where the spec permits recovery;
+# decode-path violations signal with NO restart (hard reject per N2/N3).
+style             = "conditions"              # "exceptions" | "result" | "either" | "errno" | "tagged_tuple" | "conditions"
+condition_root    = "entity-core-error"       # define-condition :report-ing subtype of cl:error
+leaf_conditions   = "non-canonical-ecf | truncated-input | tag-rejected | bad-seed | unsupported-content-hash-format | unsupported-key-type"
+restarts          = "offered where spec permits recovery (use-value/skip); decode rejects signal with no restart (N2/N3 hard reject)"
+value_surface     = "ignore-errors-wrapped *-safe variants for value-return callers (CL analogue of result/bang)"
+
+[async]
+# DELIBERATE idiom decision — the CL analogue of C#-Task / TS-Promise / OCaml-eio /
+# Elixir-processes. Common Lisp has NO single blessed concurrency model in the
+# standard (the ANSI standard is single-threaded); the de-facto portability layer
+# is `bordeaux-threads` over SBCL's native threads (`sb-thread`). For a
+# --profile core peer the N6/N7 reentrancy invariants (inbound concurrent with
+# outbound dispatch; reentrant request_id demux; §6.11 reentry) are satisfied by
+# ONE NATIVE THREAD PER CONNECTION (sb-thread) plus a request_id->condition-var
+# correlation table guarded by a lock — the same shape OCaml reached at S3 with
+# stdlib threads. SBCL native threads need NO third-party dep; bordeaux-threads is
+# only required if cross-implementation portability is later desired (deferred).
+# Validated at S3 (the codec is pure/synchronous and thread-free). See A-CL-003.
+style             = "native-threads"          # "sync" | "native-threads" | "green-threads" | "bordeaux"
+threading_lib     = "sb-thread"               # SBCL native threads; bordeaux-threads only if cross-impl portability is wanted (deferred)
+request_demux     = "request_id-table-with-lock"  # reentrant request_id correlation: hash-table + sb-thread mutex/condvar; see N7
+sync_surface      = "blocking-call-on-condvar"    # synchronous consumers block on a condition variable for the correlated response
+
+[naming]
+# Common-Lisp-native conventions (differ from C# PascalCase / TS camelCase /
+# OCaml lower_snake+Upper_snake / Elixir PascalCase+snake_case). CL is
+# case-INSENSITIVE by default (the reader upcases), so source is written in the
+# conventional lower lisp-case (hyphenated) and read as upper-case symbols.
+symbol_names      = "lisp-case"               # functions/variables: content-hash, sign-and-verify, peer-id
+constant_names    = "+earmuffs+"              # constants: +max-depth+ (plus-earmuffs convention)
+special_var_names = "*earmuffs*"              # dynamic/special vars: *default-format-code* (star-earmuffs)
+predicate_suffix  = "p / -p"                  # predicates end in -p (canonical-p) or p (when no hyphen would precede)
+class_names       = "lisp-case"               # CLOS classes: entity, content-hash, peer-id (defclass)
+package_names     = "lisp-case"               # packages: entity-core, entity-core/cbor (or nicknamed EC)
+keyword_args      = "lisp-case keywords"      # :key-type, :hash-type, :format-code
+file_names        = "lisp-case"               # cbor.lisp, peer-id.lisp (one logical unit per file)
+
+[build]
+build_tool        = "asdf"                    # ASDF ships with SBCL; the universal CL build/system-definition tool
+build_command     = "sbcl --non-interactive --eval '(asdf:load-system :entity-core)'"
+test_command      = "sbcl --non-interactive --load test/run-conformance.lisp"  # hand-rolled harness; loads a fixture, asserts byte-identity
+pack_command      = "sbcl --non-interactive --eval '(asdf:make :entity-core)'"  # ASDF system build; image dump (save-lisp-and-die) for an executable if needed at S5
+
+[layout]
+# Standard ASDF system layout.
+project_file      = "entity-core.asd"         # ASDF system definition (defsystem)
+src_dir           = "src/"                    # the entity-core package source
+test_dir          = "test/"                   # conformance harness + selftest
+system_name       = "entity-core"             # asdf:defsystem name
+package_name      = "entity-core"             # CL package; nickname EC
+
+[publishing]
+# Common Lisp has no single mandatory central registry. The de-facto distribution
+# channels are Quicklisp (community dist) and the newer Ultralisp; publishing is
+# "make the .asd discoverable from a git repo the dist indexes". For S5 the
+# artifact is a self-contained ASDF system + README + LICENSE; submission to
+# Quicklisp/Ultralisp is the optional registry step (decided at S5).
+registry          = "quicklisp"               # de-facto community dist (Ultralisp is the alternative); both index git repos
+registry_url      = "https://www.quicklisp.org/"
+package_id        = "entity-core-protocol"    # the .asd / project id submitted to the dist
+license_expression = "Apache-2.0"
+repository_url    = ""                         # TBD on first publish
+maintainers       = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default. The CL ecosystem is license-mixed (MIT/BSD/LLGPL common; ironclad is BSD-3); no strong mandate — keep the safe Apache-2.0 default (explicit patent grant).
+
+[testing]
+# Hand-rolled harness (test/run-conformance.lisp + test/selftest.lisp), NO
+# test-framework dependency — honoring the dependency-minimization stance (the
+# OCaml precedent, which declined ecosystem-standard alcotest for the same reason).
+# The CL ecosystem standards are FiveAM and rove; either can be layered for a
+# richer S5 report without changing the codec. The conformance harness loads the
+# normative fixture and checks byte-identity directly (the fixture carries its own
+# cross-blessed bytes). Run via `sbcl --non-interactive --load`.
+framework         = "hand-rolled"
+fiveam_optional   = true                       # FiveAM (or rove) layerable at S5 for a richer report; not a runtime/codec dep
+
+[container]
+base_image        = "entity-core-keystone/common-lisp-toolchain:latest"
+build_in_container = true
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/common-lisp entity-core-keystone/common-lisp-toolchain:latest sh -c 'sbcl --non-interactive --eval \"(asdf:load-system :entity-core)\" --load test/run-conformance.lisp'"
+
+[idiom]
+# Hints that don't fit elsewhere.
+prefer_conditions        = true               # signal conditions on the public surface; *-safe value-return wrappers for the other style
+prefer_immutable         = true               # build octet vectors then freeze; functional style for the codec (no destructive mutation across the boundary)
+clos_dispatch            = true               # CLOS generic functions + methods for the dispatcher / type machinery (S3); the distant-idiom probe — multiple dispatch vs single-dispatch peers
+native_bignum            = true               # CL integers are arbitrary-precision — NO uint64/int64 head-form native-int trap (contrast OCaml int63, C# ulong, TS bigint; matches Elixir). The head-form carrier is just an integer.
+octet_vectors            = true               # wire bytes are (simple-array (unsigned-byte 8) (*)); the CL idiom for binary data
+case_insensitive_reader  = true               # source is lower lisp-case; symbols read as upper-case (ANSI default). Keep external string/byte data case-EXACT (do not round-trip through symbols).
+declaim_optimize         = true               # (declaim (optimize ...)) for the hot codec paths; (safety 3) for the decode/reject paths
+compiler_macros          = false              # not needed for v0.1; noted as available if a hot path warrants it
+sbcl_version             = "2.6.4"
+ironclad_version         = "0.61"
+
+[deps]
+# Exact pins (S11). Toolchain pins mirrored in
+# containers/common-lisp-toolchain/Containerfile. The only third-party RUNTIME
+# dependency is ironclad (crypto). ASDF + UIOP ship inside SBCL (no separate pin).
+# CBOR/base58/varint are hand-rolled; the test harness is hand-rolled (stdlib).
+sbcl              = "2.6.4"                    # 2026-04-29 (~45d at 2026-06-13, clears the S11 30-day floor). Source-built in-container for reproducibility (the BEAM/OTP precedent). SBCL is also a reviewed source channel; 30-day floor relaxed for the toolchain itself but the exact pin stands for repro.
+ironclad          = "0.61"                    # 2024-08-20 (~22 months) — well over the S11 floor. Pulled at container BUILD time via a pinned Quicklisp dist, then run fully offline (--network=none); see the Containerfile + A-CL-004.
+quicklisp_dist    = "2026-01-01"              # Jan 2026 Quicklisp dist (~5 months) — used ONLY at container-build time to resolve ironclad 0.61 + its deps; pinned for reproducibility. Not a runtime dependency.
+asdf              = "bundled-with-sbcl"        # ASDF + UIOP ship inside the SBCL image; version = whatever SBCL 2.6.4 bundles (recorded at build)
+# ironclad transitive deps (resolved by the pinned QL dist): nibbles, alexandria,
+# (s)bclrt are NOT needed; ironclad's runtime deps are nibbles + alexandria — both
+# small, mature, BSD/MIT, pinned via the same dist. Recorded at build in the image.
+
+[spec]
+v7_version_pinned = "7.72"                     # latest spec-data SNAPSHOT available; profile + codec derive from it
+codec_corpus      = "v0.8.0"                    # ECF corpus; ENTITY-CBOR-ENCODING.md + ENTITY-NATIVE-TYPE-SYSTEM.md are byte-identical v7.71->v7.72 (SHA-verified upstream), so the v0.8.0 corpus is valid at v7.72.
+# PEER-LAYER SPEC SKEW (A-CL-001): spec HEAD is v7.74 (folded), but spec-data
+# snapshots stop at v7.72. Peers #1-4 reached v7.74 conformance against folded
+# PROPOSAL TEXT layered on the v7.72 snapshot. The v7.73 (nonce-echo §4.6) and
+# v7.74 (register/outbound/emit/owner-cap §6.13/§6.9a + §7a conformance handlers)
+# folds are PEER-LAYER (S3+), not codec — so S1/S2 are unaffected. Resync the
+# peer layer to the v7.74 surface at S3 (mirror the C#/TS/OCaml/Elixir build), and
+# escalate the missing v7.73/v7.74 spec-data snapshot to arch (S2 ownership).
+# PEER_ID CONSTRUCTION (A-CL-002, corroborates A-ZIG-001 / A-OC-007): derive the
+# Ed25519 peer_id from the §1.5 v7.65 CANONICAL-FORM TABLE (hash_type=0x00 identity
+# multihash, digest = RAW public key bytes), NOT the stale §7.4 / §1.5-line-436
+# SHA256(pubkey) skeleton. The §7.4 pseudocode is STALE and fails handshake.

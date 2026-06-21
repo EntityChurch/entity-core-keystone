@@ -1,0 +1,153 @@
+# entity-core-protocol-cobol — Language Profile
+#
+# Pre-release slate peer #6 (the genuine DISCOVERY bet, decision D2). Authored in
+# S1 from the V7 spec + the COBOL feasibility spike (spike/SPIKE-FINDINGS.md, GO
+# verdict 2026-06-18). COBOL is an alien substrate: decimal-first numerics
+# (PIC/COMP-3), fixed-width records, no native CBOR or crypto. Strategy is
+# FFI-HYBRID — crypto/hash/entity-framing/peer-id/envelope over the codec C-ABI;
+# a hand-rolled canonical CBOR *value* codec in COBOL for entity data payloads
+# (the C-ABI is entity-envelope-grained, not value-grained — see A-CBL-002).
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value
+# is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "cobol"
+name              = "COBOL (GnuCOBOL)"
+tier              = "prerelease-6"            # RELEASE-READINESS slate #6, discovery pick
+package_name      = "entity-core-protocol-cobol"
+runtime           = "cobol-toolchain"         # containers/cobol-toolchain/Containerfile
+
+[codec]
+# strategy: FFI-HYBRID. The spike confirmed the C-ABI FFI is byte-exact from
+# COBOL (ec_sha256 → ba7816bf…). BUT the C-ABI is entity-grained: ec_encode_ecf
+# /ec_content_hash take `data` as ALREADY-CANONICAL CBOR (opaque; the lib frames
+# the 2-key {data,type} map + hashes/signs). So the canonical CBOR VALUE layer —
+# building/parsing the data-payload maps/arrays/uints/text/bytes the peer uses —
+# is hand-rolled in COBOL (A-CBL-002). Crypto, SHA-2, entity framing, peer-id,
+# and envelope verification all ride the FFI. No native COBOL crypto exists.
+strategy          = "ffi-hybrid"
+# CBOR VALUE codec: hand-rolled canonical encoder/decoder (cbor.cob). Covers the
+# protocol value set: uint/nint/text/bytes/array/map/bool/null with RFC 8949
+# §4.2 length-then-lex map-key ordering + minimal-int + definite lengths + the
+# N2 recursive major-type-6 tag reject on decode. Float (f16/f32/f64 shortest)
+# arises only in the S2 ECF conformance corpus, not in peer data payloads; those
+# vectors are validated via the FFI bare-value round-trip (ec_encode_bare_value,
+# identity on canonical input) rather than re-deriving the float ladder in COBOL.
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native-value" }
+# Entity framing + hashing: FFI. ec_encode_ecf / ec_content_hash{,_with_format}
+# wrap COBOL-built canonical `data` into the canonical entity + hash it.
+entity_framing    = { name = "libentitycore_codec", strategy = "ffi", c_abi_version = "1.1" }
+# Ed25519 + SHA-256 floor: FFI (ec_ed25519_{sign,verify,seed_to_pubkey}, ec_sha256).
+ed25519_library   = { name = "libentitycore_codec (FFI)", strategy = "ffi", c_abi_version = "1.1" }
+# Ed448 + SHA-384 agility higher bar: FFI (ec_ed448_*, ec_sha384). Same library,
+# no extra COBOL — the C-ABI already carries the full agility surface.
+ed448_library     = { name = "libentitycore_codec (FFI)", strategy = "ffi", c_abi_version = "1.1" }
+sha256_source     = "libentitycore_codec ec_sha256 (FFI)"
+sha384_source     = "libentitycore_codec ec_sha384 (FFI)"
+# peer-id: FFI ec_peerid_{parse,format}. base58 stays in the C-ABI (no COBOL impl).
+base58_library    = "libentitycore_codec ec_peerid_* (FFI)"
+# varint/LEB128 (N1): the C-ABI ec_hash_format_code_{encode,decode} primitives are
+# available, but a 1-byte format code is trivially inline in the COBOL value codec.
+varint_handling   = "ffi-primitive + inline LEB128 in cbor.cob"
+
+[numeric]
+# THE discovery axis (spike P3 / A-CBL-001). COBOL is decimal-first: PIC 9(n) is a
+# decimal-digit width, not a bit width. uint64 max is 20 digits; the natural
+# PIC 9(18) silently truncates and GnuCOBOL won't declare a >18-digit binary.
+uint64_carrier    = "8-byte PIC 9(18) COMP-5"      # physical 8-byte storage holds full 2^64
+binary_truncate   = "off"                          # cobc -fno-binary-truncate (MOVEs keep full range)
+display_decimal   = "PIC 9(20) DISPLAY"            # only where a >18-digit value is shown/compared
+byte_view         = "PIC 9(2) COMP-X over PIC X"   # 1-byte numeric view for CBOR byte parsing
+endianness_note   = "COMP-5 is native byte order = matches C uint64_t over FFI; codec does CBOR big-endian"
+
+[error_model]
+# COBOL idiom: there is no exception/Result machinery. The native pattern is an
+# integer/condition RETURN-CODE plus a status field, checked at the call site —
+# which maps directly onto the C-ABI's int32_t EC_* codes (also the protocol's
+# numeric status codes 200/403/404/413/…). So: status-code returns, no exceptions.
+style             = "status-code"             # "exceptions" | "result" | "either" | "errno" | "status-code"
+error_type        = "PIC S9(9) COMP-5 return-code + 88-level condition names"
+convention        = "every fallible PROGRAM sets a status arg; caller tests it before use"
+
+[async]
+# COBOL has no language-level async. The §4.8 inbound-concurrent-with-outbound +
+# §6.11 reentrancy requirement is met with OS threads via the C-ABI/runtime: one
+# accept loop + per-connection handler invocation. GnuCOBOL programs are
+# re-entrant only with the RECURSIVE clause + LOCAL-STORAGE (spike P1); shared
+# peer state (the store) is guarded by a single-writer mutex over the FFI
+# (pthread via a tiny C shim, or serialize through one processor program).
+style             = "threads"                 # "sync" | "threads" | "callbacks"
+concurrency_model = "OS threads (pthread via C shim) + single-writer store lock"
+store_safety      = "single-writer lock (§4.8) — raw-thread idiom, enforced by hand"
+reentrancy        = "RECURSIVE + LOCAL-STORAGE for the chain-walk/decode; per-conn request_id demux"
+blocking_io_note  = "blocking read/accept run on dedicated OS threads, not a bounded pool (§7b)"
+
+[naming]
+# COBOL convention: UPPER-CASE hyphenated identifiers (the canonical COBOL style).
+# File/program ids lower-kebab to match the repo + GnuCOBOL module-name lookup.
+data_names        = "UPPER-KEBAB-CASE"        # WS fields: CONTENT-HASH, PEER-ID, CHAIN-DEPTH
+program_ids       = "lower-kebab-case"        # PROGRAM-ID: cbor-encode, chain-walk, peer-dispatch
+paragraph_names   = "UPPER-KEBAB-CASE"        # paragraphs: BUILD-ENTITY, PARSE-PARAMS
+copybook_names    = "lower-kebab-case"        # .cpy copybooks: cbor.cpy, model.cpy, ffi.cpy
+constants         = "UPPER-KEBAB-CASE"        # 78-level / 88-level condition constants
+file_format       = "free"                    # >>SOURCE FORMAT FREE (cobc -free); not fixed columns
+
+[build]
+build_tool        = "cobc (GnuCOBOL)"
+build_command     = "cobc -x -free -fno-binary-truncate -fstatic-call ..."
+compile_flags     = "-free -fno-binary-truncate -fstatic-call -W"
+link_flags        = "-L<codec-build-dir> -lentitycore_codec"
+test_command      = "cobc -x ... test/codec-selftest.cob && ./codec-selftest"
+pack_command      = "make (containers/cobol-toolchain) — source distribution"
+
+[layout]
+project_file      = "Makefile"
+src_dir           = "src/"                    # .cob programs + .cpy copybooks
+test_dir          = "test/"                   # codec self-test + smoke + selftest
+host_dir          = "bin/"                    # bin/host.cob — the TCP host validate-peer dials
+lib_modules       = "cbor, ffi, model, peer-id, identity, store, wire, capability, transport, peer"
+
+[publishing]
+registry          = "source"                  # no COBOL package registry; GnuCOBOL builds from source
+registry_url      = ""
+package_id        = "entity-core-protocol-cobol"
+license_expression = "Apache-2.0"
+repository_url    = ""                         # TBD on first publish
+authors           = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default; COBOL ecosystem has no MIT-preference norm
+
+[testing]
+# Hand-rolled COBOL harness (test/codec-selftest.cob): decodes the normative
+# fixture (conformance-vectors-v1.cbor) with the COBOL CBOR reader, runs each
+# vector through encode/decode/hash (FFI + value codec), checks byte-identity.
+# Decode-reject vectors confirm the COBOL decoder + FFI tag-scan reject. No COBOL
+# test framework exists; the harness is self-contained.
+framework         = "hand-rolled"
+
+[container]
+base_image        = "entity-core-keystone/cobol-toolchain:latest"
+build_in_container = true
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/cobol entity-core-keystone/cobol-toolchain:latest make"
+
+[idiom]
+recursive_clause_required = true              # RECURSIVE + LOCAL-STORAGE for any per-frame recursion (P1)
+single_byte_comp_x        = "PIC 9(2) COMP-X" # NOT 9(3) — that is 2 bytes (P2 trap)
+ffi_call_convention       = "CALL 'sym' USING BY REFERENCE ptr BY VALUE len RETURNING rc, -fstatic-call"
+buffer_idiom              = "PIC X(N) max-buffer + explicit used-length counter + reference modification"
+gnucobol_version          = "3.2.0"
+
+[deps]
+# Exact pins (S11; all >= 30 days old at 2026-06-18). Mirrored in
+# containers/cobol-toolchain/Containerfile.
+gnucobol          = "3.2-8.fc43"              # buildtime 2025-07-24 (~11 months)
+gcc               = "15.2.1-7.fc43"           # lowers GnuCOBOL's generated C
+libsodium         = "1.0.22-1.fc43"           # link-time dep of the C-ABI codec impl
+libentitycore_codec = { c_abi_version = "1.1", impls = ["rust", "c"], provenance = "ec_impl_info()" }
+
+[spec]
+v7_version_pinned = "7.75"                    # latest stamped spec-data (byte-stable core floor v7.75->v7.77)
+codec_corpus      = "v0.8.0"                   # ECF corpus; CBOR/type-system byte-identical v7.71->v7.75 (per prior peers)
+oracle            = "entity-core-go @ e8524ed (v7.77); core floor byte-stable from v7.75"

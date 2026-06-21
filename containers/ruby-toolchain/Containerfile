@@ -1,0 +1,98 @@
+# Ruby toolchain image — builds the native Ruby peer
+# (entity-core-protocol-ruby) per protocol-generator/ruby/profile.toml.
+#
+# UNLIKE the other peers (beam / node24 / dotnet9 / *-toolchain), which layer a
+# toolchain onto fedora:43, this image pins the OFFICIAL Docker `ruby:3.x`
+# release image directly — per the S1 ruby-peer prompt. The official image is a
+# reviewed-vendor channel (Docker Official Images, docker-library/ruby), so per
+# the S11 scope clarification the strict 30-day *registry* cool-down relaxes to
+# "pin exactly for reproducibility" (a patch-pinned tag does this); we still pin
+# a tag that is comfortably >= 30 days old.
+#
+# S1: builds run in this container, not on the host.
+# S11 PIN STATUS:
+#   ruby:3.4.4-slim-bookworm — Ruby 3.4.4 released 2025-05-14 (~13mo old at
+#   2026-06-14, well clear of the 30-day floor). slim-bookworm = Debian 12,
+#   which ships OpenSSL 3.0.x — the backend that gives stdlib `openssl`
+#   Ed25519 + Ed448 + SHA-2 (the native-crypto story; no FFI, no libsodium).
+#   The core peer has ZERO runtime gem dependencies (crypto + hashing = stdlib
+#   `openssl`/`digest`; CBOR/base58/varint hand-rolled; Minitest = stdlib), so
+#   there are no library pins to mirror here — only the Ruby toolchain itself.
+#
+# NOTE (S2 lock-step): pin the image *digest* (ruby:3.4.4-slim-bookworm@sha256:..)
+# when the image is first pulled in-container, for full reproducibility. The tag
+# is pinned now; the digest is pinned at first build.
+#
+# Build:
+#   podman build -t entity-core-keystone/ruby-toolchain:latest \
+#     -f containers/ruby-toolchain/Containerfile .
+FROM docker.io/library/ruby:3.4.4-slim-bookworm
+
+# Minimal build deps. The core peer needs none at runtime, but `bundle install`
+# of even zero runtime gems wants make/gcc available for any dev/test gem with a
+# native ext, and ca-certificates for the one network-on dep-vendor step. git is
+# handy for bundler git sources (not used at core). Kept slim.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+# UTF-8 locale: keep source/IO encoding clean. The codec core uses ASCII-8BIT
+# (BINARY) strings explicitly for wire bytes, but a UTF-8 default avoids
+# accidental latin1/ASCII surprises in text handling and filenames.
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# ── Verify the OpenSSL EdDSA backend is live (ed25519 + ed448 BOTH present) ───
+# Fails the build loudly if the bundled OpenSSL didn't wire EdDSA into stdlib
+# `openssl`. This closes the A-RUBY-002 risk at container-build time: ed448 is
+# the crypto-agility higher bar and must be reachable natively (no FFI). Round-
+# trips a sign/verify on each curve so it tests the actual signature path, not
+# just key generation.
+RUN ruby -ropenssl -e ' \
+      msg = "entity-core ed-check".b; \
+      %w[ED25519 ED448].each do |alg| \
+        k = OpenSSL::PKey.generate_key(alg); \
+        sig = k.sign(nil, msg); \
+        raise "#{alg} verify failed" unless k.verify(nil, sig, msg); \
+        raise "#{alg} tamper not rejected" if k.verify(nil, sig, (msg + "x").b); \
+        STDERR.puts "crypto #{alg} OK (sig #{sig.bytesize}B)"; \
+      end; \
+      raise "SHA-384 missing" unless OpenSSL::Digest::SHA384.new.digest_length == 48; \
+      STDERR.puts "crypto EdDSA OK: ed25519+ed448 present; SHA-384 present"; \
+    ' || (echo "FATAL: stdlib openssl lacks ed25519/ed448 — check the bundled OpenSSL build" && exit 1)
+
+# ── Bundler offline posture ──────────────────────────────────────────────────
+# Pre-update bundler in this network-on build step so dev-loop runs can be
+# --network=none. The core gem has no runtime deps, so `bundle install --local`
+# resolves nothing from the network; dev/test deps (if any are added later) are
+# vendored in one network-on step then locked.
+ENV BUNDLE_PATH=/usr/local/bundle \
+    BUNDLE_FROZEN=1 \
+    GEM_HOME=/usr/local/bundle
+
+# ── Bake the peer's bundle into the image (the one network-on step) ──────────
+# The core gem has no runtime deps; the only dev-time tools (Minitest + Rake)
+# ship with Ruby and are pinned to those versions in the Gemfile, so this
+# resolves entirely from the pre-installed gem set (no real network fetch) and
+# is captured in an image layer. Because each `podman run --rm` is ephemeral,
+# installing the bundle here (not at run time) is what makes the offline
+# `bundle exec rake test` dev-loop reproducible. Only the dependency-declaring
+# files are copied so this layer caches across source edits.
+COPY protocol-generator/ruby/Gemfile protocol-generator/ruby/entity_core_protocol.gemspec /opt/ruby-peer/
+COPY protocol-generator/ruby/lib/entity_core/version.rb /opt/ruby-peer/lib/entity_core/version.rb
+RUN cd /opt/ruby-peer \
+    && bundle config set --local frozen false \
+    && bundle install \
+    && rm -f Gemfile.lock
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="ruby-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.ruby="3.4.4"
+LABEL org.entity-core-keystone.base="docker.io/library/ruby:3.4.4-slim-bookworm"
+
+CMD ["/bin/bash"]

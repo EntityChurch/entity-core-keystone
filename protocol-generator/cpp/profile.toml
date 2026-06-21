@@ -1,0 +1,331 @@
+# entity-core-protocol-cpp — Language Profile
+#
+# A RELEASE "REACH" peer (systems / games / embedded ecosystem coverage), built
+# in the prerelease six-peer slate (research/RELEASE-READINESS.md §2 row 3). C++ is
+# CORROBORATION-ONLY by design: the spec-discovery well is dry (the 8-peer synthesis
+# saturated the language axes; the C peer #10 then re-confirmed the manual-memory axis
+# with the one §4.8 atomic-refcount finding, A-C-009). C++ is NOT expected to surface a
+# new spec defect — its value is REACH (systems/games/embedded reader can pull a native
+# peer) and exercising the generator against C++ IDIOM (RAII / `std::expected` vs
+# exceptions / templates / move-semantics ownership), which is the actual reach value.
+# Anything genuinely new is logged honestly (A-CPP-NNN); it is gravy, not the goal.
+#
+# Authored FRESH in S1 from the V7 spec (spec-data/v7.75) + C++ ecosystem research. The
+# CLOSEST analog is the C peer (protocol-generator/c/) — the same libsodium crypto, the
+# same hand-rolled canonical ECF codec, the same systems-language manual-memory concerns
+# — but C++ is DELIBERATELY a DISTINCT idiom point: it does NOT inherit C's raw return-
+# code/out-param error model or its unguarded malloc/free. C++ exercises RAII ownership
+# (smart pointers, move semantics, no manual free), a `std::expected`-based Result error
+# model (NOT exceptions on the hot path), and templates — the C++-native shapes a C++
+# developer would actually write. Where a value matches the C peer it is by independent
+# arrival from V7 + the libsodium/canonical-CBOR reality, NOT a port of the C peer.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value is logged
+# in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase. (No TBDs below.)
+
+[language]
+id                = "cpp"
+name              = "C++ (C++20)"
+tier              = "reach"                    # release slate "reach" peer — systems/games/embedded coverage; corroboration-only (discovery well dry), built for reach not findings
+package_name      = "entity-core-protocol-cpp" # keystone peer id. C++ has no single central registry; "packaging" = a CMake package (find_package / CMake Package Config) + vcpkg/conan recipes + a static/shared lib (see [publishing]).
+runtime           = "cpp-toolchain"            # references containers/cpp-toolchain/Containerfile — AUTHORED this phase (NOT built; S1 boundary). NOT the same as c-toolchain (C++ needs g++/clang++ + CMake-as-build-system + the C++20 stdlib; see [container]).
+
+[codec]
+# strategy: NATIVE hand-roll — DECISION D1 (research/RELEASE-READINESS.md §3-D1), ALREADY
+# MADE and BINDING. NOT FFI. Rationale on record: "An FFI C++ peer is the C peer in a
+# trench coat and proves nothing independent; native exercises the generator against C++
+# idiom (RAII / std::expected vs exceptions / templates), which is the actual reach
+# value. Crypto stays libsodium." So the peer MUST hand-roll the canonical ECF codec in
+# IDIOMATIC C++ — it must NOT FFI to libentitycore_codec for the codec.
+#
+# This is ALSO the same A-005 pattern every prior native peer hit: a faithful ECF codec
+# OWNS the canonical layer regardless of any CBOR library underneath. The four hard ECF
+# requirements no C++ CBOR library gives for free:
+#  (a) shortest-float / float16 minimization with the four exact specials
+#      (F9 7E00 NaN / F9 7C00 +Inf / F9 FC00 -Inf / F9 8000 -0.0); minimize by
+#      double->float->half re-decode-and-compare. (Highest bug-density code in the peer —
+#      C peer ffi-c.md / every native peer.)
+#  (b) RFC-7049 LENGTH-FIRST then bytewise (CTAP2) map-key ordering — DIFFERS from
+#      RFC-8949 §4.2 bytewise ordering (the trap the C#/Rust libs fall into).
+#  (c) recursive major-type-6 (tag) rejection at ANY nesting depth -> 400 non_canonical_ecf.
+#  (d) byte-exact raw-slice round-trip + the full uint64/nint head-form range
+#      (int.10/15/16/17, the [2^63, 2^64-1] band).
+# Surveyed C++ CBOR libs and REJECTED for the core codec (A-CPP-001):
+#  - tinycbor (Intel/AOSP) — streaming/low-level (the closest), but float-min / tag-reject /
+#    CTAP2 ordering are STILL the caller's job, and it is a C library (would re-introduce
+#    the C-not-C++ idiom we are paid to exercise). Same 0.5->0.6 churn pin risk the C peer
+#    flagged.
+#  - cppcodec — base64/base32/hex ONLY, NOT a CBOR library (LANDSCAPE mis-association).
+#  - jsoncons (cbor sub-library) — DOM-tree, header-only, broad-surface; not ECF-determinism
+#    focused (no length-then-lex, no decode-side shortest-float minimality check), obscures
+#    raw-byte fidelity. A heavy header-only dep that buys nothing for the canonical layer.
+#  - QCBOR — targets dCBOR determinism but only in its 2.x ALPHA (no stable release ->
+#    fails the S11 >=30-day-STABLE pin); and it is a C library.
+# So a library buys almost nothing and adds a build/pin dependency. Hand-rolling
+# `ecf.{hpp,cpp}` in idiomatic C++ (a `std::span<const std::byte>`-based zero-copy decoder
+# returning `std::expected<Value, EcfError>`, a `std::vector<std::byte>`/back-inserter
+# encoder) is the faithful AND the idiom-exercising path. The decoder bounds-checks every
+# read via std::span (size-carrying — the C++ answer to the C "C will not bounds-check"
+# footgun) and returns spans/views INTO the input buffer (zero-copy borrow contract,
+# lifetime-documented). `ffi` is the DOCUMENTED FALLBACK only if the S2 codec spike fails
+# — but per D1 it is explicitly NOT the chosen path even though it would compile (the whole
+# point is to WRITE the canonical C++ codec). The sibling C/Rust FFI .so is kept as a FREE
+# byte-for-byte cross-check oracle at S2/S4 (entity-core-codec-ffi-c, the C-ABI codec).
+# Spike at S2 start (PHASE-S1 mandate): push the map_keys + float v7.71 vectors through the
+# hand-rolled encoder/decoder BEFORE the full build (cheap insurance).
+strategy          = "native"
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native" } # idiomatic C++20: std::span/std::byte zero-copy decode, std::vector<std::byte> encode, std::expected error channel; encode+decode in one .hpp/.cpp unit
+# Ed25519 + SHA-256: libsodium (D1 keeps crypto on libsodium). RFC-8032 deterministic
+# detached signing via crypto_sign_detached / crypto_sign_verify_detached; seed->keypair
+# via crypto_sign_seed_keypair; SHA-256 via crypto_hash_sha256. libsodium is the ONE
+# third-party runtime dependency and is profile-AUTHORIZED here (S6, per D1) + S11-pinned.
+# C++ has no stdlib crypto; libsodium is the audited, statically-linkable single source of
+# both Ed25519 AND SHA-256 (the same call the C peer made for the same reasons). Wrapped in
+# a small RAII C++ facade (libsodium is a C API; the peer's crypto.hpp owns the C handles
+# with C++ ownership semantics — no raw resource leaks). Linked statically + privately
+# (-fvisibility=hidden + libsodium symbol localization) so the artifact is self-contained
+# and an embedder linking THEIR libsodium does not collide.
+ed25519_library   = { name = "libsodium", version = "1.0.22-1.fc43", api = "crypto_sign_seed_keypair / crypto_sign_detached / crypto_sign_verify_detached", wrapper = "RAII C++ facade over the C API" }
+# Ed448 (crypto-agility HIGHER bar, key_type 0x02 / SHA-384 content_hash 0x01 — NOT the
+# §9.1 floor): KNOWN GAP -> DEFER (per the slate: "gap -> defer"). libsodium has NO Ed448
+# (ships Ed25519 + the SHA-2 family + ML-KEM/SHA-3 as of 1.0.22, but no Ed448 /
+# Ed448-Goldilocks). Same native gap C (A-C-001), Zig (A-ZIG-002), OCaml (A-OC-002), Rust
+# (A-RUST-002) hit and Swift deferred (A-SW-001). The v0.1 core is Ed25519 + SHA-256 ONLY
+# (the §9.1 floor), fully covered by libsodium, so the gap does NOT touch the conformance
+# floor. Do NOT FFI around it for v0.1 (the slate is explicit: defer, don't FFI). When/if
+# agility enters scope, the dependency-lightest C++ route is the sibling FFI agility path —
+# entity-core-codec-ffi-c (C-ABI v1.1) already vendored a self-contained openssl curve448
+# for its Ed448 family; linking that sibling C archive for the Ed448 family ONLY is the
+# OCaml hybrid-FFI shape, and C++-to-C is a plain extern "C" link (NOT a foreign bridge).
+# Route (b) OpenSSL/libcrypto (EVP_PKEY_ED448 + SHA-384) is the heavier alternative. See
+# SPEC-AMBIGUITY-LOG A-CPP-002.
+ed448_library     = { name = "DEFERRED", version = "none", note = "libsodium has no Ed448; DEFER per slate (do not FFI around it for v0.1). When agility lands: link the sibling entity-core-codec-ffi-c agility .a (vendored curve448) via extern \"C\", or OpenSSL EVP_PKEY_ED448. Core is Ed25519-only." }
+sha256_source     = "libsodium crypto_hash_sha256 (SHA-256 floor; crypto_hash_sha512 also present; SHA-384 for agility would need OpenSSL/libcrypto — NOT in libsodium, deferred with Ed448)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (~80 lines long-division, src/base58.cpp); a dep for something this small is pure liability (same call C/Rust/C#/Go made). wire-conformance confirms it.
+varint_handling   = "native"                  # multicodec-style LEB128 (§1.5/§7.3) inline impl (src/varint.cpp); the multikey key_type / hash_type / format-code varints. Codes 0-127 are a single byte (all currently-allocated codes), so a 1-byte fast path + a general loop with its own minimality rejection.
+
+[error_model]
+# DELIBERATE idiom — a Result-style error channel via C++23/C++20 `std::expected<T, E>`
+# (with the `tl::expected` header-only shim as the fallback only if the toolchain's
+# <expected> is unavailable — see note). This is C++'s MODERN, idiomatic answer to the
+# Rust/Go "result" style, and is DISTINCT from BOTH the C peer's raw return-code/out-param
+# model AND a plain-exceptions model. The choice exercises the generator against a C++
+# IDIOM AXIS no prior peer covers: value-based error propagation in a language that ALSO
+# has exceptions — the generator must NOT reflexively reach for `throw`/`try` on the hot
+# path (the C# peer is the exceptions point in the cohort; C++ here is the std::expected
+# point). Codec/decode failures and protocol-status failures are an EcfError / ProtocolError
+# enum carried in the std::expected error channel; the dispatcher maps a ProtocolError ->
+# wire status code at the boundary (400 non_canonical_ecf / 401 / 403 / 413 / 400
+# chain_depth_exceeded). EXCEPTIONS are reserved for TRUE programmer-error / unrecoverable
+# invariant violations ONLY (std::bad_alloc on OOM, std::logic_error for "can't happen"),
+# caught at the per-connection task boundary so one bad connection never crashes the peer
+# (the §4.9 no-crash floor) — NEVER for protocol flow. No exception ESCAPES the public ABI
+# boundary (noexcept where it matters; the public surface returns std::expected, not throws).
+style             = "result"                  # "exceptions" | "result" | "either" | "errno" | "error_union" | "conditions" — here "result" = std::expected<T, E> value-based propagation, the C++-modern Result. NOT plain exceptions (that is C#'s point); NOT C's return-code/out-param (that is the C peer's point).
+result_type       = "std::expected<T, ProtocolError>" # C++23 <expected>, available in libstdc++ (GCC 12+) and libc++ (Clang 16+); the C++20-targeted build uses it via the toolchain that ships it. tl::expected is the documented header-only fallback shim.
+error_enum        = "ProtocolError / EcfError" # scoped enum class; EcfError { TruncatedInput, NonCanonicalFloat, TagRejected, DuplicateKey, NonMinimalInt, BadHeadForm, ... }; ProtocolError adds the wire-status-mapped cases { NonCanonicalEcf(400), Unauthenticated(401), CapabilityDenied(403), PayloadTooLarge(413), ChainDepthExceeded(400), ... }
+exceptions_policy = "programmer-error-only"   # exceptions ONLY for std::bad_alloc / logic_error (can't-happen); caught at the connection-task boundary (§4.9); NEVER protocol flow; NEVER escape the public ABI
+no_exceptions_on_hot_path = true              # the codec + dispatch hot path is std::expected-only; -fno-exceptions is NOT set (libsodium/std may throw bad_alloc), but the peer's own logic does not throw for control flow
+
+[memory]
+# C++-SPECIFIC — and DELIBERATELY the RAII / smart-pointer / move-semantics ownership
+# model, the C++ ANSWER to the C peer's raw unguarded malloc/free. This is THE idiom seam
+# that makes C++ a distinct reach point from C: C++ has GC-free deterministic destruction
+# (RAII), so ownership is expressed in the TYPE SYSTEM (unique_ptr / shared_ptr / move) and
+# enforced by the compiler + destructors, NOT by convention + manual free(). There is no
+# raw `new`/`delete` and no manual `free()` in idiomatic peer code — allocation is owned by
+# a smart pointer or a value container (std::vector / std::string) whose destructor frees.
+gc                = false
+allocator         = "RAII smart pointers + value containers" # std::unique_ptr (sole ownership), std::shared_ptr (the shared-store-entity case — see [concurrency], the A-C-009 analog), std::vector<std::byte> / std::string (owning buffers); NO raw new/delete in peer code
+ownership_model   = "raii-move-semantics"     # ownership encoded in the type: unique_ptr moves, shared_ptr ref-counts, values copy/move; destructors free deterministically. The C++-native replacement for C's "documented caller-frees" — the compiler + RAII enforce it, not a header comment.
+decode_zero_copy  = true                      # the decoder returns std::span<const std::byte> / string_view INTO the caller's input buffer (no copy in the hot path); the input buffer MUST outlive the decoded view (documented borrow contract; the C++ span/view lifetime discipline)
+shared_entity_lifetime = "std::shared_ptr<Entity> with atomic refcount" # PRE-RESOLVING the A-C-009 lesson IN THE TYPE SYSTEM: materialized entities shared across per-EXECUTE dispatch threads (§4.8) are held by std::shared_ptr, whose control-block refcount IS atomic by the C++ standard (thread-safe ref/unref) — so the C peer's hand-rolled atomic_int fix is FREE here (shared_ptr's atomic control block). NOTE the standard caveat (built into the design): shared_ptr's REFCOUNT is atomic, but concurrent mutation of the POINTEE still needs the store lock ([concurrency].store_safety) — shared_ptr buys lifetime-safety, not data-race-safety of the contents.
+leak_tooling      = "ASan/LSan + UBSan"       # tests build + run under AddressSanitizer + LeakSanitizer + UndefinedBehaviorSanitizer (-fsanitize=address,undefined) so a leak / use-after-free / UB is a TEST FAILURE — the C++ analogue of the C peer's manual-memory conformance bonus, even though RAII makes leaks far rarer
+hardening         = "-fsanitize=address,undefined for tests; -D_FORTIFY_SOURCE=2 -fstack-protector-strong + -Wall -Wextra -Werror for release"
+no_raw_new_delete = true                      # idiom guard: peer code uses make_unique / make_shared / value containers; raw new/delete only inside a single RAII wrapper if ever unavoidable (not expected)
+
+[concurrency]
+# DELIBERATE idiom; NOT exercised by the codec (S2 is pure/synchronous). C++'s portable
+# concurrency primitive is the C++ STANDARD THREAD LIBRARY (std::thread / std::mutex /
+# std::shared_mutex / std::condition_variable / std::atomic) — the standard-library analogue
+# of the C peer's pthreads, but TYPE-SAFE and RAII-locked (std::scoped_lock / unique_lock,
+# no manual unlock). For the §4.8/§4.9/§6.11 / §7b concurrency gate (CORE-gating, 5/5):
+# ONE reader thread (std::thread) per connection demuxing EXECUTE_RESPONSE by request_id,
+# plus a data-race-safe content store.
+# STORE-SAFETY MECHANISM (§4.8 data-race requirement): the shared content store is guarded
+# by a std::shared_mutex (many concurrent readers via std::shared_lock, exclusive writer via
+# std::unique_lock — reads dominate the dispatch path, so a shared_mutex beats a plain mutex;
+# a std::mutex is the simpler fallback). ENTITY LIFETIME is std::shared_ptr (atomic refcount
+# by the standard — see [memory].shared_entity_lifetime): this PRE-RESOLVES the C peer's
+# A-C-009 use-after-free-under-load finding structurally (the GC'd cohort peers never hit it;
+# the C peer hand-rolled atomic_int; C++ gets the same guarantee from shared_ptr's atomic
+# control block FOR FREE). NO blocking syscalls on a cooperative path (each connection has
+# its own std::thread, so a blocking recv only blocks that connection's thread — the Swift
+# §7b "dedicated thread for blocking I/O" finding applied structurally). TCP_NODELAY MUST be
+# set on every connection socket (the Zig §7b finding: Nagle/delayed-ACK on small req/resp
+# frames was THE throughput killer; 343ms/cycle churn is the Nagle signature). Write-serialize
+# each shared connection socket with a per-connection std::mutex.
+style             = "threaded"                # "sync" | "task" | "threaded" | "virtual-threads" — C++ standard threads (std::thread); coroutines (C++20) are NOT used for the core peer (blocking-thread-per-connection is the simpler, portable §7b-clean shape)
+primitive         = "std::thread / std::shared_mutex / std::mutex / std::condition_variable / std::atomic"
+default_surface   = "blocking"                # codec + core peer are blocking/synchronous; std::threads provide concurrency (one reader thread per connection)
+store_safety      = "std::shared_mutex"       # §4.8 data-race-safe store: many-reader/one-writer shared_mutex guarding the content store (std::mutex fallback). RAII-locked (shared_lock / unique_lock / scoped_lock — no manual unlock).
+entity_refcount   = "std::shared_ptr (atomic control block — A-C-009 pre-resolved)" # shared entities held by shared_ptr; refcount is atomic by the C++ standard -> no plain-int refcount race (the C peer's S4 crash, structurally avoided)
+request_demux     = "std::unordered_map<request_id, condvar-slot>" # reentrant request_id correlation (N7); the reader thread signals the waiting dispatch via a std::condition_variable slot, map guarded by its own mutex
+tcp_nodelay       = true                      # MANDATORY on every connection socket (§7b throughput; the Zig Nagle finding)
+
+[naming]
+# C++-native conventions. C++ HAS namespaces (unlike C's flat global space), so types live
+# in a project namespace `entity_core` rather than carrying a symbol prefix. Modern C++
+# leans snake_case for functions/variables (the std-library convention) and PascalCase for
+# user types/classes — the common house style (e.g. Google-ish: snake_case methods,
+# PascalCase types). Distinct from C's all-snake_case + ec_ prefix.
+namespace_root    = "entity_core"             # all public symbols live in namespace entity_core { ... } (+ nested entity_core::ecf, entity_core::crypto, ...); the namespace IS the module boundary (no C-style symbol prefix needed)
+type_names        = "PascalCase"              # classes/structs/enums: Entity, ContentHash, PeerId, EcfValue, ProtocolError (C++ user-type convention)
+function_names    = "snake_case"              # methods/free functions: content_hash(), sign_detached(), ecf_encode() (std-library + common house style)
+variable_names    = "snake_case"              # locals/members: content_hash, peer_id, format_code (members may carry a trailing _ : content_hash_)
+member_suffix     = "trailing-underscore"     # private data members use a trailing underscore (content_hash_) — common C++ convention to disambiguate from accessors
+constant_names    = "kPascalCase or UPPER_SNAKE" # constexpr constants: kMaxMessageSize (Google style) — pick kPascalCase for constexpr, UPPER_SNAKE for macros (macros minimized)
+enum_constants    = "PascalCase (enum class)" # scoped enum class members: ProtocolError::CapabilityDenied, KeyType::Ed25519 (enum class, NOT C-style UPPER_SNAKE bare enums)
+file_names        = "snake_case"              # ecf.cpp/.hpp, peer_id.cpp, content_hash.cpp, base58.cpp, varint.cpp (one logical unit per .cpp/.hpp pair)
+header_ext        = ".hpp"                    # C++ headers use .hpp (distinguish from C .h); impl .cpp
+hex_case          = "lowercase"               # std::format("{:02x}") / std::hex is lowercase by default for ALL address-space tree-path hex (§3.4/§3.5) — pinned explicitly; NEVER {:02X}/std::uppercase. (A-CL-009 avoided by default, like C, but PINNED.)
+
+[build]
+# BUILD SYSTEM = CMake (per the slate row 3: "vcpkg/conan + CMake"). This is the EXPLICIT
+# slate decision and the C++ ecosystem standard — UNLIKE the C peer (plain GNU make). C++
+# has no single universal build tool, but CMake is the de-facto standard that vcpkg AND
+# conan both integrate with, and is what a systems/games/embedded C++ developer expects.
+# (The repo's "build via make" convention bends here BY PROFILE — S6 — because CMake is the
+# idiomatic C++ build system and the slate names it; the meta-Makefile may still wrap
+# `cmake --build` as a thin orchestration shim per repo convention, but CMake owns the build
+# graph. Documented as a deliberate profile decision, A-CPP-003.)
+build_tool        = "cmake"                    # CMake — the C++-idiomatic build system; integrates vcpkg + conan; what the slate names (row 3)
+build_generator   = "ninja"                    # CMake drives Ninja (fast, deterministic) inside the container; "Unix Makefiles" generator is the fallback if ninja is unavailable
+build_command     = "cmake -S . -B build -G Ninja && cmake --build build" # -> libentity_core_protocol.a + .so + the conformance harness binary
+test_command      = "cmake --build build --target test_conformance && ctest --test-dir build" # builds + runs the conformance harness (corpus byte-identity) under ASan/LSan/UBSan via CTest
+pack_command      = "cmake --build build --target package" # CPack -> a versioned source/binary package + the CMake package-config (see [publishing])
+cxx               = "g++"                       # g++-15.2.1 (in the cpp-toolchain image); clang++ (clang-20/21) is wire-equivalent and used for the ASan/UBSan test pass if preferred (cross-compiler hygiene)
+std               = "c++20"                     # -std=c++20 -pedantic -Wall -Wextra -Werror. C++20 chosen: std::span (zero-copy decode), std::format (hex), concepts, designated init; <expected> is C++23 but GCC 12+/Clang 16+ ship it usable under -std=c++20 (or the tl::expected shim). NOT C++23-required (widest reach across embedding toolchains — the reach goal).
+cmake_min_version = "3.28"                      # CMake >= 3.28 (C++20 modules-ready, presets, FetchContent stable); the image ships 3.31.x
+
+[layout]
+project_file      = "CMakeLists.txt"
+src_dir           = "src/"                     # ecf.cpp/.hpp, base58.cpp/.hpp, varint.cpp/.hpp, content_hash.cpp/.hpp, peer_id.cpp/.hpp, crypto.cpp/.hpp, store.cpp/.hpp, dispatch.cpp/.hpp, transport.cpp/.hpp
+include_dir       = "include/"                 # the public headers under include/entity_core/ (protocol.hpp umbrella header)
+test_dir          = "test/"                    # conformance harness (test/conformance.cpp) + unit tests; loads the normative fixture and asserts byte-identity; CTest-registered, ASan/LSan/UBSan
+lib_name          = "entity_core_protocol"     # libentity_core_protocol.a + libentity_core_protocol.so; CMake target entity_core::protocol
+public_header     = "include/entity_core/protocol.hpp"
+cmake_package     = "EntityCoreProtocol"       # find_package(EntityCoreProtocol) -> target entity_core::protocol
+
+[publishing]
+# C++ has NO single central package registry; the two dominant package managers are
+# vcpkg (Microsoft) and conan (JFrog), BOTH named in the slate (row 3). "Publishing" =
+# (a) an installable CMake package (find_package config) consumed via FetchContent /
+# add_subdirectory / system install, plus (b) vcpkg + conan recipes. This mirrors the C
+# peer's decentralized stance but uses the C++ package-manager ecosystem instead of
+# pkg-config-only. license_expression Apache-2.0 (S9).
+registry          = "cmake-package + vcpkg + conan"  # no single central index; vcpkg port + conan recipe + a CMake find_package config
+registry_url      = ""                          # n/a — vcpkg/conan are decentralized recipe registries; first-publish recipe URLs TBD
+package_id        = "entity-core-protocol-cpp"  # keystone peer id / vcpkg-conan recipe name
+vcpkg_port        = "entity-core-protocol"      # vcpkg port name
+conan_recipe      = "entity-core-protocol/0.1.0" # conan recipe ref
+cmake_config      = "EntityCoreProtocolConfig.cmake" # the installed find_package config
+license_expression = "Apache-2.0"
+repository_url     = ""                          # TBD on first publish
+authors            = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"               # S9 default; C++ ecosystem is license-mixed (no dominant norm). libsodium is ISC (permissive, Apache-compatible — statically linkable into an Apache-2.0 artifact). Keep the safe Apache-2.0 default (explicit patent grant).
+
+[testing]
+# No heavyweight external test framework — a hand-rolled C++ test harness registered with
+# CTest (the dependency-minimization stance, matching the C/Zig/OCaml/CL "hand-roll even the
+# test runner" call). The conformance harness (test/conformance.cpp) loads the normative
+# fixture vectors and asserts byte-identity against the corpus; a tiny assert/expect-and-count
+# driver reports pass/fail and registers cases with CTest. Built + run under ASan/LSan/UBSan
+# so memory/UB bugs are test failures. (GoogleTest/Catch2 were considered and REJECTED for
+# dep-minimization — a counting harness + CTest suffices for a corpus byte-identity test;
+# adding a test-framework registry dep buys little. A-CPP-004.)
+framework         = "hand-rolled + CTest"      # in-repo assert/expect macros + a counting main(), registered with CTest; no GoogleTest/Catch2 dependency
+leak_checking      = true                      # ASan/LSan/UBSan under `ctest` — leak / UAF / UB = test failure
+
+[container]
+# AUTHORED this phase (NOT built — S1 boundary). containers/cpp-toolchain/Containerfile is
+# NEW: the existing c-toolchain has gcc + libsodium but the C++ PEER needs the C++ toolchain
+# (g++ / clang++ + the C++20 stdlib incl <expected> + <span> + <format>), CMake-AS-the-
+# build-system + Ninja, and the libsodium static+devel. fedora:43 base (S1). All packages
+# come through fedora's REVIEWED dnf channel (exact-pin for repro; the >=30-day age floor
+# relaxes for the reviewed distro channel per the S11 clarification — but the pins are
+# verified >=30-day-old anyway).
+base_image        = "entity-core-keystone/cpp-toolchain:latest"
+build_in_container = true
+reuse_existing     = false                     # NEW Containerfile authored (containers/cpp-toolchain/Containerfile); NOT a reuse of c-toolchain (C++ stdlib + CMake-build-system + ninja needed)
+# --network=none is honored: the core peer is libsodium + hand-rolled code only, and
+# libsodium is pre-installed in the image, so the build is fully offline. vcpkg/conan are an
+# S5/publish concern (recipe authoring), NOT needed for the in-container conformance build —
+# the codec/peer have NO third-party C++ deps to fetch (everything but libsodium is in-repo).
+dev_loop           = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/cpp entity-core-keystone/cpp-toolchain:latest sh -c 'cmake -S . -B build -G Ninja && cmake --build build && ctest --test-dir build'"
+
+[idiom]
+# Hints that don't fit elsewhere — the C++-native shapes.
+raii_ownership                = true           # RAII / smart pointers / move semantics; NO manual new/delete/free; destructors free deterministically (the headline idiom seam vs C)
+std_expected_errors           = true           # std::expected<T, E> value-based error channel; exceptions reserved for programmer-error only
+templates                     = true           # use templates/concepts where idiomatic (e.g. a generic encode<T> dispatch, concept-constrained), exercising the C++ generic-programming axis the generator has not seen
+zero_copy_decode              = true           # decoder returns std::span<const std::byte> / string_view into the input buffer; input must outlive the view (lifetime-documented borrow)
+opaque_pimpl                  = true           # public headers expose stable types + a Pimpl (std::unique_ptr<Impl>) where ABI stability matters; no internal layout leaks across the public API
+no_symbol_leak                = true           # -fvisibility=hidden; export only the entity_core:: public API via an ENTITY_CORE_API visibility macro; localize libsodium symbols so an embedder's own libsodium does not collide
+native_uint64                 = true           # C++ has native uint64_t / std::uint64_t -> the §1.5/§7.3 head-form maps DIRECTLY (no ulong/int63 special-casing like C#/OCaml; the cleanest int story alongside C/Zig/Rust). Use std::uint64_t throughout; watch signed-overflow UB (UBSan on in tests).
+hex_lowercase                 = true           # std::format("{:02x}") / std::hex is lowercase by default — PIN it explicitly: NEVER {:02X}/std::uppercase for any address-space tree-path hex (§3.4/§3.5; A-CL-009)
+defensive_bounds              = true           # bounds-check every buffer access in the decoder via std::span (size-carrying; the C++ answer to C's "won't bounds-check") — validate length before every read; .at()/explicit checks, never UB
+no_vla                        = true           # C++ has no VLAs (non-standard); attacker-controlled sizes use std::vector with explicit size checks, never a fixed stack buffer sized by input
+cxx_version                   = "c++20"
+
+[deps]
+# Exact pins (S11). The ONLY third-party runtime dependency is libsodium; everything else
+# (CBOR / base58 / varint / the test harness) is hand-rolled in-repo. The toolchain
+# (g++/clang++/cmake/ninja/binutils + the C++ stdlib) comes through fedora's REVIEWED dnf
+# channel.
+#
+# SUPPLY-CHAIN SCOPE (per the project's S11 clarification): packages pulled through a
+# REVIEWED DISTRO CHANNEL (fedora dnf) get the EXACT-version pin for reproducibility but the
+# >=30-day AGE floor RELAXES (the distro has its own security review). All the pins below come
+# via fedora:43 dnf, so they are the reviewed-channel tier. There are NO registry-pulled
+# (vcpkg/conan/crates.io/npm/PyPI-style) ecosystem C++ deps in this peer for the conformance
+# build at all — the codec/base58/varint/test-harness are all hand-rolled in-repo, and
+# libsodium comes via dnf. vcpkg/conan are an S5/publish-recipe concern only (and even then
+# the recipe declares libsodium as the single dep). The C++ peer therefore has a supply chain
+# as simple as the C peer's by construction (one audited C lib + the toolchain, both via the
+# reviewed distro channel).
+libsodium         = "1.0.22-1.fc43"            # the ONE crypto dep (Ed25519 + SHA-256 + SHA-512). fedora:43's repos ship 1.0.22-1.fc43 (ChangeLog 2026-04-10, ~2 months old at 2026-06-18 -> clears the >=30-day floor anyway); the high-level crypto_sign_* / crypto_hash_sha256 we use are stable + byte-identical across the 1.0.2x line -> conformance-neutral. CVE-2025-69277 is in the low-level crypto_core_ed25519_is_valid_point validator we do NOT call. Reviewed distro channel -> exact pin for repro, age floor relaxed (but met). Statically + privately linked (-fvisibility=hidden + symbol localization).
+gcc_cpp           = "15.2.1-7.fc43"            # gcc-c++ (g++) — the C++20 compiler; ships libstdc++ with <expected>/<span>/<format>; pulls libasan/libubsan for the sanitizer test pass. Reviewed distro channel (exact pin for repro).
+clang             = "21.1.x-fc43"              # clang/clang++ — second compiler for the ASan/UBSan cross-check pass (cross-compiler hygiene; libc++ has <expected> too). Reviewed distro channel; exact NVR pinned at container-author time (verify-and-pin the fedora:43 build at S2 — see [container] note).
+cmake             = "3.31.11-1.fc43"           # the build system (the slate decision). Reviewed distro channel.
+ninja             = "1.13.x-fc43"              # ninja-build — CMake's generator backend (fast/deterministic). Reviewed distro channel; exact NVR pinned at container-author time.
+binutils          = "2.45.1-4.fc43"            # ld/objcopy (objcopy for libsodium symbol localization). Reviewed distro channel.
+libstdcxx_devel   = "15.2.1-7.fc43"            # libstdc++-devel — the C++20 standard library headers (<expected>/<span>/<format>). Reviewed distro channel.
+# (no registry-pulled ecosystem packages — the codec, base58, varint, and test harness are all hand-rolled in-repo; vcpkg/conan are S5 recipe-authoring only)
+
+[spec]
+v7_version_pinned = "7.75"                     # spec read for profile + peer: spec-data/v7.75 (the latest STAMPED snapshot; MANIFEST pins V7 7.75). The brief notes the core floor is stable v7.75->v7.77 and the conformance oracle anchors at v7.77 (entity-core-go @ e8524ed); the wire/protocol surface is byte-stable across that window (CBOR + type-system unchanged since v7.73 E3 / v7.70 per the v7.75 MANIFEST), so deriving the peer from v7.75 + gating against the v7.77 oracle is the established cohort pattern. NOTE: the verbatim ENTITY-CORE-PROTOCOL-V7.md body's changelog header in the v7.75 snapshot reads "Version: 7.75" (MANIFEST authoritative). (A-CPP-005.)
+codec_corpus      = "v0.8.0"                    # ECF corpus; ENTITY-CBOR-ENCODING.md + ENTITY-NATIVE-TYPE-SYSTEM.md are byte-stable across v7.71->v7.75 (the v7.75 MANIFEST SHA-confirms CBOR + type-system unchanged from v7.74; the cohort SHA-verified the v7.71->v7.75 window). Agility (Ed448/SHA-384) corpus gated on A-CPP-002 (deferred).
+conformance_scaffolding = "guide-conformance-7a-7b" # §7a validate handlers + §7b concurrency gate come from GUIDE-CONFORMANCE.md + the keystone generator menu at S3/S4 — NOT from the spec-data snapshot (the v7.74/v7.75 MANIFEST flags this split). A spec-first peer reading only spec-data would otherwise miss them and fail S4. (A-CPP-006.)
+# CURRENT-STATE FLOOR this peer inherits (from the keystone menu + cohort convergence;
+# folded into PROFILE-RATIONALE + SPEC-AMBIGUITY-LOG as PRE-RESOLVED so S3 does not re-burn):
+#  - peer_id: §1.5 canonical-form table, hash_type=0x00, RAW pubkey for Ed25519 (NOT the
+#    stale §7.4 SHA-256 skeleton). 6th+ spec-first arrival (A-OC-007/A-ZIG-001/A-CL-002/
+#    A-SW-008/A-JAVA-004/A-C P1).
+#  - tree-path hex: lowercase {:02x}/std::hex (§3.4/§3.5; A-CL-009). C++ lowercase by default;
+#    pinned in [idiom].hex_lowercase.
+#  - §5.2 trichotomy: 401 authn / 403 authz / 401 unresolvable (§5.2a verdict table).
+#  - §1.1 entity `data` is an ARBITRARY ECF value (NOT necessarily a map) — model it as a
+#    general EcfValue (std::variant over the ECF major types) from the start (the A-JAVA-010
+#    silent-500 trap).
+#  - resource_bounds (§4.10, CORE-gating): r1 413 payload_too_large / clean close (16 MiB
+#    default); r2 over-deep delegation -> 400 chain_depth_exceeded (MUST be 400, NOT 403;
+#    default 64; the ~15-line §4.10(b) structural pre-check walks parents with NO sig work,
+#    max=64, BEFORE the authz walk); r3 connection flood -> 503/close or honest WARN.
+#  - concurrency (§7b, CORE-gating): 5/5; data-race-safe store (§4.8 -> std::shared_mutex),
+#    shared entity lifetime via std::shared_ptr (atomic refcount -> A-C-009 pre-resolved),
+#    resilience under load (§4.9), no blocking syscalls on a cooperative pool (one thread per
+#    connection sidesteps it), TCP_NODELAY.
+target_oracle     = "entity-core-go validate-peer --profile core (the cohort core gate; current head anchors v7.77 @ e8524ed, uniform 665 / 0 FAIL across the 17-peer matrix)" # the canonical core gate this peer must reach GREEN at S4; the orchestrator pins the exact clean go commit at S4

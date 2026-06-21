@@ -1,0 +1,84 @@
+# Node.js 24 LTS toolchain image — builds the native TypeScript peer
+# (entity-core-protocol-typescript) per protocol-generator/typescript/profile.toml.
+# Mirrors containers/dotnet9 + containers/cargo.
+#
+# S1: builds run in this container, not on the host.
+#
+# Why 24, not the containers/node20 stub: Node 20 (Iron) is EOL by mid-2026.
+# Node 24 is the active LTS (since 2025-05-06; maintenance 2026-10-20; EOL
+# 2028-04-30) and ships the native Ed25519 + Ed448 + raw-key crypto the profile
+# relies on. The old empty containers/node20/ dir is retired.
+#
+# Build:
+#   podman build -t entity-core-keystone/node24:latest -f containers/node24/Containerfile .
+#
+# PIN NOTE (S11 scope, same split as dotnet9): the Node runtime + npm come
+# through fedora's reviewed dnf channel (human-gated), so the ≥30-day "cool-down"
+# floor does NOT apply to the runtime — pin the exact NVR for reproducibility and
+# re-verify on rebuild. The floor DOES apply to everything pulled from the npm
+# registry (cborg, typescript, any optional @scure/@noble) — those live in the
+# committed package-lock.json, each ≥30 days old (see
+# research/evaluations/typescript.md + profile A-004). If fedora:43's nodejs
+# stream is not 24.x, fall back to the official nodejs.org tarball pinned by
+# exact version + SHA-256 (the reproducible alternative).
+FROM registry.fedoraproject.org/fedora:43
+
+# Node 24 LTS via the OFFICIAL nodejs.org tarball, SHA-256-pinned (S11).
+# RESOLVED AT FIRST BUILD (2026-06-11): fedora:43's dnf `nodejs` stream is 22.22.2,
+# NOT 24.x — so per this file's own PIN NOTE we take the documented fallback: the
+# official tarball pinned by exact version + SHA-256 (the reproducible alternative).
+# The profile commits to Node 24 LTS; this honors it. Node 24.16.0 (2026-05-21) was
+# only ~21d old at build time (< S11's 30-day floor), so we pin 24.15.0 (2026-04-15,
+# ~57d, LTS "Krypton") — clears the cool-down. Re-verify + re-pin deliberately on
+# rebuild (newer 24.x, ≥30d old, with its published SHA-256).
+ENV NODE_VERSION=24.15.0 \
+    NODE_SHA256=472655581fb851559730c48763e0c9d3bc25975c59d518003fc0849d3e4ba0f6
+RUN dnf install -y git xz tar && dnf clean all && \
+    curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" && \
+    echo "${NODE_SHA256}  node-v${NODE_VERSION}-linux-x64.tar.xz" | sha256sum -c - && \
+    tar -xJf "node-v${NODE_VERSION}-linux-x64.tar.xz" -C /usr/local --strip-components=1 \
+        --exclude='*/CHANGELOG.md' --exclude='*/LICENSE' --exclude='*/README.md' && \
+    rm -f "node-v${NODE_VERSION}-linux-x64.tar.xz" && \
+    node --version && npm --version
+
+# ── Supply-chain: dependency minimization + offline-by-default ──────────────
+# npm cache on a mountable path so the conformance loop (runs this many times)
+# never refetches — and so the registry is reachable in exactly ONE step. Mount a
+# named volume at /npm-cache. Defaults below kill the noise + the network-y bits
+# npm does opportunistically (audit/funding pings, update checks).
+ENV npm_config_cache=/npm-cache \
+    npm_config_audit=false \
+    npm_config_fund=false \
+    npm_config_update_notifier=false \
+    npm_config_loglevel=warn \
+    CI=true
+
+WORKDIR /work
+
+# ── How the two-phase network lockdown is USED (dev loop) ───────────────────
+# The image itself pulls nothing from npm. Dependencies enter the cache in ONE
+# network-on step, then every subsequent run is sealed with --network=none.
+#
+#  Phase 1 — populate the cache (network ON, run ONCE per lockfile change):
+#    podman run --rm \
+#      -v <repo>/protocol-generator/typescript:/work:Z -v kc-npm:/npm-cache \
+#      localhost/entity-core-keystone/node24:latest \
+#      npm ci            # resolves the COMMITTED package-lock.json into /npm-cache + node_modules
+#
+#  Phase 2 — build / test / conformance (network OFF, every other run):
+#    podman run --rm --network=none \
+#      -v <repo>/protocol-generator/typescript:/work:Z -v kc-npm:/npm-cache \
+#      localhost/entity-core-keystone/node24:latest \
+#      sh -c 'npm ci --offline && npx tsc -p tsconfig.json && node --test'
+#
+# --network=none guarantees nothing can fetch a transitive package mid-build (the
+# "left-pad / minus-split" failure mode). The S4 conformance run needs loopback to
+# the validate-peer oracle, not internet — run peer + oracle in a shared pod (or
+# --network with a localhost-only namespace), still with NO registry egress.
+# `npm ci` (never `npm install`) makes the committed lockfile authoritative.
+
+# Sentinel
+LABEL org.entity-core-keystone.role="node24"
+LABEL org.entity-core-keystone.version="1"
+
+CMD ["/bin/bash"]

@@ -1,0 +1,184 @@
+# entity-core-protocol-elixir — Language Profile
+#
+# Peer #4. Authored FRESH in S1 from the V7 spec + Elixir/BEAM ecosystem
+# research — NOT ported from the C#/TS/OCaml profiles. Like OCaml (peer #3),
+# Elixir is a deliberately DISTANT idiom chosen to re-probe V7: tagged-tuple
+# errors, the BEAM actor/process concurrency model, binary pattern-matching,
+# and arbitrary-precision native integers. Where a field happens to match a
+# prior peer it is by independent arrival, not inheritance — and the idiom
+# seams (error model, concurrency, naming) deliberately differ.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value
+# is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "elixir"
+name              = "Elixir"
+tier              = "peer-4"                  # elevated from LANDSCAPE T2/ffi (research overturned the ffi default; see arch/PROFILE-RATIONALE.md)
+package_name      = "entity-core-protocol-elixir"  # peer id (keystone naming); Hex registry id is idiomatic snake_case — see [publishing]
+runtime           = "beam"                    # references containers/beam/Containerfile
+
+[codec]
+# strategy: NATIVE — and the strongest native story of the four peers.
+# LANDSCAPE defaulted Elixir to ffi (cbor hex + enacl/libsodium). Research
+# overturned BOTH halves:
+#   (1) crypto is fully native via OTP `:crypto` (OpenSSL 3.x backend) — Ed25519,
+#       Ed448, SHA-256 AND SHA-384, so the crypto-agility HIGHER BAR needs no FFI
+#       at all (contrast OCaml A-OC-002, which had to source Ed448 over the C-ABI).
+#   (2) no BEAM CBOR library gives ECF canonicality — the A-005 pattern all three
+#       prior native peers hit — so the canonical layer is hand-rolled regardless.
+# Net: a core peer with ZERO runtime Hex dependencies. `:crypto` is stdlib;
+# CBOR + base58 + varint are hand-rolled in-repo. ffi remains the documented
+# fallback but is not expected to be needed for any tier of this peer.
+strategy          = "native"
+# CBOR: hand-rolled canonical encoder/decoder (lib/entity_core/cbor.ex). No Hex
+# CBOR library (`cbor` 1.x/2.0-rc, `excbor`) offers ECF's guarantees —
+# length-then-lex map ordering, shortest-float incl. f16, recursive major-type-6
+# tag rejection, full uint64/nint range. The `cbor` lib's "deterministic" mode
+# (where present) targets RFC 8949 §4.2 ordering, which DIFFERS from ECF's
+# RFC-7049 length-first ordering — a second reason to own the layer. Decode is
+# binary pattern-matching (`<<major::3, info::5, rest::binary>>`), the BEAM's
+# strongest idiom for a wire codec. Decided by the S1 reasoning; spike at S2.
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native" }
+# Ed25519: OTP `:crypto` (OpenSSL backend). Native, audited (OpenSSL), stdlib —
+# no Hex dep, no libsodium/enacl. seed->pubkey via crypto:generate_key(eddsa,
+# ed25519, Seed); sign via crypto:sign(eddsa, none, Msg, [Seed, ed25519]); verify
+# via crypto:verify(eddsa, none, Msg, Sig, [Pub, ed25519]). Exact arity/spelling
+# confirmed against the in-container OTP at S2 (crypto:supports(public_keys) must
+# list `eddsa`). Deterministic by construction (Ed25519 property).
+ed25519_library   = { name = "otp-crypto", version = "OTP 27.3.4", api = "crypto:{generate_key,sign,verify}/eddsa-ed25519" }
+# Ed448 (crypto-agility HIGHER BAR, v7.67): NATIVE via OTP `:crypto`
+# (crypto:sign(eddsa, none, Msg, [Seed, ed448]) etc.) — the OpenSSL 3.x backend
+# in containers/beam provides Ed448. This is the headline contrast with OCaml
+# (A-OC-002): no FFI, no opt-in sub-library, no hybrid. The agility corpus
+# (KEY-TYPE-ED448-*, HASH-FORMAT-SHA-384-*) is reachable from the default build.
+ed448_library     = { name = "otp-crypto", version = "OTP 27.3.4", strategy = "native", api = "crypto:{generate_key,sign,verify}/eddsa-ed448" }
+# SHA-256 (content_hash floor) + SHA-384 (agility hashing): OTP `:crypto`
+# (crypto:hash(sha256|sha384, Data)). Native, stdlib.
+sha256_source     = "otp-crypto (crypto:hash/2 — sha256 + sha384 for agility)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (lib/entity_core/base58.ex); no Hex dep
+varint_handling   = "native"                  # LEB128 inline impl (N1), lib/entity_core/varint.ex
+
+[error_model]
+# DELIBERATE idiom: the canonical Elixir/BEAM shape — tagged tuples
+# `{:ok, value}` / `{:error, reason}` on every fallible public surface, with a
+# `!`-suffixed raising convenience variant (`encode!/1`, `decode!/1`) for the
+# let-it-crash callers. This differs from C#/TS `exceptions` AND OCaml `result`
+# (the OCaml `result` is the nearest cousin, but Elixir's tuple+bang pair and
+# atom/struct reason vocabulary are a distinct seam). Decode-path violations
+# (non-canonical, truncated, tag-6) surface as `{:error, reason}`; an internal
+# `throw`/raise inside the binary matcher is caught at the module boundary and
+# mapped to a tagged tuple — raises never escape a non-bang public function.
+style             = "tagged_tuple"            # "exceptions" | "result" | "either" | "errno" | "tagged_tuple"
+ok_shape          = "{:ok, value}"
+error_shape       = "{:error, reason}"        # reason = atom | {atom, detail} | %EntityCore.Error{}
+bang_variants     = true                      # encode!/decode!/etc. raise EntityCore.Error for the let-it-crash surface
+error_struct      = "EntityCore.Error"        # %EntityCore.Error{kind: :non_canonical_ecf | :truncated | :bad_seed | ..., detail: term}
+internal_raise    = "EntityCore.Cbor.DecodeError"  # internal only; caught at module boundary, mapped to {:error, _}
+
+[async]
+# DELIBERATE idiom — the most distant concurrency model of the four peers: the
+# BEAM ACTOR MODEL (processes + message passing), not Task/Promise/fiber. The
+# N6/N7 reentrancy invariants (inbound processing concurrent with outbound
+# dispatch; reentrant request_id demux; §6.11 reentry over the inbound
+# connection) map naturally onto: one process per connection, a GenServer owning
+# peer state, request_id->caller correlation via a map in process state (or a
+# Registry), and selective `receive` for response demux. No monadic plumbing, no
+# explicit event loop — the scheduler is the runtime. `Task.async`/`Task.await`
+# exist but the peer architecture is process/GenServer-based, not Task-based.
+# Validated at S3 (the codec is pure/synchronous and process-free).
+style             = "processes"               # "sync" | "task" | "processes" | "genserver"
+concurrency_model = "otp-genserver"           # GenServer-owned peer state; one process per connection
+sync_surface      = "genserver-call"          # synchronous consumers use GenServer.call; the BEAM is implicitly concurrent
+request_demux     = "request_id-map-in-state" # reentrant request_id correlation lives in GenServer state (or a Registry); see N7
+
+[naming]
+# Elixir-native conventions (differ from C# PascalCase / TS camelCase / OCaml
+# lower_snake types + Upper_snake modules).
+module_names      = "PascalCase"              # modules: EntityCore.Codec, EntityCore.PeerId, EntityCore.Cbor
+function_names    = "snake_case"              # functions: content_hash, sign_and_verify
+variable_names    = "snake_case"              # variables/bindings: content_hash, peer_id
+atom_names        = "snake_case"              # atoms: :non_canonical_ecf, :ed25519, :ok, :error
+constant_module_attr = "snake_case"           # module attributes: @max_depth
+file_names        = "snake_case"              # cbor.ex, peer_id.ex (lib/entity_core/<file>.ex)
+module_namespace  = "EntityCore"              # top namespace; submodules EntityCore.Cbor, EntityCore.Peer, ...
+
+[build]
+build_tool        = "mix"
+build_command     = "mix compile"
+test_command      = "mix test"
+deps_command      = "mix deps.get"            # no runtime deps; dev/test deps only (see [deps])
+pack_command      = "mix hex.build"
+
+[layout]
+# Standard mix project layout.
+project_file      = "mix.exs"
+src_dir           = "lib/"                     # lib/entity_core/ — the EntityCore.* modules
+test_dir          = "test/"                    # ExUnit tests + conformance harness
+app_name          = "entity_core_protocol"     # OTP application atom :entity_core_protocol
+lib_module        = "EntityCore"
+
+[publishing]
+registry          = "hex"
+registry_url      = "https://hex.pm"
+# Hex package ids are idiomatic snake_case. Peer id (keystone naming) is
+# `entity-core-protocol-elixir`; the Hex registry id is the snake_case
+# `entity_core_protocol` (the "elixir" suffix is implicit — a Hex package IS a
+# BEAM package). Confirm availability/squatting at S5 before first publish.
+package_id        = "entity_core_protocol"
+license_expression = "Apache-2.0"
+repository_url    = ""                          # TBD on first publish
+maintainers       = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default. Elixir core itself is Apache-2.0; the ecosystem is Apache-2.0/MIT-mixed with no strong mandate — keep the safe default.
+
+[testing]
+# ExUnit is BUILT INTO Elixir (stdlib) — using it adds NO dependency, so it is
+# the idiomatic choice here AND honors the dependency-minimization stance (no
+# tension, unlike OCaml where the ecosystem-standard alcotest is an extra dep we
+# declined). The conformance harness is an ExUnit suite that loads the normative
+# fixtures and asserts byte-identity; a thin standalone escript runner is added
+# for the validate-peer / wire-conformance oracle loop if a non-ExUnit entry
+# point is needed at S4.
+framework         = "exunit"                   # stdlib; zero added dependency
+standalone_runner = "escript"                  # optional thin oracle-driver entry point (S4)
+
+[container]
+base_image        = "entity-core-keystone/beam:latest"
+build_in_container = true
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/elixir entity-core-keystone/beam:latest sh -c 'mix compile && mix test'"
+
+[idiom]
+# Hints that don't fit elsewhere.
+prefer_tagged_tuples     = true               # public fallible surfaces return {:ok,_}/{:error,_}; bang variants raise
+prefer_immutable         = true               # everything is immutable on the BEAM; binaries for wire bytes
+binary_pattern_match     = true               # decoder is `<<major::3, info::5, rest::binary>>` matching — the BEAM idiom for parsers
+native_bignum            = true               # BEAM integers are arbitrary-precision — NO uint64/int64 head-form native-int trap (contrast OCaml int63, C# ulong, TS bigint). The head-form carrier is just an integer.
+typespecs                = true               # @spec on public functions; Dialyzer-checkable (S5)
+doc_attrs                = true               # @moduledoc/@doc on public modules/functions (S5 hexdocs)
+otp_app                  = true               # ships as an OTP application :entity_core_protocol
+elixir_version           = "1.18.4"
+otp_version              = "27.3.4"
+
+[deps]
+# Exact pins (S11; all >= 30 days old at 2026-06-13). The core peer has ZERO
+# runtime Hex dependencies — crypto is OTP stdlib `:crypto`; CBOR/base58/varint
+# are hand-rolled; ExUnit is stdlib. Toolchain pins are mirrored in
+# containers/beam/Containerfile.
+elixir            = "1.18.4"                   # 2025-08-04 (~10mo); precompiled-for-OTP-27 build
+erlang_otp        = "27.3.4"                   # 2025-05-08 (~13mo); source-built against system OpenSSL 3.x (Ed448)
+openssl           = "system (fedora:43, 3.x)"  # OTP crypto NIF backend; provides Ed25519 + Ed448 + SHA-2
+# runtime Hex deps:   (none)
+# dev/test Hex deps:  (none required at S1; ex_doc/dialyxir MAY be added at S5 for docs/typecheck — both dev-only, pinned then)
+
+[spec]
+v7_version_pinned = "7.72"                     # latest spec-data SNAPSHOT available; profile + codec derive from it
+codec_corpus      = "v0.8.0"                    # ECF corpus; ENTITY-CBOR-ENCODING.md + ENTITY-NATIVE-TYPE-SYSTEM.md are byte-identical v7.71->v7.72 (SHA-verified upstream), so the v0.8.0 corpus is valid at v7.72.
+# PEER-LAYER SPEC SKEW (A-ELX-001): spec HEAD is v7.74 (folded), but spec-data
+# snapshots stop at v7.72. Peers #1-3 reached v7.74 conformance against folded
+# PROPOSAL TEXT layered on the v7.72 snapshot. The v7.73 (nonce-echo §4.6) and
+# v7.74 (register/outbound/emit/owner-cap §6.13/§6.9a + §7a conformance handlers)
+# folds are PEER-LAYER (S3+), not codec — so S1/S2 are unaffected. Resync the
+# peer layer to the v7.74 surface at S3 (mirror the C#/TS/OCaml build), and
+# escalate the missing v7.73/v7.74 spec-data snapshot to arch (S2 ownership).

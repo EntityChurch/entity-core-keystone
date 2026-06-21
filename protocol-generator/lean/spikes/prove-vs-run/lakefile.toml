@@ -1,0 +1,6 @@
+name = "provevsrun"
+defaultTargets = ["provevsrun"]
+
+[[lean_exe]]
+name = "provevsrun"
+root = "Main"

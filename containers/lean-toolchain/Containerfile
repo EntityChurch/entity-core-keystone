@@ -1,0 +1,87 @@
+# Lean 4 toolchain image — builds the Lean peer (entity-core-protocol-lean)
+# per protocol-generator/lean/profile.toml, AND its formal proof track.
+# Mirrors containers/swift-toolchain + containers/ocaml-toolchain (toolchain not
+# packaged by Fedora → pull the pinned official release + cryptographically verify).
+#
+# Peer #10 (taken ahead of Prolog). This is the proof-vector peer: it carries a
+# conformant core peer (Track A) AND machine-checked proofs of protocol invariants
+# (Track B). See research/stewardship/HANDOFF-LEAN-PEER-*.md and the S1 1a/1b docs.
+#
+# S1 NOTE: AUTHORED **AND BUILD-VERIFIED** this phase (1c spike). Lean-on-Fedora and
+# the elan toolchain pull are the long pole (like Swift's swift-crypto build), so the
+# container is proven NOW to prevent an S2 dead-end — deliberate deviation from the
+# author-only S1 convention, per this peer's spike contract.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11), build-verified 2026-06-14.
+#   elan v4.2.3       — released 2024-06-08 (~2 yr old; elan releases rarely). The
+#                       Lean toolchain manager. Pinned by exact GitHub release asset
+#                       + sha256 (fail-closed). elan-init is a single static binary.
+#   Lean 4.29.1       — released 2026-04-14 (~2 months old at pin time; clears the
+#                       ≥30-day cool-down). Settled stable .1 release. elan fetches it
+#                       from release.lean-lang.org per the lean-toolchain pin.
+#   (Batteries/mathlib for the proofs/ target are pinned later via lake-manifest.json,
+#    S11, at S2/S3 — NOT in this image; the shipping peer is Batteries-at-most and
+#    mathlib-free, mathlib is a proofs/-only build dep. See 1a §6.)
+#
+# WHY elan (not `dnf install lean`): Fedora 43 ships no Lean rpm. elan is the project's
+#   official version manager; it places lean+lake on PATH and fetches the exact
+#   toolchain named in a project's lean-toolchain file. We pin elan by release asset +
+#   sha256 and pin Lean by exact version, fail-closed on the elan hash.
+#
+# NETWORK: the elan tarball pull + the Lean toolchain download need network at BUILD
+#   time. Lean project builds (S2+) run offline once the toolchain + any Lake deps are
+#   resolved/cached into the image or a mounted cache volume.
+#
+# CRYPTO FFI (Track A higher bar + the 1c crypto spike): the peer links
+#   libentitycore_codec (C-ABI, ffi-generator/c-abi) for Ed25519/Ed448/SHA — the
+#   OCaml/Swift/Zig precedent. The .so is MOUNTED at run time (not baked in), so this
+#   image carries only the toolchain. gcc + the C runtime below cover leanc's native
+#   compilation/linking and the FFI shim build.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build:
+#   podman build -t entity-core-keystone/lean-toolchain:latest \
+#     -f containers/lean-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# ── Deps Lean + leanc (native compile/link) + Lake (git deps) + FFI need ────────
+# gcc/gcc-c++/binutils: leanc drives the C compiler/linker for native code + FFI.
+# gmp(-devel): Lean's arbitrary-precision Nat/Int. libuv(-devel): Lean's IO/task
+# runtime scheduler. git: Lake fetches dependencies. curl/ca-certificates/tar/gzip:
+# fetch + unpack the pinned elan release. findutils/which: build scripts.
+RUN dnf install -y \
+        curl ca-certificates tar gzip \
+        git findutils which procps-ng \
+        gcc gcc-c++ binutils \
+        gmp gmp-devel \
+        libuv libuv-devel \
+        zlib-devel \
+        python3 \
+    && dnf clean all
+
+# ── Pinned elan install (S11: exact release asset + sha256, fail-closed) ────────
+ARG ELAN_VERSION=v4.2.3
+ARG ELAN_SHA256=df0b2b3a439961ffcbb3985214365ffe40f49bc871df04dff268c7d8e21ca8b2
+ARG LEAN_VERSION=4.29.1
+ENV ELAN_HOME=/opt/elan
+ENV PATH=/opt/elan/bin:$PATH
+
+RUN set -eux; \
+    url="https://github.com/leanprover/elan/releases/download/${ELAN_VERSION}/elan-x86_64-unknown-linux-gnu.tar.gz"; \
+    curl -sSL "$url" -o /tmp/elan.tgz; \
+    echo "${ELAN_SHA256}  /tmp/elan.tgz" | sha256sum -c -; \
+    tar xzf /tmp/elan.tgz -C /tmp; \
+    /tmp/elan-init -y --no-modify-path --default-toolchain "${LEAN_VERSION}"; \
+    rm -f /tmp/elan.tgz /tmp/elan-init; \
+    # Build-verify: the toolchain is present and runs on fedora:43's glibc.
+    lean --version; \
+    lake --version
+
+WORKDIR /work
+
+# S4 (deferred): pull validate-peer + entity-peer oracles from entity-core-go HEAD
+# into output/s4-oracles/, as the other toolchains do (COPY --from a go build stage
+# or mount prebuilt). Not needed for the 1c spikes or S2 codec.
+
+CMD ["bash"]

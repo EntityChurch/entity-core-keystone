@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>13.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+
+    <PackageId>entity-core-protocol-csharp</PackageId>
+    <Authors>Entity Core Protocol contributors</Authors>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <Description>Entity Core protocol peer for .NET — V7 core codec (S2).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- S11: exact pins, ≥30 days old at pin time; lockfile committed. -->
+    <PackageReference Include="System.Formats.Cbor" Version="9.0.0" />
+    <PackageReference Include="NSec.Cryptography" Version="25.4.0" />
+    <!-- Ed448 provider (crypto-agility seam, v7.67). Independent crypto source from
+         NSec/libsodium; pure-managed, keeps the peer native-first. See A-009. -->
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="EntityCore.Protocol.Tests" />
+    <InternalsVisibleTo Include="EntityCore.Protocol.Conformance" />
+    <InternalsVisibleTo Include="EntityCore.Protocol.Agility" />
+    <InternalsVisibleTo Include="EntityCore.Protocol.Smoke" />
+    <InternalsVisibleTo Include="EntityCore.Protocol.Host" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,82 @@
+# entity-core-protocol-python — PEP 517/518 manifest (hatchling backend).
+#
+# Modern src-layout, no setup.py. The core peer ships exactly ONE runtime
+# dependency (`cryptography`); CBOR / base58 / varint are hand-rolled in-repo
+# and SHA-2 / threading / socket are stdlib. Dev tools (pytest / ruff / mypy)
+# are a NON-runtime extra. Pins + rationale: profile.toml [deps] + [build].
+#
+# Version 0.1.0 (final pre-1.0 — A-PY-005; pip excludes pre-release tags by
+# default, so `0.1.0rc1` would not install without --pre, undercutting the
+# adoption goal). Dist name `entity-core-protocol-python` (A-PY-006), import
+# package `entity_core`. Build/verify recipe: status/PHASE-S5.md.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "entity-core-protocol-python"
+version = "0.1.0"
+description = "Clean-room Python peer for the Entity Core Protocol (V7) — codec + crypto core."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+authors = [{ name = "Entity Core Protocol contributors" }]
+keywords = ["entity-core", "cbor", "ecf", "ed25519", "content-addressing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+# The ONE runtime dependency. OpenSSL-backed Ed25519 + Ed448 + SHA-2.
+dependencies = ["cryptography==48.0.0"]
+
+[project.optional-dependencies]
+# Dev-only — NOT shipped in the wheel's runtime deps (S5 surface; pytest is
+# the conformance harness runner).
+dev = [
+    "pytest>=8,<9",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[project.urls]
+# Repository URL is a publish-time field (S5, A-PY-006), filled on first publish
+# once the in-repo-vs-standalone-repo decision lands (keystone-wide S10).
+
+[project.scripts]
+# The standalone peer host / S4 conformance + oracle driver. `validate-peer`
+# dials it; flags --name / --port / --seed / --validate. This is the same entry
+# the offline core image runs as `python -m entity_core.host`.
+entity-core-peer = "entity_core.host:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/entity_core"]
+
+[tool.hatch.build.targets.sdist]
+# Ship the library + tests + the closeout docs; never the gitignored output/
+# (oracle binaries, run artifacts) or bytecode caches.
+include = ["src/entity_core", "tests", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
+exclude = ["output", "**/__pycache__", "**/*.pyc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+files = ["src/entity_core"]

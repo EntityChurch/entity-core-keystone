@@ -1,0 +1,22 @@
+.{
+    // entity-core-protocol-zig — package manifest (profile [publishing]).
+    // Zig has no central registry: consumers fetch by URL + content hash from
+    // their own build.zig.zon. No third-party deps — the core peer is std-only.
+    .name = .entity_core_protocol_zig,
+    // Version line: 0.1.0-pre (cohort-wide pre-release; lifecycle S5 §Version-pin).
+    // Promotes to 0.1.0 only when (a) S4 fully green [met] AND (b) at least one
+    // external consumer confirms it works [not yet]. Tracks V7 spec-data v7.72 +
+    // v7.74 (§10.1 core-register + §9.5a CORE-TREE) oracle; codec corpus v0.8.0.
+    .version = "0.1.0-pre",
+    .fingerprint = 0xf9f8a35eb2199374,
+    .minimum_zig_version = "0.15.1",
+    // std-only: ZERO third-party packages — std.crypto (Ed25519 + SHA-2),
+    // std.Thread, std.testing all ship with the pinned 0.15.1 toolchain. The
+    // single supply-chain pin is the Zig version (containers/zig-toolchain).
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://entity-systems/keystone/seed-policy.schema.json",
+  "title": "Entity Core seed policy (V7 §6.9a)",
+  "description": "The declared identity -> capability seed policy a generated entity-core-protocol peer materializes at L0 and consults at §4.6 authenticate. Cross-peer convention; see README.md. Normative contract is V7 §6.9a.",
+  "type": "object",
+  "required": ["version", "entries"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": ["grantee", "grants"],
+      "additionalProperties": false,
+      "properties": {
+        "grantee": {
+          "description": "self | default | identity-hash hex (66/98 chars) | Base58 peer-id (§6.9a.1).",
+          "type": "string",
+          "minLength": 1
+        },
+        "grants": {
+          "description": "The §3.6 grant-entry list (the scope minted for this grantee, UNION'd with the §4.4 discovery floor at authenticate).",
+          "type": "array",
+          "items": { "$ref": "#/$defs/grant" }
+        },
+        "bounds": { "$ref": "#/$defs/bounds" }
+      }
+    },
+    "grant": {
+      "type": "object",
+      "required": ["handlers", "resources", "operations"],
+      "additionalProperties": false,
+      "properties": {
+        "handlers": { "$ref": "#/$defs/scope" },
+        "resources": { "$ref": "#/$defs/scope" },
+        "operations": { "$ref": "#/$defs/scope" },
+        "peers": { "$ref": "#/$defs/scope" },
+        "constraints": { "type": "object" },
+        "allowances": { "type": "object" }
+      }
+    },
+    "scope": {
+      "description": "A §3.6 scope dimension: {include, exclude?}. Patterns use V7's * glob (§5.4).",
+      "type": "object",
+      "required": ["include"],
+      "additionalProperties": false,
+      "properties": {
+        "include": { "type": "array", "items": { "type": "string" } },
+        "exclude": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "bounds": {
+      "description": "Optional temporal bounds (wall-clock ms since epoch). Server overrides caller-supplied created_at/revoked_at (§6.2).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "not_before": { "type": "integer", "minimum": 0 },
+        "expires_at": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -1,0 +1,116 @@
+# PHP toolchain image — builds the native PHP peer
+# (entity-core-protocol-php) per protocol-generator/php/profile.toml.
+#
+# Like the Ruby peer (and unlike the fedora:43-base *-toolchain images), this
+# image pins the OFFICIAL Docker `php:8.x` release image directly. The official
+# image is a reviewed-vendor channel (Docker Official Images, docker-library/php),
+# so per the S11 scope clarification the strict 30-day *registry* cool-down relaxes
+# to "pin exactly for reproducibility" (a patch-pinned tag does this); we still pin
+# a tag comfortably >= 30 days old as of 2026-06-19.
+#
+# Peer: PHP (release "reach" peer, slate row 2 — research/RELEASE-READINESS.md §2).
+# Codec = NATIVE hand-roll (cbor-php is not ECF-exact, A-005); crypto = ext-sodium
+# (Ed25519 + SHA-256, bundled with PHP); Ed448 DEFERRED (ext-sodium gap; hybrid-FFI
+# via libentitycore_codec when agility lands). uint64 head-form carried via ext-gmp.
+#
+# S1: AUTHORED, NOT BUILT. This Containerfile is written in the S1 (profile) phase;
+# the image is NOT built and no podman/toolchain runs in S1 (S1 boundary). The
+# first build (and the build-time assertions below) happen at S2.
+#
+# S11 PIN STATUS:
+#   php:8.3.21-cli-bookworm — the PHP 8.3.x patch line (8.3.0 released 2023-11-23;
+#   8.3.x patches issued monthly through 2024-2025), far over the 30-day floor at
+#   2026-06-19. The `cli` flavor is the long-lived-CLI-peer SAPI (not apache/fpm).
+#   bookworm = Debian 12. ext-sodium (floor crypto) is BUILT IN to the official
+#   php:8.3 image; ext-gmp (the uint64 head-form carrier) is NOT and is added below.
+#   The core peer has ZERO runtime Composer dependencies (crypto = ext-sodium core
+#   ext; CBOR/base58/varint hand-rolled; SHA = stdlib hash()), so there are no
+#   library pins to mirror here — only the PHP toolchain itself + ext-gmp + the
+#   dev-only PHPUnit (vendored in the one network-on step).
+#
+# NOTE (S2 lock-step): re-verify the exact php:8.3.x patch the official tag ships
+# at the first S2 build and re-pin deliberately; then pin the image *digest*
+# (php:8.3.21-cli-bookworm@sha256:..) for full reproducibility. Tag pinned now;
+# digest pinned at first pull.
+#
+# Build (at S2, NOT in S1):
+#   podman build -t entity-core-keystone/php-toolchain:latest \
+#     -f containers/php-toolchain/Containerfile .
+FROM docker.io/library/php:8.3.21-cli-bookworm
+
+# ── Build deps + ext-gmp (the uint64 head-form carrier) ──────────────────────
+# ext-sodium (Ed25519 + the SHA-2 family for content_hash) ships BUILT IN to the
+# official php:8.3 image — no install needed. ext-gmp is NOT in the default image
+# and is REQUIRED: PHP's native int is 64-bit signed (overflow-to-float past
+# 2^63), so the CBOR uint64 head-form in the [2^63, 2^64-1] band is carried via
+# GMP (profile [idiom].uint64_carrier). docker-php-ext-install gmp compiles the
+# bundled gmp extension against libgmp-dev (Debian reviewed channel). git +
+# unzip/ca-certificates support Composer's dist installs.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libgmp-dev \
+        git \
+        unzip \
+        ca-certificates \
+    && docker-php-ext-install gmp \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Composer (pinned, from the official composer image layer) ────────────────
+# Copy the composer binary from the official composer:2.x image (reviewed-vendor
+# channel; pin the exact 2.x and re-verify/digest-pin at S2). Composer's only job
+# here is dev/test tooling (PHPUnit) + PSR-4 autoload — the core peer has zero
+# runtime Composer deps.
+COPY --from=docker.io/library/composer:2.7.9 /usr/bin/composer /usr/bin/composer
+
+ENV COMPOSER_ALLOW_SUPERUSER=1 \
+    COMPOSER_NO_INTERACTION=1 \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# ── Verify the crypto + carrier backends are live ────────────────────────────
+# Fails the build loudly if ext-sodium (Ed25519 floor crypto) or ext-gmp (the
+# uint64 carrier) is missing. Round-trips an Ed25519 sign/verify (tests the actual
+# signature path, not just key gen) AND a GMP arithmetic check on a value > 2^63
+# (the head-form band that overflows a native PHP int to a lossy float). SHA-256 +
+# SHA-384 presence checked via stdlib hash(). Ed448 is NOT checked — it is the
+# DEFERRED agility higher bar (ext-sodium has no Ed448; the v0.1 floor is
+# Ed25519 + SHA-256 only).
+RUN php -r ' \
+      if (!extension_loaded("sodium")) { fwrite(STDERR, "FATAL: ext-sodium missing\n"); exit(1); } \
+      if (!extension_loaded("gmp"))    { fwrite(STDERR, "FATAL: ext-gmp missing (uint64 carrier)\n"); exit(1); } \
+      $seed = str_repeat("\x11", 32); \
+      $kp = sodium_crypto_sign_seed_keypair($seed); \
+      $pk = sodium_crypto_sign_publickey($kp); \
+      $sk = sodium_crypto_sign_secretkey($kp); \
+      $msg = "entity-core ed25519 check"; \
+      $sig = sodium_crypto_sign_detached($msg, $sk); \
+      if (!sodium_crypto_sign_verify_detached($sig, $msg, $pk)) { fwrite(STDERR, "FATAL: ed25519 verify failed\n"); exit(1); } \
+      if (sodium_crypto_sign_verify_detached($sig, $msg . "x", $pk)) { fwrite(STDERR, "FATAL: ed25519 tamper not rejected\n"); exit(1); } \
+      $big = gmp_pow(2, 63); $big = gmp_add($big, 7); \
+      if (gmp_strval($big) !== "9223372036854775815") { fwrite(STDERR, "FATAL: gmp uint64-band arithmetic wrong\n"); exit(1); } \
+      if (strlen(hash("sha256", "x", true)) !== 32) { fwrite(STDERR, "FATAL: sha256 missing\n"); exit(1); } \
+      if (strlen(hash("sha384", "x", true)) !== 48) { fwrite(STDERR, "FATAL: sha384 missing\n"); exit(1); } \
+      fwrite(STDERR, sprintf("crypto+carrier OK: ed25519 sig %dB, gmp>2^63 ok, sha256+sha384 present\n", strlen($sig))); \
+    '
+
+# ── PHPUnit offline posture (the one network-on step) ────────────────────────
+# Pre-install the dev/test bundle (PHPUnit + PSR-4 autoload) in this network-on
+# build step so dev-loop runs can be --network=none. The core peer has ZERO
+# runtime Composer deps, so `composer install --no-dev` resolves nothing from the
+# network; PHPUnit (dev-only) is vendored here and captured in an image layer.
+# Only the dependency-declaring files are copied so this layer caches across
+# source edits.
+COPY protocol-generator/php/composer.json /opt/php-peer/composer.json
+RUN cd /opt/php-peer \
+    && composer install --no-interaction --prefer-dist --no-scripts || true
+# (|| true: composer.json is authored at S2; this layer is a no-op until it exists.
+#  At S2 the dev bundle resolves here so the offline dev loop works.)
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="php-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.php="8.3.21"
+LABEL org.entity-core-keystone.base="docker.io/library/php:8.3.21-cli-bookworm"
+
+CMD ["/bin/bash"]

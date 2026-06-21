@@ -1,0 +1,90 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Standalone wire-conformance driver for the Ruby peer (the exe-script oracle
+# entry point). Loads the vendored ECF + agility corpora and runs THIS peer's
+# codec against them, reporting per-vector PASS/FAIL and an exit code.
+#
+#   wire-conformance run <src-dir> --vectors <vectors-dir>
+#
+# Both positional args are accepted-for-compat with the keystone gate command
+# (the Go oracle's CLI shape); the Ruby driver resolves its own lib from
+# <src-dir> and loads `conformance-vectors-v1.cbor` (+ optionally
+# `agility-vectors-v1.cbor`) from <vectors-dir>.
+
+require "optparse"
+
+src_dir = nil
+vectors_dir = nil
+
+args = ARGV.dup
+args.shift if args.first == "run" # tolerate the `run` subcommand
+
+parser = OptionParser.new do |o|
+  o.banner = "usage: wire-conformance run <src-dir> --vectors <vectors-dir>"
+  o.on("--vectors DIR", "directory holding conformance-vectors-v1.cbor") { |d| vectors_dir = d }
+end
+remaining = parser.parse(args)
+src_dir ||= remaining.shift
+
+abort parser.banner if vectors_dir.nil?
+
+# Resolve the peer's lib. <src-dir> may point at .../ruby/src or .../ruby; walk
+# up to find lib/entity_core.rb.
+lib_candidates = []
+if src_dir
+  base = File.expand_path(src_dir)
+  lib_candidates << File.join(base, "entity_core.rb")
+  lib_candidates << File.join(base, "lib", "entity_core.rb")
+  lib_candidates << File.join(File.dirname(base), "lib", "entity_core.rb")
+end
+lib_candidates << File.expand_path("../lib/entity_core.rb", __dir__)
+
+entry = lib_candidates.find { |p| File.exist?(p) }
+abort "could not locate entity_core.rb (looked in: #{lib_candidates.join(', ')})" unless entry
+
+require entry
+
+conformance_corpus = File.join(vectors_dir, "conformance-vectors-v1.cbor")
+agility_corpus = File.join(vectors_dir, "agility-vectors-v1.cbor")
+
+total_fail = 0
+
+def report(title, results)
+  passes = results.count { |r| r.status == :pass }
+  fails  = results.select { |r| r.status == :fail }
+  skips  = results.count { |r| r.status == :skip }
+
+  puts "== #{title} =="
+  results.each do |r|
+    case r.status
+    when :pass then puts "PASS #{r.id}"
+    when :skip then puts "SKIP #{r.id}"
+    when :fail then puts "FAIL #{r.id}  #{r.detail}"
+    end
+  end
+  puts "-- #{title}: #{passes} PASS, #{fails.size} FAIL, #{skips} SKIP (#{results.size} total)"
+  puts
+  fails.size
+end
+
+if File.exist?(conformance_corpus)
+  results = EntityCore::Conformance.run(File.binread(conformance_corpus))
+  total_fail += report("ECF wire-conformance", results)
+else
+  warn "no conformance corpus at #{conformance_corpus}"
+  total_fail += 1
+end
+
+if File.exist?(agility_corpus)
+  gates = EntityCore::Agility.run(File.binread(agility_corpus))
+  total_fail += report("crypto-agility", gates)
+end
+
+if total_fail.zero?
+  puts "ALL GREEN"
+  exit 0
+else
+  puts "#{total_fail} FAILURE(S)"
+  exit 1
+end

@@ -1,0 +1,10 @@
+/* Linker version script (spec sec.7 symbol hygiene; ffi-c.md). Export ONLY the
+ * ec_* ABI entry points; localize everything else — including all statically
+ * linked libsodium symbols — so an embedder linking their own libsodium does
+ * not collide with ours. */
+{
+  global:
+    ec_*;
+  local:
+    *;
+};

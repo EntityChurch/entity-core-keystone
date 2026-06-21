@@ -1,0 +1,12 @@
+# C build artifacts (reproducible from source; never committed).
+*.o
+*.a
+*.so
+conformance
+smoke-bin
+entity-peer-c
+typereg-bin
+spike
+*.pc
+# dist artifacts (the make dist source tarball is built on demand, not committed)
+entity-core-protocol-c-*.tar.gz

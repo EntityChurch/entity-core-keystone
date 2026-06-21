@@ -1,0 +1,71 @@
+# entity-core-protocol-rust — the GENERATED clean-room Rust core-protocol peer.
+#
+# Distinct from the hand-written siblings entity-core-rust + entity-core-codec-ffi-rust.
+# Dependency stance (S1 profile, [deps]): dep-minimization. The ECF canonical CBOR
+# layer, base58, and the LEB128 varint are hand-rolled (no ciborium / bs58 / leb128).
+# Only two direct registry deps: ed25519-dalek (Ed25519 sign/verify) + sha2 (SHA-256
+# content_hash floor + SHA-384 agility). Pins are exact (S11); the full transitive
+# closure is committed in Cargo.lock with curve25519-dalek held at 4.1.3 (4.2.0 yanked).
+[package]
+name        = "entity-core-protocol-rust"
+version     = "0.1.0-pre"
+edition     = "2021"
+license     = "Apache-2.0"
+authors     = ["Entity Core Protocol contributors"]
+description = "Clean-room Rust core-protocol peer for the Entity Core protocol (V7 Layers 0-4): native canonical-ECF CBOR codec, Ed25519 identity, capability authorization, and the §9.5 53-type registry. validate-peer --profile core PASS (665 / 0 FAIL)."
+# repository: parked empty until the S10 per-language-repo decision (the in-repo vs
+# standalone lift fixes the URL); set deliberately at publish-prep. crates.io accepts
+# publish without it, but it is documented here as the publish-time field to fill.
+repository  = ""
+# crates.io categories must be from the fixed slug set; these are the closest fits for a
+# protocol/networking/cryptography peer.
+categories  = ["network-programming", "cryptography", "encoding"]
+keywords    = ["entity-core", "cbor", "ecf", "ed25519", "protocol"]
+# MSRV (S11): conformance is proven on the pinned distro toolchain rust 1.96.0 (fedora:43,
+# reviewed channel). 1.96 is asserted as the floor since that is the verified build; a
+# lower MSRV is plausible (the crate is plain std + ed25519-dalek + sha2) but is NOT
+# claimed without a verified lower-bound build. Re-pin deliberately if a floor is proven.
+rust-version = "1.96"
+# Keep the package lean: ship only src/ + manifest + lockfile + LICENSE/README/CHANGELOG.
+# Everything else (gitignored output/, S4 harness scripts, the spec snapshot, status docs)
+# is excluded so `cargo package` produces a clean source crate. cargo always excludes
+# target/ and the .git tree; this covers the in-tree scratch + non-crate companions.
+exclude = [
+    "output/",
+    "target/",
+    "status/",
+    "arch/",
+    "profile.toml",
+    "run-s4.sh",
+    "run-origination-core.sh",
+]
+# DEFERRED publish (S10): parked at 0.1.0-pre, no `cargo publish` is run this phase.
+# `publish = false` guards against an accidental upload; `cargo package` still works.
+publish     = false
+
+[lib]
+name = "entity_core_protocol"
+path = "src/lib.rs"
+
+[dependencies]
+# Ed25519: audited pure-Rust, deterministic signing (RFC 8032). Exact pin (S11).
+ed25519-dalek = { version = "=2.2.0", default-features = false }
+# SHA-256 (content_hash floor) + SHA-384 (agility, native). 0.10.x stable line.
+sha2          = { version = "=0.10.9", default-features = false }
+
+[[bin]]
+# S2 conformance harness: the Rust analogue of go's `wire-conformance emit-canonical`.
+# Reads the canonical-ECF corpus (.cbor) and writes a per-impl emission file
+# (GUIDE-CONFORMANCE §3.1 shape) so the emission can be byte-compared against go's.
+name = "wire-conformance"
+path = "src/bin/wire_conformance.rs"
+
+[[bin]]
+# S3 peer host: the runnable target for S4 `validate-peer --profile core`. Boots a
+# single Peer listener on a TCP port and blocks. Flags: --name NAME · --port N ·
+# --validate · --debug-open-grants · --help.
+name = "entity-peer-host"
+path = "src/bin/host.rs"
+
+[profile.release]
+opt-level = 2

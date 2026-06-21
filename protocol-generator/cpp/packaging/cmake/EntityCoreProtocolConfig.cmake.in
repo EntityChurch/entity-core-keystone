@@ -1,0 +1,28 @@
+# EntityCoreProtocolConfig.cmake — the find_package config for entity-core-protocol-cpp.
+#
+# Rendered by `configure_package_config_file` at install time (S5 packaging,
+# A-CPP-016). A consumer does:
+#
+#     find_package(EntityCoreProtocol 0.1.0 REQUIRED)
+#     target_link_libraries(myapp PRIVATE entity_core::protocol)
+#
+# C++ has no central package registry; this CMake package + the vcpkg port +
+# the conan recipe are the distribution surface. None is pushed to a registry —
+# publishing is an operator action (lifecycle §Publishing).
+#
+# SPDX-License-Identifier: Apache-2.0
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# libsodium is the one runtime dependency (Ed25519 + SHA-256). It is located via
+# pkg-config (the same path the build uses); a consumer of the shared lib needs
+# it at runtime, a fully-static consumer links it in.
+find_dependency(PkgConfig)
+pkg_check_modules(SODIUM REQUIRED IMPORTED_TARGET libsodium)
+
+find_dependency(Threads)
+
+include("${CMAKE_CURRENT_LIST_DIR}/EntityCoreProtocolTargets.cmake")
+
+check_required_components(EntityCoreProtocol)

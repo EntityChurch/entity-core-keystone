@@ -1,0 +1,95 @@
+# CI — entity-core-protocol-haskell (peer #8) conformance gates.
+#
+# Authored at S5 (PHASE-S5 §"CI config"). Runs the green gates entirely inside the pinned
+# `ghc-toolchain` Podman image, sealed-offline (`--network=none`) against the warm cabal
+# store + the committed cabal.project.freeze (A-HS-005: a cold-store `cabal build` consults
+# the remote Hackage index, so the offline gate REQUIRES a warm `.cabal-home` — see the
+# "Warm the cabal store" step). The Go `validate-peer` oracle is a CGO_ENABLED=0 ELF that
+# runs in the same image sharing one loopback.
+#
+# DELIBERATELY NOT WIRED TO ANY REMOTE/CD. No deploy, no registry push, no `cabal upload` —
+# `/entity-rosetta` never publishes (lifecycle §Publishing); the operator decides. This file
+# documents the reproducible offline gate; whether/where it runs (this peer's standalone
+# repo CI, or a keystone-wide CI home) is an operator/arch decision (PHASE-S5 §7). Committed
+# for reviewability, not because a runner is attached.
+#
+# Assumptions when wired: the runner has Podman, the `ghc-toolchain:latest` image is built
+# (containers/ghc-toolchain/Containerfile), and the oracle ELF is vendored to
+# output/s4-oracles/validate-peer (rebuild per status/CONFORMANCE-REPORT.md). Because the
+# offline build needs a warm store, CI either (a) restores a cached `.cabal-home` populated
+# from the committed freeze + pinned index-state (a single networked resolve), or (b) drops
+# the `--network=none` on the warm-up step only. Paths assume the keystone repo root is the
+# checkout root.
+
+name: haskell-conformance
+
+on:
+  push:
+    paths:
+      - 'protocol-generator/haskell/**'
+      - 'protocol-generator/shared/spec-data/**'
+      - 'protocol-generator/shared/test-vectors/**'
+  pull_request:
+    paths:
+      - 'protocol-generator/haskell/**'
+  workflow_dispatch: {}
+
+# No deploy/publish permissions — read-only.
+permissions:
+  contents: read
+
+env:
+  IMAGE: entity-core-keystone/ghc-toolchain:latest
+  CABAL_DIR: /work/protocol-generator/haskell/.cabal-home
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify toolchain image + oracle present
+        run: |
+          podman image exists "$IMAGE" || { echo "::error::build $IMAGE from containers/ghc-toolchain/Containerfile first"; exit 1; }
+          test -x output/s4-oracles/validate-peer || { echo "::error::vendor the validate-peer oracle ELF (CONFORMANCE-REPORT.md)"; exit 1; }
+
+      # Warm the cabal store from the committed freeze + pinned index-state. This is the ONE
+      # networked step (Hackage resolve); everything after it is sealed-offline. Skip if the
+      # runner restores a cached .cabal-home (the populated store is ~2.4G — cache it).
+      - name: Warm the cabal store (committed freeze + pinned index-state)
+        run: |
+          podman run --rm -e CABAL_DIR="$CABAL_DIR" -v "$PWD":/work:Z \
+            -w /work/protocol-generator/haskell "$IMAGE" \
+            sh -c 'cabal build --dependencies-only -f dev || cabal build --dependencies-only'
+
+      # Gate 1 — codec + agility + type-registry + property/selftest (must stay 160/0) and
+      # the two-peer smoke (7/7), warnings-as-errors (-f dev), sealed offline.
+      - name: cabal test conformance + smoke (160/0 + 7/7)
+        run: |
+          podml() { podman run --rm --network=none -e CABAL_DIR="$CABAL_DIR" -v "$PWD":/work:Z \
+            -w /work/protocol-generator/haskell "$IMAGE" sh -c "$1"; }
+          podml 'cabal build --offline -f dev'
+          podml 'cabal test conformance --offline -f dev'
+          podml 'cabal test smoke --offline -f dev'
+
+      # Gate 2 — cabal check stays clean (publish hygiene).
+      - name: cabal check (clean)
+        run: |
+          podman run --rm --network=none -e CABAL_DIR="$CABAL_DIR" -v "$PWD":/work:Z \
+            -w /work/protocol-generator/haskell "$IMAGE" cabal check
+
+      # Gate 3 — S4 live-peer validate-peer --profile core (must stay 0 FAIL). The peer + the
+      # Go oracle ELF run together in the image over loopback, --network=none. run-s4.sh writes
+      # status/CONFORMANCE-REPORT.json; assert summary.failed == 0 (the green gate).
+      - name: validate-peer --profile core (0 FAIL)
+        run: |
+          podman run --rm --network=none -e CABAL_DIR="$CABAL_DIR" -v "$PWD":/work:Z \
+            "$IMAGE" sh /work/protocol-generator/haskell/run-s4.sh
+          python3 - <<'PY'
+          import json, sys
+          s = json.load(open("protocol-generator/haskell/status/CONFORMANCE-REPORT.json"))["summary"]
+          print("summary:", s)
+          if s.get("failed", 1) != 0:
+              print("::error::validate-peer core has FAILs — gate not green"); sys.exit(1)
+          PY

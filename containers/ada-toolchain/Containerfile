@@ -1,0 +1,114 @@
+# Ada (GNAT) toolchain image — builds the native Ada peer
+# (entity-core-protocol-ada) per protocol-generator/ada/profile.toml.
+# Based on containers/base/Containerfile (fedora:43); mirrors the distro-install
+# structure of containers/c-toolchain + containers/common-lisp-toolchain.
+#
+# S1: AUTHORED ONLY — not built this phase (S1 is research/authoring; the toolchain
+#     is provisioned at S2). Builds run in this container, not on the host.
+# S11: pin the toolchain to an exact version; the Fedora 43 distro channel is a
+#     reviewed vendor channel (Fedora's packaging/review process — the OS-package
+#     analogue of the .NET/Temurin feeds), so the EXACT package NVR pin stands for
+#     reproducibility and the ≥30-day age floor is comfortably cleared by the distro
+#     release dates.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Exact NVRs captured at the S2 build (2026-06-14) by
+# `rpm -q` inside the built image (see /opt/ada-toolchain-versions.txt). Ages all
+# ≥30 days old:
+#   GNAT (gcc-gnat) 15.2.1-7.fc43 — GCC 15.2 released upstream 2025-08-08 (~10mo).
+#                                   FSF GCC-Ada. Full Ada 2012/2022 + design-by-
+#                                   contract aspects (Pre/Post/Type_Invariant/
+#                                   Predicate; the GCC 15 `Finalizable` aspect line).
+#                                   The contract aspects + tasks + protected objects
+#                                   are all in the GNAT runtime. (S2 CORRECTION: the
+#                                   S1 draft said `-2.fc43`; the real Fedora 43
+#                                   release at S2-build time is `-7.fc43` — re-pinned
+#                                   here and in profile.toml [deps] from the image's
+#                                   actual dnf metadata.)
+#   gprbuild        25.0.0-5.fc43  — the GNAT project build driver; dnf-installed from
+#                                   the Fedora 43 repo alongside gcc-gnat. Exact NVR
+#                                   captured from the image's dnf metadata at the S2
+#                                   build (the distro-channel analogue of verifying
+#                                   the Temurin sha256).
+#   libsodium-devel 1.0.22-1.fc43  — crypto: Ed25519 + SHA-256 for the §9.1 floor.
+#                                   (S2 CORRECTION: the S1 draft claimed libsodium
+#                                   1.0.20; fedora:43 ships ONLY libsodium-1.0.22-1.fc43
+#                                   — verified by `rpm -q` and matching the existing
+#                                   c-toolchain pin. The high-level crypto_sign_* /
+#                                   crypto_hash_sha256 APIs are byte-identical between
+#                                   1.0.20 and 1.0.22, so this is a pin-hygiene
+#                                   correctness fix, NOT a behavior/conformance change.)
+#                                   Already pulled by containers/base/Containerfile;
+#                                   re-stated here so this image is self-contained.
+#                                   Consumed via an Interfaces.C binding (pragma Import,
+#                                   Convention=>C).
+#                                   NOTE: libsodium has NO Ed448 and NO SHA-384
+#                                   (SHA-256+512 only) — the v7.67 agility higher bar
+#                                   (Ed448/SHA-384) is DEFERRED to an OpenSSL-curve448 /
+#                                   C-ABI overlay (A-ADA-002); openssl-devel is pulled
+#                                   below so the agility overlay can be built later
+#                                   without a network round-trip. The §9.1 CORE FLOOR
+#                                   needs ONLY libsodium.
+#
+# CORE RUNTIME DEPS: libsodium (system shared library — the ONLY runtime dep; audited +
+# universal). CBOR (canonical ECF), base58, and the multicodec-style LEB128 varint are
+# hand-rolled in-repo (no Ada lib gives canonical ECF; the A-005 pattern). There are NO
+# Alire crate dependencies — gprbuild builds against a committed .gpr with no registry
+# resolve, so the dev loop runs fully offline under --network=none.
+#
+# WHY THE FEDORA 43 DISTRO GNAT, NOT AN ALIRE-DISTRIBUTED OR FROM-SOURCE GNAT:
+#   Fedora 43 ships gcc-gnat 15.2.1 (matching the base image's gcc/gcc-c++ exactly), so
+#   pinning the distro package keeps the WHOLE toolchain on one reviewed channel + one
+#   OS, needs no tarball/sha juggling, and reuses the base image's existing
+#   libsodium-devel. This is the c-toolchain / common-lisp-toolchain pattern (pin the
+#   distro toolchain) rather than the zig/java tarball-fetch pattern — appropriate
+#   because gcc-gnat is a first-class Fedora 43 package, unlike a pinned Zig/Temurin
+#   release the distro doesn't carry at the wanted version.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (S2):
+#   podman build -t entity-core-keystone/ada-toolchain:latest \
+#     -f containers/ada-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# ── Ada (GNAT) toolchain + crypto, from the Fedora 43 distro channel ─────────
+# Every package pinned to its EXACT Fedora 43 NVR (S11), captured at the S2 build
+# from the image's dnf metadata (see /opt/ada-toolchain-versions.txt and
+# protocol-generator/ada/profile.toml [deps]). git/curl/ca-certificates/tar/gzip/
+# xz/findutils/which are unversioned base utilities (network/extract helpers, not
+# part of the reproducible toolchain surface).
+#
+# NOTE: gcc-gnat pulls in gcc 15.2.1 + the GNAT Ada runtime (tasks, protected objects,
+# the rendezvous + contract-aspect runtime support). gprbuild pulls libgpr. The base
+# fedora:43 image already provides curl/tar/git via the layers below; we install the
+# Ada-specific set explicitly so this image is self-contained even if rebuilt FROM the
+# raw fedora:43 (not FROM entity-core-keystone/base).
+RUN dnf install -y \
+        gcc-gnat-15.2.1-7.fc43 \
+        gprbuild-25.0.0-5.fc43 \
+        libsodium-devel-1.0.22-1.fc43 \
+        openssl-devel-3.5.4-3.fc43 \
+        gcc-15.2.1-7.fc43 \
+        make-4.4.1-11.fc43 \
+        git curl ca-certificates tar gzip xz \
+        findutils which \
+    && dnf clean all \
+    # Smoke the toolchain at BUILD time (fails the image build if GNAT/gprbuild absent).
+    && gnatmake --version \
+    && gprbuild --version
+
+# Record the resolved gcc-gnat NVR into the image (audit trail for the exact pin).
+# At the S2 build this captures the precise installed version; if it ever drifts from
+# 15.2.1-7.fc43 the operator re-pins profile.toml [deps].gnat and this Containerfile.
+RUN rpm -q gcc-gnat gprbuild libsodium libsodium-devel openssl-devel gcc make \
+        > /opt/ada-toolchain-versions.txt \
+    && cat /opt/ada-toolchain-versions.txt
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="ada-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.gnat="gcc-gnat-15.2.1-7.fc43"
+LABEL org.entity-core-keystone.libsodium="1.0.22-1.fc43 (fedora-43)"
+
+CMD ["/bin/bash"]
