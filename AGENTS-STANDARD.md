@@ -111,7 +111,7 @@ the contract, flag the cosmetics):
 |---|---|
 | Reference / durable docs, specs | `docs/`, `docs/{architecture,reference,spec}/` — edit in place |
 | Agent guidance | `AGENTS.md` + `AGENTS-STANDARD.md` + `CLAUDE.md` (root) |
-| Dated status / handoffs | `status/` (`HANDOFF-YYYY-MM-DD.md`, `STATUS-*`, `CHECKPOINT-*`) — ephemeral |
+| Dated status / handoffs | `docs/status/` (`HANDOFF-YYYY-MM-DD.md`, `STATUS-*`, `CHECKPOINT-*`) — ephemeral |
 | ADRs (rationale) | `docs/adr/` (`NNNN-slug.md`) |
 | Scratch / local | `.gitignore` — never committed |
 

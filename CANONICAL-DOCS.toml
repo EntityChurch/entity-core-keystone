@@ -34,6 +34,12 @@ title = "entity-core-keystone — overview, build, honest independence"
 blurb = "What the keystone is, the three arms (protocol-generator / ffi-generator / research), the make+podman bare-host build, and the precise independence framing."
 group = "Overview"
 
+[[doc]]
+path  = "docs/status/STATUS.md"
+title = "Status"
+blurb = "Current project status — where the project is, recent work, backlog, and what's next."
+group = "Overview"
+
 # ── Conformance ─────────────────────────────────────────────────────────────
 [[doc]]
 path  = "CONFORMANCE-MATRIX.md"
