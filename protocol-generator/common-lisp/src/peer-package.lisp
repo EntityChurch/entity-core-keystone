@@ -19,7 +19,7 @@
   (:use #:cl)
   ;; Pull the codec value model + primitives in by their EC: names where used.
   (:import-from #:entity-core
-                #:cbor-encode #:cbor-decode
+                #:cbor-encode #:cbor-decode #:cbor-decode-salvage
                 #:bytes #:make-bytes #:bytes-octets #:bytes-p
                 #:cbor-map #:make-cbor-map #:cbor-map-pairs #:cbor-map-p #:map-of
                 #:content-hash

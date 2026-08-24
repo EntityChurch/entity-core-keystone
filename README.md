@@ -154,8 +154,8 @@ subdirectory, never an in-place edit.
 
 | Input | Path |
 |---|---|
-| **The spec** — 3 normative files | `protocol-generator/shared/spec-data/v0.8.0/` |
-| **Conformance / diagnostic vectors** — ECF codec, crypto-agility, type-registry corpora | `protocol-generator/shared/test-vectors/v0.8.0/` |
+| **The spec** — 3 normative files | `protocol-generator/shared/spec-data/v0.8.2/` (current pin; `v0.8.0` retained as a point-in-time pin) |
+| **Conformance / diagnostic vectors** — ECF codec, crypto-agility, type-registry corpora | `protocol-generator/shared/test-vectors/v0.8.0/` (no `v0.8.2` vector set has been cut) |
 
 Both are verbatim, byte-for-byte, SHA-256-pinned snapshots with provenance in their own `MANIFEST.md`.
 `make lint` verifies the pins.
@@ -165,16 +165,20 @@ Both are verbatim, byte-for-byte, SHA-256-pinned snapshots with provenance in th
 As of 2026-08-21 the whole cohort is measured at **one** pin — oracle `entity-core-go @ c1b0708`,
 spec snapshot `v0.8.2` — from a single full census over all 45 measurable peers:
 
-- **5 peers pass `--profile core` 0-FAIL**: `go` `haskell` `lean` `ocaml` `swift` (tier M1), all
-  fixed in that session. The maintenance-tier gate is green and the re-pin is landed.
-- **31 more fail nothing but three new `capability` checks** — 29 at exactly 3F with a
+- **13 peers pass `--profile core` 0-FAIL** — **tiers M1 and M2 are both complete**: `go` `haskell`
+  `lean` `ocaml` `swift` (M1, 5/5) and `common-lisp` `csharp` `elixir` `java` `kotlin` `python`
+  `rust` `typescript` (M2, 8/8, all fixed 2026-08-22). The maintenance-tier gate is green.
+- **25 more fail nothing but three new `capability` checks** — 23 at exactly 3F with a
   byte-identical breakdown, 2 at 2F. That uniformity is the point: it is **one unimplemented spec
-  feature measured 31 times**, not 31 defects.
-- **`typescript` 84F is 3 real + 81 cascade** from a single connection-killing bug (the same one
-  `lean` had, now fixed there); **`cobol` 30F** is the CAP trio plus its standing 27.
-- **4 peers produced INVALID MEASUREMENTS** (`csharp`, `asm-x86_64`, `asm-arm64`, `riscv64`) —
-  starved runs that executed fewer checks than the pinned set. They are quarantined, not scored.
-  A run measured on a different set of checks is not a worse score; it is not a score.
+  feature measured many times**, not many defects. (It was 31 before the M2 pass.)
+- **`cobol` 30F** is the CAP trio plus its standing 27-FAIL liveness cascade.
+  *(`typescript`'s 84F — 3 real + 81 cascade — was fixed 2026-08-22 and is now `755 · 0F`.)*
+- **3 peers produce INVALID MEASUREMENTS** (`asm-x86_64`, `asm-arm64`, `riscv64`) — starved runs
+  that executed fewer checks than the pinned set. They are quarantined, not scored. A run measured
+  on a different set of checks is not a worse score; it is not a score.
+  (**`csharp` was the fourth until 2026-08-22**, when it was root-caused as `typescript`'s bug in
+  its *hang*-form rather than its *close*-form and fixed: 18 m 20 s and 9 starved categories →
+  a clean, fully comparable `755 · 0F` in 7.2 s. Matrix §1c.)
 - `apl` remains upstream-blocked and unmeasured.
 
 **The failures were never regressions — they are a feature nobody had implemented.** §5.6's
@@ -184,7 +188,7 @@ conformance vector exercised it until this pin. Fixing M1 also turned up a **fai
 `go`/`haskell`/`ocaml` *honored* a capability whose `expires_at` was negative — and a §6.3 rule every
 peer was breaking: a rejected frame is owed a `400 non_canonical_ecf`, not silence.
 
-> **The honest one-line summary: 5 of 45 peers are publishable today.** "No green report → no
+> **The honest one-line summary: 13 of 45 peers are publishable today.** "No green report → no
 > publish" is unchanged and it now binds 40 peers. `CONFORMANCE-MATRIX.md` is authoritative — its
 > 2026-08-21 banner carries the full accounting, §1a the invalid measurements, §1b the cascade.
 

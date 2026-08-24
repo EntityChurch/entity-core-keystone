@@ -13,6 +13,32 @@
 
 (in-package #:entity-core/peer)
 
+(defconstant +uint64-max+ (1- (ash 1 64))
+  "Inclusive maximum of primitive/uint — the §5.6 rule-3 representability bound.")
+
+(defun temporal-fields-representable-p (cap)
+  "§6.2 CAP-6a (INGEST): every temporal field on a RECEIVED token must be either
+ABSENT (legal — \"no bound\") or representable as primitive/uint. A bignum, a
+negative integer, or any non-integer is MALFORMED, and the verifier MUST refuse it
+rather than read the unrepresentable field as absent — absent means *no expiry*, so
+the fail-open reading grants an immortal capability to whoever sent the bad value.
+
+The mechanism here is arithmetic rather than a null: ENTITY-UINT returns the value
+of ANY integer, including a negative one, so the range checks did not skip — they
+ran and returned the wrong answer. For a negative not_before, (>= tnow nb) is true,
+so the cap passed.
+
+Common Lisp integers are unbounded, so the >2^64 half is a DELIBERATE range check —
+there is no overflow to trip over.
+
+MUST run BEFORE the range checks it protects."
+  (every (lambda (key)
+           (let ((v (entity-field cap key)))
+             (or (null v)
+                 (and (integerp v) (<= 0 v +uint64-max+)))))
+         '("expires_at" "not_before" "created_at")))
+
+
 (define-condition unresolvable-grantee (error) ()
   (:documentation "§5.5 carve-out: a grantee that cannot be resolved → 401, not 403."))
 
@@ -363,6 +389,9 @@ NIL to 403 capability_denied; never errors or hangs."
        ;; §5.5 M6 root-at-local — the local peer MUST be a quorum member.
        (some (lambda (s) (let ((pid (peer-id-of s))) (and pid (string= pid local-peer))))
              signers)
+       ;; §6.2 CAP-6a (INGEST) — BEFORE the range checks below, which the
+       ;; absent-vs-unrepresentable ambiguity is exactly what defeats.
+       (temporal-fields-representable-p cap)
        ;; temporal validity + grantee resolution (as for any root).
        (let ((tnow (now-ms)))
          (and (let ((nb (entity-uint cap "not_before"))) (or (null nb) (>= tnow nb)))
@@ -435,6 +464,9 @@ UNRESOLVABLE-GRANTEE for the §5.5 401 carve-out."
                       (if gh
                           (unless (funcall resolve-fn gh) (error 'unresolvable-grantee))
                           (error 'unresolvable-grantee)))
+                    ;; §6.2 CAP-6a (INGEST) — before the range checks, same reason
+                    ;; as the root path.
+                    (unless (temporal-fields-representable-p current) (setf good nil))
                     ;; temporal validity
                     (let ((tnow (now-ms)))
                       (let ((nb (entity-uint current "not_before")))

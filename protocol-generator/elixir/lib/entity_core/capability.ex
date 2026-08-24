@@ -662,7 +662,43 @@ defmodule EntityCore.Capability do
     end
   end
 
+  @uint64_max 18_446_744_073_709_551_615
+
+  # §6.2 CAP-6a (INGEST): every temporal field on a RECEIVED token must be either ABSENT
+  # (legal — "no bound") or representable as primitive/uint. A bignum, a negative integer,
+  # or any non-integer is MALFORMED, and the verifier MUST refuse it rather than read the
+  # unrepresentable field as absent — absent means *no expiry*, so the fail-open reading
+  # grants an immortal capability to whoever sent the malformed value.
+  #
+  # This is the reader-side half of CAP-6 and it is where this peer failed OPEN:
+  # Model.uint_field/2 answers nil BOTH for an absent field and for a present-but-negative
+  # one (its guard is `is_integer(n) and n >= 0`), so `expires_at: -1` skipped the expiry
+  # check entirely and was honored with 200.
+  #
+  # Elixir integers are arbitrary-precision, so the `>2^64` half is a DELIBERATE range
+  # check — there is no overflow to trip over, and a bignum language that "just does the
+  # arithmetic" silently never notices.
+  defp temporal_fields_representable(cap) do
+    Enum.all?(["expires_at", "not_before", "created_at"], fn key ->
+      case Model.field(cap, key) do
+        nil -> true
+        v when is_integer(v) -> v >= 0 and v <= @uint64_max
+        _ -> false
+      end
+    end)
+  end
+
+  # MUST run BEFORE the range checks below — they are exactly what the
+  # absent-vs-unrepresentable ambiguity defeats.
   defp temporal_ok(current, t) do
+    if not temporal_fields_representable(current) do
+      false
+    else
+      temporal_range_ok(current, t)
+    end
+  end
+
+  defp temporal_range_ok(current, t) do
     nb_ok =
       case Model.uint_field(current, "not_before") do
         nb when nb != nil -> t >= nb

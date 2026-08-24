@@ -61,15 +61,75 @@ class Peer private constructor(
     /** A minted token + its signature. */
     private data class Minted(val token: Entity, val signature: Entity)
 
-    private fun mintToken(granteeHash: ByteArray, grants: List<EcfValue.MapVal>, parent: ByteArray?): Minted {
+    /** Inclusive maximum of `primitive/uint` — the §5.6 rule-3 representability bound. */
+    private val UINT64_MAX_P: BigInteger = BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE)
+
+    private fun mintToken(granteeHash: ByteArray, grants: List<EcfValue.MapVal>, parent: ByteArray?): Minted =
+        mintTokenAt(granteeHash, grants, parent, Capability.nowMs(), null)
+
+    /**
+     * [mintToken] with an explicit `created_at` and §5.6 `expires_at`.
+     *
+     * The two are passed together on purpose: the §5.6 duration terms are relative to
+     * [createdAt], so sampling the clock twice would let the emitted `created_at` and the
+     * expiry derived from it skew apart. Callers computing a ceiling sample once.
+     */
+    private fun mintTokenAt(
+        granteeHash: ByteArray,
+        grants: List<EcfValue.MapVal>,
+        parent: ByteArray?,
+        createdAt: Long,
+        expiresAt: BigInteger?,
+    ): Minted {
         val pairs = ArrayList<EcfValue.Entry>()
         pairs.add(EcfValue.Entry(EcfValue.Text("granter"), EcfValue.Bytes(identity.identityHash())))
         pairs.add(EcfValue.Entry(EcfValue.Text("grantee"), EcfValue.Bytes(granteeHash)))
         pairs.add(EcfValue.Entry(EcfValue.Text("grants"), grantsArray(grants)))
-        pairs.add(EcfValue.Entry(EcfValue.Text("created_at"), EcfValue.IntVal.of(Capability.nowMs())))
+        pairs.add(EcfValue.Entry(EcfValue.Text("created_at"), EcfValue.IntVal.of(createdAt)))
+        if (expiresAt != null) pairs.add(EcfValue.Entry(EcfValue.Text("expires_at"), EcfValue.IntVal(expiresAt)))
         if (parent != null) pairs.add(EcfValue.Entry(EcfValue.Text("parent"), EcfValue.Bytes(parent)))
         val token = Entity.make("system/capability/token", EcfValue.MapVal(pairs))
         return Minted(token, identity.sign(token))
+    }
+
+    /**
+     * Convert a DURATION term (`ttl_ms`) to an absolute timestamp, reporting whether it
+     * contributes a ceiling at all (§5.6 MIN_DEFINED rule 1 + rule 3).
+     *
+     * Overflow DROPS the term — treated as absent, exactly as a null term is. It MUST NOT
+     * wrap and MUST NOT saturate: saturation encodes differently from absence and
+     * manufactures `expires_at == 2^64-1`, a finite bound no reader can distinguish from a
+     * deliberate one. `BigInteger` does not overflow, so this is a DELIBERATE range check.
+     *
+     * `ttl == 0` is NOT special-cased, deliberately: rule 2 makes 0 a DEFINED value
+     * yielding [createdAt] (expire immediately). Letting it fall out of the arithmetic is
+     * what keeps it from collapsing into the absent/null "no bound" spelling.
+     */
+    private fun durationTerm(createdAt: Long, ttl: BigInteger?): BigInteger? {
+        if (ttl == null || ttl.signum() < 0) return null
+        val sum = BigInteger.valueOf(createdAt).add(ttl)
+        return if (sum > UINT64_MAX_P) null else sum
+    }
+
+    /** §5.6 MIN_DEFINED: the minimum over the DEFINED terms only; null when none is. */
+    private fun minDefined(vararg terms: BigInteger?): BigInteger? = terms.filterNotNull().minOrNull()
+
+    /**
+     * The `ttl_ms` of the policy entry that ceilings THIS caller (§6.2 CAP-5), via the
+     * same dual-form lookup the §4.4 authenticate path uses (hex → Base58 → `default`).
+     *
+     * This is the term that makes policy withdrawal bounded on the `request` path: the
+     * entry's `ttl_ms` is the withdrawal latency for tokens already issued.
+     */
+    private fun policyTtlMs(granteeHash: ByteArray): BigInteger? {
+        val base = "/$localPeer/system/capability/policy/"
+        val byId = store.getByHash(granteeHash)?.bytes("public_key")?.let { pub ->
+            store.getAt(base + Identity.peerIdOfPublicKey(pub))
+        }
+        val entry = store.getAt(base + Cbor.hex(granteeHash))
+            ?: byId
+            ?: store.getAt(base + "default")
+        return entry?.uint("ttl_ms")
     }
 
     private fun capIncluded(m: Minted): List<Envelope.Included> = listOf(
@@ -352,7 +412,7 @@ class Peer private constructor(
         private fun request(ctx: HandlerContext): Outcome {
             val params = ctx.exec.entityField("params")
             val author = ctx.exec.bytes("author") ?: return Outcome.err(403, "capability_denied")
-            return mintBounded(ctx.callerCap, reqGrants(params), author, null)
+            return mintBounded(ctx.callerCap, reqGrants(params), author, null, params)
         }
 
         private fun delegate(ctx: HandlerContext): Outcome {
@@ -363,7 +423,7 @@ class Peer private constructor(
             if (!(author != null && Identity.octetsEqual(author, identity.identityHash()))) {
                 return Outcome.err(501, "unsupported_operation", "delegate: same-peer-only in v1")
             }
-            return mintBounded(ctx.callerCap, reqGrants(params), author, ph)
+            return mintBounded(ctx.callerCap, reqGrants(params), author, ph, params)
         }
 
         private fun revoke(ctx: HandlerContext): Outcome {
@@ -387,7 +447,7 @@ class Peer private constructor(
             return Outcome.ok(Wire.emptyParams())
         }
 
-        private fun mintBounded(callerCap: Entity?, reqGrants: List<EcfValue.MapVal>, granteeHash: ByteArray, parent: ByteArray?): Outcome {
+        private fun mintBounded(callerCap: Entity?, reqGrants: List<EcfValue.MapVal>, granteeHash: ByteArray, parent: ByteArray?, params: Entity?): Outcome {
             var bounded = false
             if (callerCap != null) {
                 val parentGrants = Capability.grantsOfToken(callerCap)
@@ -402,7 +462,26 @@ class Peer private constructor(
                 }
             }
             if (!bounded) return Outcome.err(403, "scope_exceeds_authority")
-            val m = mintToken(granteeHash, reqGrants, parent)
+            // §6.2 CAP-5 / §5.6 MIN_DEFINED. `request` mints a ROOT token (parent: null),
+            // so §5.6's parent-child attenuation rule never reaches it — without this
+            // bound, temporal attenuation is the one dimension a requester can escape.
+            //
+            //   expires_at = MIN_DEFINED(
+            //       caller_capability.expires_at,      // ABSOLUTE — enters directly
+            //       created_at + policy_entry.ttl_ms,  // DURATION — converted first
+            //       created_at + request.ttl_ms)       // DURATION — converted first
+            //
+            // Term SHAPE is the trap: mixing a duration in unconverted yields a timestamp
+            // near the epoch and clamps every token to already-expired. The disposition is
+            // a CLAMP, never a rejection — an over-long request from a bounded caller
+            // mints at 200 with the clamped value; rejecting it is non-conformant.
+            val createdAt = Capability.nowMs()
+            val expiresAt = minDefined(
+                callerCap?.uint("expires_at"),
+                durationTerm(createdAt, policyTtlMs(granteeHash)),
+                durationTerm(createdAt, params?.uint("ttl_ms")),
+            )
+            val m = mintTokenAt(granteeHash, reqGrants, parent, createdAt, expiresAt)
             return Outcome.ok(
                 Entity.make("system/capability/grant", Cbor.map("token", Cbor.bytes(m.token.hash()))),
                 capIncluded(m),

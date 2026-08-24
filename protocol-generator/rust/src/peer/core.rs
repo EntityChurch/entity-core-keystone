@@ -191,18 +191,59 @@ fn mint_token(
     parent: Option<&[u8]>,
     grants: Vec<Value>,
 ) -> Minted {
+    mint_token_at(id, grantee_hash, parent, grants, now_ms(), None)
+}
+
+/// `mint_token` with an explicit `created_at` and §5.6 `expires_at`.
+///
+/// The two are passed together on purpose: `expires_at` is computed FROM `created_at`
+/// (the duration terms are relative to it), so sampling the clock twice would let the
+/// emitted `created_at` and the expiry derived from it skew apart. Callers sample once
+/// and thread it through.
+fn mint_token_at(
+    id: &Identity,
+    grantee_hash: &[u8],
+    parent: Option<&[u8]>,
+    grants: Vec<Value>,
+    created_at: u64,
+    expires_at: Option<u64>,
+) -> Minted {
     let mut pairs = vec![
         (Key::Text("granter".into()), model::bytes(&id.identity_hash)),
         (Key::Text("grantee".into()), model::bytes(grantee_hash)),
         (Key::Text("grants".into()), Value::Array(grants)),
-        (Key::Text("created_at".into()), Value::UInt(now_ms())),
+        (Key::Text("created_at".into()), Value::UInt(created_at)),
     ];
+    if let Some(ex) = expires_at {
+        pairs.push((Key::Text("expires_at".into()), Value::UInt(ex)));
+    }
     if let Some(ph) = parent {
         pairs.push((Key::Text("parent".into()), model::bytes(ph)));
     }
     let token = Entity::make("system/capability/token", Value::Map(pairs));
     let signature = id.sign_entity(&token);
     Minted { token, signature }
+}
+
+/// Convert a DURATION term (`ttl_ms`) to an absolute timestamp, reporting whether it
+/// contributes a ceiling at all (§5.6 MIN_DEFINED rule 1 + rule 3).
+///
+/// Overflow DROPS the term — treated as absent, exactly as a null term is. It MUST NOT
+/// wrap and MUST NOT saturate: saturation encodes differently from absence and
+/// manufactures `expires_at == u64::MAX`, a finite bound no reader can distinguish from
+/// a deliberate one.
+///
+/// `ttl == 0` is NOT special-cased, deliberately: rule 2 makes 0 a DEFINED value
+/// yielding `created_at` (expire immediately). Letting it fall out of the arithmetic is
+/// what keeps it from collapsing into the absent/null "no bound" spelling — and that
+/// collapse is exactly what `ttl_zero_and_overflow` caught here.
+fn duration_term(created_at: u64, ttl: Option<u64>) -> Option<u64> {
+    created_at.checked_add(ttl?)
+}
+
+/// §5.6 MIN_DEFINED: the minimum over the DEFINED terms only; `None` when none is.
+fn min_defined(terms: [Option<u64>; 3]) -> Option<u64> {
+    terms.into_iter().flatten().min()
 }
 
 impl Peer {
@@ -590,6 +631,26 @@ impl Peer {
         err_out(501, "unsupported_operation", Some(op))
     }
 
+    /// The `ttl_ms` of the policy entry that ceilings THIS caller (§6.2 CAP-5), via the
+    /// same dual-form lookup the §4.4 authenticate path uses (hex → Base58 → `default`).
+    ///
+    /// This is the term that makes policy withdrawal bounded on the `request` path: the
+    /// entry's `ttl_ms` is the withdrawal latency for tokens already issued.
+    fn policy_ttl_ms(&self, grantee_hash: &[u8]) -> Option<u64> {
+        let base = format!("/{}/system/capability/policy/", self.local_peer);
+        let entry = self
+            .store
+            .get_at(&format!("{base}{}", hex(grantee_hash)))
+            .or_else(|| {
+                let peer = self.store.get_by_hash(grantee_hash)?;
+                let pk = peer.bytes_field("public_key")?;
+                let pid = identity::peer_id_of_pubkey(pk);
+                self.store.get_at(&format!("{base}{pid}"))
+            })
+            .or_else(|| self.store.get_at(&format!("{base}default")))?;
+        entry.uint_field("ttl_ms")
+    }
+
     // ── §6.9a seed-policy derivation ───────────────────────────────────────────
 
     /// authenticate-time derivation: dual-form lookup (hex → Base58 → default),
@@ -761,7 +822,13 @@ impl Peer {
                     Some(a) => a,
                     None => return err_out(403, "capability_denied", None),
                 };
-                self.mint_bounded(caller_cap, req_grants(params.as_ref()), &grantee, None)
+                self.mint_bounded(
+                    caller_cap,
+                    req_grants(params.as_ref()),
+                    &grantee,
+                    None,
+                    params.as_ref(),
+                )
             }
             "delegate" => {
                 let parent = params
@@ -777,7 +844,13 @@ impl Peer {
                 // delegate is same-peer-only in v1.
                 match &author {
                     Some(a) if a == &self.identity.identity_hash => {
-                        self.mint_bounded(caller_cap, req_grants(params.as_ref()), a, Some(&parent))
+                        self.mint_bounded(
+                            caller_cap,
+                            req_grants(params.as_ref()),
+                            a,
+                            Some(&parent),
+                            params.as_ref(),
+                        )
                     }
                     _ => err_out(
                         501,
@@ -848,6 +921,7 @@ impl Peer {
         req_grants: Vec<Value>,
         grantee_hash: &[u8],
         parent: Option<&[u8]>,
+        params: Option<&Entity>,
     ) -> Outcome {
         let bounded = match caller_cap {
             Some(cc) => cap::requested_grants_within(&self.local_peer, &req_grants, cc),
@@ -856,7 +930,33 @@ impl Peer {
         if !bounded {
             return err_out(403, "scope_exceeds_authority", None);
         }
-        let minted = mint_token(&self.identity, grantee_hash, parent, req_grants);
+        // §6.2 CAP-5 / §5.6 MIN_DEFINED. `request` mints a ROOT token (parent: null), so
+        // §5.6's parent-child attenuation rule never reaches it — without this bound,
+        // temporal attenuation is the one dimension a requester can escape.
+        //
+        //   expires_at = MIN_DEFINED(
+        //       caller_capability.expires_at,      ; ABSOLUTE — enters directly
+        //       created_at + policy_entry.ttl_ms,  ; DURATION — converted first
+        //       created_at + request.ttl_ms)       ; DURATION — converted first
+        //
+        // Term SHAPE is the trap: mixing a duration in unconverted yields a timestamp
+        // near the epoch and clamps every token to already-expired. The disposition is a
+        // CLAMP, never a rejection — an over-long request from a bounded caller mints at
+        // 200 with the clamped value; rejecting it is explicitly non-conformant.
+        let created_at = now_ms();
+        let expires_at = min_defined([
+            caller_cap.and_then(|cc| cc.uint_field("expires_at")),
+            duration_term(created_at, self.policy_ttl_ms(grantee_hash)),
+            duration_term(created_at, params.and_then(|p| p.uint_field("ttl_ms"))),
+        ]);
+        let minted = mint_token_at(
+            &self.identity,
+            grantee_hash,
+            parent,
+            req_grants,
+            created_at,
+            expires_at,
+        );
         let grant_result = Entity::make(
             "system/capability/grant",
             model::map(vec![("token", model::bytes(&minted.token.hash))]),

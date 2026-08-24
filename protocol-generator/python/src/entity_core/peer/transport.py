@@ -101,6 +101,45 @@ class TransportIO:
         except OSError:
             pass
 
+    def _reject_non_canonical(self, payload: bytes) -> None:
+        """Answer a frame the strict decoder rejected with ``400 non_canonical_ecf``
+        (§6.3), recovering ONLY the ``request_id`` so the sender can correlate it.
+
+        The frame stays rejected: nothing is built from it, nothing is stored, and the
+        tag is never interpreted — the salvage decode exists solely to read back the
+        correlation key. The envelope and entity-wrapper shapes are fixed maps with no
+        legal tag position, so a frame whose ONLY defect is a tag inside some entity's
+        ``data`` still has a structurally sound root, which is exactly the case worth
+        recovering (and the one CAP-6a's ``>2^64`` half arrives as — a bignum can only
+        reach a peer as a major-type-6 tag). If even the request_id is unrecoverable
+        there is nobody to answer, so the frame is dropped: the one case where silence is
+        all that is available.
+        """
+        from .._cbor import decode_salvage
+        from .model import Envelope, Included
+        from .wire import error_result, make_response
+
+        try:
+            v = decode_salvage(payload)
+            request_id = v["root"]["data"]["request_id"]
+            if not isinstance(request_id, str):
+                return
+        except Exception:
+            return  # no correlatable request_id — nothing to answer
+        try:
+            result = error_result(
+                "non_canonical_ecf",
+                "frame is not canonical ECF (section 6.3): CBOR tags are forbidden "
+                "anywhere in an entity",
+            )
+            self.write_framed(
+                Envelope(root=make_response(request_id, 400, result), included=Included())
+            )
+        except Exception:
+            # A write failure here is a dead socket, not a protocol decision; the read
+            # loop's own error handling ends the loop on the next iteration.
+            return
+
     def read_loop(self, on_execute: Callable[[Envelope], None]) -> None:
         """§6.11 demux: EXECUTE_RESPONSE -> route; EXECUTE -> dispatch on its own
         thread (§4.8)."""
@@ -119,7 +158,14 @@ class TransportIO:
             try:
                 env = envelope_of_frame(payload)
             except (BadEntityError, Exception):
-                continue  # malformed frame: skip, keep reading
+                # §6.3: "Rejection returns `400 non_canonical_ecf`" — the frame is
+                # refused (correct), and that refusal MUST be a STATUS, not silence.
+                # Skipping it satisfies only the first half of the sentence and leaves
+                # the sender blocked until its own timeout, so a refusal is
+                # indistinguishable from a dead peer. §4.9(c) deliver-or-signal says the
+                # same from the other direction. Answer, then keep reading.
+                self._reject_non_canonical(payload)
+                continue
             if env.root.type == "system/protocol/execute/response":
                 self._route_response(env)
             else:

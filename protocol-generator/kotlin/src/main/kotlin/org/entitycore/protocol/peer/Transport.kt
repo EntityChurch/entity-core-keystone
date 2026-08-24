@@ -1,5 +1,7 @@
 package org.entitycore.protocol.peer
 
+import org.entitycore.protocol.EcfResult
+import org.entitycore.protocol.codec.CanonicalCbor
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -122,6 +124,46 @@ object Transport {
      *  own coroutine (§4.8) + write the response. Runs on a dedicated OS thread (§7b: the
      *  blocking framed read never sits on the cooperative pool). Returns when the
      *  connection closes / a malformed frame ends it. */
+    /**
+     * Answer a frame the strict decoder rejected with `400 non_canonical_ecf` (§6.3),
+     * recovering ONLY the `request_id` so the sender can correlate the refusal.
+     *
+     * The frame stays rejected: nothing is built from it, nothing is stored, and the tag
+     * is never interpreted — the salvage decode exists solely to read back the correlation
+     * key. The envelope and entity-wrapper shapes are fixed maps with no legal tag
+     * position, so a frame whose ONLY defect is a tag inside some entity's `data` still has
+     * a structurally sound root, which is exactly the case worth recovering (and the one
+     * CAP-6a's `>2^64` half arrives as — a bignum can only reach a peer as a
+     * major-type-6 tag). If even the request_id is unrecoverable there is nobody to
+     * answer, so the frame is dropped: the one case where silence is all there is.
+     */
+    private fun rejectNonCanonical(io: Io, payload: ByteArray) {
+        val requestId = try {
+            val v = (CanonicalCbor.decodeSalvage(payload) as? EcfResult.Ok)?.value ?: return
+            val root = Cbor.asMap((v as? EcfValue.MapVal)?.get("root")) ?: return
+            (Cbor.asMap(root["data"])?.get("request_id") as? EcfValue.Text)?.value ?: return
+        } catch (bad: Exception) {
+            return // no correlatable request_id — nothing to answer
+        }
+        try {
+            io.writeFramed(
+                Envelope(
+                    Wire.makeResponse(
+                        requestId, 400,
+                        Wire.errorResult(
+                            "non_canonical_ecf",
+                            "frame is not canonical ECF (section 6.3): CBOR tags are " +
+                                "forbidden anywhere in an entity",
+                        ),
+                    ),
+                ),
+            )
+        } catch (ignore: Exception) {
+            // A write failure here is a dead socket, not a protocol decision; the read
+            // loop's own error handling ends the connection on the next iteration.
+        }
+    }
+
     private fun readLoop(peer: Peer, conn: Conn, io: Io, scope: CoroutineScope) {
         try {
             while (true) {
@@ -129,7 +171,14 @@ object Transport {
                 val env = try {
                     Wire.envelopeOfFrame(payload)
                 } catch (bad: Exception) {
-                    continue // skip a malformed frame (§4.9: don't crash, keep serving)
+                    // §6.3: "Rejection returns `400 non_canonical_ecf`" — the frame is
+                    // refused (correct), and that refusal MUST be a STATUS, not silence.
+                    // Skipping it satisfies only the first half of the sentence and leaves
+                    // the sender blocked until its own timeout, so a refusal is
+                    // indistinguishable from a dead peer. §4.9(c) says the same from the
+                    // other direction. Answer, then keep serving.
+                    rejectNonCanonical(io, payload)
+                    continue
                 }
                 if (env.root.type == "system/protocol/execute/response") {
                     io.routeResponse(env)

@@ -418,6 +418,30 @@ fn check_delegation_caveats(parent: &Entity, child: &Entity, depth: u64) -> bool
     true
 }
 
+/// §6.2 CAP-6a (INGEST): every temporal field on a RECEIVED token must be either
+/// ABSENT (legal — "no bound") or representable as `primitive/uint`. A bignum, a
+/// negative integer, or anything else is **malformed**, and the verifier MUST refuse
+/// it rather than treat the unrepresentable field as absent.
+///
+/// This is the reader-side half of CAP-6 and it is where this peer failed OPEN.
+/// `uint_field` returns `None` BOTH for an absent field and for a present non-`UInt`
+/// one, so `if let Some(ex) = cap.uint_field("expires_at")` silently SKIPPED the
+/// expiry check on a token carrying `expires_at: -1` and honored it with 200 — an
+/// immortal capability handed to whoever sent the malformed value.
+///
+/// MUST run BEFORE the range checks it protects, because the range checks are
+/// exactly what the absent/unrepresentable ambiguity defeats.
+pub(super) fn temporal_fields_representable(cap: &Entity) -> bool {
+    for key in ["expires_at", "not_before", "created_at"] {
+        match cap.field(key) {
+            None | Some(Value::Null) => continue, // absent/null is legal — no bound
+            Some(Value::UInt(_)) => continue,     // representable
+            _ => return false,                    // negative, bignum, text, … → malformed
+        }
+    }
+    true
+}
+
 fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -565,6 +589,11 @@ fn verify_multisig_root(
     }
 
     // temporal validity + grantee resolution (as for any root).
+    // CAP-6a FIRST: an unrepresentable temporal field is malformed, and must not be
+    // read as absent by the `uint_field` checks below (which cannot tell the two apart).
+    if !temporal_fields_representable(cap) {
+        return Verdict::Deny;
+    }
     let t = now_ms();
     if let Some(nb) = cap.uint_field("not_before") {
         if t < nb {
@@ -684,7 +713,12 @@ fn verify_capability_chain(
         if resolve(env, st, &grantee).is_none() {
             return Err(());
         }
-        // temporal validity.
+        // temporal validity. CAP-6a runs FIRST, for the same reason as the root path:
+        // `uint_field` collapses "absent" and "present but not a uint", so an
+        // unrepresentable expiry would otherwise skip the range check and fail OPEN.
+        if !temporal_fields_representable(current) {
+            return Ok(Verdict::Deny);
+        }
         if let Some(nb) = current.uint_field("not_before") {
             if t < nb {
                 return Ok(Verdict::Deny);

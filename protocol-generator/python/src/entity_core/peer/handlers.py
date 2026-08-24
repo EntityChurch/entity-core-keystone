@@ -61,6 +61,31 @@ class DispatchCtx:
     has_cap: bool = False
 
 
+UINT64_MAX = (1 << 64) - 1
+
+
+def _duration_term(created_at: int, ttl: int | None) -> int | None:
+    """Convert a DURATION term (``ttl_ms``) to an absolute timestamp, reporting whether
+    it contributes a ceiling at all (§5.6 MIN_DEFINED rule 1 + rule 3).
+
+    Overflow DROPS the term — treated as absent, exactly as a null term is. It MUST NOT
+    wrap and MUST NOT saturate: saturation encodes differently from absence and
+    manufactures ``expires_at == 2**64-1``, a finite bound no reader can distinguish from
+    a deliberate one. Python ints are unbounded, so this is a DELIBERATE range check
+    rather than an overflow trap — a bignum language that "just does the arithmetic"
+    silently never fires rule 3 at all.
+
+    ``ttl == 0`` is NOT special-cased, deliberately: rule 2 makes 0 a DEFINED value
+    yielding ``created_at`` (expire immediately). Letting it fall out of the arithmetic
+    is what keeps it from collapsing into the absent/null "no bound" spelling — and that
+    collapse is exactly what ``ttl_zero_and_overflow`` caught here.
+    """
+    if ttl is None:
+        return None
+    total = created_at + ttl
+    return None if total > UINT64_MAX else total
+
+
 def _params_entity(exec_e: Entity) -> Entity | None:
     return exec_e.sub_entity("params")
 
@@ -337,7 +362,9 @@ class CapabilityHandler:
                 return g
         return []
 
-    def _mint_bounded(self, ctx: DispatchCtx, req_grants: list, grantee_hash, parent) -> Outcome:
+    def _mint_bounded(
+        self, ctx: DispatchCtx, req_grants: list, grantee_hash, parent, params=None
+    ) -> Outcome:
         p = self.p
         bounded = False
         if ctx.has_cap and ctx.caller_cap is not None:
@@ -354,7 +381,28 @@ class CapabilityHandler:
                     break
         if not bounded:
             return Outcome.err(403, "scope_exceeds_authority")
-        token, sig = p.mint_token(grantee_hash, req_grants, parent)
+        # §6.2 CAP-5 / §5.6 MIN_DEFINED. `request` mints a ROOT token (parent: null), so
+        # §5.6's parent-child attenuation rule never reaches it — without this bound,
+        # temporal attenuation is the one dimension a requester can escape.
+        #
+        #   expires_at = MIN_DEFINED(
+        #       caller_capability.expires_at,      # ABSOLUTE — enters directly
+        #       created_at + policy_entry.ttl_ms,  # DURATION — converted first
+        #       created_at + request.ttl_ms)       # DURATION — converted first
+        #
+        # Term SHAPE is the trap: mixing a duration in unconverted yields a timestamp
+        # near the epoch and clamps every token to already-expired. The disposition is a
+        # CLAMP, never a rejection — an over-long request from a bounded caller mints at
+        # 200 with the clamped value; rejecting it is explicitly non-conformant.
+        created_at = p.now_millis()
+        terms = [
+            ctx.caller_cap.uint("expires_at") if ctx.caller_cap is not None else None,
+            _duration_term(created_at, p.policy_ttl_ms(bytes(grantee_hash))),
+            _duration_term(created_at, params.uint("ttl_ms") if params is not None else None),
+        ]
+        defined = [t for t in terms if t is not None]
+        expires_at = min(defined) if defined else None
+        token, sig = p.mint_token(grantee_hash, req_grants, parent, created_at, expires_at)
         return Outcome.ok(
             Entity.make("system/capability/grant", {"token": bytes(token.hash)}),
             token,
@@ -368,7 +416,7 @@ class CapabilityHandler:
         author = exec_e.bytes_("author")
         if author is None:
             return Outcome.err(403, "capability_denied")
-        return self._mint_bounded(ctx, self._req_grants(params), author, None)
+        return self._mint_bounded(ctx, self._req_grants(params), author, None, params)
 
     def _delegate(self, ctx: DispatchCtx) -> Outcome:
         p, exec_e = self.p, ctx.exec
@@ -381,7 +429,7 @@ class CapabilityHandler:
             return Outcome.err(400, "unexpected_params", "delegate: zero parent")
         if author != p.identity.identity_hash:
             return Outcome.err(501, "unsupported_operation", "delegate: same-peer-only in v1")
-        return self._mint_bounded(ctx, self._req_grants(params), author, ph)
+        return self._mint_bounded(ctx, self._req_grants(params), author, ph, params)
 
     def _revoke(self, ctx: DispatchCtx) -> Outcome:
         p, exec_e = self.p, ctx.exec

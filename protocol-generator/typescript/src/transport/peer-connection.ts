@@ -1,6 +1,7 @@
 import { type Socket } from "node:net";
 import { ConnectionBrokenError, EntityCoreError, EntityProtocolError, RecvTimeoutError } from "../errors.js";
-import { Envelope, Execute, ExecuteResponse, TypeNames } from "../model/index.js";
+import { decodeSalvage } from "../codec/canonical-cbor.js";
+import { Ecf, Envelope, Execute, ExecuteResponse, TypeNames } from "../model/index.js";
 import { type ConnectionState, Deferred } from "../handlers/index.js";
 import { type Dispatcher } from "../dispatch/index.js";
 import { DEFAULT_MAX_FRAME_BYTES, readFrames, writeFrame } from "./frame-codec.js";
@@ -102,7 +103,14 @@ export class PeerConnection {
           envelope = Envelope.decode(frame);
         } catch (e) {
           if (e instanceof EntityCoreError) {
-            break; // malformed frame → close connection (Layer 0, §6.7)
+            // §6.3: "Rejection returns `400 non_canonical_ecf`" — the frame is
+            // refused (above), and that refusal MUST be a STATUS, not silence.
+            // This used to `break`, closing the connection: one bad frame then took
+            // every later request on it with it, which is where this peer's 81
+            // cascade FAILs came from. §4.9(c) deliver-or-signal says the same from
+            // the other direction. Answer, then keep serving.
+            await this.#rejectNonCanonical(frame);
+            continue;
           }
           throw e;
         }
@@ -165,6 +173,43 @@ export class PeerConnection {
       // hard to root-cause — if you're chasing a mystery connection-close here,
       // temporarily log `e` rather than assuming there's nothing to see.
       this.#destroy();
+    }
+  }
+
+  /**
+   * Answer a frame the strict decoder rejected with `400 non_canonical_ecf` (§6.3),
+   * recovering ONLY the `request_id` so the sender can correlate the refusal.
+   *
+   * The frame stays rejected: nothing is built from it, nothing is stored, and the tag
+   * is never interpreted — the salvage decode exists solely to read back the correlation
+   * key. If even the request_id is unrecoverable there is nobody to answer, so the frame
+   * is dropped; that is the one case where silence is all that is available.
+   */
+  async #rejectNonCanonical(frame: Uint8Array): Promise<void> {
+    let requestId: string;
+    try {
+      // envelope → root (an entity wrapper: {type, data, content_hash}) → data →
+      // request_id. The envelope and entity-wrapper shapes are fixed maps with no
+      // legal tag position, so a frame whose ONLY defect is a tag inside some
+      // entity's `data` still has a structurally sound root — which is exactly the
+      // case worth recovering, and the one CAP-6a's >2^64 half arrives as.
+      const salvaged = decodeSalvage(frame);
+      const root = Ecf.require(salvaged, "root");
+      requestId = Ecf.requireText(Ecf.require(root, "data"), "request_id");
+    } catch {
+      return; // no correlatable request_id — nothing to answer
+    }
+    try {
+      const response = ExecuteResponse.error(
+        requestId,
+        400,
+        "non_canonical_ecf",
+        "frame is not canonical ECF (§6.3): CBOR tags are forbidden anywhere in an entity",
+      );
+      await this.#write(new Envelope(response.entity, []));
+    } catch {
+      // A write failure here is a dead socket, not a protocol decision; the read
+      // loop's own error handling tears the connection down on the next iteration.
     }
   }
 

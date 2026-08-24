@@ -70,12 +70,45 @@
         (let ((payload (handler-case (read-frame (io-stream io))
                          ((or transport-closed end-of-file) () (return)))))
           (let ((env (ignore-errors (envelope-of-frame payload))))
+            ;; §6.3: "Rejection returns `400 non_canonical_ecf`" — the frame is refused
+            ;; (correct), and that refusal MUST be a STATUS, not silence. Dropping it
+            ;; satisfies only the first half of the sentence and leaves the sender blocked
+            ;; until its own timeout, so a refusal is indistinguishable from a dead peer.
+            ;; §4.9(c) deliver-or-signal says the same from the other direction.
+            (unless env (reject-non-canonical io payload))
             (when env
               (if (string= (entity-typ (envelope-root env)) "system/protocol/execute/response")
                   (route-response io env)
                   (sb-thread:make-thread (lambda () (funcall on-execute env))
                                          :name "exec-dispatch"))))))
     (error () nil)))
+
+(defun reject-non-canonical (io payload)
+  "Answer a frame the strict decoder rejected with 400 non_canonical_ecf (§6.3),
+recovering ONLY the request_id so the sender can correlate the refusal.
+
+The frame stays rejected: nothing is built from it, nothing is stored, and the tag is
+never interpreted — the salvage decode exists solely to read back the correlation key.
+The envelope and entity-wrapper shapes are fixed maps with no legal tag position, so a
+frame whose ONLY defect is a tag inside some entity's data still has a structurally
+sound root, which is exactly the case worth recovering (and the one CAP-6a's >2^64 half
+arrives as — a bignum can only reach a peer as a major-type-6 tag). If even the
+request_id is unrecoverable there is nobody to answer, so the frame is dropped: the one
+case where silence is all that is available."
+  (ignore-errors
+   (let* ((v (cbor-decode-salvage payload))
+          (root (map-field v "root"))
+          (data (map-field root "data"))
+          (rid (map-field data "request_id")))
+     (when (stringp rid)
+       (write-framed
+        io
+        (make-envelope
+         (make-response rid 400
+                        (error-result
+                         "non_canonical_ecf"
+                         "frame is not canonical ECF (section 6.3): CBOR tags are forbidden anywhere in an entity"))
+         nil))))))
 
 ;; ── server: serve one accepted connection ───────────────────────────────────────
 

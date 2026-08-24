@@ -6,15 +6,15 @@
 
 | | Peers |
 |---|---|
-| **0-FAIL @ `c1b0708`** (5) | `go` `haskell` `lean` `ocaml` `swift` — **tier M1, all fixed this session** |
-| **3F — the CAP gap only** (29) | `ada` `c` `common-lisp` `cpp` `crystal` `dart` `datalog` `elixir` `fortran` `io` `java` `julia` `kotlin` `node-red` `odin` `oz` `pd` `php` `prolog` `python` `rexx` `ruby` `rust` `rust-wasm` `rust-wasm-wasmtime` `tcl` `turbowarp` `unison` `zig` |
+| **0-FAIL @ `c1b0708`** (13) | `go` `haskell` `lean` `ocaml` `swift` (**tier M1**, 5/5) · `common-lisp` `csharp` `elixir` `java` `kotlin` `python` `rust` `typescript` (**tier M2**, 8/8) — M2 completed 2026-08-22 |
+| **3F — the CAP gap only** (23) | `ada` `c` `cpp` `crystal` `dart` `datalog` `fortran` `io` `julia` `node-red` `odin` `oz` `pd` `php` `prolog` `rexx` `ruby` `rust-wasm` `rust-wasm-wasmtime` `tcl` `turbowarp` `unison` `zig` |
 | **2F** (2) | `sql` `wasm-wat` — the CAP-5/CAP-6 pair; both already refuse CAP-6a correctly |
 | **4F** (3) | `forth` `nim` `smalltalk` — CAP trio + one further `capability` check |
-| **Larger** (2) | `typescript` — **84F, of which 81 are cascade** (lean's exact defect, §1b) · `cobol` — 30F (CAP trio + its standing 27-FAIL liveness cascade) |
-| **INVALID MEASUREMENT** (4) | `csharp` `asm-x86_64` `asm-arm64` `riscv64` — starved runs, **not scores** (§1a) |
+| **Larger** (1) | `cobol` — 30F (CAP trio + its standing 27-FAIL liveness cascade) |
+| **INVALID MEASUREMENT** (3) | `asm-x86_64` `asm-arm64` `riscv64` — starved runs, **not scores** (§1a). *(`csharp` was the fourth; fixed 2026-08-22 — §1c.)* |
 | **Not measured** (1) | `apl` — upstream-blocked, unchanged (§3) |
 
-**The headline is one sentence: `--profile core` gained three `capability` checks, and every peer that has not been fixed fails exactly those three.** **31 of the 40 unfixed peers fail nothing but those checks** — 29 at exactly 3F with a byte-identical P/W/F/S, and 2 (`sql`, `wasm-wat`) at 2F because they already refuse CAP-6a correctly. That uniformity is the finding. It is **not** 40 independent regressions; it is one unimplemented spec feature (§5.6's MIN_DEFINED mint ceiling), measured 40 times. The five M1 peers show what the fixed state looks like, and their diffs are the reference for the rest.
+**The headline is one sentence: `--profile core` gained three `capability` checks, and every peer that has not been fixed fails exactly those three.** After the M1 (2026-08-21) and M2 (2026-08-22) passes, **32 peers remain unfixed — 3 of them INVALID measurements, 29 scored — and 25 of those 29 fail nothing but those checks**: 23 at exactly 3F with a byte-identical P/W/F/S, and 2 (`sql`, `wasm-wat`) at 2F because they already refuse CAP-6a correctly. The remaining 4 are `forth`/`nim`/`smalltalk` at 4F (the CAP trio plus one further `capability` check) and `cobol` at 30F (the trio plus its standing 27). That uniformity is the finding. It is **not** 32 independent regressions; it is one unimplemented spec feature (§5.6's MIN_DEFINED mint ceiling), measured across the cohort. **The thirteen fixed peers show what the fixed state looks like, and their diffs are the reference for the rest** (§3). *(Pre-M2 this sentence read "31 of the 40 unfixed" — correct on 2026-08-21, superseded by the M2 pass.)*
 
 **Reading a row.** Each `--profile core` cell is `total · NF — P/W/F/S`, measured at the oracle's **default 10-minute global `-timeout`**. The **`NF` figure is the gate**; the `total` is extension-inflated and non-gating (it moves between oracle builds without any verdict changing). A skip counts as a failure unless it is an explicit `--profile core` extension carve-out. Per [ADR-0012] these peers are **cohort-consistent, not independent convergence** — they share a generation lineage and, for the FFI-hybrid peers, one codec `.so`; a cohort of generated peers all passing one author's vectors is not 40 independent confirmations.
 
@@ -22,11 +22,15 @@
 
 **Conformance gate:** `validate-peer --profile core` — the extension-free categories (`connectivity`, `encoding`, `type_system`, `origination`, `resource_bounds`, `concurrency`, + the §10.1 register / §7a conformance-handler gates).
 
+**Where §1's numbers come from, and what is *not* in the repo — read this before citing a cell.** Every `--profile core` figure in §1 is generated from the centralized census, `output/scratch/census/<peer>.json`. **`output/` is gitignored, so those artifacts are not committed** — the numbers are *reproducible from the pin* (`tools/oracle-bootstrap.sh` rebuilds the oracle at `tools/oracle-pin.env`'s `ref`; `tools/run-cohort-census.sh` re-runs the cohort), not *archived in the tree*. That is the design, and it has a consequence worth stating plainly rather than leaving for someone to trip over: **the per-peer `protocol-generator/<lang>/status/CONFORMANCE-REPORT.{md,json}` records are a DIFFERENT artifact and are currently one pin behind — every one of the 45 is at the retired `de8f807` 740-check set (or older), none at 755.** `tools/run-cohort-census.sh` says so in its own header comment: it collects to `output/scratch/census/` *"WITHOUT ever writing to a peer's tracked `status/CONFORMANCE-REPORT.json`"* — that separation is deliberate (a census must not silently rewrite a peer's own signed-off record), but it means a fresh clone shows each peer's committed report disagreeing with its row here. **§1 is authoritative; the per-peer `status/` report is that peer's last direct `run-s4.sh`, not the census.** Refreshing the 13 publishable peers' records is tracked in §3.
+
 *The previous header block — the accreted `cc1970f`-era cohort paragraph — is archived verbatim at `docs/archive/CONFORMANCE-MATRIX-header-pre-de8f807.md`. Do not cite figures from it.*
 
-> ## ✅ CURRENT (2026-08-21) — re-pinned to `c1b0708` + spec `v0.8.2`; **M1 fixed, re-pin LANDED**
+> ## ✅ CURRENT (2026-08-21 · extended 2026-08-22) — re-pinned to `c1b0708` + spec `v0.8.2`; **M1 and M2 both fixed, re-pin LANDED**
 >
-> **Read this before pulling any peer. It supersedes the 2026-08-17 banner below.** Both anchors were re-pinned this session: the spec snapshot to **`v0.8.2`** (`entity-core-protocol` `106834c`) and the oracle to **`c1b0708`** (`entity-core-go` HEAD). Tier **M1 was re-run, came back 0 of 5, was fixed, and is now 5/5 at `755 · 0F — 312P/337W/0F/106S`** — identical across all five. `tools/tier-status.py --gate` exits 0. **The full 45-peer census then ran**, so every row in §1 is a fresh `c1b0708` measurement.
+> **Read this before pulling any peer. It supersedes the 2026-08-17 banner below.** Both anchors were re-pinned on 2026-08-21: the spec snapshot to **`v0.8.2`** (`entity-core-protocol` `106834c`) and the oracle to **`c1b0708`** (`entity-core-go` HEAD). Tier **M1 was re-run, came back 0 of 5, was fixed, and is now 5/5 at `755 · 0F — 312P/337W/0F/106S`** — identical across all five. `tools/tier-status.py --gate` exits 0. **The full 45-peer census then ran**, so every row in §1 is a fresh `c1b0708` measurement.
+>
+> **Extension, 2026-08-22 — tier M2 is now 8/8 and 13 of 45 peers are publishable.** `typescript` (84F → 0F) and `csharp` (INVALID → 0F) turned out to be the **same** §6.3 defect in its two presentations (§1b/§1c), not two problems; `rust` `python` `java` `kotlin` `elixir` `common-lisp` then took the same CAP fix and all landed 0F. **The fix shape did not change once across thirteen languages** — ~200 lines over 5–6 files, the same five places — and that invariance is the evidence the spec reading is right, not just that the tests pass. Two lessons appeared only past the M1 sample and are ratcheted in `AGENTS.md`: **CAP-6a's fail-open has two mechanisms** (null-collapse, and an arithmetic fail-open involving no null at all — one grep does not catch both), and **§6.3 is not optional even when a peer is already at 0F** (`rust`, `common-lisp` were 0F while still scoring CAP-6a WARN).
 >
 > **What moved in the gate, attributed BY CATEGORY** (never by commit message): 18 declared checks added `de8f807 → c1b0708`; each resolved to its declaring file, that file's category *constant* read, and the constant tested against `coreProfileCategories`. **5 gate `--profile core`, all `catCapability`** — CAP-5 `request_mint_temporal_ceiling`, CAP-6 `request_ttl_zero_and_overflow`, CAP-6a `ingest_rejects_unrepresentable_expiry`, CAP-2/3 `configure_empty_grants_withdrawal`, CAP-7 `configure_rejects_base58_partial_prefix`. The other 13 are extension-only. `core_gate_fingerprint` stayed byte-identical (`8261a033…`) for the **fourth** consecutive time in this shape.
 >
@@ -37,9 +41,9 @@
 > 2. **CAP-6a failed OPEN in three peers.** `Uint`/`uint_field`/`uintField`/`uintAt` all answer "nothing" for BOTH an absent field and a present non-uint one, so a capability with `expires_at: -1` **skipped the expiry check** and was honored with `200`. §6.2 CAP-6a names it: a verifier "MUST NOT treat the unrepresentable field as absent."
 > 3. **`swift` only: §5.5a's per-link granter frames scope the RESOURCE dimension ONLY.** Applying them to all four dimensions is identical to correct whenever child and parent share a granter — every self-issued path — and makes a *universal* parent grant cover **no** child grant the moment a delegated cap arrives. 745 of 755 checks passed while every delegated cap returned 403.
 >
-> **The cohort result is one number repeated:** **31 of the 40 unfixed peers fail nothing but the new CAP checks** — 29 at exactly 3F with a byte-identical P/W/F/S, and 2 (`sql`, `wasm-wat`) at 2F because they already refuse CAP-6a correctly. This is one missing feature measured 40 times, not 40 defects. `typescript` additionally carries lean's §6.3 cascade (81 of its 84). `cobol` carries its standing 27.
+> **The cohort result is one number repeated:** **31 of the 40 unfixed peers fail nothing but the new CAP checks** — 29 at exactly 3F with a byte-identical P/W/F/S, and 2 (`sql`, `wasm-wat`) at 2F because they already refuse CAP-6a correctly. This is one missing feature measured 40 times, not 40 defects. `typescript` additionally carries lean's §6.3 cascade (81 of its 84). `cobol` carries its standing 27. — ***As measured on 2026-08-21. After the M2 pass the counts are 32 unfixed / 25 CAP-only; `typescript`'s cascade is fixed. See the 2026-08-22 extension above and §1's header line. The finding is unchanged; only the counts moved.***
 >
-> **Four peers produced INVALID MEASUREMENTS** — `csharp` (698/755), `asm-x86_64`/`asm-arm64`/`riscv64` (714/755) — all with `budget_exhausted` categories. They are quarantined, not scored (§1a). **`csharp` is new at this pin** and was clean at `de8f807`.
+> **Four peers produced INVALID MEASUREMENTS** — `csharp` (698/755), `asm-x86_64`/`asm-arm64`/`riscv64` (714/755) — all with `budget_exhausted` categories. They are quarantined, not scored (§1a). **`csharp` was new at this pin and is now ROOT-CAUSED (2026-08-22): it is defect class 1 above in its hang-form**, not a separate problem — same three real FAILs at the same indices as `typescript`, but it drops the frame and holds the connection open instead of closing, so downstream checks time out rather than fail fast and the budget expires (§1c). Fixing §6.3 should restore a valid measurement *and* take it to 0F.
 >
 > **Publication is unchanged: "no green report → no publish."** Today that means the five M1 peers, and only those.
 >
@@ -132,11 +136,12 @@
 
 ## 1. Primary status table
 
-> **How to read this section.** The **table** is the live state, but as of 2026-08-21 it spans
-> **two pins**: the 5 M1 rows (`go` `haskell` `lean` `ocaml` `swift`) are fresh `c1b0708`
-> measurements on a **755**-check set; every other row is a `de8f807` measurement (2026-08-17) on a
-> **740**-check set and is **not current** — those peers have not been run against the 5 new
-> `capability` checks. Rows from different pins are not comparable to each other. The
+> **How to read this section.** The **table** is the live state, and as of the 2026-08-21 full
+> census it spans **one pin**: every row is a `c1b0708` measurement on the **755**-check set, with
+> the M2 rows re-measured after their 2026-08-22 fixes. Nothing is carried forward from `de8f807`.
+> *(This note previously described a two-pin split — 5 fresh M1 rows against 40 stale `de8f807`
+> ones. That was accurate for the few hours between the M1 fix and the full census, and was left
+> standing after the census closed it. Corrected 2026-08-22.)* The
 > **dated `>` note blocks** that follow are a
 > *build log* — each records what a peer's arrival established at the pin current on that date,
 > and the figures in them (`682·0F @ cc1970f`, `665 @ e8524ed`, …) are **historical, not claims
@@ -332,14 +337,14 @@
 | **Haskell** | **M1** | v0.8.0 | `c1b0708` | 755 · **0F** — 312P/337W/0F/106S ⁵ | native hand-rolled | native — crypton | **native** — crypton (Ed448) | Cabal, `0.1.0-pre` |
 | **Go** (clean-room) | **M1** | v0.8.0 | `c1b0708` | 755 · **0F** — 312P/337W/0F/106S ⁵ | native hand-rolled | native — stdlib `crypto/ed25519` | deferred (→ FFI when scoped) | Go module, `0.1.0-pre` |
 | **Lean** | **M1** | v0.8.0 | `c1b0708` | 755 · **0F** — 312P/337W/0F/106S ⁵ | **pure-Lean proven core** + FFI crypto | **FFI** — C-ABI `ec_ed25519_*` | FFI (deferred) | Lake, `0.1.0-pre` |
-| **C#** | M2 | v0.8.0 | `c1b0708` | ⚠ **INVALID MEASUREMENT**³ — ran **698 of the pinned 755** checks; 9 categor(ies) `budget_exhausted`. Not a score; quarantined. | native (Cbor Ctap2 + handroll) | native — NSec | managed — BouncyCastle | NuGet, `0.1.0-pre` |
-| **TypeScript** | M2 | v0.8.0 | `c1b0708` | 755 · **84F** — 224P/336W/84F/111S | native (cborg + handroll) | native — @noble | managed — @noble | npm, `0.1.0-pre` |
-| **Java** | M2 | v0.8.0 | `c1b0708` | 755 · **3F** — 309P/337W/3F/106S | native hand-rolled | native — JDK SunEC | JDK / BouncyCastle | Maven, `0.1.0-pre` |
-| **Kotlin** | M2 | v0.8.0 | `c1b0708` | 755 · **3F** — 309P/337W/3F/106S | native hand-rolled | native — JDK SunEC | deferred (→ JDK SunEC / BouncyCastle) | Gradle→Maven Central, `0.1.0-pre` |
-| **Elixir** | M2 | v0.8.0 | `c1b0708` | 755 · **3F** — 309P/337W/3F/106S | native hand-rolled | native — OTP `:crypto` | **native** — OTP `:crypto` | Hex, `0.1.0-pre` |
-| **Common Lisp** | M2 | v0.8.0 | `c1b0708` | 755 · **3F** — 309P/337W/3F/106S | native hand-rolled | native — ironclad (pure-Lisp) | **native** — ironclad (pure-Lisp) | ASDF/Quicklisp, `0.1.0` |
-| **Rust** (clean-room) | M2 | v0.8.0 | `c1b0708` | 755 · **3F** — 309P/337W/3F/106S | native hand-rolled | native — ed25519-dalek + sha2 | deferred (→ FFI when scoped) | crates.io, `0.1.0-pre` |
-| **Python** (clean-room) | M2 | v0.8.0 | `c1b0708` | 755 · **3F** — 309P/337W/3F/106S | native hand-rolled | native — `cryptography` (OpenSSL) | **native** — `cryptography` (Ed448) | PyPI, `0.1.0` |
+| **C#** | M2 | v0.8.0 | `c1b0708` | **755 · 0F** — 313P/336W/0F/106S ✅ *(was an INVALID MEASUREMENT at 698/755 with 9 starved categories; fixed 2026-08-22 — §1c. Run time 18m20s → **7.2s**.)* | native (Cbor Ctap2 + handroll) | native — NSec | managed — BouncyCastle | NuGet, `0.1.0-pre` |
+| **TypeScript** | M2 | v0.8.0 | `c1b0708` | **755 · 0F** — 312P/337W/0F/106S ✅ *(was 84F = 3 real + 81 cascade; fixed 2026-08-22 — §1b.)* | native (cborg + handroll) | native — @noble | managed — @noble | npm, `0.1.0-pre` |
+| **Java** | M2 | v0.8.0 | `c1b0708` | **755 · 0F** — 312P/337W/0F/106S ✅ *(was 3F; CAP fix 2026-08-22)* | native hand-rolled | native — JDK SunEC | JDK / BouncyCastle | Maven, `0.1.0-pre` |
+| **Kotlin** | M2 | v0.8.0 | `c1b0708` | **755 · 0F** — 312P/337W/0F/106S ✅ *(was 3F; CAP fix 2026-08-22)* | native hand-rolled | native — JDK SunEC | deferred (→ JDK SunEC / BouncyCastle) | Gradle→Maven Central, `0.1.0-pre` |
+| **Elixir** | M2 | v0.8.0 | `c1b0708` | **755 · 0F** — 312P/337W/0F/106S ✅ *(was 3F; CAP fix 2026-08-22)* | native hand-rolled | native — OTP `:crypto` | **native** — OTP `:crypto` | Hex, `0.1.0-pre` |
+| **Common Lisp** | M2 | v0.8.0 | `c1b0708` | **755 · 0F** — 311P/338W/0F/106S ✅ *(was 3F; CAP fix 2026-08-22. One WARN off the cohort: `concurrency/t1_1_concurrent_demux` reports no parallel speedup under load — the check names itself informational, **not** a §6.11 violation.)* | native hand-rolled | native — ironclad (pure-Lisp) | **native** — ironclad (pure-Lisp) | ASDF/Quicklisp, `0.1.0` |
+| **Rust** (clean-room) | M2 | v0.8.0 | `c1b0708` | **755 · 0F** — 312P/337W/0F/106S ✅ *(was 3F; CAP fix 2026-08-22)* | native hand-rolled | native — ed25519-dalek + sha2 | deferred (→ FFI when scoped) | crates.io, `0.1.0-pre` |
+| **Python** (clean-room) | M2 | v0.8.0 | `c1b0708` | **755 · 0F** — 312P/337W/0F/106S ✅ *(was 3F; CAP fix 2026-08-22)* | native hand-rolled | native — `cryptography` (OpenSSL) | **native** — `cryptography` (Ed448) | PyPI, `0.1.0` |
 | **Zig** | M3 | v0.8.0 | `c1b0708` | 755 · **3F** — 309P/337W/3F/106S | native (std-only) | native — `std.crypto` | deferred | source, `0.1.0-pre` |
 | **C** | M3 | v0.8.0 | `c1b0708` | 755 · **3F** — 309P/337W/3F/106S | native hand-rolled | native — libsodium | deferred (libsodium has no Ed448) | `make dist` + pkg-config |
 | **C++** | M3 | v0.8.0 | `c1b0708` | 755 · **3F** — 309P/337W/3F/106S | native hand-rolled | native — libsodium | deferred (libsodium has no Ed448) | CMake pkg + vcpkg + conan, `0.1.0-pre` |
@@ -381,7 +386,7 @@
 > **Update 2026-07-13 — both peers reworked to author the protocol IN the paradigm, not wrap it (supersedes the "both delegate the §6.5 engine / both 249·2F" description below).** Node-RED's §6.5 is now the visible **16-node flow-graph** (still 249·2F — leaf crypto delegated + the throughput boundary). **TurboWarp was rebuilt, then completed:** the §6.5 dispatch, the full §5.2 verify sequence, and **ALL FIVE handler bodies** (§4 connect / echo / §6.3 tree / §6.2 handlers / §6.2 capability) are now authored as **Scratch blocks** (502 blocks) — reorganized from one 400-block tower into a short **dispatch spine + one `define dispatch-<handler>` custom-block procedure per handler** for legibility — with only the socket / canonical-CBOR / Ed25519-SHA / chain-verdict / token-mint / seed-cap / store mechanics behind the `ecutils` **seam** (deliberately no `dispatch` block). The **§6.6 handler resolution is authored as the actual tree WALK** (a `repeat until` that walks the dispatch path longest-prefix-first for the matching `system/handler` registration == `HandlerRegistry#resolve`) — not a hardcoded pattern list; the per-prefix store lookup + path slice are the only seam bits, and the final pattern→body match is just body-selection (Scratch can't call a procedure by dynamic name; resolved-but-un-authored handlers delegate). Measured **291 P / 294 W / 0 F / 97 S — Result: PASS @ `cc1970f`**, **solid 5/5 full-marathon runs** including both §6.11 robustness tests (`t2_1_sustained_load` + `t2_2_connection_churn`), via the headless **block-interpreter harness** (`turbowarp/src/harness/run-blocks.mjs`, which runs the *real* `project.json` block graph against the oracle). **The earlier flakiness was a harness-scheduling bug, now fixed** (not the old `A-TW-throughput` label, and not the connect authoring): the interpreter drained the inbound queue in one serial burst without yielding, so under §6.11 connection *churn* (t2_2) responses didn't flush before the oracle tore connections down → dropped requests → a downstream cascade. Yielding to the event loop between hats (`await setImmediate` — the cooperative per-tick model real Scratch already uses) resolved it; verified by reverting connect to delegated (which *also* failed t2_2 → proved the serial drain, not the authoring, was the root). A real-TurboWarp-VM run is the remaining confirmation. Still cohort-consistent (shared bundled `@noble` + generation lineage), not independent convergence (ADR-0012). Consolidated survey + when-to-stop verdict: `research/evaluations/visual-paradigms.md`. See `docs/status/HANDOFF-2026-07-13-turbowarp-closeout.md`.
 
 The historical description below (both 249·2F, both delegating the §6.5 engine) is retained for the Node-RED throughput finding. Both delegate codec/crypto to the TS peer (Node-RED require()'d, TurboWarp esbuild-bundled), so a green result would be cohort-consistent, not independent (ADR-0012). `validate-peer --profile core` @ `cc1970f` for BOTH: **249 P / 293 W / 2 F / 101 S** — all correctness categories green (connectivity 22/22, type_system 108P, multisig 11 w/ genuine 2-of-3 accept-path, security 28, capability 12, §6.11 concurrency *correctness* t1_2/t1_3). The **2 identical FAILs are §6.11 sustained-load/churn robustness** (`t2_1`/`t2_2`) — a documented **throughput boundary** (`A-NR-throughput` / `A-TW-throughput`): they **pass standalone** and fail only under the full ~640-test marathon. That the LEAN TurboWarp harness hits the SAME boundary as Node-RED shows it is **engine-level** (the shared delegated §6.5 engine's full-suite sustained-load behavior on pure-JS crypto), not a per-runtime artifact — not a correctness defect, not memory-bound. Per "no green → no publish," unpublished. Value is visualization + generator-robustness, not a conformance claim. See `protocol-generator/{node-red,turbowarp}/`. The peer is authored as a Node-RED *flow-graph* (§6.6 dispatch ↔ wire routing); codec/crypto/§6.5-engine are delegated (interop) to the TypeScript peer, so a green result would be cohort-consistent, not independent (ADR-0012). `validate-peer --profile core` @ `cc1970f`: **249 P / 293 W / 2 F / 101 S** — **all correctness categories green** (connectivity 22/22, type_system 108P, multisig 11 w/ genuine 2-of-3 accept-path, security 28, capability 12, §6.11 concurrency *correctness* t1_2/t1_3). The **2 FAILs are §6.11 sustained-load/churn robustness** (`t2_1`/`t2_2`) — a documented **Node-RED-substrate throughput boundary** (`A-NR-throughput`): they **pass standalone** and fail only under the full ~640-test marathon (event-loop saturation + visual-runtime per-request overhead on pure-JS crypto), not a correctness defect, not memory-bound. Per "no green → no publish," unpublished. Value is visualization + generator-robustness, not a conformance claim. See `protocol-generator/node-red/`.
-² **Every `--profile core` cell is a fresh measurement at oracle `c1b0708` (2026-08-21)** — `total · NF — P/W/F/S`, from one centralized `tools/run-cohort-census.sh` run over all 45 measurable peers. Nothing in this column is carried forward from an earlier pin: `755 ≠ 740`, so a `de8f807` figure is not comparable to one here even when the F-count matches. The four peers that did not execute the full 755 are quarantined in §1a rather than listed with a score.
+² **Every `--profile core` cell is a fresh measurement at oracle `c1b0708` (2026-08-21)** — `total · NF — P/W/F/S`, from one centralized `tools/run-cohort-census.sh` run over all 45 measurable peers. Nothing in this column is carried forward from an earlier pin: `755 ≠ 740`, so a `de8f807` figure is not comparable to one here even when the F-count matches. The **three** peers that did not execute the full 755 are quarantined in §1a rather than listed with a score. *(Four, until `csharp` was fixed 2026-08-22 — §1c.)*
 
 ⁴ **`Maint.` is the MAINTENANCE tier — how often this peer is re-measured, nothing else.** `M1` lockstep · `M2` priority catch-up · `M3` on-demand · `probe` paradigm probe · `exploratory` not a deployable peer. Defined per-peer in **`tools/peer-tiers.tsv`** (the roster) and explained in **§4**; current per-tier state is `tools/tier-status.py`. **These are NOT `research/LANDSCAPE.md`'s tiers 1–5**, which classify the *language landscape* ("what is worth building") rather than re-measurement cadence — the two were previously both written as bare `1`/`2`/`3` and were routinely confused, which is why these carry the `M` prefix. **A maintenance tier never affects whether a peer may be published**; it affects only how promptly it is re-measured after an oracle re-pin.
 
@@ -392,22 +397,30 @@ The historical description below (both 249·2F, both delegating the §6.5 engine
 **Crypto-availability tiers** (the per-ecosystem story an adopter most needs): `native` = ships with runtime/stdlib or an in-language audited lib, no FFI; `managed` = a managed-code crypto package on the language's package manager; `FFI-hybrid` = native floor, Ed448 via `libentitycore_codec`; `FFI` = whole crypto surface via C-ABI; `deferred` = Ed25519+SHA-256 floor only, Ed448 not yet wired.
 
 
-⁵ **Tier M1 — fixed this session, and the reference for everyone else.** These five went `3F/2F/83F` → **`0F`** at `c1b0708`. Three defect classes, all in the banner above and ratcheted in `AGENTS.md`: §5.6's MIN_DEFINED mint ceiling (absent in every peer, not merely wrong), CAP-6a's absent-vs-unrepresentable fail-open, and §6.3's missing `400 non_canonical_ecf` rejection status. `swift` needed a fourth — §5.5a frame over-scoping — which was the actual cause of its capability failures rather than a symptom. `lean`'s 83F was **2 real + 81 cascade** from one §6.3 defect; fixing it returned it to 0F, which is what confirmed the diagnosis. **The five diffs are the reference fix for the other 40** — author it once from the spec, propagate, do not rediscover it 40 times.
+⁵ **Tier M1 — fixed this session, and the reference for everyone else.** These five went `3F/2F/83F` → **`0F`** at `c1b0708`. Three defect classes, all in the banner above and ratcheted in `AGENTS.md`: §5.6's MIN_DEFINED mint ceiling (absent in every peer, not merely wrong), CAP-6a's absent-vs-unrepresentable fail-open, and §6.3's missing `400 non_canonical_ecf` rejection status. `swift` needed a fourth — §5.5a frame over-scoping — which was the actual cause of its capability failures rather than a symptom. `lean`'s 83F was **2 real + 81 cascade** from one §6.3 defect; fixing it returned it to 0F, which is what confirmed the diagnosis. **These five diffs — plus M2's eight, landed 2026-08-22 — are the reference fix for the remaining 32** (§3): author it once from the spec, propagate, do not rediscover it 32 times. *(This footnote read "the reference fix for the other 40" before the M2 pass.)*
 
 ---
 
-## 1a. INVALID MEASUREMENTS — four peers, and why they are not scores
+## 1a. INVALID MEASUREMENTS — three peers, and why they are not scores
 
-**Status at `c1b0708`: `asm-x86_64` · `asm-arm64` · `riscv64` (714/755) and `csharp` (698/755).
-All four have `budget_exhausted` categories. None of the four is listed with a P/W/F/S anywhere in
+**Status at `c1b0708`: `asm-x86_64` · `asm-arm64` · `riscv64` (714/755).
+All three have `budget_exhausted` categories. None of the three is listed with a P/W/F/S anywhere in
 §1, because a run measured on a different set of checks is not a worse score — it is not a score.**
 
-`tools/check-set-gate.py` caught all four automatically (41/45 conforming) and
-`tools/run-cohort-census.sh` exits non-zero on them. That is the gate working as designed.
+`tools/check-set-gate.py` reports **42/45 conforming** and exits non-zero on exactly these three;
+`tools/run-cohort-census.sh` does the same. That is the gate working as designed — **a non-zero
+exit from the cohort gate is the expected, documented state today, not a regression**, and it is
+attributable in full to this section.
 
-**`csharp` is NEW at this pin** — it was a clean `740 · 0F` at `de8f807`. 9 starved categories, 698
-of 755 checks. Unlike the asm trio's known cause it has not been root-caused; it is a fresh item,
-not a carried one.
+**`csharp` was the fourth until 2026-08-22 — it is now FIXED and fully comparable.** It was a clean
+`740 · 0F` at `de8f807`, then came back at 698 of 755 checks with 9 starved categories at this pin.
+**Root-caused 2026-08-22: it was `typescript`'s §6.3 defect in its hang-form — see §1c.** Same 3 real
+FAILs at the same indices, same cascade onset, but the peer dropped the frame and left the connection
+open instead of closing, so each downstream check waited out a timeout (CAP-6a alone: 120 s) until the
+global budget expired. Fixing the missing `400 non_canonical_ecf` restored both a valid measurement
+and 0F in one change: **`755 · 0F — 313P/336W/0F/106S`, run time 18 m 20 s → 7.2 s.** Nothing had
+regressed. *(This paragraph read "it has not been root-caused" until 2026-08-22, and "one fix should
+restore both" until that fix was measured.)*
 
 **The asm/ISA trio — what the "1 FAIL" was actually hiding.** Traced and measured 2026-08-17, still
 unfixed, and the reason this section exists:
@@ -482,25 +495,99 @@ Full trace, probe scripts and raw output: `research/stewardship/SESSION-2026-08-
 
 ---
 
-## 1b. `typescript`'s 84F is 3 real FAILs and 81 cascade — the same defect `lean` had
+## 1b. `typescript`'s 84F was 3 real FAILs and 81 cascade — the same defect `lean` had — **FIXED 2026-08-22**
 
-**Do not read 84 as "typescript is the worst peer in the cohort." It is a 3F peer with one
-connection-killing bug**, and the bug is `lean`'s, already fixed and verified there.
+> **Resolved.** `typescript` is now **`755 · 0F — 312P/337W/0F/106S`**. This section is retained
+> because the *diagnosis* is the reusable part: the 84 was never a measure of how bad the peer was,
+> and reading it that way would have sent the fix in the wrong direction. The analysis below is
+> as-measured before the fix.
+
+**Do not read 84 as "typescript is the worst peer in the cohort." It was a 3F peer with one
+connection-killing bug**, and the bug was `lean`'s, already fixed and verified there.
 
 Measured, not inferred. `typescript`'s failure sequence is byte-for-byte the shape `lean` had before
-its fix: the first FAIL of all 755 is `capability/request_mint_temporal_ceiling` (idx 559), the last
-check before the first transport error is `capability/ingest_rejects_unrepresentable_expiry` (a WARN
-whose own message reports a **transport-drop** rather than the §5.2 `capability_denied` disposition),
-and from **idx 563** onward every category fails on a dead connection — `tree_operations` 20,
-`security` 29, `multisig` 12, `authz` 10, `universal_address_space` 7, `peer_canonicalization` 3.
+its fix: the first FAIL of all 755 is `capability/configure_empty_grants_withdrawal` (**idx 558**),
+followed immediately by `request_mint_temporal_ceiling` (559) and `request_ttl_zero_and_overflow`
+(560) — those three, and only those three, are real. The last check before the first transport error
+is `capability/ingest_rejects_unrepresentable_expiry` (a WARN whose own message reports a
+**transport-drop** rather than the §5.2 `capability_denied` disposition), and from **idx 563** onward
+every category fails on a dead connection — `tree_operations` 20, `security` 29, `multisig` 12,
+`authz` 10, `universal_address_space` 7, `peer_canonicalization` 3.
+
+*(This paragraph named idx 559 / `request_mint_temporal_ceiling` as the first FAIL until 2026-08-22.
+Off by one check: 558 is `configure_empty_grants_withdrawal`. The real-FAIL count of 3 and the idx-563
+cascade onset were both correct; only the identity of the first was wrong.)*
 
 That is §6.3's missing rejection status (banner item 1): an undecodable frame is refused by dropping
 or closing instead of answering `400 non_canonical_ecf`, and on a peer that closes, the refusal takes
 the whole connection with it. **`lean` went 83F → 0F on exactly this fix**, and its 81 cascade
 vanished — which is what turned the diagnosis from plausible into confirmed.
 
-**Expected result once the cohort fix lands on `typescript`: 3F → 0F, in one change.** The number to
-watch is not 84; it is whether the first transport error still appears at idx 563.
+**CONFIRMED 2026-08-22 — the prediction held exactly.** `typescript` is now
+**`755 · 0F — 312P/337W/0F/106S`**, byte-identical to the M1 five, and the run fell from a cascading
+84F to a clean PASS in 33.9 s. All 81 cascade FAILs vanished with the one §6.3 change; the 3 real
+FAILs took the §5.6 ceiling + CAP-2 fix. No transport error at idx 563 any more.
+
+---
+
+## 1c. `csharp`'s INVALID measurement was the SAME defect as `typescript`'s — ROOT-CAUSED **and FIXED** 2026-08-22
+
+> **Resolved.** Both peers are now `755 · 0F` (`csharp` 313P/336W, `typescript` 312P/337W). Retained
+> because the *differential* is the reusable part: it is how a starved run gets attributed to a known
+> defect instead of being filed as a harness problem. Analysis below is as-measured before the fix.
+
+**`csharp` was not an unexplained new failure. It was `typescript`'s §6.3 defect with the other
+failure mode: `typescript` *closes* on an undecodable frame, `csharp` *hangs*.** That single
+difference is what turned an 84F score into a starved, unscoreable run — and it meant one fix
+addressed both the FAILs and the INVALID status, which is exactly what happened.
+
+This supersedes the "not root-caused" note carried in §1a and §3 since 2026-08-21.
+
+**The evidence, measured from the census reports, not inferred:**
+
+| | `typescript` | `csharp` | `go`/`lean` (fixed) |
+|---|---|---|---|
+| First FAIL | idx **558** `configure_empty_grants_withdrawal` | idx **558**, same check | — |
+| Real FAILs | 3, at idx 558/559/560 | **3, at idx 558/559/560 — identical** | 0 |
+| First transport error | idx **563** | idx **563** — identical | — |
+| CAP-6a check `elapsed_ms` | **5 ms** | **120 060 ms** | 1 ms |
+| Cascade error text | fast close | `read response: i/o timeout` | — |
+| Total run | **2 733 ms** | **1 100 556 ms** (18 m 20 s) | ~2 s |
+| Outcome | 84F, full 755 measured | 52F, **9 categories never ran** → INVALID | `755 · 0F` |
+
+**The mechanism.** Both peers reject an undecodable frame without answering `400
+non_canonical_ecf` (§6.3, banner item 1). `typescript` closes the connection, so every later
+check fails *instantly* — 81 cascade FAILs, but the suite still completes and the measurement
+stays valid. `csharp` instead **drops the frame and leaves the connection open**, so the oracle
+blocks until its own timeout on every subsequent request. The CAP-6a check alone burns **120 s**
+(six field×shape variants × a 20 s block) — that is AGENTS.md's documented symptom (a), *"the
+sender blocks until its own timeout, so a refusal is indistinguishable from a dead peer."*
+`security` then burns 600 s and `tree_operations` 380 s, the 10-minute global budget expires, and
+`authz` · `concurrency` · `crypto_agility` · `format_agility` · `multisig` · `negotiation` ·
+`peer_canonicalization` · `resource_bounds` · `universal_address_space` never run.
+
+**So the starvation is a symptom, not an independent problem.** `csharp` was a clean `740 · 0F`
+at `de8f807` because CAP-6a did not exist as a check then — the drop-form defect was always
+present and simply had nothing to expose it. Nothing regressed.
+
+**CONFIRMED 2026-08-22 — and the timing is the proof.** `csharp` is now
+**`755 · 0F — 313P/336W/0F/106S`**, a fully comparable measurement (`check-set-gate.py` PASS, zero
+`budget_exhausted`). The whole run went from **1 100 556 ms (18 m 20 s) to 7 198 ms** — a ~150×
+collapse from one change to the read loop. That is the diagnosis proving itself: if the starvation
+had been latency, slowness, or a resource problem, answering `400 non_canonical_ecf` instead of
+falling silent would not have touched it. Nine categories that had never run now run.
+The precise mechanism, confirmed in the source: `csharp` did not merely drop the frame — it `break`ed
+out of the read loop **without closing the socket**, so the oracle's every later write went to a
+socket nobody was reading. Functionally identical to a hang, and a shape worth recognising on its
+own: *a peer that stops reading but stays connected is indistinguishable from a slow peer.*
+
+**Generalizable, and the reason this got its own section:** *a hang and a close are the same
+`§6.3` bug, but they present as two completely different failure classes* — one as a large FAIL
+count on a valid measurement, the other as a quarantined INVALID with a *small* FAIL count. The
+diagnostic that unified them is cheap and should be run first on any starved peer: **compare the
+first-FAIL index and the first-transport-error index against a known peer with the same defect.**
+Here they matched exactly (558 / 563), which is what turned "csharp is a mystery" into "csharp is
+typescript."
 
 ## 2. Capability & parity table
 
@@ -551,7 +638,7 @@ Feature parity is **not** uniform — the 5 T2 peers (C, Ada, Ruby, Prolog, Go) 
 
 ## 3. Maintenance state & catch-up backlog
 
-**Standing maintenance loop (the steady state):** when a spec amendment lands and Go ships the corresponding `validate-peer` update, re-vendor the oracle, re-run **M1** immediately and converge to 0-FAIL, then catch up M2/M3 as capacity allows. *(This paragraph said "Tier-1/Tier-2/Tier-3" until 2026-08-21 — the exact bare-numeral spelling §4 warns is routinely confused with `research/LANDSCAPE.md`'s selection tiers. Corrected to the `M` prefix.)* **As of 2026-08-21 this loop is mid-cycle and stalled at step two: the oracle is re-vendored, M1 is re-run, and M1 has not converged** — see §4. This is the engine of spec refinement now — not new languages (see the fifteen-peer architecture milestone review, §5).
+**Standing maintenance loop (the steady state):** when a spec amendment lands and Go ships the corresponding `validate-peer` update, re-vendor the oracle, re-run **M1** immediately and converge to 0-FAIL, then catch up M2/M3 as capacity allows. *(This paragraph said "Tier-1/Tier-2/Tier-3" until 2026-08-21 — the exact bare-numeral spelling §4 warns is routinely confused with `research/LANDSCAPE.md`'s selection tiers. Corrected to the `M` prefix.)* **As of 2026-08-22 the loop has completed its first two stages: the oracle is re-vendored, M1 converged 5/5 (2026-08-21), and M2 converged 8/8 (2026-08-22). It is now at step three — M3 and the probes catching up** — see §4. *(This read "mid-cycle and stalled at step two … M1 has not converged" while that was true, on 2026-08-21.)* This is the engine of spec refinement now — not new languages (see the fifteen-peer architecture milestone review, §5).
 
 | Item | Scope | Priority | Notes |
 |------|-------|----------|-------|
@@ -561,13 +648,14 @@ Feature parity is **not** uniform — the 5 T2 peers (C, Ada, Ruby, Prolog, Go) 
 | ~~**Scorecard label fix** `62044c5 → b30a589`~~ ✅ DONE | provenance | — | **CLOSED (2026-07-12).** A-C-008 / A-ADA-013: `62044c5` was off-by-one; `b30a589` is the true v7.75 baseline where `resource_bounds` activates under `--profile core` (clean `62044c5` auto-skips it → 574·0F·90S, not the recorded 576·0F·89S). Corrected in-repo across the 9 v7.75-re-run peer reports that paired `576·0F·89S` with `62044c5` (common-lisp, csharp, elixir, haskell, java, ocaml, swift, typescript, zig); C/Ada already carried `b30a589`. Remaining `62044c5` mentions tree-wide are accurate history (the clean-subset evidence runs) and left intact. |
 | ~~**CLI normalization** (`--name`)~~ ✅ DONE | C, Ada, Ruby, Go, Prolog | — | **CLOSED (2026-07-12).** The audit found the deviation was wider than "C/Ada lack `--name`": **neither Go nor Ruby actually had `--name`** (only `--seed`; the matrix had overclaimed it), and **Prolog's `--name` was a fake** (parsed then ignored, seed hardcoded). Standardized all five on the canonical convention (OCaml/Swift/Haskell/COBOL): default seed `0x11×32`; `--name NAME` loads the seed from `~/.entity/peers/NAME/keypair`. Go/Ada default seed normalized `0x01`→`0x11`. Each `run-s4.sh` provisions the conformance keypair + boots `--name conformance`. |
 | ~~**Verify genuine multisig** on later-folded peers~~ ✅ DONE | C, Ada, Ruby, Prolog, Go, COBOL | — | **CLOSED (2026-07-12) — with a real finding.** Making the accept-path RUN exposed **4 of 5 as FRAME-ONLY** (Ruby/Go/C/Ada rejected a valid co-signed 2-of-3 — a masked conformance defect the reject-dominated `multisig` category hid). All four fixed with genuine §3.6 M3/M4/M6 (`multisig_root_ok`, modeled on the genuine Prolog peer) → accept-path PASS @ `cc1970f`; Ruby/Go carry in-repo unit tests, C/Ada guard via the now-genuine S4 accept-path. Prolog + COBOL were already genuine. The Ada fix additionally uncovered **A-ADA-014** (a latent §PR-8 fixed-length-String crash). Finding note in `research/stewardship/`. |
-| **Capability mint temporal ceiling** (§5.6 / §6.2) — **FIXED in M1, owed to 40 peers** | 40 peers (M1's 5 are done) | **Highest — it is the entire gap between the cohort and 0-FAIL** | **The fix exists, is verified, and just needs propagating.** §5.6's MIN_DEFINED construction was ABSENT in every peer (`mintToken` set no `expires_at` at all); implemented in `go`/`haskell`/`lean`/`ocaml`/`swift` and all five went to 0F. **The rules, from `spec-data/v0.8.2/ENTITY-CORE-PROTOCOL.md` §5.6:** `expires_at = MIN` over the **DEFINED** terms of `{parent.expires_at, caller_capability.expires_at, created_at + policy_entry.ttl_ms, created_at + request.ttl_ms}` — the first two ABSOLUTE, the last two DURATIONS converted against a **once-sampled** `created_at`; `ttl_ms == 0` is **defined** and yields `created_at` (do NOT special-case it — letting it fall out of the arithmetic is what stops it collapsing into the "no bound" spelling); an overflowing term is **dropped**, never wrapped or saturated; and an over-long request from a bounded caller **mints `200` with the clamped value — rejecting it is non-conformant.** Reference diffs: commits `e979e6c` (go), `58d190c` (ocaml), `8f790f6` (haskell), `cf2717c` (lean), `ded3e07` (swift). |
-| **CAP-6a ingest fail-OPEN** (§6.2 / §5.2) | unmeasured beyond M1; **was present in 3 of the 5 M1 peers** | **Highest — security** | A received capability whose `expires_at`/`not_before`/`created_at` is not `uint64`-representable is malformed and MUST be refused via the §5.2 `capability_denied` disposition. `go`/`haskell`/`ocaml` **honored it and returned 200**. Mechanism, identical in five type systems: the idiomatic accessor (`Uint`/`uint_field`/`uintField`/`uintAt`) answers "nothing" for BOTH an absent field and a present non-uint one, so the expiry check is silently skipped. **The representability check must run BEFORE the range check it protects.** |
-| **§6.3 rejection status missing** — the cascade source | `typescript` confirmed (§1b); unmeasured elsewhere; **was present in all 5 M1 peers** | **High — one change, up to −81 FAILs per affected peer** | §6.3: *"Rejection returns `400 non_canonical_ecf`"*. Every M1 peer rejected an undecodable frame and then said nothing — `continue`, a logged skip, `break`/close, or a `none` that ended the read loop. §4.9(c) deliver-or-signal says the same. On a peer that closes, ONE bad frame kills the connection and every later check fails on it. **`lean` 83F → 0F and `typescript`'s 81 cascade are both this.** Fix shape: keep the strict decoder byte-unchanged, add a salvage decode used ONLY to recover `request_id`, answer 400, keep serving — the frame stays rejected, so the `tag_reject` wire-conformance vectors keep their meaning. |
-| **§5.5a frame over-scoping** | `swift` (fixed); worth grepping the other 40 | Medium | §5.5a's per-link granter frames scope the **RESOURCE dimension only**. swift passed them to all four dimensions of `grantSubset` and defaulted `peers` to them — identical to correct whenever child and parent share a granter, and fatal the moment a **delegated** cap arrives. **Enforcement grep:** in each peer, only the resources comparison may receive the granter frames. |
-| **`csharp` INVALID MEASUREMENT** — new at this pin | `csharp` | High — it is unmeasured, not low-scoring | 698 of 755 checks, 9 `budget_exhausted` categories. Clean `740 · 0F` at `de8f807`, so this appeared with the re-pin. Not root-caused. Drive the starved categories directly with `-category <name>` rather than raising `-timeout` (§1a). |
+| **Capability mint temporal ceiling** (§5.6 / §6.2) — **FIXED in M1+M2 (13 peers), owed to 32** | 32 peers (M1's 5 + M2's 8 are done) | **Highest — it is the entire gap between the cohort and 0-FAIL** | **The fix exists, is verified, and just needs propagating.** §5.6's MIN_DEFINED construction was ABSENT in every peer (`mintToken` set no `expires_at` at all); implemented in `go`/`haskell`/`lean`/`ocaml`/`swift` and all five went to 0F. **The rules, from `spec-data/v0.8.2/ENTITY-CORE-PROTOCOL.md` §5.6:** `expires_at = MIN` over the **DEFINED** terms of `{parent.expires_at, caller_capability.expires_at, created_at + policy_entry.ttl_ms, created_at + request.ttl_ms}` — the first two ABSOLUTE, the last two DURATIONS converted against a **once-sampled** `created_at`; `ttl_ms == 0` is **defined** and yields `created_at` (do NOT special-case it — letting it fall out of the arithmetic is what stops it collapsing into the "no bound" spelling); an overflowing term is **dropped**, never wrapped or saturated; and an over-long request from a bounded caller **mints `200` with the clamped value — rejecting it is non-conformant.** Reference diffs: commits `e979e6c` (go), `58d190c` (ocaml), `8f790f6` (haskell), `cf2717c` (lean), `ded3e07` (swift). |
+| **CAP-6a ingest fail-OPEN** (§6.2 / §5.2) | fixed in all 13 M1+M2 peers; unmeasured beyond them. **Present in 3 of 5 M1 peers and in ALL 6 of the remaining M2 peers** — assume it is present until measured | **Highest — security** | A received capability whose `expires_at`/`not_before`/`created_at` is not `uint64`-representable is malformed and MUST be refused via the §5.2 `capability_denied` disposition. `go`/`haskell`/`ocaml` **honored it and returned 200**. Mechanism, identical in five type systems: the idiomatic accessor (`Uint`/`uint_field`/`uintField`/`uintAt`) answers "nothing" for BOTH an absent field and a present non-uint one, so the expiry check is silently skipped. **The representability check must run BEFORE the range check it protects.** |
+| **§6.3 rejection status missing** — the cascade source — **FIXED in all 13 M1+M2 peers; unmeasured in the other 32** | fixed in M1's 5 and M2's 8 (`typescript` §1b, `csharp` §1c); unmeasured elsewhere — **assume present until measured** | **High — one change, up to −81 FAILs per affected peer, and it can also un-starve an INVALID run** | §6.3: *"Rejection returns `400 non_canonical_ecf`"*. **Not optional even when a peer is already at 0F:** `rust` and `common-lisp` both reached 0F while still scoring CAP-6a **WARN**, because the `>2^64` half of that check can only arrive as a major-type-6 tag and is therefore rejected at decode — it needs the §6.3 answer to be *scored* as a refusal at all. Every M1 peer rejected an undecodable frame and then said nothing — `continue`, a logged skip, `break`/close, or a `none` that ended the read loop. §4.9(c) deliver-or-signal says the same. On a peer that closes, ONE bad frame kills the connection and every later check fails on it. **`lean` 83F → 0F and `typescript`'s 81 cascade are both this.** Fix shape: keep the strict decoder byte-unchanged, add a salvage decode used ONLY to recover `request_id`, answer 400, keep serving — the frame stays rejected, so the `tag_reject` wire-conformance vectors keep their meaning. |
+| **§5.5a frame over-scoping** | `swift` (fixed); not seen in M2's eight; **worth grepping the remaining 32** | Medium | §5.5a's per-link granter frames scope the **RESOURCE dimension only**. swift passed them to all four dimensions of `grantSubset` and defaulted `peers` to them — identical to correct whenever child and parent share a granter, and fatal the moment a **delegated** cap arrives. **Enforcement grep:** in each peer, only the resources comparison may receive the granter frames. |
+| ~~**`csharp` INVALID MEASUREMENT**~~ ✅ **DONE (2026-08-22)** | `csharp` | — | **CLOSED.** Was 698 of 755 checks with 9 `budget_exhausted` categories. **Never a distinct defect: it was `typescript`'s §6.3 missing-rejection-status in the hang-form** (drop + hold the connection open, rather than close), so every downstream check waited out a timeout — CAP-6a alone burned 120 s of the 10-minute budget — and the tail never ran. Identical 3 real FAILs at identical indices (558/559/560) and identical cascade onset (563) to `typescript`; that one comparison is what turned it from "new at this pin, not root-caused" into "it is `typescript`". **§1c** has the full differential. The §6.3 fix restored a valid 755-check run *and* 0F together: `755 · 0F — 313P/336W/0F/106S`, 18 m 20 s → 7.2 s. `-timeout` was never raised. |
 | **Connection-pressure defect** (3 core FAILs each) | asm-x86_64, asm-arm64, riscv64 | **High** — it is the only thing between these three and a 0-FAIL gate, and it suppresses coverage | `t2_2_connection_churn` + `r1_payload_over_limit` + `r3_connection_flood`, one failure family: forked children block forever in `read(2)` with no idle deadline, and there is no §4.10(c) connection-admission cap. Characterised + measured 2026-08-17 (**§1a**); root cause not isolated to an instruction. Fix shape known from the cohort (A-RX-014 pairing). Three ISAs of hand-written asm — its own session. |
 | **Extension type-vocabulary over-publication** | asm-x86_64, asm-arm64, riscv64 | Medium — cosmetic to the gate, material to the matrix's comparability | `src/typestore.s` publishes ~200 types incl. COMPUTE/CONTENT/CLOCK/CONTINUATION extension vocabularies, against `AGENTS.md`'s "a core peer never pre-publishes extension vocabularies". Converts 283 `type_system` WARNs to PASSes, so these three read `545P/42W` vs the cohort's `307P/327W` — **a higher pass count from a scope violation, not better conformance** (**§1a**). Enforcement grep: `grep -rl 'system/type/compute/apply' protocol-generator/*/src/` should be empty. |
+| **Per-peer `status/CONFORMANCE-REPORT` records are one pin behind** — found 2026-08-22 | all 45 (13 publishable ones matter most) | **Medium — a transparency defect, not a conformance one** | Every tracked `protocol-generator/<lang>/status/CONFORMANCE-REPORT.json` is at the retired `de8f807` **740**-check set or older (38 at 740, 4 at 682, 1 at 645, `io` unreadable); **none is at 755**. The `.md` siblings are worse — several still lead with `cc1970f`/`b30a589`-era banners and bodies quoting `552`/`576` totals from oracle `cb54f5b`. So a fresh clone shows each peer's own committed report contradicting its §1 row. **Not a wrong number in §1** (which is census-backed and correct) and **not caused by the M1/M2 passes** — the last status refresh was 2026-08-17, and `run-cohort-census.sh` deliberately never writes these files. Fix: re-run `run-s4.sh` directly (its default `-json-out` *is* `status/CONFORMANCE-REPORT.json`) for the 13 publishable peers and refresh their `.md` headers. Until then the disclosure in the header block above is the honest position. |
 | **`authz_peers_target_from_uri`** — WARN on every peer | all | Low — inconclusive by design | A single standalone peer cannot resolve `target_peer` against a synthetic foreign URI; needs a real two-peer harness to exercise. Not attempted since it was found 2026-08-16. |
 | **RT-13b Class M** — own ≥2-writer concurrency test | 18 peers (`ada c cobol common-lisp cpp csharp haskell java julia kotlin lean ocaml odin prolog python ruby unison zig`) | Medium | Unchanged since 2026-07-28, re-confirmed 2026-08-13. Its own session's work. |
 | **Ed448 agility** for deferred peers | Swift, Zig, C, Ada, Go | Demand-driven | Floor (Ed25519+SHA-256) ships; Ed448 via the OCaml FFI-hybrid pattern or native lib when an adopter needs it. |
@@ -639,26 +727,35 @@ tools/run-cohort-census.sh                # everything (pre-release)
 A tier run gates **only the peers it ran** — otherwise `--tier M1` would exit non-zero because of a
 probe nobody re-ran, and the exit code would stop meaning anything.
 
-### Current state — 2026-08-21 @ `c1b0708` (post-fix, post-full-census)
+### Current state — 2026-08-22 @ `c1b0708` (post-M1-fix, post-full-census, post-M2-fix)
 
 | Tier | Current & 0-FAIL | State |
 |---|:---:|---|
-| **M1** | **5 / 5** | **Fixed this session — the re-pin is LANDED.** `tools/tier-status.py --gate` exits 0 |
-| **M2** | 0 / 8 | Re-measured at `c1b0708`. 6 at 3F (the CAP gap) · `typescript` 84F = 3 real + 81 cascade (§1b) · `csharp` INVALID (§1a) |
+| **M1** | **5 / 5** | **Fixed 2026-08-21 — the re-pin is LANDED.** `tools/tier-status.py --gate` exits 0 |
+| **M2** | **8 / 8** | **Fixed 2026-08-22.** `typescript` 84F → 0F and `csharp` INVALID → 0F were the *same* §6.3 defect in its two presentations (§1b/§1c); the other 6 took the same CAP fix |
 | **M3** | 0 / 13 | Re-measured. 11 at 3F · `nim` 4F · `cobol` 30F (CAP trio + its standing 27) |
 | **probe** | 0 / 18 | Re-measured. 13 at 2–4F · `asm-x86_64` `asm-arm64` `riscv64` INVALID (§1a) · `apl` unmeasurable |
 | **exploratory** | 0 / 2 | Re-measured. Both 3F. Never gates (§1 ‡) |
 
 **Every tier is current on the pin — nothing is stale.** What the lower tiers carry is a *peer*
-debt, not a measurement debt, and it is one debt: **31 of the 40 unfixed peers fail nothing but the
-new CAP checks** — 29 at exactly 3F with a byte-identical P/W/F/S, 2 at 2F. That is the §5.6 mint
-ceiling, absent everywhere, measured 40 times.
+debt, not a measurement debt, and it is one debt: **25 of the 29 scored unfixed peers fail nothing
+but the new CAP checks** — 23 at exactly 3F with a byte-identical P/W/F/S, 2 at 2F. That is the §5.6
+mint ceiling, absent everywhere, measured across the cohort. *(Before the M2 pass this read "31 of
+the 40 unfixed"; the count moved, the finding did not.)*
 
 **This is the tier policy paying for itself in both directions.** Running M1 first (5 peers) found
 the entire gating delta and produced a verified fix; running the full 45 afterwards is what
 established that the gap is *uniform* rather than 40 separate problems — and it caught two things
-M1 alone could not: `typescript`'s cascade and `csharp`'s new invalid measurement. **Tiering governs
-the cadence between releases; a release still runs everything, and this one did.**
+M1 alone could not: `typescript`'s cascade and `csharp`'s invalid measurement, which the M2 pass then
+proved were one defect, not two. **Tiering governs the cadence between releases; a release still runs
+everything, and this one did.**
+
+**What M2 added that M1 could not have taught.** Thirteen languages took the same ~200-line fix over
+the same five places, unchanged — and that invariance is the evidence the spec reading is right, not
+merely that the tests pass. But two lessons only appeared past the M1 sample: **CAP-6a's fail-open has
+two mechanisms, not one** (null-collapse *and* an arithmetic fail-open that involves no null at all,
+so the grep that catches one misses the other — `AGENTS.md` carries both), and **§6.3 is not optional
+even at 0F** (`rust`, `common-lisp`). Pattern-matching off M1 alone would have missed both.
 
 ### Why this is on now
 

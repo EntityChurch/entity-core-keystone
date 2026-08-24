@@ -117,13 +117,29 @@ class Peer:
         return [GrantSpec(["*"], ["*"], ["*"], [self.local_peer])]
 
     # ── token mint (§4.4 / §6.9a) ────────────────────────────────────────────
-    def mint_token(self, grantee_hash: bytes, grants: list, parent: bytes | None) -> tuple[Entity, Entity]:
+    def mint_token(
+        self,
+        grantee_hash: bytes,
+        grants: list,
+        parent: bytes | None,
+        created_at: int | None = None,
+        expires_at: int | None = None,
+    ) -> tuple[Entity, Entity]:
+        """Mint + sign a capability token.
+
+        ``created_at`` and ``expires_at`` are passed together on purpose: the §5.6
+        duration terms are relative to ``created_at``, so sampling the clock twice would
+        let the emitted ``created_at`` and the expiry derived from it skew apart. Callers
+        computing a ceiling sample once and thread it through.
+        """
         data: dict[str, Any] = {
             "granter": bytes(self.identity.identity_hash),
             "grantee": bytes(grantee_hash),
             "grants": grants,
-            "created_at": self.now_millis(),
+            "created_at": self.now_millis() if created_at is None else created_at,
         }
+        if expires_at is not None:
+            data["expires_at"] = expires_at
         if parent is not None:
             data["parent"] = bytes(parent)
         token = Entity.make("system/capability/token", data)
@@ -143,6 +159,30 @@ class Peer:
             g = e.field("grants")
             if isinstance(g, list):
                 return g
+        return None
+
+    def policy_ttl_ms(self, grantee_hash: bytes) -> int | None:
+        """The ``ttl_ms`` of the policy entry that ceilings THIS caller (§6.2 CAP-5),
+        via the same dual-form lookup the §4.4 authenticate path uses
+        (hex -> Base58 -> ``default``).
+
+        This is the term that makes policy withdrawal bounded on the ``request`` path:
+        the entry's ``ttl_ms`` is the withdrawal latency for tokens already issued.
+        """
+        from .identity import peer_id_of_public_key
+
+        base = "/" + self.local_peer + "/system/capability/policy/"
+        keys = [grantee_hash.hex()]
+        peer_e = self.store.get_by_hash(grantee_hash)
+        if peer_e is not None:
+            pub = peer_e.bytes_("public_key")
+            if pub is not None:
+                keys.append(peer_id_of_public_key(pub))
+        keys.append("default")
+        for key in keys:
+            e = self.store.get_at(base + key)
+            if e is not None:
+                return e.uint("ttl_ms")
         return None
 
     def derive_seed_grants(self, remote_peer: Entity, remote_peer_id: str) -> list:

@@ -1,12 +1,31 @@
 # Canonical-docs declaration — the publishable doc surface the content leaf
 # ingests for the keystone domain ([internal] CANONICAL-DOCS-FORMAT.md).
 # Only docs at NON-scrubbed paths are listed: the release builder drops
-# **/HANDOFF*, *REVIEW*, *EXPLORATION*, PROPOSAL-*, RESPONSE-*, STATUS*,
-# WORKSTREAMS.md, .claude/, CLAUDE.md — so the canonical surface (conformance
-# matrix + research diagnostics) lives under names that survive the cut. The
-# internal STATUS.md / WORKSTREAMS.md are intentionally NOT declared (ephemeral
-# steward planning, honest absence per ADR-0012); the project's workstream shape
-# is conveyed by the README's three-arms section.
+# **/HANDOFF*, *REVIEW*, *EXPLORATION*, PROPOSAL-*, RESPONSE-*, WORKSTREAMS.md,
+# .claude/, CLAUDE.md — so the canonical surface (conformance matrix + research
+# diagnostics) lives under names that survive the cut. The internal
+# WORKSTREAMS.md is intentionally NOT declared (ephemeral steward planning,
+# honest absence per ADR-0012); the project's workstream shape is conveyed by the
+# README's three-arms section.
+#
+# ** THE STATUS RULE (operator-confirmed 2026-08-22 — this header had it wrong). **
+# The scrub is `STATUS-*` (the DATED ones), NOT `STATUS*`. The distinction is
+# load-bearing and the two kinds of file are not the same artifact:
+#
+#   docs/status/STATUS.md    — SINGULAR, undated, PUBLIC and CANONICAL. A tracked,
+#                              managed, point-in-time snapshot of what the project
+#                              has been working on, published so adopters can
+#                              follow along. Not a changelog (CHANGELOG.md is that,
+#                              and is stricter), and not ephemeral. It is DECLARED
+#                              below and is meant to survive the release cut.
+#   docs/status/STATUS-*.md  — DATED snapshots, and HANDOFF-*/CHECKPOINT-* beside
+#   docs/status/HANDOFF-*.md   them: ephemeral working traffic that flies left and
+#                              right during a session. Scrubbed. Never declared.
+#
+# So the STATUS.md entry below is correct as written; this comment previously
+# claimed the builder dropped it and that it was "intentionally NOT declared,"
+# which contradicted the declaration and mis-stated the standard. Corrected rather
+# than resolved by removing the entry — the entry was always the right half.
 
 [project]
 name   = "Entity Core Keystone"
@@ -17,12 +36,15 @@ intro  = """
 The keystone of the Entity Core arch: a generator that emits a full core
 protocol peer (entity-core-protocol-<lang>) for any target language from the
 pinned spec snapshot (currently v0.8.2), plus a language-agnostic codec C-ABI.
-The cohort is 46 generated core peers, 45 of them measured. Conformance state as
-of 2026-08-21 spans two oracle pins and is NOT uniformly green: the 5 lockstep
-peers re-run at oracle c1b0708 all FAIL the newly-landed core capability checks,
-and the other 40 still carry their superseded de8f807 measurement, which does not
-carry forward. The failures are an unimplemented spec feature (the section 5.6
-minted-capability temporal ceiling) rather than regressions. The conformance
+The cohort is 46 generated core peers, 45 of them measured — all 45 at ONE oracle
+pin (c1b0708, 2026-08-21), nothing carried forward. Conformance state is NOT
+uniformly green: 5 peers (the M1 lockstep tier) pass --profile core 0-FAIL and are
+the only ones publishable today; the other 40 fail the newly-landed core capability
+checks, 31 of them failing nothing else and with a byte-identical breakdown. Those
+failures are one unimplemented spec feature (the section 5.6 minted-capability
+temporal ceiling) measured 40 times, rather than 40 regressions. Four further peers
+produced INVALID MEASUREMENTS — starved runs that are quarantined, not scored. The
+conformance
 matrix is authoritative and carries the per-peer transparency contract — spec
 version, oracle commit, codec/crypto strategy, known gaps — and it states plainly
 which rows are current and which are historical. Honest scope: these peers are

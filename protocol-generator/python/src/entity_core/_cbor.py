@@ -269,12 +269,15 @@ def _encode_map_into(m: dict, out: bytearray) -> None:
 # Decode (strict ECF)
 # ─────────────────────────────────────────────────────────────────────────────
 class _Decoder:
-    __slots__ = ("buf", "pos", "n")
+    __slots__ = ("buf", "pos", "n", "salvage")
 
-    def __init__(self, buf: bytes):
+    def __init__(self, buf: bytes, salvage: bool = False):
         self.buf = buf
         self.pos = 0
         self.n = len(buf)
+        # When True, a major-type-6 tag is UNWRAPPED instead of rejected. Set only by
+        # decode_salvage() -- see its docstring for why this may never reach ingestion.
+        self.salvage = salvage
 
     def _need(self, k: int) -> None:
         if self.pos + k > self.n:
@@ -358,6 +361,12 @@ class _Decoder:
             return self._decode_map(length)
         if major == _MT_TAG:
             # §6.3: any CBOR tag (major type 6) at any depth is rejected.
+            if self.salvage:
+                # Salvage only: skip the tag's argument and return its content, so the
+                # request_id can be recovered from an already-rejected frame. Never
+                # reached from the strict decode path.
+                self._read_argument(info)
+                return self._decode_value()
             raise NonCanonicalEcfError("CBOR tag (major type 6) forbidden in ECF (non_canonical_ecf)")
         # major == 7: simple values + floats.
         return self._decode_simple(info)
@@ -442,3 +451,21 @@ def decode(buf: bytes) -> Any:
     keys) and :class:`TruncatedError` on a short read.
     """
     return _Decoder(bytes(buf)).decode()
+
+
+def decode_salvage(buf: bytes) -> Any:
+    """Tag-tolerant decode, for ONE purpose: recovering the ``request_id`` of a frame the
+    strict decoder has already rejected, so the peer can answer ``400 non_canonical_ecf``
+    (§6.3) instead of falling silent.
+
+    §6.3 says rejection RETURNS a status — that is the second half of the sentence, and
+    refusing the frame satisfies only the first half. A silent drop makes a refusal
+    indistinguishable from a dead peer: the sender blocks until its own timeout.
+
+    This is NOT a lenient ingestion mode and MUST NOT be wired into one. The frame stays
+    rejected: no entity is built from it, nothing is stored, the tag is never interpreted
+    — so §6.3's MUST NOT strip / preserve / interpret all still hold, and the
+    ``tag_reject`` wire-conformance vectors keep their meaning precisely because the
+    strict :func:`decode` path every real route uses is byte-unchanged.
+    """
+    return _Decoder(bytes(buf), salvage=True)._decode_value()

@@ -276,6 +276,42 @@ final class Capability {
 
     // ── §5.5 / §5.6 chain verification + attenuation ─────────────────────────────────
 
+    /** Inclusive maximum of {@code primitive/uint} — the representability bound. */
+    private static final BigInteger UINT64_MAX =
+            BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE);
+
+    /**
+     * §6.2 CAP-6a (INGEST): every temporal field on a RECEIVED token must be either
+     * ABSENT (legal — "no bound") or representable as {@code primitive/uint}. A bignum,
+     * a negative integer, or any non-integer is <b>malformed</b>, and the verifier MUST
+     * refuse it rather than read the unrepresentable field as absent — absent means
+     * <i>no expiry</i>, so the fail-open reading grants an immortal capability.
+     *
+     * <p>The mechanism here differs from the null-collapsing peers and is worth naming:
+     * {@code Cbor.uint} returns the {@code BigInteger} of ANY {@code EcfValue.Int},
+     * including a negative one. So the range checks did not skip — they ran and simply
+     * returned the wrong answer: for a negative {@code not_before},
+     * {@code now < not_before} is false, so the cap passed. Same fail-open, reached by
+     * arithmetic rather than by a null.
+     *
+     * <p>MUST run BEFORE the range checks it protects.
+     */
+    static boolean temporalFieldsRepresentable(Entity cap) {
+        for (String key : new String[] {"expires_at", "not_before", "created_at"}) {
+            EcfValue v = cap.field(key);
+            if (v == null || v instanceof EcfValue.Null) {
+                continue; // absent/null is legal — no bound
+            }
+            if (!(v instanceof EcfValue.Int i)) {
+                return false;
+            }
+            if (i.value().signum() < 0 || i.value().compareTo(UINT64_MAX) > 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     static long nowMs() {
         return System.currentTimeMillis();
     }
@@ -395,6 +431,12 @@ final class Capability {
             }
         }
         if (!localInSigners) {
+            return false;
+        }
+
+        // §6.2 CAP-6a (INGEST) — MUST run BEFORE the range checks below, because the
+        // range checks are exactly what the unrepresentable value defeats.
+        if (!temporalFieldsRepresentable(cap)) {
             return false;
         }
 
@@ -711,6 +753,10 @@ final class Capability {
                 }
             } else {
                 throw new UnresolvableGrantee();
+            }
+            // §6.2 CAP-6a (INGEST) — before the range checks, same reason as the root path.
+            if (!temporalFieldsRepresentable(current)) {
+                good = false;
             }
             // temporal validity
             long tnow = nowMs();

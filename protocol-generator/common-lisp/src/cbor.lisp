@@ -282,6 +282,29 @@ is not exactly representable as a finite f16 (so the caller falls back to f32/f6
 ;; Decode
 ;; ═════════════════════════════════════════════════════════════════════════════
 
+(defvar *cbor-salvage-tags* nil
+  "When true, %DEC UNWRAPS a major-type-6 tag instead of signalling TAG-REJECTED.
+Bound only by CBOR-DECODE-SALVAGE — see its docstring for why this may never reach
+an ingestion path. A special variable rather than a threaded parameter because the
+binding is dynamically scoped to exactly one call and CL gives that for free.")
+
+(defun cbor-decode-salvage (octets)
+  "Tag-tolerant decode, for ONE purpose: recovering the request_id of a frame the
+strict decoder has already rejected, so the peer can answer 400 non_canonical_ecf
+(§6.3) instead of falling silent.
+
+§6.3 says rejection RETURNS a status — that is the second half of the sentence, and
+refusing the frame satisfies only the first half. A silent drop makes a refusal
+indistinguishable from a dead peer: the sender blocks until its own timeout.
+
+This is NOT a lenient ingestion mode and MUST NOT be wired into one. The frame stays
+rejected: no entity is built from it, nothing is stored, the tag is never interpreted
+— so §6.3's MUST NOT strip / preserve / interpret all still hold, and the tag_reject
+wire-conformance vectors keep their meaning precisely because the strict CBOR-DECODE
+path every real route uses is byte-unchanged."
+  (let ((*cbor-salvage-tags* t))
+    (cbor-decode octets :require-end nil)))
+
 (defun cbor-decode (octets &key (start 0) (require-end t))
   "Decode canonical ECF OCTETS to a value. Signals on tags (N2), truncation,
 indefinite lengths, and (when REQUIRE-END) trailing bytes."
@@ -318,7 +341,14 @@ indefinite lengths, and (when REQUIRE-END) trailing bytes."
            (%dec-array o ni len depth)))
       (5 (multiple-value-bind (len ni) (%dec-arg o i info)
            (%dec-map o ni len depth)))
-      (6 (error 'tag-rejected :detail (list :major-6 :at i))) ; N2 — hard reject
+      (6 (if *cbor-salvage-tags*
+             ;; Salvage only: skip the tag's argument and return its content, so the
+             ;; request_id can be recovered from an already-rejected frame. Never
+             ;; reached from the strict decode path.
+             (multiple-value-bind (%tag ni) (%dec-arg o i info)
+               (declare (ignore %tag))
+               (%dec o ni (1+ depth)))
+             (error 'tag-rejected :detail (list :major-6 :at i)))) ; N2 — hard reject
       (7 (%dec-simple o i info)))))
 
 (defun %need (o i len)

@@ -272,7 +272,30 @@ object CanonicalCbor {
         v
     }
 
-    private class Cursor(val o: ByteArray, var i: Int)
+    /**
+     * [salvage] = true makes a major-type-6 tag UNWRAP instead of reject. Set only by
+     * [decodeSalvage] — see its doc for why this may never reach an ingestion path.
+     */
+    private class Cursor(val o: ByteArray, var i: Int, val salvage: Boolean = false)
+
+    /**
+     * Tag-tolerant decode, for ONE purpose: recovering the `request_id` of a frame the
+     * strict decoder has already rejected, so the peer can answer `400 non_canonical_ecf`
+     * (§6.3) instead of falling silent.
+     *
+     * §6.3 says rejection RETURNS a status — that is the second half of the sentence, and
+     * refusing the frame satisfies only the first half. A silent drop makes a refusal
+     * indistinguishable from a dead peer: the sender blocks until its own timeout.
+     *
+     * This is NOT a lenient ingestion mode and MUST NOT be wired into one. The frame stays
+     * rejected: no entity is built from it, nothing is stored, the tag is never
+     * interpreted — so §6.3's MUST NOT strip / preserve / interpret all still hold, and the
+     * `tag_reject` wire-conformance vectors keep their meaning precisely because the strict
+     * [decode] path every real route uses is byte-unchanged.
+     */
+    fun decodeSalvage(octets: ByteArray): EcfResult<EcfValue> = guard {
+        dec(Cursor(octets, 0, salvage = true), 0)
+    }
 
     private fun dec(c: Cursor, depth: Int): EcfValue {
         if (depth > MAX_DEPTH) throw EcfException(EntityError.CodecError.NonCanonicalEcf("max depth exceeded"))
@@ -318,7 +341,15 @@ object CanonicalCbor {
                 }
                 EcfValue.MapVal(entries)
             }
-            6 -> throw EcfException(EntityError.CodecError.TagRejected("major-type-6 tag rejected at ${c.i - 1}"))
+            6 -> if (c.salvage) {
+                // Salvage only: skip the tag's argument and return its content, so the
+                // request_id can be recovered from an already-rejected frame. Never
+                // reached from the strict decode path.
+                decArg(c, info)
+                dec(c, depth + 1)
+            } else {
+                throw EcfException(EntityError.CodecError.TagRejected("major-type-6 tag rejected at ${c.i - 1}"))
+            }
             7 -> decSimple(c, info)
             else -> throw EcfException(EntityError.CodecError.NonCanonicalEcf("bad major type $major"))
         }

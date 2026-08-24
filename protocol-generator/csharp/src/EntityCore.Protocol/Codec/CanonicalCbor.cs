@@ -53,6 +53,31 @@ internal static class CanonicalCbor
     }
 
     /// <summary>
+    /// Tag-tolerant decode, for ONE purpose: recovering the <c>request_id</c> of a frame
+    /// the strict decoder has already rejected, so the peer can answer
+    /// <c>400 non_canonical_ecf</c> (§6.3) instead of falling silent.
+    /// <para>
+    /// §6.3 says rejection RETURNS a status — that is the second half of the sentence, and
+    /// refusing the frame satisfies only the first half. Silence makes a refusal
+    /// indistinguishable from a dead peer: the sender blocks until its own timeout, which
+    /// on this peer cost 120 s in the CAP-6a check alone and starved nine whole categories
+    /// out of the run.
+    /// </para>
+    /// <para>
+    /// This is NOT a lenient ingestion mode and MUST NOT be wired into one. The frame stays
+    /// rejected: no entity is built from it, nothing is stored, the tag is never
+    /// interpreted — so §6.3's MUST NOT strip / preserve / interpret all still hold, and
+    /// the <c>tag_reject</c> wire-conformance vectors keep their meaning precisely because
+    /// the strict <see cref="Decode"/> path every real route uses is byte-unchanged.
+    /// </para>
+    /// </summary>
+    internal static EcfValue DecodeSalvage(ReadOnlyMemory<byte> data)
+    {
+        var reader = new CborReader(data, CborConformanceMode.Lax);
+        return ReadValue(reader, salvage: true);
+    }
+
+    /// <summary>
     /// Lenient parse used only to load the (already-canonical) conformance
     /// fixture. Tags are still rejected; canonical ordering is not re-checked.
     /// </summary>
@@ -128,7 +153,7 @@ internal static class CanonicalCbor
         }
     }
 
-    private static EcfValue ReadValue(CborReader reader)
+    private static EcfValue ReadValue(CborReader reader, bool salvage = false)
     {
         CborReaderState state;
         try
@@ -146,6 +171,14 @@ internal static class CanonicalCbor
             {
                 case CborReaderState.Tag:
                     // N2: CBOR major-type-6 tags are forbidden anywhere in ECF.
+                    if (salvage)
+                    {
+                        // Salvage only: skip the tag and return its content, so the
+                        // request_id can be recovered from an already-rejected frame.
+                        // Never reached from the strict Decode path.
+                        reader.ReadTag();
+                        return ReadValue(reader, salvage);
+                    }
                     throw new EntityCodecException("CBOR tag forbidden in ECF");
 
                 case CborReaderState.UnsignedInteger:
@@ -161,10 +194,10 @@ internal static class CanonicalCbor
                     return new EcfValue.Text(reader.ReadTextString());
 
                 case CborReaderState.StartArray:
-                    return ReadArray(reader);
+                    return ReadArray(reader, salvage);
 
                 case CborReaderState.StartMap:
-                    return ReadMap(reader);
+                    return ReadMap(reader, salvage);
 
                 case CborReaderState.Boolean:
                     return new EcfValue.Bool(reader.ReadBoolean());
@@ -199,26 +232,26 @@ internal static class CanonicalCbor
         }
     }
 
-    private static EcfValue ReadArray(CborReader reader)
+    private static EcfValue ReadArray(CborReader reader, bool salvage = false)
     {
         reader.ReadStartArray();
         var items = new List<EcfValue>();
         while (reader.PeekState() != CborReaderState.EndArray)
         {
-            items.Add(ReadValue(reader));
+            items.Add(ReadValue(reader, salvage));
         }
         reader.ReadEndArray();
         return new EcfValue.Array(items);
     }
 
-    private static EcfValue ReadMap(CborReader reader)
+    private static EcfValue ReadMap(CborReader reader, bool salvage = false)
     {
         reader.ReadStartMap();
         var pairs = new List<KeyValuePair<EcfValue, EcfValue>>();
         while (reader.PeekState() != CborReaderState.EndMap)
         {
-            EcfValue key = ReadValue(reader);
-            EcfValue val = ReadValue(reader);
+            EcfValue key = ReadValue(reader, salvage);
+            EcfValue val = ReadValue(reader, salvage);
             pairs.Add(new KeyValuePair<EcfValue, EcfValue>(key, val));
         }
         reader.ReadEndMap();

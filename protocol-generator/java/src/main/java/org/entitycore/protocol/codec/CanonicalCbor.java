@@ -300,7 +300,32 @@ public final class CanonicalCbor {
     private static final class Cursor {
         final byte[] o;
         int i;
-        Cursor(byte[] o, int i) { this.o = o; this.i = i; }
+        /**
+         * When true, a major-type-6 tag is UNWRAPPED instead of rejected. Set only by
+         * {@link #decodeSalvage} — see its doc for why this may never reach ingestion.
+         */
+        final boolean salvage;
+        Cursor(byte[] o, int i) { this(o, i, false); }
+        Cursor(byte[] o, int i, boolean salvage) { this.o = o; this.i = i; this.salvage = salvage; }
+    }
+
+    /**
+     * Tag-tolerant decode, for ONE purpose: recovering the {@code request_id} of a frame
+     * the strict decoder has already rejected, so the peer can answer
+     * {@code 400 non_canonical_ecf} (§6.3) instead of falling silent.
+     *
+     * <p>§6.3 says rejection RETURNS a status — that is the second half of the sentence,
+     * and refusing the frame satisfies only the first half. A silent drop makes a refusal
+     * indistinguishable from a dead peer: the sender blocks until its own timeout.
+     *
+     * <p>This is NOT a lenient ingestion mode and MUST NOT be wired into one. The frame
+     * stays rejected: no entity is built from it, nothing is stored, the tag is never
+     * interpreted — so §6.3's MUST NOT strip / preserve / interpret all still hold, and
+     * the {@code tag_reject} wire-conformance vectors keep their meaning precisely because
+     * the strict {@link #decode} path every real route uses is byte-unchanged.
+     */
+    public static EcfValue decodeSalvage(byte[] octets) throws EntityCodecException {
+        return dec(new Cursor(octets, 0, true), 0);
     }
 
     private static EcfValue dec(Cursor c, int depth) throws EntityCodecException {
@@ -361,6 +386,13 @@ public final class CanonicalCbor {
                 return new EcfValue.Map(entries);
             }
             case 6:
+                if (c.salvage) {
+                    // Salvage only: skip the tag's argument and return its content, so the
+                    // request_id can be recovered from an already-rejected frame. Never
+                    // reached from the strict decode path.
+                    decArg(c, info);
+                    return dec(c, depth + 1);
+                }
                 throw new TagRejectedException("major-type-6 tag rejected at " + (c.i - 1));
             case 7:
                 return decSimple(c, info);

@@ -224,6 +224,32 @@ def find_signature_by_signer(target: bytes, signer: bytes, included: dict) -> En
 
 
 # ── multi-granter (§3.6) ──────────────────────────────────────────────────────
+UINT64_MAX = (1 << 64) - 1
+
+
+def _temporal_fields_representable(cap: Entity) -> bool:
+    """§6.2 CAP-6a: every temporal field on a RECEIVED token must be either ABSENT
+    (legal — "no bound") or representable as ``primitive/uint``.
+
+    A bignum, a negative integer, or any non-integer is **malformed**, and the verifier
+    MUST refuse it rather than read the unrepresentable field as absent — absent means
+    *no expiry*, so the fail-open reading grants an immortal capability. Refusal is the
+    §5.2 ``capability_denied`` disposition, not a decode-layer silent drop.
+
+    Note Python's unbounded ints make the ``>2^64`` half a DELIBERATE range check: there
+    is no overflow to trip over, so a peer that "just does the arithmetic" never notices.
+    """
+    for key in ("expires_at", "not_before", "created_at"):
+        v = cap.field(key)
+        if v is None:
+            continue  # absent is legal
+        if isinstance(v, bool) or not isinstance(v, int):
+            return False
+        if v < 0 or v > UINT64_MAX:
+            return False
+    return True
+
+
 def _granter_is_multi(token: Entity) -> bool:
     """Whether the cap's granter is a multi-granter (a {signers, threshold} map)
     rather than a single system/hash (bytes)."""
@@ -490,6 +516,16 @@ def verify_capability_chain(
         geh = current.bytes_("grantee")
         if geh is None or resolve(geh) is None:
             return UNRESOLVABLE_GRANTEE
+
+        # §6.2 CAP-6a (INGEST) — MUST run BEFORE the range checks below, because the
+        # range checks are exactly what the ambiguity defeats. Entity.uint() returns
+        # None BOTH for an absent field and for a present-but-unrepresentable one (a
+        # negative int, a bignum), so `if ex is not None` silently SKIPPED the expiry
+        # check on a token carrying expires_at:-1 and honored it with 200 — an immortal
+        # capability handed to whoever sent the malformed value. §6.2 is explicit that a
+        # verifier "MUST NOT treat the unrepresentable field as absent".
+        if not _temporal_fields_representable(current):
+            return AUTHZ_DENY
 
         # Temporal validity
         nb = current.uint("not_before")

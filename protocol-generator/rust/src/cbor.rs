@@ -208,7 +208,11 @@ fn f16_to_f64(h: u16) -> f64 {
 /// input (tags at any depth, indefinite lengths, non-minimal int/float,
 /// duplicate or unsorted map keys, trailing data).
 pub fn decode(bytes: &[u8]) -> Result<Value> {
-    let mut d = Decoder { buf: bytes, pos: 0 };
+    let mut d = Decoder {
+        buf: bytes,
+        pos: 0,
+        salvage: false,
+    };
     let v = d.value()?;
     if d.pos != d.buf.len() {
         return Err(CodecError::TrailingData);
@@ -216,9 +220,34 @@ pub fn decode(bytes: &[u8]) -> Result<Value> {
     Ok(v)
 }
 
+/// Tag-tolerant decode, for ONE purpose: recovering the `request_id` of a frame the
+/// strict decoder has already rejected, so the peer can answer `400 non_canonical_ecf`
+/// (§6.3) instead of falling silent.
+///
+/// §6.3 says rejection RETURNS a status — that is the second half of the sentence, and
+/// refusing the frame satisfies only the first half. A silent drop makes a refusal
+/// indistinguishable from a dead peer: the sender blocks until its own timeout.
+///
+/// This is NOT a lenient ingestion mode and MUST NOT be wired into one. The frame stays
+/// rejected: no entity is built from it, nothing is stored, the tag is never
+/// interpreted — so §6.3's MUST NOT strip / preserve / interpret all still hold, and the
+/// `tag_reject` wire-conformance vectors keep their meaning precisely because the strict
+/// [`decode`] path every real route uses is byte-unchanged.
+pub fn decode_salvage(bytes: &[u8]) -> Result<Value> {
+    let mut d = Decoder {
+        buf: bytes,
+        pos: 0,
+        salvage: true,
+    };
+    d.value()
+}
+
 struct Decoder<'a> {
     buf: &'a [u8],
     pos: usize,
+    /// When true, a major-type-6 tag is UNWRAPPED instead of rejected. Set only by
+    /// [`decode_salvage`].
+    salvage: bool,
 }
 
 impl<'a> Decoder<'a> {
@@ -323,6 +352,13 @@ impl<'a> Decoder<'a> {
             6 => {
                 // §6.3: tags are forbidden at any nesting depth. Reject the
                 // whole datum the moment a tag head is seen.
+                if self.salvage {
+                    // Salvage only: skip the tag's argument and return its content, so
+                    // the request_id can be recovered from an already-rejected frame.
+                    // Never reached from the strict decode path.
+                    self.read_arg(ai)?;
+                    return self.value();
+                }
                 Err(CodecError::TagRejected)
             }
             7 => self.decode_simple_or_float(ai),

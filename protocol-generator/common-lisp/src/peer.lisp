@@ -86,17 +86,60 @@
 
 ;; ── token mint (§4.4 / §6.9a) ──────────────────────────────────────────────────
 
-(defun mint-token (peer grantee-hash grants &key parent)
+(defun mint-token (peer grantee-hash grants &key parent (created-at (now-ms)) expires-at)
   "Mint + sign a capability token granted by us to GRANTEE-HASH. Returns
-(values token signature)."
+(values token signature).
+
+CREATED-AT and EXPIRES-AT travel together on purpose: the §5.6 duration terms are
+relative to CREATED-AT, so sampling the clock twice would let the emitted created_at
+and the expiry derived from it skew apart. Callers computing a ceiling sample once."
   (let* ((id (peer-identity peer))
          (pairs (list (cons "granter" (make-bytes (identity-hash id)))
                       (cons "grantee" (make-bytes grantee-hash))
                       (cons "grants" grants)
-                      (cons "created_at" (now-ms)))))
+                      (cons "created_at" created-at))))
+    (when expires-at (setf pairs (append pairs (list (cons "expires_at" expires-at)))))
     (when parent (setf pairs (append pairs (list (cons "parent" (make-bytes parent))))))
     (let ((token (make-entity "system/capability/token" (make-cbor-map pairs))))
       (values token (sign-entity id token)))))
+
+(defconstant +uint64-max-mint+ (1- (ash 1 64)))
+
+(defun duration-term (created-at ttl)
+  "Convert a DURATION term (ttl_ms) to an absolute timestamp, returning NIL when it
+contributes no ceiling (§5.6 MIN_DEFINED rule 1 + rule 3).
+
+Overflow DROPS the term — treated as absent, exactly as a null term is. It MUST NOT
+wrap and MUST NOT saturate: saturation encodes differently from absence and
+manufactures expires_at == 2^64-1, a finite bound no reader can distinguish from a
+deliberate one. Lisp integers are unbounded, so this is a DELIBERATE range check.
+
+TTL = 0 is NOT special-cased, deliberately: rule 2 makes 0 a DEFINED value yielding
+CREATED-AT (expire immediately). Letting it fall out of the arithmetic is what keeps
+it from collapsing into the absent/null \"no bound\" spelling."
+  (when (and ttl (integerp ttl) (>= ttl 0))
+    (let ((sum (+ created-at ttl)))
+      (when (<= sum +uint64-max-mint+) sum))))
+
+(defun min-defined (&rest terms)
+  "§5.6 MIN_DEFINED: the minimum over the DEFINED terms only; NIL when none is."
+  (let ((defined (remove nil terms)))
+    (when defined (reduce #'min defined))))
+
+(defun policy-ttl-ms (peer grantee-hash)
+  "The ttl_ms of the policy entry that ceilings THIS caller (§6.2 CAP-5), via the
+same dual-form lookup the §4.4 authenticate path uses (hex → Base58 → default).
+
+This is the term that makes policy withdrawal bounded on the `request` path: the
+entry's ttl_ms is the withdrawal latency for tokens already issued."
+  (let* ((store (peer-store peer))
+         (base (concatenate 'string "/" (peer-local-peer peer) "/system/capability/policy/"))
+         (peer-e (store-get-by-hash store grantee-hash))
+         (pub (and peer-e (entity-bytes peer-e "public_key")))
+         (entry (or (store-get-at store (concatenate 'string base (hex grantee-hash)))
+                    (and pub (store-get-at store (concatenate 'string base (peer-id-of-pubkey pub))))
+                    (store-get-at store (concatenate 'string base "default")))))
+    (when entry (entity-uint entry "ttl_ms"))))
 
 ;; ── §6.9a seed policy (authenticate-time grant derivation) ──────────────────────
 
@@ -364,7 +407,7 @@ caller leading slash whose first seg is not a peer_id, ./ ../ interior empty."
 (defun req-grants-of (params)
   (let ((g (and params (entity-field params "grants")))) (if (listp g) g nil)))
 
-(defun mint-bounded (peer caller-cap req-grants grantee-hash &key parent)
+(defun mint-bounded (peer caller-cap req-grants grantee-hash &key parent params)
   "Mint a token bounded as a subset of CALLER-CAP (§6.2 subset-validation)."
   (let* ((local (peer-local-peer peer))
          (bounded
@@ -376,20 +419,40 @@ caller leading slash whose first seg is not a peer_id, ./ ../ interior empty."
                             (some (lambda (pg) (grant-subset local local local c pg)) parent-grants)))
                         req-grants)))))
     (if (not bounded) (err 403 "scope_exceeds_authority")
-        (multiple-value-bind (token sgn) (mint-token peer grantee-hash req-grants :parent parent)
+        ;; §6.2 CAP-5 / §5.6 MIN_DEFINED. `request` mints a ROOT token (parent: null),
+        ;; so §5.6's parent-child attenuation rule never reaches it — without this
+        ;; bound, temporal attenuation is the one dimension a requester can escape.
+        ;;
+        ;;   expires_at = MIN_DEFINED(
+        ;;       caller_capability.expires_at,      ; ABSOLUTE — enters directly
+        ;;       created_at + policy_entry.ttl_ms,  ; DURATION — converted first
+        ;;       created_at + request.ttl_ms)       ; DURATION — converted first
+        ;;
+        ;; Term SHAPE is the trap: mixing a duration in unconverted yields a timestamp
+        ;; near the epoch and clamps every token to already-expired. The disposition is
+        ;; a CLAMP, never a rejection — an over-long request from a bounded caller mints
+        ;; at 200 with the clamped value; rejecting it is non-conformant.
+        (let* ((created-at (now-ms))
+               (expires-at (min-defined
+                            (and caller-cap (entity-uint caller-cap "expires_at"))
+                            (duration-term created-at (policy-ttl-ms peer grantee-hash))
+                            (duration-term created-at (and params (entity-uint params "ttl_ms"))))))
+        (multiple-value-bind (token sgn)
+            (mint-token peer grantee-hash req-grants :parent parent
+                        :created-at created-at :expires-at expires-at)
           (ok (make-entity "system/capability/grant"
                            (map-of "token" (make-bytes (entity-hash token))))
               (list (cons (entity-hash token) token)
                     (cons (identity-hash (peer-identity peer))
                           (identity-peer-entity (peer-identity peer)))
-                    (cons (entity-hash sgn) sgn)))))))
+                    (cons (entity-hash sgn) sgn))))))))
 
 (defmethod handle-op ((h capability-handler) (op (eql :request)) ctx)
   (let* ((peer (handler-peer h)) (exec (ctx-exec ctx))
          (params (entity-entity exec "params"))
          (author (entity-bytes exec "author")))
     (if (null author) (err 403 "capability_denied")
-        (mint-bounded peer (ctx-caller-cap ctx) (req-grants-of params) author))))
+        (mint-bounded peer (ctx-caller-cap ctx) (req-grants-of params) author :params params))))
 
 (defmethod handle-op ((h capability-handler) (op (eql :delegate)) ctx)
   (let* ((peer (handler-peer h)) (exec (ctx-exec ctx))
@@ -401,7 +464,7 @@ caller leading slash whose first seg is not a peer_id, ./ ../ interior empty."
       ((is-zero-hash ph) (err 400 "unexpected_params" "delegate: zero parent"))
       ((not (and author (octets-equal author (identity-hash (peer-identity peer)))))
        (err 501 "unsupported_operation" "delegate: same-peer-only in v1"))
-      (t (mint-bounded peer (ctx-caller-cap ctx) (req-grants-of params) author :parent ph)))))
+      (t (mint-bounded peer (ctx-caller-cap ctx) (req-grants-of params) author :parent ph :params params)))))
 
 (defmethod handle-op ((h capability-handler) (op (eql :revoke)) ctx)
   (let* ((peer (handler-peer h)) (exec (ctx-exec ctx))

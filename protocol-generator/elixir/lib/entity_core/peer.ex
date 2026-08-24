@@ -137,17 +137,86 @@ defmodule EntityCore.Peer do
   """
   @spec mint_token(t(), binary(), [term()], binary() | nil) :: {EntityCore.Entity.t(), EntityCore.Entity.t()}
   def mint_token(t, grantee_hash, grants, parent \\ nil) do
+    mint_token_at(t, grantee_hash, grants, parent, now_ms(), nil)
+  end
+
+  @doc """
+  `mint_token/4` with an explicit `created_at` and §5.6 `expires_at`.
+
+  The two are passed together on purpose: the §5.6 duration terms are relative to
+  `created_at`, so sampling the clock twice would let the emitted `created_at` and the
+  expiry derived from it skew apart. Callers computing a ceiling sample once.
+  """
+  def mint_token_at(t, grantee_hash, grants, parent, created_at, expires_at) do
     data =
       %{
         "granter" => {:bytes, t.identity.identity_hash},
         "grantee" => {:bytes, grantee_hash},
         "grants" => grants,
-        "created_at" => now_ms()
+        "created_at" => created_at
       }
+      |> maybe_put("expires_at", expires_at)
       |> maybe_put("parent", parent && {:bytes, parent})
 
     token = Model.make("system/capability/token", data)
     {token, Identity.sign_entity(t.identity, token)}
+  end
+
+  @uint64_max 18_446_744_073_709_551_615
+
+  # Convert a DURATION term (ttl_ms) to an absolute timestamp, reporting whether it
+  # contributes a ceiling at all (§5.6 MIN_DEFINED rule 1 + rule 3).
+  #
+  # Overflow DROPS the term — treated as absent, exactly as a null term is. It MUST NOT
+  # wrap and MUST NOT saturate: saturation encodes differently from absence and
+  # manufactures expires_at == 2^64-1, a finite bound no reader can distinguish from a
+  # deliberate one. Elixir integers are arbitrary-precision, so this is a DELIBERATE range
+  # check rather than an overflow trap.
+  #
+  # ttl == 0 is NOT special-cased, deliberately: rule 2 makes 0 a DEFINED value yielding
+  # created_at (expire immediately). Letting it fall out of the arithmetic is what keeps it
+  # from collapsing into the absent/null "no bound" spelling.
+  defp duration_term(_created_at, nil), do: nil
+
+  defp duration_term(created_at, ttl) when is_integer(ttl) and ttl >= 0 do
+    sum = created_at + ttl
+    if sum > @uint64_max, do: nil, else: sum
+  end
+
+  defp duration_term(_created_at, _ttl), do: nil
+
+  # §5.6 MIN_DEFINED: the minimum over the DEFINED terms only; nil when none is.
+  defp min_defined(terms) do
+    case Enum.reject(terms, &is_nil/1) do
+      [] -> nil
+      defined -> Enum.min(defined)
+    end
+  end
+
+  # The ttl_ms of the policy entry that ceilings THIS caller (§6.2 CAP-5), via the same
+  # dual-form lookup the §4.4 authenticate path uses (hex → Base58 → default). This is the
+  # term that makes policy withdrawal bounded on the `request` path: the entry's ttl_ms is
+  # the withdrawal latency for tokens already issued.
+  defp policy_ttl_ms(t, grantee_hash) do
+    base = "/" <> t.local_peer <> "/system/capability/policy/"
+
+    by_id =
+      case Store.get_by_hash(t.store, grantee_hash) do
+        nil ->
+          nil
+
+        peer_e ->
+          case Model.bytes_field(peer_e, "public_key") do
+            nil -> nil
+            pub -> Store.get_at(t.store, base <> EntityCore.PeerId.from_public_key(pub, :ed25519))
+          end
+      end
+
+    entry =
+      Store.get_at(t.store, base <> Model.hex(grantee_hash)) || by_id ||
+        Store.get_at(t.store, base <> "default")
+
+    if entry, do: Model.uint_field(entry, "ttl_ms"), else: nil
   end
 
   defp maybe_put(map, _k, nil), do: map
@@ -553,7 +622,7 @@ defmodule EntityCore.Peer do
   end
 
   # mint a token bounded as a subset of the caller's authenticated cap (§6.2).
-  defp mint_bounded(t, caller_cap, req_grants, grantee_hash, parent \\ nil) do
+  defp mint_bounded(t, caller_cap, req_grants, grantee_hash, parent, params) do
     bounded =
       case caller_cap do
         nil ->
@@ -571,7 +640,29 @@ defmodule EntityCore.Peer do
     if not bounded do
       err(403, "scope_exceeds_authority")
     else
-      {token, sgn} = mint_token(t, grantee_hash, req_grants, parent)
+      # §6.2 CAP-5 / §5.6 MIN_DEFINED. `request` mints a ROOT token (parent: null), so
+      # §5.6's parent-child attenuation rule never reaches it — without this bound,
+      # temporal attenuation is the one dimension a requester can escape.
+      #
+      #   expires_at = MIN_DEFINED(
+      #       caller_capability.expires_at,      # ABSOLUTE — enters directly
+      #       created_at + policy_entry.ttl_ms,  # DURATION — converted first
+      #       created_at + request.ttl_ms)       # DURATION — converted first
+      #
+      # Term SHAPE is the trap: mixing a duration in unconverted yields a timestamp near
+      # the epoch and clamps every token to already-expired. The disposition is a CLAMP,
+      # never a rejection — an over-long request from a bounded caller mints at 200 with
+      # the clamped value; rejecting it is explicitly non-conformant.
+      created_at = now_ms()
+
+      expires_at =
+        min_defined([
+          caller_cap && Model.uint_field(caller_cap, "expires_at"),
+          duration_term(created_at, policy_ttl_ms(t, grantee_hash)),
+          duration_term(created_at, params && Model.uint_field(params, "ttl_ms"))
+        ])
+
+      {token, sgn} = mint_token_at(t, grantee_hash, req_grants, parent, created_at, expires_at)
       grant_result = Model.make("system/capability/grant", %{"token" => {:bytes, token.hash}})
 
       included =
@@ -593,7 +684,7 @@ defmodule EntityCore.Peer do
       "request" ->
         case author do
           nil -> err(403, "capability_denied")
-          grantee_hash -> mint_bounded(t, caller_cap, req_grants_of(params), grantee_hash)
+          grantee_hash -> mint_bounded(t, caller_cap, req_grants_of(params), grantee_hash, nil, params)
         end
 
       "delegate" ->
@@ -628,7 +719,7 @@ defmodule EntityCore.Peer do
             err(403, "capability_denied")
 
           true ->
-            mint_bounded(t, caller_cap, req_grants_of(params), author, ph)
+            mint_bounded(t, caller_cap, req_grants_of(params), author, ph, params)
         end
     end
   end

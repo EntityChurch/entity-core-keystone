@@ -124,6 +124,19 @@ public final class Peer {
 
     private Minted mintToken(byte[] granteeHash, List<EcfValue.Map> grants, byte[] parent)
             throws EntityCryptoException {
+        return mintTokenAt(granteeHash, grants, parent, Capability.nowMs(), null);
+    }
+
+    /**
+     * {@link #mintToken} with an explicit {@code created_at} and §5.6 {@code expires_at}.
+     *
+     * <p>The two are passed together on purpose: the §5.6 duration terms are relative to
+     * {@code createdAt}, so sampling the clock twice would let the emitted
+     * {@code created_at} and the expiry derived from it skew apart. Callers computing a
+     * ceiling sample once and thread it through.
+     */
+    private Minted mintTokenAt(byte[] granteeHash, List<EcfValue.Map> grants, byte[] parent,
+            long createdAt, BigInteger expiresAt) throws EntityCryptoException {
         List<EcfValue.Map.Entry> pairs = new ArrayList<>();
         pairs.add(new EcfValue.Map.Entry(new EcfValue.Text("granter"),
                 new EcfValue.Bytes(identity.identityHash())));
@@ -131,12 +144,78 @@ public final class Peer {
                 new EcfValue.Bytes(granteeHash)));
         pairs.add(new EcfValue.Map.Entry(new EcfValue.Text("grants"), grantsArray(grants)));
         pairs.add(new EcfValue.Map.Entry(new EcfValue.Text("created_at"),
-                EcfValue.Int.of(Capability.nowMs())));
+                EcfValue.Int.of(createdAt)));
+        if (expiresAt != null) {
+            pairs.add(new EcfValue.Map.Entry(new EcfValue.Text("expires_at"),
+                    new EcfValue.Int(expiresAt)));
+        }
         if (parent != null) {
             pairs.add(new EcfValue.Map.Entry(new EcfValue.Text("parent"), new EcfValue.Bytes(parent)));
         }
         Entity token = Entity.make("system/capability/token", new EcfValue.Map(pairs));
         return new Minted(token, identity.sign(token));
+    }
+
+    /**
+     * Convert a DURATION term ({@code ttl_ms}) to an absolute timestamp, reporting
+     * whether it contributes a ceiling at all (§5.6 MIN_DEFINED rule 1 + rule 3).
+     *
+     * <p>Overflow DROPS the term — treated as absent, exactly as a null term is. It MUST
+     * NOT wrap and MUST NOT saturate: saturation encodes differently from absence and
+     * manufactures {@code expires_at == 2^64-1}, a finite bound no reader can distinguish
+     * from a deliberate one. {@code BigInteger} does not overflow, so this is a
+     * DELIBERATE range check — a bignum type that "just does the arithmetic" silently
+     * never fires rule 3.
+     *
+     * <p>{@code ttl == 0} is NOT special-cased, deliberately: rule 2 makes 0 a DEFINED
+     * value yielding {@code createdAt} (expire immediately). Letting it fall out of the
+     * arithmetic is what keeps it from collapsing into the absent/null "no bound"
+     * spelling — the collapse {@code ttl_zero_and_overflow} caught here.
+     */
+    private static BigInteger durationTerm(long createdAt, BigInteger ttl) {
+        if (ttl == null || ttl.signum() < 0) {
+            return null;
+        }
+        BigInteger sum = BigInteger.valueOf(createdAt).add(ttl);
+        return sum.compareTo(UINT64_MAX_J) > 0 ? null : sum;
+    }
+
+    /** §5.6 MIN_DEFINED: the minimum over the DEFINED terms only; null when none is. */
+    private static BigInteger minDefined(BigInteger... terms) {
+        BigInteger out = null;
+        for (BigInteger t : terms) {
+            if (t != null && (out == null || t.compareTo(out) < 0)) {
+                out = t;
+            }
+        }
+        return out;
+    }
+
+    private static final BigInteger UINT64_MAX_J =
+            BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE);
+
+    /**
+     * The {@code ttl_ms} of the policy entry that ceilings THIS caller (§6.2 CAP-5), via
+     * the same dual-form lookup the §4.4 authenticate path uses
+     * (hex → Base58 → {@code default}).
+     *
+     * <p>This is the term that makes policy withdrawal bounded on the {@code request}
+     * path: the entry's {@code ttl_ms} is the withdrawal latency for tokens already issued.
+     */
+    private BigInteger policyTtlMs(byte[] granteeHash) {
+        String base = "/" + localPeer + "/system/capability/policy/";
+        Entity entry = store.getAt(base + Cbor.hex(granteeHash));
+        if (entry == null) {
+            Entity peerE = store.getByHash(granteeHash);
+            byte[] pub = (peerE != null) ? peerE.bytes("public_key") : null;
+            if (pub != null) {
+                entry = store.getAt(base + Identity.peerIdOfPublicKey(pub));
+            }
+        }
+        if (entry == null) {
+            entry = store.getAt(base + "default");
+        }
+        return (entry != null) ? entry.uint("ttl_ms") : null;
     }
 
     private static EcfValue grantsArray(List<EcfValue.Map> grants) {
@@ -533,7 +612,7 @@ public final class Peer {
             if (author == null) {
                 return Outcome.err(403, "capability_denied");
             }
-            return mintBounded(ctx.callerCap(), reqGrants(params), author, null);
+            return mintBounded(ctx.callerCap(), reqGrants(params), author, null, params);
         }
 
         private Outcome delegate(HandlerContext ctx) throws EntityCryptoException {
@@ -550,7 +629,7 @@ public final class Peer {
             if (!(author != null && Identity.octetsEqual(author, identity.identityHash()))) {
                 return Outcome.err(501, "unsupported_operation", "delegate: same-peer-only in v1");
             }
-            return mintBounded(ctx.callerCap(), reqGrants(params), author, ph);
+            return mintBounded(ctx.callerCap(), reqGrants(params), author, ph, params);
         }
 
         private Outcome revoke(HandlerContext ctx) {
@@ -586,7 +665,8 @@ public final class Peer {
         }
 
         private Outcome mintBounded(Entity callerCap, List<EcfValue.Map> reqGrants,
-                                    byte[] granteeHash, byte[] parent) throws EntityCryptoException {
+                                    byte[] granteeHash, byte[] parent, Entity params)
+                throws EntityCryptoException {
             boolean bounded = false;
             if (callerCap != null) {
                 List<Capability.GrantRec> parentGrants = Capability.grantsOfToken(callerCap);
@@ -610,7 +690,25 @@ public final class Peer {
             if (!bounded) {
                 return Outcome.err(403, "scope_exceeds_authority");
             }
-            Minted m = mintToken(granteeHash, reqGrants, parent);
+            // §6.2 CAP-5 / §5.6 MIN_DEFINED. `request` mints a ROOT token (parent: null),
+            // so §5.6's parent-child attenuation rule never reaches it — without this
+            // bound, temporal attenuation is the one dimension a requester can escape.
+            //
+            //   expires_at = MIN_DEFINED(
+            //       caller_capability.expires_at,      // ABSOLUTE — enters directly
+            //       created_at + policy_entry.ttl_ms,  // DURATION — converted first
+            //       created_at + request.ttl_ms)       // DURATION — converted first
+            //
+            // Term SHAPE is the trap: mixing a duration in unconverted yields a timestamp
+            // near the epoch and clamps every token to already-expired. The disposition is
+            // a CLAMP, never a rejection — an over-long request from a bounded caller
+            // mints at 200 with the clamped value; rejecting it is non-conformant.
+            long createdAt = Capability.nowMs();
+            BigInteger expiresAt = minDefined(
+                    (callerCap != null) ? callerCap.uint("expires_at") : null,
+                    durationTerm(createdAt, policyTtlMs(granteeHash)),
+                    durationTerm(createdAt, (params != null) ? params.uint("ttl_ms") : null));
+            Minted m = mintTokenAt(granteeHash, reqGrants, parent, createdAt, expiresAt);
             return Outcome.ok(
                     Entity.make("system/capability/grant", Cbor.map("token", Cbor.bytes(m.token().hash()))),
                     capIncluded(m));

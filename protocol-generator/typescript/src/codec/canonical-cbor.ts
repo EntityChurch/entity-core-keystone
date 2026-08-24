@@ -149,6 +149,11 @@ function compareBytes(a: Uint8Array, b: Uint8Array): number {
 interface Cursor {
   readonly buf: Uint8Array;
   pos: number;
+  /**
+   * When true, a major-type-6 tag is UNWRAPPED instead of rejected. Set only by
+   * {@link decodeSalvage} — see its doc for why this may never reach an ingestion path.
+   */
+  readonly salvage?: boolean;
 }
 
 /**
@@ -163,6 +168,27 @@ export function decode(bytes: Uint8Array): EcfValue {
     throw new EntityCodecError(`trailing bytes after top-level item (${bytes.length - cursor.pos} extra)`);
   }
   return value;
+}
+
+/**
+ * Tag-tolerant decode, for ONE purpose: recovering the `request_id` of a frame the
+ * strict decoder has already rejected, so the peer can answer `400 non_canonical_ecf`
+ * (§6.3) instead of dropping the frame or closing the connection.
+ *
+ * §6.3 says rejection RETURNS a status — that is the second half of the sentence, and
+ * dropping the frame satisfies only the first half. A silent drop makes a refusal
+ * indistinguishable from a dead peer (the sender blocks until its own timeout), and a
+ * close takes every later request on that connection with it.
+ *
+ * This is NOT a lenient ingestion mode and MUST NOT be wired into one. The frame stays
+ * rejected: no entity is built from it, nothing is stored, the tag is never interpreted
+ * — so §6.3's MUST NOT strip / preserve / interpret all still hold, and the `tag_reject`
+ * wire-conformance vectors keep their meaning precisely because the strict {@link decode}
+ * path every real route uses is byte-unchanged.
+ */
+export function decodeSalvage(bytes: Uint8Array): EcfValue {
+  const cursor: Cursor = { buf: bytes, pos: 0, salvage: true };
+  return readValue(cursor);
 }
 
 function readByte(cursor: Cursor): number {
@@ -207,6 +233,13 @@ function readValue(cursor: Cursor): EcfValue {
       return readMap(cursor, Number(readArgument(cursor, ai)));
     case 6:
       // N2 / §6.3: CBOR major-type-6 tags are forbidden anywhere in ECF.
+      if (cursor.salvage) {
+        // Salvage only: skip the tag's argument and return its content, so the
+        // request_id can be recovered from an already-rejected frame. Never reached
+        // from the strict decode path.
+        readArgument(cursor, ai);
+        return readValue(cursor);
+      }
       throw new EntityCodecError("CBOR tag forbidden in ECF (non_canonical_ecf)");
     case 7:
       return readSimpleOrFloat(cursor, ai);

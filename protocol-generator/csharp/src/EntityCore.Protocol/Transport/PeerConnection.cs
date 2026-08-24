@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Formats.Cbor;
+using EntityCore.Protocol.Codec;
 using EntityCore.Protocol.Dispatch;
 using EntityCore.Protocol.Handlers;
 using EntityCore.Protocol.Model;
@@ -119,7 +121,16 @@ internal sealed class PeerConnection : IReentrantSender, IAsyncDisposable
                 }
                 catch (EntityCoreException)
                 {
-                    break; // malformed frame → close connection (Layer 0, §6.7)
+                    // §6.3: "Rejection returns `400 non_canonical_ecf`" — the frame is
+                    // refused (above), and that refusal MUST be a STATUS, not silence.
+                    // This used to `break`, which left the read loop AND left the socket
+                    // open: the oracle's every later request then went to a socket nobody
+                    // was reading, so each one waited out its own timeout instead of
+                    // failing fast. That is where this peer's 18-minute run and its nine
+                    // starved categories came from. §4.9(c) deliver-or-signal says the
+                    // same from the other direction. Answer, then keep serving.
+                    await RejectNonCanonicalAsync(frame, ct).ConfigureAwait(false);
+                    continue;
                 }
 
                 string rootType = envelope.Root.Type;
@@ -188,6 +199,49 @@ internal sealed class PeerConnection : IReentrantSender, IAsyncDisposable
         {
             // A failed write or dispatch crash tears the connection down.
             await _cts.CancelAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Answer a frame the strict decoder rejected with <c>400 non_canonical_ecf</c> (§6.3),
+    /// recovering ONLY the <c>request_id</c> so the sender can correlate the refusal.
+    /// <para>
+    /// The frame stays rejected: nothing is built from it, nothing is stored, and the tag
+    /// is never interpreted — the salvage decode exists solely to read back the
+    /// correlation key. The envelope and entity-wrapper shapes are fixed maps with no
+    /// legal tag position, so a frame whose ONLY defect is a tag inside some entity's
+    /// <c>data</c> still has a structurally sound root, which is exactly the case this
+    /// recovers (and the one CAP-6a's &gt;2^64 half arrives as). If even the request_id is
+    /// unrecoverable there is nobody to answer, so the frame is dropped — the one case
+    /// where silence is all that is available.
+    /// </para>
+    /// </summary>
+    private async Task RejectNonCanonicalAsync(ReadOnlyMemory<byte> frame, CancellationToken ct)
+    {
+        string requestId;
+        try
+        {
+            EcfValue salvaged = CanonicalCbor.DecodeSalvage(frame);
+            EcfValue root = Ecf.Require(salvaged, "root");
+            requestId = Ecf.RequireText(Ecf.Require(root, "data"), "request_id");
+        }
+        catch (Exception ex) when (ex is EntityCoreException or CborContentException
+                                      or InvalidOperationException or ArgumentException)
+        {
+            return; // no correlatable request_id — nothing to answer
+        }
+
+        try
+        {
+            ExecuteResponse response = ExecuteResponse.Error(
+                requestId, Status.BadRequest, "non_canonical_ecf",
+                "frame is not canonical ECF (§6.3): CBOR tags are forbidden anywhere in an entity");
+            await WriteAsync(new Envelope(response.Entity, System.Array.Empty<Entity>()), ct).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // A write failure here is a dead socket, not a protocol decision; the read
+            // loop's own error handling tears the connection down on the next iteration.
         }
     }
 

@@ -211,6 +211,33 @@ internal object Capability {
 
     // ── §5.5 / §5.6 chain verification + attenuation ─────────────────────────────────
 
+    /** Inclusive maximum of `primitive/uint` — the representability bound. */
+    private val UINT64_MAX: BigInteger = BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE)
+
+    /**
+     * §6.2 CAP-6a (INGEST): every temporal field on a RECEIVED token must be either
+     * ABSENT (legal — "no bound") or representable as `primitive/uint`. A bignum, a
+     * negative integer, or any non-integer is **malformed**, and the verifier MUST refuse
+     * it rather than read the unrepresentable field as absent — absent means *no expiry*,
+     * so the fail-open reading grants an immortal capability.
+     *
+     * The mechanism here is arithmetic rather than a null: `Cbor.uint` returns the
+     * `BigInteger` of ANY `IntVal`, including a negative one, so the range checks did not
+     * skip — they ran and returned the wrong answer. For a negative `not_before`,
+     * `now < not_before` is false, so the cap passed.
+     *
+     * MUST run BEFORE the range checks it protects.
+     */
+    fun temporalFieldsRepresentable(cap: Entity): Boolean {
+        for (key in listOf("expires_at", "not_before", "created_at")) {
+            val v = cap.field(key) ?: continue          // absent is legal — no bound
+            if (v is EcfValue.Null) continue
+            val i = (v as? EcfValue.IntVal) ?: return false
+            if (i.value.signum() < 0 || i.value > UINT64_MAX) return false
+        }
+        return true
+    }
+
     fun nowMs(): Long = System.currentTimeMillis()
 
     fun findSignature(target: ByteArray, included: List<Envelope.Included>): Entity? =
@@ -282,6 +309,10 @@ internal object Capability {
         // §5.5 M6 root-at-local: the local peer MUST be one of the quorum signers.
         val localInSigners = mg.signers.any { peerIdOfSigner(resolve, it) == localPeer }
         if (!localInSigners) return false
+
+        // §6.2 CAP-6a (INGEST) — MUST run BEFORE the range checks below, because the
+        // range checks are exactly what the unrepresentable value defeats.
+        if (!temporalFieldsRepresentable(cap)) return false
 
         // Temporal validity + grantee resolution (as for any root).
         val now = nowMs()
@@ -478,6 +509,8 @@ internal object Capability {
             } else {
                 throw UnresolvableGrantee()
             }
+            // §6.2 CAP-6a (INGEST) — before the range checks, same reason as the root path.
+            if (!temporalFieldsRepresentable(current)) good = false
             // temporal validity
             val tnow = nowMs()
             val nb = current.uint("not_before")

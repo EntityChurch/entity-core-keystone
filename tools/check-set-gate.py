@@ -89,8 +89,24 @@ def collect(args):
         for d in DEFAULT_DIRS:
             for p in sorted(d.glob("*.json")):
                 reports[p.stem] = (p, json.loads(p.read_text()))
-        for d in OVERLAY_DIRS:                       # post-rebuild re-verifications win
+        # Post-rebuild re-verifications supersede the census -- but ONLY if they are
+        # actually NEWER than the census report they would replace. The overlay dir is
+        # not scoped to a run or to an oracle pin, so a re-verify left behind by an
+        # EARLIER pin sits there indefinitely and silently wins over a fresh census.
+        # Measured 2026-08-22: reverify/ still held node-red + rust-wasm{,-wasmtime}
+        # reports from 2026-08-17 at the retired de8f807 pin (740 checks). They
+        # outranked the 2026-08-21 c1b0708 census (755 checks), so the gate reported
+        # 7 non-comparable peers instead of the true 4 -- three of them condemned on
+        # four-day-old evidence measured against a different check set. Same class as
+        # the stale-build-artifact rule in AGENTS.md: an input that predates what it
+        # supersedes is not an override, it is drift.
+        for d in OVERLAY_DIRS:
             for p in sorted(d.glob("*.json")):
+                prev = reports.get(p.stem)
+                if prev and prev[0].stat().st_mtime > p.stat().st_mtime:
+                    print(f"check-set-gate: ignoring STALE overlay {p} "
+                          f"(older than {prev[0]})", file=sys.stderr)
+                    continue
                 reports[p.stem] = (p, json.loads(p.read_text()))
     return reports
 

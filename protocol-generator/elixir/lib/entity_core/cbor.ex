@@ -157,6 +157,29 @@ defmodule EntityCore.Cbor do
     e in Error -> {:error, e}
   end
 
+  @doc """
+  Tag-tolerant decode, for ONE purpose: recovering the `request_id` of a frame the strict
+  decoder has already rejected, so the peer can answer `400 non_canonical_ecf` (§6.3)
+  instead of falling silent.
+
+  §6.3 says rejection RETURNS a status — that is the second half of the sentence, and
+  refusing the frame satisfies only the first half. A silent drop makes a refusal
+  indistinguishable from a dead peer: the sender blocks until its own timeout.
+
+  This is NOT a lenient ingestion mode and MUST NOT be wired into one. The frame stays
+  rejected: no entity is built from it, nothing is stored, the tag is never interpreted —
+  so §6.3's MUST NOT strip / preserve / interpret all still hold, and the `tag_reject`
+  wire-conformance vectors keep their meaning precisely because the strict `decode/1` path
+  every real route uses is byte-unchanged.
+  """
+  @spec decode_salvage(binary()) :: {:ok, term()} | {:error, Error.t()}
+  def decode_salvage(bin) when is_binary(bin) do
+    {value, _rest} = do_decode(bin, 0, true)
+    {:ok, value}
+  rescue
+    e in Error -> {:error, e}
+  end
+
   @doc "Decode bang variant — raises `EntityCore.Error` on failure."
   @spec decode!(binary()) :: term()
   def decode!(bin) do
@@ -166,10 +189,12 @@ defmodule EntityCore.Cbor do
     end
   end
 
-  defp do_decode(_bin, depth) when depth > @max_depth,
+  defp do_decode(bin, depth), do: do_decode(bin, depth, false)
+
+  defp do_decode(_bin, depth, _salvage) when depth > @max_depth,
     do: raise(%Error{kind: :non_canonical_ecf, detail: :max_depth})
 
-  defp do_decode(<<major::3, info::5, rest::binary>>, depth) do
+  defp do_decode(<<major::3, info::5, rest::binary>>, depth, salvage) do
     case major do
       0 ->
         arg(info, rest)
@@ -191,22 +216,30 @@ defmodule EntityCore.Cbor do
 
       4 ->
         {len, r} = arg(info, rest)
-        read_seq(len, r, depth + 1, [])
+        read_seq(len, r, depth + 1, [], salvage)
 
       5 ->
         {len, r} = arg(info, rest)
-        read_map(len, r, depth + 1, %{})
+        read_map(len, r, depth + 1, %{}, salvage)
 
       6 ->
         # Invariant N2 / ECF §6.3 — tags MUST be rejected on any data field.
-        raise(%Error{kind: :non_canonical_ecf, detail: :cbor_tag})
+        if salvage do
+          # Salvage only: skip the tag's argument and return its content, so the
+          # request_id can be recovered from an already-rejected frame. Never
+          # reached from the strict decode path.
+          {_tag, r} = arg(info, rest)
+          do_decode(r, depth + 1, salvage)
+        else
+          raise(%Error{kind: :non_canonical_ecf, detail: :cbor_tag})
+        end
 
       7 ->
         read_simple(info, rest)
     end
   end
 
-  defp do_decode(<<>>, _depth), do: raise(%Error{kind: :truncated, detail: :empty})
+  defp do_decode(<<>>, _depth, _salvage), do: raise(%Error{kind: :truncated, detail: :empty})
 
   # Argument decode for majors 0-5. Rejects reserved (28-30) and indefinite (31).
   defp arg(info, rest) when info < 24, do: {info, rest}
@@ -216,20 +249,20 @@ defmodule EntityCore.Cbor do
   defp arg(27, <<n::64, rest::binary>>), do: {n, rest}
   defp arg(info, _rest), do: raise(%Error{kind: :non_canonical_ecf, detail: {:bad_argument, info}})
 
-  defp read_seq(0, rest, _depth, acc), do: {Enum.reverse(acc), rest}
+  defp read_seq(0, rest, _depth, acc, _salvage), do: {Enum.reverse(acc), rest}
 
-  defp read_seq(n, rest, depth, acc) do
-    {item, r} = do_decode(rest, depth)
-    read_seq(n - 1, r, depth, [item | acc])
+  defp read_seq(n, rest, depth, acc, salvage) do
+    {item, r} = do_decode(rest, depth, salvage)
+    read_seq(n - 1, r, depth, [item | acc], salvage)
   end
 
-  defp read_map(0, rest, _depth, acc), do: {acc, rest}
+  defp read_map(0, rest, _depth, acc, _salvage), do: {acc, rest}
 
-  defp read_map(n, rest, depth, acc) do
-    {k, r1} = do_decode(rest, depth)
-    {v, r2} = do_decode(r1, depth)
+  defp read_map(n, rest, depth, acc, salvage) do
+    {k, r1} = do_decode(rest, depth, salvage)
+    {v, r2} = do_decode(r1, depth, salvage)
     if Map.has_key?(acc, k), do: raise(%Error{kind: :duplicate_key, detail: k})
-    read_map(n - 1, r2, depth, Map.put(acc, k, v))
+    read_map(n - 1, r2, depth, Map.put(acc, k, v), salvage)
   end
 
   defp read_simple(20, rest), do: {false, rest}

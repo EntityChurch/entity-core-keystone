@@ -22,6 +22,7 @@
    ;; ── CBOR / ECF codec ──
    #:cbor-encode
    #:cbor-decode
+   #:cbor-decode-salvage
    #:cbor-decode-safe
    ;; the value sentinels for the float specials + byte-string distinction
    #:+nan+
