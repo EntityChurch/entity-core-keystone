@@ -58,15 +58,19 @@ share a generation lineage and, for the FFI-hybrid peers, one codec `.so`.
 1. **Propagate the CAP fix to the remaining 32 peers** (tier M3, the probes, `node-red`/wasm).
    Rules and thirteen reference commits are in `CONFORMANCE-MATRIX.md` §3; the fix shape is uniform
    (~200 lines over 5–6 files) and has now held across **thirteen** languages unchanged.
-2. **Refresh the 13 publishable peers' `status/CONFORMANCE-REPORT.{md,json}`.** Found 2026-08-22:
-   every tracked per-peer report is one pin behind (740-check set or older; none at 755), because the
-   census deliberately never writes them and `output/` is gitignored. A **transparency** gap, not a
-   conformance one — §1's numbers are census-backed and correct — but a fresh clone shows each peer's
-   own report disagreeing with its row. Matrix §3.
-3. **The asm/ISA trio's connection-pressure family** — its own session (§1a). Also what makes
+2. **The asm/ISA trio's connection-pressure family** — its own session (§1a). Also what makes
    `tools/check-set-gate.py` exit non-zero cohort-wide today (42/45 comparable, by design).
-4. **`cobol`'s standing 27-FAIL liveness cascade** — a separate investigation.
-5. **Package-registry publish** and **Ed448/SHA-384 agility** stay demand-driven.
+3. **`cobol`'s standing 27-FAIL liveness cascade** — a separate investigation.
+4. **Package-registry publish** and **Ed448/SHA-384 agility** stay demand-driven.
+
+**Closed 2026-08-22 — the committed reports now match what we publish.** Every tracked per-peer
+`status/CONFORMANCE-REPORT.{md,json}` had drifted a full oracle pin behind the matrix (740-check set
+or older; none at 755), so a clone showed each peer contradicting its own published row. §1 was never
+wrong — it is census-backed — but nothing gated those files, and the only cohort driver structurally
+refused to write them. All 13 publishable peers were **re-measured** (each reproduced its published
+number exactly), `run-cohort-census.sh --to-status` adds the missing destination, and `make lint` now
+runs `check-set-gate.py --tracked` so it cannot silently return. The 32 unfixed peers' reports stay
+behind by design — they owe the *fix*, not the paperwork.
 
 ## Where the detail lives
 

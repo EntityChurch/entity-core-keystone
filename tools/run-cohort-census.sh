@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # run-cohort-census.sh — re-run every peer's `run-s4.sh --profile core` against
 # the PINNED oracle (tools/oracle-pin.env / output/s4-oracles/validate-peer) and
-# collect one JSON report per peer under output/scratch/census/, WITHOUT ever
-# writing to a peer's tracked status/CONFORMANCE-REPORT.json.
+# collect one JSON report per peer under output/scratch/census/.
 #
 # Why this exists: no cohort-wide driver existed before this (2026-07-28) run —
 # every prior sweep drove each peer's run-s4.sh by hand. This is the durable,
@@ -13,9 +12,39 @@
 # EXCEPT python/ruby/prolog, which read the JSON_OUT env var instead (no "$@"
 # forwarding in those three) — handled per-peer below.
 #
+# ---------------------------------------------------------------------------
+# TWO DESTINATIONS, ONE DISPATCH TABLE (--to-status, added 2026-08-22)
+# ---------------------------------------------------------------------------
+# By DEFAULT this script writes only to output/scratch/census/ and never touches
+# a peer's tracked status/CONFORMANCE-REPORT.json. That default is deliberate and
+# unchanged: a cohort census must not silently rewrite 45 peers' signed-off
+# records, and output/ is gitignored so a census leaves the tree clean.
+#
+# But "never writes them" plus "output/ is gitignored" had a consequence nobody
+# had measured until 2026-08-22: the tracked per-peer reports drifted a full
+# oracle pin behind the matrix, cohort-wide — 38 peers at the retired de8f807
+# 740-check set, 4 at 682, none at the current 755 — while CONFORMANCE-MATRIX.md
+# §1 published fresh census numbers. A clone showed each peer's own committed
+# report disagreeing with its published row, and no tool could refresh them
+# because the only cohort driver structurally refused to.
+#
+# `--to-status` is that missing capability. It is an EXPLICIT opt-in, never the
+# default, and it reuses this file's per-peer dispatch table verbatim rather than
+# duplicating it — a second copy of the image/flag/timeout mapping is exactly how
+# the two destinations would drift apart again.
+#
+#   Refreshing a tracked report is a MEASUREMENT, not a file copy. Never
+#   hand-copy output/scratch/census/<peer>.json onto a tracked status report:
+#   that fabricates the provenance this separation exists to protect. Re-run.
+#
+# Enforcement that the drift does not silently return: `tools/check-set-gate.py
+# --tracked` gates the tracked reports against the pinned check set.
+#
 # Usage:
 #   tools/run-cohort-census.sh                 # every peer except apl (blocked, see AGENTS.md §8)
 #   tools/run-cohort-census.sh go rust python   # a subset
+#   tools/run-cohort-census.sh --to-status go rust   # refresh TRACKED status reports
+#   tools/run-cohort-census.sh --to-status --tier M1,M2
 #   CONCURRENCY=2 tools/run-cohort-census.sh    # default 1 (see below)
 #
 # CONCURRENCY defaults to 1, deliberately: every run-s4.sh bind-mounts the repo
@@ -38,6 +67,28 @@ LOGS="$REPO_ROOT/output/scratch/census-logs"
 mkdir -p "$OUT" "$LOGS"
 CONCURRENCY="${CONCURRENCY:-1}"
 
+# Destination mode: "census" (default, gitignored scratch) or "status" (the peer's
+# TRACKED status/CONFORMANCE-REPORT.json). See the --to-status block in the header.
+DEST="${DEST:-census}"
+
+# Container-visible path this peer's report should be written to.
+jout_for() {
+  if [ "$DEST" = "status" ]; then
+    echo "/work/protocol-generator/$1/status/CONFORMANCE-REPORT.json"
+  else
+    echo "/work/output/scratch/census/$1.json"
+  fi
+}
+
+# Host-side path for the same report (for the post-run summary read).
+hostout_for() {
+  if [ "$DEST" = "status" ]; then
+    echo "$REPO_ROOT/protocol-generator/$1/status/CONFORMANCE-REPORT.json"
+  else
+    echo "$OUT/$1.json"
+  fi
+}
+
 # Mode A: self-contained run-s4.sh (embeds its own podman run) — invoke directly.
 run_direct() {
   local peer="$1"; shift
@@ -47,7 +98,7 @@ run_direct() {
 # Mode A peers that ignore CLI args and read JSON_OUT instead.
 run_direct_envjson() {
   local peer="$1"
-  JSON_OUT="/work/output/scratch/census/$peer.json" \
+  JSON_OUT="$(jout_for "$peer")" \
     ./protocol-generator/"$peer"/run-s4.sh
 }
 
@@ -57,7 +108,7 @@ run_podman() {
   podman run $PODMAN_RUN_CAPS --rm "$@" \
     -v "$REPO_ROOT":/work:Z "$image" \
     sh /work/protocol-generator/"$peer"/run-s4.sh -profile core \
-    -json-out /work/output/scratch/census/"$peer".json
+    -json-out "$(jout_for "$peer")"
 }
 
 # Same peer, with an explicit -timeout (see the run_direct case-statement note above).
@@ -66,14 +117,14 @@ run_podman_timeout() {
   podman run $PODMAN_RUN_CAPS --rm "$@" \
     -v "$REPO_ROOT":/work:Z "$image" \
     sh /work/protocol-generator/"$peer"/run-s4.sh -profile core -timeout "$budget" \
-    -json-out /work/output/scratch/census/"$peer".json
+    -json-out "$(jout_for "$peer")"
 }
 
 census_one() {
   local peer="$1"
   local log="$LOGS/$peer.log"
-  local jout="/work/output/scratch/census/$peer.json"
-  echo "=== $peer starting $(date -u +%H:%M:%S) ===" > "$log"
+  local jout; jout="$(jout_for "$peer")"
+  echo "=== $peer starting $(date -u +%H:%M:%S) [dest=$DEST] ===" > "$log"
   local rc=0
   case "$peer" in
     # ---- Mode A: self-contained, CLI passthrough ----
@@ -168,16 +219,17 @@ census_one() {
       echo "unknown peer: $peer" >>"$log"; rc=127 ;;
   esac
   echo "=== $peer done rc=$rc $(date -u +%H:%M:%S) ===" >> "$log"
-  if [ -f "$OUT/$peer.json" ]; then
+  local hostout; hostout="$(hostout_for "$peer")"
+  if [ -f "$hostout" ]; then
     local summary
-    summary=$(python3 -c "import json,sys; d=json.load(open('$OUT/$peer.json')); s=d.get('summary',{}); print(f\"{s.get('total','?')}\/{s.get('passed','?')}\/{s.get('warned','?')}\/{s.get('failed','?')}\/{s.get('skipped','?')}\")" 2>/dev/null || echo "unparseable")
+    summary=$(python3 -c "import json,sys; d=json.load(open('$hostout')); s=d.get('summary',{}); print(f\"{s.get('total','?')}\/{s.get('passed','?')}\/{s.get('warned','?')}\/{s.get('failed','?')}\/{s.get('skipped','?')}\")" 2>/dev/null || echo "unparseable")
     echo "$peer: rc=$rc P/W/F/S total=$summary"
   else
     echo "$peer: rc=$rc NO JSON PRODUCED (see $log)"
   fi
 }
-export -f census_one run_direct run_direct_envjson run_podman run_podman_timeout
-export REPO_ROOT OUT LOGS PODMAN_RUN_CAPS
+export -f census_one run_direct run_direct_envjson run_podman run_podman_timeout jout_for hostout_for
+export REPO_ROOT OUT LOGS PODMAN_RUN_CAPS DEST
 
 # ---------------------------------------------------------------------------
 # Peer selection. The maintenance-tier policy (CONFORMANCE-MATRIX.md §4) exists so
@@ -211,9 +263,11 @@ while [ "$#" -gt 0 ]; do
     --tier) TIER_SEL="$2"; shift 2 ;;
     --tier=*) TIER_SEL="${1#--tier=}"; shift ;;
     --stale) STALE_ONLY=1; shift ;;
+    --to-status) DEST=status; shift ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done
+export DEST
 
 CUR_REF="$(awk -F= '/^ref[ \t]*=/{gsub(/[ \t]/,"",$2); print $2; exit}' "$REPO_ROOT/tools/oracle-pin.env")"
 
@@ -255,7 +309,8 @@ echo "=============================================================="
 # non-zero because of a probe nobody re-ran, and the exit code stops meaning anything.
 GATE_FILES=()
 for peer in "${PEERS[@]}"; do
-  [ -f "$OUT/$peer.json" ] && GATE_FILES+=("$OUT/$peer.json")
+  f="$(hostout_for "$peer")"
+  [ -f "$f" ] && GATE_FILES+=("$f")
 done
 if [ "${#GATE_FILES[@]}" -eq 0 ]; then
   echo "check-set gate: no reports produced — nothing to gate"; gate_rc=2
@@ -279,7 +334,7 @@ fi
 # Only the pin column moves. Tier and note are hand-maintained and never touched.
 # ---------------------------------------------------------------------------
 STAMPED=$(printf '%s\n' "${PEERS[@]}" | while read -r peer; do
-  [ -f "$OUT/$peer.json" ] && echo "$peer"
+  [ -f "$(hostout_for "$peer")" ] && echo "$peer"
 done | tr '\n' ' ')
 if [ -n "$STAMPED" ]; then
   TSV="$REPO_ROOT/tools/peer-tiers.tsv"

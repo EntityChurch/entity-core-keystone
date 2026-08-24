@@ -1,3 +1,20 @@
+<!-- current-pin-banner:c1b0708 -->
+> **CURRENT (2026-08-22) — oracle `entity-core-go @ c1b0708`, spec snapshot `v0.8.2`.**
+> `validate-peer --profile core` → **PASS, 0 FAIL** · **755 total · 312 pass · 337 warn · 0 FAIL · 106 skip** (elapsed 8904 ms).
+>
+> Re-measured directly against the pinned oracle via
+> `tools/run-cohort-census.sh --to-status python` — **a measurement, not a copy of the census.**
+> The machine-readable `CONFORMANCE-REPORT.json` beside this file is the authoritative
+> artifact; `tools/check-set-gate.py --tracked` gates it against the pinned check set, so this
+> report can no longer silently drift a pin behind `CONFORMANCE-MATRIX.md` §1 (which it had,
+> cohort-wide, until 2026-08-22).
+>
+> **Everything below this line predates this measurement and is retained as build history.**
+> Where it disagrees with the figures above, the figures above win; `CONFORMANCE-MATRIX.md` §1
+> is authoritative for the cohort.
+
+---
+
 # entity-core-protocol-python — Conformance Report (S4 + S3 + S2)
 
 > **S5 (publish) stamp.** Final release: version **`0.1.0`** /

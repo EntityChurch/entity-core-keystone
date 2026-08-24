@@ -138,6 +138,15 @@ lint:
 	done; \
 	[ -n "$$any" ] || { echo "  ERROR: no spec-data MANIFEST found" >&2; exit 1; }; \
 	echo "lint: spec-data integrity OK (peers are linted per-toolchain, in-container)"
+	@echo "lint: gating COMMITTED per-peer conformance reports (read-only)…"
+	@# The second root-level invariant that is cheaply checkable read-only: a peer we
+	@# publish as 0-FAIL must have a COMMITTED status/CONFORMANCE-REPORT.json measured
+	@# on the pinned check set. Until 2026-08-22 nothing looked at these files and all
+	@# 45 had drifted a full oracle pin behind CONFORMANCE-MATRIX.md §1 — a clone showed
+	@# each peer contradicting its own published row. Peers still owing the CAP fix are
+	@# reported but do not fail the gate (disclosed debt, matrix §3); the gated set is
+	@# the publishable one, so this can only ratchet tighter.
+	@python3 tools/check-set-gate.py --tracked --quiet
 
 # fmt = autoformat (writes). Intentionally a no-op: generated source is formatted
 # by its own toolchain, and spec-data/<version>/ is a SHA-256-pinned immutable
