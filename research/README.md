@@ -4,6 +4,9 @@ The stewardship arm. Cross-arm knowledge base + escalation hub.
 
 ## Files
 
+- **`PROJECT-RETROSPECTIVE.md`** — the capstone synthesis. What the project is, how we got here, and what generating entity-core onto 45 substrates taught us about the protocol, the substrates, and the method. The narrative front door; read it first for the whole picture. Backbone: `SUBSTRATE-TAKEAWAYS.md`.
+- **`SUBSTRATE-TAKEAWAYS.md`** — what translates across substrates / what needs a seam / what doesn't (the retrospective's operational spine).
+- **`PARADIGM-MAP.md`** — whole-territory cartography + viability filter. **`COMPLETENESS-ROADMAP.md`** — remaining-target queue.
 - **`LANDSCAPE.md`** — live per-language survey. Tiers, library choices, codec strategy, current status. Update as profiles get drafted and phases pass.
 - **`evaluations/<lang>.md`** — per-language deep-dives. CBOR + Ed25519 + build-system audits. Reproducible audit trail. Authored BEFORE the corresponding `<lang>/profile.toml` so profile choices have a documented basis.
 - **`diagnostics/`** — debugging playbooks. `validate-peer-usage.md` is the canonical entry point. New failure modes get pinned here so the next operator finds them faster.
