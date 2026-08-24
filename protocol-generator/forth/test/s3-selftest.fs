@@ -20,9 +20,9 @@ variable pass  variable total
 \ badd ( e-addr -- )  add an entity to incB (self-delimiting => len via ent-len).
 : badd { eaddr -- }  incB-addr incB-len incB-n  eaddr eaddr ent-len  inc-add ;
 
-create sd1 32 allot   create sd2 32 allot
+create sd1 32 allot   create sd2 32 allot   create sd3 32 allot
 : fill ( byte addr -- )  32 0 ?do 2dup i + c! loop 2drop ;
-: setup ( -- )  $11 sd1 fill  $22 sd2 fill ;
+: setup ( -- )  $11 sd1 fill  $22 sd2 fill  $33 sd3 fill ;
 
 \ ── L1 identity ──
 : t-identity ( -- )
@@ -119,10 +119,76 @@ create sd1 32 allot   create sd2 32 allot
   s" req-9" 404 empty-params wire-response { ru } { re }
   re resp-status drop 404 =                            s" wire: RESPONSE status field" check ;
 
+\ ── §5.2 `peers` grant dimension (0.8.1 peers-fix, HANDOFF-TO-ARCH-2026-08-13) ──
+\ Regression coverage for capauthz.fs's grant-covers-op-handler / check-permission: the
+\ `peers` scope was previously never read at all (silently equivalent to peers:{include:["*"]}
+\ on every grant). The oracle has ZERO vectors for this dimension (confirmed in the handoff),
+\ so this unit test is the only thing that will ever catch a regression here.
+\ (Split into small helper words — gforth's per-definition locals table is tight against the
+\ already-large peer-all.fs load, and one big multi-locals word overflows it.)
+
+\ mk-token1 ( grant-mtv-a grant-mtv-u -- cap-eaddr cap-eu )  a capability token w/ one grant.
+: mk-token1 { ga gu -- ceaddr ceu }
+  am-mark { tmk }
+  [char] m b,  1 4 >be
+  s" grants" tv-text 2drop
+    am-mark [char] a b, 1 4 >be  ga gu bytes,  drop
+  tmk am-span
+  s" system/capability/token" 2swap ent-make ;
+
+\ mk-grant-def ( -- grant-a grant-u )  handlers:*, operations:*, `peers` OMITTED (the spec
+\ default {include:[local_peer_id]} applies at evaluation time).
+: mk-grant-def ( -- ga gu )
+  am-mark { mk }
+  [char] m b,  2 4 >be
+  s" handlers"   tv-text 2drop  s" *" path-scope-inc1 2drop
+  s" operations" tv-text 2drop  s" *" path-scope-inc1 2drop
+  mk am-span ;
+
+\ mk-grant-peer ( peer-a peer-u -- grant-a grant-u )  handlers:*, operations:*, peers:{include:[peer]}.
+: mk-grant-peer { pa pu -- ga gu }
+  am-mark { mk }
+  [char] m b,  3 4 >be
+  s" handlers"   tv-text 2drop  s" *" path-scope-inc1 2drop
+  s" operations" tv-text 2drop  s" *" path-scope-inc1 2drop
+  s" peers"      tv-text 2drop  pa pu path-scope-inc1 2drop
+  mk am-span ;
+
+\ mk-exec-foreign ( peer-a peer-u -- exec-a exec-u )  an EXECUTE "get" on "/<peer>/system/tree".
+: mk-exec-foreign { pa pu -- exa exu }
+  pa pu s" system/tree" canon { ua uu }
+  s" req-p1" ua uu s" get" empty-params 0 0 0 0 wire-execute ;
+
+\ mk-exec-local ( -- exec-a exec-u )  an EXECUTE "get" on the bare (unaddressed) local path.
+: mk-exec-local ( -- exa exu )
+  s" req-p2" s" system/tree" s" get" empty-params 0 0 0 0 wire-execute ;
+
+: t-peers-scope ( -- )
+  store-reset  sd1 32 id-init
+  id-peerid { lpa lpu }                                \ local peer_id
+  sd2 32 id-peerid-of-pub { fpa fpu }                   \ "foreign" peer_id (the target peer)
+  sd3 32 id-peerid-of-pub { opa opu }                   \ a THIRD, unrelated peer_id
+  fpa fpu mk-exec-foreign { fexa fexu }                 \ EXECUTE addressed at the foreign peer
+  \ grant 1 (ACCEPT path): peers explicitly includes the target peer -> ALLOW.
+  fpa fpu mk-grant-peer mk-token1 { cap1 cap1u }
+  fexa incB-addr incB-len incB-n lpa lpu cap1 check-permission
+    s" peers: explicit include matching target_peer -> ALLOW" check
+  \ grant 2 (REJECT path): peers includes only an unrelated THIRD peer, excluding the target
+  \ -> DENY. Pre-fix this dimension was never read, so this grant used to (wrongly) ALLOW.
+  opa opu mk-grant-peer mk-token1 { cap2 cap2u }
+  fexa incB-addr incB-len incB-n lpa lpu cap2 check-permission 0=
+    s" peers: include excludes target_peer -> DENY (was silently ALLOW pre-fix)" check
+  \ grant 3 (ACCEPT path, default): peers OMITTED entirely; request targets LOCAL -> the
+  \ spec default {include:[local_peer_id]} still ALLOWs the unaddressed/local case.
+  mk-exec-local { lexa lexu }
+  mk-grant-def mk-token1 { cap3 cap3u }
+  lexa incB-addr incB-len incB-n lpa lpu cap3 check-permission
+    s" peers: omitted -> defaults to {include:[local]}, local target -> ALLOW" check ;
+
 : run-selftest ( -- )
   0 pass ! 0 total !
   setup
-  t-identity  t-store  t-envelope-n5  t-chain-depth  t-payload-cap  t-wire
+  t-identity  t-store  t-envelope-n5  t-chain-depth  t-payload-cap  t-wire  t-peers-scope
   cr ." SELFTEST " pass @ 0 .r ." /" total @ 0 .r cr
   pass @ total @ = if 0 else 1 then (bye) ;
 run-selftest

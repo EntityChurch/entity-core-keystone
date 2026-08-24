@@ -451,6 +451,35 @@ variable seen-n
   i 0< if ehp-span 2@ exit then
   ehp-span 2@ i 1+ /string ;
 
+\ ── §5.2 `peers` grant dimension (0.8.1, HANDOFF-TO-ARCH-2026-08-13 remediation) ──
+\ extract-peer ( uri-a uri-u local-a local-u -- peer-a peer-u )  target_peer per spec line
+\ 2196: the EXECUTE's own dispatch URI's first path segment IF it's a valid peer_id (§1.4
+\ seg-is-peerid?, Base58 >=46 chars), else local_peer_id. Strips a leading "entity://" scheme,
+\ then a leading "/", then takes up to the next "/" (or the whole remainder if none) — mirrors
+\ the reference `first_segment`/`extract_peer` byte-for-byte (rust/src/peer/capability.rs
+\ lines 195-213; python/src/entity_core/peer/capability.py).
+2variable ep-span
+: extract-peer { ua uu la lu -- pa pu }
+  ua uu ep-span 2!
+  ep-span 2@ s" entity://" str-starts if ep-span 2@ 9 /string ep-span 2! then
+  ep-span 2@ s" /" str-starts if ep-span 2@ 1 /string ep-span 2! then
+  ep-span 2@ 0 slash-from { i }
+  i 0< if ep-span 2@ else ep-span 2@ drop i then
+  2dup seg-is-peerid? if exit then
+  2drop la lu ;
+
+\ grant-peers-ok? ( exec local-a local-u grant-mtv -- flag )  §5.2 peers dimension: a genuine
+\ MUST-gate, checked exactly like operations/handlers/resources — a grant that fails this check
+\ does NOT cover the request. `grant.peers` defaults to {include:[local_peer_id]} when absent
+\ (spec line 1040/2378) — NOT "no restriction" — so the absent case is target_peer==local_peer_id
+\ literally (identical to what SCOPE-ID matches-scope would compute against that synthetic
+\ default, since it carries no exclude and its sole include pattern is the literal local id).
+: grant-peers-ok? { exec la lu grant -- flag }
+  exec exec-uri la lu extract-peer { tpa tpu }
+  grant s" peers" grant-scope { ps }
+  ps 0= if tpa tpu la lu span-eq exit then
+  la lu tpa tpu ps SCOPE-ID matches-scope ;
+
 \ ── §5.2 resource-scope check (§PR-8 granter-framed) ──
 \ exec-resource-tv ( exec -- rtv | 0 )  the exec.resource map TV, or 0.
 : exec-resource-tv ( exec -- rtv )  s" resource" ent-field ;
@@ -482,13 +511,16 @@ variable seen-n
   loop  true ;
 
 \ grant-covers-op-handler ( exec local-a local-u granter-a granter-u grant-mtv -- flag )  does
-\ one grant cover the exec's operation + resolved handler path + resource targets (§PR-8 frame)?
-\ §5.2/0.8.1 F40: `operations` is id-scope (literal), `handlers` is path-scope (canonicalized).
+\ one grant cover the exec's operation + resolved handler path + target peer + resource targets
+\ (§PR-8 frame)? §5.2/0.8.1 F40: `operations`/`peers` are id-scope (literal), `handlers` is
+\ path-scope (canonicalized). `peers` (0.8.1 peers-fix): the target_peer dimension — MUST-gate,
+\ same as the other three; previously unchecked entirely (HANDOFF-TO-ARCH-2026-08-13).
 : grant-covers-op-handler { exec la lu ga gu grant -- flag }
   exec exec-operation { opa opu }
   la lu opa opu grant s" operations" grant-scope SCOPE-ID matches-scope 0= if false exit then
   exec exec-handler-path { ha hu }
   la lu ha hu grant s" handlers" grant-scope SCOPE-PATH matches-scope 0= if false exit then
+  exec la lu grant grant-peers-ok? 0= if false exit then
   exec la lu ga gu grant grant-covers-resource? ;
 
 \ check-permission ( exec arr lens nvar local-a local-u cap -- flag )  ALLOW iff some grant of

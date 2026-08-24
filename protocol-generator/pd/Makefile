@@ -15,7 +15,7 @@ BUILD       := build
 EXTERNAL    := $(BUILD)/ecodec.pd_linux
 CODEC_SO    := $(BUILD)/libentitycore_codec.so
 
-.PHONY: all external codec smoke frametest decodetest responsetest treewalktest hellotest authkat authzkat authzdenykat treegetkat clean
+.PHONY: all external codec smoke frametest decodetest responsetest treewalktest hellotest authkat authzkat authzdenykat authzpeerskat treegetkat clean
 all: external
 
 # The C-ABI codec (libentitycore_codec.so). PIC shared lib, exports only ec_*
@@ -133,6 +133,17 @@ authzdenykat: external
 	gcc -Wall -I$(SPEC) test/authz-deny-offline.c \
 	    -L$(BUILD) -lentitycore_codec -Wl,-rpath,'$$ORIGIN' -o $(BUILD)/authz-deny-offline
 	./$(BUILD)/authz-deny-offline
+
+# §5.2 `peers` grant-dimension offline KAT (structural, no wire vector — the
+# conformance oracle has ZERO coverage of this dimension, see HANDOFF-TO-ARCH-
+# 2026-08-13-peers-grant-dimension-oracle-gap.md, so there is no captured frame to
+# replay). Hand-builds synthetic capability-grant CBOR and exercises cap_permits'
+# peers scope directly: explicit include/exclude, bare "*", and the
+# omitted-`peers`-defaults-to-local-only fallback (the regression this closes).
+authzpeerskat:
+	mkdir -p $(BUILD)
+	gcc -Wall test/authz-peers-offline.c -o $(BUILD)/authz-peers-offline
+	./$(BUILD)/authz-peers-offline
 
 # §6.3 system/tree:get accept-path offline KAT: the ENTITY-mode direction the live
 # oracle doesn't cover (it lists, and fetches only compute types) — the 8 primitive

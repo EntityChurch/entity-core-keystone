@@ -35,6 +35,9 @@ s_entity_scheme: .asciz "entity://"
 ka_expires:  .asciz "expires_at"
 ka_notbefore: .asciz "not_before"
 s_star:     .asciz "*"
+# F-peers (§5.4 is_peer_id): Base58 alphabet (Bitcoin), 58 bytes, no terminator needed —
+# is_peer_id always scans exactly 58 entries.
+s_base58_alpha: .ascii "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 v_hello:  .asciz "hello"
 v_ed25519:.asciz "ed25519"
 v_ed448:  .asciz "ed448"
@@ -109,8 +112,17 @@ ec_invalid_path:      .asciz "invalid_path"
 	.lcomm g_dhlen,  8
 	.lcomm g_drlen,  8
 	.lcomm g_ms,     8
+	.globl g_handler_ptr
+	.globl g_handler_len
 	.lcomm g_handler_ptr, 8
 	.lcomm g_handler_len, 8
+	# F-peers: extract_peer(execute.data.uri, local_peer_id) result — the target_peer used by
+	# the §5.2 peers-scope check. Set by derive_handler; defaults to g_peerid/g_peerid_len.
+	# .globl'd (like g_handler_ptr/len above) so tools/peers-scope-test.c can drive/inspect it.
+	.globl g_target_peer_ptr
+	.globl g_target_peer_len
+	.lcomm g_target_peer_ptr, 8
+	.lcomm g_target_peer_len, 8
 	# ---- A-ASM-011 per-fork write store (path→entity) ----
 	# store_idx: up to STORE_MAX entries × 32 B  [path_ptr, path_len, blob_ptr, blob_len].
 	# store_arena: copy arena — the request buffer b_req is reused each frame, so a put must
@@ -5490,19 +5502,81 @@ verify_get_cap:
 	ret
 
 # =====================================================================
+# is_peer_id(rdi = ptr, rsi = len) -> rax = 1 if len >= 46 and every byte is in the Base58
+# alphabet (§5.4 is_peer_id: Base58(key_type||hash_type||digest), 46 chars is the minimum
+# for the smallest supported algorithm — Ed25519+SHA-256), else 0. Used by extract_peer
+# (derive_handler below) to decide whether a uri's first path segment is a real peer id.
+	.globl is_peer_id
+	.type is_peer_id, @function
+is_peer_id:
+	cmp  $46, %rsi
+	jb   .Lipi_no
+	push %rbx
+	push %r12
+	push %r13
+	push %r14
+	mov  %rdi, %r12                  # ptr
+	mov  %rsi, %r13                  # len
+	xor  %r14d, %r14d                # i
+.Lipi_loop:
+	cmp  %r13, %r14
+	jae  .Lipi_yes
+	movzbl (%r12,%r14), %ebx
+	lea  s_base58_alpha(%rip), %rdx
+	xor  %eax, %eax
+.Lipi_scan:
+	cmp  $58, %eax
+	jae  .Lipi_no_pop
+	cmpb %bl, (%rdx,%rax)
+	je   .Lipi_found
+	inc  %eax
+	jmp  .Lipi_scan
+.Lipi_found:
+	inc  %r14
+	jmp  .Lipi_loop
+.Lipi_no_pop:
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	xor  %eax, %eax
+	ret
+.Lipi_yes:
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	mov  $1, %eax
+	ret
+.Lipi_no:
+	xor  %eax, %eax
+	ret
+
+# =====================================================================
 # derive_handler(rdi = exec data map) — set g_handler_ptr/g_handler_len to the request's
 # target handler, parsed from data.uri by stripping the "entity://<peer_id>/" prefix (scheme
 # + authority). Falls back to system/tree when uri is absent or lacks the scheme, so the
 # get path (uri = entity://<peer>/system/tree) and unrouted ops both scope-check the real
 # handler namespace instead of a hardcoded one. Closes handler_scope_denied.
+# Also sets g_target_peer_ptr/g_target_peer_len (§5.2 extract_peer, F-peers): the uri's first
+# path segment when it validates as a real peer id (is_peer_id above), else the default —
+# this peer's own g_peerid/g_peerid_len — exactly extract_peer's local-peer fallback. Every
+# early-return path below leaves that default in place, matching extract_peer's short-form/
+# no-scheme/no-slash cases (all of which mean "no peer prefix" -> local peer).
+	.globl derive_handler
 	.type derive_handler, @function
 derive_handler:
 	push %rbx
 	push %r12
 	push %r13
+	push %r14
 	lea  va_systree(%rip), %rax       # default handler = system/tree
 	mov  %rax, g_handler_ptr(%rip)
 	movq $11, g_handler_len(%rip)
+	lea  g_peerid(%rip), %rax         # default target_peer = local peer id
+	mov  %rax, g_target_peer_ptr(%rip)
+	mov  g_peerid_len(%rip), %rax
+	mov  %rax, g_target_peer_len(%rip)
 	lea  k_uri(%rip), %rsi
 	mov  $3, %rdx
 	call map_find                     # rdi = exec (preserved)
@@ -5521,22 +5595,38 @@ derive_handler:
 	test %rax, %rax
 	jz   .Ldh_ret
 	lea  9(%r12), %rbx                # cursor past the scheme
+	mov  %rbx, %r14                   # first-segment start (candidate target_peer)
 	mov  %r13, %r12
 	sub  $9, %r12                     # remaining len (the "<peer>/<handler>" authority+path)
 .Ldh_scan:
 	test %r12, %r12
-	jz   .Ldh_ret                     # no '/', keep default
+	jz   .Ldh_ret                     # no '/', keep defaults (handler + target_peer)
 	cmpb $0x2f, (%rbx)
 	je   .Ldh_found
 	inc  %rbx
 	dec  %r12
 	jmp  .Ldh_scan
 .Ldh_found:
+	# candidate peer-id segment = [r14, rbx) — validate before adopting it as target_peer
+	# (extract_peer only trusts a first segment that is_peer_id).
+	mov  %rbx, %rax
+	sub  %r14, %rax                   # segment length
+	mov  %r14, %rdi
+	mov  %rax, %rsi
+	call is_peer_id
+	test %rax, %rax
+	jz   .Ldh_not_peer
+	mov  %r14, g_target_peer_ptr(%rip)
+	mov  %rbx, %rax
+	sub  %r14, %rax
+	mov  %rax, g_target_peer_len(%rip)
+.Ldh_not_peer:
 	inc  %rbx                         # skip the '/'
 	dec  %r12
 	mov  %rbx, g_handler_ptr(%rip)
 	mov  %r12, g_handler_len(%rip)
 .Ldh_ret:
+	pop  %r14
 	pop  %r13
 	pop  %r12
 	pop  %rbx
@@ -5671,6 +5761,7 @@ verify_get_scope:
 #   -> rax = 1 if some grant permits (operation ∈ operations.include) ∧ (handler ∈
 #      handlers.include) ∧ (target matches resources.include), else 0. "*" wildcards honored.
 # The handler is g_handler_ptr/len, parsed from data.uri by derive_handler.
+	.globl grant_scope_ok
 	.type grant_scope_ok, @function
 grant_scope_ok:
 	push %rbx
@@ -5734,6 +5825,38 @@ grant_scope_ok:
 	call array_contains_star
 	test %rax, %rax
 	jz   .Lgs_next
+	# peers.include ∋ target_peer ? (§5.2/F-peers) grant.peers defaults to
+	# {include:[local_peer_id]} when the grant omits the field entirely.
+	mov  %r12, %rdi
+	lea  ka_peers(%rip), %rsi
+	mov  $5, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lgs_peers_default
+	mov  %rax, %rdi
+	lea  ka_include(%rip), %rsi
+	mov  $7, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lgs_peers_default
+	mov  %rax, %rdi
+	mov  g_target_peer_ptr(%rip), %rsi
+	mov  g_target_peer_len(%rip), %rdx
+	call array_contains_star
+	test %rax, %rax
+	jz   .Lgs_next
+	jmp  .Lgs_peers_ok
+.Lgs_peers_default:
+	mov  g_target_peer_len(%rip), %rax
+	cmp  g_peerid_len(%rip), %rax
+	jne  .Lgs_next
+	mov  g_target_peer_ptr(%rip), %rdi
+	lea  g_peerid(%rip), %rsi
+	mov  %rax, %rcx
+	call memeq
+	test %rax, %rax
+	jz   .Lgs_next
+.Lgs_peers_ok:
 	# resources.include matches target ?
 	mov  %r12, %rdi
 	lea  ka_resources(%rip), %rsi

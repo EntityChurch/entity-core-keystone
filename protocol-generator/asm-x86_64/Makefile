@@ -77,6 +77,16 @@ parse-test: $(OBJ)/codec.o | $(BIN)
 	$(CC) $(LDFLAGS) -O0 -o $(BIN)/parse-test tools/peerid-parse-test.c $(OBJ)/codec.o $(CODEC_LDFLAGS)
 	LD_LIBRARY_PATH=$(CODEC_DIR) $(BIN)/parse-test
 
+# -- peers-scope-test (§5.2 `peers` grant dimension accept + reject paths) ----------------
+# The conformance oracle has zero vectors for the `peers` dimension (see
+# research/stewardship/HANDOFF-TO-ARCH-2026-08-13-peers-grant-dimension-oracle-gap.md), so
+# this drives derive_handler/grant_scope_ok directly against hand-encoded CBOR fixtures — no
+# FFI/.so link needed (dispatch.o's unrelated externs are stubbed in the test file itself).
+.PHONY: peers-scope-test
+peers-scope-test: $(OBJ)/dispatch.o $(OBJ)/cbor.o | $(BIN)
+	$(CC) $(LDFLAGS) -O0 -o $(BIN)/peers-scope-test tools/peers-scope-test.c $(OBJ)/dispatch.o $(OBJ)/cbor.o
+	$(BIN)/peers-scope-test
+
 .PHONY: clean
 clean:
 	rm -rf $(OBJ) $(BIN)

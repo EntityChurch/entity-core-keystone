@@ -47,7 +47,11 @@ $(CODEC_SO):
 	cd $(CODEC_SRC) && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release >/dev/null && cmake --build build >/dev/null
 
 # Load the src/*.st doits into a fresh base image + the SUnit test class; snapshot a peer
-# .image. Depends on the codec .so (UFFI warms on first crypto call).
+# .image. Depends on the codec .so (UFFI warms on first crypto call). Deliberately does NOT
+# bake EcCapAuthzTest into this snapshot: this is the SAME image run-s4.sh boots the
+# conformance peer from (bin/peer.st), so keeping it byte-for-byte what it was before the
+# 2026-08-13 peers-dimension fix means zero risk of a test-only class perturbing peer boot.
+# `sunit` below loads EcCapAuthzTest JIT, on top of this same snapshot, at test-run time.
 image: ffi $(PEERIMG)
 $(PEERIMG): load.st $(wildcard src/*/*.st) tests/EntityCore-Tests/EcCodecTest.st
 	rm -f $(PEERIMG) entity-core.changes *.sources
@@ -73,9 +77,13 @@ crypto-accept: image
 multisig-accept: image
 	$(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "$$(cat tests/multisig-accept.st)"
 
-# SUnit suite (bundled xUnit) — the first-class TestCase mirror of the drivers.
+# SUnit suite (bundled xUnit) — the first-class TestCase mirror of the drivers, PLUS the
+# EcCapAuthz §5.2 `peers`-dimension regression suite (2026-08-13 fix; the oracle has zero
+# coverage of this dimension, see the class comment on EcCapAuthzTest). EcCapAuthzTest is
+# loaded JIT here, not baked into $(PEERIMG) (see the comment on that recipe above).
 sunit: image
 	$(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "| r | r := EcCodecTest buildSuite run. 'SUnit runs=', r runCount printString, ' passes=', r passedCount printString, ' failures=', r failureCount printString, ' errors=', r errorCount printString"
+	$(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "| r | Smalltalk compiler evaluate: (FileLocator workingDirectory / 'tests/EntityCore-Tests/EcCapAuthzTest.st') contents. r := EcCapAuthzTest buildSuite run. 'SUnit runs=', r runCount printString, ' passes=', r passedCount printString, ' failures=', r failureCount printString, ' errors=', r errorCount printString"
 
 # ── S5 packaging (deferred like the cohort; source distribution + Metacello baseline) ──
 # Pharo has NO binary package registry — distribution is a git repo + a Metacello baseline. The

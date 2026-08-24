@@ -1774,14 +1774,31 @@ static int matches_resource_scope(const unsigned char *buf, size_t len, size_t s
     return 1;
 }
 
+/* §5.2 peers dimension: `grant.peers or {include: [local_peer_id]}`, checked
+ * against `target_peer`. `peers` is `system/capability/id-scope` (same shape as
+ * `operations`) — id-scope matching is literal-with-bare-star/prefix-star, no
+ * absolute-path canonicalization (peer IDs carry no "/"), so matches_scope_rel
+ * (already used for `operations`) applies unchanged; see rust reference
+ * `matches_id_pattern` (`protocol-generator/rust/src/peer/capability.rs`). */
+static int matches_peers_scope(const unsigned char *buf, size_t len, size_t ge,
+                               const char *target_peer, const char *local_pid)
+{
+    cbor_rd sc;
+    if (!cbor_map_find(buf, len, ge, "peers", &sc)) return strcmp(target_peer, local_pid) == 0;
+    return matches_scope_rel(buf, len, sc.pos, target_peer);
+}
+
 /* §5.2 check_permission: some grant in the cap entity (at cap_ent_pos) covers
- * (operation, handler, resource_or_null) across operations/handlers/resources. The
- * resource dimension canonicalizes each pattern in the cap GRANTER's frame (§5.5a):
- * `granter_local` says whether the cap's granter is the local peer; `local_pid` is
- * this peer's base58 peer_id (for absolute `/{peer}/...` pattern matching). */
+ * (operation, handler, target_peer, resource_or_null) across
+ * operations/handlers/peers/resources. The resource dimension canonicalizes each
+ * pattern in the cap GRANTER's frame (§5.5a): `granter_local` says whether the
+ * cap's granter is the local peer; `local_pid` is this peer's base58 peer_id (for
+ * absolute `/{peer}/...` pattern matching AND the peers-scope default/self-check).
+ * `target_peer` is `extract_peer(execute.data.uri, local_pid)` (§5.2 L2067) —
+ * the peer segment of the request's OWN dispatch URI, not the resource target. */
 static int cap_permits(const unsigned char *buf, size_t len, size_t cap_ent_pos,
                        const char *operation, const char *handler, const char *resource,
-                       int granter_local, const char *local_pid)
+                       int granter_local, const char *local_pid, const char *target_peer)
 {
     cbor_rd d, grants;
     if (!cbor_map_find(buf, len, cap_ent_pos, "data", &d)) return 0;
@@ -1792,7 +1809,7 @@ static int cap_permits(const unsigned char *buf, size_t len, size_t cap_ent_pos,
         size_t ge = r.pos; cbor_rd sc; int okg = 1;
         if (!cbor_map_find(buf, len, ge, "operations", &sc) || !matches_scope_rel(buf, len, sc.pos, operation)) okg = 0;
         if (okg && (!cbor_map_find(buf, len, ge, "handlers", &sc) || !matches_scope_rel(buf, len, sc.pos, handler))) okg = 0;
-        /* peers: floor grants omit it (default local); request is local → skip. */
+        if (okg && !matches_peers_scope(buf, len, ge, target_peer, local_pid)) okg = 0;
         if (okg && resource) {
             if (!cbor_map_find(buf, len, ge, "resources", &sc)
                 || !matches_resource_scope(buf, len, sc.pos, resource, granter_local, local_pid)) okg = 0;
@@ -1855,6 +1872,28 @@ static const char *canonical_key(const char *in, char *buf, size_t cap)
         snprintf(buf, cap, "/%.*s/%s", (int)plen, peer, rest);  /* foreign → absolute */
     }
     return buf;
+}
+
+/* §5.2 extract_peer(uri, local_peer_id) (L2196-2201): the first URI path segment
+ * if it looks like a peer id, else the local peer. Strips an "entity://" scheme
+ * or a single leading '/' first (both to_peer_relative and canonical_key strip
+ * the same two wire forms); a bare peer-relative URI's first segment is a
+ * handler-tree segment, not a peer id, and falls through to local_pid — matches
+ * rust's `extract_peer` (`protocol-generator/rust/src/peer/capability.rs`). */
+static const char *extract_peer(const char *uri, const char *local_pid, char *out, size_t cap)
+{
+    const char *p = uri;
+    if (strncmp(p, "entity://", 9) == 0) p += 9;
+    else if (p[0] == '/') p += 1;
+    const char *slash = strchr(p, '/');
+    size_t seglen = slash ? (size_t)(slash - p) : strlen(p);
+    if (seglen > 0 && is_peer_id_seg(p, seglen)) {
+        size_t n = seglen < cap - 1 ? seglen : cap - 1;
+        memcpy(out, p, n); out[n] = '\0';
+        return out;
+    }
+    snprintf(out, cap, "%s", local_pid);
+    return out;
 }
 
 /* The resolved handler pattern (peer-relative), stashed by [op_supported( so the
@@ -1931,8 +1970,13 @@ static void ecodec_authz_check_perm(t_ecodec *x, t_symbol *handler)
              * (granter == local, byte-identical frames). Multi-granter aware. */
             int granter_local = cap_granter_local(buf, len, &cap);
             ec_init_identity();
+            /* §5.2 target_peer = extract_peer(execute.data.uri, local_peer_id) —
+             * the peer segment of THIS request's own dispatch URI (g_dec.uri),
+             * not the resource target parsed above. */
+            char tpeer[128];
+            extract_peer(g_dec.uri, g_peer_id, tpeer, sizeof tpeer);
             ok = cap_permits(buf, len, cap.pos, g_authz.operation, hpat, resource,
-                             granter_local, g_peer_id);
+                             granter_local, g_peer_id, tpeer);
         }
     }
     authz_bit(x, "perm_ok", ok);
@@ -2679,8 +2723,12 @@ static int authz_path_permitted(const char *operation, const char *path)
     if (!included_find(buf, len, g_authz.cap_h, &cap)) return 0;
     int granter_local = cap_granter_local(buf, len, &cap);
     ec_init_identity();
+    /* Same request as [authz_check_perm(: target_peer comes from THIS request's
+     * own dispatch URI (g_dec.uri), not from `path` (the tree path being tested). */
+    char tpeer[128];
+    extract_peer(g_dec.uri, g_peer_id, tpeer, sizeof tpeer);
     return cap_permits(buf, len, cap.pos, operation, "system/tree", path,
-                       granter_local, g_peer_id);
+                       granter_local, g_peer_id, tpeer);
 }
 
 /* length-then-lex comparator (§1.3 canonical CBOR key order). */
@@ -2964,7 +3012,16 @@ static void ecodec_tree_put_serve(t_ecodec *x)
 /* §6.2 subset validation: every (operation, handler, resource) triple the request
  * asks for MUST be permitted by the caller's presented cap (no scope widening).
  * Returns 1 if the requested grants are within the caller's authority, 0 if any
- * triple exceeds it. Reuses cap_permits over the caller's cap grants. */
+ * triple exceeds it. Reuses cap_permits over the caller's cap grants. Self-check:
+ * this is the LOCAL system/capability:request|delegate mint path (§6.2), not a
+ * dispatch against a foreign URI, so target_peer is trivially local (g_peer_id) —
+ * unlike the dispatch-time call sites, there is no execute.data.uri here to
+ * extract_peer from. (The requested grant's OWN `peers` dimension, if any, is a
+ * separate subset question this pointwise op×handler×resource walk does not
+ * cover — see rust's `grant_subset`, which additionally subset-checks
+ * `child.peers` against `parent.peers`; out of scope for this fix, which is
+ * about the CURRENT request's target-peer check, not mint-time peers-scope
+ * narrowing of a NEW grant.) */
 static int req_grants_within_cap(const unsigned char *buf, size_t len, size_t grants_pos, size_t caller_cap_pos)
 {
     cbor_rd r = { buf, len, grants_pos }; int mj; uint64_t n;
@@ -2988,14 +3045,14 @@ static int req_grants_within_cap(const unsigned char *buf, size_t len, size_t gr
                 if (has_res) {
                     cbor_rd rrr = { buf, len, rinc.pos }; int rmj; uint64_t rn;
                     if (cbor_head(&rrr, &rmj, &rn) != 0 || rmj != 4) return 0;
-                    if (rn == 0 && !cap_permits(buf, len, caller_cap_pos, op, h, NULL, 1, g_peer_id)) return 0;
+                    if (rn == 0 && !cap_permits(buf, len, caller_cap_pos, op, h, NULL, 1, g_peer_id, g_peer_id)) return 0;
                     for (uint64_t ri = 0; ri < rn; ri++) {
                         char res[512]; cbor_rd re = { buf, len, rrr.pos };
                         if (cbor_get_text(&re, res, sizeof res) != 0) return 0;
-                        if (!cap_permits(buf, len, caller_cap_pos, op, h, res, 1, g_peer_id)) return 0;
+                        if (!cap_permits(buf, len, caller_cap_pos, op, h, res, 1, g_peer_id, g_peer_id)) return 0;
                         if (cbor_skip(&rrr) != 0) return 0;
                     }
-                } else if (!cap_permits(buf, len, caller_cap_pos, op, h, NULL, 1, g_peer_id)) return 0;
+                } else if (!cap_permits(buf, len, caller_cap_pos, op, h, NULL, 1, g_peer_id, g_peer_id)) return 0;
                 if (cbor_skip(&hrr) != 0) return 0;
             }
             if (cbor_skip(&orr) != 0) return 0;

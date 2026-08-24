@@ -57,3 +57,33 @@ Legend: **[decision]** a build/profile choice · **[finding]** something the sub
   (size to the 16-MiB cap, drain + 413, bounds-check every buffer op *before* the access)
   is therefore sharper here — the trap is a last-resort backstop, never a handled path.
   Frame-cap (§1.6) is load-bearing on the single memory + single thread (the TurboWarp lesson).
+
+- **A-WAT-008 [finding + decision] — the `peers` grant dimension was never checked at dispatch;
+  fixed per `HANDOFF-TO-ARCH-2026-08-13-peers-grant-dimension-oracle-gap.md`.** `$grant_scope_ok`
+  / `$op_scope_ok` walked `operations`→`handlers`→`resources` only; `"peers"` (`$t_035`) was
+  parsed into the seed-grant type-registry entity but never read back — a §5.2 MUST-violation
+  (handoff §0/§1). Fixed: `$derive_handler` now also derives `g_tpp`/`g_tplen`
+  (`extract_peer` — the EXECUTE uri's first path segment when it is peer-id-shaped
+  [`$is_peer_id_seg`, ≥46-char base58, byte-exact parity with `rust/src/peer/capability.rs`
+  `is_peer_id`], else `local_peer_id`); a new `$peers_scope_ok(grant, target, tlen)` defaults an
+  absent `peers` key to `{include:[local_peer_id]}` and otherwise checks include (reusing
+  `$resource_matches` — the same literal bare-`*`/trailing-`/*`/exact matcher already used for
+  `resources`, since wasm-wat applies no per-dimension frame canonicalization) AND NOT exclude;
+  wired into both `$grant_scope_ok` and `$op_scope_ok`'s per-grant loop.
+  **Scope decision:** implemented include+exclude for `peers` specifically (mirroring
+  `rust`/`python`'s `check_permission` exactly, since the task named them as the reference
+  shape), but did **not** retrofit `exclude` onto the pre-existing `operations`/`handlers`/
+  `resources` checks — that is the separate, already-tracked F40 id-scope-typing gap
+  (`HANDOFF-TO-ARCH-2026-07-27-F40-asymmetry-audit.md` lists wasm-wat among the 13 peers with
+  `id-scope` "type-declared but not acted on"). Confirmed via a direct A/B run against the
+  pinned oracle (fceb61f) with this fix stashed vs. applied: **identical** result both ways —
+  `718 total (294 P / 322 W / 1 F / 101 S)`, the sole FAIL being the pre-existing
+  `authz.f40_id_scope_exclude_literal` (operations-dimension canonicalization, unrelated to this
+  fix) — so this change adds zero new FAILs. (The baseline `output/scratch/census/wasm-wat.json`
+  reads `719` total / 0 FAIL from 2026-07-28; the `719`→`718` delta reproduces identically with
+  and without this fix — `authz.f40_id_scope_include_control` not appearing in either run — so
+  it is pre-existing oracle/harness run-to-run variance, not a regression from this change.)
+  New offline regression guard (`src/dispatch-test.wat` / `make dispatch-test`): the go-oracle
+  has zero vector coverage of the `peers` dimension (handoff §0), so this is the only guard —
+  4 assertions, default-scope accept/reject + explicit include/exclude accept/reject, plus two
+  `is_peer_id_seg` sanity checks.

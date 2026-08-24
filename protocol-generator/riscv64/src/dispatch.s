@@ -37,6 +37,9 @@ s_entity_scheme: .asciz "entity://"
 ka_expires:  .asciz "expires_at"
 ka_notbefore: .asciz "not_before"
 s_star:     .asciz "*"
+# F-peers (§5.4 is_peer_id): Base58 alphabet (Bitcoin), 58 bytes, no terminator needed —
+# is_peer_id always scans exactly 58 entries. Ported from asm-arm64/src/dispatch.s.
+s_base58_alpha: .ascii "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 v_hello:  .asciz "hello"
 v_ed25519:.asciz "ed25519"
 v_ed448:  .asciz "ed448"
@@ -111,8 +114,17 @@ ec_invalid_path:      .asciz "invalid_path"
 	.lcomm g_dhlen,  8
 	.lcomm g_drlen,  8
 	.lcomm g_ms,     8
+	.globl g_handler_ptr
+	.globl g_handler_len
 	.lcomm g_handler_ptr, 8
 	.lcomm g_handler_len, 8
+	# F-peers: extract_peer(execute.data.uri, local_peer_id) result — the target_peer used by
+	# the §5.2 peers-scope check. Set by derive_handler; defaults to g_peerid/g_peerid_len.
+	# .globl'd (like g_handler_ptr/len above) so tools/peers-scope-test.c can drive/inspect it.
+	.globl g_target_peer_ptr
+	.globl g_target_peer_len
+	.lcomm g_target_peer_ptr, 8
+	.lcomm g_target_peer_len, 8
 	# ---- A-ASM-011 per-fork write store (path→entity) ----
 	# store_idx: up to STORE_MAX entries × 32 B  [path_ptr, path_len, blob_ptr, blob_len].
 	# store_arena: copy arena — the request buffer b_req is reused each frame, so a put must
@@ -5733,11 +5745,77 @@ verify_get_cap:
 	ret
 
 # =====================================================================
+# is_peer_id(a0 = ptr, a1 = len) -> a0 = 1 if len >= 46 and every byte is in the Base58
+# alphabet (§5.4 is_peer_id: Base58(key_type||hash_type||digest), 46 chars is the minimum
+# for the smallest supported algorithm — Ed25519+SHA-256), else 0. Used by extract_peer
+# (derive_handler below) to decide whether a uri's first path segment is a real peer id.
+# Ported from asm-arm64/src/dispatch.s (x0/x1/x9/x19/x20/x21 -> a0/a1/t0/s1/s2/s3).
+	.globl is_peer_id
+	.type is_peer_id, @function
+is_peer_id:
+	li   t0, 46
+	bltu a1, t0, .Lipi_no
+	addi sp, sp, -48
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	mv   s0, sp
+	mv   s1, a0                      # ptr
+	mv   s2, a1                      # len
+	li   s3, 0                       # i
+.Lipi_loop:
+	bgeu s3, s2, .Lipi_yes
+	add  t0, s1, s3
+	lbu  t0, 0(t0)
+	adr_l t1, s_base58_alpha
+	li   t2, 0
+.Lipi_scan:
+	li   t3, 58
+	bgeu t2, t3, .Lipi_no_pop
+	add  t4, t1, t2
+	lbu  t4, 0(t4)
+	beq  t4, t0, .Lipi_found
+	addi t2, t2, 1
+	j    .Lipi_scan
+.Lipi_found:
+	addi s3, s3, 1
+	j    .Lipi_loop
+.Lipi_no_pop:
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 48
+	li   a0, 0
+	ret
+.Lipi_yes:
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 48
+	li   a0, 1
+	ret
+.Lipi_no:
+	li   a0, 0
+	ret
+
+# =====================================================================
 # derive_handler(a0 = exec data map) — set g_handler_ptr/g_handler_len to the request's
 # target handler, parsed from data.uri by stripping the "entity://<peer_id>/" prefix (scheme
 # + authority). Falls back to system/tree when uri is absent or lacks the scheme, so the
 # get path (uri = entity://<peer>/system/tree) and unrouted ops both scope-check the real
 # handler namespace instead of a hardcoded one. Closes handler_scope_denied.
+# Also sets g_target_peer_ptr/g_target_peer_len (§5.2 extract_peer, F-peers): the uri's first
+# path segment when it validates as a real peer id (is_peer_id above), else the default —
+# this peer's own g_peerid/g_peerid_len — exactly extract_peer's local-peer fallback. Every
+# early-return path below leaves that default in place, matching extract_peer's short-form/
+# no-scheme/no-slash cases (all of which mean "no peer prefix" -> local peer).
+	.globl derive_handler
 	.type derive_handler, @function
 derive_handler:
 	addi sp, sp, -48
@@ -5746,12 +5824,20 @@ derive_handler:
 	sd   s1, 16(sp)                 # s1=cursor(rbx), s2=uri ptr(r12)
 	sd   s2, 24(sp)
 	sd   s3, 32(sp)               # s3=uri len/remaining(r13)
+	sd   s4, 40(sp)               # s4=segment start(r14)
 	mv   s0, sp
 	adr_l t0, va_systree            # default handler = system/tree
 	adr_l t1, g_handler_ptr
 	sd   t0, 0(t1)
 	li   t0, 11
 	adr_l t1, g_handler_len
+	sd   t0, 0(t1)
+	adr_l t0, g_peerid              # default target_peer = local peer id
+	adr_l t1, g_target_peer_ptr
+	sd   t0, 0(t1)
+	adr_l t0, g_peerid_len
+	ld   t0, 0(t0)
+	adr_l t1, g_target_peer_len
 	sd   t0, 0(t1)
 	# a0 = exec (preserved into map_find)
 	adr_l a1, k_uri
@@ -5769,9 +5855,10 @@ derive_handler:
 	call memeq
 	beqz a0, .Ldh_ret
 	addi s1, s2, 9                  # cursor past the scheme
+	mv   s4, s1                     # first-segment start (candidate target_peer)
 	addi s3, s3, -9               # remaining len (the "<peer>/<handler>" authority+path)
 .Ldh_scan:
-	beqz s3, .Ldh_ret              # no '/', keep default
+	beqz s3, .Ldh_ret              # no '/', keep defaults (handler + target_peer)
 	lbu  t0, 0(s1)
 	li   t1, 0x2f
 	beq  t0, t1, .Ldh_found
@@ -5779,6 +5866,18 @@ derive_handler:
 	addi s3, s3, -1
 	j    .Ldh_scan
 .Ldh_found:
+	# candidate peer-id segment = [s4, s1) — validate before adopting it as target_peer
+	# (extract_peer only trusts a first segment that is_peer_id).
+	sub  a1, s1, s4                 # segment length
+	mv   a0, s4
+	call is_peer_id
+	beqz a0, .Ldh_not_peer
+	adr_l t0, g_target_peer_ptr
+	sd   s4, 0(t0)
+	sub  t0, s1, s4
+	adr_l t1, g_target_peer_len
+	sd   t0, 0(t1)
+.Ldh_not_peer:
 	addi s1, s1, 1                  # skip the '/'
 	addi s3, s3, -1
 	adr_l t0, g_handler_ptr
@@ -5786,6 +5885,7 @@ derive_handler:
 	adr_l t0, g_handler_len
 	sd   s3, 0(t0)
 .Ldh_ret:
+	ld   s4, 40(sp)
 	ld   s3, 32(sp)
 	ld   s2, 24(sp)
 	ld   s1, 16(sp)
@@ -5910,6 +6010,7 @@ verify_get_scope:
 #   -> a0 = 1 if some grant permits (operation ∈ operations.include) ∧ (handler ∈
 #      handlers.include) ∧ (target matches resources.include), else 0. "*" wildcards honored.
 # The handler is g_handler_ptr/len, parsed from data.uri by derive_handler.
+	.globl grant_scope_ok
 	.type grant_scope_ok, @function
 # s4=target ptr, s5=target len, s6 is the global cursor (untouched), s7=op ptr,
 # s8=op len, s3=cursor(grant map ptr), s1=grant count. (r12→s2, r13→s4, r14→s5,
@@ -5970,6 +6071,37 @@ grant_scope_ok:
 	ld   a2, 0(t0)
 	call array_contains_star
 	beqz a0, .Lgs_next
+	# peers.include ∋ target_peer ? (§5.2/F-peers) grant.peers defaults to
+	# {include:[local_peer_id]} when the grant omits the field entirely.
+	mv   a0, s2
+	adr_l a1, ka_peers
+	li   a2, 5
+	call map_find
+	beqz a0, .Lgs_peers_default
+	adr_l a1, ka_include
+	li   a2, 7
+	call map_find
+	beqz a0, .Lgs_peers_default
+	adr_l t0, g_target_peer_ptr
+	ld   a1, 0(t0)
+	adr_l t0, g_target_peer_len
+	ld   a2, 0(t0)
+	call array_contains_star
+	beqz a0, .Lgs_next
+	j    .Lgs_peers_ok
+.Lgs_peers_default:
+	adr_l t0, g_target_peer_len
+	ld   t1, 0(t0)                   # target_peer len
+	adr_l t0, g_peerid_len
+	ld   t0, 0(t0)                   # local peer id len
+	bne  t1, t0, .Lgs_next
+	adr_l a0, g_target_peer_ptr
+	ld   a0, 0(a0)                   # target_peer ptr
+	adr_l a1, g_peerid               # local peer id ptr (inline buffer, not a pointer slot)
+	mv   a2, t0                      # len (shared)
+	call memeq
+	beqz a0, .Lgs_next
+.Lgs_peers_ok:
 	# resources.include matches target ?
 	mv   a0, s2
 	adr_l a1, ka_resources

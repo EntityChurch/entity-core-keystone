@@ -100,6 +100,26 @@ identity-test: $(OUT)/identity-test.combined.wasm
 	@$(WASMEDGE) $< && echo "identity-test: PASS (peer_id KAT + identity_hash over the seam)" \
 	  || { echo "identity-test: FAIL (assert id = exit code above)"; exit 1; }
 
+# -- offline KAT: §5.2 `peers` grant dimension (peers_scope_ok / is_peer_id_seg) -------------
+# No live socket/oracle — the go-oracle has zero vector coverage of this dimension (see
+# dispatch-test.wat header), so this is the only regression guard for it.
+$(OUT)/dispatch-test.wasm: $(SRC)/dispatch-test.wat | $(OUT)
+	$(WAT2WASM) $< -o $@
+
+$(OUT)/dispatch-test.combined.wasm: $(OUT)/wire.wasm $(OUT)/identity.wasm $(OUT)/dispatch.wasm $(OUT)/dispatch-test.wasm $(CODEC_WASM) | $(OUT)
+	$(WASMMERGE) -all \
+	  $(OUT)/wire.wasm wire \
+	  $(OUT)/identity.wasm identity \
+	  $(OUT)/dispatch.wasm dispatch \
+	  $(OUT)/dispatch-test.wasm dtest \
+	  $(CODEC_WASM) codec \
+	  --rename-export-conflicts -o $@
+
+.PHONY: dispatch-test
+dispatch-test: $(OUT)/dispatch-test.combined.wasm
+	@$(WASMEDGE) $< && echo "dispatch-test: PASS (§5.2 peers-scope: default + explicit include/exclude, accept + reject)" \
+	  || { echo "dispatch-test: FAIL (exit code above; see src/dispatch-test.wat header for the code table)"; exit 1; }
+
 # -- the live peer: merge wire + identity + host + codec into one module ---------
 $(OUT)/host.wasm: $(SRC)/host.wat | $(OUT)
 	$(WAT2WASM) $< -o $@

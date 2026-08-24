@@ -63,6 +63,8 @@
   (data $a_eimm    "identity_mismatch") (data $a_ekt "unsupported_key_type")
   (data $a_opauth  "authenticate") (data $a_ehnf "handler_not_found")
   (data $a_eihf    "incompatible_hash_format")
+  ;; §5.2 peers-scope (id-scope) grant dimension — grant.peers.{include,exclude}
+  (data $a_peers   "peers")         (data $a_exclude "exclude")
 
   ;; tree-GET / authority / store rodata @0x462000 (slot i → 0x462000 + i*0x40; via $disp_init)
   (data $b_author   "author")     (data $b_cap    "capability") (data $b_resource "resource")
@@ -405,6 +407,8 @@
     (memory.init $a_opauth  (i32.const 0x4618c0) (i32.const 0) (i32.const 12))
     (memory.init $a_ehnf    (i32.const 0x461900) (i32.const 0) (i32.const 17))
     (memory.init $a_eihf    (i32.const 0x461940) (i32.const 0) (i32.const 24))
+    (memory.init $a_peers   (i32.const 0x461980) (i32.const 0) (i32.const 5))
+    (memory.init $a_exclude (i32.const 0x4619c0) (i32.const 0) (i32.const 7))
     ;; tree-GET / authority / store constants @0x462000 (slot i → 0x462000 + i*0x40)
     (memory.init $b_author   (i32.const 0x462000) (i32.const 0) (i32.const 6))
     (memory.init $b_cap      (i32.const 0x462040) (i32.const 0) (i32.const 10))
@@ -1113,6 +1117,10 @@
   (global $s_blen (mut i32) (i32.const 0))          ;; last store_get blob length
   (global $g_hptr (mut i32) (i32.const 0))          ;; request handler (derive_handler)
   (global $g_hlen (mut i32) (i32.const 0))
+  ;; §5.2 extract_peer target_peer (derive_handler): the EXECUTE uri's own peer segment when it
+  ;; is peer-id-shaped, else local_peer_id — consumed by $peers_scope_ok.
+  (global $g_tpp   (mut i32) (i32.const 0))
+  (global $g_tplen (mut i32) (i32.const 0))
   (global $g_rtp   (mut i32) (i32.const 0))         ;; register/unregister: resource system/handler/{pattern}
   (global $g_rtlen (mut i32) (i32.const 0))
   (global $g_patp   (mut i32) (i32.const 0))        ;; register/unregister: {pattern} tail
@@ -2737,7 +2745,51 @@
       (br $L)))
     (i32.const 0))
 
-  ;; ∃ grant permitting op×handler(g_hptr/len)×target ? "*" honored per dimension.
+  ;; base58 (Bitcoin alphabet, excludes 0/O/I/l) membership — for $is_peer_id_seg.
+  (func $b58_char (param $c i32) (result i32)
+    (if (i32.and (i32.ge_u (local.get $c) (i32.const 0x31)) (i32.le_u (local.get $c) (i32.const 0x39)))
+      (then (return (i32.const 1))))                                              ;; '1'-'9'
+    (if (i32.and (i32.ge_u (local.get $c) (i32.const 0x41)) (i32.le_u (local.get $c) (i32.const 0x5a)))
+      (then (if (i32.and (i32.ne (local.get $c) (i32.const 0x49)) (i32.ne (local.get $c) (i32.const 0x4f)))
+              (then (return (i32.const 1))))))                                    ;; 'A'-'Z' minus I,O
+    (if (i32.and (i32.ge_u (local.get $c) (i32.const 0x61)) (i32.le_u (local.get $c) (i32.const 0x7a)))
+      (then (if (i32.ne (local.get $c) (i32.const 0x6c)) (then (return (i32.const 1))))))  ;; 'a'-'z' minus l
+    (i32.const 0))
+
+  ;; §5.2 extract_peer helper: is $seg (ptr,len) shaped like a peer id (>=46-char base58)?
+  ;; Byte-exact parity with the rust/python reference `is_peer_id` (rust/src/peer/capability.rs).
+  ;; wasm-wat's own $path_valid already uses a coarser >=32 threshold for the unrelated
+  ;; absolute-path-vs-bare-word question; kept separate here since this feeds check_permission.
+  (func $is_peer_id_seg (export "is_peer_id_seg") (param $p i32) (param $len i32) (result i32)
+    (local $i i32)
+    (if (i32.lt_u (local.get $len) (i32.const 46)) (then (return (i32.const 0))))
+    (block $done (loop $L
+      (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
+      (if (i32.eqz (call $b58_char (i32.load8_u (i32.add (local.get $p) (local.get $i)))))
+        (then (return (i32.const 0))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $L)))
+    (i32.const 1))
+
+  ;; §5.2 peers-scope (id-scope: bare "*" / trailing "/*" / exact literal — no path
+  ;; canonicalization, §5.4/F40 — reuses $resource_matches, the same literal matcher already
+  ;; used for the resources path-scope dimension since wasm-wat applies no frame translation).
+  ;; A grant with no "peers" key defaults to {include:[local_peer_id]} (no exclude) — §5.2 spec
+  ;; text line 1040/2378. $g is the current grant entry, matching $grant_scope_ok's convention.
+  (func $peers_scope_ok (export "peers_scope_ok") (param $g i32) (param $target i32) (param $tlen i32) (result i32)
+    (local $m i32) (local $inc i32) (local $exc i32)
+    (local.set $m (call $map_find (local.get $g) (i32.const 0x461980) (i32.const 5)))   ;; peers
+    (if (i32.eq (local.get $m) (i32.const -1))
+      (then (return (call $streq (local.get $target) (local.get $tlen) (i32.const 0x420200) (i32.load (i32.const 0x4202F0))))))
+    (local.set $inc (call $map_find (local.get $m) (i32.const 0x4613c0) (i32.const 7)))   ;; include
+    (if (i32.eq (local.get $inc) (i32.const -1)) (then (return (i32.const 0))))
+    (if (i32.eqz (call $resource_matches (local.get $inc) (local.get $target) (local.get $tlen))) (then (return (i32.const 0))))
+    (local.set $exc (call $map_find (local.get $m) (i32.const 0x4619c0) (i32.const 7)))   ;; exclude
+    (if (i32.ne (local.get $exc) (i32.const -1))
+      (then (if (call $resource_matches (local.get $exc) (local.get $target) (local.get $tlen)) (then (return (i32.const 0))))))
+    (i32.const 1))
+
+  ;; ∃ grant permitting op×handler(g_hptr/len)×target×peer(g_tpp/len) ? "*" honored per dimension.
   (func $grant_scope_ok (param $td i32) (param $target i32) (param $tlen i32) (param $op i32) (param $oplen i32) (result i32)
     (local $grants i32) (local $n i64) (local $i i64) (local $g i32) (local $m i32) (local $inc i32)
     (local.set $grants (call $map_find (local.get $td) (i32.const 0x4611c0) (i32.const 6)))   ;; grants
@@ -2758,6 +2810,7 @@
         (local.set $inc (call $map_find (local.get $m) (i32.const 0x4613c0) (i32.const 7)))
         (br_if $next (i32.eq (local.get $inc) (i32.const -1)))
         (br_if $next (i32.eqz (call $array_contains_star (local.get $inc) (global.get $g_hptr) (global.get $g_hlen))))
+        (br_if $next (i32.eqz (call $peers_scope_ok (local.get $g) (global.get $g_tpp) (global.get $g_tplen))))
         (local.set $m (call $map_find (local.get $g) (i32.const 0x461340) (i32.const 9)))     ;; resources
         (br_if $next (i32.eq (local.get $m) (i32.const -1)))
         (local.set $inc (call $map_find (local.get $m) (i32.const 0x4613c0) (i32.const 7)))
@@ -2790,7 +2843,8 @@
         (br_if $next (i32.eq (local.get $m) (i32.const -1)))
         (local.set $inc (call $map_find (local.get $m) (i32.const 0x4613c0) (i32.const 7)))
         (br_if $next (i32.eq (local.get $inc) (i32.const -1)))
-        (if (call $array_contains_star (local.get $inc) (global.get $g_hptr) (global.get $g_hlen))
+        (br_if $next (i32.eqz (call $array_contains_star (local.get $inc) (global.get $g_hptr) (global.get $g_hlen))))
+        (if (call $peers_scope_ok (local.get $g) (global.get $g_tpp) (global.get $g_tplen))
           (then (return (i32.const 1)))))
       (local.set $g (call $skip (local.get $g)))
       (local.set $i (i64.add (local.get $i) (i64.const 1)))
@@ -2926,11 +2980,17 @@
       (br $rL)))
     (i32.const 1))
 
-  ;; parse data.uri (entity://<peer>/<handler>) → g_hptr/g_hlen; default system/tree.
+  ;; parse data.uri (entity://<peer>/<handler>) → g_hptr/g_hlen (handler, default system/tree)
+  ;; and g_tpp/g_tplen (§5.2 extract_peer target_peer: the uri's first path segment when it is
+  ;; peer-id-shaped, else local_peer_id — line 2196 of the spec). Defaults are set up front so
+  ;; every early-return (missing/malformed/short uri) still leaves target_peer = local_peer_id,
+  ;; matching extract_peer's else-branch.
   (func $derive_handler (param $edp i32)
-    (local $u i32) (local $up i32) (local $ulen i32) (local $cur i32) (local $end i32)
+    (local $u i32) (local $up i32) (local $ulen i32) (local $cur i32) (local $end i32) (local $segp i32) (local $seglen i32)
     (global.set $g_hptr (i32.const 0x461640))   ;; system/tree
     (global.set $g_hlen (i32.const 11))
+    (global.set $g_tpp (i32.const 0x420200))    ;; default target_peer = local_peer_id
+    (global.set $g_tplen (i32.load (i32.const 0x4202F0)))
     (local.set $u (call $map_find (local.get $edp) (i32.const 0x462100) (i32.const 3)))   ;; uri
     (if (i32.eq (local.get $u) (i32.const -1)) (then (return)))
     (local.set $up (call $rd_head (local.get $u)))
@@ -2939,11 +2999,17 @@
     (if (i32.eqz (call $streq (local.get $up) (i32.const 9) (i32.const 0x462380) (i32.const 9))) (then (return)))  ;; "entity://"
     (local.set $cur (i32.add (local.get $up) (i32.const 9)))
     (local.set $end (i32.add (local.get $up) (local.get $ulen)))
+    (local.set $segp (local.get $cur))
     (block $f (loop $L
       (br_if $f (i32.ge_u (local.get $cur) (local.get $end)))
       (br_if $f (i32.eq (i32.load8_u (local.get $cur)) (i32.const 0x2f)))
       (local.set $cur (i32.add (local.get $cur) (i32.const 1)))
       (br $L)))
+    (local.set $seglen (i32.sub (local.get $cur) (local.get $segp)))
+    (if (call $is_peer_id_seg (local.get $segp) (local.get $seglen))
+      (then
+        (global.set $g_tpp (local.get $segp))
+        (global.set $g_tplen (local.get $seglen))))
     (if (i32.lt_u (i32.add (local.get $cur) (i32.const 1)) (local.get $end))
       (then
         (local.set $cur (i32.add (local.get $cur) (i32.const 1)))

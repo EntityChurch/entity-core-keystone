@@ -4,7 +4,10 @@ sends over EcEntity / EcValue objects — NOT transpiled) from the already-conve
 logic (forth src/capauthz.fs / the Rexx Cap_VerifyChain). EcCapability supplies the trichotomy
 scaffold + the §4.10(b) depth pre-check; THIS class adds the full chain walk (root single-sig +
 multisig M3/M4/M6), per-link signature + attenuation + grantee/expiry, §5.7 caveats, §5.1
-revocation, and the §5.2 permission-scope gate the dispatcher maps to a status.
+revocation, and the §5.2 permission-scope gate the dispatcher maps to a status — ALL FOUR grant
+dimensions (handlers, operations, peers, resources; 2026-08-13 fix, see
+research/stewardship/HANDOFF-TO-ARCH-2026-08-13-peers-grant-dimension-oracle-gap.md — `peers`
+was previously never read at dispatch).
 
 THE PURE-OBJECT REP (A-ST-000): a capability token is an EcEntity; grants/scopes are EcMap /
 EcArray value objects; a peer_id / hash is a String / ByteArray. Path patterns are Strings;
@@ -16,7 +19,7 @@ the inbound EcEnvelope for included-set resolution, and the EcStore for §5.1 re
 lookups). No shared mutable state → §N8 verdict determinism structural.
 
 LIVE-IMAGE NOTE: EcCapability / EcIdentity / EcEntity / EcMap / EcArray / EcTextString /
-EcByteString resolve at send-time inside method bodies."
+EcByteString / EcBase58 resolve at send-time inside method bodies."
 
 | pkg cls |
 pkg := 'EntityCore-Capability'.
@@ -439,26 +442,67 @@ cls class compile: 'grant: aGrant coversResourceExec: anExec local: aLocal grant
 	targets isEmpty ifTrue: [ ^ true ].
 	^ targets allSatisfy: [ :t | self resourceTargetCovered: t local: aLocal granter: aGranter grant: aGrant ]'.
 
-"grantCoversOpHandler:exec:local:granter: — one grant covers operation + handler + resources.
- §5.2/F40: `operations` is an id-scope dimension (literal match, kind: #idScope); `handlers` is
- a path-scope dimension (canonicalize + §5.4 match, kind: #pathScope) — the two MUST NOT be
- interchanged."
-cls class compile: 'grant: aGrant coversOpHandlerExec: anExec local: aLocal granter: aGranter
+"── §5.2 peers dimension (target_peer): the EXECUTE''s own dispatch URI, NOT the resource-
+    target field — §3.6 line 3228''s worked example (a peer serving /{remote_peer_id}/data/*
+    locally) is exactly the case peers vs. resources must distinguish. ──"
+"isPeerIdSeg: — §1.5: is aSeg a syntactically valid peer_id (Base58, >= 46 chars)? Mirrors
+ EcPeerHandlers2.st>>isPeerIdSeg: (§1.4 R1 path validity) — duplicated here, not shared,
+ because EcCapAuthz is deliberately EcPeer-free (see the class comment); sourced off
+ EcBase58''s alphabet accessor rather than a third hardcoded literal."
+cls class compile: 'isPeerIdSeg: aSeg
+	| alpha |
+	aSeg size < 46 ifTrue: [ ^ false ].
+	alpha := EcBase58 alphabet.
+	^ aSeg allSatisfy: [ :c | alpha includes: c ]'.
+"firstSegment: — the leading path segment of a (possibly leading-/) URI body."
+cls class compile: 'firstSegment: aUriBody
+	| u idx |
+	u := (aUriBody beginsWith: ''/'') ifTrue: [ aUriBody copyFrom: 2 to: aUriBody size ] ifFalse: [ aUriBody ].
+	idx := u indexOf: $/.
+	idx = 0 ifTrue: [ ^ u ].
+	^ u copyFrom: 1 to: idx - 1'.
+"execTargetPeer:local: — §5.2 target_peer = extract_peer(execute.data.uri, local_peer_id)
+ (line 2196): the exec.uri''s first path segment if it is a syntactically valid peer_id,
+ else local."
+cls class compile: 'execTargetPeer: anExec local: aLocal
+	| u first |
+	u := (anExec textAt: ''uri'') ifNil: [ ^ aLocal ].
+	(u beginsWith: ''entity://'') ifTrue: [ u := u copyFrom: 10 to: u size ].
+	first := self firstSegment: u.
+	^ (self isPeerIdSeg: first) ifTrue: [ first ] ifFalse: [ aLocal ]'.
+"grant:peersOk:target: — grant.peers or the spec default {include: [local_peer_id]} (line
+ 2378) must cover target_peer; an id-scope dimension (literal match like `operations`, F40,
+ kind: #idScope). Peer IDs are explicit, no `self` alias — so the omitted-scope default
+ (no exclude, include = [local]) reduces to plain equality against local."
+cls class compile: 'grant: aGrant peersOk: aLocal target: aTargetPeer
+	| ps |
+	ps := self grantScope: aGrant key: ''peers''.
+	ps isNil ifTrue: [ ^ aTargetPeer = aLocal ].
+	^ self matchesScope: ps frame: aLocal value: aTargetPeer local: aLocal kind: #idScope'.
+
+"grantCoversOpHandler:exec:local:granter:targetPeer: — one grant covers operation + handler +
+ peers + resources (§5.2, all four dimensions unconditionally, line 2059-2083/2390). §F40:
+ `operations`/`peers` are id-scope dimensions (literal match, kind: #idScope); `handlers` is a
+ path-scope dimension (canonicalize + §5.4 match, kind: #pathScope) — the dimensions MUST NOT
+ be interchanged."
+cls class compile: 'grant: aGrant coversOpHandlerExec: anExec local: aLocal granter: aGranter targetPeer: aTargetPeer
 	(self matchesScope: (self grantScope: aGrant key: ''operations'')
 		frame: aLocal value: (anExec textAt: ''operation'') local: aLocal kind: #idScope) ifFalse: [ ^ false ].
 	(self matchesScope: (self grantScope: aGrant key: ''handlers'')
 		frame: aLocal value: (self execHandlerPath: anExec) local: aLocal kind: #pathScope) ifFalse: [ ^ false ].
+	(self grant: aGrant peersOk: aLocal target: aTargetPeer) ifFalse: [ ^ false ].
 	^ self grant: aGrant coversResourceExec: anExec local: aLocal granter: aGranter'.
 
 "checkPermission:cap:local:in: — ALLOW iff some grant of the resolved LEAF cap covers
- operation + handler + resource targets (resources granter-framed, §PR-8)."
+ operation + handler + peer + resource targets (resources granter-framed, §PR-8)."
 cls class compile: 'checkPermission: anExec cap: aCap local: aLocal in: anEnvelope
-	| grants granter |
+	| grants granter targetPeer |
 	grants := self grantsOf: aCap.
 	grants isNil ifTrue: [ ^ false ].
 	granter := self granterPeerOfCap: aCap local: aLocal in: anEnvelope.
+	targetPeer := self execTargetPeer: anExec local: aLocal.
 	^ grants items anySatisfy: [ :g |
-		self grant: g coversOpHandlerExec: anExec local: aLocal granter: granter ]'.
+		self grant: g coversOpHandlerExec: anExec local: aLocal granter: granter targetPeer: targetPeer ]'.
 
 "── §5.1 revocation: deny iff a revocation marker is bound at
     /<local>/system/capability/revocations/<hex(H)> for H in {leaf cap hash, chain-root hash}. ──"
