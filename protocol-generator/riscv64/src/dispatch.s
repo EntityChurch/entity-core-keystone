@@ -72,6 +72,8 @@ k_grant:      .asciz "grant"
 p_hnd_slash:  .asciz "system/handler/"
 p_cap_grants: .asciz "system/capability/grants/"
 p_sig_slash:  .asciz "system/signature/"
+p_sys_slash:  .asciz "system/"
+p_sys_bare:   .asciz "system"
 s_pat_connect: .asciz "system/protocol/connect"
 s_iface_tree:  .asciz "system/handler/system/tree"
 s_iface_connect: .asciz "system/handler/system/protocol/connect"
@@ -909,6 +911,7 @@ ec_unsupported_op: .asciz "unsupported_operation"
 ec_incompat_hf: .asciz "incompatible_hash_format"
 ec_unsup_kt:  .asciz "unsupported_key_type"
 ec_cap_denied: .asciz "capability_denied"
+ec_forbidden_pattern: .asciz "forbidden_pattern"
 ec_unresolvable_grantee: .asciz "unresolvable_grantee"
 ec_chain_depth: .asciz "chain_depth_exceeded"
 ka_parent:   .asciz "parent"
@@ -3200,6 +3203,38 @@ serve_register:
 	sd   a0, 0(t0)
 	lla  t0, g_hpat_len
 	sd   a2, 0(t0)
+	# ── §6.2 reserved-pattern guard ─────────────────────────────────────
+	# user-installed handlers MUST NOT register at system/* paths. Runs
+	# right after the pattern is extracted but BEFORE any of the five
+	# normative writes below (interface/handler/token/signature/response).
+	# Reserved iff pattern == "system" (len 6, exact) or pattern starts
+	# with "system/" (len >= 7, prefix). s1 free in this function.
+	lla  t0, g_hpat_len
+	ld   s1, 0(t0)                  # pattern len
+	li   t0, 7
+	blt  s1, t0, .Lsr_pat_chk6
+	lla  t0, g_hpat_ptr
+	ld   a0, 0(t0)
+	lla  a1, p_sys_slash
+	li   a2, 7
+	call memeq
+	bnez a0, .Lsr_reserved
+	j    .Lsr_pat_ok
+.Lsr_pat_chk6:
+	li   t0, 6
+	bne  s1, t0, .Lsr_pat_ok
+	lla  t0, g_hpat_ptr
+	ld   a0, 0(t0)
+	lla  a1, p_sys_bare
+	li   a2, 6
+	call memeq
+	beqz a0, .Lsr_pat_ok
+.Lsr_reserved:
+	li   a0, 403
+	lla  a1, ec_forbidden_pattern
+	call send_error
+	j    .Lsr_done
+.Lsr_pat_ok:
 	# interface store path = "system/handler/" + pattern → save into b_ipath
 	lla  a0, p_hnd_slash
 	li   a1, 15

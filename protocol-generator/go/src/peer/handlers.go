@@ -470,11 +470,20 @@ func registerPattern(exec Entity) (string, outcome, bool) {
 	return target[len(prefix):], outcome{}, true
 }
 
+// isReservedSystemPattern reports whether pattern falls under the reserved
+// system/* namespace (§6.2: user-installed handlers MUST NOT register there).
+func isReservedSystemPattern(pattern string) bool {
+	return pattern == "system" || startsWith("system/", pattern)
+}
+
 func (h handlersHandler) register(ctx *dispatchCtx) outcome {
 	p, exec := h.p, ctx.exec
 	pattern, bad, ok := registerPattern(exec)
 	if !ok {
 		return bad
+	}
+	if isReservedSystemPattern(pattern) {
+		return errOutcome(403, "forbidden_pattern", "§6.2: user-installed handlers MUST NOT register at system/* paths: "+pattern)
 	}
 	req, ok := paramsEntity(exec)
 	if !ok {

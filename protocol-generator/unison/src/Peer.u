@@ -522,12 +522,19 @@ doRegister p pattern req =
   result = makeEntity "system/handler/register-result" (VMap resultData)
   okOc result
 
+-- §6.2: user-installed handlers MUST NOT register at reserved system/* patterns.
+isReservedSystemPattern : Text -> Boolean
+isReservedSystemPattern pattern = (pattern == "system") || (textStartsWith "system/" pattern)
+
 registerHandler : Peer -> Entity ->{IO} Outcome
 registerHandler p exec = match registerPatternOf exec with
   None -> errMsg 400 "invalid_resource" "register requires system/handler/{pattern} target"
-  Some pattern -> match entityField exec "params" with
-    None -> errMsg 400 "unexpected_params" "register: missing params"
-    Some req -> doRegister p pattern req
+  Some pattern ->
+    if isReservedSystemPattern pattern then
+      errMsg 403 "forbidden_pattern" ("§6.2: user-installed handlers MUST NOT register at system/* paths: " Text.++ pattern)
+    else match entityField exec "params" with
+      None -> errMsg 400 "unexpected_params" "register: missing params"
+      Some req -> doRegister p pattern req
 
 -- §3.4 writer/unregister symmetry: unregister MUST tear down ALL five register
 -- writes — the handler, the interface, the grant token, AND the grant's signature

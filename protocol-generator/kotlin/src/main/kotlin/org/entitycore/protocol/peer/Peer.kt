@@ -421,6 +421,10 @@ class Peer private constructor(
         private fun register(ctx: HandlerContext): Outcome {
             val exec = ctx.exec
             val pattern = registerPattern(exec) ?: return registerPatternError(exec)
+            if (isReservedSystemPattern(pattern)) {
+                return Outcome.err(403, "forbidden_pattern",
+                    "§6.2: user-installed handlers MUST NOT register at system/* paths: $pattern")
+            }
             val req = exec.entityField("params") ?: return Outcome.err(400, "unexpected_params", "register: missing params")
             if (req.type != "system/handler/register-request") {
                 return Outcome.err(400, "unexpected_params", "register expects register-request, got ${req.type}")
@@ -804,6 +808,10 @@ class Peer private constructor(
             if (!Capability.startsWith(prefix, target) || target.length == prefix.length) return null
             return target.substring(prefix.length)
         }
+
+        /** §6.2: user-installed handlers MUST NOT register at reserved "system/" paths. */
+        private fun isReservedSystemPattern(pattern: String): Boolean =
+            pattern == "system" || Capability.startsWith("system/", pattern)
 
         private fun registerPatternError(exec: Entity): Outcome {
             execResourceTarget(exec)

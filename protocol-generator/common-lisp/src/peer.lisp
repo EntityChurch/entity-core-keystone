@@ -450,10 +450,17 @@ caller leading slash whose first seg is not a peer_id, ./ ../ interior empty."
                                "resource target MUST be system/handler/{pattern}"))
               (values (subseq target (length prefix)) nil))))))
 
+(defun reserved-system-pattern-p (pattern)
+  "§6.2: user-installed handlers MUST NOT register at reserved system/* patterns."
+  (or (string= pattern "system") (starts-with "system/" pattern)))
+
 (defmethod handle-op ((h handlers-handler) (op (eql :register)) ctx)
   (let ((peer (handler-peer h)) (exec (ctx-exec ctx)))
     (multiple-value-bind (pattern bad) (register-pattern exec)
       (if bad bad
+          (if (reserved-system-pattern-p pattern)
+              (err 403 "forbidden_pattern"
+                   (concatenate 'string "§6.2: user-installed handlers MUST NOT register at system/* paths: " pattern))
           (let ((req (entity-entity exec "params")))
             (cond
               ((null req) (err 400 "unexpected_params" "register: missing params"))
@@ -496,7 +503,7 @@ caller leading slash whose first seg is not a peer_id, ./ ../ interior empty."
                                (make-entity "system/handler/interface"
                                             (map-of "pattern" pattern "name" name "operations" operations)))
                    (ok (make-entity "system/handler/register-result"
-                                    (map-of "pattern" pattern "grant" (entity-data token)))))))))))))
+                                    (map-of "pattern" pattern "grant" (entity-data token))))))))))))))
 
 (defmethod handle-op ((h handlers-handler) (op (eql :unregister)) ctx)
   (let ((peer (handler-peer h)) (exec (ctx-exec ctx)))

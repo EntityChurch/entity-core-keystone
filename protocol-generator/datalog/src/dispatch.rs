@@ -118,6 +118,12 @@ fn err_out(status: u64, code: &str) -> Outcome {
     }
 }
 
+/// §6.2: `"system"` itself or any `"system/..."` prefix is reserved for system
+/// handlers; user-installed handlers MUST NOT register there.
+fn is_reserved_system_pattern(pattern: &str) -> bool {
+    pattern == "system" || pattern.starts_with("system/")
+}
+
 fn error_result(code: &str) -> Entity {
     Entity::make(
         "system/protocol/error",
@@ -1146,6 +1152,11 @@ impl Peer {
             Ok(p) => p,
             Err(o) => return o,
         };
+        // §6.2: user-installed handlers MUST NOT register at reserved "system/*"
+        // paths. Refused before any of the five normative writes below.
+        if is_reserved_system_pattern(&pattern) {
+            return err_out(403, "forbidden_pattern");
+        }
         let params = match exec.entity_field("params") {
             Some(p) if p.typ == "system/handler/register-request" => p,
             _ => return err_out(400, "invalid_params"),

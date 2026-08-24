@@ -1137,6 +1137,15 @@ procedure division using lk-env lk-rootoff lk-status lk-res lk-reslen lk-reshash
         call "error-result" using errc errcl lk-res lk-reslen lk-reshash
         goback
     end-if
+    *> §6.2: user-installed handlers MUST NOT register at system/* paths.
+    *> Checked before any of the five normative writes below.
+    if (patlen = 6 and pat(1:6) = "system")
+       or (patlen >= 7 and pat(1:7) = "system/")
+        move 403 to lk-status
+        move "forbidden_pattern" to errc move 17 to errcl
+        call "error-result" using errc errcl lk-res lk-reslen lk-reshash
+        goback
+    end-if
     call "ent-field" using lk-env lk-rootoff k-params k-params-len poff pfd
     if pfd = 0
         move 400 to lk-status

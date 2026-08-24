@@ -458,6 +458,11 @@ module EntityCore
       target[prefix.size..]
     end
 
+    # §6.2: user-installed handlers MUST NOT register at system/* paths.
+    def self.reserved_system_pattern?(pattern : String) : Bool
+      pattern == "system" || pattern.starts_with?("system/")
+    end
+
     def self.register_pattern_error(exec : Entity) : Outcome
       target = exec_resource_target(exec)
       if target.nil?

@@ -40,6 +40,15 @@ caps.local.sh
 # binary). Un-ignore the source so the entrypoint is tracked.
 !protocol-generator/julia/bin/
 !protocol-generator/julia/bin/**
+# …and the Forth peer keeps its peer entry SOURCE in bin/ (bin/peer.fs — the CLI arg
+# parser + main word that `gforth bin/peer.fs --port … --name …` runs; interpreted, not
+# a compiled binary). Un-ignore the source so the entrypoint is tracked. Found 2026-08-17
+# (W-REGISTER-GUARD remediation): this exception was missing entirely, so bin/peer.fs was
+# NEVER committed since S3 (0267303) despite the peer being S4/S5-complete — every prior
+# session's green report was measured against a stray untracked local file, invisible to
+# a fresh clone/worktree. Recovered from the primary checkout's untracked copy.
+!protocol-generator/forth/bin/
+!protocol-generator/forth/bin/**
 **/obj/
 **/build/
 **/dist/

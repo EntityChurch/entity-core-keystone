@@ -471,6 +471,10 @@ final class Peer {
     final exec = ctx.exec;
     final pattern = _registerPattern(exec);
     if (pattern == null) return _registerPatternError(exec);
+    if (pattern == 'system' || pattern.startsWith('system/')) {
+      return Outcome.err(403, 'forbidden_pattern',
+          '§6.2: user-installed handlers MUST NOT register at system/* paths: $pattern');
+    }
     final req = exec.entityField('params');
     if (req == null) {
       return Outcome.err(400, 'unexpected_params', 'register: missing params');

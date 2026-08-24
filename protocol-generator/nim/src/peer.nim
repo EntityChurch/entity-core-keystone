@@ -486,10 +486,17 @@ proc installTypes(p: Peer; req: Entity) =
       let te = makeEntity("system/type", pair.val)
       p.store.bindAt(p.abs("system/type/" & pair.key.t), te)
 
+proc isReservedSystemPattern(pattern: string): bool =
+  ## §6.2: user-installed handlers MUST NOT register at system/* paths.
+  pattern == "system" or pattern.startsWith("system/")
+
 proc handlerRegister(p: Peer; params: Entity; rt: ResourceTarget): Outcome =
   let patOpt = patternFromResource(rt)
   if patOpt.isNone: return errOut(400, "ambiguous_resource")
   let pattern = patOpt.get
+  if isReservedSystemPattern(pattern):
+    return errOut(403, "forbidden_pattern",
+      some("§6.2: user-installed handlers MUST NOT register at system/* paths: " & pattern))
   if params.typ != "system/handler/register-request":
     return errOut(400, "invalid_params")
   let manifest = params.field("manifest")

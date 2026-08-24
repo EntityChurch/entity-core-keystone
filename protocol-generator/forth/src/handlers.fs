@@ -841,10 +841,30 @@ create reg-ifacebuf 512 allot
   gta ent-hash id-sign  spa spu 2swap store-bind
   gta ;
 
+\ reserved-pattern? ( pa pu -- flag )  §6.2: true iff pattern == "system" or pattern starts
+\ with "system/" -- user-installed handlers MUST NOT register there.
+: reserved-pattern? { pa pu -- flag }
+  pa pu s" system" compare 0= if true exit then
+  pu 7 < if false exit then
+  pa 7 s" system/" compare 0= ;
+
+create reg-reservedmsg-buf 512 allot
+\ reserved-msg ( pa pu -- ma mu )  the §6.2 refusal message, with the offending pattern
+\ appended (durable scratch buffer, same shape as cap-cat/manifest-interface-rel above).
+: reserved-msg { pa pu -- ma mu }
+  s" §6.2: user-installed handlers MUST NOT register at system/* paths: " { la lu }
+  la reg-reservedmsg-buf lu move
+  pa reg-reservedmsg-buf lu + pu move
+  reg-reservedmsg-buf lu pu + ;
+
 : hnd-handlers-register { conn exec arr lens nvar -- status raddr ru }
   exec reg-pattern dup 0= if 2drop
     exec tree-target 0= if 400 s" ambiguous_resource" 0 0 error-result exit then
     400 s" invalid_resource" 0 0 error-result exit then { pa pu }
+  pa pu reserved-pattern? if
+    pa pu reserved-msg { ma mu }
+    403 s" forbidden_pattern" ma mu error-result exit
+  then
   exec params-of dup 0= if drop 400 s" unexpected_params" 0 0 error-result exit then { req }
   req ent-type s" system/handler/register-request" compare 0<> if
     400 s" unexpected_params" 0 0 error-result exit then

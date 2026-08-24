@@ -898,6 +898,15 @@ package body Entity_Core.Protocol.Handlers is
       return Target;
    end Pattern_Of_Target;
 
+   --  §6.2: user-installed handlers MUST NOT register at system/* paths.
+   function Is_Reserved_System_Pattern (Pattern : String) return Boolean is
+      Prefix : constant String := "system/";
+   begin
+      return Pattern = "system"
+        or else (Pattern'Length >= Prefix'Length
+                  and then Pattern (Pattern'First .. Pattern'First + Prefix'Length - 1) = Prefix);
+   end Is_Reserved_System_Pattern;
+
    function Handle_Handler_Register
      (Peer : Peer_Access; Exec : Materialized_Entity) return Outcome is
       Params   : constant Ecf_Value := Field (Data (Exec), "params");
@@ -908,6 +917,10 @@ package body Entity_Core.Protocol.Handlers is
    begin
       if Pattern = "" then
          return Err (400, "invalid_params", "register requires manifest.pattern");
+      end if;
+      if Is_Reserved_System_Pattern (Pattern) then
+         return Err (403, "forbidden_pattern",
+           "§6.2: user-installed handlers MUST NOT register at system/* paths: " & Pattern);
       end if;
       declare
          --  Interface entity (TypeHandlerInterface) at system/handler/<pattern>.

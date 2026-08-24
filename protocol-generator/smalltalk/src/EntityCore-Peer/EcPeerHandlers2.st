@@ -277,6 +277,11 @@ ecPeer compile: 'regPattern: anExec
 	(target size > pfx size and: [ target beginsWith: pfx ]) ifFalse: [ ^ nil ].
 	^ target copyFrom: pfx size + 1 to: target size'.
 
+"isReservedSystemPattern: — §6.2: user-installed handlers MUST NOT register at
+ system/* paths. pattern = ''system'' or begins with ''system/''."
+ecPeer compile: 'isReservedSystemPattern: aPattern
+	^ aPattern = ''system'' or: [ aPattern beginsWith: ''system/'' ]'.
+
 "bindAssociatedTypes: — WRITE 2: walk a {name -> type-def} map, binding each at
  /<local>/system/type/<name> as a system/type entity."
 ecPeer compile: 'bindAssociatedTypes: aTypesValue
@@ -340,6 +345,9 @@ ecPeer compile: 'handleHandlerRegister: ctx
 	req isNil ifTrue: [ ^ EcHandlerResult error: 400 code: ''unexpected_params'' message: nil ].
 	req type = ''system/handler/register-request'' ifFalse: [
 		^ EcHandlerResult error: 400 code: ''unexpected_params'' message: nil ].
+	(self isReservedSystemPattern: pattern) ifTrue: [
+		^ EcHandlerResult error: 403 code: ''forbidden_pattern''
+			message: ''§6.2: user-installed handlers MUST NOT register at system/* paths: '', pattern ].
 	manifest := req field: ''manifest''.
 	self regWriteHandler: pattern manifest: manifest.               "WRITEs 1 + 5"
 	self bindAssociatedTypes: (req field: ''types'').               "WRITE 2"

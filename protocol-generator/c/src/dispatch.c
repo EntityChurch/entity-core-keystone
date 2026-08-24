@@ -1219,6 +1219,12 @@ static char *register_pattern(const ec_entity *exec)
     return strdup(target + pl);
 }
 
+/* §6.2: user-installed handlers MUST NOT register at reserved "system/" paths. */
+static bool is_reserved_system_pattern(const char *pattern)
+{
+    return strcmp(pattern, "system") == 0 || ec_startswith("system/", pattern);
+}
+
 static void h_handlers(ec_peer *p, ec_conn *conn, const ec_envelope *env,
                        const ec_entity *exec, const ec_entity *caller_cap,
                        const char *op, ec_outcome *out)
@@ -1240,6 +1246,16 @@ static void h_handlers(ec_peer *p, ec_conn *conn, const ec_envelope *env,
             outcome_err(out, 400, "invalid_resource",
                         "resource target MUST be system/handler/{pattern}");
         }
+        return;
+    }
+
+    if (is_register && is_reserved_system_pattern(pattern)) {
+        char msg[320];
+        snprintf(msg, sizeof msg,
+                 "\xc2\xa7" "6.2: user-installed handlers MUST NOT register at system/* paths: %s",
+                 pattern); /* U+00A7 SECTION SIGN, UTF-8 */
+        free(pattern);
+        outcome_err(out, 403, "forbidden_pattern", msg);
         return;
     }
 

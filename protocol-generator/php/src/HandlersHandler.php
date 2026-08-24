@@ -27,6 +27,10 @@ final class HandlersHandler implements Handler
         if ($pattern === null) {
             return PeerHelpers::registerPatternError($exec);
         }
+        if (PeerHelpers::isReservedSystemPattern($pattern)) {
+            return Outcome::err(403, 'forbidden_pattern',
+                '§6.2: user-installed handlers MUST NOT register at system/* paths: ' . $pattern);
+        }
         $req = $exec->entityField('params');
         if ($req === null) {
             return Outcome::err(400, 'unexpected_params', 'register: missing params');

@@ -71,6 +71,8 @@ k_grant:      .asciz "grant"
 p_hnd_slash:  .asciz "system/handler/"
 p_cap_grants: .asciz "system/capability/grants/"
 p_sig_slash:  .asciz "system/signature/"
+p_sys_slash:  .asciz "system/"
+p_sys_bare:   .asciz "system"
 s_pat_connect: .asciz "system/protocol/connect"
 s_iface_tree:  .asciz "system/handler/system/tree"
 s_iface_connect: .asciz "system/handler/system/protocol/connect"
@@ -877,6 +879,7 @@ ec_unsupported_op: .asciz "unsupported_operation"
 ec_incompat_hf: .asciz "incompatible_hash_format"
 ec_unsup_kt:  .asciz "unsupported_key_type"
 ec_cap_denied: .asciz "capability_denied"
+ec_forbidden_pattern: .asciz "forbidden_pattern"
 ec_unresolvable_grantee: .asciz "unresolvable_grantee"
 ec_chain_depth: .asciz "chain_depth_exceeded"
 ka_parent:   .asciz "parent"
@@ -2986,6 +2989,39 @@ serve_register:
 	str  x0, [x9]
 	adr_l x9, g_hpat_len
 	str  x2, [x9]
+	// ── §6.2 reserved-pattern guard ─────────────────────────────────────
+	// user-installed handlers MUST NOT register at system/* paths. Runs
+	// right after the pattern is extracted but BEFORE any of the five
+	// normative writes below (interface/handler/token/signature/response).
+	// Reserved iff pattern == "system" (len 6, exact) or pattern starts
+	// with "system/" (len >= 7, prefix). mcmp_lex is a leaf (x0-x2/x9/x10
+	// only); x19 survives the call unsaved.
+	adr_l x9, g_hpat_len
+	ldr  x19, [x9]                  // pattern len
+	cmp  x19, #7
+	b.lt .Lsr_pat_chk6
+	adr_l x9, g_hpat_ptr
+	ldr  x0, [x9]
+	adr_l x1, p_sys_slash
+	mov  x2, #7
+	bl   mcmp_lex
+	cbz  w0, .Lsr_reserved
+	b    .Lsr_pat_ok
+.Lsr_pat_chk6:
+	cmp  x19, #6
+	b.ne .Lsr_pat_ok
+	adr_l x9, g_hpat_ptr
+	ldr  x0, [x9]
+	adr_l x1, p_sys_bare
+	mov  x2, #6
+	bl   mcmp_lex
+	cbnz w0, .Lsr_pat_ok
+.Lsr_reserved:
+	mov  x0, #403
+	adr_l x1, ec_forbidden_pattern
+	bl   send_error
+	b    .Lsr_done
+.Lsr_pat_ok:
 	// interface store path = "system/handler/" + pattern → save into b_ipath
 	adr_l x0, p_hnd_slash
 	mov  x1, #15

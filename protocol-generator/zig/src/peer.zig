@@ -538,12 +538,21 @@ fn registerPattern(a: std.mem.Allocator, exec: Entity) Error!union(enum) { patte
     return .{ .pattern = target[prefix.len..] };
 }
 
+// §6.2: user-installed handlers MUST NOT register at reserved "system/" paths.
+fn isReservedSystemPattern(pattern: []const u8) bool {
+    return std.mem.eql(u8, pattern, "system") or cap.startsWith(pattern, "system/");
+}
+
 fn registerHandler(p: *Peer, a: std.mem.Allocator, exec: Entity) Error!Outcome {
     const rp = try registerPattern(a, exec);
     const pattern = switch (rp) {
         .err => |e| return e,
         .pattern => |s| s,
     };
+    if (isReservedSystemPattern(pattern)) {
+        const msg = try std.fmt.allocPrint(a, "\xc2\xa76.2: user-installed handlers MUST NOT register at system/* paths: {s}", .{pattern});
+        return errOut(a, 403, "forbidden_pattern", msg);
+    }
     const req = (try exec.entityField(a, "params")) orelse return errOut(a, 400, "unexpected_params", "register: missing params");
     if (!std.mem.eql(u8, req.typ, "system/handler/register-request"))
         return errOut(a, 400, "unexpected_params", "register expects register-request");

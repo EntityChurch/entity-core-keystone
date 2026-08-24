@@ -438,11 +438,21 @@ class HandlersHandler:
             )
         return target[len(prefix):], None
 
+    @staticmethod
+    def _is_reserved_system_pattern(pattern: str) -> bool:
+        """§6.2: user-installed handlers MUST NOT register at system/* paths."""
+        return pattern == "system" or pattern.startswith("system/")
+
     def _register(self, ctx: DispatchCtx) -> Outcome:
         p, exec_e = self.p, ctx.exec
         pattern, bad = self._register_pattern(exec_e)
         if bad is not None:
             return bad
+        if self._is_reserved_system_pattern(pattern):
+            return Outcome.err(
+                403, "forbidden_pattern",
+                "§6.2: user-installed handlers MUST NOT register at system/* paths: " + pattern,
+            )
         req = _params_entity(exec_e)
         if req is None:
             return Outcome.err(400, "unexpected_params", "register: missing params")

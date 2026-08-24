@@ -886,6 +886,15 @@ impl Peer {
             Ok(p) => p,
             Err(o) => return o,
         };
+        if is_reserved_system_pattern(&pattern) {
+            return err_out(
+                403,
+                "forbidden_pattern",
+                Some(&format!(
+                    "§6.2: user-installed handlers MUST NOT register at system/* paths: {pattern}"
+                )),
+            );
+        }
         let req = match exec.entity_field("params") {
             Some(r) => r,
             None => return err_out(400, "unexpected_params", Some("register: missing params")),
@@ -1239,6 +1248,11 @@ fn path_flex_ok(target: &str) -> bool {
     }
     body.split('/')
         .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+}
+
+/// §6.2: user-installed handlers MUST NOT register at system/* paths.
+fn is_reserved_system_pattern(pattern: &str) -> bool {
+    pattern == "system" || pattern.starts_with("system/")
 }
 
 fn register_pattern(exec: &Entity) -> Result<String, Outcome> {

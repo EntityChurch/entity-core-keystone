@@ -480,10 +480,17 @@ let register_pattern (exec : Model.entity) : (string, outcome) result =
         Error (err 400 "invalid_resource" ~message:"resource target MUST be system/handler/{pattern}")
       else Ok (String.sub target (String.length prefix) (String.length target - String.length prefix))
 
+(* §6.2: user-installed handlers MUST NOT register at system/* paths. *)
+let is_reserved_system_pattern (pattern : string) : bool =
+  String.equal pattern "system" || Capability.starts_with ~prefix:"system/" pattern
+
 (* register (§6.2 / §6.13(a)): the five normative writes. A 501 stub is non-conformant. *)
 let register (t : t) (exec : Model.entity) : outcome =
   match register_pattern exec with
   | Error e -> e
+  | Ok pattern when is_reserved_system_pattern pattern ->
+      err 403 "forbidden_pattern"
+        ~message:("§6.2: user-installed handlers MUST NOT register at system/* paths: " ^ pattern)
   | Ok pattern -> (
       match entity_field exec "params" with
       | None -> err 400 "unexpected_params" ~message:"register: missing params"

@@ -72,6 +72,11 @@
 # repo — this is the toolchain whose rustfmt NVR started the whole 2026-07-27
 # image-rot sweep. See c-toolchain's Containerfile for the full rationale. SHA-256
 # recorded at fetch time (Koji predates distro GPG signing).
+# RE-PIN (2026-08-17, register-reserved-pattern fix session): the `rust` binary RPM
+# depends on `rust-std-static` at the exact same NVR, but that dependency was never
+# added to the koji-fetch list — `dnf install` failed with "nothing provides
+# rust-std-static(x86-64) = 1.96.1-1.fc43". Added it to the same koji pin (verified
+# present at the same 1.96.1-1.fc43 Koji path; SHA-256 recorded at fetch time).
 FROM registry.fedoraproject.org/fedora:43
 
 # rust + cargo from the distro (reviewed channel, pinned NVR for repro); gcc/cc is the
@@ -80,11 +85,13 @@ FROM registry.fedoraproject.org/fedora:43
 # change. git for any source operations the build expects.
 # clippy + rustfmt are the profile's hard lint floor (`cargo clippy -D warnings &&
 # cargo fmt --check`). On fedora they are SEPARATE rpms from rust/cargo (not bundled),
-# pinned to the same NVR (distro-channel pin-for-repro).
+# pinned to the same NVR (distro-channel pin-for-repro). rust-std-static is `rust`'s
+# own dependency (the stdlib rlibs) — same NVR, must be fetched explicitly too.
 COPY containers/koji-fetch.sh /usr/local/bin/koji-fetch.sh
 RUN chmod +x /usr/local/bin/koji-fetch.sh \
     && koji-fetch.sh rust 1.96.1 1.fc43 \
         rust:d008ed30fa93406d30a044bbcb360f1d744796e428921b78140982be232d2b9b \
+        rust-std-static:fd28b8fd1266dab0df34cdc058257a71ea00b7b102b92d3da66468d41108600a \
         cargo:91c098b91ad70e3aa1470f9bb6c0b8c5b8475dcc84526a5ec909873f550263ff \
         clippy:a2da29e6891cfb157bfb58bd75f92392ef8b851befc8befa1a5193a370fa527b \
         rustfmt:23ddfae74e2b9ffa6c2833c0dd2ecb8b39392795a10c5b977de805d26a2590c6 \

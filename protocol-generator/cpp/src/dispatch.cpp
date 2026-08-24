@@ -611,6 +611,11 @@ std::optional<std::string> register_pattern(const Entity& exec) {
     if (!cap::starts_with(prefix, *target) || target->size() == prefix.size()) return std::nullopt;
     return target->substr(prefix.size());
 }
+
+// §6.2: user-installed handlers MUST NOT register at reserved "system/" paths.
+bool is_reserved_system_pattern(const std::string& pattern) {
+    return pattern == "system" || cap::starts_with("system/", pattern);
+}
 }  // namespace
 
 void Peer::h_handlers(const Entity& exec, const std::string& op, Outcome& o) {
@@ -627,6 +632,12 @@ void Peer::h_handlers(const Entity& exec, const std::string& op, Outcome& o) {
             err(o, 400, "invalid_resource",
                 "resource target MUST be system/handler/{pattern}");
         }
+        return;
+    }
+
+    if (is_register && is_reserved_system_pattern(*pattern)) {
+        err(o, 403, "forbidden_pattern",
+            "\xc2\xa7" "6.2: user-installed handlers MUST NOT register at system/* paths: " + *pattern);
         return;
     }
 

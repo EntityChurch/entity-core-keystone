@@ -576,35 +576,43 @@ mint_bounded(Peer, CallerCap, ReqGrants, GranteeHash, Parent, Outcome) :-
        Outcome = outcome(200, GrantE, Included)
     ;  error_result("scope_exceeds_authority", "", R), Outcome = outcome(403, R, []) ).
 
+% §6.2: user-installed handlers MUST NOT register at reserved system/* patterns.
+is_reserved_system_pattern(Pattern) :-
+    ( Pattern == "system" ; string_concat("system/", _, Pattern) ), !.
+
 % ── register live-hook: write the five normative entities (§6.13(a)) ──
 handle_register(Peer, Exec, Outcome) :-
     peer_local_peer(Peer, Local), peer_store(Peer, StoreId), peer_identity(Peer, Identity),
     ( exec_resource_target(Exec, Target), string_concat("system/handler/", Pattern, Target), Pattern \== ""
-    -> ( ent_entity(Exec, "params", Req), entity_type(Req, "system/handler/register-request")
-       -> ( ent_field(Req, "manifest", map(M)) -> true ; M = [] ),
-          ( memberchk("name"-Name, M), string(Name) -> true ; Name = Pattern ),
-          ( memberchk("operations"-Ops, M) -> true ; Ops = map([]) ),
-          atomics_to_string(["/", Local, "/", Pattern], HandlerPath),
-          atomics_to_string(["system/handler/", Pattern], InterfaceRel),
-          make_entity("system/handler", map(["interface"-InterfaceRel]), HandlerE),
-          store_bind(StoreId, HandlerPath, HandlerE),
-          % self-issued signed handler grant + signature at §3.5 pointer.
-          identity_hash(Identity, IdHash),
-          mint_token(Identity, IdHash, [], GrantToken, GrantSig),
-          atomics_to_string(["/", Local, "/system/capability/grants/", Pattern], GrantPath),
-          store_bind(StoreId, GrantPath, GrantToken),
-          entity_hash(GrantToken, GTH), bytes_hex(GTH, GTHHexA), atom_string(GTHHexA, GTHHex),
-          atomics_to_string(["/", Local, "/system/signature/", GTHHex], SigPath),
-          store_bind(StoreId, SigPath, GrantSig),
-          % interface entity (discovery index).
-          atomics_to_string(["/", Local, "/system/handler/", Pattern], IfacePath),
-          make_entity("system/handler/interface",
-                      map(["pattern"-Pattern, "name"-Name, "operations"-Ops]), IfaceE),
-          store_bind(StoreId, IfacePath, IfaceE),
-          make_entity("system/handler/register-result",
-                      map(["pattern"-Pattern, "grant"-map([])]), ResultE),
-          Outcome = outcome(200, ResultE, [])
-       ;  error_result("unexpected_params", "register expects register-request", R), Outcome = outcome(400, R, []) )
+    -> ( is_reserved_system_pattern(Pattern)
+       -> atomics_to_string(["§6.2: user-installed handlers MUST NOT register at system/* paths: ", Pattern], ForbiddenMsg),
+          error_result("forbidden_pattern", ForbiddenMsg, R), Outcome = outcome(403, R, [])
+       ;  ( ent_entity(Exec, "params", Req), entity_type(Req, "system/handler/register-request")
+          -> ( ent_field(Req, "manifest", map(M)) -> true ; M = [] ),
+             ( memberchk("name"-Name, M), string(Name) -> true ; Name = Pattern ),
+             ( memberchk("operations"-Ops, M) -> true ; Ops = map([]) ),
+             atomics_to_string(["/", Local, "/", Pattern], HandlerPath),
+             atomics_to_string(["system/handler/", Pattern], InterfaceRel),
+             make_entity("system/handler", map(["interface"-InterfaceRel]), HandlerE),
+             store_bind(StoreId, HandlerPath, HandlerE),
+             % self-issued signed handler grant + signature at §3.5 pointer.
+             identity_hash(Identity, IdHash),
+             mint_token(Identity, IdHash, [], GrantToken, GrantSig),
+             atomics_to_string(["/", Local, "/system/capability/grants/", Pattern], GrantPath),
+             store_bind(StoreId, GrantPath, GrantToken),
+             entity_hash(GrantToken, GTH), bytes_hex(GTH, GTHHexA), atom_string(GTHHexA, GTHHex),
+             atomics_to_string(["/", Local, "/system/signature/", GTHHex], SigPath),
+             store_bind(StoreId, SigPath, GrantSig),
+             % interface entity (discovery index).
+             atomics_to_string(["/", Local, "/system/handler/", Pattern], IfacePath),
+             make_entity("system/handler/interface",
+                         map(["pattern"-Pattern, "name"-Name, "operations"-Ops]), IfaceE),
+             store_bind(StoreId, IfacePath, IfaceE),
+             make_entity("system/handler/register-result",
+                         map(["pattern"-Pattern, "grant"-map([])]), ResultE),
+             Outcome = outcome(200, ResultE, [])
+          ;  error_result("unexpected_params", "register expects register-request", R), Outcome = outcome(400, R, []) )
+       )
     ;  error_result("invalid_resource", "resource target MUST be system/handler/{pattern}", R), Outcome = outcome(400, R, []) ).
 
 handle_unregister(Peer, Exec, Outcome) :-

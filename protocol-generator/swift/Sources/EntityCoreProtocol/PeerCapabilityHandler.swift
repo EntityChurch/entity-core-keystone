@@ -20,6 +20,11 @@ extension Peer {
             }
             // resource is "system/handler/{pattern}" → derive {pattern}.
             let pattern = patternFromHandlerResource(first)
+            // §6.2: user-installed handlers MUST NOT register at system/* paths.
+            if isReservedSystemPattern(pattern) {
+                return try errorResponse(requestID: requestID, status: 403, code: "forbidden_pattern",
+                    message: "§6.2: user-installed handlers MUST NOT register at system/* paths: " + pattern)
+            }
             // The five §6.13a writes (manifest, types, grant, grant-sig, interface).
             try await registerHandler(pattern: pattern)
             // register-result.
@@ -84,6 +89,11 @@ extension Peer {
         var s = resource
         if let r = s.range(of: "system/handler/") { s = String(s[r.upperBound...]) }
         return s
+    }
+
+    /// §6.2: user-installed handlers MUST NOT register at system/* paths.
+    func isReservedSystemPattern(_ pattern: String) -> Bool {
+        pattern == "system" || pattern.hasPrefix("system/")
     }
 
     // MARK: - Capability handler (§6.2)

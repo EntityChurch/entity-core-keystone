@@ -392,9 +392,15 @@ function register_pattern(exec::Entity)
     return (target[length(prefix)+1:end], nothing)
 end
 
+# §6.2: "system" itself or any "system/..." prefix is reserved for system handlers;
+# user-installed handlers MUST NOT register there.
+is_reserved_system_pattern(pattern::AbstractString) = pattern == "system" || startswith(pattern, "system/")
+
 function register_handler_op(p::Peer_t, exec::Entity)::HandlerResult
     pattern, e = register_pattern(exec)
     pattern === nothing && return e
+    # §6.2: refuse before any of the five normative writes below.
+    is_reserved_system_pattern(pattern) && return err(403, "forbidden_pattern")
     req = entityfield(exec, "params")
     req === nothing && return err(400, "unexpected_params")
     req.typ == "system/handler/register-request" || return err(400, "unexpected_params")

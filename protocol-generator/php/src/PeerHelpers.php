@@ -83,6 +83,12 @@ final class PeerHelpers
         return \substr($target, \strlen($prefix));
     }
 
+    /** §6.2: user-installed handlers MUST NOT register at system/* paths. */
+    public static function isReservedSystemPattern(string $pattern): bool
+    {
+        return $pattern === 'system' || \str_starts_with($pattern, 'system/');
+    }
+
     public static function registerPatternError(Entity $exec): Outcome
     {
         if (self::execResourceTarget($exec) === null) {

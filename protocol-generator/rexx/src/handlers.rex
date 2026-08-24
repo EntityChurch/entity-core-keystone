@@ -74,6 +74,14 @@ Hnd_RegisterPatternError: procedure expose EC.
   if Hnd_ExecResourceTarget(exec) == '' then return Out_Err(400, 'ambiguous_resource', 'register/unregister require exactly one resource target')
   return Out_Err(400, 'invalid_resource', 'resource target MUST be system/handler/{pattern}')
 
+/* §6.2: true iff pattern == "system" or pattern starts with "system/" -- user-installed
+ * handlers MUST NOT register there. */
+Hnd_IsReservedPattern: procedure expose EC.
+  parse arg pattern
+  if pattern == 'system' then return 1
+  if length(pattern) <= length('system/') then return 0
+  return substr(pattern, 1, length('system/')) == 'system/'
+
 /* ═════ §4.1 / §4.6 connect handler ═════ */
 Hnd_Connect: procedure expose EC.
   parse arg peer_h, operation, ctx
@@ -254,6 +262,7 @@ _handlers_register: procedure expose EC.
   ident = Peer_Identity(peer_h)
   pattern = Hnd_RegisterPattern(exec)
   if pattern == '' then return Hnd_RegisterPatternError(exec)
+  if Hnd_IsReservedPattern(pattern) then return Out_Err(403, 'forbidden_pattern', '§6.2: user-installed handlers MUST NOT register at system/* paths: ' || pattern)
   req = Ent_EntityField(exec, 'params')
   if req == '' then return Out_Err(400, 'unexpected_params', 'register: missing params')
   if Ent_Type(req) \== 'system/handler/register-request' then return Out_Err(400, 'unexpected_params', 'register expects register-request')

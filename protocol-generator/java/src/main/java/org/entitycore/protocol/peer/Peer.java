@@ -634,6 +634,10 @@ public final class Peer {
             if (pattern == null) {
                 return registerPatternError(exec);
             }
+            if (isReservedSystemPattern(pattern)) {
+                return Outcome.err(403, "forbidden_pattern",
+                        "§6.2: user-installed handlers MUST NOT register at system/* paths: " + pattern);
+            }
             Entity req = exec.entityField("params");
             if (req == null) {
                 return Outcome.err(400, "unexpected_params", "register: missing params");
@@ -1126,6 +1130,11 @@ public final class Peer {
             return null;
         }
         return target.substring(prefix.length());
+    }
+
+    /** §6.2: user-installed handlers MUST NOT register at reserved {@code system/*} paths. */
+    private static boolean isReservedSystemPattern(String pattern) {
+        return pattern.equals("system") || Capability.startsWith("system/", pattern);
     }
 
     private static Outcome registerPatternError(Entity exec) {

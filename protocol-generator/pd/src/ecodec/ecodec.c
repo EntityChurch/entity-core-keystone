@@ -3522,6 +3522,13 @@ static int register_pattern(char *out, size_t cap)
     return 0;
 }
 
+/* §6.2: "system" itself or any "system/..." prefix is reserved for system
+ * handlers; user-installed handlers MUST NOT register there. */
+static int is_reserved_system_pattern(const char *pattern)
+{
+    return strcmp(pattern, "system") == 0 || strncmp(pattern, "system/", 7) == 0;
+}
+
 /* [handler_register_serve( — the five normative §6.13(a)/§6.2 register writes:
  * (1) the system/handler MANIFEST at the pattern path (dispatch target,
  * interface-linked); (2) associated types (none installed — register-request
@@ -3538,6 +3545,8 @@ static void ecodec_handler_register_serve(t_ecodec *x)
     int pr = register_pattern(pattern, sizeof pattern);
     if (pr == -1) { emit_error_response(x, 400, "ambiguous_resource"); return; }
     if (pr == -2) { emit_error_response(x, 400, "invalid_resource"); return; }
+    /* §6.2: refuse before any of the five normative writes below. */
+    if (is_reserved_system_pattern(pattern)) { emit_error_response(x, 403, "forbidden_pattern"); return; }
 
     cbor_rd pent, pdata, ptypef;
     char ptype[128] = "";

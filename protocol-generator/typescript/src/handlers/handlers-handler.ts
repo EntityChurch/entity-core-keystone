@@ -40,6 +40,9 @@ export class HandlersHandler implements Handler {
       return patternOrErr;
     }
     const pattern = patternOrErr;
+    if (isReservedSystemPattern(pattern)) {
+      return errorResult(Status.Forbidden, "forbidden_pattern", `§6.2: user-installed handlers MUST NOT register at system/* paths: ${pattern}`);
+    }
     if (ctx.params.type !== TypeNames.HandlerRegisterRequest) {
       return errorResult(Status.BadRequest, "invalid_params", `register expects a ${TypeNames.HandlerRegisterRequest} (got '${ctx.params.type}')`);
     }
@@ -133,6 +136,11 @@ function installTypes(ctx: HandlerContext, req: EcfValue): void {
   for (const [typeName, typeDef] of Ecf.entries(types)) {
     ctx.peer.tree.put(abs(ctx, "system/type/" + typeName), Entity.create(TypeNames.Type, typeDef));
   }
+}
+
+/** §6.2: user-installed handlers MUST NOT register at system/* paths. */
+function isReservedSystemPattern(pattern: string): boolean {
+  return pattern === "system" || pattern.startsWith("system/");
 }
 
 /**

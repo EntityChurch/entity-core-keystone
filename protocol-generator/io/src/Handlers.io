@@ -255,12 +255,22 @@ HandlersHandler := Handler clone do(
         ,
             fail(400, "invalid_resource", "resource target MUST be system/handler/{pattern}"))
     )
+    // §6.2: true iff pattern == "system" or pattern starts with "system/" -- user-installed
+    // handlers MUST NOT register there.
+    _isReservedPattern := method(pattern,
+        pattern == "system" or(pattern beginsWithSeq("system/"))
+    )
 
     op_register := method(ctx,
         exec := execOf(ctx)
         store := peer store
         pattern := _registerPattern(exec)
         if(pattern == nil, return _patternError(exec))
+        // §6.2 wire message stays plain ASCII (A-OZ-008 precedent: a non-ASCII byte in a
+        // wire-visible string tripped the codec's UTF-8 validation path on this run --
+        // isolated live, see SPEC-AMBIGUITY-LOG; keep the § citation in source comments only).
+        if(_isReservedPattern(pattern),
+            return fail(403, "forbidden_pattern", "section 6.2: user-installed handlers MUST NOT register at system/* paths: " .. pattern))
         req := exec entityField("params")
         if(req == nil, return fail(400, "unexpected_params", "register: missing params"))
         if(req entityType != "system/handler/register-request",

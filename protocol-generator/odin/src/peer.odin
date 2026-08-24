@@ -739,12 +739,21 @@ register_pattern :: proc(exec: Entity) -> (pattern: string, err: Outcome, has_er
 	return target[len(prefix):], Outcome{}, false
 }
 
+// §6.2: user-installed handlers MUST NOT register at system/* paths.
+@(private = "file")
+is_reserved_system_pattern :: proc(pattern: string) -> bool {
+	return pattern == "system" || strings.has_prefix(pattern, "system/")
+}
+
 @(private = "file")
 register_handler :: proc(p: ^Peer, exec: Entity) -> Outcome {
 	a := context.temp_allocator
 	pattern, perr, has_perr := register_pattern(exec)
 	if has_perr {
 		return perr
+	}
+	if is_reserved_system_pattern(pattern) {
+		return err_out(403, "forbidden_pattern", strings.concatenate({"§6.2: user-installed handlers MUST NOT register at system/* paths: ", pattern}, a))
 	}
 	req, has_req, _ := entity_field_entity(exec, "params", a)
 	if !has_req {

@@ -7,9 +7,17 @@
 #      (entity-core-go/core/go.mod declares `go 1.25.0`). The exact NVR below is
 #      what fedora:43 shipped at authoring; re-verify the >=30-day age when you
 #      rebuild, and prefer pinning the base image by digest for full repro.
+# RE-PIN (2026-08-17, register-reserved-pattern fix session): golang-1.25.10-*.fc43
+#   rotted out of the `updates` repo metadata (`No match for argument`) — same class
+#   of rot AGENTS.md documents for gcc/binutils/rust/dotnet, first time observed for
+#   golang. Verified via `dnf list --showduplicates golang` inside fedora:43: the
+#   surviving NVRs are 1.25.1-2.fc43 (base `fedora`) and 1.25.12-1.fc43 (`updates`).
+#   Re-pinned to the freshest reviewed distro build per the S11 pin-for-repro rule.
+#   Plain dnf pin (not yet converted to koji-fetch.sh) since this is the first
+#   observed rot for golang, per AGENTS.md's "convert the first time it rots" rule.
 FROM registry.fedoraproject.org/fedora:43
 
-RUN dnf install -y golang-1.25.10 git && dnf clean all
+RUN dnf install -y golang-1.25.12-1.fc43 git && dnf clean all
 
 ENV GOTOOLCHAIN=local \
     GOFLAGS=-mod=mod

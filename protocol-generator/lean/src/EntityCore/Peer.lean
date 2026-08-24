@@ -600,10 +600,18 @@ def registerPattern (exec : Entity) : Except Outcome String :=
       .error (err 400 "invalid_resource" (some "resource target MUST be system/handler/{pattern}"))
     else .ok (target.drop pfx.length).toString
 
+-- §6.2: user-installed handlers MUST NOT register at reserved system/* patterns.
+def isReservedSystemPattern (pattern : String) : Bool :=
+  pattern == "system" || pattern.startsWith "system/"
+
 def register (peer : Peer) (exec : Entity) : IO Outcome := do
   match registerPattern exec with
   | .error e => pure e
-  | .ok pattern => match entityField exec "params" with
+  | .ok pattern =>
+    if isReservedSystemPattern pattern then
+      pure (err 403 "forbidden_pattern"
+        (some s!"§6.2: user-installed handlers MUST NOT register at system/* paths: {pattern}"))
+    else match entityField exec "params" with
     | none => pure (err 400 "unexpected_params" (some "register: missing params"))
     | some req =>
       if req.typ != "system/handler/register-request" then

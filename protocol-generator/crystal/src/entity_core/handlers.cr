@@ -292,6 +292,10 @@ module EntityCore
         exec = ctx.exec
         pattern = Peer.register_pattern(exec)
         return Peer.register_pattern_error(exec) if pattern.nil?
+        if Peer.reserved_system_pattern?(pattern)
+          return Outcome.err(403, "forbidden_pattern",
+            "§6.2: user-installed handlers MUST NOT register at system/* paths: " + pattern)
+        end
 
         req = exec.entity_field("params")
         return Outcome.err(400, "unexpected_params", "register: missing params") if req.nil?

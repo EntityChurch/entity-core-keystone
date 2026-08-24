@@ -547,12 +547,19 @@ registerPattern exec = case resourceTarget exec of
           then Left (errMsg 400 "invalid_resource" "resource target MUST be system/handler/{pattern}")
           else Right (T.drop (T.length prefix) target)
 
+-- | §6.2: user-installed handlers MUST NOT register at system/* paths.
+isReservedSystemPattern :: Text -> Bool
+isReservedSystemPattern pattern = pattern == "system" || "system/" `T.isPrefixOf` pattern
+
 -- | register (§6.13a / §6.2): the five normative writes. (1) manifest, (2) types,
 -- (3) self-issued signed grant, (4) grant-signature at @system/signature/{hash}@
 -- (§3.5 pointer), (5) interface index. A 501 stub is non-conformant under v7.74.
 registerHandler :: Peer -> Entity -> IO Outcome
 registerHandler p exec = case registerPattern exec of
   Left e -> pure e
+  Right pattern
+    | isReservedSystemPattern pattern ->
+        pure (errMsg 403 "forbidden_pattern" ("§6.2: user-installed handlers MUST NOT register at system/* paths: " <> pattern))
   Right pattern -> case entityField exec "params" of
     Nothing -> pure (errMsg 400 "unexpected_params" "register: missing params")
     Just req

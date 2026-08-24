@@ -695,6 +695,9 @@ defmodule EntityCore.Peer do
     end
   end
 
+  # §6.2: user-installed handlers MUST NOT register at reserved system/* patterns.
+  defp reserved_system_pattern?(pattern), do: pattern == "system" or String.starts_with?(pattern, "system/")
+
   # register (§6.2 / §6.13(a)): the five normative writes. A 501 stub is non-conformant.
   defp register(t, exec) do
     case register_pattern(exec) do
@@ -702,15 +705,19 @@ defmodule EntityCore.Peer do
         e
 
       {:ok, pattern} ->
-        case entity_field(exec, "params") do
-          nil ->
-            err(400, "unexpected_params", "register: missing params")
+        if reserved_system_pattern?(pattern) do
+          err(403, "forbidden_pattern", "§6.2: user-installed handlers MUST NOT register at system/* paths: " <> pattern)
+        else
+          case entity_field(exec, "params") do
+            nil ->
+              err(400, "unexpected_params", "register: missing params")
 
-          %{type: type} = req when type != "system/handler/register-request" ->
-            err(400, "unexpected_params", "register expects register-request, got " <> req.type)
+            %{type: type} = req when type != "system/handler/register-request" ->
+              err(400, "unexpected_params", "register expects register-request, got " <> req.type)
 
-          req ->
-            do_register(t, pattern, req)
+            req ->
+              do_register(t, pattern, req)
+          end
         end
     end
   end

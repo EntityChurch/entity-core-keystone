@@ -112,6 +112,9 @@
   (data $b_ambigres "ambiguous_resource")               ;; 400 error code (18)
   (data $b_manifmm  "manifest_pattern_mismatch")        ;; 400 error code (25)
   (data $b_pwild    "/*/*")                              ;; peer-wildcard resource pattern (4)
+  (data $b_forbidpat "forbidden_pattern")                ;; §6.2 403 error code (17)
+  (data $b_sysexact "system")                            ;; §6.2 reserved pattern exact match (6)
+  (data $b_sysslash "system/")                           ;; §6.2 reserved pattern prefix match (7)
   ;; ===== §7a conformance handlers (--validate) — pattern/path/field constants (0x466a00+) =====
   (data $v_pecho  "system/validate/echo")                            ;; echo pattern (20)
   (data $v_pdisp  "system/validate/dispatch-outbound")               ;; dispatch-outbound pattern (33)
@@ -457,6 +460,9 @@
     (memory.init $v_rgrant   (i32.const 0x466bc0) (i32.const 0) (i32.const 15))
     (memory.init $v_rcsig    (i32.const 0x466c00) (i32.const 0) (i32.const 21))
     (memory.init $v_ridpfx   (i32.const 0x466c40) (i32.const 0) (i32.const 4))
+    (memory.init $b_forbidpat (i32.const 0x466c60) (i32.const 0) (i32.const 17))
+    (memory.init $b_sysexact  (i32.const 0x466c80) (i32.const 0) (i32.const 6))
+    (memory.init $b_sysslash  (i32.const 0x466ca0) (i32.const 0) (i32.const 7))
     (memory.init $b_scheme   (i32.const 0x462380) (i32.const 0) (i32.const 9))
     (memory.init $b_star     (i32.const 0x4623c0) (i32.const 0) (i32.const 1))
     (memory.init $b_slashstar (i32.const 0x462400) (i32.const 0) (i32.const 2))
@@ -3436,6 +3442,18 @@
   ;; 400 manifest_pattern_mismatch shorthand.
   (func $err_manifmm (param $out i32) (param $rid i32) (param $rlen i32) (result i32)
     (call $build_error (local.get $out) (i32.const 0x4669b0) (i32.const 25) (i32.const 400) (local.get $rid) (local.get $rlen)))
+  ;; 403 forbidden_pattern shorthand (§6.2 reserved-pattern register refusal).
+  (func $err_forbidpat (param $out i32) (param $rid i32) (param $rlen i32) (result i32)
+    (call $build_error (local.get $out) (i32.const 0x466c60) (i32.const 17) (i32.const 403) (local.get $rid) (local.get $rlen)))
+
+  ;; §6.2: "system" itself or any "system/..." prefix is reserved for system handlers;
+  ;; user-installed handlers MUST NOT register there. $p/$l is the {pattern} tail
+  ;; (already stripped of the "system/handler/" resource prefix by $reg_pattern).
+  (func $is_reserved_pattern (param $p i32) (param $l i32) (result i32)
+    (if (call $streq (local.get $p) (local.get $l) (i32.const 0x466c80) (i32.const 6))   ;; "system"
+      (then (return (i32.const 1))))
+    (if (i32.lt_u (local.get $l) (i32.const 7)) (then (return (i32.const 0))))
+    (call $streq (local.get $p) (i32.const 7) (i32.const 0x466ca0) (i32.const 7)))       ;; "system/" prefix
 
   ;; parse resource.targets[0] into the register/unregister pattern. Sets $g_rtp/$g_rtlen (the
   ;; full resource `system/handler/{pattern}`) and $g_patp/$g_patlen (the {pattern} tail). Returns
@@ -3483,6 +3501,10 @@
     (if (local.get $e) (then (return (local.get $e))))
     (local.set $e (call $reg_pattern (local.get $edp) (local.get $out) (local.get $rid) (local.get $rlen)))
     (if (local.get $e) (then (return (local.get $e))))
+    ;; §6.2: refuse a register at a reserved "system"/"system/..." pattern before any
+    ;; of the five normative writes below.
+    (if (call $is_reserved_pattern (global.get $g_patp) (global.get $g_patlen))
+      (then (return (call $err_forbidpat (local.get $out) (local.get $rid) (local.get $rlen)))))
     ;; params.data → manifest
     (local.set $params (call $map_find (local.get $edp) (i32.const 0x461000) (i32.const 6)))
     (if (i32.eq (local.get $params) (i32.const -1)) (then (return (call $err_invparams (local.get $out) (local.get $rid) (local.get $rlen)))))

@@ -550,6 +550,22 @@ define
          {OutErr 400 "ambiguous_resource" "register/unregister require exactly one resource target"}
       else {OutErr 400 "invalid_resource" "resource target MUST be system/handler/{pattern}"} end
    end
+   %% IsReservedSystemPattern — §6.2: user-installed handlers MUST NOT register at
+   %% system/* paths. Pattern == "system" or begins with "system/". (The runtime
+   %% error message below spells out "section 6.2" in plain ASCII, not "§6.2" --
+   %% a literal U+00A7 baked into an Oz string constant crashes the peer with an
+   %% internal "Tell: 403 = 500" unification failure inside OutErr, verified by
+   %% isolated A/B: {OutErr 403 code "reserved pattern: "#Pattern} is clean, the
+   %% same call with a leading "§6.2: ..." text is not -- reproducibly, every
+   %% time. Comments are source text, never compiled into a runtime value, so §
+   %% is safe here.)
+   fun {IsReservedSystemPattern Pattern}
+      Rpfx = "system/"
+   in
+      if Pattern == "system" then true
+      elseif {Length Pattern} =< {Length Rpfx} then false
+      else {List.take Pattern {Length Rpfx}} == Rpfx end
+   end
 
    fun {HHandlers P Operation Ctx}
       if Operation == "register" then {HandlersRegister P Ctx}
@@ -564,6 +580,8 @@ define
       Pattern = {RegisterPattern Exec}
    in
       if Pattern == absent then {RegisterPatternError Exec}
+      elseif {IsReservedSystemPattern Pattern} then
+         {OutErr 403 "forbidden_pattern" "section 6.2: user-installed handlers MUST NOT register at system/* paths: "#Pattern}
       else
          local Req = {Ent.getEntity Exec "params"} in
             if Req == absent then {OutErr 400 "unexpected_params" "register: missing params"}

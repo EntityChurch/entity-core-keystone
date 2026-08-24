@@ -10,6 +10,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/* §6.2: "system" itself or any "system/..." prefix is reserved for system handlers;
+ * user-installed handlers MUST NOT register there. */
+static int is_reserved_system_pattern(const char *pattern) {
+    static const char pfx[] = "system/";
+    return !strcmp(pattern,"system") || !strncmp(pattern,pfx,sizeof(pfx)-1);
+}
 /* strip "/{peer}/" from an absolute handler pattern → the relative pattern (e.g. system/tree). */
 static const char *rel_pattern(const char *pat) {
     size_t pl = strlen(g_peer_id);
@@ -519,6 +525,10 @@ static void dispatch_body(int fd, conn_state *cs, const char *rid, const char *p
             const char *pfx="system/handler/"; if (strncmp(tgt,pfx,strlen(pfx))!=0) { (void)emit_error(fd,rid,400,"unexpected_params"); return; }
             const char *hp=tgt+strlen(pfx); if (!hp[0] || strlen(hp)>200) { (void)emit_error(fd,rid,400,"unexpected_params"); return; }
             char hpc[600]; snprintf(hpc,sizeof hpc,"%s",hp);
+            /* §6.2: user-installed handlers MUST NOT register at reserved "system/..."
+             * paths. Refused before any of the register writes below; unregister
+             * needs no such guard. */
+            if (!strcmp(op,"register") && is_reserved_system_pattern(hpc)) { (void)emit_error(fd,rid,403,"forbidden_pattern"); return; }
             if (!strcmp(op,"unregister")) {
                 char ap[768]; if (g_store) execf(g_store,"DELETE FROM handler_reg WHERE path='/%s/%s';",g_peer_id,hpc);
                 /* remove the grant token's signature (recompute the token hash from its stored node) */

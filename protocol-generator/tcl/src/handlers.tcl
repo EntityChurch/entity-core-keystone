@@ -85,6 +85,15 @@ proc ::entity::core::handlers::register_pattern_error {exec} {
     return [err 400 invalid_resource "resource target MUST be system/handler/{pattern}"]
 }
 
+# §6.2: true iff pattern == "system" or pattern starts with "system/" -- user-installed
+# handlers MUST NOT register there.
+proc ::entity::core::handlers::is_reserved_pattern {pattern} {
+    if {$pattern eq "system"} { return 1 }
+    set prefix "system/"
+    if {[string length $pattern] < [string length $prefix]} { return 0 }
+    return [expr {[string range $pattern 0 [expr {[string length $prefix]-1}]] eq $prefix}]
+}
+
 # ═════════════════════════ §4.1 / §4.6 connect handler ═════════════════════════
 proc ::entity::core::handlers::connect {peer_h operation ctx} {
     switch -- $operation {
@@ -290,6 +299,9 @@ proc ::entity::core::handlers::_handlers_register {peer_h ctx} {
     set ident [::entity::core::peer::identity $peer_h]
     set pattern [register_pattern $exec]
     if {$pattern eq ""} { return [register_pattern_error $exec] }
+    if {[is_reserved_pattern $pattern]} {
+        return [err 403 forbidden_pattern "§6.2: user-installed handlers MUST NOT register at system/* paths: $pattern"]
+    }
     set req [::entity::core::entity::entity_field $exec params]
     if {$req eq ""} { return [err 400 unexpected_params "register: missing params"] }
     if {[::entity::core::entity::type $req] ne "system/handler/register-request"} {

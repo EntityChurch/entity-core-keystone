@@ -743,6 +743,17 @@ contains
     p = target(len(pfx)+1:)
   end function register_pattern
 
+  ! §6.2: user-installed handlers MUST NOT register at system/* paths.
+  function is_reserved_system_pattern(pattern) result(reserved)
+    character(len=*), intent(in) :: pattern
+    logical :: reserved
+    character(len=*), parameter :: pfx = 'system/'
+    reserved = .false.
+    if (pattern == 'system') then; reserved = .true.; return; end if
+    if (len(pattern) < len(pfx)) return
+    if (pattern(1:len(pfx)) == pfx) reserved = .true.
+  end function is_reserved_system_pattern
+
   function handlers_register(env) result(oc)
     type(envelope_t), intent(in) :: env
     type(outcome_t) :: oc
@@ -754,6 +765,11 @@ contains
     exec = env%root
     pattern = register_pattern(exec)
     if (len(pattern) == 0) then; oc = register_pattern_error(exec); return; end if
+    if (is_reserved_system_pattern(pattern)) then
+      oc = out_err(403, 'forbidden_pattern', &
+        '§6.2: user-installed handlers MUST NOT register at system/* paths: ' // pattern)
+      return
+    end if
     req = ent_entity_field(exec, 'params')
     if (.not. req%present) then; oc = out_err(400, 'unexpected_params', 'register: missing params'); return; end if
     if (ent_type(req) /= 'system/handler/register-request') then; oc = out_err(400, 'unexpected_params', 'register expects register-request'); return; end if

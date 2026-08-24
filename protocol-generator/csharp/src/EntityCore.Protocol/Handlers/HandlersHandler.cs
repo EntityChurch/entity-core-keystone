@@ -48,6 +48,11 @@ internal sealed class HandlersHandler : IHandler
         {
             return err;
         }
+        if (IsReservedSystemPattern(pattern))
+        {
+            return Errors.Error(Status.Forbidden, "forbidden_pattern",
+                $"§6.2: user-installed handlers MUST NOT register at system/* paths: {pattern}");
+        }
         if (ctx.Params.Type != TypeNames.HandlerRegisterRequest)
         {
             return Errors.Error(Status.BadRequest, "invalid_params",
@@ -177,4 +182,10 @@ internal sealed class HandlersHandler : IHandler
     }
 
     private static string Abs(HandlerContext ctx, string peerRelative) => "/" + ctx.LocalPeerId + "/" + peerRelative;
+
+    /// <summary>
+    /// §6.2: user-installed handlers MUST NOT register at reserved <c>system/*</c> paths.
+    /// </summary>
+    private static bool IsReservedSystemPattern(string pattern) =>
+        pattern == "system" || pattern.StartsWith("system/", StringComparison.Ordinal);
 }
