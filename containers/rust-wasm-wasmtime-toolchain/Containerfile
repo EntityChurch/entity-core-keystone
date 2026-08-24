@@ -1,0 +1,77 @@
+# Rust→WebAssembly (wasmtime/AOT) toolchain image — cross-compiles the GENERATED Rust
+# protocol peer (protocol-generator/rust, crate `entity-core-protocol-rust`) to
+# `wasm32-wasip1` and runs it under WASMTIME, precompiled to native code (`wasmtime
+# compile` → `.cwasm`, Cranelift AOT).
+#
+# This is the PRODUCTION compile-once-run-native counterpart to
+# containers/rust-wasm-toolchain (which runs the SAME wasip1 module under WasmEdge/JIT).
+# Same interior, same target, same wasip1 std — the ONLY variables that change are the
+# runtime (wasmtime, not WasmEdge) and the execution mode (AOT native, not JIT). That
+# isolation is deliberate: it makes the AOT column a controlled comparison against the
+# WasmEdge/JIT column. See protocol-generator/rust-wasm-wasmtime/ + research/evaluations/.
+#
+# Layering:
+#   - rust + cargo + rust-std-static-wasm32-wasip1 → the wasm cross target, ALL from the
+#     fedora:43 distro channel (NO rustup / curl|sh). wasip1 (not wasip2) is deliberate:
+#     wasmtime AOT is WASI-version-agnostic, and fedora ships no wasip2 std — targeting
+#     wasip1 keeps the toolchain distro-pure AND the comparison controlled.
+#   - wabt / binaryen → wasm-opt + wasm2wat/wasm-validate for the size comparison (same
+#     tooling as the other wasm peers).
+#   - wasmtime → the RUNTIME + AOT compiler. NOT packaged in fedora (verified 2026-07-15:
+#     `dnf list wasmtime` → nothing), so it is fetched as a CHECKSUM-PINNED upstream
+#     release binary (S11: prefer distro; when none, a pinned release). The guest binds
+#     no socket — the host preopens the listener via `wasmtime run -S preview2=n -S
+#     tcplisten=127.0.0.1:PORT`, and the peer accepts with the standard wasip1 sock_accept.
+#   - gcc → cargo needs a `cc` for build-script host artifacts (not linked into wasm).
+#
+# S11 PINS (what fedora:43 shipped / upstream released at authoring, 2026-07-15):
+#   wasmtime  v46.0.1 x86_64-linux
+#     url    = https://github.com/bytecodealliance/wasmtime/releases/download/v46.0.1/wasmtime-v46.0.1-x86_64-linux.tar.xz
+#     sha256 = 9ae0b17ea298bcc52277a8208d6ab7fae8e1a89579672f9d82f9d86c116edb62
+#     (self-reported: wasmtime 46.0.1 (823d1b8f2 2026-06-24))
+#   rust/cargo/rust-std come through the distro (reviewed channel → pin-for-repro; the
+#   >=30-day floor relaxes). The crate pins (ed25519-dalek, sha2, wasi) keep the >=30-day
+#   discipline in the committed Cargo.lock. NOTE: `.cwasm` produced by this image is
+#   wasmtime-46.0.1-specific — re-pin the runtime and rebuild the AOT artifact together.
+#
+# Build (needs network for the one-time dnf + the pinned wasmtime fetch):
+#   podman build -t entity-core-keystone/rust-wasm-wasmtime-toolchain:latest \
+#     -f containers/rust-wasm-wasmtime-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+RUN dnf install -y --setopt=install_weak_deps=False \
+        rust-1.96.1-1.fc43 \
+        cargo-1.96.1-1.fc43 \
+        rust-std-static-wasm32-wasip1-1.96.1-1.fc43 \
+        gcc \
+        wabt-1.0.37-2.fc43 \
+        binaryen-126-1.fc43 \
+        make-1:4.4.1-11.fc43 \
+        tar \
+        xz \
+        findutils \
+        which \
+    && dnf clean all
+
+# wasmtime — checksum-pinned upstream release (not in fedora). Fetch, verify, install the
+# single static binary, drop the tarball. If the sha256 mismatches, the build FAILS here.
+ARG WASMTIME_VER=v46.0.1
+ARG WASMTIME_SHA256=9ae0b17ea298bcc52277a8208d6ab7fae8e1a89579672f9d82f9d86c116edb62
+ADD https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VER}/wasmtime-${WASMTIME_VER}-x86_64-linux.tar.xz /tmp/wasmtime.tar.xz
+RUN echo "${WASMTIME_SHA256}  /tmp/wasmtime.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/wasmtime.tar.xz -C /tmp \
+    && install -m0755 /tmp/wasmtime-${WASMTIME_VER}-x86_64-linux/wasmtime /usr/local/bin/wasmtime \
+    && rm -rf /tmp/wasmtime.tar.xz /tmp/wasmtime-${WASMTIME_VER}-x86_64-linux \
+    && wasmtime --version
+
+# Keep cargo's registry/cache on a mountable path so repeated conformance runs don't
+# refetch crates. Mount a volume at /cargo.
+ENV CARGO_HOME=/cargo \
+    CARGO_TERM_COLOR=never
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="rust-wasm-wasmtime-toolchain"
+LABEL org.entity-core-keystone.version="1"
+
+CMD ["/bin/bash"]

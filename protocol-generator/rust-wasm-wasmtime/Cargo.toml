@@ -1,0 +1,51 @@
+# entity-core-protocol-rust-wasm-wasmtime — the Rust core-protocol peer compiled to
+# WebAssembly and run under WASMTIME (Cranelift AOT), the production compile-once-run-
+# native counterpart to the WasmEdge/JIT peer in ../rust-wasm.
+#
+# SAME interior, SAME wasm32-wasip1 target as ../rust-wasm — the ONLY differences are
+# the runtime (wasmtime, not WasmEdge) and the transport seam's socket ABI:
+#
+#   ../rust-wasm (WasmEdge)      : guest self-binds via WasmEdge's non-standard sock_*
+#                                  extension (sock_open/bind/listen), then accepts.
+#   this crate   (wasmtime)      : the HOST preopens the listener (`wasmtime run -S
+#                                  preview2=n -S tcplisten=127.0.0.1:PORT`); the guest
+#                                  receives it as preopened fd 3 and calls the STANDARD
+#                                  wasip1 `sock_accept`. recv/send are fd_read/fd_write,
+#                                  readiness is `poll_oneoff` — all standard preview1.
+#
+# Reusing wasip1 (not wasip2) is deliberate: `wasmtime compile` (AOT) is WASI-version-
+# agnostic, so wasip1 answers the compile-once-run-native question with a CONTROLLED
+# comparison — same codegen artifact as the WasmEdge column, only runtime + exec-mode
+# change. wasip2 would add a second variable (a different socket ABI) and cost the
+# no-rustup supply-chain rule (fedora ships no wasip2 std). It is a deferred forward-ABI
+# probe, not a prerequisite for the AOT column. See ../rust-wasm and
+# research/evaluations/wasm-codegen-comparison.md.
+[package]
+name        = "entity-core-protocol-rust-wasm-wasmtime"
+version     = "0.1.0-pre"
+edition     = "2021"
+license     = "Apache-2.0"
+authors     = ["Entity Core Protocol contributors"]
+description = "The generated Rust core-protocol peer, cross-compiled to wasm32-wasip1 and run under wasmtime (Cranelift AOT) with a single-threaded poll_oneoff socket seam over a host-preopened listener."
+publish     = false
+
+[[bin]]
+name = "entity-peer-wasm-wasmtime"
+path = "src/main.rs"
+
+[dependencies]
+# The PROTOCOL PAYLOAD — the native Rust peer's library, unmodified, cross-compiled to
+# wasm. Identical path dep as ../rust-wasm: the interior is substrate-neutral, so the
+# AOT column measures ONLY codegen + runtime, never a different interior.
+entity-core-protocol-rust = { path = "../rust" }
+# The TRANSPORT SEAM's platform binding: the STANDARD wasip1 raw bindings (sock_accept,
+# poll_oneoff, fd_read/fd_write, fd_fdstat_set_flags). Replaces ../rust-wasm's
+# WasmEdge-specific `wasmedge_wasi_socket` — wasmtime implements the standard snapshot,
+# not WasmEdge's sock_* extension. Scoped to THIS bin; the interior stays FFI-free.
+wasi = "0.11.1"
+
+[profile.release]
+# Match ../rust-wasm's profile so the size/warmup comparison stays apples-to-apples.
+opt-level = "s"
+lto       = true
+strip     = true

@@ -1,0 +1,40 @@
+# entity-core-protocol-rust-wasm — the Rust core-protocol peer compiled to WebAssembly.
+#
+# This crate is DELIBERATELY THIN: it is the WASM *transport seam* only. The entire
+# protocol payload — canonical-ECF codec, Ed25519 identity, §5 capability authorization,
+# the §6 dispatch chain, the §9.5 type floor — is the UNMODIFIED library of the native
+# Rust peer (`entity-core-protocol`, a path dep on ../rust), cross-compiled to
+# `wasm32-wasip1`. The only substrate-specific code here is `src/main.rs`: a single-
+# threaded poll loop over WasmEdge sockets + the §7a reentrant-outbound pump.
+#
+# The point of the split IS the thesis: the transportable compute payload is untouched;
+# only the ~one-file host seam changes per substrate. Companion to the hand-authored WAT
+# peer (protocol-generator/wasm-wat) — same runtime (WasmEdge), so the head-to-head is
+# isolated to codegen. See research/evaluations/wasm-codegen-comparison.md.
+[package]
+name        = "entity-core-protocol-rust-wasm"
+version     = "0.1.0-pre"
+edition     = "2021"
+license     = "Apache-2.0"
+authors     = ["Entity Core Protocol contributors"]
+description = "The generated Rust core-protocol peer, cross-compiled to wasm32-wasip1 and run under WasmEdge with a single-threaded socket poll-loop transport seam."
+publish     = false
+
+[[bin]]
+name = "entity-peer-wasm"
+path = "src/main.rs"
+
+[dependencies]
+# The PROTOCOL PAYLOAD — the native Rust peer's library, unmodified, cross-compiled to
+# wasm. This is the whole point: the interior is substrate-neutral.
+entity-core-protocol-rust = { path = "../rust" }
+# The TRANSPORT SEAM's platform binding: WasmEdge's non-standard wasi_snapshot_preview1
+# Berkeley-socket extension (sock_open/bind/listen/accept/recv/send). Scoped to THIS bin
+# only — the wasm analog of the asm peer linking libc sockets; the interior stays FFI-free.
+wasmedge_wasi_socket = "0"
+
+[profile.release]
+# Optimize for a fair size comparison against the hand-authored WAT peer + fast JIT warmup.
+opt-level = "s"
+lto       = true
+strip     = true

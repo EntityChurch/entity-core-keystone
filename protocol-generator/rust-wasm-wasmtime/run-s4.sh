@@ -1,0 +1,69 @@
+#!/bin/sh
+# S4 conformance harness — entity-core-protocol-rust-wasm-wasmtime (the Rust peer compiled
+# to wasm32-wasip1, precompiled to native code and run under WASMTIME/AOT). Direct analog
+# of ../rust-wasm/run-s4.sh; the differences are (1) the runtime is wasmtime not WasmEdge,
+# (2) the peer runs as AOT-native `.cwasm` not JIT, (3) the listener is HOST-preopened via
+# `-S tcplisten` (the guest accepts on it) rather than self-bound. Same interior, same
+# oracle, same loopback — so this isolates runtime + execution-mode for the AOT column.
+#
+# Runs inside the rust-wasm-wasmtime-toolchain container (the Go validate-peer oracle is a
+# fedora:43 ELF that runs there too, sharing one loopback; --network=none keeps it
+# sealed). Mount a cargo cache at /cargo so the one-time crate fetch is reused.
+#
+# Invoke from the repo root:
+#   podman run --memory=6g --memory-swap=6g --pids-limit=2048 --cpus=4 --rm --network=none \
+#     -v "$PWD":/work:Z -v <cargo-cache>:/cargo:Z \
+#     localhost/entity-core-keystone/rust-wasm-wasmtime-toolchain:latest \
+#     sh /work/protocol-generator/rust-wasm-wasmtime/run-s4.sh [validate-peer-args...]
+#
+# MODE=aot (default) runs out/peer.cwasm (--allow-precompiled). MODE=wasm runs out/peer.wasm
+# directly (wasmtime JIT-compiles it) — for the AOT-vs-JIT-warmup datapoint on ONE runtime.
+set -eu
+PORT="${PORT:-7777}"
+MODE="${MODE:-aot}"
+ORACLE="${ORACLE:-/work/output/s4-oracles/validate-peer}"
+PROJ=/work/protocol-generator/rust-wasm-wasmtime
+# --debug-open-grants: the degenerate default→* seed policy so grant-gated categories RUN.
+# --validate: arm the §7a conformance scaffold (reentrant-dispatch checks). Both OFF in
+# production default. These go to the GUEST (after the module path), not to wasmtime.
+PEERFLAGS="${PEERFLAGS:---debug-open-grants --validate}"
+cd "$PROJ"
+
+if [ "$MODE" = "aot" ]; then
+  [ "${NOBUILD:-0}" = "1" ] || make aot >/dev/null
+  MODULE="out/peer.cwasm"
+  PRECOMPILED="--allow-precompiled"
+else
+  [ "${NOBUILD:-0}" = "1" ] || make peer >/dev/null
+  MODULE="out/peer.wasm"
+  PRECOMPILED=""
+fi
+
+# `-S preview2=n` selects wasmtime's legacy wasip1 implementation — the one that supports
+# `-S tcplisten` (the host-preopened Berkeley listener the guest accepts on). `-S tcplisten`
+# grants the listen socket bound to 127.0.0.1:$PORT; the guest receives it as a preopened fd.
+# No `--run-mode` flag — AOT means the .cwasm is already native (this is the WasmEdge
+# `--enable-jit` analog made unnecessary: Cranelift compiled per-request Ed25519 verify to
+# native code ahead of time, so §6.11 t2_1/t2_2 sustain full verification with no JIT warmup).
+wasmtime run \
+  -S preview2=n \
+  -S tcplisten="127.0.0.1:$PORT" \
+  $PRECOMPILED \
+  "$MODULE" $PEERFLAGS >/tmp/host.out 2>/tmp/host.err &
+HOST_PID=$!
+trap 'kill "$HOST_PID" 2>/dev/null || true' EXIT INT TERM
+
+i=0
+while [ "$i" -lt 100 ]; do
+  grep -q '^LISTENING' /tmp/host.out 2>/dev/null && break
+  if ! kill -0 "$HOST_PID" 2>/dev/null; then
+    echo "peer exited before LISTENING:" >&2; cat /tmp/host.err >&2; exit 1
+  fi
+  i=$((i + 1)); sleep 0.1
+done
+head -1 /tmp/host.out
+
+if [ "$#" -eq 0 ]; then
+  set -- -profile core -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
+fi
+"$ORACLE" -addr "127.0.0.1:$PORT" "$@" || true

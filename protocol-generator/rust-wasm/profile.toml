@@ -1,0 +1,109 @@
+# entity-core-protocol-rust-wasm — Language Profile
+#
+# The COMPILED WebAssembly peer: the generated Rust peer's library
+# (protocol-generator/rust, crate `entity-core-protocol`), cross-compiled UNMODIFIED to
+# `wasm32-wasip1` and run under WasmEdge. It is the sibling of the hand-authored WAT peer
+# (protocol-generator/wasm-wat) — the two WASM flavors of COMPLETENESS-ROADMAP §2:
+#   - wasm-wat  = hand-authored .wat + a compiled-codec seam (authored FROM spec in WAT).
+#   - rust-wasm = a whole existing peer (Rust) COMPILED to wasm (LLVM codegen).
+# Running BOTH on the SAME runtime (WasmEdge 0.17.1) isolates the head-to-head to ONE
+# variable — codegen: hand-written WAT vs Rust→LLVM→wasm. See
+# research/evaluations/wasm-codegen-comparison.md.
+#
+# The thesis this peer makes literal: the whole protocol PAYLOAD is substrate-neutral. The
+# ~4,000-line interior (codec, §5 authorization, §6 dispatch, §9.5 type floor, crypto)
+# cross-compiled to wasm with ZERO source changes — even `random_nonce`'s /dev/urandom
+# fallback (SHA-256 of counter‖time‖stack-addr) covers the WASI sandbox for free. Only the
+# ~one-file TRANSPORT SEAM changes: `std::thread` + `std::net` (which compile but do not
+# function on wasip1) are replaced by a single-threaded `poll_oneoff` loop over WasmEdge
+# sockets in `src/main.rs`. That is the "minimal transportable layer" made concrete: swap
+# one host file, carry the whole protocol.
+#
+# It exists for SUBSTRATE-DYNAMICS + the codegen comparison, NOT spec-discovery (the wire
+# axes are saturated; --profile core lands 0-FAIL as corroboration, cohort-consistent — NOT
+# independent convergence, ADR-0012). Honesty caveat: this shares the native Rust peer's
+# generation lineage AND its codec/crypto crates (ed25519-dalek, sha2) — the independent
+# datapoint is the wasm TRANSPORT SEAM + the "unmodified interior cross-compiles" result,
+# not the codec.
+
+[language]
+id                = "rust-wasm"
+name              = "Rust → WebAssembly (wasm32-wasip1, compiled peer)"
+tier              = "substrate-probe"          # compiled-wasm host model; corroboration tier (research/LANDSCAPE.md)
+package_name      = "entity-core-protocol-rust-wasm"
+runtime           = "rust-wasm-toolchain"      # containers/rust-wasm-toolchain/Containerfile
+isa               = "wasm32-wasip1 (bulk-memory/sign-ext/mutable-globals), executed by WasmEdge 0.17.1 --run-mode=jit"
+# The cross-compiled flavor of the two WASM peers. The interior is a PATH DEP on ../rust —
+# no source is duplicated; this crate is the transport seam + a wasm binary target only.
+
+[codec]
+# strategy: NATIVE (inherited). The peer reuses the native Rust peer's hand-rolled canonical
+# ECF codec + ed25519-dalek + sha2 UNCHANGED — they cross-compile to wasm32-wasip1 cleanly
+# (proven: the whole lib builds in 2.5s with no target-specific code). No seam, no FFI: unlike
+# the WAT peer (which has no CBOR/crypto stack and must merge a compiled codec), the Rust peer
+# carries its own — that is the point of compiling a whole peer rather than authoring one.
+strategy          = "native (inherited from ../rust, cross-compiled)"
+cbor_library      = { name = "hand-rolled ECF (../rust src/cbor.rs)", version = "in-tree", canonical_mode = "ecf" }
+ed25519_library   = { name = "ed25519-dalek", version = "=2.2.0" }   # compiles to wasm32-wasip1; verify is RNG-free, sign is seed-deterministic
+sha256_source     = "sha2 =0.10.9 (§9.1 floor + §agility SHA-384)"
+base58_library    = "hand-rolled (../rust src/base58.rs)"
+ed448_library     = { name = "deferred", version = "n/a" }           # agility not in the core floor; would take the codec-seam route like the cohort
+
+[error_model]
+style             = "result"                   # inherited: Rust Result/Option; the transport seam maps io::Error → connection close
+error_set         = "CodecError / peer Outcome (inherited); the seam adds only socket-level io::Result"
+trap_policy       = "the interior is #![forbid(unsafe_code)] + panic-free on the conformance surface; a panic aborts the single wasm process (no fork blast-radius), so the 16-MiB §4.10(a) frame cap + bounded reads are load-bearing (over-cap → close)"
+
+[async]
+# SUBSTRATE-FORCED single thread. wasm32-wasip1 has no threads and std::net does not function,
+# so the native peer's thread-per-connection transport is replaced by a single-threaded
+# poll_oneoff loop. CRUCIALLY the interior is UNCHANGED: §7a dispatch-outbound reentry uses the
+# same `Conn.outbound` Arc<OutboundFn> seam, invoked here by a single-threaded REENTRANT PUMP
+# (send the outbound frame, pump THIS fd until the correlated reply; defer inbound requests
+# seen mid-pump) — same-connection reentry needs no true concurrency (the asm/wasm-wat finding).
+# The seam absorbs the whole thread→poll difference; `Peer::dispatch` is byte-identical native.
+style             = "evented"                  # single-threaded poll loop; native peer is threaded — the seam bridges it
+default_surface   = "nonblocking-sockets-over-poll_oneoff"
+primitive         = "wasmedge_wasi_socket TcpListener/TcpStream (WasmEdge wasi_snapshot_preview1 sock_*) + its poll() (poll_oneoff); non-blocking accept"
+reentry_demux     = "single-threaded reentrant pump: pending[echo_rid] + a deferred-request queue; serializes exactly like the native per-conn mutex (src/main.rs pump_outbound)"
+
+[build]
+build_tool        = "cargo (cross) + wasmedge"
+build_command     = "cargo build --release --target wasm32-wasip1 --bin entity-peer-wasm ; cp target/wasm32-wasip1/release/entity-peer-wasm.wasm out/peer.wasm"
+test_command      = "run-s4.sh   # validate-peer --profile core under WasmEdge --run-mode=jit"
+entry_point       = "main (WASI command target `entity-peer-wasm`)"
+
+[layout]
+project_file      = "Cargo.toml + Makefile"
+src_dir           = "src/"                     # main.rs = the ENTIRE substrate-specific surface (the transport seam); interior is the ../rust path dep
+lib_name          = "n/a — the artifact is out/peer.wasm (a WASI command module)"
+module_root       = "src/main.rs"
+
+[dependencies]
+# The interior is a path dep; the seam adds ONE platform binding (sockets). The interior's own
+# dep-minimization (only ed25519-dalek + sha2) is unchanged — wasmedge_wasi_socket is confined
+# to the wasm BIN, the wasm analog of the asm peer linking libc for sockets.
+interior          = { crate = "entity-core-protocol-rust", path = "../rust" }   # the UNMODIFIED payload
+socket_seam       = { crate = "wasmedge_wasi_socket", version = "0.5.5" }       # WasmEdge sock_* + poll_oneoff; bin-only
+
+[container]
+base_image        = "entity-core-keystone/rust-wasm-toolchain:latest"
+build_in_container = true
+# First build needs network for the one-time cargo fetch (Cargo.lock committed); after the
+# /cargo cache is warm it runs offline. Loopback works in the container netns, so run-s4 (Go
+# oracle + wasm peer over 127.0.0.1) stays sealed.
+dev_loop          = "podman run --rm -v $PWD:/work:Z -v <cargo-cache>:/cargo:Z -w /work/protocol-generator/rust-wasm entity-core-keystone/rust-wasm-toolchain:latest make peer"
+
+[idiom]
+transport_via_crate           = "wasmedge_wasi_socket (WasmEdge wasi_snapshot_preview1 Berkeley sockets); byte-for-byte the same import surface host.wat binds by hand"
+single_send_framing           = true           # response = ONE contiguous [len][payload] write, NOT wire::write_frame's two sends — defeats the Nagle/delayed-ACK churn stall (host.wat's fix, ported)
+crypto_execution_mode         = "JIT (--run-mode=jit) is load-bearing: interpreter runs Ed25519 verify at ~ms → §6.11 t2_1/t2_2 time out; JIT ~µs. Same finding as wasm-wat."
+integer_model                 = "fixed-width u64 (inherited) → carries the head-form + [2^63,2^64-1] self-test via the native codec"
+interior_source_changes       = "ZERO — the ../rust lib cross-compiles unmodified; only src/main.rs (the transport seam) is substrate-specific"
+
+[license]
+generated_outputs = "Apache-2.0"
+
+[spec]
+v7_version_pinned = "v0.8.0 / V8"
+oracle_pin        = "cc1970f (fingerprint 8261a03…) — matches the cohort; validate-peer --profile core = 0-FAIL"

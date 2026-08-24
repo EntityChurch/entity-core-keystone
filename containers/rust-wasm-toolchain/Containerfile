@@ -1,0 +1,66 @@
+# Rust→WebAssembly toolchain image — cross-compiles the GENERATED Rust protocol peer
+# (protocol-generator/rust, crate `entity-core-protocol-rust`) to `wasm32-wasip1` and
+# runs the resulting module under WasmEdge with real sockets.
+#
+# This is the COMPILED-wasm counterpart to containers/wasm-wat-toolchain (which
+# assembles the HAND-AUTHORED WAT peer). The two run on the SAME runtime (WasmEdge
+# 0.17) so the head-to-head is isolated to ONE variable: codegen — hand-written WAT vs
+# Rust→LLVM→wasm. See protocol-generator/rust-wasm/ + research/evaluations/.
+#
+# Layering (all from the fedora:43 reviewed distro channel, S11 pin-for-repro):
+#   - rust + cargo + rust-std-static-wasm32-wasip1 → the wasm cross target. Fedora ships
+#     the wasip1 std as a distro package (NO rustup / curl|sh); wasip2 is NOT packaged,
+#     which is the practical reason this peer targets wasip1 + WasmEdge first.
+#   - wabt / binaryen → wasm-opt + wasm2wat/wasm-validate for size measurement + the
+#     Rust-wasm ⟷ hand-WAT code-size comparison (same tooling as the WAT peer).
+#   - wasmedge → the RUNTIME (the "kernel"): its non-standard wasi_snapshot_preview1
+#     Berkeley-socket extension (sock_open/bind/listen/accept/recv/send + poll_oneoff)
+#     is what the peer's transport seam binds via `extern "C"` — the wasm analog of the
+#     asm peer calling Linux socket syscalls, and byte-for-byte the same import surface
+#     the hand-authored host.wat uses.
+#   - gcc → cargo needs a `cc` for build-script host artifacts (not linked into wasm).
+#
+# NOTE (runtime version): wasmedge is pinned to 0.17.1 (fedora updates, 2026-07-15) —
+# the wasm-wat peer was measured on 0.17.0, which fedora has since superseded (0.17.0 is
+# gone from the repos). For the honest head-to-head, run BOTH peers under this 0.17.1
+# (the wasm-wat peer.wasm is a portable artifact) so the comparison stays single-runtime.
+#
+# S11 pins = what fedora:43 shipped at authoring (2026-07-15). rust/cargo/rust-std come
+# through the distro (reviewed channel → pin-for-repro; the >=30-day floor relaxes). The
+# crate pins (ed25519-dalek, sha2) keep the >=30-day discipline in the committed
+# Cargo.lock, unchanged from the native rust peer. Re-verify NVRs + re-pin on rebuild;
+# prefer a base-image digest pin for full repro.
+#
+# Build:
+#   podman build -t entity-core-keystone/rust-wasm-toolchain:latest \
+#     -f containers/rust-wasm-toolchain/Containerfile .
+#
+# NETWORK: the one-time `cargo fetch` of the small registry closure needs network at
+# first build; after Cargo.lock + the .cargo cache are populated, the build runs fully
+# offline (`cargo build --offline`, podman `--network=none`).
+FROM registry.fedoraproject.org/fedora:43
+
+RUN dnf install -y --setopt=install_weak_deps=False \
+        rust-1.96.1-1.fc43 \
+        cargo-1.96.1-1.fc43 \
+        rust-std-static-wasm32-wasip1-1.96.1-1.fc43 \
+        gcc \
+        wabt-1.0.37-2.fc43 \
+        wasmedge-0.17.1-1.fc43 \
+        binaryen-126-1.fc43 \
+        make-1:4.4.1-11.fc43 \
+        findutils \
+        which \
+    && dnf clean all
+
+# Keep cargo's registry/cache on a mountable path so repeated conformance runs don't
+# refetch crates. Mount a volume at /cargo.
+ENV CARGO_HOME=/cargo \
+    CARGO_TERM_COLOR=never
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="rust-wasm-toolchain"
+LABEL org.entity-core-keystone.version="1"
+
+CMD ["/bin/bash"]

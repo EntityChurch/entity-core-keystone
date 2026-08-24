@@ -1,0 +1,40 @@
+# entity-core-protocol-rust-wasm-wasmtime — profile
+#
+# This is NOT a new language profile — it is a RUNTIME + SEAM variant of ../rust-wasm,
+# which is itself a compile-target variant of ../rust. The protocol interior, numeric
+# model, crypto stack, and codec are inherited UNCHANGED from ../rust (path dep). The
+# only profile-relevant deltas from ../rust-wasm are the runtime and the socket ABI.
+#
+# See ../rust/profile.toml + ../rust-wasm/ for the inherited decisions; ADR-0012 honesty:
+# this shares the rust generation lineage — cohort-consistent, not independent convergence.
+
+[meta]
+name        = "rust-wasm-wasmtime"
+inherits    = "rust-wasm"        # → which inherits "rust"
+kind        = "runtime+seam-variant"
+target      = "wasm32-wasip1"    # deliberately wasip1, not wasip2 (see rationale below)
+runtime     = "wasmtime"         # v46.0.1, checksum-pinned (not in fedora); Cranelift AOT
+exec_mode   = "AOT"              # `wasmtime compile` → .cwasm, run --allow-precompiled
+
+[rationale]
+# Why wasip1, not wasip2: `wasmtime compile` (AOT) is WASI-version-agnostic, so wasip1
+# answers the compile-once-run-native question as a CONTROLLED comparison against the
+# WasmEdge column (same codegen artifact, only runtime + exec-mode change). wasip2 would
+# add a second variable (a different socket ABI) and cost the no-rustup S11 rule (fedora
+# ships no wasip2 std). wasip2 is a DEFERRED forward-ABI probe, not a prerequisite.
+target_choice = "wasip1 (controlled comparison + distro-pure toolchain; wasip2 deferred)"
+
+[seam]
+# The ONLY substrate-specific code (src/main.rs `sock` module). Everything else — framing,
+# the §7a reentrant-outbound pump, dispatch — ports verbatim from ../rust-wasm.
+listener    = "host-preopened via `wasmtime run -S preview2=n -S tcplisten=ADDR`"
+accept      = "standard wasip1 sock_accept (the `wasi` 0.11.1 crate) — NOT WasmEdge sock_*"
+readiness   = "poll_oneoff"
+recv_send   = "fd_read / fd_write"
+binding     = "wasi = 0.11.1 (preview1), bin-only; interior stays FFI-free"
+
+[status]
+# validate-peer --profile core → Result: PASS — 682 · 291P · 294W · 0F · 97S @ cc1970f
+# (running the AOT .cwasm). Full cohort parity with rust-wasm / wasm-wat. See status/PHASE-S3.md.
+conformance = "682 · 291P · 294W · 0F · 97S @ cc1970f (AOT .cwasm)"
+publish     = "0.1.0-pre — source (`make aot`); registry-publish deferred like the cohort"
