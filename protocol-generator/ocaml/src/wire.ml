@@ -48,6 +48,31 @@ let write_frame (fd : Unix.file_descr) (payload : string) : unit =
 let envelope_of_frame (payload : string) : Model.envelope =
   Model.envelope_of_cbor (Cbor.decode payload)
 
+(* [salvage_request_id payload] recovers ONLY the [request_id] from a frame the
+   strict decoder rejected, so the rejection can be delivered as a correlated
+   [400 non_canonical_ecf] response (§6.3) instead of silence.
+
+   The frame stays rejected. Nothing else is read out of it: no entity is built,
+   nothing is stored, and the offending tag is discarded rather than interpreted.
+   The envelope and entity-wrapper shapes are fixed maps with no legal tag
+   position (§6.3), so a frame whose only defect is a tag inside some entity's
+   [data] still has a structurally sound root — which is exactly the case this
+   recovers. Returns [None] when even the request_id is unreachable, leaving the
+   frame unattributable and silence the only remaining option. *)
+let salvage_request_id (payload : string) : string option =
+  match Cbor.decode ~keep_tags:true payload with
+  | exception _ -> None
+  | c -> (
+      match Model.map_get c "root" with
+      | Some r -> (
+          match Model.map_get r "data" with
+          | Some d -> (
+              match Model.map_get d "request_id" with
+              | Some (Cbor.Text rid) -> Some rid
+              | _ -> None)
+          | None -> None)
+      | None -> None)
+
 let frame_of_envelope (env : Model.envelope) : string =
   Cbor.encode (Model.envelope_to_cbor env)
 

@@ -19,6 +19,28 @@ def maxFrame : Nat := 16 * 1024 * 1024
 def payloadOfEnvelope (env : Envelope) : ByteArray :=
   EntityCore.Codec.encode (envelopeToCbor env)
 
+/-- Recover ONLY the `request_id` from a frame the strict decoder rejected, so the
+rejection can be delivered as a correlated `400 non_canonical_ecf` response (§6.3)
+instead of silence or a closed connection.
+
+The frame stays rejected. Nothing else is read out of it: no entity is built,
+nothing is stored, and the offending tag is discarded rather than interpreted. The
+envelope and entity-wrapper shapes are fixed maps with no legal tag position
+(§6.3), so a frame whose only defect is a tag inside some entity's `data` still has
+a structurally sound root -- exactly the case this recovers. -/
+def salvageRequestId (payload : ByteArray) : Option String :=
+  match EntityCore.Codec.decodeSalvage payload with
+  | .error _ => none
+  | .ok v =>
+      match mapGet v "root" with
+      | some r =>
+          match mapGet r "data" with
+          | some d => match mapGet d "request_id" with
+                      | some (.text rid) => some rid
+                      | _ => none
+          | none => none
+      | none => none
+
 /-- Parse a CBOR payload to an envelope (`none` on malformed bytes — §3.3 drop). -/
 def envelopeOfPayload (payload : ByteArray) : Option Envelope :=
   match EntityCore.Codec.decode payload with

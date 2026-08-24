@@ -283,9 +283,51 @@ def rootAuthorityOk : RootAuthority → Bool
   | .single isLocal => isLocal
   | .multi signers threshold parentNull => multiSigRootOk signers threshold parentNull
 
-/-- Per-link temporal validity (§5.5) against the single explicit `now`. -/
+/-- §6.2 CAP-6a: every temporal field on a RECEIVED token must be either ABSENT
+(legal) or representable as `primitive/uint`.
+
+This is the reader-side half of CAP-6 and where a peer fails OPEN: `uintField`
+answers `none` for BOTH an absent field and a present non-uint one, so a token
+carrying `expires_at: -1` slips past the range checks below and is honoured.
+§6.2 CAP-6a: such a token "is malformed. A verifier MUST refuse it and MUST NOT
+treat the unrepresentable field as absent." -/
+def temporalFieldsRepresentable (e : Entity) : Bool :=
+  ["expires_at", "not_before", "created_at"].all (fun k =>
+    match field e k with
+    | none => true            -- absent is legal
+    | some (.uint _) => true  -- representable
+    | some _ => false)        -- present but undecodable as uint64
+
+/-- §5.6 rule 3: convert a DURATION term to an absolute timestamp, or `none` when
+it contributes no ceiling. An overflowing conversion is treated as ABSENT exactly
+as a null term is -- never wrapped, never saturated (saturating manufactures
+`expires_at = 2^64-1`, a finite bound indistinguishable from a deliberate one).
+
+`ttl = 0` is deliberately NOT special-cased: §5.6 rule 2 makes it a DEFINED value
+yielding `created_at` (expire immediately), and letting it fall out of the
+arithmetic is what keeps it from collapsing into the absent/"no bound" spelling. -/
+def addTtl (createdAt ttl : UInt64) : Option UInt64 :=
+  let sum := createdAt + ttl
+  if sum < createdAt then none else some sum
+
+/-- §5.6 MIN_DEFINED: the minimum over the DEFINED terms only; `none` when no term
+is defined (the token genuinely has no expiry). Absolute terms enter directly;
+durations must be converted with `addTtl` first. -/
+def minDefined (terms : List (Option UInt64)) : Option UInt64 :=
+  terms.foldl (fun acc t =>
+    match acc, t with
+    | none, x => x
+    | x, none => x
+    | some a, some b => some (if b < a then b else a)) none
+
+/-- Per-link temporal validity (§5.5) against the single explicit `now`.
+
+CAP-6a runs FIRST and must: the two range checks use `uintField`, which cannot
+tell "absent" from "present but not a uint" -- exactly the ambiguity that made an
+unrepresentable field fail open. -/
 def temporalOk (e : Entity) (now : UInt64) : Bool :=
-  (match uintField e "not_before" with | some nb => !(now < nb) | none => true)
+  temporalFieldsRepresentable e
+  && (match uintField e "not_before" with | some nb => !(now < nb) | none => true)
   && (match uintField e "expires_at" with | some ex => !(ex < now) | none => true)
 
 /-- Structural linkage + attenuation + §5.7 caveats for one (child, parent) edge

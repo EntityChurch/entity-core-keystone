@@ -93,7 +93,7 @@ func (p *Peer) bootstrapHandlerEntities(spec bootstrapSpec) {
 		cbor.Entry("name", cbor.Text(spec.name)),
 		cbor.Entry("operations", cbor.NewMap(opPairs...)),
 	)))
-	token, _ := p.mintToken(p.identity.IdentityHash(), cbor.Value{Kind: cbor.KindArray}, nil)
+	token, _ := p.mintToken(p.identity.IdentityHash(), cbor.Value{Kind: cbor.KindArray}, nil, nil)
 	p.store.Bind("/"+local+"/system/capability/grants/"+spec.pattern, token)
 }
 
@@ -131,7 +131,7 @@ func NewPeer(seed []byte, opts ...Option) (*Peer, error) {
 	// pointer) and the default scope-template entry. open-grants selects the
 	// degenerate [default -> *].
 	policyBase := "/" + p.localPeer + "/system/capability/policy/"
-	ownerToken, ownerSig := p.mintToken(identity.IdentityHash(), grantsCbor(p.ownerGrants()...), nil)
+	ownerToken, ownerSig := p.mintToken(identity.IdentityHash(), grantsCbor(p.ownerGrants()...), nil, nil)
 	p.store.Bind(policyBase+hexOf(identity.IdentityHash()), ownerToken)
 	p.store.Bind("/"+p.localPeer+"/system/signature/"+hexOf(ownerToken.Hash), ownerSig)
 

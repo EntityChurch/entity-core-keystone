@@ -58,7 +58,7 @@ import System.IO.Unsafe (unsafePerformIO)
 
 import EntityCore.Model (Entity (..), Envelope (..), textField)
 import EntityCore.Peer (Conn (..), Peer, dispatch, internalErrorResponse, newConn)
-import EntityCore.Wire (frameOfEnvelope, envelopeOfFrame, maxFrame, parseFrameLength)
+import EntityCore.Wire (frameOfEnvelope, envelopeOfFrame, salvageRequestId, makeResponse, errorResult, maxFrame, parseFrameLength)
 
 -- | Per-connection IO state.
 data ConnIO = ConnIO
@@ -157,7 +157,20 @@ readLoop cio onExecute = loop
         Right Nothing -> dbg "readFrame EOF"
         Right (Just payload) -> do
           case envelopeOfFrame payload of
-            Left e -> dbg ("envelopeOfFrame FAIL: " ++ show e) -- malformed frame: §3.3 invalid → drop; loop continues
+            -- §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame
+            -- is owed a STATUS, not silence. Dropping it rejected the frame
+            -- (correct) and then said nothing (wrong): the sender blocked until
+            -- its own timeout, violating §6.3's second sentence and §4.9(c)
+            -- deliver-or-signal, and making a refusal indistinguishable from a
+            -- dead peer. The frame is still REJECTED; only the request_id is
+            -- salvaged, to correlate the response.
+            Left e -> do
+              dbg ("envelopeOfFrame FAIL: " ++ show e)
+              case salvageRequestId payload of
+                Just rid ->
+                  writeFramed cio
+                    (Envelope (makeResponse rid 400 (errorResult Nothing "non_canonical_ecf")) [])
+                Nothing -> pure ()
             Right env ->
               if entType (envRoot env) == "system/protocol/execute/response"
                 then dbg ("recv RESPONSE rid=" ++ show (textField (envRoot env) "request_id")) >> routeResponse cio env

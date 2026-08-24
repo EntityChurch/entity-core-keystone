@@ -140,6 +140,12 @@ def readArg (ai : UInt8) (bs : ByteArray) (pos : Nat) : Except CodecError (UInt6
 
 mutual
   partial def decodeItem (bs : ByteArray) (pos : Nat) : Except CodecError (Value × Nat) :=
+    decodeItemT false bs pos
+
+  /-- `decodeItem` with an explicit tag policy. `keepTags := true` is the SALVAGE
+  path only (see `decodeSalvage`); every ingestion route uses `keepTags := false`,
+  which is byte-for-byte the original behaviour. -/
+  partial def decodeItemT (keepTags : Bool) (bs : ByteArray) (pos : Nat) : Except CodecError (Value × Nat) :=
     if pos < bs.size then
       let ib := bs[pos]!
       let major := (ib >>> 5).toNat
@@ -160,34 +166,42 @@ mutual
             | some s => pure (.text s, p + k)
             | none => .error (.badUtf8 "text: invalid UTF-8")
           else .error (.truncated "text string payload")
-      | 4 => do let (len, p) ← readArg ai bs (pos + 1); decodeArray bs p len.toNat []
-      | 5 => do let (len, p) ← readArg ai bs (pos + 1); decodeMap bs p len.toNat [] none
-      | 6 => .error (.tagRejected s!"major-type-6 tag (ai={ai.toNat}) on the wire (§6.3)")
+      | 4 => do let (len, p) ← readArg ai bs (pos + 1); decodeArrayT keepTags bs p len.toNat []
+      | 5 => do let (len, p) ← readArg ai bs (pos + 1); decodeMapT keepTags bs p len.toNat [] none
+      | 6 =>
+          if keepTags then do
+            -- Salvage path only: skip the tag head and decode the item it wraps,
+            -- so a caller REJECTING this frame can still reach the request_id
+            -- needed to answer §6.3's mandated 400 non_canonical_ecf instead of
+            -- dropping it in silence. Nothing tagged survives.
+            let (_, p) ← readArg ai bs (pos + 1)
+            decodeItemT keepTags bs p
+          else .error (.tagRejected s!"major-type-6 tag (ai={ai.toNat}) on the wire (§6.3)")
       | 7 => decodeSimple ai bs (pos + 1)
       | _ => .error (.nonCanonical "impossible major type")
     else .error (.truncated "decode: unexpected end of input")
 
-  partial def decodeArray (bs : ByteArray) (pos count : Nat) (acc : List Value)
+  partial def decodeArrayT (keepTags : Bool) (bs : ByteArray) (pos count : Nat) (acc : List Value)
       : Except CodecError (Value × Nat) :=
     match count with
     | 0 => pure (.array acc.reverse, pos)
     | k + 1 => do
-        let (v, p) ← decodeItem bs pos
-        decodeArray bs p k (v :: acc)
+        let (v, p) ← decodeItemT keepTags bs pos
+        decodeArrayT keepTags bs p k (v :: acc)
 
-  partial def decodeMap (bs : ByteArray) (pos count : Nat) (acc : List (Value × Value))
+  partial def decodeMapT (keepTags : Bool) (bs : ByteArray) (pos count : Nat) (acc : List (Value × Value))
       (prevKey : Option ByteArray) : Except CodecError (Value × Nat) :=
     match count with
     | 0 => pure (.map acc.reverse, pos)
     | k + 1 => do
-        let (key, p1) ← decodeItem bs pos
-        let (val, p2) ← decodeItem bs p1
+        let (key, p1) ← decodeItemT keepTags bs pos
+        let (val, p2) ← decodeItemT keepTags bs p1
         let kb := buildValue key
         match prevKey with
-        | none => decodeMap bs p2 k ((key, val) :: acc) (some kb)
+        | none => decodeMapT keepTags bs p2 k ((key, val) :: acc) (some kb)
         | some pb =>
             match keyCmp pb kb with
-            | .lt => decodeMap bs p2 k ((key, val) :: acc) (some kb)
+            | .lt => decodeMapT keepTags bs p2 k ((key, val) :: acc) (some kb)
             | .eq => .error (.duplicateKey "map: duplicate key")
             | .gt => .error (.nonCanonical "map: keys not in canonical order")
 
@@ -219,6 +233,21 @@ mutual
     | 24 => .error (.unsupported "simple value with 1-byte arg not in ECF")
     | n => .error (.unsupported s!"simple value ai={n} not in ECF")
 end
+
+/-- Decode for the SALVAGE path: identical to `decode` except a major-type-6 tag
+yields the item it wraps instead of an error, and trailing bytes are tolerated.
+
+Used by ONE caller — `EntityCore.Wire.salvageRequestId`, which recovers the
+`request_id` of a frame it is REJECTING so the rejection can be delivered as
+§6.3's mandated `400 non_canonical_ecf` rather than as silence (§4.9(c)
+deliver-or-signal says the same from the other side). Not a weakening of the tag
+reject: the frame is still rejected, the salvage result yields one string and is
+never turned into an entity, stored, or forwarded, so §6.3's MUST NOT strip /
+preserve / interpret all hold. Every ingestion route uses `decode`. -/
+def decodeSalvage (bs : ByteArray) : Except CodecError Value :=
+  match decodeItemT true bs 0 with
+  | .error e => .error e
+  | .ok (v, _) => .ok v
 
 /-- Decode a single top-level value, rejecting trailing bytes. -/
 def decode (bs : ByteArray) : Except CodecError Value :=

@@ -113,9 +113,17 @@ buildMap kvs =
 decode :: BS.ByteString -> Either CodecError Value
 decode = decodeWith True
 
--- | Like 'decode' but does NOT reject tags — used only by the file-marker /
--- relaxed surfaces (not on the wire). Kept narrow; the protocol path uses
--- 'decode'.
+-- | Like 'decode' but does NOT reject tags: a major-type-6 head is skipped and
+-- the item it wraps is returned in its place.
+--
+-- Used for the file-marker surface and for ONE wire caller —
+-- 'EntityCore.Wire.salvageRequestId', which recovers the @request_id@ of a frame
+-- it is REJECTING so the rejection can be delivered as §6.3's mandated
+-- @400 non_canonical_ecf@ rather than as silence (§4.9(c) deliver-or-signal says
+-- the same from the other side). That is not a weakening of the tag reject: the
+-- frame is still rejected, the salvage result yields one string and is never
+-- turned into an entity, stored, or forwarded, so §6.3's MUST NOT strip /
+-- preserve / interpret all hold. The protocol ingestion path uses 'decode'.
 decodeAllowTags :: BS.ByteString -> Either CodecError Value
 decodeAllowTags = decodeWith False
 
@@ -156,7 +164,15 @@ decodeItem rejectTags bs = case BS.uncons bs of
           6 ->
             if rejectTags
               then Left (TagRejected ("tag major-type-6 (ai=" ++ show ai ++ ") on the wire"))
-              else Left (TagRejected "tag rejected (allow-tags path is not wired for protocol use)")
+              else do
+                -- Salvage path only ('decodeAllowTags'). Skip the tag head and
+                -- decode the item it wraps, so a caller REJECTING this frame can
+                -- still reach the request_id needed to answer §6.3's mandated
+                -- 400 non_canonical_ecf instead of dropping it in silence.
+                -- Nothing tagged survives: the wrapper is discarded, never
+                -- interpreted, and the result is never turned into an entity.
+                (!_tagNum, !r) <- readArg ai rest
+                decodeItem rejectTags r
           7 -> decodeSimpleOrFloat ai rest
           _ -> Left (NonCanonicalEcf "decode: impossible major type")
 

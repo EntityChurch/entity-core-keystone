@@ -112,13 +112,27 @@ let now_ms () = Int64.of_float (Unix.gettimeofday () *. 1000.)
 
 (* Mint a root capability token granted by us to [grantee_hash]. Signs it and
    returns (token, signature). *)
-let mint_token (t : t) ~grantee_hash ?parent ~(grants : Cbor.t list) () : Model.entity * Model.entity =
+(* [mint_token] mints + signs a capability token granted by us to [grantee_hash].
+
+   [?created_at] lets the caller pin the instant so a computed [?expires_at] is
+   guaranteed relative to the SAME created_at that lands in the token (§5.10 also
+   wants the evaluation timestamp sampled once, not re-read per term).
+
+   [?expires_at] carries §5.6's MIN_DEFINED ceiling: [None] means no term was
+   defined and the token genuinely has no expiry (the ONLY "no bound" spelling),
+   while [Some v] is emitted verbatim — including [v = created_at], which §5.6
+   rule 2 requires for [ttl_ms = 0] and which means "already expired at every
+   observable instant", not "unbounded". *)
+let mint_token (t : t) ~grantee_hash ?parent ?created_at ?expires_at
+    ~(grants : Cbor.t list) () : Model.entity * Model.entity =
+  let created = match created_at with Some c -> c | None -> now_ms () in
   let data =
     (Cbor.Text "granter", Cbor.Bytes t.identity.identity_hash)
     :: (Cbor.Text "grantee", Cbor.Bytes grantee_hash)
     :: (Cbor.Text "grants", Cbor.Array grants)
-    :: (Cbor.Text "created_at", Cbor.Uint (now_ms ()))
-    :: (match parent with Some p -> [ (Cbor.Text "parent", Cbor.Bytes p) ] | None -> [])
+    :: (Cbor.Text "created_at", Cbor.Uint created)
+    :: (match expires_at with Some e -> [ (Cbor.Text "expires_at", Cbor.Uint e) ] | None -> [])
+    @ (match parent with Some p -> [ (Cbor.Text "parent", Cbor.Bytes p) ] | None -> [])
   in
   let token = Model.make ~typ:"system/capability/token" (Cbor.Map data) in
   (token, Identity.sign_entity t.identity token)
@@ -303,6 +317,11 @@ let path_flex_ok (target : string) : bool =
       let body = match List.rev body with "" :: rest -> List.rev rest | _ -> body in
       List.for_all (fun s -> not (String.equal s "") && not (String.equal s ".") && not (String.equal s "..")) body
 
+(* [resolve_token t h] finds a token entity by content hash in the local store.
+   Used for the §5.6 parent.expires_at term on the delegate path; an unresolvable
+   parent simply contributes no term (MIN_DEFINED is over DEFINED terms only). *)
+let resolve_token (t : t) (h : string) : Model.entity option = Store.get_by_hash t.store h
+
 let is_deletion_marker (t : t) (h : string) : bool =
   match Store.get_by_hash t.store h with
   | Some e -> String.equal e.Model.typ "system/deletion-marker"
@@ -383,7 +402,7 @@ let is_zero_hash (h : string) : bool = String.for_all (fun c -> c = '\000') h
 (* mint a token for [grantee_hash], bounded as a subset of the caller's
    authenticated cap (§6.2 subset-validation), returning the grant result. *)
 let mint_bounded (t : t) ~(caller_cap : Model.entity option) ~(req_grants : Cbor.t list)
-    ~(grantee_hash : string) ?parent () : outcome =
+    ?(req_ttl_ms : int64 option) ~(grantee_hash : string) ?parent () : outcome =
   let bounded =
     match caller_cap with
     | None -> false
@@ -400,7 +419,25 @@ let mint_bounded (t : t) ~(caller_cap : Model.entity option) ~(req_grants : Cbor
   in
   if not bounded then err 403 "scope_exceeds_authority"
   else begin
-    let token, sgn = mint_token t ~grantee_hash ?parent ~grants:req_grants () in
+    (* §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE
+       and convert the duration terms against that same instant.
+
+       This is NOT an authorization decision: an over-long ttl_ms from a bounded
+       caller MINTS a clamped token and returns 200 — "rejecting it is
+       non-conformant" (§5.6). The bound exists because [request] mints a ROOT
+       token (parent: null), so §5.6's parent-child attenuation never reaches it;
+       without the clamp, temporal attenuation is the one dimension a requester
+       could escape and policy withdrawal would have no bounded latency. *)
+    let created = now_ms () in
+    let parent_expiry =
+      match parent with
+      | None -> None
+      | Some ph -> Option.bind (resolve_token t ph) (fun pe -> Model.uint_field pe "expires_at")
+    in
+    let caller_expiry = Option.bind caller_cap (fun c -> Model.uint_field c "expires_at") in
+    let req_expiry = Option.bind req_ttl_ms (fun ttl -> Capability.add_ttl created ttl) in
+    let expires_at = Capability.min_defined [ parent_expiry; caller_expiry; req_expiry ] in
+    let token, sgn = mint_token t ~grantee_hash ?parent ~created_at:created ?expires_at ~grants:req_grants () in
     let grant_result =
       Model.make ~typ:"system/capability/grant" (Cbor.Map [ (Cbor.Text "token", Cbor.Bytes token.hash) ])
     in
@@ -411,6 +448,12 @@ let mint_bounded (t : t) ~(caller_cap : Model.entity option) ~(req_grants : Cbor
 let req_grants_of params =
   match Option.bind params (fun p -> Model.field p "grants") with Some (Cbor.Array l) -> l | _ -> []
 
+(* §5.6: request.ttl_ms is a DURATION term. Absent => no term. A present but
+   non-uint value is likewise no term (and the frame carrying it is rejected at
+   decode by §6.3 long before here). *)
+let req_ttl_of (params : Model.entity option) : int64 option =
+  Option.bind params (fun p -> Model.uint_field p "ttl_ms")
+
 let capability_handler (t : t) (exec : Model.entity) ~(caller_cap : Model.entity option) : outcome =
   let op = Option.value ~default:"" (Model.text_field exec "operation") in
   let params = entity_field exec "params" in
@@ -419,7 +462,9 @@ let capability_handler (t : t) (exec : Model.entity) ~(caller_cap : Model.entity
   | "request" -> (
       match author with
       | None -> err 403 "capability_denied"
-      | Some grantee_hash -> mint_bounded t ~caller_cap ~req_grants:(req_grants_of params) ~grantee_hash ())
+      | Some grantee_hash ->
+          mint_bounded t ~caller_cap ~req_grants:(req_grants_of params)
+            ?req_ttl_ms:(req_ttl_of params) ~grantee_hash ())
   | "delegate" -> (
       (* parent MUST be present and non-zero (v7.62 §9), checked before the
          same-peer gate so a malformed delegate is a 400 not a 501. *)
@@ -435,7 +480,8 @@ let capability_handler (t : t) (exec : Model.entity) ~(caller_cap : Model.entity
             match author with
             | None -> err 403 "capability_denied"
             | Some grantee_hash ->
-                mint_bounded t ~caller_cap ~req_grants:(req_grants_of params) ~grantee_hash ~parent:ph ()))
+                mint_bounded t ~caller_cap ~req_grants:(req_grants_of params)
+                  ?req_ttl_ms:(req_ttl_of params) ~grantee_hash ~parent:ph ()))
   | "revoke" -> (
       match Option.bind params (fun p -> Model.bytes_field p "token") with
       | None -> err 400 "unexpected_params" ~message:"revoke: missing token"

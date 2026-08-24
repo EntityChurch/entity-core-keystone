@@ -133,7 +133,7 @@ func (h connectHandler) authenticate(ctx *dispatchCtx) outcome {
 	// success: mint the §4.4 / §6.9a initial capability for the remote.
 	remotePeer := PeerEntityOfPublicKey(pub)
 	grants := p.deriveSeedGrants(remotePeer, claimed)
-	token, sig := p.mintToken(remotePeer.Hash, grants, nil)
+	token, sig := p.mintToken(remotePeer.Hash, grants, nil, nil)
 	c.established = true
 	return okOutcome(
 		mustEntity("system/capability/grant", cbor.NewMap(
@@ -372,7 +372,27 @@ func (h capabilityHandler) mintBounded(ctx *dispatchCtx, reqGrantsV cbor.Value, 
 	if !bounded {
 		return errOutcome(403, "scope_exceeds_authority", "")
 	}
-	token, sig := p.mintToken(granteeHash, reqGrantsV, parent)
+	// §5.6 MIN_DEFINED temporal ceiling (CAP-5/CAP-6). Sample created_at ONCE and
+	// convert the duration terms against that same instant.
+	//
+	// Note what this is NOT: an authorization decision. An over-long ttl_ms from a
+	// bounded caller MINTS a clamped token and returns 200 — "rejecting it is
+	// non-conformant" (§5.6). The bound exists because `request` mints a ROOT token
+	// (parent: null), so §5.6's parent-child attenuation never reaches it; without
+	// this clamp, temporal attenuation is the one dimension a requester could
+	// escape, and policy withdrawal would have no bounded latency.
+	createdAt := nowMillis()
+	params, _ := paramsEntity(ctx.exec)
+	expiresAt, hasExpiry := minDefinedExpiry(
+		term(p.parentExpiry(ctx, parent)),          // absolute
+		term(callerCapExpiry(ctx)),                 // absolute
+		term(durationTerm(createdAt, params, "ttl_ms")), // duration -> absolute
+	)
+	var expiryPtr *uint64
+	if hasExpiry {
+		expiryPtr = &expiresAt
+	}
+	token, sig := p.mintTokenAt(createdAt, granteeHash, reqGrantsV, parent, expiryPtr)
 	return okOutcome(
 		mustEntity("system/capability/grant", cbor.NewMap(cbor.Entry("token", cbor.Bytes(token.Hash)))),
 		token,
@@ -539,7 +559,7 @@ func (h handlersHandler) register(ctx *dispatchCtx) outcome {
 	}
 
 	// (3) self-issued signed handler grant + (4) grant-signature at §3.5.
-	token, sig := p.mintToken(p.identity.IdentityHash(), grantScope, nil)
+	token, sig := p.mintToken(p.identity.IdentityHash(), grantScope, nil, nil)
 	p.store.Bind(abs("system/capability/grants/"+pattern), token)
 	p.store.Bind(abs("system/signature/"+hexOf(token.Hash)), sig)
 

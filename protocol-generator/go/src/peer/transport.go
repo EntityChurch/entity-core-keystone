@@ -121,7 +121,23 @@ func (io *transportIO) readLoop(onExecute func(Envelope)) {
 		}
 		env, err := EnvelopeOfFrame(payload)
 		if err != nil {
-			continue // malformed frame: skip, keep reading
+			// §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame
+			// is owed a STATUS, not silence. This used to `continue`, which
+			// rejected the frame (correct) and then dropped it on the floor
+			// (wrong): the sender saw no response at all and blocked until its
+			// own timeout, violating §6.3's second sentence and §4.9(c)
+			// deliver-or-signal. It also made a refusal indistinguishable from a
+			// dead peer, and on a single-connection oracle run it poisons every
+			// later request on the same connection.
+			//
+			// The frame is still REJECTED — we only salvage enough to correlate
+			// the response. If even the request_id is unrecoverable the frame is
+			// unattributable and silence is the only option left.
+			if reqID, ok := salvageRequestID(payload); ok {
+				_ = io.writeFramed(NewEnvelope(MakeResponse(reqID, 400,
+					ErrorResult("non_canonical_ecf", ""))))
+			}
+			continue
 		}
 		if env.Root.Type == "system/protocol/execute/response" {
 			io.routeResponse(env)

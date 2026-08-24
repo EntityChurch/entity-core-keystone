@@ -64,8 +64,28 @@ def closeConn (cio : ConnIO) : IO Unit := do
 /-- Reader loop (§6.11 demux): RESPONSE → route; EXECUTE → dispatch on its own
 dedicated thread (§4.8). Ends on connection close / malformed frame. -/
 partial def readLoop (cio : ConnIO) (onExecute : Envelope → IO Unit) : IO Unit := do
-  match ← EntityCore.Net.readFrame cio.fd with
-  | none => pure ()
+  match ← EntityCore.Net.readFramePayload cio.fd with
+  | none => pure ()   -- connection finished (EOF / short read / §4.10(a) oversize)
+  | some payload =>
+  match EntityCore.Wire.envelopeOfPayload payload with
+  | none =>
+    -- §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is owed
+    -- a STATUS, not silence, and certainly not a closed connection. This branch
+    -- used to be indistinguishable from EOF, so ONE malformed frame ended the
+    -- read loop and every later request on the connection failed. That is what
+    -- turned a single CAP-6a refusal into an 81-check cascade.
+    --
+    -- The frame is still REJECTED — only the request_id is salvaged, to
+    -- correlate the response — and the loop keeps serving.
+    (match EntityCore.Wire.salvageRequestId payload with
+     | some rid =>
+         let resp : Envelope :=
+           { root := EntityCore.Wire.makeResponse rid 400
+                       (EntityCore.Wire.errorResult "non_canonical_ecf" none),
+             included := [] }
+         (try writeFramed cio resp catch _ => pure ())
+     | none => pure ())
+    readLoop cio onExecute
   | some env =>
     if env.root.typ == "system/protocol/execute/response" then
       routeResponse cio env

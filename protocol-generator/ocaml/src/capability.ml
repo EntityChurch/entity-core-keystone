@@ -47,6 +47,63 @@ let grants_of_token (token : Model.entity) : grant list =
   | Some (Cbor.Array l) -> List.map parse_grant l
   | _ -> []
 
+(* ── §6.2 CAP-6a: unrepresentable temporal fields on INGEST ────────────────── *)
+
+(* [temporal_fields_representable tok] is [true] when every CAP-6a temporal field
+   on a RECEIVED token is either ABSENT (legal) or a [Cbor.Uint].
+
+   This is the reader-side half of CAP-6 and it is where a peer fails OPEN.
+   [Model.uint_field] collapses "absent" and "present but not a uint" into
+   [None], so a token carrying [expires_at: -1] slipped past the expiry check and
+   was honoured. §6.2 CAP-6a: such a token "is malformed. A verifier MUST refuse
+   it and MUST NOT treat the unrepresentable field as absent."
+
+   Refusal is the §5.2 capability_denied disposition — never a decode-layer
+   silent drop, and never a transport close. *)
+let temporal_fields_representable (tok : Model.entity) : bool =
+  List.for_all
+    (fun key ->
+      match Model.field tok key with
+      | None -> true                (* absent is legal *)
+      | Some (Cbor.Uint _) -> true  (* representable *)
+      | Some _ -> false)            (* present but undecodable as uint64 *)
+    [ "expires_at"; "not_before"; "created_at" ]
+
+(* ── §5.6 temporal ceiling (CAP-5 / CAP-6) ─────────────────────────────────── *)
+
+(* [add_ttl created_at ttl] converts a DURATION term to an absolute timestamp,
+   reporting [None] when the term contributes no ceiling.
+
+   §5.6 rule 3: a term whose conversion overflows is treated as ABSENT, exactly
+   as a null term is. It MUST NOT wrap and MUST NOT saturate — saturating encodes
+   differently from absence and manufactures [expires_at = 2^64-1], a finite
+   bound no reader can distinguish from a deliberate one.
+
+   [ttl = 0] is deliberately NOT special-cased: §5.6 rule 2 makes it a DEFINED
+   value yielding [created_at] (expire immediately), and letting it fall out of
+   the arithmetic is what keeps it from ever collapsing into the absent/"no
+   bound" spelling. Values are unsigned 64-bit carried in [int64]. *)
+let add_ttl (created_at : int64) (ttl : int64) : int64 option =
+  let sum = Int64.add created_at ttl in
+  if Int64.unsigned_compare sum created_at < 0 then None (* wrapped => drop *)
+  else Some sum
+
+(* [min_defined terms] is §5.6's MIN_DEFINED: the minimum over the DEFINED terms
+   only, and [None] when no term is defined (the token genuinely has no expiry).
+
+   Callers pass terms already shaped: absolute timestamps (parent.expires_at,
+   caller_capability.expires_at) enter directly; durations (ttl_ms) are converted
+   with [add_ttl] first. Mixing a duration in unconverted yields a near-epoch
+   timestamp and silently clamps every token to already-expired. *)
+let min_defined (terms : int64 option list) : int64 option =
+  List.fold_left
+    (fun acc t ->
+      match acc, t with
+      | None, x -> x
+      | x, None -> x
+      | Some a, Some b -> Some (if Int64.unsigned_compare b a < 0 then b else a))
+    None terms
+
 (* ── §5.4 pattern matching ────────────────────────────────────────────────── *)
 
 let starts_with ~prefix s =
@@ -495,7 +552,16 @@ let verify_capability_chain ~local_peer ~store (capability : Model.entity)
               (match Model.bytes_field current "grantee" with
                | Some gh -> if resolve_fn gh = None then raise Unresolvable_grantee
                | None -> raise Unresolvable_grantee);
-              (* temporal validity *)
+              (* temporal validity.
+
+                 CAP-6a FIRST (§6.2, 0.8.1): a PRESENT but unrepresentable
+                 expires_at / not_before / created_at is malformed and MUST be
+                 refused — "MUST NOT treat the unrepresentable field as absent".
+                 This has to precede the two range checks below because
+                 [Model.uint_field] answers [None] for BOTH an absent field and a
+                 present non-uint one, so on its own it silently skips the check
+                 and honours the token (fail-open). Absent stays legal. *)
+              if not (temporal_fields_representable current) then ok := false;
               let t = now_ms () in
               (match Model.uint_field current "not_before" with
                | Some nb when Int64.unsigned_compare t nb < 0 -> ok := false | _ -> ());

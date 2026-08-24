@@ -149,12 +149,34 @@ func (p *Peer) ownerGrants() []grantSpec {
 // ── token mint (§4.4 / §6.9a) ───────────────────────────────────────────────
 
 // mintToken mints + signs a capability token granted by us to granteeHash.
-func (p *Peer) mintToken(granteeHash []byte, grants cbor.Value, parent []byte) (token, sig Entity) {
+//
+// expiresAt carries §5.6's MIN_DEFINED ceiling: nil means no term was defined
+// and the token genuinely has no expiry (the ONLY "no bound" spelling), while a
+// non-nil value is emitted verbatim — including a value equal to created_at,
+// which §5.6 rule 2 requires for ttl_ms == 0 and which means "already expired at
+// every observable instant", not "unbounded".
+//
+// Note the ordering constraint this imposes on callers: created_at is sampled
+// HERE, but the duration terms feeding expiresAt must be converted against that
+// same created_at. mintTokenAt exists so a caller can pin the instant once and
+// use it for both, rather than sampling the clock twice and skewing the two.
+func (p *Peer) mintToken(granteeHash []byte, grants cbor.Value, parent []byte, expiresAt *uint64) (token, sig Entity) {
+	return p.mintTokenAt(nowMillis(), granteeHash, grants, parent, expiresAt)
+}
+
+// mintTokenAt is mintToken with the created_at instant supplied by the caller,
+// so a computed expires_at is guaranteed to be relative to the SAME instant that
+// lands in the token. §5.10/§5.2 also require the evaluation timestamp to be
+// sampled once per verdict rather than re-read per term.
+func (p *Peer) mintTokenAt(createdAt uint64, granteeHash []byte, grants cbor.Value, parent []byte, expiresAt *uint64) (token, sig Entity) {
 	pairs := []cbor.Pair{
 		cbor.Entry("granter", cbor.Bytes(p.identity.IdentityHash())),
 		cbor.Entry("grantee", cbor.Bytes(granteeHash)),
 		cbor.Entry("grants", grants),
-		cbor.Entry("created_at", cbor.Uint(nowMillis())),
+		cbor.Entry("created_at", cbor.Uint(createdAt)),
+	}
+	if expiresAt != nil {
+		pairs = append(pairs, cbor.Entry("expires_at", cbor.Uint(*expiresAt)))
 	}
 	if parent != nil {
 		pairs = append(pairs, cbor.Entry("parent", cbor.Bytes(parent)))

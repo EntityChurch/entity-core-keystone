@@ -78,6 +78,24 @@ public enum Wire {
 
     /// Decode envelope bytes into `Envelope`. The root entity and each included
     /// entity are decoded; tags (N2) and duplicate keys are rejected by the codec.
+    /// Recover ONLY the `request_id` from a frame the strict decoder rejected, so
+    /// the rejection can be delivered as a correlated `400 non_canonical_ecf`
+    /// response (§6.3) instead of silence or a closed connection.
+    ///
+    /// The frame stays rejected. Nothing else is read out of it: no entity is
+    /// built, nothing is stored, the tag is discarded rather than interpreted. The
+    /// envelope and entity-wrapper shapes are fixed maps with no legal tag position
+    /// (§6.3), so a frame whose only defect is a tag inside some entity's `data`
+    /// still has a structurally sound root — exactly the case this recovers.
+    public static func salvageRequestID(_ bytes: [UInt8]) -> String? {
+        guard let v = try? CBOR.decodeAllowingTags(bytes),
+              let root = v.mapValue("root"),
+              let data = root.mapValue("data"),
+              let rid = data.textAt("request_id")
+        else { return nil }
+        return rid
+    }
+
     public static func decodeEnvelope(_ bytes: [UInt8]) throws(CodecError) -> Envelope {
         let value = try CBOR.decode(bytes)
         guard case .map = value, let rootVal = value.mapValue("root") else {

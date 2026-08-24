@@ -47,6 +47,10 @@ module EntityCore.Capability
   , extractPeer
   , firstSegment
   , findSignature
+    -- * §5.6 temporal ceiling (CAP-5 / CAP-6) + §6.2 CAP-6a ingest
+  , addTtl
+  , minDefined
+  , temporalFieldsRepresentable
   ) where
 
 import Data.ByteString (ByteString)
@@ -101,6 +105,58 @@ parseGrant c =
   let sc key = maybe (Scope [] []) parseScope (mapGet c key)
    in Grant (sc "handlers") (sc "resources") (sc "operations")
         (parseScope <$> mapGet c "peers")
+
+-- ── §5.6 temporal ceiling (CAP-5 / CAP-6) ───────────────────────────────────
+
+-- | Convert a DURATION term to an absolute timestamp, reporting 'Nothing' when
+-- the term contributes no ceiling.
+--
+-- §5.6 rule 3: a term whose conversion overflows is treated as ABSENT, exactly
+-- as a null term is. It MUST NOT wrap and MUST NOT saturate -- saturating encodes
+-- differently from absence and manufactures @expires_at == 2^64-1@, a finite
+-- bound no reader can distinguish from a deliberate one.
+--
+-- @ttl == 0@ is deliberately NOT special-cased: §5.6 rule 2 makes it a DEFINED
+-- value yielding @created_at@ (expire immediately), and letting it fall out of
+-- the arithmetic is what keeps it from ever collapsing into the absent /
+-- \"no bound\" spelling.
+addTtl :: Word64 -> Word64 -> Maybe Word64
+addTtl createdAt ttl
+  | sum' < createdAt = Nothing   -- wrapped => drop the term
+  | otherwise = Just sum'
+  where
+    sum' = createdAt + ttl
+
+-- | §5.6's MIN_DEFINED: the minimum over the DEFINED terms only, and 'Nothing'
+-- when no term is defined (the token genuinely has no expiry).
+--
+-- Callers pass terms already shaped: absolute timestamps (@parent.expires_at@,
+-- @caller_capability.expires_at@) enter directly; durations are converted with
+-- 'addTtl' first. Mixing a duration in unconverted yields a near-epoch timestamp
+-- and silently clamps every token to already-expired.
+minDefined :: [Maybe Word64] -> Maybe Word64
+minDefined terms = case [x | Just x <- terms] of
+  [] -> Nothing
+  xs -> Just (minimum xs)
+
+-- ── §6.2 CAP-6a: unrepresentable temporal fields on INGEST ──────────────────
+
+-- | True when every CAP-6a temporal field on a RECEIVED token is either ABSENT
+-- (legal) or a 'VUInt'.
+--
+-- This is the reader-side half of CAP-6 and where a peer fails OPEN: 'uintField'
+-- answers 'Nothing' for BOTH an absent field and a present non-uint one, so a
+-- token carrying @expires_at: -1@ slipped past the expiry check and was honored.
+-- §6.2 CAP-6a: such a token \"is malformed. A verifier MUST refuse it and MUST NOT
+-- treat the unrepresentable field as absent.\"
+temporalFieldsRepresentable :: Entity -> Bool
+temporalFieldsRepresentable tok =
+  all ok ["expires_at", "not_before", "created_at"]
+  where
+    ok k = case field tok k of
+      Nothing -> True           -- absent is legal
+      Just (VUInt _) -> True    -- representable
+      Just _ -> False           -- present but undecodable as uint64
 
 grantsOfToken :: Entity -> [Grant]
 grantsOfToken token = case field token "grants" of
@@ -327,7 +383,8 @@ verifyMultiSigRoot localPeer nowMs resolve included cap mg =
       localInSigners = any (\s -> peerIdOf s == Just localPeer) signers
       -- temporal validity + grantee resolution (as for any root).
       temporalOk =
-        (case uintField cap "not_before" of Just nb -> nowMs >= nb; Nothing -> True)
+        temporalFieldsRepresentable cap   -- CAP-6a: see the chain-walk note below
+          && (case uintField cap "not_before" of Just nb -> nowMs >= nb; Nothing -> True)
           && (case uintField cap "expires_at" of Just ex -> ex >= nowMs; Nothing -> True)
       granteeOk = case bytesField cap "grantee" of Just gh -> resolve gh /= Nothing; Nothing -> False
       -- §5.5 M4 k-of-n — count DISTINCT signers with a valid signature over the
@@ -514,7 +571,12 @@ verifyCapabilityChain localPeer nowMs resolve included capability =
                           Just gh -> resolve gh == Nothing
                           Nothing -> True
                         temporalOk =
-                          (case uintField current "not_before" of Just nb -> nowMs >= nb; Nothing -> True)
+                          -- CAP-6a FIRST: a present-but-unrepresentable temporal
+                          -- field is malformed and MUST be refused. Must precede
+                          -- the range checks below, which use uintField and so
+                          -- cannot tell "absent" from "present but not a uint".
+                          temporalFieldsRepresentable current
+                            && (case uintField current "not_before" of Just nb -> nowMs >= nb; Nothing -> True)
                             && (case uintField current "expires_at" of Just ex -> ex >= nowMs; Nothing -> True)
                         linkOk
                           | i < n - 1 =

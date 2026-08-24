@@ -190,18 +190,32 @@ firstJustM (m : ms) = m >>= \case Just x -> pure (Just x); Nothing -> firstJustM
 mintToken :: Peer -> ByteString -> Maybe ByteString -> [Value] -> IO (Entity, Entity)
 mintToken p granteeHash parent grants = do
   t <- nowMs
+  pure (mintTokenAt p t granteeHash parent Nothing grants)
+
+-- | 'mintToken' with @created_at@ supplied by the caller and §5.6's MIN_DEFINED
+-- ceiling attached, so a computed @expires_at@ is guaranteed relative to the SAME
+-- instant that lands in the token (§5.10 also wants the evaluation timestamp
+-- sampled once per verdict rather than re-read per term).
+--
+-- @Nothing@ for the expiry means no term was defined and the token genuinely has
+-- no expiry -- the ONLY "no bound" spelling. @Just v@ is emitted verbatim,
+-- including @v == created_at@, which §5.6 rule 2 requires for @ttl_ms == 0@ and
+-- which means "already expired at every observable instant", not "unbounded".
+mintTokenAt :: Peer -> Word64 -> ByteString -> Maybe ByteString -> Maybe Word64 -> [Value] -> (Entity, Entity)
+mintTokenAt p createdAt granteeHash parent expiresAt grants =
   let dat =
         VMap
           ( [ (VText "granter", VBytes (idIdentityHash (peerIdentity p)))
             , (VText "grantee", VBytes granteeHash)
             , (VText "grants", VArray grants)
-            , (VText "created_at", VUInt t)
+            , (VText "created_at", VUInt createdAt)
             ]
+              ++ maybe [] (\e -> [(VText "expires_at", VUInt e)]) expiresAt
               ++ maybe [] (\ph -> [(VText "parent", VBytes ph)]) parent
           )
       token = makeEntity "system/capability/token" dat
       sgn = signEntity (peerIdentity p) token
-  pure (token, sgn)
+   in (token, sgn)
 
 -- ── §6.13(b) handler-facing outbound dispatch ─────────────────────────────────
 
@@ -463,11 +477,17 @@ treeHandler p exec = do
 
 -- ── capability handler (§6.2) ──────────────────────────────────────────────────
 
+-- | Find a token entity by content hash in the local store. Used for the §5.6
+-- @parent.expires_at@ term on the delegate path; an unresolvable parent simply
+-- contributes no term (MIN_DEFINED is over DEFINED terms only).
+resolveToken :: Peer -> ByteString -> IO (Maybe Entity)
+resolveToken p h = Store.getByHash (peerStore p) h
+
 isZeroHash :: ByteString -> Bool
 isZeroHash = BS.all (== 0)
 
-mintBounded :: Peer -> Maybe Entity -> [Value] -> ByteString -> Maybe ByteString -> IO Outcome
-mintBounded p callerCap reqGrants granteeHash parent = do
+mintBounded :: Peer -> Maybe Entity -> [Value] -> Maybe Word64 -> ByteString -> Maybe ByteString -> IO Outcome
+mintBounded p callerCap reqGrants reqTtlMs granteeHash parent = do
   let bounded = case callerCap of
         Nothing -> False
         Just cap ->
@@ -481,7 +501,23 @@ mintBounded p callerCap reqGrants granteeHash parent = do
   if not bounded
     then pure (errOc 403 "scope_exceeds_authority")
     else do
-      (token, sgn) <- mintToken p granteeHash parent reqGrants
+      -- §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE
+      -- and convert the duration terms against that same instant.
+      --
+      -- Not an authorization decision: an over-long ttl_ms from a bounded caller
+      -- MINTS a clamped token at 200 -- "rejecting it is non-conformant" (§5.6).
+      -- The bound exists because `request` mints a ROOT token (parent: null), so
+      -- §5.6's parent-child attenuation never reaches it.
+      createdAt <- nowMs
+      parentExpiry <- case parent of
+        Nothing -> pure Nothing
+        Just ph -> do
+          mpe <- resolveToken p ph
+          pure (mpe >>= \pe -> uintField pe "expires_at")
+      let callerExpiry = callerCap >>= \c -> uintField c "expires_at"
+          reqExpiry = reqTtlMs >>= Cap.addTtl createdAt
+          expiresAt = Cap.minDefined [parentExpiry, callerExpiry, reqExpiry]
+          (token, sgn) = mintTokenAt p createdAt granteeHash parent expiresAt reqGrants
       let grantResult = makeEntity "system/capability/grant" (VMap [(VText "token", VBytes (entHash token))])
       pure $
         okI
@@ -494,6 +530,12 @@ mintBounded p callerCap reqGrants granteeHash parent = do
 reqGrantsOf :: Maybe Entity -> [Value]
 reqGrantsOf params = case params >>= (`field` "grants") of Just (VArray l) -> l; _ -> []
 
+-- | §5.6: @request.ttl_ms@ is a DURATION term. Absent => no term. A present but
+-- non-uint value is likewise no term (and the frame carrying it is rejected at
+-- decode by §6.3 long before here).
+reqTtlOf :: Maybe Entity -> Maybe Word64
+reqTtlOf params = params >>= \pe -> uintField pe "ttl_ms"
+
 capabilityHandler :: Peer -> Entity -> Maybe Entity -> IO Outcome
 capabilityHandler p exec callerCap = do
   let op = fromMaybe "" (textField exec "operation")
@@ -502,7 +544,7 @@ capabilityHandler p exec callerCap = do
   case op of
     "request" -> case author of
       Nothing -> pure (errOc 403 "capability_denied")
-      Just granteeHash -> mintBounded p callerCap (reqGrantsOf params) granteeHash Nothing
+      Just granteeHash -> mintBounded p callerCap (reqGrantsOf params) (reqTtlOf params) granteeHash Nothing
     "delegate" -> case params >>= (`bytesField` "parent") of
       Nothing -> pure (errMsg 400 "unexpected_params" "delegate: parent required")
       Just ph | isZeroHash ph -> pure (errMsg 400 "unexpected_params" "delegate: zero parent")
@@ -511,7 +553,7 @@ capabilityHandler p exec callerCap = do
           then pure (errMsg 501 "unsupported_operation" "delegate: same-peer-only in v1")
           else case author of
             Nothing -> pure (errOc 403 "capability_denied")
-            Just granteeHash -> mintBounded p callerCap (reqGrantsOf params) granteeHash (Just ph)
+            Just granteeHash -> mintBounded p callerCap (reqGrantsOf params) (reqTtlOf params) granteeHash (Just ph)
     "revoke" -> case params >>= (`bytesField` "token") of
       Nothing -> pure (errMsg 400 "unexpected_params" "revoke: missing token")
       Just tokenH | isZeroHash tokenH -> pure (errMsg 400 "unexpected_params" "revoke: zero token")

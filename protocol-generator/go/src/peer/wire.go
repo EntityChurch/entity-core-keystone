@@ -68,6 +68,35 @@ func EnvelopeOfFrame(payload []byte) (Envelope, error) {
 	return EnvelopeOfCbor(v)
 }
 
+// salvageRequestID recovers ONLY the request_id from a frame the strict decoder
+// rejected, so the rejection can be delivered as a correlated
+// `400 non_canonical_ecf` response (§6.3) instead of silence.
+//
+// The frame stays rejected. Nothing else is read out of it: no entity is built,
+// nothing is stored, and the offending tag is never interpreted. The envelope
+// and entity-wrapper shapes are fixed maps with no legal tag position (§6.3), so
+// a frame whose ONLY defect is a tag inside some entity's `data` still has a
+// structurally sound root — which is exactly the case this recovers.
+func salvageRequestID(payload []byte) (string, bool) {
+	v, err := cbor.DecodeSalvage(payload)
+	if err != nil || v.Kind != cbor.KindMap {
+		return "", false
+	}
+	rootV, ok := MapField(v, "root")
+	if !ok || rootV.Kind != cbor.KindMap {
+		return "", false
+	}
+	dataV, ok := MapField(rootV, "data")
+	if !ok || dataV.Kind != cbor.KindMap {
+		return "", false
+	}
+	ridV, ok := MapField(dataV, "request_id")
+	if !ok || ridV.Kind != cbor.KindText {
+		return "", false
+	}
+	return ridV.Text, true
+}
+
 // FrameOfEnvelope encodes an Envelope to a frame payload.
 func FrameOfEnvelope(env Envelope) ([]byte, error) {
 	return cbor.Encode(env.ToCbor())

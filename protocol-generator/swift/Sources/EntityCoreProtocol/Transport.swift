@@ -63,7 +63,24 @@ public actor Connection {
                 socket.readFrame()
             }
             guard let frame = frameOpt else { break }   // EOF / connection broken
-            guard let env = try? Wire.decodeEnvelope(frame) else { break } // §3.3 malformed → close
+            guard let env = try? Wire.decodeEnvelope(frame) else {
+                // §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame
+                // is owed a STATUS, not a closed connection. Breaking here rejected
+                // the frame (correct) and tore down the whole connection (wrong):
+                // it violates §6.3's second sentence and §4.9(c) deliver-or-signal,
+                // makes a refusal indistinguishable from a dead peer, and kills every
+                // in-flight and subsequent request over ONE bad frame.
+                //
+                // The frame is still REJECTED — only the request_id is salvaged, to
+                // correlate the response — and the connection stays up.
+                if let rid = Wire.salvageRequestID(frame),
+                   let err = try? Wire.errorEntity(code: "non_canonical_ecf", message: nil),
+                   let root = try? Wire.buildResponse(requestID: rid, status: 400, result: err),
+                   let bytes = try? Wire.encodeEnvelope(root: root) {
+                    await send(bytes)
+                }
+                continue
+            }
             await handleFrame(env)
         }
         await teardown()

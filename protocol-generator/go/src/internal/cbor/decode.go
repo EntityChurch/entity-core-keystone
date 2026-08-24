@@ -29,6 +29,11 @@ var (
 type decoder struct {
 	b   []byte
 	pos int
+	// keepTags makes decodeItem yield a KindTag Value instead of returning
+	// ErrTagRejected. It exists for ONE caller — DecodeSalvage — and is never
+	// set on the strict path. See DecodeSalvage for why this is not a
+	// weakening of the §6.3 tag reject.
+	keepTags bool
 }
 
 // Decode parses exactly one canonical-ECF data item from b, rejecting any CBOR
@@ -42,6 +47,35 @@ func Decode(b []byte) (Value, error) {
 	}
 	if d.pos != len(b) {
 		return Value{}, ErrTrailing
+	}
+	return v, nil
+}
+
+// DecodeSalvage parses b for the sole purpose of REPORTING a rejection, not of
+// accepting one. It is identical to Decode except that a major-type-6 tag yields
+// a KindTag Value rather than ErrTagRejected.
+//
+// Why this exists (§6.3, and it is a conformance requirement rather than a
+// convenience): the tag rule is *"Implementations MUST reject any received
+// protocol frame containing a CBOR tag on a data field. **Rejection returns
+// `400 non_canonical_ecf`**."* Rejecting by dropping the frame on the floor
+// satisfies the first sentence and violates the second — the peer owes the
+// sender a status, and §4.9(c) deliver-or-signal says the same thing from the
+// other direction. But the status has to be carried on a response correlated by
+// `request_id`, and the strict decoder cannot reach the request_id in a frame it
+// refuses to parse. This function recovers exactly that much and nothing more.
+//
+// This is NOT a weakening of the tag reject. The frame is still rejected; a
+// KindTag Value is never converted to an Entity, never stored, never forwarded,
+// and never interpreted — §6.3's "MUST NOT silently strip / MUST NOT preserve /
+// MUST NOT attempt to interpret" all still hold. The strict Decode path used by
+// every real ingestion route is byte-for-byte unchanged, which is what keeps the
+// `tag_reject` wire-conformance vectors meaningful.
+func DecodeSalvage(b []byte) (Value, error) {
+	d := &decoder{b: b, keepTags: true}
+	v, err := d.decodeItem()
+	if err != nil {
+		return Value{}, err
 	}
 	return v, nil
 }
@@ -151,6 +185,21 @@ func (d *decoder) decodeItem() (Value, error) {
 		// §6.3 / N2: any major-type-6 item in a data position is rejected.
 		// We do not interpret, strip, or preserve. (The tag argument is
 		// still consumed only to report a clean error, not to accept it.)
+		if d.keepTags {
+			// Salvage path only (DecodeSalvage): surface the tag as a value so
+			// the caller can locate the request_id and SIGNAL the rejection.
+			// The frame is still rejected — the tag is never interpreted and
+			// never reaches an entity.
+			tagNum, err := d.readArg(ai)
+			if err != nil {
+				return Value{}, err
+			}
+			inner, err := d.decodeItem()
+			if err != nil {
+				return Value{}, err
+			}
+			return Value{Kind: KindTag, Tag: tagNum, TagItem: &inner}, nil
+		}
 		return Value{}, ErrTagRejected
 	case mtSimp:
 		return d.decodeSimple(ai)

@@ -182,9 +182,25 @@ public enum CBOR {
         return value
     }
 
+    /// Like `decode` but does NOT reject tags: a major-type-6 head is skipped and
+    /// the item it wraps is returned in its place.
+    ///
+    /// Used by ONE caller — `Wire.salvageRequestID`, which recovers the
+    /// `request_id` of a frame it is REJECTING so the rejection can be delivered as
+    /// §6.3's mandated `400 non_canonical_ecf` rather than as silence (§4.9(c)
+    /// deliver-or-signal says the same from the other side). Not a weakening of the
+    /// tag reject: the frame is still rejected, the salvage result yields one string
+    /// and is never turned into an entity, stored, or forwarded, so §6.3's MUST NOT
+    /// strip / preserve / interpret all hold. Every ingestion route uses `decode`.
+    public static func decodeAllowingTags(_ bytes: [UInt8]) throws(CodecError) -> CBORValue {
+        var decoder = Decoder(bytes: bytes, allowTags: true)
+        return try decoder.decodeItem(depth: 0)
+    }
+
     struct Decoder {
         let bytes: [UInt8]
         var offset: Int = 0
+        var allowTags: Bool = false
         static let maxDepth = 64   // §10.2 DoS bound
 
         mutating func readByte() throws(CodecError) -> UInt8 {
@@ -276,6 +292,15 @@ public enum CBOR {
                 }
                 return .map(pairs)
             case 6: // tag — N2 / §6.3: MUST reject, at any depth.
+                if allowTags {
+                    // Salvage path only (`decodeAllowingTags`): skip the tag head
+                    // and decode the item it wraps, so a caller REJECTING this
+                    // frame can still reach the request_id needed to answer §6.3's
+                    // mandated 400 non_canonical_ecf instead of dropping it in
+                    // silence. Nothing tagged survives.
+                    _ = try readArgument(ai)
+                    return try decodeItem(depth: depth + 1)
+                }
                 throw CodecError.tagRejected
             case 7:
                 return try decodeSimpleOrFloat(ai)

@@ -22,16 +22,29 @@ public struct SeedGrant: Sendable {
     public let handlers: [String]
     public let resources: [String]
     public let operations: [String]
-    public init(handlers: [String], resources: [String], operations: [String]) {
+    /// §3.6 `peers` dimension. `nil` OMITS the key, which is NOT the same as
+    /// universal: an absent `peers` is resolved per-link against the GRANTER's own
+    /// frame (§5.5a), so a grant without it can only ever authorize the granter's
+    /// own peer. A seed intended to be universal must say so explicitly.
+    public let peers: [String]?
+    public init(handlers: [String], resources: [String], operations: [String],
+                peers: [String]? = nil) {
         self.handlers = handlers; self.resources = resources; self.operations = operations
+        self.peers = peers
     }
     /// Render to the CBOR grant-entry map shape.
     public func toValue() -> CBORValue {
-        .textMap([
+        var fields: [(String, CBORValue)] = [
             ("handlers", .textMap([("include", .array(handlers.map { .text($0) }))])),
             ("resources", .textMap([("include", .array(resources.map { .text($0) }))])),
             ("operations", .textMap([("include", .array(operations.map { .text($0) }))])),
-        ])
+        ]
+        if let peers {
+            fields.append(("peers", .textMap([("include", .array(peers.map { .text($0) }))])))
+        }
+        // §3.6 key order is fixed by ECF's canonical map sort at encode time, so
+        // appending is safe regardless of position.
+        return .textMap(fields)
     }
 }
 
@@ -70,8 +83,24 @@ public struct SeedPolicy: Sendable {
     /// (not a hardcoded fork). Use only to drive the full grant-gated validate-peer
     /// surface from a single connector.
     public static func debugOpen() -> SeedPolicy {
+        // Every dimension must be EXPLICITLY universal, and two of them were not:
+        //
+        //  * `peers` was omitted. An absent peers scope resolves per-link against
+        //    the granter's own frame (§5.5a), so the connection cap authorized only
+        //    THIS peer. Any delegated child cap — whose granter is the CALLER, hence
+        //    a different frame — then failed §5.6 attenuation, and every request
+        //    presenting one came back 403 scope_exceeds_authority. That is a single
+        //    seed defect, but it reads as three unrelated capability failures
+        //    (CAP-5, CAP-6, and CAP-6a's control losing its teeth).
+        //
+        //  * `resources` carried only "/*/*". §5.5a's bare-star is granter-LOCAL,
+        //    never universal, so the absolute all-peers form is needed alongside it
+        //    to cover foreign namespaces (the A-PD-017 sibling trap, same shape).
+        //
+        // This now matches the go/ocaml/haskell/lean seeds exactly.
         SeedPolicy(entries: [SeedEntry(grantee: "default",
-            grants: [SeedGrant(handlers: ["*"], resources: ["/*/*"], operations: ["*"])])])
+            grants: [SeedGrant(handlers: ["*"], resources: ["*", "/*/*"],
+                               operations: ["*"], peers: ["*"])])])
     }
 
     /// Custom entries (the `.of(...)` builder).

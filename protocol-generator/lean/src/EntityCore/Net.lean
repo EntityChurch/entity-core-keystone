@@ -33,9 +33,17 @@ def writeFrame (fd : UInt32) (env : EntityCore.Model.Envelope) : IO Unit := do
   let payload := EntityCore.Wire.payloadOfEnvelope env
   tcpSendRaw fd (be32 payload.size ++ payload)
 
-/-- Read one framed envelope; `none` on connection close or a malformed/oversized
-frame (§3.3 — the caller ends the reader loop). -/
-def readFrame (fd : UInt32) : IO (Option EntityCore.Model.Envelope) := do
+/-- Read one framed payload. `none` means the CONNECTION is finished (EOF, short
+read, or an over-`maxFrame` length prefix per §4.10(a)); it does NOT mean the
+frame was malformed.
+
+That distinction is the whole point of this function. It used to decode inline and
+collapse "connection closed" and "undecodable frame" into the same `none`, and
+`readLoop`'s `none` branch ENDS the loop -- so a single malformed frame tore the
+connection down and every subsequent request on it failed. Decoding is now the
+caller's job, which lets it answer §6.3's mandated `400 non_canonical_ecf` and
+keep serving. -/
+def readFramePayload (fd : UInt32) : IO (Option ByteArray) := do
   let hdr ← tcpRecvExact fd 4
   if hdr.size != 4 then pure none
   else
@@ -45,6 +53,14 @@ def readFrame (fd : UInt32) : IO (Option EntityCore.Model.Envelope) := do
     else
       let payload ← tcpRecvExact fd (UInt32.ofNat len)
       if payload.size != len then pure none
-      else pure (EntityCore.Wire.envelopeOfPayload payload)
+      else pure (some payload)
+
+/-- Read one framed envelope; `none` on connection close OR a malformed frame.
+Retained for callers that do not need the distinction (the client/outbound side);
+the server reader loop uses `readFramePayload` so it can tell them apart. -/
+def readFrame (fd : UInt32) : IO (Option EntityCore.Model.Envelope) := do
+  match ← readFramePayload fd with
+  | none => pure none
+  | some payload => pure (EntityCore.Wire.envelopeOfPayload payload)
 
 end EntityCore.Net

@@ -14,6 +14,7 @@ module EntityCore.Wire
   , frameHeader
   , parseFrameLength
   , envelopeOfFrame
+  , salvageRequestId
   , frameOfEnvelope
   , makeResponse
   , makeExecute
@@ -26,7 +27,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Text (Text)
 
-import EntityCore.Codec.CBOR (decode, encode)
+import EntityCore.Codec.CBOR (decode, decodeAllowTags, encode)
 import EntityCore.Codec.Error (CodecError (..))
 import EntityCore.Codec.Value (Value (..))
 import EntityCore.Model
@@ -55,6 +56,28 @@ parseFrameLength hdr =
 
 envelopeOfFrame :: ByteString -> Either CodecError Envelope
 envelopeOfFrame payload = decode payload >>= envelopeOfCbor
+
+-- | Recover ONLY the @request_id@ from a frame the strict decoder rejected, so
+-- the rejection can be delivered as a correlated @400 non_canonical_ecf@
+-- response (§6.3) instead of silence.
+--
+-- The frame stays rejected. Nothing else is read out of it: no entity is built,
+-- nothing is stored, and the offending tag is discarded rather than interpreted.
+-- The envelope and entity-wrapper shapes are fixed maps with no legal tag
+-- position (§6.3), so a frame whose only defect is a tag inside some entity's
+-- @data@ still has a structurally sound root -- exactly the case this recovers.
+-- 'Nothing' when even the request_id is unreachable, leaving the frame
+-- unattributable and silence the only remaining option.
+salvageRequestId :: ByteString -> Maybe Text
+salvageRequestId payload = case decodeAllowTags payload of
+  Left _ -> Nothing
+  Right v -> do
+    root <- mapGet v "root"
+    dat <- mapGet root "data"
+    rid <- mapGet dat "request_id"
+    case rid of
+      VText t -> Just t
+      _ -> Nothing
 
 frameOfEnvelope :: Envelope -> ByteString
 frameOfEnvelope env =

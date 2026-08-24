@@ -77,7 +77,27 @@ let read_loop (io : io) ~(on_execute : Model.envelope -> unit) : unit =
     | None -> ()
     | Some payload ->
         (match (try Some (Wire.envelope_of_frame payload) with _ -> None) with
-         | None -> ()  (* malformed frame: §3.3 invalid → drop; loop continues *)
+         | None ->
+             (* §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame
+                is owed a STATUS, not silence. This used to drop the frame, which
+                rejected it (correct) and then said nothing (wrong): the sender
+                blocked until its own timeout, violating §6.3's second sentence
+                and §4.9(c) deliver-or-signal, and making a refusal
+                indistinguishable from a dead peer. On a single-connection oracle
+                run it also poisons every later request on the connection.
+
+                The frame is still REJECTED — only the request_id is salvaged, to
+                correlate the response. *)
+             (match Wire.salvage_request_id payload with
+              | Some request_id ->
+                  let resp =
+                    { Model.root =
+                        Wire.make_response ~request_id ~status:400
+                          ~result:(Wire.error_result "non_canonical_ecf");
+                      Model.included = [] }
+                  in
+                  (try write_framed io resp with _ -> ())
+              | None -> ())
          | Some env ->
              if String.equal env.Model.root.Model.typ "system/protocol/execute/response" then
                route_response io env

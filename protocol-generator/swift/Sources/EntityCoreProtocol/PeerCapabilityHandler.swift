@@ -125,10 +125,20 @@ extension Peer {
         }
         // Validate each requested grant is a subset of the caller's authenticated cap.
         let callerGrants = Capability.grants(of: callerCap)
-        let granterFrame = (await granterPeerID(of: callerCap)) ?? localPeerID
+        // §6.2 MINT-TIME subset check — the capability-handler surface, NOT the
+        // §5.5 dispatch chain walk. Both sides stay on the LOCAL frame, matching
+        // go and ocaml.
+        //
+        // This used to pass the caller cap's granter as `parentFrame`. For a
+        // DELEGATED caller cap that frame is the caller's peer, and §5.5a
+        // canonicalization makes a bare `*` granter-LOCAL — so the child's `["*"]`
+        // became `/<thisPeer>/*` while the parent's identical `["*"]` became
+        // `/<callerPeer>/*`, and a grant could not be a subset of ITSELF. Same
+        // bare-star trap as A-PD-017, reached from the frame side rather than the
+        // seed side.
         let requestedGrants = requested.map { Capability.GrantEntry.from($0) }
         for rg in requestedGrants {
-            if !Capability.grantCoveredBy(rg, callerGrants, childFrame: localPeerID, parentFrame: granterFrame) {
+            if !Capability.grantCoveredBy(rg, callerGrants, childFrame: localPeerID, parentFrame: localPeerID, localPeerID: localPeerID) {
                 return try errorResponse(requestID: requestID, status: 403, code: "scope_exceeds_authority")
             }
         }
@@ -136,13 +146,27 @@ extension Peer {
         guard let grantee = ctx.callerIdentityHash else {
             return try errorResponse(requestID: requestID, status: 403, code: "scope_exceeds_authority")
         }
+        // §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). created_at is sampled
+        // ONCE and the duration term converted against that same instant.
+        //
+        // Not an authorization decision: an over-long ttl_ms from a bounded caller
+        // MINTS a clamped token at 200 -- "rejecting it is non-conformant" (§5.6).
+        //
+        // The previous line had no ceiling at all AND would TRAP on overflow --
+        // Swift's `+` on UInt64 is checked, so an over-2^64 ttl_ms crashed the peer
+        // instead of dropping the term as §5.6 rule 3 requires.
+        let createdAt = nowMillis()
+        let expiresAt = Capability.minDefined([
+            callerCap.data.uintAt("expires_at"),               // absolute
+            Capability.addTTL(createdAt, p.uintAt("ttl_ms")),  // duration -> absolute
+        ])
         var tokenFields: [(String, CBORValue)] = [
             ("grants", .array(requested)),
             ("granter", .bytes(identity.identityHash)),
             ("grantee", .bytes(grantee)),
-            ("created_at", .uint(nowMillis())),
+            ("created_at", .uint(createdAt)),
         ]
-        if let ttl = p.uintAt("ttl_ms") { tokenFields.append(("expires_at", .uint(nowMillis() + ttl))) }
+        if let e = expiresAt { tokenFields.append(("expires_at", .uint(e))) }
         let token = try Model.make(type: "system/capability/token", data: .textMap(tokenFields))
         let tokenSig = try identity.signatureEntity(target: token.hash)
         let grant = try Model.make(type: "system/capability/grant", fields: [("token", .bytes(token.hash))])

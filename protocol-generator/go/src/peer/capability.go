@@ -449,6 +449,142 @@ func isAttenuated(localPeer, childPeer, parentPeer string, child, parent Entity)
 
 func cborTrue(v cbor.Value) bool { return v.Kind == cbor.KindBool && v.Bool }
 
+// ── §5.6 temporal ceiling (CAP-5 / CAP-6) ───────────────────────────────────
+
+// addTTL converts a DURATION term to an absolute timestamp, reporting whether
+// the term contributes a ceiling at all.
+//
+// §5.6 rule 3: a term whose conversion createdAt+ttl is not representable is
+// treated as ABSENT, exactly as a null term is. It MUST NOT wrap and MUST NOT
+// saturate to a representable maximum — saturation encodes differently from
+// absence and manufactures expires_at == 2^64-1, a finite bound no reader can
+// distinguish from a deliberate one.
+//
+// ttl == 0 is NOT a special case here and deliberately so: §5.6 rule 2 makes 0
+// a DEFINED value yielding createdAt (expire immediately). The absent/null field
+// is the only "no bound" spelling. Falling out of the arithmetic naturally is
+// what keeps the two from ever collapsing into each other.
+func addTTL(createdAt, ttl uint64) (uint64, bool) {
+	sum := createdAt + ttl
+	if sum < createdAt { // uint64 wrap => not representable => drop the term
+		return 0, false
+	}
+	return sum, true
+}
+
+// minDefinedExpiry is §5.6's MIN_DEFINED construction: the minimum over the
+// DEFINED terms only, with no expiry at all if no term is defined.
+//
+// Callers pass each term already shaped: absolute timestamps (parent.expires_at,
+// caller_capability.expires_at) enter directly; durations (policy_entry.ttl_ms,
+// request.ttl_ms) MUST be converted with addTTL first. Mixing a duration in
+// unconverted yields a timestamp near the epoch and silently clamps every token
+// to already-expired — the failure mode §5.6 calls out by name.
+func minDefinedExpiry(terms ...struct {
+	v  uint64
+	ok bool
+}) (uint64, bool) {
+	out, have := uint64(0), false
+	for _, t := range terms {
+		if !t.ok {
+			continue
+		}
+		if !have || t.v < out {
+			out, have = t.v, true
+		}
+	}
+	return out, have
+}
+
+func term(v uint64, ok bool) struct {
+	v  uint64
+	ok bool
+} {
+	return struct {
+		v  uint64
+		ok bool
+	}{v, ok}
+}
+
+// durationTerm reads a DURATION field (ttl_ms) off a params/policy entity and
+// converts it to an absolute timestamp relative to createdAt, per §5.6 rule 1.
+// Reports ok=false when the field is absent (no term) or when the conversion
+// overflows (rule 3: drop, never wrap or saturate).
+//
+// A present ttl_ms of 0 returns (createdAt, true) — DEFINED, expire immediately.
+func durationTerm(createdAt uint64, e Entity, key string) (uint64, bool) {
+	ttl, ok := e.Uint(key)
+	if !ok {
+		return 0, false
+	}
+	return addTTL(createdAt, ttl)
+}
+
+// callerCapExpiry is the absolute caller_capability.expires_at term (§5.6). A
+// request presenting no capability contributes no term.
+func callerCapExpiry(ctx *dispatchCtx) (uint64, bool) {
+	if !ctx.hasCap {
+		return 0, false
+	}
+	return ctx.callerCap.Uint("expires_at")
+}
+
+// parentExpiry is the absolute parent.expires_at term (§5.6), for the delegate
+// path. `request` mints a ROOT token (parent nil) and contributes no term here —
+// which is exactly why the caller-cap term above has to carry the ceiling.
+func (p *Peer) parentExpiry(ctx *dispatchCtx, parent []byte) (uint64, bool) {
+	if parent == nil {
+		return 0, false
+	}
+	tok, ok := p.resolveToken(ctx, parent)
+	if !ok {
+		return 0, false
+	}
+	return tok.Uint("expires_at")
+}
+
+// resolveToken finds a token entity by content hash, preferring the frame's own
+// included set and falling back to the local store.
+func (p *Peer) resolveToken(ctx *dispatchCtx, hash []byte) (Entity, bool) {
+	if ctx != nil {
+		if e, ok := ctx.included.Get(hash); ok {
+			return e, true
+		}
+	}
+	if e, ok := p.store.GetAt("/" + p.localPeer + "/system/capability/tokens/" + hexOf(hash)); ok {
+		return e, true
+	}
+	return Entity{}, false
+}
+
+// ── §6.2 CAP-6a: unrepresentable temporal fields on INGEST ──────────────────
+
+// temporalFieldsRepresentable reports whether every CAP-6a temporal field on a
+// RECEIVED token is either absent (legal) or representable as primitive/uint.
+//
+// This is the reader-side half of CAP-6 and it is where a peer fails OPEN. Our
+// Uint() accessor returns (0,false) both when a field is ABSENT and when it is
+// PRESENT but not a uint — a negative integer or a bignum — so the temporal
+// checks below silently skipped a token carrying expires_at:-1 and honored it.
+// §6.2 CAP-6a is explicit: such a token "is malformed. A verifier MUST refuse it
+// and MUST NOT treat the unrepresentable field as absent." An absent (null)
+// expires_at stays legal and is deliberately NOT rejected here.
+//
+// Refusal must be the §5.2 capability_denied disposition (a status-bearing
+// response), never a decode-layer silent drop or a transport close.
+func temporalFieldsRepresentable(tok Entity) bool {
+	for _, key := range []string{"expires_at", "not_before", "created_at"} {
+		v, present := tok.Field(key)
+		if !present {
+			continue // absent is legal
+		}
+		if v.Kind != cbor.KindUint {
+			return false // present but undecodable as uint64 => malformed
+		}
+	}
+	return true
+}
+
 // checkDelegationCaveats (§5.7): parent's delegation_caveats constrain its direct
 // child. Returns true if the child is admissible.
 func checkDelegationCaveats(parent, child Entity, depth uint64) bool {
@@ -704,6 +840,15 @@ func verifyCapabilityChain(localPeer string, store *Store, capability Entity, in
 			return VerdictUnresolvableGrantee
 		}
 		// temporal validity
+		//
+		// CAP-6a FIRST: a present-but-unrepresentable expires_at/not_before/
+		// created_at is MALFORMED and must be refused outright. This has to run
+		// BEFORE the two range checks below, because those use Uint(), which
+		// cannot tell "absent" from "present but not a uint" — so on its own it
+		// would skip the check and honor the token (fail-open).
+		if !temporalFieldsRepresentable(current) {
+			return VerdictAuthzDeny
+		}
 		if nb, ok := current.Uint("not_before"); ok && now < nb {
 			return VerdictAuthzDeny
 		}

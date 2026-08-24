@@ -164,7 +164,22 @@ and encode (v : t) : string =
 
 (* ── decode (rejects tags + indefinite lengths) ───────────────────────────── *)
 
-let decode (s : string) : t =
+(* [decode ?keep_tags s] parses one canonical-ECF item.
+
+   [keep_tags] exists for ONE caller — [Transport]'s §6.3 rejection path — and is
+   never set on any ingestion route. With it set, a major-type-6 tag yields its
+   INNER item instead of raising, so the caller can locate the [request_id] of a
+   frame it is REJECTING and answer [400 non_canonical_ecf] as §6.3 requires
+   ("Rejection returns 400 non_canonical_ecf") rather than dropping the frame in
+   silence, which also violates §4.9(c) deliver-or-signal.
+
+   This is not a weakening of the tag reject. The frame is still rejected: the
+   salvage result is used to read one string and is never turned into an entity,
+   stored, or forwarded, so §6.3's MUST NOT strip / preserve / interpret all hold
+   — nothing tagged survives the call. The default-[false] path every real decode
+   uses is byte-for-byte unchanged, which is what keeps the [tag_reject]
+   wire-conformance vectors meaningful. *)
+let decode ?(keep_tags = false) (s : string) : t =
   let pos = ref 0 in
   let n = String.length s in
   let need k = if !pos + k > n then raise (Decode_error "truncated") in
@@ -201,7 +216,9 @@ let decode (s : string) : t =
           else let k = item () in let v = item () in loop (i - 1) ((k, v) :: acc)
         in
         Map (loop len [])
-    | 6 -> raise (Decode_error "non_canonical_ecf: CBOR tag not permitted in ECF")
+    | 6 ->
+        if keep_tags then (ignore (read_arg ai); item ())
+        else raise (Decode_error "non_canonical_ecf: CBOR tag not permitted in ECF")
     | 7 ->
         (match ai with
          | 20 -> Bool false

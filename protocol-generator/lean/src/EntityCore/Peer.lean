@@ -99,16 +99,22 @@ def ownerGrants (peer : Peer) : List Value :=
 -- ── token minting (§6.9 / §6.2) ───────────────────────────────────────────────
 
 /-- Mint a root capability token granted by us to `granteeHash`; sign it. -/
-def mintToken (peer : Peer) (granteeHash : ByteArray) (parent : Option ByteArray)
-    (grants : List Value) : IO (Entity × Entity) := do
-  let now ← EntityCore.Net.nowMs ()
+def mintTokenAt (peer : Peer) (createdAt : UInt64) (granteeHash : ByteArray)
+    (parent : Option ByteArray) (expiresAt : Option UInt64)
+    (grants : List Value) : Entity × Entity :=
   let data := [(.text "granter", .bytes peer.identity.identityHash),
                (.text "grantee", .bytes granteeHash),
                (.text "grants", .array grants),
-               (.text "created_at", .uint now)]
+               (.text "created_at", .uint createdAt)]
+              ++ (match expiresAt with | some e => [(.text "expires_at", .uint e)] | none => [])
               ++ (match parent with | some p => [(.text "parent", .bytes p)] | none => [])
   let token := make "system/capability/token" (.map data)
-  pure (token, EntityCore.Identity.signEntity peer.identity token)
+  (token, EntityCore.Identity.signEntity peer.identity token)
+
+def mintToken (peer : Peer) (granteeHash : ByteArray) (parent : Option ByteArray)
+    (grants : List Value) : IO (Entity × Entity) := do
+  let now ← EntityCore.Net.nowMs ()
+  pure (mintTokenAt peer now granteeHash parent none grants)
 
 -- ── §6.9a seed policy ─────────────────────────────────────────────────────────
 
@@ -528,8 +534,12 @@ def isZeroHash (h : ByteArray) : Bool := h.data.all (· == 0)
 def reqGrantsOf (params : Option Entity) : List Value :=
   match params.bind (fun p => field p "grants") with | some (.array l) => l | _ => []
 
+/-- §5.6: `request.ttl_ms` is a DURATION term. Absent (or non-uint) => no term. -/
+def reqTtlOf (params : Option Entity) : Option UInt64 :=
+  params.bind (fun p => uintField p "ttl_ms")
+
 def mintBounded (peer : Peer) (callerCap : Option Entity) (reqGrants : List Value)
-    (granteeHash : ByteArray) (parent : Option ByteArray) : IO Outcome := do
+    (reqTtlMs : Option UInt64) (granteeHash : ByteArray) (parent : Option ByteArray) : IO Outcome := do
   let bounded := match callerCap with
     | none => false
     | some cap =>
@@ -540,7 +550,22 @@ def mintBounded (peer : Peer) (callerCap : Option Entity) (reqGrants : List Valu
             EntityCore.Capability.grantSubset peer.localPeer peer.localPeer peer.localPeer c pg))
   if !bounded then pure (err 403 "scope_exceeds_authority")
   else do
-    let (token, sgn) ← mintToken peer granteeHash parent reqGrants
+    -- §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE
+    -- and convert the duration terms against that same instant.
+    --
+    -- Not an authorization decision: an over-long ttl_ms from a bounded caller
+    -- MINTS a clamped token at 200 -- "rejecting it is non-conformant" (§5.6).
+    let createdAt ← EntityCore.Net.nowMs ()
+    let parentExpiry ← (match parent with
+      | none => pure none
+      | some ph => do
+          match ← EntityCore.Store.getByHash peer.store ph with
+          | some pe => pure (uintField pe "expires_at")
+          | none => pure none)
+    let callerExpiry := callerCap.bind (fun c => uintField c "expires_at")
+    let reqExpiry := (reqTtlMs.bind (fun t => EntityCore.Capability.addTtl createdAt t))
+    let expiresAt := EntityCore.Capability.minDefined [parentExpiry, callerExpiry, reqExpiry]
+    let (token, sgn) := mintTokenAt peer createdAt granteeHash parent expiresAt reqGrants
     pure (ok (make "system/capability/grant" (.map [(.text "token", .bytes token.hash)]))
              [(token.hash, token), (peer.identity.identityHash, peer.identity.peerEntity), (sgn.hash, sgn)])
 
@@ -552,7 +577,7 @@ def capabilityHandler (peer : Peer) (exec : Entity) (callerCap : Option Entity) 
   | "request" =>
     (match author with
      | none => pure (err 403 "capability_denied")
-     | some granteeHash => mintBounded peer callerCap (reqGrantsOf params) granteeHash none)
+     | some granteeHash => mintBounded peer callerCap (reqGrantsOf params) (reqTtlOf params) granteeHash none)
   | "delegate" =>
     (match params.bind (fun p => bytesField p "parent") with
      | none => pure (err 400 "unexpected_params" (some "delegate: parent required"))
@@ -562,7 +587,7 @@ def capabilityHandler (peer : Peer) (exec : Entity) (callerCap : Option Entity) 
          pure (err 501 "unsupported_operation" (some "delegate: same-peer-only in v1"))
        else match author with
             | none => pure (err 403 "capability_denied")
-            | some granteeHash => mintBounded peer callerCap (reqGrantsOf params) granteeHash (some ph))
+            | some granteeHash => mintBounded peer callerCap (reqGrantsOf params) (reqTtlOf params) granteeHash (some ph))
   | "revoke" =>
     (match params.bind (fun p => bytesField p "token") with
      | none => pure (err 400 "unexpected_params" (some "revoke: missing token"))

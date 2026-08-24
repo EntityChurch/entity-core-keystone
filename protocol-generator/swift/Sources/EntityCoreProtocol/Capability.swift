@@ -24,6 +24,51 @@ public enum Verdict: Sendable, Equatable {
 
 public enum Capability {
 
+    // ── §5.6 temporal ceiling (CAP-5 / CAP-6) ───────────────────────────────
+
+    /// Convert a DURATION term to an absolute timestamp; `nil` when the term
+    /// contributes no ceiling.
+    ///
+    /// §5.6 rule 3: an overflowing conversion is treated as ABSENT exactly as a
+    /// null term is -- never wrapped, never saturated (saturating manufactures
+    /// `expires_at == 2^64-1`, a finite bound indistinguishable from a deliberate
+    /// one). `addingReportingOverflow` makes the drop explicit; a bare `+` traps.
+    ///
+    /// `ttl == 0` is deliberately NOT special-cased: §5.6 rule 2 makes it DEFINED
+    /// and equal to `created_at` (expire immediately), and letting it fall out of
+    /// the arithmetic is what keeps it from collapsing into the "no bound" spelling.
+    public static func addTTL(_ createdAt: UInt64, _ ttl: UInt64?) -> UInt64? {
+        guard let ttl else { return nil }
+        let (sum, overflow) = createdAt.addingReportingOverflow(ttl)
+        return overflow ? nil : sum
+    }
+
+    /// §5.6 MIN_DEFINED: minimum over the DEFINED terms only; `nil` when none is
+    /// defined. Absolute terms enter directly; durations go through `addTTL` first.
+    public static func minDefined(_ terms: [UInt64?]) -> UInt64? {
+        terms.compactMap { $0 }.min()
+    }
+
+    // ── §6.2 CAP-6a: unrepresentable temporal fields on INGEST ──────────────
+
+    /// True when every CAP-6a temporal field on a RECEIVED token is ABSENT (legal)
+    /// or a representable uint.
+    ///
+    /// `uintAt` returns nil for BOTH an absent field and a present non-uint one, so
+    /// a token carrying `expires_at: -1` slips past the range checks and is honored.
+    /// §6.2 CAP-6a: such a token "is malformed. A verifier MUST refuse it and MUST
+    /// NOT treat the unrepresentable field as absent."
+    public static func temporalFieldsRepresentable(_ tok: Entity) -> Bool {
+        for key in ["expires_at", "not_before", "created_at"] {
+            guard let v = tok.data.mapValue(key) else { continue }
+            if case .uint = v { continue }
+            return false
+        }
+        return true
+    }
+
+
+
     // MARK: §1.4 / §5.4 pattern matching
 
     /// §5.4 canonicalize: resolve peer-relative paths to absolute. Reject
@@ -325,6 +370,7 @@ public enum Capability {
         if !localInSigners { return false }
 
         // Temporal validity + grantee resolution (as for any root).
+        if !temporalFieldsRepresentable(cap) { return false }   // CAP-6a
         if let nb = cap.data.uintAt("not_before"), now < nb { return false }
         if let ea = cap.data.uintAt("expires_at"), ea < now { return false }
         guard let granteeHash = cap.data.bytesAt("grantee"), resolve(granteeHash) != nil else { return false }
@@ -439,7 +485,10 @@ public enum Capability {
                 return .unresolvableGrantee
             }
 
-            // Temporal validity.
+            // Temporal validity. CAP-6a FIRST — the range checks use `uintAt`,
+            // which cannot tell "absent" from "present but not a uint"; that
+            // ambiguity is exactly the fail-open.
+            if !temporalFieldsRepresentable(current) { return .authzDeny(code: "capability_denied") }
             if let nb = current.data.uintAt("not_before"), now < nb { return .authzDeny(code: "capability_denied") }
             if let ea = current.data.uintAt("expires_at"), ea < now { return .authzDeny(code: "capability_denied") }
 
@@ -450,7 +499,8 @@ public enum Capability {
                       parentGrantee.elementsEqual(granterHash) else { return .authzDeny(code: "capability_denied") }
                 if !isAttenuated(child: current, parent: parent,
                                  childFrame: granterPeerID(current) ?? localPeerID,
-                                 parentFrame: granterPeerID(parent) ?? localPeerID) {
+                                 parentFrame: granterPeerID(parent) ?? localPeerID,
+                                 localPeerID: localPeerID) {
                     return .authzDeny(code: "capability_denied")
                 }
                 if !checkDelegationCaveats(parent: parent, child: current, depth: i) {
@@ -463,10 +513,10 @@ public enum Capability {
 
     // MARK: §5.6 attenuation (per-side granter frame, §5.5a Amendment 1)
 
-    public static func isAttenuated(child: Entity, parent: Entity, childFrame: String, parentFrame: String) -> Bool {
+    public static func isAttenuated(child: Entity, parent: Entity, childFrame: String, parentFrame: String, localPeerID: String) -> Bool {
         let childGrants = grants(of: child), parentGrants = grants(of: parent)
         for cg in childGrants {
-            if !grantCoveredBy(cg, parentGrants, childFrame: childFrame, parentFrame: parentFrame) { return false }
+            if !grantCoveredBy(cg, parentGrants, childFrame: childFrame, parentFrame: parentFrame, localPeerID: localPeerID) { return false }
         }
         // Expiration nil-vs-finite (§5.6 normative): finite parent + null child = escalation.
         if let pe = parent.data.uintAt("expires_at") {
@@ -476,18 +526,35 @@ public enum Capability {
         return true
     }
 
-    static func grantCoveredBy(_ child: GrantEntry, _ parents: [GrantEntry], childFrame: String, parentFrame: String) -> Bool {
-        for p in parents where grantSubset(child, p, childFrame: childFrame, parentFrame: parentFrame) { return true }
+    static func grantCoveredBy(_ child: GrantEntry, _ parents: [GrantEntry], childFrame: String, parentFrame: String, localPeerID: String) -> Bool {
+        for p in parents where grantSubset(child, p, childFrame: childFrame, parentFrame: parentFrame, localPeerID: localPeerID) { return true }
         return false
     }
 
-    static func grantSubset(_ child: GrantEntry, _ parent: GrantEntry, childFrame: String, parentFrame: String) -> Bool {
-        if !scopeSubset(child.handlers, parent.handlers, childFrame: childFrame, parentFrame: parentFrame) { return false }
-        if !scopeSubset(child.operations, parent.operations, childFrame: childFrame, parentFrame: parentFrame) { return false }
+    /// §5.6 grant subset.
+    ///
+    /// §5.5a Amendment 1's per-link granter frames (`childFrame` / `parentFrame`)
+    /// scope the **resource dimension ONLY**. handlers, operations and peers are
+    /// compared in the LOCAL frame on both sides.
+    ///
+    /// Getting that wrong is invisible until the frames differ. This used to pass
+    /// the granter frames to all four dimensions and default `peers` to them, which
+    /// is identical behaviour whenever child and parent share a granter — every
+    /// self-issued path — and wrong for exactly one case: a DELEGATED child cap,
+    /// whose granter is the caller rather than this peer. There, a parent handler
+    /// scope of `["*"]` canonicalized to `/<thisPeer>/*` while the child's
+    /// `["system/capability"]` canonicalized to `/<callerPeer>/system/capability`,
+    /// so a universal parent grant could not cover ANY child grant and every
+    /// request presenting a delegated cap came back 403. It surfaced as three
+    /// unrelated-looking capability failures (CAP-5, CAP-6, and CAP-6a's control
+    /// losing its teeth), none of which is where the defect was.
+    static func grantSubset(_ child: GrantEntry, _ parent: GrantEntry, childFrame: String, parentFrame: String, localPeerID: String) -> Bool {
+        if !scopeSubset(child.handlers, parent.handlers, childFrame: localPeerID, parentFrame: localPeerID) { return false }
+        if !scopeSubset(child.operations, parent.operations, childFrame: localPeerID, parentFrame: localPeerID) { return false }
         if !scopeSubset(child.resources, parent.resources, childFrame: childFrame, parentFrame: parentFrame) { return false }
-        let cp = child.peers ?? Scope(include: [childFrame])
-        let pp = parent.peers ?? Scope(include: [parentFrame])
-        if !scopeSubset(cp, pp, childFrame: childFrame, parentFrame: parentFrame) { return false }
+        let cp = child.peers ?? Scope(include: [localPeerID])
+        let pp = parent.peers ?? Scope(include: [localPeerID])
+        if !scopeSubset(cp, pp, childFrame: localPeerID, parentFrame: localPeerID) { return false }
         // Constraint key retention + byte equality.
         for (k, v) in parent.constraints {
             guard let cv = child.constraints.first(where: { cborEqual($0.key, k) })?.value, cborEqual(cv, v) else { return false }
