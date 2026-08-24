@@ -1,0 +1,112 @@
+#!/bin/sh
+# S4 conformance harness — entity-core-protocol-rexx.
+#
+# Runs entirely inside the rexx-toolchain container (fedora:43): the Go validate-peer
+# oracle is a static CGO_ENABLED=0 ELF that runs there too, so oracle + peer share one
+# loopback and the whole run stays sealed-offline (--network=none — intra-container
+# 127.0.0.1 works under it). Builds the peer's C prerequisites (the ecnet co-process
+# daemon + the eccrypto helper, both over libentitycore_codec) and the concatenated
+# host binary, launches bin/peer.rex with --name conformance --debug-open-grants
+# --validate, waits for its LISTENING line, points validate-peer at it, tears down.
+#
+# Invoke from the repo root (the oracle binary is a gitignored local tool — build it
+# first with tools/oracle-bootstrap.sh):
+#   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm --network=none \
+#     -v "$PWD":/work:Z entity-core-keystone/rexx-toolchain:latest sh /work/protocol-generator/rexx/run-s4.sh [validate-peer-args...]
+#
+# Or via the run wrapper: ./run-s4.sh  (which drives podman for you).
+#
+# Default validate-peer args: -profile core (all core-profile categories; the oracle
+# auto-allowlists the §9.0 extension-carve-out skips). Pass args to override (e.g. a
+# single -category, or -failures-only). ORACLE / PORT / VALIDATE are env overrides.
+#
+# When NOT already inside the container (no /work), re-exec self under podman.
+set -eu
+
+if [ ! -d /work/protocol-generator/rexx ]; then
+  REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+  . "$REPO_ROOT/tools/podman-caps.sh"
+  IMAGE="entity-core-keystone/rexx-toolchain:latest"
+  exec podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z \
+    -w /work/protocol-generator/rexx "$IMAGE" sh /work/protocol-generator/rexx/run-s4.sh "$@"
+fi
+
+PORT="${PORT:-7777}"
+CODEC_BUILD=/work/ffi-generator/c-abi/entity-core-codec-ffi-c/build
+ORACLE="${ORACLE:-/work/output/s4-oracles/validate-peer}"
+PROJ=/work/protocol-generator/rexx
+PEERBIN=/tmp/rexx-peer.rex
+NET="$PROJ/src/ext/ecnet"
+
+cd "$PROJ"
+
+# Build the ecnet daemon + eccrypto helper (+ libentitycore_codec if absent) and the
+# concatenated host binary (bin/peer.rex + the routine library).
+make s4peer >/tmp/s4build.out 2>&1 || { echo "s4 peer build failed:" >&2; cat /tmp/s4build.out >&2; exit 1; }
+
+# --validate enables the §7a conformance handlers (system/validate/{echo,
+# dispatch-outbound}) so the validate_echo_dispatch + dispatch_outbound_reentry probes
+# run live instead of honest-SKIP. Off in production; on here. (VALIDATE=0 → SKIP path.)
+VALIDATE_FLAG=""; [ "${VALIDATE:-1}" = "1" ] && VALIDATE_FLAG="--validate"
+
+# Provision the peer's persistent identity at the standard on-disk location so the
+# validator's multisig accept-path probe (valid_2of3_peer_signed_accepted) can find the
+# peer's keypair (crypto.LookupKeypairByPeerID) and co-sign AS the peer — exercising
+# genuine K-of-N instead of env-skipping. The seed (0x11 × 32, base64 "ERER…") matches
+# the launcher default, so peer_id is unchanged. NAME follows the Go entity-peer /
+# peer-manager convention: ~/.entity/peers/NAME/keypair.
+NAME="${PEERNAME:-conformance}"
+KPDIR="${HOME:-/root}/.entity/peers/$NAME"
+mkdir -p "$KPDIR"
+printf '%s\n%s\n%s\n' \
+  '-----BEGIN ENTITY PRIVATE KEY-----' \
+  'ERERERERERERERERERERERERERERERERERERERERERE=' \
+  '-----END ENTITY PRIVATE KEY-----' > "$KPDIR/keypair"
+
+# The FIFO base is per-run; EC_DBG (optional) redirects the daemon's stderr to a log.
+BASE="/tmp/ecnet-s4.$$"
+LD_LIBRARY_PATH="$CODEC_BUILD" rexx "$PEERBIN" \
+  --port "$PORT" --name "$NAME" --net "$NET" --base "$BASE" \
+  --debug-open-grants $VALIDATE_FLAG >/tmp/host.out 2>/tmp/host.err &
+HOST_PID=$!
+cleanup() {
+  kill "$HOST_PID" 2>/dev/null || true
+  pkill -f "$NET $BASE" 2>/dev/null || true
+  rm -f "$BASE.cmd" "$BASE.evt" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# Wait up to 20s for the readiness line (Regina startup + daemon spawn + FIFO open).
+i=0
+while [ "$i" -lt 200 ]; do
+  if grep -q '^LISTENING' /tmp/host.out 2>/dev/null; then break; fi
+  if ! kill -0 "$HOST_PID" 2>/dev/null; then
+    echo "host exited before LISTENING:" >&2
+    cat /tmp/host.err >&2
+    exit 1
+  fi
+  i=$((i + 1))
+  sleep 0.1
+done
+if ! grep -q '^LISTENING' /tmp/host.out 2>/dev/null; then
+  echo "host never reached LISTENING within 20s:" >&2
+  cat /tmp/host.err >&2
+  exit 1
+fi
+head -1 /tmp/host.out
+
+# Default args: the full --profile core run, with the JSON report emitted alongside.
+# -timeout: the overall run budget (an OPERATOR knob — the test's own design doctrine
+# is "a slow language passes by being correct, not by being fast"; the real gate is the
+# 20s per-request cap, never wall-clock). This peer is the cohort's slowest: its §9.1
+# crypto crosses a FIFO to the ecnet co-process PER OP (A-RX-011 forbids an in-process
+# shim), so each request is several IPC round-trips (~17ms) where a compiled peer is
+# sub-ms. concurrency.t2_1 alone streams 10000 tree.gets (~170s single-threaded). The
+# default 60s budget is consumed long before the later categories surface (the
+# budget-exhaustion cascade), so widen it — as dart (5m) and prolog (180s) already do
+# for the same reason. Override with ORACLE_TIMEOUT.
+if [ "$#" -eq 0 ]; then
+  set -- -profile core -timeout "${ORACLE_TIMEOUT:-10m}" -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
+fi
+
+"$ORACLE" -addr "127.0.0.1:$PORT" "$@" || true

@@ -1,0 +1,14 @@
+# Build artifacts — the crypto helper binary (built from src/ext/eccrypto.c against
+# libentitycore_codec via `make ext`). Provenance via Crypto_ImplInfo (ec_impl_info).
+src/ext/eccrypto
+src/ext/ecnet
+src/ext/*.so
+src/ext/*.o
+
+# bin/ here is the SOURCE host entrypoint (bin/peer.rex for S4), NOT a build-output
+# dir. The repo-root .gitignore has a blanket `**/bin/`; un-ignore it explicitly.
+!/bin/
+!/bin/peer.rex
+
+# S5 packaging output (make dist) — source tarball, not committed.
+dist/

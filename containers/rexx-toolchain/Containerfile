@@ -1,0 +1,101 @@
+# Rexx toolchain image — builds the ALIEN-SUBSTRATE peer
+# (entity-core-protocol-rexx) per protocol-generator/rexx/profile.toml.
+# Mirrors the structure of containers/tcl-toolchain + containers/cobol-toolchain.
+#
+# ALIEN-SUBSTRATE PROBE: native-DECIMAL number model + EIAS. Rexx has NO binary
+# numeric type — numbers are decimal strings (NUMERIC DIGITS), and there is no IEEE
+# float type nor any built-in to read/write IEEE bits. The codec is hand-rolled pure
+# Rexx (the probe: every IEEE float bit computed in decimal arithmetic); crypto
+# crosses the C-ABI (libentitycore_codec) via a C external-function extension using
+# Regina's SAA API (rexxsaa.h) — the COBOL/Tcl FFI-hybrid shape.
+#
+# S11: pin the toolchain + every dependency to an exact version. Regina is a distro-
+#      packaged, reviewed source channel; the exact version pin stands for
+#      reproducibility. libentitycore_codec statically links the image's libsodium.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Versions confirmed available on fedora:43 (2026-07-11):
+#   Regina Rexx   3.9.6-5.fc43  — classic ANSI Rexx (fedora packages Regina, not
+#                                 ooRexx). Provides rexx/regina (interp),
+#                                 regina-rexx-devel (rexxsaa.h for the crypto ext),
+#                                 regina-rexx-libs, and the RxSock + RxMath external-
+#                                 function libraries (the TCP substrate for S3).
+#   libsodium     1.0.22        — statically + privately linked into
+#                                 libentitycore_codec.{so,a} by its CMake.
+# CBOR + base58 + varint are hand-rolled pure Rexx in-repo (no Rexx pkg gives
+# canonical ECF; A-005, 8th peer to hit it). No pure-Rexx crypto exists → the crypto
+# ext is mandatory (like COBOL). The test harness is hand-rolled (no Rexx test fw).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (S2, not S1):
+#   podman build -t entity-core-keystone/rexx-toolchain:latest \
+#     -f containers/rexx-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps.
+# regina-rexx + regina-rexx-libs: the interpreter (rexx/regina) + RxSock/RxMath libs.
+# regina-rexx-devel: rexxsaa.h + the Regina API headers the crypto C ext compiles against.
+# gcc/gcc-c++/cmake/make/pkgconfig: build the C-ABI codec (libentitycore_codec) via its
+#   CMake, and the crypto external-function extension against regina-rexx-devel.
+# libsodium-static + libsodium-devel: the C-ABI CMake STATICALLY + PRIVATELY links
+#   libsodium into libentitycore_codec.{so,a}. Without these the C-ABI build FATALs.
+RUN dnf install -y \
+        regina-rexx regina-rexx-devel regina-rexx-libs \
+        gcc gcc-c++ cmake make pkgconfig \
+        libsodium-static libsodium-devel \
+        git curl ca-certificates findutils which glibc-langpack-en tar \
+    && dnf clean all
+
+# Wire data is byte-oriented; pin a UTF-8 locale so non-ASCII text vectors + argv
+# load cleanly (Regina is byte-oriented but the shell/env still needs a sane locale).
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# ── Verify the Regina pin + the DECIMAL/byte probe primitives (A-RX-001/002/004) ──
+# The seams this peer exists to exercise must have working primitives:
+#   - NUMERIC DIGITS decimal arithmetic exact (0.1+0.2 == 0.3; 2**64-1 exact)
+#   - D2C(n,len) big-endian + C2D round-trip across the uint64 boundary (native ints)
+#   - BITAND/BITXOR bit ops (the CBOR/float bit engine)
+#   - LENGTH counts BYTES (no char-vs-byte trap — contrast Tcl A-TCL-002)
+RUN cat > /tmp/probe.rex <<'REXX' && rexx /tmp/probe.rex && rm -f /tmp/probe.rex
+parse version ver
+say "Regina" ver
+numeric digits 40
+big = 2**64 - 1
+if big \= 18446744073709551615 then do; say "FATAL: decimal 2**64-1 wrong ("big")"; exit 1; end
+c = d2c(big, 8)
+if c2x(c) \= "FFFFFFFFFFFFFFFF" then do; say "FATAL: d2c uint64 not big-endian ("c2x(c)")"; exit 1; end
+if c2d(c) \= big then do; say "FATAL: c2d roundtrip"; exit 1; end
+say "d2c/c2d uint64 big-endian OK" c2x(c)
+if (0.1 + 0.2) \= 0.3 then do; say "FATAL: decimal not exact ("0.1+0.2")"; exit 1; end
+say "decimal-exact OK (0.1+0.2 = 0.3)"
+if bitand("0f0f"x, "ffff"x) \= "0f0f"x then do; say "FATAL: bitand"; exit 1; end
+if bitxor("00ff"x, "0f0f"x) \= "0ff0"x then do; say "FATAL: bitxor"; exit 1; end
+say "bit ops OK"
+if length("hello") \= 5 then do; say "FATAL: length not bytes"; exit 1; end
+say "LENGTH-is-bytes OK (no char-vs-byte trap)"
+REXX
+
+# ── Verify rexxsaa.h is present (the crypto external-function ext compiles against it) ──
+RUN test -f /usr/include/rexxsaa.h && echo "rexxsaa.h present (crypto ext buildable)" \
+    || ( echo "FATAL: rexxsaa.h missing — regina-rexx-devel did not provide it"; exit 1 )
+
+# ── Verify RxSock is loadable (the S3 TCP substrate; informational at build) ──
+# rxfuncadd returns 0 on success. Non-fatal here (transport is S3's gate); records
+# whether RxSock is present so S3 doesn't rediscover it (A-RX-008).
+RUN cat > /tmp/sock.rex <<'REXX' ; rexx /tmp/sock.rex || true ; rm -f /tmp/sock.rex
+rc = rxfuncadd("SockLoadFuncs", "rxsock", "SockLoadFuncs")
+if rc = 0 then do
+  call SockLoadFuncs
+  say "RxSock loadable OK (SockLoadFuncs added)"
+end
+else say "RxSock rxfuncadd rc="rc" (S3 will confirm the socket path; A-RX-008)"
+REXX
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="rexx-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.regina="3.9.6"
+LABEL org.entity-core-keystone.experimental="decimal-number-model-alien-substrate-probe"
+
+CMD ["/bin/bash"]

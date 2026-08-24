@@ -1,0 +1,223 @@
+# entity-core-protocol-rexx — Language Profile
+#
+# ALIEN-SUBSTRATE PROBE (native-DECIMAL number model + EIAS). Peer #24. Authored
+# FRESH in S1 from the V8 spec-data + Regina Rexx research — NOT ported from any
+# prior peer's profile. Rexx is the SECOND Everything-Is-A-String peer (after Tcl,
+# #23), but its headline novelty is a DIFFERENT, less-saturated wire axis: Rexx has
+# **no binary numeric type at all**. Every value is a character string, and
+# arithmetic is arbitrary-precision DECIMAL governed by `NUMERIC DIGITS` (default 9).
+#
+# *** THE EXPERIMENTAL QUESTION THIS PROFILE EXISTS TO ANSWER ***
+# ECF's canonical wire carries a BINARY integer tower (CBOR mt0/1, network-order
+# octets) and a BINARY IEEE-754 float tower (mt7, f16/f32/f64) with a shortest-form
+# ladder. Every prior peer had *some* native binary numeric primitive to lean on:
+# fixed-width ints (C/Zig/C#), platform bignums (Python/Ruby/CL/Elixir/Prolog/Tcl),
+# and — critically — a native IEEE float type + a `binary`/`pack`/`memcpy` path to
+# its bits (even Tcl had `binary format R/Q`). **Rexx has NEITHER.** Its numbers are
+# decimal strings; there is no IEEE float type and no built-in to view a number's
+# binary representation. So: can a peer whose entire numeric model is DECIMAL carry
+# a BINARY int + IEEE-754 float wire format exactly — computing every IEEE mantissa/
+# exponent bit and every shortest-float decision in decimal arithmetic — without the
+# spec's numeric determinism (int-vs-float intent, shortest-form ladder, uint64
+# boundary) leaking into ad-hoc convention? This is the **float/number-model axis**
+# the peer-selection compass (LANDSCAPE §"Runtime-shared families") marks as the
+# highest fresh-yield remaining surface. The bet: the decimal↔IEEE seam (A-RX-002)
+# and the int-vs-float intent seam (A-RX-003) surface a real numeric-precision
+# finding, or confirm the spec is already tight enough to force the peer to carry
+# int-vs-float intent + IEEE bits explicitly (which is itself the answer).
+# See arch/PROFILE-RATIONALE.md.
+#
+# Profile authority (PROMPT-CONSTANTS): the agent MUST use the values declared here.
+# A "TBD" value is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "rexx"
+name              = "Rexx"
+tier              = "alien-substrate-probe"   # not a Tier-1..5 cohort slot; a decimal-number-model + EIAS probe
+package_name      = "entity-core-protocol-rexx"   # keystone peer id
+runtime           = "rexx-toolchain"          # references containers/rexx-toolchain/Containerfile
+interpreter       = "Regina Rexx 3.9.6"       # classic ANSI Rexx (fedora:43 packages Regina; no ooRexx). The
+                                              # pure decimal-string substrate — ooRexx's objects would blunt the probe.
+
+[codec]
+# strategy: FFI-HYBRID — hand-rolled canonical CBOR in PURE REXX (the decimal probe
+# lives here), crypto over the C-ABI (libentitycore_codec). Same shape as COBOL
+# (peer 22) and Tcl (peer 23): a native value-codec for the parts the language CAN
+# do, the C-ABI for the crypto it cannot. Rationale for each half:
+#
+#   (1) CBOR: hand-rolled canonical encoder/decoder in pure Rexx (src/cbor.rex).
+#       No Rexx CBOR package exists (the A-005 pattern, now 8/8). Rexx's byte/number
+#       built-ins ARE a competent byte assembler for the INTEGER tower:
+#         D2C(n, len) → an len-byte BIG-ENDIAN character string (network order, free!)
+#         C2D(bytes)  → a DECIMAL integer (exact to NUMERIC DIGITS)
+#         C2X/X2C/D2X/X2D → hex<->char<->decimal; BITAND/BITOR/BITXOR → bit ops
+#       So minimal int/length heads are NATIVE and clean (contrast Tcl's binary
+#       format). The uint64 boundary [2^63, 2^64-1] is FREE via decimal bignum with a
+#       high NUMERIC DIGITS — no fixed-width trap (A-RX-001), but reached through
+#       DECIMAL, not a platform bignum.
+#       The HARD part is the FLOAT tower (mt7): Rexx has NO IEEE float type and NO
+#       built-in to read/write IEEE bits. Every f16/f32/f64 encode is hand-computed
+#       from a decimal value (sign, biased exponent, 52/23/10-bit mantissa) via
+#       decimal arithmetic + D2C, and decode is the inverse; the shortest-float ladder
+#       (does this value round-trip through f16/f32 exactly?) is decided in decimal.
+#       This is the deepest hand-roll in the cohort — the probe (A-RX-002/006).
+#
+#   (2) Crypto: NO native crypto in Regina Rexx. So the §9.1 signature floor is an
+#       FFI obligation from the start (like COBOL/Tcl): a C external-function extension
+#       via Regina's SAA API (rexxsaa.h — RexxRegisterFunctionExe / RexxAllocateMemory,
+#       loaded with rxfuncadd), binding libentitycore_codec's ec_sha256/384 +
+#       ec_ed25519_{seed_to_pubkey,sign,verify}. SHA also crosses the C-ABI for one
+#       consistent crypto surface.
+strategy          = "ffi-hybrid"
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native", impl = "pure-Rexx over D2C/C2D/BITAND + NUMERIC DIGITS decimal; IEEE floats FULLY hand-rolled (no binary float type)" }
+ed25519_library   = { name = "libentitycore_codec (C external-function extension, Regina SAA API)", version = "C-ABI 1.1", api = "ec_ed25519_{seed_to_pubkey,sign,verify} + ec_sha256/384" }
+ed448_library     = { name = "libentitycore_codec (C ext, Regina SAA API)", version = "C-ABI 1.1", strategy = "ffi", api = "ec_ed448_{seed_to_pubkey,sign,verify}" }
+sha256_source     = "libentitycore_codec ec_sha256 (FFI via the C ext); no pure-Rexx SHA fallback (Regina has no crypto)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (src/base58.rex); decimal bignum base-256->base-58
+varint_handling   = "native"                  # LEB128 multikey varint (N1, §7.3), src/varint.rex — pure Rexx over D2C/C2D + BITAND
+numeric_model     = "decimal"                 # NUMERIC DIGITS arbitrary-precision decimal; NO binary int/float type (the probe axis)
+
+[error_model]
+# Classic Rexx error handling is the CONDITION system: `SIGNAL ON SYNTAX`, `SIGNAL ON
+# ERROR`, `CALL ON …`, plus the RC special variable and the RESULT of a CALL. There
+# is no exception OBJECT (ANSI Rexx predates ooRexx's classes). The idiomatic modern-
+# classic story for a library is: a procedure RETURNs its value on success and, on a
+# hard reject (non-canonical / truncated / bad seed), raises a SYNTAX condition via
+# `CALL Reject 'KIND' 'detail'` which the codec's public entry traps with `SIGNAL ON
+# SYNTAX`. The KIND travels in a namespaced global (the -errorcode analogue) since a
+# raised Rexx condition carries only a numeric code + the offending line, not a
+# structured payload. In-band "absent"/"not found" is a distinguished sentinel value,
+# NOT a condition (see A-RX-007: the empty string is a legitimate wire value, so
+# absent is a tagged marker that cannot collide with a real empty byte/text string).
+style             = "conditions"              # SIGNAL ON SYNTAX/ERROR + RC/RESULT; the classic-Rexx condition system
+condition_family  = "CALL Reject KIND detail  (raises SYNTAX; KIND in EC.!ERRKIND global)"
+leaf_kinds        = "NON_CANONICAL_ECF | TRUNCATED_INPUT | TAG_REJECTED | BAD_SEED | UNSUPPORTED_CONTENT_HASH_FORMAT | UNSUPPORTED_KEY_TYPE"
+absent_sentinel   = "a tagged marker (kind 0-length list is impossible in the tagged rep — a present value is always a non-empty stem/list); NOT the empty string (A-RX-007)"
+
+[async]
+# Classic Rexx is SINGLE-THREADED with NO native concurrency. RESOLVED AT S1
+# (A-RX-008): fedora:43's `regina-rexx` does NOT package RxSock (only RexxUtil /
+# libregutil + librxtest*; `rxfuncadd 'SockLoadFuncs','rxsock',…` → rc 60). So the
+# TCP substrate is folded into the SAME C external-function extension that carries
+# crypto (the COBOL netshim.c pattern): the C ext exposes BSD-socket primitives
+# (EcNetListen / EcNetAccept / EcNetConnect / EcNetSend / EcNetRecv / EcNetSelect /
+# EcNetClose / EcNetNodelay) as Regina external functions alongside the ec_* crypto.
+# The peer is a SINGLE-THREADED SELECT LOOP: EcNetSelect multiplexes the listen
+# socket + every connection; each inbound frame is dispatched to completion before
+# the next. Same structural shape as the COBOL poll() peer (#22) — §7b store-safety
+# is STRUCTURAL (one interp, one thread, no concurrent store access → no lock, no
+# race). The §6.11 handler-initiated outbound-dispatch reentry is a MANUAL pump (as
+# in COBOL): the handler calls EcNetSend then re-enters a bounded EcNetSelect/
+# EcNetRecv loop to await the correlated reply by request_id — no thread (a dedicated
+# reentry pump, the correlation-map tax the non-actor/non-CSP peers pay).
+style             = "single-thread-select"    # C-ext BSD-socket select loop; no threads (classic Rexx has none)
+socket_source     = "C external-function extension (COBOL netshim pattern) — RxSock NOT packaged with fedora Regina (A-RX-008)"
+event_primitive   = "EcNetSelect over the listen socket + per-connection sockets; EcNetRecv/EcNetSend"
+request_demux     = "request_id -> a pending stem (EC.!PENDING.reqid) in the one interp; matched in the reentry pump"
+store_model       = "plain Rexx stems (compound variables) in the one interp — structurally race-free (single thread)"   # §4.8/§7b; no lock
+tcp_nodelay       = true                       # EcNetNodelay (setsockopt TCP_NODELAY) in the C ext on accepted/dialed sockets (§7b)
+blocking_discipline = "EcNetSelect gates every recv/send so no call blocks the single loop indefinitely; a per-op timeout bounds the reentry pump"
+
+[naming]
+# Rexx is CASE-INSENSITIVE (symbols fold to uppercase internally). The community
+# convention: UPPERCASE keywords, Capitalized or UPPER procedure labels, and stems
+# (compound variables) as the aggregate/struct unit. There is no namespace/module
+# system in ANSI Rexx — files are sourced via one program calling routines in
+# external .rex files (or the `::REQUIRES`-less classic model: a routines library
+# sourced by the main). We prefix all public routines with a module tag to avoid the
+# flat global label space (`Cbor_Encode`, `Ent_Make`, `Cap_VerifyRequest`).
+proc_names        = "Module_Verb  (Capitalized tag + underscore + verb: Cbor_Encode, Peer_Dispatch)"
+namespace_scheme  = "label-prefix (no ANSI namespaces): <Tag>_<Verb>; internal helpers get a leading '.' -> '_'? no — '_'-lead: _tag_helper"
+aggregate_unit    = "stem (compound variable): a value/entity is a stem EC.<handle>.<field>; the struct analogue"
+variable_names    = "UPPER for globals/exposed (EC.!GLOBAL), lower/Mixed for locals"
+constant_names    = "UPPER_SNAKE in a globals stem (EC.!MAX_DEPTH = 64); Rexx has no const keyword"
+file_names        = "snake_case.rex (cbor.rex, entity.rex, capability.rex); one module per file"
+main_program      = ".rex entry sourced via CALL/interpret of the routines library"
+
+[build]
+# Rexx is INTERPRETED — no compile gate (like Tcl/Prolog/Python/Ruby). "Build" =
+# the C crypto extension (rxs*.so via the Regina SAA API) compiled with the image gcc
+# + regina-rexx-devel, plus a load smoke (`rxfuncadd` the crypto ext + call a routine).
+# No cargo/dotnet-class build tool; the "package" is a directory of .rex files + the
+# compiled crypto .so. libentitycore_codec is a runtime .so linked by the crypto ext.
+build_tool        = "regina (rexx interpreter) + gcc for the crypto ext"
+build_command     = "make ext   # compile the crypto C external-function extension"
+test_command      = "rexx test/all.rex   # hand-rolled harness (no Rexx test framework)"
+package_command   = "make dist  # tar the .rex tree + the crypto ext + a load stub"
+
+[layout]
+src_dir           = "src/"                     # the *.rex routine files (cbor, varint, base58, peerid, entity, ...)
+test_dir          = "test/"                    # hand-rolled conformance + smoke harnesses
+ext_dir           = "src/ext/"                 # the crypto C external-function extension (entitycore_rexx.c -> librexxcrypto.so)
+entry_point       = "src/entity_core.rex"      # umbrella loader: sources every routine file + rxfuncadd the crypto ext
+ffi_binding       = "src/ext/entitycore_rexx.c" # Regina SAA-API crypto ext binding libentitycore_codec
+
+[publishing]
+# Rexx has NO package registry (no CPAN/PyPI/crates analogue). The living
+# distribution norms: (a) a tarball / git repo of .rex files a user drops on
+# REGINA_MACROS / the search path, (b) inclusion in a Rexx script archive (e.g. the
+# RexxLA site). Publish = tag a git release with the .rex tree + the crypto ext build
+# recipe; there is no registry inclusion step. Analogous to COBOL (make dist) — a
+# source distribution, not a binary registry.
+registry          = "git + tarball (no Rexx registry exists)"
+registry_url      = ""                          # TBD on first publish
+package_id        = "entity-core-protocol-rexx"
+license_expression = "Apache-2.0"
+repository_url    = ""                           # TBD on first publish
+
+[license]
+generated_outputs = "Apache-2.0"               # S9 default. Regina itself is LGPL/MPL; the ecosystem is license-mixed with no mandate — keep the Apache-2.0 default (explicit patent grant).
+
+[testing]
+# NO standard Rexx unit-test framework exists (unlike Tcl's bundled tcltest). The
+# harness is hand-rolled (the COBOL pattern): a test/all.rex that sources the routines,
+# walks the pinned v0.8.0 fixture, and asserts byte-identity against the hand-rolled
+# codec + the crypto ext. Zero test-dependency cost; also zero framework help.
+framework         = "hand-rolled (no Rexx test framework)"
+runner            = "test/all.rex (+ test/conformance.rex, test/smoke.rex)"
+conformance_probe = "load spec-data v0.8.0 fixtures; assert byte-identity vs hand-rolled codec + crypto ext"
+
+[container]
+base_image        = "entity-core-keystone/rexx-toolchain:latest"
+build_in_container = true
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/rexx entity-core-keystone/rexx-toolchain:latest sh -c 'rexx test/all.rex'"
+
+[idiom]
+# DECIMAL-number-model + EIAS hints — the seams where this substrate is unlike every
+# prior peer (INCLUDING Tcl, which had a native IEEE float + binary format).
+native_decimal_only     = true                # THE headline. Numbers are decimal strings; NUMERIC DIGITS sets precision. NO binary int, NO IEEE float type. Every wire int is D2C/C2D (native, big-endian); every wire float is hand-computed IEEE bits from a decimal value (A-RX-002).
+no_binary_float_type    = true                # A-RX-002 (core probe): CBOR mt7 f16/f32/f64. Rexx has NO float type and NO built-in for IEEE bits. The encoder computes sign/biased-exponent/mantissa in decimal arithmetic and lays the bytes with D2C; the decoder inverts. The shortest-float ladder (round-trips through f16/f32 exactly?) is a decimal decision. The deepest hand-roll in the cohort.
+int_is_decimal_native   = true                # A-RX-001: the integer tower is FREE and CLEAN — D2C(n,len) is native big-endian, C2D is exact to NUMERIC DIGITS. Full uint64 [2^63,2^64-1] with NUMERIC DIGITS>=25 (set high). NO fixed-width trap; reached via DECIMAL bignum (vs Tcl/Python platform bignum, vs C#/Zig fixed-width).
+numeric_intent_seam     = true                # A-RX-003: "1" vs "1.0" vs 1 — EIAS + decimal gives no intrinsic int-vs-float type. The data model marks int-vs-float intent EXPLICITLY at value construction (a tagged rep); NEVER infer mt0/1 vs mt7 from the string form (DATATYPE(x,'W') classifies the string, ambiguously).
+byte_string_native      = true                # A-RX-004: a Rexx string IS a byte string (Regina is byte-oriented, no Unicode type). LENGTH counts BYTES. So the A-TCL-002 char-vs-byte-length trap does NOT arise (LENGTH is already the wire byte count). byte-vs-text (mt2 vs mt3) intent is still carried EXPLICITLY in the tagged rep (a string alone cannot say which major type).
+d2c_c2d_codec           = true                # D2C/C2D/D2X/X2D/C2X/X2C + BITAND/BITOR/BITXOR are the byte/bit engine. D2C(n,len)=big-endian; no left-shift operator (use *2**k or X2D/D2X). f16 half-float + shortest ladder are hand-rolled bit arithmetic on decimals.
+empty_string_trap       = true                # A-RX-007: the empty string is a legitimate wire VALUE (empty mt2/mt3), so it cannot be the "absent" sentinel. Absent is a tagged marker; a present value is always a non-empty tagged list/stem.
+single_thread_select    = true                # C-ext BSD-socket select loop; §7b store-safety structural (single thread); §6.11 reentry a manual pump (COBOL-shape, correlation-map tax).
+no_compile_gate         = true                # interpreted; NO static type/coverage check. Correctness rests on the conformance corpus (the dynamic caveat; sharpest here — EIAS + decimal erase even value-level types).
+rexx_variant            = "Regina 3.9.6 (classic ANSI Rexx; NOT ooRexx)"
+
+[deps]
+# Exact pins (S11). Toolchain pins mirrored in containers/rexx-toolchain/Containerfile.
+# The third-party RUNTIME surface is small: Regina core (RxSock is NOT packaged;
+# + the crypto C ext (built here) + libentitycore_codec. No pure-Rexx crypto exists.
+regina            = "3.9.6"                     # Regina Rexx 3.9.6-5.fc43 — the fedora:43-packaged classic ANSI Rexx. 3.9.x is the long-stable line (well over the S11 30-day floor). Provides regina/rexx (interp), regina-rexx-devel (rexxsaa.h for the C ext), regina-rexx-libs, RexxUtil (libregutil). NOTE: does NOT ship RxSock (A-RX-008, confirmed at the S1 container build) → sockets go through the C ext.
+libentitycore_codec = "C-ABI 1.1"               # the crypto floor .so (pinned at the ffi-generator layer). The crypto ext links it.
+libsodium         = "1.0.22 (image-provided, fedora:43)"  # statically+privately linked into libentitycore_codec by its CMake
+# NUMERIC DIGITS is set in-program (default 9 is too low for uint64 + hashing math);
+# the codec sets `NUMERIC DIGITS 40` at entry (A-RX-001) — recorded, not a dep.
+
+[spec]
+spec_version_pinned = "0.8.0"                  # spec-data snapshot protocol-generator/shared/spec-data/v0.8.0/ (V8). Confirm the three SHA-256 pins in MANIFEST.md unchanged at S2.
+codec_corpus      = "v0.8.0"                    # ECF corpus protocol-generator/shared/test-vectors/v0.8.0/ (conformance-vectors-v1.cbor); core wire byte-unchanged across V7->V8.
+oracle_commit     = "cc1970f"                   # go oracle for S4 (public HEAD, re-normalized 2026-07-10). core-gate fingerprint 8261a033… ; target --profile core = 0 FAIL. Build via tools/oracle-bootstrap.sh.
+# PEER_ID CONSTRUCTION (corroborates the cohort): derive the Ed25519 peer_id from the
+# §1.5 CANONICAL-FORM TABLE — hash_type = 0x00 identity-multihash, digest = the RAW
+# 32-byte public key (NO SHA256(pubkey) skeleton). peer_id wire form =
+# Base58(key_type || hash_type || digest). §7.4 already defers to the §1.5 table on
+# the v0.8.0 snapshot — settled, baked in to avoid the S4 handshake debug cycle.
+# COHORT-SETTLED TRAPS pre-resolved here (do NOT re-burn): lowercase %02x hex for
+# §3.4/§3.5 tree-paths (A-CL-009); §5.2 401/403/401-unresolvable authz trichotomy;
+# entity `data` is an arbitrary ECF value, NOT necessarily a map (A-JAVA-010);
+# §4.10 chain-depth pre-check -> 400 chain_depth_exceeded (depth 64), 16 MiB payload
+# -> 413 payload_too_large; §7b store-race-safety (structural here) + TCP_NODELAY +
+# no blocking calls on the select path.
