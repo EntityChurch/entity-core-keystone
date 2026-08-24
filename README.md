@@ -261,8 +261,12 @@ conformance vector exercised it until this pin. Fixing M1 also turned up a **fai
 peer was breaking: a rejected frame is owed a `400 non_canonical_ecf`, not silence.
 
 > **The honest one-line summary: 13 of 45 peers are publishable today.** "No green report → no
-> publish" is unchanged and it now binds 40 peers. `CONFORMANCE-MATRIX.md` is authoritative — its
-> 2026-08-21 banner carries the full accounting, §1a the invalid measurements, §1b the cascade.
+> publish" is unchanged, and it now withholds the other **32** — plus the unmeasured `apl`, which
+> has no green report either, so 33 of the 46 in the tree. (**It said 40 until 2026-08-23**, which
+> was right at the M1 pin and was not updated when M2 took the publishable count 5 → 13. Two
+> numbers in one sentence that must sum to the third is a shape that rots silently; it is written
+> as a subtraction now so the next reader can check it.) `CONFORMANCE-MATRIX.md` is authoritative —
+> its 2026-08-21 banner carries the full accounting, §1a the invalid measurements, §1b the cascade.
 
 ### On the word "independent"
 
