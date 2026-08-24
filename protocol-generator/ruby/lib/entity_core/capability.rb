@@ -96,10 +96,33 @@ module EntityCore
       path == pattern
     end
 
-    def matches_scope(local_peer, value, scope)
+    # §5.2 id-scope match (0.8.1, F40) — +operations+ and +peers+. Literal comparison
+    # with exactly two wildcard forms: bare +*+ and a trailing slash-star segment-prefix.
+    # None of the §5.4 path transforms apply, so a pattern carrying path syntax is
+    # matched as a literal string: a non-match, never a fault.
+    def matches_id_pattern(value, pattern)
+      return true if pattern == "*"
+      return value.start_with?(pattern[0...-1]) if pattern.length >= 2 && pattern.end_with?("/*")
+
+      value == pattern
+    end
+
+    # §5.2 typed scope match. +kind+ is +:id+ (operations, peers) or +:path+ (handlers,
+    # resources) and has no default — every call site names its dimension, so a new one
+    # cannot silently inherit the wrong matcher, which is exactly the F40 defect.
+    def matches_scope(local_peer, value, scope, kind)
+      if kind == :id
+        return covered_id(scope.incl, value) && !covered_id(scope.excl, value)
+      end
+
       cv = canonicalize(local_peer, value)
       covered(local_peer, scope.incl, cv) && !covered(local_peer, scope.excl, cv)
     end
+
+    def covered_id(pats, value)
+      pats.any? { |p| matches_id_pattern(value, p) }
+    end
+    private_class_method :covered_id
 
     def covered(frame, pats, cv)
       pats.any? { |p| matches_pattern(cv, canonicalize(frame, p)) }
@@ -171,11 +194,11 @@ module EntityCore
       target_peer = extract_peer(local_peer, uri)
       resource = exec.map_field("resource")
       grants_of_token(token).each do |g|
-        ok = matches_scope(local_peer, operation, g.operations) &&
-             matches_scope(local_peer, handler_pattern, g.handlers)
+        ok = matches_scope(local_peer, operation, g.operations, :id) &&
+             matches_scope(local_peer, handler_pattern, g.handlers, :path)
         if ok
           peers = g.peers || Scope.new(incl: [local_peer], excl: [])
-          ok = matches_scope(local_peer, target_peer, peers)
+          ok = matches_scope(local_peer, target_peer, peers, :id)
         end
         ok = check_resource_scope(local_peer, granter_peer, resource, g.resources) if ok && resource
         return :allow if ok

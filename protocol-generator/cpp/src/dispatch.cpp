@@ -328,7 +328,12 @@ void Peer::h_connect(Connection& conn, const Envelope& env, const Entity& exec,
         return;
     }
     if (op == "authenticate") {
-        if (conn.established) { err(o, 409, "connection_already_established"); return; }
+        // RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+        // single-use nonce. The anti-replay property is the MUST and the
+        // mechanism (established-state tracking) is impl-defined, but the
+        // STATUS is pinned to 401 invalid_nonce — a 409 state-conflict
+        // under-signals the replay.
+        if (conn.established) { err(o, 401, "invalid_nonce"); return; }
         if (!conn.have_nonce) { err(o, 401, "invalid_nonce"); return; }
         auto auth = exec.entity_field("params");
         if (!auth) { err(o, 401, "authentication_failed"); return; }

@@ -648,6 +648,11 @@ build_hello_response:
 	push %r13
 	push %r14
 	push %r15
+	# RT-6: (re)start of a connection's handshake — clear any authenticated-latch left over
+	# from a prior connection served by this same process (the fork-exhaustion inline-serve
+	# fallback in host.s reuses one process across connections; the common fork-per-connection
+	# path gets this for free via a fresh, zeroed child .bss).
+	movq $0, g_authenticated(%rip)
 	# nonce (32 CSPRNG bytes)
 	lea  b_nonce(%rip), %rdi
 	mov  $32, %rsi
@@ -888,6 +893,9 @@ ka_signers:  .asciz "signers"
 	.lcomm b_derived_pid, 128
 	.lcomm g_derived_pid_len, 8
 	.lcomm g_auth_hash,  64
+	.lcomm g_authenticated, 8         # RT-6 (§4.6): 0/1, set once authenticate succeeds — a
+                                           # second authenticate on this connection must not
+                                           # re-verify the (single-use) nonce and re-mint a grant.
 	.lcomm b_err,        128
 	.lcomm err_ch,       64
 	.lcomm b_er_resp,    2048
@@ -1138,6 +1146,16 @@ build_authenticate_response:
 	push %r14
 	push %r15
 	mov  %rdi, %r12                  # exec data map
+	# RT-6 (§4.6) anti-replay: a SECOND authenticate on an already-established connection
+	# must be rejected outright — the nonce is single-use, so re-verifying it and re-minting
+	# a grant would let a captured/replayed authenticate frame mint fresh capabilities.
+	cmpq $0, g_authenticated(%rip)
+	je   .Lauth_not_replay
+	mov  $401, %rdi
+	lea  ec_invalid_nonce(%rip), %rsi
+	call send_error
+	jmp  .Lauth_ret
+.Lauth_not_replay:
 	# params entity
 	mov  %r12, %rdi
 	lea  ka_params(%rip), %rsi
@@ -1306,6 +1324,7 @@ build_authenticate_response:
 	test %rax, %rax
 	jz   .Lauth_bad_imp
 	# ================= verification passed =================
+	movq $1, g_authenticated(%rip)   # RT-6: latch — the next authenticate on this conn is a replay
 
 	call now_ms
 	mov  %rax, g_created(%rip)

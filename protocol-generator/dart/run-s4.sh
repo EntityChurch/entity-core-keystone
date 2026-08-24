@@ -33,7 +33,10 @@ cd "$PROJ"
 
 if [ "${NOBUILD:-0}" != "1" ]; then
   # Offline dep resolution + fresh AOT compile of the host (per profile [build]).
-  dart pub get --offline >/tmp/build.out 2>&1 || { echo "pub get failed:"; cat /tmp/build.out; exit 1; }
+  # --enforce-lockfile: fail rather than silently re-resolve and rewrite the committed
+  # pubspec.lock (A conformance run must not be able to change what it is measuring —
+  # a prior run silently bumped `meta` 1.18.3 -> 1.19.0 as a side effect of `pub get`).
+  dart pub get --offline --enforce-lockfile >/tmp/build.out 2>&1 || { echo "pub get failed:"; cat /tmp/build.out; exit 1; }
   mkdir -p "$BUILD"
   dart compile exe bin/peer.dart -o "$PEER" >>/tmp/build.out 2>&1 || { echo "compile failed:"; cat /tmp/build.out; exit 1; }
 fi
@@ -83,7 +86,7 @@ head -2 /tmp/host.out
 # sustained-load/churn ~50s) before the later categories surface; the wider window
 # lets every core category run to completion (full 665 total, none budget-skipped).
 if [ "$#" -eq 0 ]; then
-  set -- -profile core -timeout 5m -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
+  set -- -profile core -timeout 5m -json-out "${JSON_OUT:-$PROJ/status/CONFORMANCE-REPORT.json}"
 fi
 
 "$ORACLE" -addr "127.0.0.1:$PORT" "$@" || true

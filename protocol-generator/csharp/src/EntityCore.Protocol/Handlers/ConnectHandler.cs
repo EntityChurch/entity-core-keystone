@@ -114,7 +114,11 @@ internal sealed class ConnectHandler : IHandler
     {
         if (conn.Established)
         {
-            return Error(ctx, Status.Conflict, "connection_already_established", "connection already established");
+            // RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+            // single-use nonce. The anti-replay property is the MUST and the mechanism
+            // (established-state tracking) is impl-defined, but the STATUS is pinned to
+            // 401 invalid_nonce — a 409 state-conflict under-signals the replay.
+            return Error(ctx, Status.Unauthorized, "invalid_nonce", "authenticate replayed on an already-established connection");
         }
         if (!conn.HelloReceived)
         {

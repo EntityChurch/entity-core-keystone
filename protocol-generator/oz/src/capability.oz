@@ -90,10 +90,37 @@ define
       {Some Pats fun {$ P} {MatchesPattern Cv {Hp.canonicalize Frame P}} end}
    end
 
-   fun {MatchesScope LocalPeer Value S}
-      Cv = {Hp.canonicalize LocalPeer Value}
+   %% §5.2 id-scope match (0.8.1, F40) -- operations and peers. Literal comparison with
+   %% exactly two wildcard forms: bare "*" and a trailing slash-star segment-prefix. None
+   %% of the §5.4 path transforms apply, so a pattern carrying path syntax is matched as
+   %% a literal string: a non-match, never a fault.
+   fun {MatchesIdPattern Value Pattern}
+      Plen = {Length Pattern}
    in
-      {Covered LocalPeer S.incl Cv} andthen {Not {Covered LocalPeer S.excl Cv}}
+      if Pattern == "*" then true
+      elseif Plen >= 2 andthen {List.drop Pattern Plen-2} == "/*" then
+         Prefix = {List.take Pattern Plen-1}
+      in
+         {Length Value} >= Plen-1 andthen {List.take Value Plen-1} == Prefix
+      else Value == Pattern
+      end
+   end
+
+   fun {CoveredId Pats Value}
+      {Some Pats fun {$ P} {MatchesIdPattern Value P} end}
+   end
+
+   %% §5.2 typed scope match. Kind is id (operations, peers) or path (handlers,
+   %% resources) and is given at every call site -- there is no default, so a new one
+   %% cannot inherit the wrong matcher silently, which is exactly the F40 defect.
+   fun {MatchesScope LocalPeer Value S Kind}
+      if Kind == id then
+         {CoveredId S.incl Value} andthen {Not {CoveredId S.excl Value}}
+      else
+         Cv = {Hp.canonicalize LocalPeer Value}
+      in
+         {Covered LocalPeer S.incl Cv} andthen {Not {Covered LocalPeer S.excl Cv}}
+      end
    end
 
    %% ── §5.2 check_permission ──
@@ -157,11 +184,11 @@ define
       fun {Go Gs}
          case Gs of nil then 'DENY'
          [] G|Gr then
-            if {Not {MatchesScope LocalPeer Operation G.operations}} then {Go Gr}
-            elseif {Not {MatchesScope LocalPeer HandlerPattern G.handlers}} then {Go Gr}
+            if {Not {MatchesScope LocalPeer Operation G.operations id}} then {Go Gr}
+            elseif {Not {MatchesScope LocalPeer HandlerPattern G.handlers path}} then {Go Gr}
             else
                local Peers = if G.peers == absent then scope(incl:[LocalPeer] excl:nil) else G.peers end in
-                  if {Not {MatchesScope LocalPeer TargetPeer Peers}} then {Go Gr}
+                  if {Not {MatchesScope LocalPeer TargetPeer Peers id}} then {Go Gr}
                   elseif Resource \= absent andthen
                          {CheckResourceScope LocalPeer GranterPeer Resource G.resources} == 'DENY' then {Go Gr}
                   else 'ALLOW' end

@@ -40,6 +40,26 @@ CORE_GATE=cmd/internal/validate/profile.go   # the mirror-stable core anchor
 
 die(){ echo "oracle-bootstrap: ERROR $*" >&2; exit 1; }
 
+# check_set_digest — the SECOND anchor, and the one core_gate_fingerprint is blind
+# to. Reads the whole cmd/internal/validate tree on stdin (a `git archive | tar -xO`
+# stream) and hashes the sorted set of DECLARED CHECK NAMES.
+#
+# Why it exists (2026-07-27, measured): cc1970f -> af8a582 added four hard-FAIL
+# vectors INSIDE existing core categories (handshake_nonce_single_use,
+# f40_id_scope_exclude_literal, f40_id_scope_include_no_overgrant,
+# t1_4_frame_write_atomicity) and flipped most of the cohort from PASS to FAIL —
+# while core_gate_fingerprint stayed byte-identical (8261a033…), because the
+# category set and type floor did not move. The fingerprint answers "which
+# categories run"; it CANNOT answer "what do they assert". Reasoning
+# "same fingerprint => verdicts carry forward" from it is unsound, and that
+# reasoning was committed policy until this run disproved it.
+#
+# So: fingerprint unchanged + digest unchanged => a carry-forward is defensible.
+# Fingerprint unchanged + digest MOVED => the gate moved; re-run the cohort.
+check_set_digest() {
+  grep -oE '\.Declare\("[a-z0-9_]+"' | sed 's/.*("//; s/"//' | sort -u | sha256sum | cut -d' ' -f1
+}
+
 # core_gate_fingerprint — the AUTHORITATIVE, mirror-stable identity of the core
 # gate. Reads profile.go on stdin and hashes the *normalized semantic content* of
 # its two gate maps (coreProfileCategories = the category set + coreTypeFloor = the
@@ -83,6 +103,16 @@ SHORT=$(printf '%s' "$COMMIT" | cut -c1-7)
 #      edit (incl. a comment reword); kept only for traceability.
 CORE_FP=$(git -C "$GO_REPO" show "$ARCHIVE_REF:$CORE_GATE" | core_gate_fingerprint)
 CORE_SHA=$(git -C "$GO_REPO" show "$ARCHIVE_REF:$CORE_GATE" | sha256sum | cut -d' ' -f1)
+CHECK_SET=$(git -C "$GO_REPO" archive "$ARCHIVE_REF" cmd/internal/validate | tar -xO | check_set_digest)
+EXPECT_CS=""
+[ -f "$PIN_FILE" ] && EXPECT_CS=$(awk -F'= *' '/^check_set_digest/{print $2; exit}' "$PIN_FILE" | awk '{print $1}')
+if [ -n "$EXPECT_CS" ] && [ "$EXPECT_CS" != "$CHECK_SET" ]; then
+  echo "oracle-bootstrap: NOTE check-set digest differs from committed pin" >&2
+  echo "  committed: $EXPECT_CS" >&2
+  echo "  building:  $CHECK_SET" >&2
+  echo "  => the oracle's CHECK SET moved (vectors added/removed/renamed). No verdict" >&2
+  echo "     carries forward, even if core_gate_fingerprint is unchanged — RE-RUN THE COHORT." >&2
+fi
 EXPECT=""
 [ -f "$PIN_FILE" ] && EXPECT=$(awk -F'= *' '/^core_gate_fingerprint/{print $2; exit}' "$PIN_FILE" | awk '{print $1}')
 if [ -n "$EXPECT" ] && [ "$EXPECT" != "$CORE_FP" ]; then
@@ -93,12 +123,22 @@ if [ -n "$EXPECT" ] && [ "$EXPECT" != "$CORE_FP" ]; then
   echo "     (policy §4). Update oracle-pin.env if intended. (A comment reword alone can no" >&2
   echo "     longer trigger this — the raw sha256 is informational: $CORE_SHA)" >&2
 fi
+# "Nothing to do" requires BOTH anchors to match. Matching the fingerprint alone is
+# NOT sufficient and used to be: at the cc1970f -> af8a582 bucket-B cutover the
+# fingerprint was byte-identical while the check set gained four hard-FAIL core
+# vectors, so this short-circuit would have declared a stale oracle current and
+# silently run the OLD check set over the whole cohort — the exact failure mode
+# AGENTS.md warns about, mechanized.
 if [ "${FORCE:-0}" != "1" ] && [ -x "$OUT/validate-peer" ] && [ -f "$PROV_FILE" ]; then
   HAVE=$(awk -F'= *' '/^core_gate_fingerprint/{print $2; exit}' "$PROV_FILE" | awk '{print $1}')
-  if [ "$HAVE" = "$CORE_FP" ]; then
-    echo "oracle-bootstrap: installed oracle already matches core-gate fingerprint $CORE_FP — nothing to do (FORCE=1 to rebuild)."
+  HAVE_CS=$(awk -F'= *' '/^check_set_digest/{print $2; exit}' "$PROV_FILE" | awk '{print $1}')
+  if [ "$HAVE" = "$CORE_FP" ] && [ "$HAVE_CS" = "$CHECK_SET" ]; then
+    echo "oracle-bootstrap: installed oracle matches BOTH the core-gate fingerprint ($CORE_FP)"
+    echo "                  and the check-set digest ($CHECK_SET) — nothing to do (FORCE=1 to rebuild)."
     exit 0
   fi
+  [ "$HAVE" = "$CORE_FP" ] && [ "$HAVE_CS" != "$CHECK_SET" ] && \
+    echo "oracle-bootstrap: fingerprint matches but the CHECK SET moved — rebuilding (this is the stale-oracle trap)." >&2
 fi
 
 echo "oracle-bootstrap: building from $SRC"
@@ -133,6 +173,7 @@ done
   echo "built_from            = $SRC"
   echo "core_gate_fingerprint = $CORE_FP   # normalized category set + type floor (AUTHORITATIVE)"
   echo "core_gate_sha256      = $CORE_SHA   # raw sha256(cmd/internal/validate/profile.go) (informational)"
+  echo "check_set_digest      = $CHECK_SET   # sorted set of declared check names (AUTHORITATIVE for carry-forward)"
   echo "built_at              = $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$PROV_FILE"
 

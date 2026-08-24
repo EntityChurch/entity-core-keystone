@@ -12,9 +12,11 @@
 # auto-rebuilt — provenance is tools/oracle-pin.env; (re)build via
 # tools/oracle-bootstrap.sh.
 #
-#   ./run-s4.sh                      # -category connectivity (the handshake leg)
+#   ./run-s4.sh                      # -profile core (the full core gate; matches
+#                                     # every other peer's default — a bare invocation
+#                                     # must give the real gate verdict, not a single
+#                                     # category dressed up as one)
 #   ./run-s4.sh -category connectivity -verbose
-#   ./run-s4.sh -profile core        # the full core gate (once the peer is further along)
 #   PATCH=src/handshake-test.pd ./run-s4.sh   # override the served patch
 #   ./run-s4.sh -category authz               # the §5.2 verify_request DENY paths
 #
@@ -22,6 +24,11 @@
 # §5.2 authz ladder passes the DENY paths reachable by a core peer (deny_default,
 # grantee→401, no_catchall, expired); delegate_grant/scope_exceeds/revoked need
 # handler machinery (system/role, system/capability:request) — see status/.
+#
+# HISTORY: this defaulted to `-category connectivity` (24 checks) until 2026-07-27.
+# That default let a bare invocation print a `Result:` line that reads exactly like
+# a gate verdict while never running the gate — corrected to match every sibling
+# harness's convention of defaulting to the real `-profile core` run.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -42,8 +49,9 @@ EC_OPEN_GRANTS="${EC_OPEN_GRANTS:-1}"
 EC_VALIDATE="${EC_VALIDATE:-1}"
 EC_NAME="${EC_NAME:-conformance}"
 
-# Default oracle args: the connectivity category (exercises the §4.1 handshake).
-if [ "$#" -eq 0 ]; then set -- -category connectivity; fi
+# Default oracle args: the full core gate, same convention as every sibling harness.
+JSON_OUT="${JSON_OUT:-$WORKDIR/status/CONFORMANCE-REPORT.json}"
+if [ "$#" -eq 0 ]; then set -- -profile core -json-out "$JSON_OUT"; fi
 
 # Oracle args ("$@") are forwarded as positional parameters into the container
 # shell (bash -lc '…' bash "$@") — no string interpolation, so args stay intact.

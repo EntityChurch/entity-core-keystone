@@ -275,10 +275,12 @@ do-hello.
 *> ---- authenticate --------------------------------------------------
 do-auth.
     if c-estab = 1
-        move 409 to lk-rstatus
-        move "connection_already_established" to errc move 30 to errc-len
-        call "error-result" using errc errc-len lk-res lk-res-len lk-res-hash
-        exit paragraph
+        *> RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+        *> single-use nonce. The anti-replay property is the MUST and the
+        *> mechanism (established-state tracking) is impl-defined, but the
+        *> STATUS is pinned to 401 invalid_nonce — a 409 state-conflict
+        *> under-signals the replay.
+        perform auth-401-nonce  exit paragraph
     end-if
     if c-havenonce = 0
         perform auth-401-nonce  exit paragraph

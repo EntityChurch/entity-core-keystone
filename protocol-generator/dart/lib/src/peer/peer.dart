@@ -180,7 +180,11 @@ final class Peer {
   Future<Outcome> _authenticate(HandlerContext ctx) async {
     final conn = ctx.conn;
     final exec = ctx.exec;
-    if (conn.established) return Outcome.err(409, 'connection_already_established');
+    // RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+    // single-use nonce. The anti-replay property is the MUST and the mechanism
+    // (established-state tracking) is impl-defined, but the STATUS is pinned to
+    // 401 invalid_nonce — a 409 state-conflict under-signals the replay.
+    if (conn.established) return Outcome.err(401, 'invalid_nonce');
     final issuedNonce = conn.issuedNonce;
     if (issuedNonce == null) return Outcome.err(401, 'invalid_nonce'); // before hello
     final auth = exec.entityField('params');

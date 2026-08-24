@@ -518,7 +518,12 @@ contains
     character(len=:), allocatable :: kt, claimed, hello_pid
     logical :: sig_ok
     exec = env%root
-    if (c_estab(slot)) then; oc = out_err(409, 'connection_already_established', ''); return; end if
+    ! RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+    ! single-use nonce. The anti-replay property is the MUST and the
+    ! mechanism (established-state tracking) is impl-defined, but the
+    ! STATUS is pinned to 401 invalid_nonce — a 409 state-conflict
+    ! under-signals the replay.
+    if (c_estab(slot)) then; oc = out_err(401, 'invalid_nonce', ''); return; end if
     if (.not. c_has_nonce(slot)) then; oc = out_err(401, 'invalid_nonce', ''); return; end if
     auth = ent_entity_field(exec, 'params')
     if (.not. auth%present) then; oc = out_err(401, 'authentication_failed', ''); return; end if

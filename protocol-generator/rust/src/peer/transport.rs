@@ -354,3 +354,6 @@ pub fn shutdown(stream: &TcpStream) {
     let _ = (&mut &*stream).flush();
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
+
+#[cfg(test)]
+mod tests;

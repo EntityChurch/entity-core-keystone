@@ -37,9 +37,39 @@ proc scopeFromEcf(v: EcValue): Scope =
     for it in exc.arr:
       if it != nil and it.kind == ekText: result.excludes.add it.t
 
-proc matches*(s: Scope; value, localPeerId: string): bool =
-  ## True if `value` is included and not excluded (§5.2 matches_scope). Value and
-  ## patterns are canonicalized uniformly (path + identifier dimensions share it).
+type ScopeKind* = enum
+  ## Which §5.2 matcher a grant dimension uses (0.8.1, F40). Named at every call site --
+  ## there is no default -- so a new one cannot inherit the wrong matcher silently, which
+  ## is exactly the F40 defect.
+  skId    ## operations, peers   -- system/capability/id-scope
+  skPath  ## handlers, resources -- system/capability/path-scope
+
+proc matchesIdPattern*(value, pattern: string): bool =
+  ## §5.2 id-scope match (0.8.1, F40): literal comparison with exactly two wildcard forms
+  ## -- bare `*` and a trailing slash-star segment-prefix. None of the §5.4 path
+  ## transforms apply, so a pattern carrying path syntax is matched as a literal string:
+  ## a non-match, never a fault.
+  if pattern == "*": return true
+  if pattern.len >= 2 and pattern[^2 .. ^1] == "/*":
+    # prefix keeps the slash; open-coded rather than importing strutils (paths.nim
+    # keeps its own startsWith2 private to avoid the name-clash surface).
+    let prefix = pattern[0 ..< pattern.len - 1]
+    return value.len >= prefix.len and value[0 ..< prefix.len] == prefix
+  value == pattern
+
+proc matches*(s: Scope; value, localPeerId: string; kind: ScopeKind): bool =
+  ## True if `value` is included and not excluded (§5.2 matches_scope). `kind` selects
+  ## the matcher by scope type: skPath canonicalizes both sides, skId compares literally.
+  ## The two MUST NOT be interchanged.
+  if kind == skId:
+    var matchedId = false
+    for pattern in s.includes:
+      if matchesIdPattern(value, pattern): matchedId = true; break
+    if not matchedId: return false
+    if s.hasExclude:
+      for pattern in s.excludes:
+        if matchesIdPattern(value, pattern): return false
+    return true
   let cv = try: canonicalize(value, localPeerId) except PathError: return false
   var matched = false
   for pattern in s.includes:
@@ -453,9 +483,9 @@ proc checkPermission*(exec: Entity; cap: CapabilityToken; handlerPattern, localP
   let operation = exec.textField("operation").get("")
   let targetPeer = extractPeer(exec.textField("uri").get(""), localPeerId)
   for grant in cap.grants:
-    if not grant.operations.matches(operation, localPeerId): continue
-    if not grant.handlers.matches(handlerPattern, localPeerId): continue
-    if not grant.effectivePeers(localPeerId).matches(targetPeer, localPeerId): continue
+    if not grant.operations.matches(operation, localPeerId, skId): continue
+    if not grant.handlers.matches(handlerPattern, localPeerId, skPath): continue
+    if not grant.effectivePeers(localPeerId).matches(targetPeer, localPeerId, skId): continue
     if resource.isSome and not checkResourceScope(resource.get, grant.resources, localPeerId, granterPeerId):
       continue
     return true
@@ -467,8 +497,8 @@ proc checkPathPermission*(operation, path: string; cap: CapabilityToken;
   ## enforcement when `resource` is absent.
   let cp = try: canonicalize(path, localPeerId) except PathError: return false
   for grant in cap.grants:
-    if not grant.handlers.matches(handlerPattern, localPeerId): continue
-    if not grant.operations.matches(operation, localPeerId): continue
-    if not grant.resources.matches(cp, localPeerId): continue
+    if not grant.handlers.matches(handlerPattern, localPeerId, skPath): continue
+    if not grant.operations.matches(operation, localPeerId, skId): continue
+    if not grant.resources.matches(cp, localPeerId, skPath): continue
     return true
   false

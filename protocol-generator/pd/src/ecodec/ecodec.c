@@ -88,6 +88,8 @@ typedef struct ec_conn {
     uint32_t       framelen;          /* decoded body length once have_len */
     unsigned char  nonce[32];         /* §4.6 nonce issued in THIS conn's hello */
     int            nonce_set;
+    int            authenticated;     /* RT-6 (§4.6): a valid authenticate has already been
+                                       * accepted on THIS conn — a second one is a nonce replay */
     double         accept_ms;         /* accept time (for idle-flood reaping) */
     int            got_data;          /* has this conn ever sent a byte? */
 } ec_conn;
@@ -657,6 +659,9 @@ static int  g_identity_ready = 0;
  * connection state (multi-socket) is A-PD-002/(c). Set by build_hello. */
 static unsigned char g_issued_nonce[32];
 static int           g_issued_nonce_set = 0;
+/* RT-6 (§4.6): mirrors ec_conn.authenticated for the single-global legacy
+ * ([netreceive] test patch) path, same per-connection/global split as the nonce. */
+static int           g_authenticated = 0;
 
 /* Minimal base64 decode (standard alphabet, '=' padding). Returns bytes or -1. */
 static int b64_decode(const char *in, unsigned char *out, size_t outcap)
@@ -823,6 +828,19 @@ static void auth_err(t_ecodec *x, const char *reason)
 {
     t_atom a; SETSYMBOL(&a, gensym(reason));
     outlet_anything(x->x_out, gensym("auth_err"), 1, &a);
+}
+
+/* [auth_check_established( — RT-6 (§4.6) anti-replay: has THIS connection already
+ * completed authenticate? A second authenticate must not be re-processed (it would
+ * re-verify the same still-cached nonce and re-issue a grant) — the nonce is
+ * documented single-use. Rung → [established_ok 0|1( — 0 = already authenticated,
+ * canvas rejects with 401 invalid_nonce WITHOUT calling auth_decode; 1 = first
+ * authenticate on this conn, canvas proceeds to the normal PoP ladder. */
+static void ecodec_auth_check_established(t_ecodec *x)
+{
+    int already = g_cur_conn ? g_cur_conn->authenticated : g_authenticated;
+    t_atom a; SETFLOAT(&a, already ? 0 : 1);
+    outlet_anything(x->x_out, gensym("established_ok"), 1, &a);
 }
 
 /* [auth_decode( — parse the authenticate EXECUTE in the frame buffer. The
@@ -1054,9 +1072,12 @@ static void ecodec_build_grant(t_ecodec *x)
     if (wb_head(&resd, 5, 1) || wb_text(&resd, "token") || wb_bytes(&resd, token_h, 33)) goto done;
     bad = 0;
 done:
-    if (!bad)
+    if (!bad) {
+        /* RT-6 (§4.6): mark this connection established BEFORE emitting the grant, so a
+         * pipelined replay arriving right after can never race past auth_check_established. */
+        if (g_cur_conn) g_cur_conn->authenticated = 1; else g_authenticated = 1;
         emit_response_frame_inc(x, 200, "system/capability/grant", resd.p, resd.len, inc.p, inc.len);
-    else
+    } else
         pd_error(x, "ecodec: build_grant failed");
     free(gpd.p); free(grants.p); free(tokd.p); free(sigd.p); free(resd.p);
     free(tok_ent.p); free(gp_ent.p); free(sig_ent.p); free(inc.p);
@@ -3765,6 +3786,7 @@ void ecodec_setup(void)
     class_addmethod(ecodec_class, (t_method)ecodec_peer_id,    gensym("peer_id"),    0);
     class_addmethod(ecodec_class, (t_method)ecodec_build_hello, gensym("build_hello"), 0);
     /* §4.6 authenticate proof-of-possession rungs (canvas guard ladder) */
+    class_addmethod(ecodec_class, (t_method)ecodec_auth_check_established, gensym("auth_check_established"), 0);
     class_addmethod(ecodec_class, (t_method)ecodec_auth_decode,      gensym("auth_decode"),      0);
     class_addmethod(ecodec_class, (t_method)ecodec_auth_check_nonce, gensym("auth_check_nonce"), 0);
     class_addmethod(ecodec_class, (t_method)ecodec_auth_check_sig,   gensym("auth_check_sig"),   0);

@@ -136,13 +136,36 @@ def matches_pattern(path: str, pattern: str) -> bool:
     return path == pattern
 
 
-def _covered(local_peer: str, value: str, pats: list[str]) -> bool:
+def matches_id_pattern(value: str, pattern: str) -> bool:
+    """§5.2 id-scope match (0.8.1, F40) — ``operations`` and ``peers``.
+
+    Literal comparison with exactly two wildcard forms: bare ``*`` and a trailing
+    ``/*`` segment-prefix. None of the §5.4 path transforms apply — no leading-``/``
+    universal reading, no ``/*/`` interior peer-wildcard, no peer-relative
+    qualification. A pattern carrying path syntax is matched as a literal string, so
+    it is a non-match, never a fault.
+    """
+    if pattern == "*":
+        return True
+    if pattern.endswith("/*"):
+        return value.startswith(pattern[:-1])
+    return value == pattern
+
+
+def _covered(local_peer: str, value: str, pats: list[str], kind: str) -> bool:
+    if kind == "id":
+        return any(matches_id_pattern(value, p) for p in pats)
     cv = _canon(local_peer, value)
     return any(matches_pattern(cv, _canon(local_peer, p)) for p in pats)
 
 
-def _matches_scope(local_peer: str, value: str, s: Scope) -> bool:
-    return _covered(local_peer, value, s.incl) and not _covered(local_peer, value, s.excl)
+def _matches_scope(local_peer: str, value: str, s: Scope, kind: str) -> bool:
+    """§5.2 typed scope match. ``kind`` is ``"id"`` (operations, peers) or ``"path"``
+    (handlers, resources) and has no default — every call site names its dimension, so
+    a new one cannot silently inherit the wrong matcher (that is the F40 defect)."""
+    return _covered(local_peer, value, s.incl, kind) and not _covered(
+        local_peer, value, s.excl, kind
+    )
 
 
 # ── peer-id detection (§1.4) ──────────────────────────────────────────────────
@@ -562,12 +585,12 @@ def check_permission(
     resource = exec_e.field("resource")
 
     for g in _grants_of_token(token):
-        if not _matches_scope(local_peer, operation, g.operations):
+        if not _matches_scope(local_peer, operation, g.operations, "id"):
             continue
-        if not _matches_scope(local_peer, handler_pattern, g.handlers):
+        if not _matches_scope(local_peer, handler_pattern, g.handlers, "path"):
             continue
         peers = g.peers if g.peers is not None else Scope([local_peer], [])
-        if not _matches_scope(local_peer, target_peer, peers):
+        if not _matches_scope(local_peer, target_peer, peers, "id"):
             continue
         if isinstance(resource, dict):
             if not _check_resource_scope(local_peer, granter_peer, resource, g.resources):

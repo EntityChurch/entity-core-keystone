@@ -345,7 +345,25 @@ matches_pattern(Path, Pattern) :-
     ( Path == Prefix -> true ; string_concat(PrefixSlash, _, Path) -> true ; string_concat(Prefix, _, Path) ).
 matches_pattern(Path, Pattern) :- Path == Pattern.
 
-matches_scope(LocalPeer, Value, Scope) :-
+% §5.2 id-scope match (0.8.1, F40) — operations and peers. Literal comparison with
+% exactly two wildcard forms: bare "*" and a trailing slash-star segment-prefix. None of
+% the §5.4 path transforms apply, so a pattern carrying path syntax is matched as a
+% literal string: a non-match, never a fault.
+matches_id_pattern(_Value, "*") :- !.
+matches_id_pattern(Value, Pattern) :-
+    string_concat(Prefix, "/*", Pattern), !,
+    string_concat(Prefix, "/", PrefixSlash),
+    string_concat(PrefixSlash, _, Value).
+matches_id_pattern(Value, Pattern) :- Value == Pattern.
+
+% §5.2 typed scope match. Kind is `id` (operations, peers) or `path` (handlers,
+% resources) and is given at every call site — there is no default, so a new one cannot
+% inherit the wrong matcher silently, which is exactly the F40 defect.
+matches_scope(_LocalPeer, Value, Scope, id) :- !,
+    scope_incl(Scope, Incl), scope_excl(Scope, Excl),
+    once(( member(P, Incl), matches_id_pattern(Value, P) )),
+    \+ ( member(Q, Excl), matches_id_pattern(Value, Q) ).
+matches_scope(LocalPeer, Value, Scope, path) :-
     canonicalize(LocalPeer, Value, CV),
     scope_incl(Scope, Incl), scope_excl(Scope, Excl),
     once(( member(P, Incl), canonicalize(LocalPeer, P, CP), matches_pattern(CV, CP) )),
@@ -365,14 +383,14 @@ check_permission(LocalPeer, GranterPeer, Exec, Token, HandlerPattern, allow) :-
 check_permission(_,_,_,_,_, deny).
 
 grant_ok(LocalPeer, GranterPeer, Op, HandlerPattern, TargetPeer, Exec, G) :-
-    grant_field(G, "operations", OpScope), matches_scope(LocalPeer, Op, OpScope),
-    grant_field(G, "handlers", HScope), matches_scope(LocalPeer, HandlerPattern, HScope),
+    grant_field(G, "operations", OpScope), matches_scope(LocalPeer, Op, OpScope, id),
+    grant_field(G, "handlers", HScope), matches_scope(LocalPeer, HandlerPattern, HScope, path),
     peer_scope_ok(LocalPeer, TargetPeer, G),
     resource_ok(LocalPeer, GranterPeer, Exec, G).
 
 peer_scope_ok(LocalPeer, TargetPeer, G) :-
     ( ent_field_or_default(G, "peers", PScope)
-    -> matches_scope(LocalPeer, TargetPeer, PScope)
+    -> matches_scope(LocalPeer, TargetPeer, PScope, id)
     ;  TargetPeer == LocalPeer ).
 ent_field_or_default(map(P), "peers", Scope) :- memberchk("peers"-Scope, P).
 

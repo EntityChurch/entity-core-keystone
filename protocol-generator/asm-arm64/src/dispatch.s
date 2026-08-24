@@ -915,6 +915,9 @@ ka_signers:  .asciz "signers"
 	.lcomm resp_ch2,     64
 	.lcomm b_ar_env,     32768
 	.lcomm g_created,    8
+	// RT-6 (§4.6): set once authenticate succeeds on this connection; a second authenticate
+	// frame on the same connection must be rejected (401 invalid_nonce), not re-processed.
+	.lcomm g_established, 8
 	// ---- §7a dispatch-outbound reentry (bidirectional dispatch + demux) ----
 	// pending_tab: 16 entries × 80 B  [0]=echo_rid(32) [32]=erid_len [40]=disp_rid(32) [72]=drid_len
 	.lcomm pending_tab,  1280
@@ -1156,6 +1159,17 @@ build_authenticate_response:
 	stp  x21, x22, [sp, #32]
 	stp  x23, x24, [sp, #48]
 	mov  x21, x0                     // exec data map
+	// RT-6 (§4.6) anti-replay: a SECOND authenticate on an already-established connection must
+	// not be re-processed (it would re-verify the same still-cached nonce and re-issue a grant).
+	// The nonce is documented single-use — reject outright, before any parsing/verification.
+	adr_l x9, g_established
+	ldr  x9, [x9]
+	cbz  x9, .Lauth_not_replay
+	mov  x0, #401
+	adr_l x1, ec_invalid_nonce
+	bl   send_error
+	b    .Lauth_ret
+.Lauth_not_replay:
 	// params entity
 	mov  x0, x21
 	adr_l x1, ka_params
@@ -1304,6 +1318,11 @@ build_authenticate_response:
 	bl   memeq
 	cbz  x0, .Lauth_bad_imp
 	// ================= verification passed =================
+
+	// RT-6 (§4.6): mark this connection established so a replayed authenticate is rejected.
+	adr_l x9, g_established
+	mov  x10, #1
+	str  x10, [x9]
 
 	bl   now_ms
 	adr_l x9, g_created

@@ -66,7 +66,14 @@ module.exports = function (RED) {
       const session = newSession(kernel, id, (bytes) => writeFrame(socket, Buffer.from(bytes)));
       const entry = { socket, buffer: Buffer.alloc(0), session };
       conns.set(id, entry);
-      session.start(); // kick the delegated responder handshake driver (leg 3)
+      // §4.1: leg-3 (the responder's own reverse authenticate) is OPTIONAL and
+      // reachability-gated — a responder MUST NOT proactively send it to an
+      // initiator that hasn't indicated it accepts inbound dispatch. Sending it
+      // unconditionally on every accept corrupts a client-style (request/response-
+      // only) initiator's next read, e.g. the RT-6 replay probe reads the
+      // unsolicited leg-3 EXECUTE instead of its real response and scores a
+      // status=0 decode failure. session.start() stays defined for when the
+      // deferred reachability-signal mechanism lands; do not call it here.
 
       socket.on("data", (chunk) => {
         entry.buffer = Buffer.concat([entry.buffer, chunk]);

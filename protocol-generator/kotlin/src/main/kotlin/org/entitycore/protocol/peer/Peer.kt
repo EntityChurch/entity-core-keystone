@@ -152,7 +152,11 @@ class Peer private constructor(
         private fun authenticate(ctx: HandlerContext): Outcome {
             val conn = ctx.conn
             val exec = ctx.exec
-            if (conn.established) return Outcome.err(409, "connection_already_established")
+            // RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+            // single-use nonce. The anti-replay property is the MUST and the mechanism
+            // (established-state tracking) is impl-defined, but the STATUS is pinned to
+            // 401 invalid_nonce — a 409 state-conflict under-signals the replay.
+            if (conn.established) return Outcome.err(401, "invalid_nonce")
             val issuedNonce = conn.issuedNonce ?: return Outcome.err(401, "invalid_nonce") // before hello
             val auth = exec.entityField("params") ?: return Outcome.err(401, "authentication_failed")
             // §4.6 hardening: reject unsupported key_type / non-32-byte pubkey / non-0x01 peer_id.

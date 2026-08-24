@@ -680,7 +680,12 @@ static void h_connect(ec_peer *p, ec_conn *conn, const ec_envelope *env,
     }
     if (strcmp(op, "authenticate") == 0) {
         if (conn->established) {
-            outcome_err(out, 409, "connection_already_established", NULL);
+            /* RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+             * single-use nonce. The anti-replay property is the MUST and the
+             * mechanism (established-state tracking) is impl-defined, but the
+             * STATUS is pinned to 401 invalid_nonce — a 409 state-conflict
+             * under-signals the replay. */
+            outcome_err(out, 401, "invalid_nonce", NULL);
             return;
         }
         if (!conn->have_nonce) {

@@ -356,7 +356,10 @@ define
       Exec = {CtxExec Ctx}
       Included = {CtxIncluded Ctx}
    in
-      if {Conn.get C established} then {OutErr 409 "connection_already_established" ""}
+      %% RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+      %% single-use nonce — pinned to 401 invalid_nonce, not a 409 state-conflict
+      %% which under-signals the replay.
+      if {Conn.get C established} then {OutErr 401 "invalid_nonce" ""}
       else
          local IssuedNonce = {Conn.get C issuedNonce} in
             if IssuedNonce == unit then {OutErr 401 "invalid_nonce" ""}

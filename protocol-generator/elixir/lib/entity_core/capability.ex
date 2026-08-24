@@ -126,9 +126,36 @@ defmodule EntityCore.Capability do
     end
   end
 
-  defp matches_scope(local_peer, value, s) do
-    cv = canonicalize(local_peer, value)
-    covered = fn pats -> Enum.any?(pats, fn p -> matches_pattern(cv, canonicalize(local_peer, p)) end) end
+  @doc """
+  §5.2 id-scope match (0.8.1, F40) — `operations` and `peers`. Literal comparison with
+  exactly two wildcard forms: bare `*` and a trailing slash-star segment-prefix. None of
+  the §5.4 path transforms apply, so a pattern carrying path syntax is matched as a
+  literal string: a non-match, never a fault.
+  """
+  def matches_id_pattern(_value, "*"), do: true
+
+  def matches_id_pattern(value, pattern) do
+    if byte_size(pattern) >= 2 and String.ends_with?(pattern, "/*") do
+      String.starts_with?(value, binary_part(pattern, 0, byte_size(pattern) - 1))
+    else
+      value == pattern
+    end
+  end
+
+  # §5.2 typed scope match. `kind` is `:id` (operations, peers) or `:path` (handlers,
+  # resources) and has no default — every call site names its dimension, so a new one
+  # cannot silently inherit the wrong matcher, which is exactly the F40 defect.
+  defp matches_scope(local_peer, value, s, kind) do
+    covered =
+      case kind do
+        :id ->
+          fn pats -> Enum.any?(pats, fn p -> matches_id_pattern(value, p) end) end
+
+        :path ->
+          cv = canonicalize(local_peer, value)
+          fn pats -> Enum.any?(pats, fn p -> matches_pattern(cv, canonicalize(local_peer, p)) end) end
+      end
+
     if not covered.(s.incl), do: false, else: not covered.(s.excl)
   end
 
@@ -202,10 +229,10 @@ defmodule EntityCore.Capability do
     resource = Model.field(exec, "resource")
 
     grant_ok = fn g ->
-      matches_scope(local_peer, operation, g.operations) and
-        matches_scope(local_peer, handler_pattern, g.handlers) and
+      matches_scope(local_peer, operation, g.operations, :id) and
+        matches_scope(local_peer, handler_pattern, g.handlers, :path) and
         (let_peers = g.peers || %{incl: [local_peer], excl: []}
-         matches_scope(local_peer, target_peer, let_peers)) and
+         matches_scope(local_peer, target_peer, let_peers, :id)) and
         (case resource do
            nil -> true
            r -> check_resource_scope(local_peer, granter_peer, r, g.resources)

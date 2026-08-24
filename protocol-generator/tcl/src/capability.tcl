@@ -129,7 +129,34 @@ proc ::entity::core::capability::_covered {frame pats cv} {
     return 0
 }
 
-proc ::entity::core::capability::matches_scope {local_peer value s} {
+# §5.2 id-scope match (0.8.1, F40) — operations and peers. Literal comparison with
+# exactly two wildcard forms: bare * and a trailing slash-star segment-prefix. None of
+# the §5.4 path transforms apply, so a pattern carrying path syntax is matched as a
+# literal string: a non-match, never a fault.
+proc ::entity::core::capability::matches_id_pattern {value pattern} {
+    if {$pattern eq "*"} { return 1 }
+    if {[string length $pattern] >= 2 && [string range $pattern end-1 end] eq "/*"} {
+        set prefix [string range $pattern 0 end-1]
+        return [string equal -length [string length $prefix] $value $prefix]
+    }
+    return [string equal $value $pattern]
+}
+
+proc ::entity::core::capability::_covered_id {pats value} {
+    foreach p $pats {
+        if {[matches_id_pattern $value $p]} { return 1 }
+    }
+    return 0
+}
+
+# §5.2 typed scope match. `kind` is id (operations, peers) or path (handlers, resources)
+# and has no default — every call site names its dimension, so a new one cannot silently
+# inherit the wrong matcher, which is exactly the F40 defect.
+proc ::entity::core::capability::matches_scope {local_peer value s kind} {
+    if {$kind eq "id"} {
+        return [expr {[_covered_id [dict get $s incl] $value]
+            && ![_covered_id [dict get $s excl] $value]}]
+    }
     set cv [canonicalize $local_peer $value]
     return [expr {[_covered $local_peer [dict get $s incl] $cv]
         && ![_covered $local_peer [dict get $s excl] $cv]}]
@@ -188,12 +215,12 @@ proc ::entity::core::capability::check_permission {local_peer granter_peer exec 
     set target_peer [extract_peer $local_peer $uri]
     set resource [::entity::core::entity::mapfield $exec resource]
     foreach g [grants_of_token $token] {
-        set ok [expr {[matches_scope $local_peer $operation [dict get $g operations]]
-            && [matches_scope $local_peer $handler_pattern [dict get $g handlers]]}]
+        set ok [expr {[matches_scope $local_peer $operation [dict get $g operations] id]
+            && [matches_scope $local_peer $handler_pattern [dict get $g handlers] path]}]
         if {$ok} {
             set peers [dict get $g peers]
             if {$peers eq ""} { set peers [dict create incl [list $local_peer] excl {}] }
-            set ok [matches_scope $local_peer $target_peer $peers]
+            set ok [matches_scope $local_peer $target_peer $peers id]
         }
         if {$ok && $resource ne ""} {
             set ok [check_resource_scope $local_peer $granter_peer $resource [dict get $g resources]]

@@ -12,10 +12,26 @@
 # ≥30-day discipline; the SDK does not. We still pin the exact NVR for
 # reproducibility (re-pin deliberately on rebuild; prefer a base-image digest pin
 # for full repro). 9.0.10x supports net9.0 + C# 13 (profile language_version 13.0).
+# RE-PIN (2026-07-27, cohort image-rot sweep): dotnet-sdk-9.0-9.0.117-1.fc43 aged out of
+#   the fedora:43 `updates` repo (`No match for argument`), so the image would not build and
+#   the csharp peer could not be validated. Verified inside fedora:43 on 2026-07-27: the
+#   surviving NVRs are 9.0.109-1.fc43 (base) and 9.0.119-1.fc43 (updates). Re-pinned to
+#   9.0.119-1.fc43 per the S11 distro-channel pin-for-repro rule.
+# KOJI-PIN (2026-07-27, closing the rot class): dotnet-sdk-9.0 fetched from Koji's
+# permanent build archive (containers/koji-fetch.sh), not the rolling dnf repo — see
+# c-toolchain's Containerfile for the full rationale. SHA-256 recorded at fetch time.
+# Its own transitive deps (dotnet-runtime-9.0 etc.) are left to resolve from the live
+# repo as before — only re-koji-pin them too if they independently rot.
 FROM registry.fedoraproject.org/fedora:43
 
 # .NET 9 SDK, exact NVR. Pulls the matching 9.0 runtime + host as dependencies.
-RUN dnf install -y dotnet-sdk-9.0-9.0.117-1.fc43 && dnf clean all
+COPY containers/koji-fetch.sh /usr/local/bin/koji-fetch.sh
+RUN chmod +x /usr/local/bin/koji-fetch.sh \
+    && koji-fetch.sh dotnet9.0 9.0.119 1.fc43 \
+        dotnet-sdk-9.0:adc47789499cbbb899f5ac685c2045798e527b8a6f310e307b0b39cdd3ff0970 \
+    && dnf install -y /tmp/rpms/*.rpm \
+    && rm -rf /tmp/rpms \
+    && dnf clean all
 
 # Keep NuGet's package cache on a mountable path so repeated dev-loop runs don't
 # refetch packages (the conformance loop runs this many times). Mount a volume at

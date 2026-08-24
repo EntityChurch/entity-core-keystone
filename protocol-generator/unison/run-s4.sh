@@ -17,8 +17,8 @@
 #     localhost/entity-core-keystone/unison-toolchain:latest \
 #     sh /work/protocol-generator/unison/run-s4.sh [validate-peer-args...]
 #
-# Or from the repo root via the wrapper at the bottom (set INCONTAINER=0 to have
-# this script launch its own podman container).
+# Or from the repo root directly (bare `./run-s4.sh`) — the wrapper below re-execs
+# itself inside the container automatically.
 #
 # Default args: -profile core (the single-flag gate). ORACLE/PORT/NOBUILD/VALIDATE
 # /PEERNAME env overrides.
@@ -31,7 +31,10 @@ PORT="${PORT:-7777}"
 ORACLE="${ORACLE:-$REPO_ROOT/output/s4-oracles/validate-peer}"
 
 # If we're not already in the container, re-exec inside it under caps, offline.
-if [ "${INCONTAINER:-1}" != "1" ]; then
+# Default INCONTAINER=0: a bare host invocation must self-relaunch, not assume it
+# is already sandboxed (the previous default of 1 meant a host run skipped the
+# re-exec entirely and died on `cd /work/...`, since /work is never mounted there).
+if [ "${INCONTAINER:-0}" != "1" ]; then
   HOSTREPO="$(cd "$(dirname "$0")/../.." && pwd)"
   . "$HOSTREPO/tools/podman-caps.sh"
   exec podman run $PODMAN_RUN_CAPS --rm --network=none \
@@ -84,6 +87,6 @@ done
 grep '^LISTENING' /tmp/host.out || { echo "no LISTENING line after 30s" >&2; cat /tmp/host.err >&2; exit 1; }
 
 if [ "$#" -eq 0 ]; then
-  set -- -profile core -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
+  set -- -profile core -json-out "${JSON_OUT:-$PROJ/status/CONFORMANCE-REPORT.json}"
 fi
 "$ORACLE" -addr "127.0.0.1:$PORT" "$@" || true

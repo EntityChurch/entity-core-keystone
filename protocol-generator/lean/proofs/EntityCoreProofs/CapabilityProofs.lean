@@ -371,11 +371,28 @@ theorem checkPermission_no_grants_deny (lp gp : String) (exec token : EntityCore
     checkPermission lp gp exec token hp = .deny := by
   unfold checkPermission; rw [h]; rfl
 
-/-- **Excludes cannot be bypassed.** If a value falls in a scope's exclude set, the
-scope does not match it — the exclude overrides any include (§5.4 deny-override). -/
+/-- **Excludes cannot be bypassed** (path-scope). If a value falls in a scope's exclude
+set, the scope does not match it — the exclude overrides any include (§5.4
+deny-override). -/
 theorem matchesScope_excl_override (lp value : String) (s : Scope)
-    (h : covered lp lp value s.excl = true) : matchesScope lp value s = false := by
+    (h : covered lp lp value s.excl = true) : matchesScope lp value s .path = false := by
   simp [matchesScope, h]
+
+/-- **Excludes cannot be bypassed** (id-scope, 0.8.1 F40). The same deny-override holds
+on the literal matcher, and is stated separately precisely because F40 makes the two
+matchers distinct: a single theorem over an untyped `matchesScope` would have hidden the
+very asymmetry F40 pins. -/
+theorem matchesScope_id_excl_override (lp value : String) (s : Scope)
+    (h : coveredId value s.excl = true) : matchesScope lp value s .id = false := by
+  simp [matchesScope, h]
+
+/-- **The id-scope matcher applies no path transform** (0.8.1 F40). A pattern in path
+form (`/*/op`) matches a bare identifier only if the identifier IS that literal string —
+the property that separates the conformant reading from the canonicalizing one. -/
+theorem matchesIdPattern_literal (value pattern : String)
+    (hstar : pattern ≠ "*") (hsuffix : pattern.endsWith "/*" = false) :
+    matchesIdPattern value pattern = (value == pattern) := by
+  simp [matchesIdPattern, hstar, hsuffix]
 
 -- ── Reflexivity chain (the fold base case) ───────────────────────────────────
 
@@ -453,6 +470,8 @@ theorem allowed_chain_leaf_atten_root (lp : String) (now : UInt64) :
 #print axioms matchesSeg_refl
 #print axioms checkPermission_no_grants_deny
 #print axioms matchesScope_excl_override
+#print axioms matchesScope_id_excl_override
+#print axioms matchesIdPattern_literal
 #print axioms isAttenuated_refl
 #print axioms edgeOk_atten
 #print axioms allowed_chain_leaf_atten_root

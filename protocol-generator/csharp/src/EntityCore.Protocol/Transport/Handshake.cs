@@ -37,7 +37,17 @@ internal static class Handshake
         return await AuthenticateAsync(conn, local, remoteNonce, remotePeerId, timeout, ct).ConfigureAwait(false);
     }
 
-    /// <summary>Responder side: await the inbound hello, then send the reverse <c>authenticate</c> (§4.1 E3).</summary>
+    /// <summary>
+    /// Responder side: await the inbound hello, then send the reverse <c>authenticate</c>
+    /// (§4.1 leg 3 — the OPTIONAL symmetric form). NOT currently called by
+    /// <see cref="Peer"/>: §4.1 pins leg 3 as reachability-gated on the initiator having
+    /// signaled it accepts inbound dispatch, and that signaling mechanism is spec-deferred
+    /// ("no reference impl currently sends leg 3"). A responder that sends it
+    /// unconditionally violates the §4.1 MUST NOT and corrupts a client-style initiator's
+    /// next read (RT-6 — this is what <c>connectivity.handshake_nonce_single_use</c> caught
+    /// against validate-peer, a client-style initiator). Kept for when the reachability
+    /// signal lands.
+    /// </summary>
     public static async Task<PeerSession> RespondAsync(
         PeerConnection conn, PeerIdentity local, ConnectionState state, TimeSpan timeout, CancellationToken ct)
     {

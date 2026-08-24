@@ -317,7 +317,10 @@ connect_handler :: proc(p: ^Peer, conn: ^Conn, exec: Entity, env: Envelope) -> O
 		return ok_out(hello)
 	} else if op == "authenticate" {
 		if conn.established {
-			return err_out(409, "connection_already_established", "")
+			// RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+			// single-use nonce — pinned to 401 invalid_nonce, not a 409 state-conflict
+			// which under-signals the replay.
+			return err_out(401, "invalid_nonce", "")
 		}
 		if !conn.has_nonce {
 			return err_out(401, "invalid_nonce", "")

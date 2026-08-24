@@ -39,6 +39,8 @@ module EntityCore.Capability
   , normalizeUri
   , canonicalize
   , matchesPattern
+  , ScopeKind (..)
+  , matchesIdPattern
   , startsWith
   , isPeerId
   , parsePeerIdKt
@@ -142,10 +144,33 @@ matchesPattern path pattern
        in prefix `T.isPrefixOf` path
   | otherwise = path == pattern
 
-matchesScope :: Text -> Text -> Scope -> Bool
-matchesScope localPeer value s =
-  let cv = canonicalize localPeer value
-      covered pats = any (\p -> matchesPattern cv (canonicalize localPeer p)) pats
+-- | Which §5.2 matcher a grant dimension uses (0.8.1, F40). Passed explicitly at every
+-- call site — there is no default — so a new one cannot inherit the wrong matcher
+-- silently, which is exactly the F40 defect.
+data ScopeKind
+  = -- | @operations@, @peers@ — @system\/capability\/id-scope@.
+    IdScope
+  | -- | @handlers@, @resources@ — @system\/capability\/path-scope@.
+    PathScope
+  deriving (Eq, Show)
+
+-- | §5.2 id-scope match (0.8.1, F40): literal comparison with exactly two wildcard
+-- forms — bare @*@ and a trailing @\/*@ segment-prefix. None of the §5.4 path
+-- transforms apply, so a pattern carrying path syntax is matched as a literal string:
+-- a non-match, never a fault.
+matchesIdPattern :: Text -> Text -> Bool
+matchesIdPattern value pattern
+  | pattern == "*" = True
+  | "/*" `T.isSuffixOf` pattern = T.dropEnd 1 pattern `T.isPrefixOf` value
+  | otherwise = value == pattern
+
+matchesScope :: Text -> Text -> Scope -> ScopeKind -> Bool
+matchesScope localPeer value s kind =
+  let covered = case kind of
+        IdScope -> \pats -> any (matchesIdPattern value) pats
+        PathScope ->
+          let cv = canonicalize localPeer value
+           in \pats -> any (\p -> matchesPattern cv (canonicalize localPeer p)) pats
    in covered (scIncl s) && not (covered (scExcl s))
 
 -- ── §5.2 check_permission ──────────────────────────────────────────────────────
@@ -219,9 +244,9 @@ checkPermission localPeer granterPeer exec token handlerPattern =
       targetPeer = extractPeer localPeer uri
       resource = field exec "resource"
       grantOk g =
-        matchesScope localPeer operation (grOperations g)
-          && matchesScope localPeer handlerPattern (grHandlers g)
-          && matchesScope localPeer targetPeer (fromMaybe (Scope [localPeer] []) (grPeers g))
+        matchesScope localPeer operation (grOperations g) IdScope
+          && matchesScope localPeer handlerPattern (grHandlers g) PathScope
+          && matchesScope localPeer targetPeer (fromMaybe (Scope [localPeer] []) (grPeers g)) IdScope
           && case resource of
             Nothing -> True
             Just r -> checkResourceScope localPeer granterPeer r (grResources g)

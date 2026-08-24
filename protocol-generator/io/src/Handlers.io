@@ -104,7 +104,10 @@ ConnectHandler := Handler clone do(
         conn := ctx at("conn")
         exec := execOf(ctx)
         included := ctx at("included")
-        if(conn at("established") == true, return fail(409, "connection_already_established", nil))
+        // RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+        // single-use nonce — pinned to 401 invalid_nonce, not a 409 state-conflict
+        // which under-signals the replay.
+        if(conn at("established") == true, return fail(401, "invalid_nonce", nil))
         issuedNonce := conn at("issued_nonce")
         if(issuedNonce == nil, return fail(401, "invalid_nonce", nil))
         auth := exec entityField("params")

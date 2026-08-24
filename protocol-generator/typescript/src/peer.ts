@@ -18,7 +18,7 @@ import { EmitBus } from "./emit/index.js";
 import { Entity, Ecf, TypeNames, hashHex } from "./model/index.js";
 import { Dispatcher } from "./dispatch/index.js";
 import { seedCoreTypes } from "./types/index.js";
-import { PeerConnection, type PeerSession, initiate, respond } from "./transport/index.js";
+import { PeerConnection, type PeerSession, initiate } from "./transport/index.js";
 
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
@@ -195,19 +195,20 @@ export class Peer implements PeerServices {
     this.#connections.add(conn);
     conn.start();
 
-    // Reverse-direction handshake (§4.1 E3): the responder sends its own
-    // authenticate once it has the initiator's hello. Fire-and-forget — it
-    // completes the mutual handshake; its session is not needed here.
-    void this.#respondInBackground(conn, state);
-  }
-
-  async #respondInBackground(conn: PeerConnection, state: ConnectionState): Promise<void> {
-    try {
-      await respond(conn, this.#identity, state, HANDSHAKE_TIMEOUT_MS);
-    } catch {
-      // The reverse handshake is best-effort; failures don't affect the
-      // initiator's already-established session.
-    }
+    // No reverse-direction handshake here (§4.1 leg 3). The spec pins leg 3 as
+    // OPTIONAL and reachability-gated, deferred until a signaling mechanism (a
+    // `hello` "accepts-inbound" capability or similar) is designed: "A responder
+    // MUST NOT proactively send a leg-3 authenticate to an initiator that has
+    // not indicated it accepts inbound dispatch... An unsolicited inbound
+    // authenticate corrupts a client-style initiator's next read." (§4.1; "no
+    // reference impl currently sends leg 3"). This peer previously fired it
+    // unconditionally on every inbound connection — a real conformance bug, not
+    // a cosmetic one: it is the confirmed root cause of the
+    // connectivity/handshake_nonce_single_use (RT-6) failure, where this eager
+    // leg-3 EXECUTE reliably outraced a same-connection follow-up request (the
+    // RT-6 replay probe) and got read by the peer on the other end as if it
+    // were that request's response, desyncing the exchange and causing it to
+    // disconnect before the real response was written.
   }
 
   /** Dial a peer at `host:port` and complete the handshake, returning the session. */

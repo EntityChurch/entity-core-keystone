@@ -27,7 +27,7 @@
 #                        relaxed for distro-reviewed, met anyway). High-level
 #                        crypto_sign_* / crypto_hash_sha256 are what we bind — stable +
 #                        byte-identical across 1.0.x. Statically + privately linked.
-#   gcc        15.2.1-7.fc43  — Nim's C backend (nim c -> C -> gcc). Reviewed dnf channel.
+#   gcc        15.3.1-1.fc43  — Nim's C backend (nim c -> C -> gcc). Reviewed dnf channel.
 # CBOR (canonical ECF), base58, and the multicodec-style LEB128 varint are hand-rolled
 # in-repo (no Nim lib gives canonical ECF; the A-005 pattern). Ed448/SHA-384 agility is
 # DEFERRED (libsodium has no Ed448) — an opt-in sub-library (openssl-devel OR the sibling
@@ -44,6 +44,19 @@
 # Build (S2, once NIM_SHA256 is filled):
 #   podman build -t entity-core-keystone/nim-toolchain:latest \
 #     -f containers/nim-toolchain/Containerfile .
+# RE-PIN (2026-07-27, cohort image-rot sweep): the fedora:43 `updates` repo no longer
+#   serves gcc/gcc-c++/gcc-gnat/libstdc++*/libasan/libubsan 15.2.1-7.fc43 or
+#   binutils 2.45.1-4.fc43 — `dnf install` failed with `No match for argument`, so the
+#   image would not build and the peer could not be validated at all. Verified against
+#   `dnf list --showduplicates` inside fedora:43 on 2026-07-27: the surviving NVRs are
+#   15.2.1-2.fc43 (base `fedora`) and 15.3.1-1.fc43 (`updates`) for the gcc family, and
+#   2.45.1-5.fc43 (`updates`) for binutils. Re-pinned to the freshest reviewed distro
+#   build per the S11 distro-channel pin-for-repro rule. Same rot that took out
+#   containers/rust-toolchain (rustfmt-1.96.0-1.fc43); pinning exact NVRs against a
+#   rolling `updates` repo is reproducible only until the NVR is superseded.
+# KOJI-PIN (2026-07-27, closing the rot class): gcc fetched from Koji's permanent
+# build archive (containers/koji-fetch.sh), not the rolling dnf repo — see
+# c-toolchain's Containerfile for the full rationale. SHA-256 recorded at fetch time.
 FROM registry.fedoraproject.org/fedora:43
 
 # System deps:
@@ -54,13 +67,18 @@ FROM registry.fedoraproject.org/fedora:43
 #   glibc-langpack-en — a UTF-8 locale for clean text-vector handling.
 # Pinned NVRs (S11): what fedora:43 shipped at authoring; re-verify >=30-day age + re-pin
 # on rebuild; prefer pinning the base image by digest for full repro.
-RUN dnf install -y \
-        gcc-15.2.1-7.fc43 \
+COPY containers/koji-fetch.sh /usr/local/bin/koji-fetch.sh
+RUN chmod +x /usr/local/bin/koji-fetch.sh \
+    && koji-fetch.sh gcc 15.3.1 1.fc43 \
+        gcc:5361a544a8412eecfdfb1dc117749b637bfcd19de41eaa9468f94cade6cf1824 \
+    && dnf install -y \
+        /tmp/rpms/*.rpm \
         libsodium-1.0.22-1.fc43 \
         libsodium-static-1.0.22-1.fc43 \
         libsodium-devel-1.0.22-1.fc43 \
         curl ca-certificates tar xz \
         git findutils which glibc-langpack-en \
+    && rm -rf /tmp/rpms \
     && dnf clean all
 
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8

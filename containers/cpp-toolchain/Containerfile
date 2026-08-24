@@ -36,6 +36,24 @@
 # NOTE (glibc portability, R5): a glibc shared object won't load on hosts older than this
 # base's glibc. For a *shipped* release artifact, rebuild on an old-glibc
 # (manylinux-style) base. fedora:43 is fine for development + conformance.
+# RE-PIN (2026-07-27, cohort image-rot sweep): the fedora:43 `updates` repo no longer
+#   serves gcc/gcc-c++/gcc-gnat/libstdc++*/libasan/libubsan 15.2.1-7.fc43 or
+#   binutils 2.45.1-4.fc43 — `dnf install` failed with `No match for argument`, so the
+#   image would not build and the peer could not be validated at all. Verified against
+#   `dnf list --showduplicates` inside fedora:43 on 2026-07-27: the surviving NVRs are
+#   15.2.1-2.fc43 (base `fedora`) and 15.3.1-1.fc43 (`updates`) for the gcc family, and
+#   2.45.1-5.fc43 (`updates`) for binutils. Re-pinned to the freshest reviewed distro
+#   build per the S11 distro-channel pin-for-repro rule. Same rot that took out
+#   containers/rust-toolchain (rustfmt-1.96.0-1.fc43); pinning exact NVRs against a
+#   rolling `updates` repo is reproducible only until the NVR is superseded.
+# KOJI-PIN (2026-07-27, closing the rot class): the whole gcc family + binutils fetched
+# from Koji's permanent build archive (containers/koji-fetch.sh), not the rolling dnf
+# repo — see c-toolchain's Containerfile for the full rationale. SHA-256 recorded at
+# fetch time. ninja/cmake/libsodium stay on the regular dnf repo pin for now.
+# RE-PIN (2026-07-27, same day, clang): clang/clang-tools-extra/libcxx* 21.1.8-4.fc43
+#   ALSO aged out of the `updates` repo mid-session (superseded by 21.1.8-6.fc43) — live
+#   proof of the rot class recurring within hours, not months. Koji-pinned too (source
+#   package "llvm", not "clang" — verify with a HEAD request before assuming otherwise).
 FROM registry.fedoraproject.org/fedora:43
 
 # ── C++20 toolchain + CMake build system + libsodium ─────────────────────────
@@ -52,26 +70,35 @@ FROM registry.fedoraproject.org/fedora:43
 # `aa03ca9219a8`): clang/clang-tools-extra/libcxx* = 21.1.8-4.fc43, ninja-build =
 # 1.13.1-4.fc43 (the S1 "verify-and-pin at S2" items, now exact). Reviewed distro
 # channel (S11): exact-pin for repro, ≥30-day age floor relaxed (and met).
-RUN dnf install -y \
-        gcc-c++-15.2.1-7.fc43 \
-        gcc-15.2.1-7.fc43 \
-        libstdc++-15.2.1-7.fc43 \
-        libstdc++-devel-15.2.1-7.fc43 \
-        libstdc++-static-15.2.1-7.fc43 \
-        clang-21.1.8-4.fc43 \
-        clang-tools-extra-21.1.8-4.fc43 \
-        libcxx-21.1.8-4.fc43 libcxx-devel-21.1.8-4.fc43 \
-        libcxxabi-21.1.8-4.fc43 libcxxabi-devel-21.1.8-4.fc43 \
-        libasan-15.2.1-7.fc43 \
-        libubsan-15.2.1-7.fc43 \
+COPY containers/koji-fetch.sh /usr/local/bin/koji-fetch.sh
+RUN chmod +x /usr/local/bin/koji-fetch.sh \
+    && koji-fetch.sh gcc 15.3.1 1.fc43 \
+        gcc:5361a544a8412eecfdfb1dc117749b637bfcd19de41eaa9468f94cade6cf1824 \
+        gcc-c++:c8722edb1bc14ce4d1c024d5e22e7c6c33770489448fd3408acbad6d5152f2f6 \
+        libstdc++:025b3f236c6ca67481897c85a568555266696fca79f80444ed9faad4d3858d83 \
+        libstdc++-devel:38d059c0e6047d0c9a4baf0b4c89ed75c568207c6ebc1fde6bc9c9b48b09a523 \
+        libstdc++-static:b82d8cdca0e605e8a0de6425a576aebac22ef36827de87d8ff3d5bc6d36da8b7 \
+        libasan:aae22be593238a4192919a7ed44f79b90d3ab551d36e36edfacad246ae791e6c \
+        libubsan:cdb8babf852bbea9d574241bd402fb34d5c0544289e8142cdf516245251c83fd \
+    && koji-fetch.sh binutils 2.45.1 5.fc43 \
+        binutils:a3971b2f8c7b97b8f6e7000223226dc47d4ef8fa0d5b585791a3cf1f9f975431 \
+    && koji-fetch.sh llvm 21.1.8 6.fc43 \
+        clang:6092682c9f14ffd445a529e5dea4ace0874a4ff49c715665810f78c7afac63ba \
+        clang-tools-extra:2485457e1029cc33d477c5591c8264145f79bbca17f0ebf638ae6dcde2762db1 \
+        libcxx:75c97dc970fd3f4de17542de6bde2c814febd65a538aa4ca740fc8a9abae7910 \
+        libcxx-devel:f4242775c1317339deb60e66c6f1e6c483234a495ea6d9d29022fd7530eedb2d \
+        libcxxabi:ea1b0e3375bbec622beab31bc74e0af17538b09076c4de691f23539a8ef4f866 \
+        libcxxabi-devel:dd43b3d4de0da697e09d12745f7be7ba17f66a4bc5a4ba81ada7a92479946045 \
+    && dnf install -y \
+        /tmp/rpms/*.rpm \
         cmake-3.31.11-1.fc43 \
         ninja-build-1.13.1-4.fc43 \
         make-1:4.4.1-11.fc43 \
-        binutils-2.45.1-4.fc43 \
         pkgconf-pkg-config \
         libsodium-1.0.22-1.fc43 \
         libsodium-static-1.0.22-1.fc43 \
         libsodium-devel-1.0.22-1.fc43 \
+    && rm -rf /tmp/rpms \
     && dnf clean all
 
 # Keep CMake/CTest output uncolored + deterministic in the container.

@@ -194,8 +194,51 @@ static bool covered(const char *frame, const ec_value *pats, const char *cv)
     return false;
 }
 
-static bool matches_scope(const char *local_peer, const char *value, scope s)
+/* §5.2 id-scope match (0.8.1, F40) — `operations` and `peers`. Literal compare with
+ * exactly two wildcard forms: bare "*" and a trailing slash-star segment-prefix. None
+ * of the §5.4 path transforms apply — no leading-slash universal reading, no interior
+ * peer-wildcard, no peer-relative qualification — so a pattern carrying path syntax is
+ * matched as a literal string: a non-match, never a fault. */
+static bool matches_id_pattern(const char *value, const char *pattern)
 {
+    if (strcmp(pattern, "*") == 0) {
+        return true;
+    }
+    size_t plen = strlen(pattern);
+    if (plen >= 2 && pattern[plen - 1] == '*' && pattern[plen - 2] == '/') {
+        return strncmp(value, pattern, plen - 1) == 0;
+    }
+    return strcmp(value, pattern) == 0;
+}
+
+/* any id-scope pattern in `pats` covering `value` — no canonicalization */
+static bool covered_id(const ec_value *pats, const char *value)
+{
+    if (!pats) {
+        return false;
+    }
+    for (size_t i = 0; i < pats->as.arr.len; i++) {
+        const ec_value *p = pats->as.arr.items[i];
+        if (!p || p->kind != EC_TEXT) {
+            continue;
+        }
+        if (matches_id_pattern(value, (const char *)p->as.bytes.p)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Which §5.2 matcher a grant dimension uses (0.8.1, F40). Passed explicitly at every
+ * call site — no default — so a new one cannot inherit the wrong matcher silently,
+ * which is exactly the F40 defect. */
+typedef enum { SCOPE_ID, SCOPE_PATH } scope_kind;
+
+static bool matches_scope(const char *local_peer, const char *value, scope s, scope_kind kind)
+{
+    if (kind == SCOPE_ID) {
+        return covered_id(s.incl, value) && !covered_id(s.excl, value);
+    }
     char *cv = NULL;
     if (ec_canonicalize(local_peer, value, &cv) != EC_OK) {
         return false;
@@ -307,12 +350,12 @@ ec_verdict ec_cap_check_permission(const char *local_peer, const char *granter_p
     if (grants) {
         for (size_t i = 0; i < grants->as.arr.len; i++) {
             const ec_value *g = grants->as.arr.items[i];
-            bool ok = matches_scope(local_peer, operation, parse_scope(grant_dim(g, "operations")))
-                   && matches_scope(local_peer, handler_pattern, parse_scope(grant_dim(g, "handlers")));
+            bool ok = matches_scope(local_peer, operation, parse_scope(grant_dim(g, "operations")), SCOPE_ID)
+                   && matches_scope(local_peer, handler_pattern, parse_scope(grant_dim(g, "handlers")), SCOPE_PATH);
             if (ok) {
                 const ec_value *peers_v = grant_dim(g, "peers");
                 if (peers_v) {
-                    ok = matches_scope(local_peer, target_peer, parse_scope(peers_v));
+                    ok = matches_scope(local_peer, target_peer, parse_scope(peers_v), SCOPE_ID);
                 } else {
                     /* default peers = [local] */
                     ok = (strcmp(target_peer, local_peer) == 0);
@@ -405,9 +448,9 @@ bool ec_cap_grant_subset(const char *local_peer, const char *child_peer,
      * conservatively handled by requiring the explicit side to include local. */
     const char *only_peer = local_peer;
     if (cp) {
-        return matches_scope(local_peer, only_peer, parse_scope(cp));  /* child ⊆ {local} */
+        return matches_scope(local_peer, only_peer, parse_scope(cp), SCOPE_ID);  /* child ⊆ {local} */
     }
-    return matches_scope(local_peer, only_peer, parse_scope(pp));      /* {local} ⊆ parent */
+    return matches_scope(local_peer, only_peer, parse_scope(pp), SCOPE_ID);      /* {local} ⊆ parent */
 }
 
 /* ── §5.5 chain collection + §4.10(b) depth pre-check ───────────────────────── */

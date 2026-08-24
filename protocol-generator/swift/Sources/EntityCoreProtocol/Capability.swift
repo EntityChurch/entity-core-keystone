@@ -84,7 +84,7 @@ public enum Capability {
         return isPeerID(String(first))
     }
 
-    // MARK: §5.2 matches_scope (uniform over path-scope & id-scope)
+    // MARK: §5.2 matches_scope (typed by scope kind — 0.8.1, F40)
 
     /// A grant scope `{include, exclude?}`.
     public struct Scope: Sendable {
@@ -102,9 +102,39 @@ public enum Capability {
         }
     }
 
-    /// §5.2 matches_scope: value is included and not excluded. `frame` is the
-    /// canonicalization peer_id for BOTH value and patterns at this call site.
-    public static func matchesScope(_ value: String, _ scope: Scope, frame: String) -> Bool {
+    /// Which §5.2 matcher a grant dimension uses (0.8.1, F40). Passed explicitly at
+    /// every call site — no default — so a new one cannot inherit the wrong matcher
+    /// silently, which is exactly the F40 defect.
+    public enum ScopeKind: Sendable {
+        /// `operations`, `peers` — `system/capability/id-scope`.
+        case id
+        /// `handlers`, `resources` — `system/capability/path-scope`.
+        case path
+    }
+
+    /// §5.2 id-scope match (0.8.1, F40): literal comparison with exactly two wildcard
+    /// forms — bare `*` and a trailing slash-star segment-prefix. None of the §5.4 path
+    /// transforms apply, so a pattern carrying path syntax is matched as a literal
+    /// string: a non-match, never a fault.
+    public static func matchesIDPattern(_ value: String, _ pattern: String) -> Bool {
+        if pattern == "*" { return true }
+        if pattern.count >= 2, pattern.hasSuffix("/*") {
+            return value.hasPrefix(String(pattern.dropLast()))
+        }
+        return value == pattern
+    }
+
+    /// §5.2 matches_scope: value is included and not excluded. `kind` selects the
+    /// matcher by scope type — `.path` canonicalizes both sides against `frame`, `.id`
+    /// compares literally. The two MUST NOT be interchanged.
+    public static func matchesScope(_ value: String, _ scope: Scope, frame: String, kind: ScopeKind) -> Bool {
+        if kind == .id {
+            var matchedID = false
+            for p in scope.include where matchesIDPattern(value, p) { matchedID = true; break }
+            guard matchedID else { return false }
+            for p in scope.exclude where matchesIDPattern(value, p) { return false }
+            return true
+        }
         let cv = canonicalize(value, frame: frame)
         var matched = false
         for p in scope.include where matchesPattern(cv, canonicalize(p, frame: frame)) { matched = true; break }
@@ -151,10 +181,10 @@ public enum Capability {
         localPeerID: String, granterFrame: String
     ) -> Bool {
         for g in grants {
-            if !matchesScope(operation, g.operations, frame: localPeerID) { continue }
-            if !matchesScope(handlerPattern, g.handlers, frame: localPeerID) { continue }
+            if !matchesScope(operation, g.operations, frame: localPeerID, kind: .id) { continue }
+            if !matchesScope(handlerPattern, g.handlers, frame: localPeerID, kind: .path) { continue }
             let peersScope = g.peers ?? Scope(include: [localPeerID])
-            if !matchesScope(targetPeer, peersScope, frame: localPeerID) { continue }
+            if !matchesScope(targetPeer, peersScope, frame: localPeerID, kind: .id) { continue }
             if let rt = resourceTarget {
                 if !checkResourceScope(rt, g.resources, localPeerID: localPeerID, granterFrame: granterFrame) { continue }
             }

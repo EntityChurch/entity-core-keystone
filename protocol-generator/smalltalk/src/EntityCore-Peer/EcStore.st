@@ -22,12 +22,18 @@ cls class compile: 'new  ^ super new initStore'.
 cls compile: 'initStore  content := Dictionary new. tree := Dictionary new. ^ self'.
 cls compile: 'reset  content := Dictionary new. tree := Dictionary new'.
 
-"hexKey: — a lowercase-hex String key for a ByteArray content_hash (a stable Dictionary key)."
+"hexKey: — a lowercase-hex String key for a ByteArray content_hash (a stable Dictionary key).
+ `printPaddedWith:to:base:` yields UPPERCASE, so `asLowercase` is load-bearing (A-CL-009):
+ the comment claimed lowercase while the code produced uppercase. Self-consistent as a key
+ either way — put: and getByHash: both go through here — but the store's hex and the
+ §3.4/§3.5 path hex built by EcCapAuthz>>hexOf: MUST agree in case, or a revocation-marker
+ lookup silently misses. RT-14 (§3.5, 0.8.1) makes lowercase the cohort rule, so pin it here
+ rather than rely on the two sites never meeting."
 cls compile: 'hexKey: aByteArray
 	| s |
 	s := WriteStream on: String new.
 	aByteArray do: [ :b |
-		s nextPutAll: (b printPaddedWith: $0 to: 2 base: 16) ].
+		s nextPutAll: (b printPaddedWith: $0 to: 2 base: 16) asLowercase ].
 	^ s contents'.
 
 "── Content Store: content_hash -> entity (idempotent, §1.1 immutability). ──"

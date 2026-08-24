@@ -198,10 +198,23 @@ internal sealed class Peer : IPeerServices, IAsyncDisposable
                 _connections.Add(conn);
                 conn.Start();
 
-                // Reverse-direction handshake (§4.1 E3): the responder sends its own
-                // authenticate once it has the initiator's hello. Fire-and-forget —
-                // it completes the mutual handshake; its session is not needed here.
-                _ = RespondInBackgroundAsync(conn, state, ct);
+                // §4.1: leg 3 (the responder proactively sending its own authenticate
+                // back to the initiator) is the OPTIONAL symmetric form, reachability-
+                // gated on the initiator having signaled it accepts inbound dispatch.
+                // The signaling mechanism is spec-deferred — "no reference impl
+                // currently sends leg 3" — and a responder "MUST NOT proactively send
+                // a leg-3 authenticate to an initiator that has not indicated it
+                // accepts inbound dispatch"; a client-style initiator (request/response
+                // only — a browser, CLI, or **conformance harness**) "MUST be able to
+                // complete the handshake via legs 1-2 alone... An unsolicited inbound
+                // authenticate corrupts a client-style initiator's next read." This
+                // peer previously fired leg 3 unconditionally on every accepted
+                // connection, which did exactly that: validate-peer's single-shot
+                // handshake_nonce_single_use probe (a client-style initiator) read the
+                // unsolicited reverse-authenticate EXECUTE instead of its own replayed
+                // authenticate's EXECUTE_RESPONSE, corrupting the read and surfacing as
+                // "status 0 code=''" (RT-6). Do not reintroduce this without the §4.1
+                // reachability-signal mechanism landing first (see Handshake.RespondAsync).
             }
         }
         catch (Exception) when (ct.IsCancellationRequested)
@@ -211,19 +224,6 @@ internal sealed class Peer : IPeerServices, IAsyncDisposable
         catch (ObjectDisposedException)
         {
             // Listener stopped.
-        }
-    }
-
-    private async Task RespondInBackgroundAsync(PeerConnection conn, ConnectionState state, CancellationToken ct)
-    {
-        try
-        {
-            await Handshake.RespondAsync(conn, _identity, state, TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
-        }
-        catch (Exception)
-        {
-            // The reverse handshake is best-effort; failures don't affect the
-            // initiator's already-established session.
         }
     }
 

@@ -1,0 +1,176 @@
+{
+  "$comment": "Keystone-authored portable case set for the 0.8.1 F40 typed scope-match rule. NOT an arch canonical fixture (those live in shared/test-vectors/, byte-pinned). Substitute {local} and {remote} with real Base58 peer-ids before running.",
+  "spec_version": "0.8.1",
+  "spec_pin": {
+    "repo": "entity-core-protocol",
+    "commit": "6285c94",
+    "sections": ["5.2 id-scope pattern grammar", "5.4 matches_pattern", "1.4 canonicalize"]
+  },
+  "placeholders": {
+    "{local}": "the peer's own Base58 peer-id (the canonicalization frame)",
+    "{remote}": "any other well-formed Base58 peer-id"
+  },
+  "cases": [
+    {
+      "id": "id.exact.hit",
+      "dim": "operations", "scope_type": "id-scope",
+      "value": "get", "include": ["get"], "exclude": [],
+      "expect": true,
+      "note": "Bare identifier. Agrees under both readings — control."
+    },
+    {
+      "id": "id.exact.miss",
+      "dim": "operations", "scope_type": "id-scope",
+      "value": "put", "include": ["get"], "exclude": [],
+      "expect": false,
+      "note": "Control: the common deny case must not regress."
+    },
+    {
+      "id": "id.star",
+      "dim": "operations", "scope_type": "id-scope",
+      "value": "get", "include": ["*"], "exclude": [],
+      "expect": true,
+      "note": "Bare * survives id-scope. The shipped open-grants seed uses operations:[\"*\"]; a strict string-equality reading would break bootstrap."
+    },
+    {
+      "id": "id.prefix.hit",
+      "dim": "operations", "scope_type": "id-scope",
+      "value": "compute/apply", "include": ["compute/*"], "exclude": [],
+      "expect": true,
+      "note": "Trailing /* = literal segment-prefix, the second and last surviving wildcard."
+    },
+    {
+      "id": "id.prefix.miss",
+      "dim": "operations", "scope_type": "id-scope",
+      "value": "computex/apply", "include": ["compute/*"], "exclude": [],
+      "expect": false,
+      "note": "The prefix retains its slash, so a longer first segment does not match."
+    },
+    {
+      "id": "id.prefix.no_bare_parent",
+      "dim": "operations", "scope_type": "id-scope",
+      "value": "compute", "include": ["compute/*"], "exclude": [],
+      "expect": false,
+      "note": "prefix = pattern minus the trailing '*' = 'compute/', and 'compute' does not start with 'compute/'. Same boundary as §5.4."
+    },
+    {
+      "id": "id.pathform.universal_prefix",
+      "dim": "operations", "scope_type": "id-scope",
+      "value": "get", "include": ["/*/get"], "exclude": [],
+      "expect": false,
+      "note": "F40 HEADLINE (include over-grant). A canonicalizing peer ALLOWS this; the conformant reading denies it. /*/ is not an interior wildcard in id-scope."
+    },
+    {
+      "id": "id.pathform.local_qualified",
+      "dim": "operations", "scope_type": "id-scope",
+      "value": "get", "include": ["/{local}/get"], "exclude": [],
+      "expect": false,
+      "note": "No peer-relative qualification in id-scope: the value is never rewritten to /{local}/get."
+    },
+    {
+      "id": "id.pathform.absolute",
+      "dim": "operations", "scope_type": "id-scope",
+      "value": "get", "include": ["/get"], "exclude": [],
+      "expect": false,
+      "note": "No leading-/ universal reading. Agrees under both readings, but pins the rule."
+    },
+    {
+      "id": "id.peers.exact",
+      "dim": "peers", "scope_type": "id-scope",
+      "value": "{remote}", "include": ["{remote}"], "exclude": [],
+      "expect": true,
+      "note": "Peer-ids are flat: literal id or bare *."
+    },
+    {
+      "id": "id.peers.star",
+      "dim": "peers", "scope_type": "id-scope",
+      "value": "{remote}", "include": ["*"], "exclude": [],
+      "expect": true
+    },
+    {
+      "id": "id.peers.other",
+      "dim": "peers", "scope_type": "id-scope",
+      "value": "{remote}", "include": ["{local}"], "exclude": [],
+      "expect": false,
+      "note": "Control: the §3.6 default (peers absent -> local only) must still deny a foreign peer."
+    },
+    {
+      "id": "id.peers.pathform.all",
+      "dim": "peers", "scope_type": "id-scope",
+      "value": "{remote}", "include": ["/*/*"], "exclude": [],
+      "expect": false,
+      "note": "F40 (include over-grant), peers dimension. The divergence is not operations-only."
+    },
+    {
+      "id": "id.peers.pathform.qualified",
+      "dim": "peers", "scope_type": "id-scope",
+      "value": "{remote}", "include": ["/*/{remote}"], "exclude": [],
+      "expect": false,
+      "note": "F40 (include over-grant), peers dimension, absolute-qualified form."
+    },
+    {
+      "id": "id.literal.pathform.self",
+      "dim": "operations", "scope_type": "id-scope",
+      "value": "/*/get", "include": ["/*/get"], "exclude": [],
+      "expect": true,
+      "informative": true,
+      "note": "PRECISION: path syntax in an id dimension is matched literally, NOT rejected. A value that IS that literal string matches. Peers must not add a validation error for path syntax here."
+    },
+    {
+      "id": "id.exclude.exact",
+      "dim": "operations", "scope_type": "id-scope",
+      "value": "get", "include": ["*"], "exclude": ["get"],
+      "expect": false,
+      "note": "Control: an exclude that agrees under both readings still denies."
+    },
+    {
+      "id": "id.exclude.pathform",
+      "dim": "operations", "scope_type": "id-scope",
+      "value": "get", "include": ["*"], "exclude": ["/*/get"],
+      "expect": true,
+      "note": "F40 HEADLINE (exclude inversion) — the single highest-value case. A canonicalizing peer DENIES; the conformant reading ALLOWS, because the exclude pattern matches nothing literally. A peer cannot pass this by accident, and a rejection-only oracle probe would never surface it."
+    },
+    {
+      "id": "id.exclude.peers.pathform",
+      "dim": "peers", "scope_type": "id-scope",
+      "value": "{remote}", "include": ["*"], "exclude": ["/*/*"],
+      "expect": true,
+      "note": "The exclude inversion on the peers dimension."
+    },
+    {
+      "id": "id.exclude.prefix",
+      "dim": "operations", "scope_type": "id-scope",
+      "value": "compute/apply", "include": ["*"], "exclude": ["compute/*"],
+      "expect": false,
+      "note": "The surviving trailing-/* wildcard still works on the exclude side."
+    },
+    {
+      "id": "path.relative.include",
+      "dim": "handlers", "scope_type": "path-scope",
+      "value": "system/tree", "include": ["system/tree"], "exclude": [],
+      "expect": true,
+      "note": "path-scope CONTROL: canonicalization is retained. Both sides -> /{local}/system/tree."
+    },
+    {
+      "id": "path.universal.include",
+      "dim": "handlers", "scope_type": "path-scope",
+      "value": "system/tree", "include": ["/*/system/tree"], "exclude": [],
+      "expect": true,
+      "note": "path-scope CONTROL: the /*/ interior peer-wildcard MUST still work here. This is what proves the fix is a SPLIT, not a blanket removal of canonicalization."
+    },
+    {
+      "id": "path.subtree.include",
+      "dim": "resources", "scope_type": "path-scope",
+      "value": "system/type/a", "include": ["system/type/*"], "exclude": [],
+      "expect": true,
+      "note": "path-scope CONTROL: trailing /* after canonicalization."
+    },
+    {
+      "id": "path.exclude.universal",
+      "dim": "resources", "scope_type": "path-scope",
+      "value": "system/tree", "include": ["*"], "exclude": ["/*/system/tree"],
+      "expect": false,
+      "note": "path-scope CONTROL, exclude side: still canonicalizes, so the exclude still bites. Mirror of id.exclude.pathform — together they prove the two matchers are genuinely distinct."
+    }
+  ]
+}

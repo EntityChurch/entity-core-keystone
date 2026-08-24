@@ -234,6 +234,15 @@ public actor Peer {
             return await handleConnect(root: root, env: env, operation: operation, requestID: reqID, session: sess)
         }
         if isConnectPath(uri) && sess.established {
+            // RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+            // single-use nonce. The anti-replay property is the MUST and the
+            // mechanism (established-state tracking) is impl-defined, but the
+            // STATUS is pinned to 401 invalid_nonce — a 409 state-conflict
+            // under-signals the replay. A replayed hello on an already-established
+            // connection is a genuinely different condition and keeps 409.
+            if operation == "authenticate" {
+                return (try? errorResponse(requestID: reqID, status: 401, code: "invalid_nonce")) ?? fallbackError()
+            }
             return (try? errorResponse(requestID: reqID, status: 409, code: "connection_already_established")) ?? fallbackError()
         }
 

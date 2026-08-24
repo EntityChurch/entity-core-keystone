@@ -24,8 +24,11 @@ PROJ=/work/protocol-generator/typescript
 cd "$PROJ"
 
 if [ "${NOBUILD:-0}" != "1" ]; then
-  npm ci --offline >/dev/null 2>&1
-  npx tsc -p tsconfig.json
+  # Capture rather than discard: a swallowed build failure produces a zero-byte log,
+  # indistinguishable from a run that never happened (e.g. npm ci --offline failing
+  # with no warm kc-npm cache volume used to vanish silently here).
+  npm ci --offline >/tmp/build.out 2>&1 || { echo "npm ci failed:" >&2; cat /tmp/build.out >&2; exit 1; }
+  npx tsc -p tsconfig.json >>/tmp/build.out 2>&1 || { echo "tsc failed:" >&2; cat /tmp/build.out >&2; exit 1; }
 fi
 
 # Launch the host; capture its stdout so we can wait for LISTENING.
@@ -72,7 +75,7 @@ head -1 /tmp/host.out
 # Default args: the full --profile core run (all 14 core-profile categories; the
 # oracle auto-allowlists the §9.0 extension-carve-out skips).
 if [ "$#" -eq 0 ]; then
-  set -- -profile core -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
+  set -- -profile core -json-out "${JSON_OUT:-$PROJ/status/CONFORMANCE-REPORT.json}"
 fi
 
 "$ORACLE" -addr "127.0.0.1:$PORT" "$@" || true

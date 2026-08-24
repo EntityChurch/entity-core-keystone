@@ -34,7 +34,7 @@ module entity_core_capability
                                 CV_CHAIN_TOO_DEEP = 3
 
   public :: cap_now_ms, cap_grant, cap_canonicalize, cap_normalize_uri
-  public :: cap_matches_pattern, cap_matches_scope, cap_is_peer_id, cap_extract_peer
+  public :: cap_matches_pattern, cap_matches_id_pattern, cap_matches_scope, cap_is_peer_id, cap_extract_peer
   public :: cap_check_permission, cap_resolve, cap_find_signature
   public :: cap_resolve_granter_peer_id, cap_grants_of_token, cap_grant_subset_local
   public :: cap_chain_exceeds_depth, cap_verify_chain, cap_is_revoked, cap_verify_request
@@ -134,15 +134,51 @@ contains
     end do
   end function covered
 
-  logical function cap_matches_scope(local, value, scope)
-    character(len=*),  intent(in) :: local, value
+  ! §5.2 id-scope match (0.8.1, F40) — operations and peers. Literal comparison with
+  ! exactly two wildcard forms: bare '*' and a trailing slash-star segment-prefix. None
+  ! of the §5.4 path transforms apply, so a pattern carrying path syntax is matched as a
+  ! literal string: a non-match, never a fault.
+  logical function cap_matches_id_pattern(value, pattern) result(m)
+    character(len=*), intent(in) :: value, pattern
+    integer :: plen
+    if (pattern == '*') then; m = .true.; return; end if
+    plen = len(pattern)
+    if (plen >= 2 .and. pattern(plen-1:plen) == '/*') then
+      m = (len(value) >= plen-1)
+      if (m) m = (value(1:plen-1) == pattern(1:plen-1))
+      return
+    end if
+    m = (value == pattern)
+  end function cap_matches_id_pattern
+
+  ! is `value` covered by any id-scope pattern in `pats`? (no canonicalization)
+  logical function covered_id(pats, value)
+    character(len=*), intent(in) :: value
+    type(str_t),      intent(in) :: pats(:)
+    integer :: i
+    covered_id = .false.
+    do i = 1, size(pats)
+      if (cap_matches_id_pattern(value, pats(i)%s)) then; covered_id = .true.; return; end if
+    end do
+  end function covered_id
+
+  ! §5.2 typed scope match. `kind` is 'id' (operations, peers) or 'path' (handlers,
+  ! resources) and is given at every call site — there is no default, so a new one
+  ! cannot inherit the wrong matcher silently, which is exactly the F40 defect.
+  logical function cap_matches_scope(local, value, scope, kind)
+    character(len=*),  intent(in) :: local, value, kind
     type(ecf_value_t), intent(in) :: scope
     character(len=:), allocatable :: cv
     type(str_t), allocatable :: incl(:), excl(:)
-    cv = canon(local, value)
     incl = text_list(m_array(scope, 'include'))
-    if (.not. covered(local, incl, cv)) then; cap_matches_scope = .false.; return; end if
     excl = text_list(m_array(scope, 'exclude'))
+    if (kind == 'id') then
+      if (.not. covered_id(incl, value)) then; cap_matches_scope = .false.; return; end if
+      cap_matches_scope = .not. covered_id(excl, value)
+      return
+    end if
+    cv = canon(local, value)
+    if (.not. covered(local, incl, cv)) then; cap_matches_scope = .false.; return; end if
     cap_matches_scope = .not. covered(local, excl, cv)
   end function cap_matches_scope
 
@@ -240,14 +276,14 @@ contains
     n = arr_count(garr)
     do i = 1, n
       g = arr_item(garr, i)
-      ok = cap_matches_scope(local, operation, m_submap(g, 'operations')) .and. &
-           cap_matches_scope(local, handler_pattern, m_submap(g, 'handlers'))
+      ok = cap_matches_scope(local, operation, m_submap(g, 'operations'), 'id') .and. &
+           cap_matches_scope(local, handler_pattern, m_submap(g, 'handlers'), 'path')
       if (ok) then
         peers = m_submap(g, 'peers')
         if (peers%vkind /= EV_MAP) then
           ok = (target_peer == local)          ! absent peers -> {local}
         else
-          ok = cap_matches_scope(local, target_peer, peers)
+          ok = cap_matches_scope(local, target_peer, peers, 'id')
         end if
       end if
       if (ok .and. resource%vkind == EV_MAP) &

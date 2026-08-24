@@ -94,10 +94,37 @@ internal object Capability {
         return path == pattern
     }
 
-    fun matchesScope(localPeer: String, value: String, s: Scope): Boolean {
+    /**
+     * Which §5.2 matcher a grant dimension uses (0.8.1, F40). Passed explicitly at every
+     * call site — no default — so a new one cannot inherit the wrong matcher silently,
+     * which is exactly the F40 defect.
+     */
+    enum class ScopeKind { ID, PATH }
+
+    /**
+     * §5.2 id-scope match (0.8.1, F40) — `operations` and `peers`. Literal comparison
+     * with exactly two wildcard forms: bare `*` and a trailing slash-star segment-prefix.
+     * None of the §5.4 path transforms apply, so a pattern carrying path syntax is
+     * matched as a literal string: a non-match, never a fault.
+     */
+    fun matchesIdPattern(value: String, pattern: String): Boolean {
+        if (pattern == "*") return true
+        if (pattern.length >= 2 && pattern.endsWith("/*")) {
+            return value.startsWith(pattern.substring(0, pattern.length - 1))
+        }
+        return value == pattern
+    }
+
+    fun matchesScope(localPeer: String, value: String, s: Scope, kind: ScopeKind): Boolean {
+        if (kind == ScopeKind.ID) {
+            return coveredId(s.incl, value) && !coveredId(s.excl, value)
+        }
         val cv = canonicalize(localPeer, value)
         return covered(localPeer, s.incl, cv) && !covered(localPeer, s.excl, cv)
     }
+
+    private fun coveredId(pats: List<String>, value: String): Boolean =
+        pats.any { matchesIdPattern(value, it) }
 
     private fun covered(frame: String, pats: List<String>, cv: String): Boolean =
         pats.any { matchesPattern(cv, canonicalize(frame, it)) }
@@ -168,11 +195,11 @@ internal object Capability {
         val targetPeer = extractPeer(localPeer, uri)
         val resource = exec.mapField("resource")
         for (g in grantsOfToken(token)) {
-            var ok = matchesScope(localPeer, operation, g.operations) &&
-                matchesScope(localPeer, handlerPattern, g.handlers)
+            var ok = matchesScope(localPeer, operation, g.operations, ScopeKind.ID) &&
+                matchesScope(localPeer, handlerPattern, g.handlers, ScopeKind.PATH)
             if (ok) {
                 val peers = g.peers ?: Scope(listOf(localPeer), emptyList())
-                ok = matchesScope(localPeer, targetPeer, peers)
+                ok = matchesScope(localPeer, targetPeer, peers, ScopeKind.ID)
             }
             if (ok && resource != null) {
                 ok = checkResourceScope(localPeer, granterPeer, resource, g.resources)

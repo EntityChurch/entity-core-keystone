@@ -336,7 +336,10 @@ create ifr-buf 512 allot
 
 \ authenticate: verify nonce echo + signature + identity binding, then issue a grant.
 : hnd-connect-auth { conn exec arr lens nvar -- status result-eaddr result-eu }
-  conn conn-estab@ if 409 s" connection_already_established" 0 0 error-result exit then
+  \ RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed single-use
+  \ nonce. The STATUS is pinned to 401 invalid_nonce -- a 409 state-conflict under-
+  \ signals the replay.
+  conn conn-estab@ if 401 s" invalid_nonce" 0 0 error-result exit then
   conn cells conn-has-nonce + @ 0= if 401 s" invalid_nonce" 0 0 error-result exit then
   exec params-of dup 0= if drop 401 s" authentication_failed" 0 0 error-result exit then { p }
   \ nonce echo check

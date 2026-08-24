@@ -117,7 +117,42 @@ final class Capability {
         return path.equals(pattern);
     }
 
-    static boolean matchesScope(String localPeer, String value, Scope s) {
+    /**
+     * Which §5.2 matcher a grant dimension uses (0.8.1, F40). Passed explicitly at every
+     * call site — no default — so a new one cannot inherit the wrong matcher silently,
+     * which is exactly the F40 defect.
+     */
+    enum ScopeKind { ID, PATH }
+
+    /**
+     * §5.2 id-scope match (0.8.1, F40) — {@code operations} and {@code peers}. Literal
+     * comparison with exactly two wildcard forms: bare {@code *} and a trailing
+     * {@code /*} segment-prefix. None of the §5.4 path transforms apply, so a pattern
+     * carrying path syntax is matched as a literal string: a non-match, never a fault.
+     */
+    static boolean matchesIdPattern(String value, String pattern) {
+        if (pattern.equals("*")) {
+            return true;
+        }
+        if (pattern.length() >= 2 && pattern.endsWith("/*")) {
+            return startsWith(pattern.substring(0, pattern.length() - 1), value);
+        }
+        return value.equals(pattern);
+    }
+
+    private static boolean coveredId(List<String> pats, String value) {
+        for (String p : pats) {
+            if (matchesIdPattern(value, p)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean matchesScope(String localPeer, String value, Scope s, ScopeKind kind) {
+        if (kind == ScopeKind.ID) {
+            return coveredId(s.incl(), value) && !coveredId(s.excl(), value);
+        }
         String cv = canonicalize(localPeer, value);
         return covered(localPeer, s.incl(), cv) && !covered(localPeer, s.excl(), cv);
     }
@@ -223,11 +258,11 @@ final class Capability {
         String targetPeer = extractPeer(localPeer, uri);
         EcfValue.Map resource = exec.mapField("resource");
         for (GrantRec g : grantsOfToken(token)) {
-            boolean ok = matchesScope(localPeer, operation, g.operations())
-                    && matchesScope(localPeer, handlerPattern, g.handlers());
+            boolean ok = matchesScope(localPeer, operation, g.operations(), ScopeKind.ID)
+                    && matchesScope(localPeer, handlerPattern, g.handlers(), ScopeKind.PATH);
             if (ok) {
                 Scope peers = (g.peers() != null) ? g.peers() : new Scope(List.of(localPeer), List.of());
-                ok = matchesScope(localPeer, targetPeer, peers);
+                ok = matchesScope(localPeer, targetPeer, peers, ScopeKind.ID);
             }
             if (ok && resource != null) {
                 ok = checkResourceScope(localPeer, granterPeer, resource, g.resources());

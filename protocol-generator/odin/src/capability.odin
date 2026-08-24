@@ -198,8 +198,44 @@ covered :: proc(lp: string, v: string, pats: []string) -> bool {
 	return false
 }
 
+// Which §5.2 matcher a grant dimension uses (0.8.1, F40). Passed explicitly at every
+// call site — no default — so a new one cannot inherit the wrong matcher silently,
+// which is exactly the F40 defect.
+Scope_Kind :: enum {
+	Id,   // operations, peers   — system/capability/id-scope
+	Path, // handlers, resources — system/capability/path-scope
+}
+
+// §5.2 id-scope match (0.8.1, F40): literal comparison with exactly two wildcard forms
+// — bare "*" and a trailing slash-star segment-prefix. None of the §5.4 path transforms
+// apply, so a pattern carrying path syntax is matched as a literal string: a non-match,
+// never a fault.
+matches_id_pattern :: proc(value: string, pattern: string) -> bool {
+	if pattern == "*" {
+		return true
+	}
+	if len(pattern) >= 2 && pattern[len(pattern) - 2:] == "/*" {
+		prefix := pattern[:len(pattern) - 1]
+		return len(value) >= len(prefix) && value[:len(prefix)] == prefix
+	}
+	return value == pattern
+}
+
 @(private = "file")
-matches_scope :: proc(local_peer: string, value: string, s: Scope) -> bool {
+covered_id :: proc(value: string, pats: []string) -> bool {
+	for p in pats {
+		if matches_id_pattern(value, p) {
+			return true
+		}
+	}
+	return false
+}
+
+@(private = "file")
+matches_scope :: proc(local_peer: string, value: string, s: Scope, kind: Scope_Kind) -> bool {
+	if kind == .Id {
+		return covered_id(value, s.incl) && !covered_id(value, s.excl)
+	}
 	cv := canonicalize(local_peer, value)
 	if !covered(local_peer, cv, s.incl) {
 		return false
@@ -275,17 +311,17 @@ check_permission :: proc(
 	resource, has_resource := entity_field(exec, "resource")
 	grants := grants_of_token(token)
 	for g in grants {
-		if !matches_scope(local_peer, operation, g.operations) {
+		if !matches_scope(local_peer, operation, g.operations, .Id) {
 			continue
 		}
-		if !matches_scope(local_peer, handler_pattern, g.handlers) {
+		if !matches_scope(local_peer, handler_pattern, g.handlers, .Path) {
 			continue
 		}
 		peers := g.peers
 		if !g.has_peers {
 			peers = Scope{incl = {local_peer}, excl = {}}
 		}
-		if !matches_scope(local_peer, target_peer, peers) {
+		if !matches_scope(local_peer, target_peer, peers, .Id) {
 			continue
 		}
 		r_ok := true

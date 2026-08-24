@@ -28,8 +28,21 @@
 #   fedora:43 rust/cargo build; confirm `dnf list rust cargo` at build time and update
 #   if fedora:43 has moved, keeping the pin exact).
 #
-#   rust  1.96.0-1.fc43   — fedora:43 distro build (reviewed channel; pin-for-repro)
-#   cargo 1.96.0-1.fc43   — fedora:43 distro build (reviewed channel; pin-for-repro)
+#   rust  1.96.1-1.fc43   — fedora:43 distro build (reviewed channel; pin-for-repro)
+#   cargo 1.96.1-1.fc43   — fedora:43 distro build (reviewed channel; pin-for-repro)
+#
+#   RE-PIN (2026-07-27): the whole 1.96.0-1.fc43 set aged out of the fedora:43
+#   `updates` repo, so `make rust-toolchain` died mid-dnf on the old rustfmt NVR and
+#   BOTH rust-consuming peers (rust, datalog) were unverifiable. `dnf list
+#   --showduplicates rust cargo clippy rustfmt` inside fedora:43 now serves exactly two
+#   NVRs, uniformly across all four packages: 1.90.0-1.fc43 (base `fedora`) and
+#   1.96.1-1.fc43 (`updates`). Re-pinned to 1.96.1-1.fc43 — the freshest reviewed
+#   distro build, and the same NVR containers/datalog-toolchain already carries.
+#   MSRV: this is a point-release bump WITHIN the pinned minor, so the crate's
+#   `rust-version = "1.96"` claim (protocol-generator/rust/Cargo.toml) still holds —
+#   1.96.1 >= 1.96 — and is re-proven by the peer building green on this image. Had the
+#   only surviving NVR been 1.90, the MSRV claim would have needed lowering + re-proving
+#   rather than a silent carry. Crate pins (Cargo.lock) UNAFFECTED.
 #
 #   S2 RE-PIN (2026-06-17): the S1-authored pin 1.95.0-5.fc43 has aged out of the
 #   fedora:43 repos entirely — `dnf list --showduplicates rust cargo` now serves only
@@ -54,6 +67,11 @@
 # Build (at S2, NOT S1):
 #   podman build -t entity-core-keystone/rust-toolchain:latest \
 #     -f containers/rust-toolchain/Containerfile .
+# KOJI-PIN (2026-07-27, closing the rot class): rust/cargo/clippy/rustfmt fetched from
+# Koji's permanent build archive (containers/koji-fetch.sh) instead of the rolling dnf
+# repo — this is the toolchain whose rustfmt NVR started the whole 2026-07-27
+# image-rot sweep. See c-toolchain's Containerfile for the full rationale. SHA-256
+# recorded at fetch time (Koji predates distro GPG signing).
 FROM registry.fedoraproject.org/fedora:43
 
 # rust + cargo from the distro (reviewed channel, pinned NVR for repro); gcc/cc is the
@@ -63,13 +81,15 @@ FROM registry.fedoraproject.org/fedora:43
 # clippy + rustfmt are the profile's hard lint floor (`cargo clippy -D warnings &&
 # cargo fmt --check`). On fedora they are SEPARATE rpms from rust/cargo (not bundled),
 # pinned to the same NVR (distro-channel pin-for-repro).
-RUN dnf install -y \
-        rust-1.96.0-1.fc43 \
-        cargo-1.96.0-1.fc43 \
-        clippy-1.96.0-1.fc43 \
-        rustfmt-1.96.0-1.fc43 \
-        gcc \
-        git \
+COPY containers/koji-fetch.sh /usr/local/bin/koji-fetch.sh
+RUN chmod +x /usr/local/bin/koji-fetch.sh \
+    && koji-fetch.sh rust 1.96.1 1.fc43 \
+        rust:d008ed30fa93406d30a044bbcb360f1d744796e428921b78140982be232d2b9b \
+        cargo:91c098b91ad70e3aa1470f9bb6c0b8c5b8475dcc84526a5ec909873f550263ff \
+        clippy:a2da29e6891cfb157bfb58bd75f92392ef8b851befc8befa1a5193a370fa527b \
+        rustfmt:23ddfae74e2b9ffa6c2833c0dd2ecb8b39392795a10c5b977de805d26a2590c6 \
+    && dnf install -y /tmp/rpms/*.rpm gcc git \
+    && rm -rf /tmp/rpms \
     && dnf clean all
 
 # Keep cargo's registry/cache on a mountable path so the conformance loop (run many

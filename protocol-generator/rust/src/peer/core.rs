@@ -504,7 +504,11 @@ impl Peer {
         }
         if op == "authenticate" {
             if conn.established {
-                return err_out(409, "connection_already_established", None);
+                // RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+                // single-use nonce. The anti-replay property is the MUST and the
+                // mechanism (established-state tracking) is impl-defined, but the STATUS
+                // is pinned to 401 invalid_nonce — a 409 under-signals the replay.
+                return err_out(401, "invalid_nonce", None);
             }
             let issued = match conn.issued_nonce {
                 Some(n) => n,

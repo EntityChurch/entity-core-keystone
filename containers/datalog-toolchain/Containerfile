@@ -101,6 +101,21 @@ COPY containers/datalog-toolchain/gogate /opt/gogate
 COPY containers/datalog-toolchain/gogate-selftest.sh /usr/local/bin/gogate-selftest.sh
 RUN chmod +x /usr/local/bin/gogate-selftest.sh && /usr/local/bin/gogate-selftest.sh
 
+# ── Warm CARGO_HOME so the conformance run is genuinely sealed-offline ───────────
+# 2026-07-27: the S4 harness runs --network=none and builds with `cargo --offline`,
+# but nothing ever populated /cargo — the harness mounts no cache volume and this
+# image baked no fetch, so a cold clone died on `failed to download either v1.16.0`
+# and the peer could not be measured at all. The one networked step has to live
+# somewhere; the image is the right place, because it is the thing that is pinned.
+# Manifest-only COPY keeps this layer cached across peer source edits.
+COPY protocol-generator/datalog/Cargo.toml protocol-generator/datalog/Cargo.lock /opt/dl-manifest/
+RUN mkdir -p /opt/dl-manifest/src \
+    && : > /opt/dl-manifest/src/lib.rs \
+    && echo 'fn main(){}' > /opt/dl-manifest/src/main.rs \
+    && echo 'fn main(){}' > /opt/dl-manifest/src/interop.rs \
+    && cd /opt/dl-manifest && cargo fetch --locked \
+    && echo "cargo cache warmed: $(ls /cargo/registry/cache/*/ | wc -l) crates"
+
 WORKDIR /work
 
 LABEL org.entity-core-keystone.role="datalog-toolchain"

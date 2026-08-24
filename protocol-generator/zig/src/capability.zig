@@ -133,7 +133,37 @@ pub fn matchesPattern(path: []const u8, pattern: []const u8) bool {
     return std.mem.eql(u8, path, pattern);
 }
 
-fn matchesScope(arena: std.mem.Allocator, local_peer: []const u8, value: []const u8, s: Scope) Error!bool {
+/// Which §5.2 matcher a grant dimension uses (0.8.1, F40). Passed explicitly at every
+/// call site — no default — so a new one cannot inherit the wrong matcher silently,
+/// which is exactly the F40 defect.
+pub const ScopeKind = enum {
+    id, // operations, peers   — system/capability/id-scope
+    path, // handlers, resources — system/capability/path-scope
+};
+
+/// §5.2 id-scope match (0.8.1, F40): literal comparison with exactly two wildcard forms
+/// — bare "*" and a trailing slash-star segment-prefix. None of the §5.4 path transforms
+/// apply, so a pattern carrying path syntax is matched as a literal string: a non-match,
+/// never a fault.
+pub fn matchesIdPattern(value: []const u8, pattern: []const u8) bool {
+    if (std.mem.eql(u8, pattern, "*")) return true;
+    if (pattern.len >= 2 and std.mem.eql(u8, pattern[pattern.len - 2 ..], "/*")) {
+        return startsWith(value, pattern[0 .. pattern.len - 1]);
+    }
+    return std.mem.eql(u8, value, pattern);
+}
+
+fn coveredId(value: []const u8, pats: []const []const u8) bool {
+    for (pats) |p| {
+        if (matchesIdPattern(value, p)) return true;
+    }
+    return false;
+}
+
+fn matchesScope(arena: std.mem.Allocator, local_peer: []const u8, value: []const u8, s: Scope, kind: ScopeKind) Error!bool {
+    if (kind == .id) {
+        return coveredId(value, s.incl) and !coveredId(value, s.excl);
+    }
     const cv = try canonicalize(arena, local_peer, value);
     const covered = struct {
         fn f(a: std.mem.Allocator, lp: []const u8, v: []const u8, pats: []const []const u8) Error!bool {
@@ -198,12 +228,12 @@ pub fn checkPermission(arena: std.mem.Allocator, local_peer: []const u8, granter
     const resource = exec.field("resource");
     const grants = try grantsOfToken(arena, token);
     for (grants) |g| {
-        const op_ok = try matchesScope(arena, local_peer, operation, g.operations);
+        const op_ok = try matchesScope(arena, local_peer, operation, g.operations, .id);
         if (!op_ok) continue;
-        const h_ok = try matchesScope(arena, local_peer, handler_pattern, g.handlers);
+        const h_ok = try matchesScope(arena, local_peer, handler_pattern, g.handlers, .path);
         if (!h_ok) continue;
         const peers = g.peers orelse Scope{ .incl = &.{local_peer}, .excl = &.{} };
-        const p_ok = try matchesScope(arena, local_peer, target_peer, peers);
+        const p_ok = try matchesScope(arena, local_peer, target_peer, peers, .id);
         if (!p_ok) continue;
         const r_ok = if (resource) |r| try checkResourceScope(arena, local_peer, granter_peer, r, g.resources) else true;
         if (r_ok) return .allow;

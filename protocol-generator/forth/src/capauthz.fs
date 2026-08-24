@@ -60,6 +60,24 @@
   then
   pa pu qa qu span-eq ;
 
+\ ── §5.2 id-scope literal match (0.8.1, F40) — `operations` and `peers`. Literal compare
+\ with exactly two wildcard forms: bare "*" and a trailing slash-star segment-prefix. None
+\ of the §5.4 path transforms apply — no leading-slash universal reading, no interior
+\ peer-wildcard, no peer-relative qualification — so a pattern carrying path syntax is
+\ matched as a literal string: a non-match, never a fault.
+\ matches-id-pattern ( val-a val-u pat-a pat-u -- flag )
+: matches-id-pattern { va vu pa pu -- flag }
+  pu 1 = pa c@ [char] * = and if true exit then       \ bare "*" matches any value
+  pu 2 >= pa pu s" /*" str-ends and if
+    va vu  pa pu 1-  str-starts exit                   \ keep the "/", drop the "*"
+  then
+  va vu pa pu span-eq ;
+
+\ §5.2 scope kind (0.8.1, F40) — REQUIRED at every matches-scope call site, no default, so
+\ a new call site cannot silently inherit the wrong matcher (the F40 defect, re-introduced).
+0 constant SCOPE-PATH
+1 constant SCOPE-ID
+
 \ ── scope reads (a system/capability/*-scope map {include:[...], exclude:[...]}) ──
 \ We read the include/exclude arrays straight off the grant's scope TV (no pre-parse).
 \ scope-array ( scope-mtv key-a key-u -- atv | 0 )  the include/exclude array TV, or 0.
@@ -70,7 +88,7 @@
 
 \ covered-by-array ( frame-a frame-u val-a val-u atv -- flag )  is canonicalized `val`
 \ (already canonicalized against the CALLER frame) matched by any pattern in the array TV,
-\ each pattern canonicalized against `frame`? (atv 0 -> no patterns -> false.)
+\ each pattern canonicalized against `frame`? (atv 0 -> no patterns -> false.) PATH-scope only.
 : covered-by-array { fa fu va vu atv -- flag }
   atv 0= if false exit then
   atv c@ [char] a <> if false exit then
@@ -86,9 +104,29 @@
     else drop then
   loop  false ;
 
-\ matches-scope ( frame-a frame-u val-a val-u scope-mtv -- flag )  §5.4: covered by include AND
-\ NOT covered by exclude. `frame` = the peer-id that frames both the value and the patterns.
-: matches-scope { fa fu va vu s -- flag }
+\ covered-by-id-array ( val-a val-u atv -- flag )  is the RAW (uncanonicalized) `val` matched
+\ literally by any pattern in the array TV? (§5.2 id-scope, 0.8.1 F40 — no frame, no canon.)
+: covered-by-id-array { va vu atv -- flag }
+  atv 0= if false exit then
+  atv c@ [char] a <> if false exit then
+  atv tv-count { n }
+  n 0 ?do
+    atv i tv-array-elem dup c@ [char] t = if
+      tv-payload { pa pu }                            \ pattern text (literal, no canon)
+      va vu pa pu matches-id-pattern
+      if true unloop exit then
+    else drop then
+  loop  false ;
+
+\ matches-scope ( frame-a frame-u val-a val-u scope-mtv kind -- flag )  §5.2, typed (0.8.1
+\ F40): kind == SCOPE-ID (operations, peers) compares literally, no canonicalization; kind ==
+\ SCOPE-PATH (handlers, resources) is the original §5.4 covered-by-include-AND-NOT-exclude,
+\ unchanged. `kind` has no default — every caller names its dimension explicitly.
+: matches-scope { fa fu va vu s kind -- flag }
+  kind SCOPE-ID = if
+    va vu s s" include" scope-array covered-by-id-array 0= if false exit then
+    va vu s s" exclude" scope-array covered-by-id-array 0= exit
+  then
   sc-mark { mk }
   fa fu va vu canon { ca cu }                         \ canonicalize the value
   fa fu  ca cu  s s" include" scope-array covered-by-array 0= if mk sc-free false exit then
@@ -445,11 +483,12 @@ variable seen-n
 
 \ grant-covers-op-handler ( exec local-a local-u granter-a granter-u grant-mtv -- flag )  does
 \ one grant cover the exec's operation + resolved handler path + resource targets (§PR-8 frame)?
+\ §5.2/0.8.1 F40: `operations` is id-scope (literal), `handlers` is path-scope (canonicalized).
 : grant-covers-op-handler { exec la lu ga gu grant -- flag }
   exec exec-operation { opa opu }
-  la lu opa opu grant s" operations" grant-scope matches-scope 0= if false exit then
+  la lu opa opu grant s" operations" grant-scope SCOPE-ID matches-scope 0= if false exit then
   exec exec-handler-path { ha hu }
-  la lu ha hu grant s" handlers" grant-scope matches-scope 0= if false exit then
+  la lu ha hu grant s" handlers" grant-scope SCOPE-PATH matches-scope 0= if false exit then
   exec la lu ga gu grant grant-covers-resource? ;
 
 \ check-permission ( exec arr lens nvar local-a local-u cap -- flag )  ALLOW iff some grant of

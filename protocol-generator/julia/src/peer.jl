@@ -155,7 +155,11 @@ function connect_handler(p::Peer_t, conn::Conn, exec::Entity, env::Envelope)::Ha
                          ("key_types" => Any["ed25519"])]))
         return okr(hello)
     elseif op == "authenticate"
-        conn.established && return err(409, "connection_already_established")
+        # RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+        # single-use nonce. The anti-replay property is the MUST and the mechanism
+        # (established-state tracking) is impl-defined, but the STATUS is pinned to
+        # 401 invalid_nonce — a 409 state-conflict under-signals the replay.
+        conn.established && return err(401, "invalid_nonce")
         issued = conn.issued_nonce
         issued === nothing && return err(401, "invalid_nonce")
         auth = entityfield(exec, "params")

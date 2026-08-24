@@ -145,15 +145,25 @@ export class PeerConnection {
       const response = await this.#dispatcher.dispatch(request, this.#state, this);
       await this.#write(response);
 
-      // §4.1 ordering: the dispatch that flips the connection to Established is the
-      // initiator's authenticate (leg 2). Only once its response is on the wire may
-      // the responder send its reverse authenticate (leg 3) — signal here, after
-      // the write, so leg 2's response always precedes leg 3.
+      // §4.1 ordering signal: historically gated the responder's own reverse
+      // authenticate (leg 3) so it never raced ahead of leg 2's response on the
+      // wire. Leg 3 is no longer sent proactively (see Peer#onInbound — §4.1
+      // pins it OPTIONAL/reachability-gated, and a responder that sends it
+      // unconditionally corrupts a client-style initiator's next read, which is
+      // exactly the RT-6 handshake_nonce_single_use failure this connection type
+      // hit: the oracle's probe reads the unsolicited leg-3 EXECUTE instead of
+      // its own replay's response and disconnects before the real response is
+      // written). Kept resolved for any future consumer; currently has none.
       if (!establishedBefore && this.#state.established) {
         this.#state.authResponseSent.resolve();
       }
     } catch {
-      // A failed write or dispatch crash tears the connection down.
+      // A failed write or dispatch crash tears the connection down rather than
+      // hanging it (V7 §6.5 finding 1: an inbound EXECUTE must never hang the
+      // peer). This catch is intentionally silent on the wire/production path,
+      // but that silence is exactly what made the RT-6 leg-3 collision above
+      // hard to root-cause — if you're chasing a mystery connection-close here,
+      // temporarily log `e` rather than assuming there's nothing to see.
       this.#destroy();
     }
   }

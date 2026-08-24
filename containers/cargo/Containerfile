@@ -12,13 +12,28 @@
 # NOTE (R5, ffi-rust.md): a glibc cdylib won't load on hosts older than this
 # base's glibc. For a *shipped* release artifact, rebuild on an old-glibc
 # (manylinux-style) base. fedora:43 is fine for development + conformance.
+# RE-PIN (2026-07-27, cohort image-rot sweep): rust/cargo 1.95.0-5.fc43 aged out of the
+#   fedora:43 repos entirely (`No match for argument`), so this image would not build and the
+#   FFI codec .so could not be produced — which in turn blocked the lean peer, whose harness
+#   links against it. Re-pinned to 1.96.1-1.fc43, the current `updates` NVR and the same one
+#   containers/rust-toolchain and containers/datalog-toolchain now carry.
+# KOJI-PIN (2026-07-27, closing the rot class): rust/cargo fetched from Koji's permanent
+# build archive (containers/koji-fetch.sh), not the rolling dnf repo — see
+# c-toolchain's Containerfile for the full rationale. SHA-256 recorded at fetch time.
 FROM registry.fedoraproject.org/fedora:43
 
 # rust + cargo from the distro; gcc/cc needed as the linker for cdylib/staticlib.
 # pkgconf + glibc-static help with fully-static staticlib consumers.
 # Pinned NVR (S11): what fedora:43 shipped at authoring (2026-06-07). Re-verify
 # the >=30-day age + re-pin deliberately on rebuild; prefer base-image digest pin.
-RUN dnf install -y rust-1.95.0-5.fc43 cargo-1.95.0-5.fc43 gcc && dnf clean all
+COPY containers/koji-fetch.sh /usr/local/bin/koji-fetch.sh
+RUN chmod +x /usr/local/bin/koji-fetch.sh \
+    && koji-fetch.sh rust 1.96.1 1.fc43 \
+        rust:d008ed30fa93406d30a044bbcb360f1d744796e428921b78140982be232d2b9b \
+        cargo:91c098b91ad70e3aa1470f9bb6c0b8c5b8475dcc84526a5ec909873f550263ff \
+    && dnf install -y /tmp/rpms/*.rpm gcc \
+    && rm -rf /tmp/rpms \
+    && dnf clean all
 
 # Keep cargo's registry/cache on a mountable path so repeated runs don't refetch
 # crates (the conformance loop runs this many times). Mount a volume at /cargo.

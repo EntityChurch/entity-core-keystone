@@ -194,7 +194,10 @@ let connect_handler (t : t) (conn : conn) (exec : Model.entity) ~(included : (st
         end
       end
   | "authenticate" -> (
-      if conn.established then err 409 "connection_already_established"
+      (* RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+         single-use nonce — pinned to 401 invalid_nonce, not a 409 state-conflict
+         which under-signals the replay. *)
+      if conn.established then err 401 "invalid_nonce"
       else
         match conn.issued_nonce with
         | None -> err 401 "invalid_nonce"     (* authenticate before hello (§4.6 step 1) *)

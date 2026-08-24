@@ -137,10 +137,35 @@ def covered (valueFrame patFrame : String) (value : String) (pats : List String)
   let cv := canonSegs valueFrame value
   pats.any (fun p => matchesSeg cv (canonSegs patFrame p))
 
-/-- §5.4 scope membership on the LOCAL frame (handlers/operations/peers
-dimensions): value in include, not in exclude. -/
-def matchesScope (localPeer : String) (value : String) (s : Scope) : Bool :=
-  covered localPeer localPeer value s.incl && !covered localPeer localPeer value s.excl
+/-- Which §5.2 matcher a grant dimension uses (0.8.1, F40). Named at every call site —
+there is no default — so a new one cannot inherit the wrong matcher silently, which is
+exactly the F40 defect. -/
+inductive ScopeKind where
+  /-- `operations`, `peers` — `system/capability/id-scope`. -/
+  | id
+  /-- `handlers`, `resources` — `system/capability/path-scope`. -/
+  | path
+  deriving DecidableEq, Repr
+
+/-- §5.2 id-scope match (0.8.1, F40): literal comparison with exactly two wildcard forms
+— bare `*` and a trailing slash-star segment-prefix. None of the §5.4 path transforms
+apply, so a pattern carrying path syntax is matched as a literal string: a non-match,
+never a fault. -/
+def matchesIdPattern (value pattern : String) : Bool :=
+  if pattern == "*" then true
+  else if pattern.length ≥ 2 && pattern.endsWith "/*" then
+    value.startsWith (pattern.dropRight 1)
+  else value == pattern
+
+def coveredId (value : String) (pats : List String) : Bool :=
+  pats.any (fun p => matchesIdPattern value p)
+
+/-- §5.2 scope membership, typed by scope kind (0.8.1, F40): `path` canonicalizes both
+sides on the LOCAL frame; `id` compares literally. Value in include, not in exclude. -/
+def matchesScope (localPeer : String) (value : String) (s : Scope) (kind : ScopeKind) : Bool :=
+  match kind with
+  | .id => coveredId value s.incl && !coveredId value s.excl
+  | .path => covered localPeer localPeer value s.incl && !covered localPeer localPeer value s.excl
 
 -- ── §5.6 attenuation (the T5a surface) ───────────────────────────────────────
 
@@ -347,10 +372,10 @@ def checkPermission (localPeer granterPeer : String) (exec token : Entity)
   let targetPeer := extractPeer localPeer uri
   let resource := field exec "resource"
   let grantOk (g : Grant) : Bool :=
-    matchesScope localPeer operation g.operations
-    && matchesScope localPeer handlerPattern g.handlers
+    matchesScope localPeer operation g.operations .id
+    && matchesScope localPeer handlerPattern g.handlers .path
     && (let peers := g.peers.getD { incl := [localPeer], excl := [] }
-        matchesScope localPeer targetPeer peers)
+        matchesScope localPeer targetPeer peers .id)
     && (match resource with
         | none => true
         | some r => checkResourceScope localPeer granterPeer r g.resources)

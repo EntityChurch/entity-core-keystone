@@ -115,6 +115,7 @@
           (i32.store (i32.add (local.get $sa) (i32.const 12)) (i32.const 4))   ;; need
           (i32.store (i32.add (local.get $sa) (i32.const 20)) (i32.const 0))   ;; served = 0 (never completed a frame)
           (i32.store (i32.add (i32.add (i32.const 0x4A0000) (i32.mul (local.get $i) (i32.const 64))) (i32.const 32)) (i32.const 0))  ;; session hello_done = 0
+          (i32.store (i32.add (i32.add (i32.const 0x4A0000) (i32.mul (local.get $i) (i32.const 64))) (i32.const 36)) (i32.const 0))  ;; session auth_done = 0 (RT-6)
           (return (local.get $i))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $L)))

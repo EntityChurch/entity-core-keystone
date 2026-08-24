@@ -199,7 +199,12 @@ method table IS the operation router; unknown pairs fall to the default → 501.
 (defmethod handle-op ((h connect-handler) (op (eql :authenticate)) ctx)
   (let ((peer (handler-peer h)) (conn (ctx-conn ctx)) (exec (ctx-exec ctx)))
     (cond
-      ((conn-established conn) (err 409 "connection_already_established"))
+      ;; RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+      ;; single-use nonce. The anti-replay property is the MUST and the
+      ;; mechanism (established-state tracking) is impl-defined, but the
+      ;; STATUS is pinned to 401 invalid_nonce — a 409 state-conflict
+      ;; under-signals the replay.
+      ((conn-established conn) (err 401 "invalid_nonce"))
       ((null (conn-issued-nonce conn)) (err 401 "invalid_nonce")) ; authenticate before hello
       (t
        (let ((auth (entity-entity exec "params")))

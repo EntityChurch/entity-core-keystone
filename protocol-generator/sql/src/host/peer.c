@@ -288,6 +288,10 @@ static int handle_hello(int fd, const char *rid, conn_state *cs, const unsigned 
 /* §4.6 authenticate: PoP (nonce-echo, signature, identity-binding), then §4.4 grant response. */
 static int handle_authenticate(int fd, const char *rid, conn_state *cs,
                                const unsigned char *buf, size_t len) {
+    /* RT-6 (§4.6) anti-replay: a SECOND authenticate on an already-established connection must
+     * not be re-processed (it would re-verify the same still-cached nonce and re-issue a grant).
+     * The nonce is documented single-use — reject outright, before any nonce/signature work. */
+    if (cs->established) return emit_error(fd, rid, 401, "invalid_nonce");
     cbor_rd root, rdata, params, pdata, f;
     char apeer[128]={0}, akt[32]={0}; unsigned char apub[64]; size_t apub_len=0, anonce_len=0; unsigned char anonce[64];
     if (!cbor_map_find(buf,len,0,"root",&root) || !cbor_map_find(buf,len,root.pos,"data",&rdata)

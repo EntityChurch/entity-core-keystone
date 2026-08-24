@@ -21,22 +21,45 @@
 # NOTE (R5): a glibc shared object won't load on hosts older than this base's
 # glibc. For a *shipped* release artifact, rebuild on an old-glibc
 # (manylinux-style) base. fedora:43 is fine for development + conformance.
+# RE-PIN (2026-07-27, cohort image-rot sweep): the fedora:43 `updates` repo no longer
+#   serves gcc/gcc-c++/gcc-gnat/libstdc++*/libasan/libubsan 15.2.1-7.fc43 or
+#   binutils 2.45.1-4.fc43 — `dnf install` failed with `No match for argument`, so the
+#   image would not build and the peer could not be validated at all. Verified against
+#   `dnf list --showduplicates` inside fedora:43 on 2026-07-27: the surviving NVRs are
+#   15.2.1-2.fc43 (base `fedora`) and 15.3.1-1.fc43 (`updates`) for the gcc family, and
+#   2.45.1-5.fc43 (`updates`) for binutils. Re-pinned to the freshest reviewed distro
+#   build per the S11 distro-channel pin-for-repro rule. Same rot that took out
+#   containers/rust-toolchain (rustfmt-1.96.0-1.fc43); pinning exact NVRs against a
+#   rolling `updates` repo is reproducible only until the NVR is superseded.
+# KOJI-PIN (2026-07-27, closing the rot class): the gcc/binutils family is the one
+# that keeps rotting (this is its second re-pin in one day at authoring). Fetching it
+# from Koji's permanent build archive (containers/koji-fetch.sh) instead of the
+# rolling dnf repo means this exact NVR resolves forever, from any machine — not just
+# until the next Fedora point release. SHA-256 recorded at fetch time (Koji predates
+# distro GPG signing). cmake/libsodium/make stay on the regular dnf repo pin for now
+# (not yet observed to rot; same treatment if they do).
 FROM registry.fedoraproject.org/fedora:43
 
 # CMake + C11 toolchain; libsodium static archive + headers (we statically and
 # privately link libsodium into the artifact per spec sec.7 + ffi-c.md).
 # Pinned NVRs (S11): what fedora:43 shipped at authoring (2026-06-07). Re-verify
 # the >=30-day age + re-pin deliberately on rebuild; prefer base-image digest pin.
-RUN dnf install -y \
+COPY containers/koji-fetch.sh /usr/local/bin/koji-fetch.sh
+RUN chmod +x /usr/local/bin/koji-fetch.sh \
+    && koji-fetch.sh gcc 15.3.1 1.fc43 \
+        gcc:5361a544a8412eecfdfb1dc117749b637bfcd19de41eaa9468f94cade6cf1824 \
+        libasan:aae22be593238a4192919a7ed44f79b90d3ab551d36e36edfacad246ae791e6c \
+        libubsan:cdb8babf852bbea9d574241bd402fb34d5c0544289e8142cdf516245251c83fd \
+    && koji-fetch.sh binutils 2.45.1 5.fc43 \
+        binutils:a3971b2f8c7b97b8f6e7000223226dc47d4ef8fa0d5b585791a3cf1f9f975431 \
+    && dnf install -y \
+        /tmp/rpms/*.rpm \
         cmake-3.31.11-1.fc43 \
-        gcc-15.2.1-7.fc43 \
-        libasan-15.2.1-7.fc43 \
-        libubsan-15.2.1-7.fc43 \
         libsodium-1.0.22-1.fc43 \
         libsodium-static-1.0.22-1.fc43 \
         libsodium-devel-1.0.22-1.fc43 \
         make-1:4.4.1-11.fc43 \
-        binutils-2.45.1-4.fc43 \
+    && rm -rf /tmp/rpms \
     && dnf clean all
 
 ENV CMAKE_COLOR_DIAGNOSTICS=OFF

@@ -15,7 +15,7 @@
 # PIN STATUS: pinned (S11). Exact NVRs captured at the S2 build (2026-06-14) by
 # `rpm -q` inside the built image (see /opt/ada-toolchain-versions.txt). Ages all
 # ≥30 days old:
-#   GNAT (gcc-gnat) 15.2.1-7.fc43 — GCC 15.2 released upstream 2025-08-08 (~10mo).
+#   GNAT (gcc-gnat) 15.3.1-1.fc43 — GCC 15.2 released upstream 2025-08-08 (~10mo).
 #                                   FSF GCC-Ada. Full Ada 2012/2022 + design-by-
 #                                   contract aspects (Pre/Post/Type_Invariant/
 #                                   Predicate; the GCC 15 `Finalizable` aspect line).
@@ -69,6 +69,23 @@
 # Build (S2):
 #   podman build -t entity-core-keystone/ada-toolchain:latest \
 #     -f containers/ada-toolchain/Containerfile .
+# RE-PIN (2026-07-27, cohort image-rot sweep): the fedora:43 `updates` repo no longer
+#   serves gcc/gcc-c++/gcc-gnat/libstdc++*/libasan/libubsan 15.2.1-7.fc43 or
+#   binutils 2.45.1-4.fc43 — `dnf install` failed with `No match for argument`, so the
+#   image would not build and the peer could not be validated at all. Verified against
+#   `dnf list --showduplicates` inside fedora:43 on 2026-07-27: the surviving NVRs are
+#   15.2.1-2.fc43 (base `fedora`) and 15.3.1-1.fc43 (`updates`) for the gcc family, and
+#   2.45.1-5.fc43 (`updates`) for binutils. Re-pinned to the freshest reviewed distro
+#   build per the S11 distro-channel pin-for-repro rule. Same rot that took out
+#   containers/rust-toolchain (rustfmt-1.96.0-1.fc43); pinning exact NVRs against a
+#   rolling `updates` repo is reproducible only until the NVR is superseded.
+# KOJI-PIN (2026-07-27, closing the rot class): the gcc family is the one that keeps
+# rotting. Fetching gcc/gcc-gnat from Koji's permanent build archive
+# (containers/koji-fetch.sh) instead of the rolling dnf repo means this exact NVR
+# resolves forever, from any machine — not just until the next Fedora point release.
+# SHA-256 recorded at fetch time (Koji predates distro GPG signing). gprbuild/
+# libsodium-devel/openssl-devel/make stay on the regular dnf repo pin for now (not
+# yet observed to rot; same treatment if they do).
 FROM registry.fedoraproject.org/fedora:43
 
 # ── Ada (GNAT) toolchain + crypto, from the Fedora 43 distro channel ─────────
@@ -83,15 +100,20 @@ FROM registry.fedoraproject.org/fedora:43
 # fedora:43 image already provides curl/tar/git via the layers below; we install the
 # Ada-specific set explicitly so this image is self-contained even if rebuilt FROM the
 # raw fedora:43 (not FROM entity-core-keystone/base).
-RUN dnf install -y \
-        gcc-gnat-15.2.1-7.fc43 \
+COPY containers/koji-fetch.sh /usr/local/bin/koji-fetch.sh
+RUN chmod +x /usr/local/bin/koji-fetch.sh \
+    && koji-fetch.sh gcc 15.3.1 1.fc43 \
+        gcc:5361a544a8412eecfdfb1dc117749b637bfcd19de41eaa9468f94cade6cf1824 \
+        gcc-gnat:2275b0231f79569bda75021130e7afbf1647c1b91d3b31247fd4a7b822190f70 \
+    && dnf install -y \
+        /tmp/rpms/*.rpm \
         gprbuild-25.0.0-5.fc43 \
         libsodium-devel-1.0.22-1.fc43 \
-        openssl-devel-3.5.4-3.fc43 \
-        gcc-15.2.1-7.fc43 \
+        openssl-devel-3.5.7-2.fc43 \
         make-4.4.1-11.fc43 \
         git curl ca-certificates tar gzip xz \
         findutils which \
+    && rm -rf /tmp/rpms \
     && dnf clean all \
     # Smoke the toolchain at BUILD time (fails the image build if GNAT/gprbuild absent).
     && gnatmake --version \
@@ -99,7 +121,7 @@ RUN dnf install -y \
 
 # Record the resolved gcc-gnat NVR into the image (audit trail for the exact pin).
 # At the S2 build this captures the precise installed version; if it ever drifts from
-# 15.2.1-7.fc43 the operator re-pins profile.toml [deps].gnat and this Containerfile.
+# 15.3.1-1.fc43 the operator re-pins profile.toml [deps].gnat and this Containerfile.
 RUN rpm -q gcc-gnat gprbuild libsodium libsodium-devel openssl-devel gcc make \
         > /opt/ada-toolchain-versions.txt \
     && cat /opt/ada-toolchain-versions.txt
@@ -108,7 +130,7 @@ WORKDIR /work
 
 LABEL org.entity-core-keystone.role="ada-toolchain"
 LABEL org.entity-core-keystone.version="1"
-LABEL org.entity-core-keystone.gnat="gcc-gnat-15.2.1-7.fc43"
+LABEL org.entity-core-keystone.gnat="gcc-gnat-15.3.1-1.fc43"
 LABEL org.entity-core-keystone.libsodium="1.0.22-1.fc43 (fedora-43)"
 
 CMD ["/bin/bash"]

@@ -146,7 +146,38 @@ function covered(frame::AbstractString, pats::Vector{String}, v::AbstractString)
     return false
 end
 
-function matches_scope(local_peer::AbstractString, value::AbstractString, s::Scope)::Bool
+"""
+Which §5.2 matcher a grant dimension uses (0.8.1, F40). Passed explicitly at every call
+site — no default — so a new one cannot inherit the wrong matcher silently, which is
+exactly the F40 defect.
+"""
+@enum ScopeKind ID_SCOPE PATH_SCOPE
+
+"""
+§5.2 id-scope match (0.8.1, F40) — `operations` and `peers`. Literal comparison with
+exactly two wildcard forms: bare `*` and a trailing slash-star segment-prefix. None of
+the §5.4 path transforms apply, so a pattern carrying path syntax is matched as a literal
+string: a non-match, never a fault.
+"""
+function matches_id_pattern(value::AbstractString, pattern::AbstractString)::Bool
+    pattern == "*" && return true
+    if length(pattern) >= 2 && endswith(pattern, "/*")
+        return startswith(value, pattern[1:end-1])
+    end
+    return value == pattern
+end
+
+function covered_id(pats::Vector{String}, value::AbstractString)::Bool
+    for p in pats
+        matches_id_pattern(value, p) && return true
+    end
+    return false
+end
+
+function matches_scope(local_peer::AbstractString, value::AbstractString, s::Scope, kind::ScopeKind)::Bool
+    if kind == ID_SCOPE
+        return covered_id(s.incl, value) && !covered_id(s.excl, value)
+    end
     cv = canonicalize(local_peer, value)
     covered(local_peer, s.incl, cv) || return false
     return !covered(local_peer, s.excl, cv)
@@ -198,10 +229,10 @@ function check_permission(local_peer::AbstractString, granter_peer::AbstractStri
     target_peer = extract_peer(local_peer, uri)
     resource = efield(exec, "resource")
     for g in grants_of_token(token)
-        matches_scope(local_peer, operation, g.operations) || continue
-        matches_scope(local_peer, handler_pattern, g.handlers) || continue
+        matches_scope(local_peer, operation, g.operations, ID_SCOPE) || continue
+        matches_scope(local_peer, handler_pattern, g.handlers, PATH_SCOPE) || continue
         peers = g.peers === nothing ? Scope([String(local_peer)], String[]) : g.peers
-        matches_scope(local_peer, target_peer, peers) || continue
+        matches_scope(local_peer, target_peer, peers, ID_SCOPE) || continue
         r_ok = resource === nothing ? true : check_resource_scope(local_peer, granter_peer, resource, g.resources)
         r_ok && return :allow
     end

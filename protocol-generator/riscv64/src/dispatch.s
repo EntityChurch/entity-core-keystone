@@ -915,6 +915,10 @@ ka_signers:  .asciz "signers"
 	.lcomm b_derived_pid, 128
 	.lcomm g_derived_pid_len, 8
 	.lcomm g_auth_hash,  64
+	# RT-6 (§4.6): set once build_authenticate_response accepts a valid authenticate on this
+	# connection (fork-per-connection, so this .bss word is per-connection state); a second
+	# authenticate frame on the same connfd is rejected before any nonce/signature work.
+	.lcomm g_authenticated, 8
 	.lcomm b_err,        128
 	.lcomm err_ch,       64
 	.lcomm b_er_resp,    2048
@@ -1227,6 +1231,18 @@ build_authenticate_response:
 	sd   s6, 56(sp)
 	mv   s0, sp
 	mv   s3, a0                     # exec data map
+	# RT-6 (§4.6) anti-replay: a SECOND authenticate on an already-established connection must
+	# not be re-processed (it would re-verify the same still-cached nonce and re-issue a
+	# grant). The nonce is documented single-use — reject outright, before any nonce/signature
+	# or even frame-shape work.
+	lla  t0, g_authenticated
+	ld   t0, 0(t0)
+	beqz t0, .Lauth_replay_ok
+	li   a0, 401
+	lla  a1, ec_invalid_nonce
+	call send_error
+	j    .Lauth_ret
+.Lauth_replay_ok:
 	# params entity
 	mv   a0, s3
 	lla  a1, ka_params
@@ -1374,6 +1390,9 @@ build_authenticate_response:
 	call memeq
 	beqz a0, .Lauth_bad_imp
 	# ================= verification passed =================
+	li   t0, 1
+	lla  t1, g_authenticated
+	sd   t0, 0(t1)
 
 	call now_ms
 	lla  t0, g_created

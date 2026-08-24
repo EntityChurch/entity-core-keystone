@@ -449,7 +449,12 @@ package body Entity_Core.Protocol.Handlers is
       Auth_Entity : constant Materialized_Entity := Params_Entity (Exec, Auth_Found);
    begin
       if Conn.Established then
-         return Err (409, "connection_already_established");
+         --  RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+         --  single-use nonce. The anti-replay property is the MUST and the
+         --  mechanism (established-state tracking) is impl-defined, but the
+         --  STATUS is pinned to 401 invalid_nonce — a 409 state-conflict
+         --  under-signals the replay.
+         return Err (401, "invalid_nonce");
       end if;
       if not Conn.Has_Nonce then
          return Err (401, "invalid_nonce");           --  authenticate before hello

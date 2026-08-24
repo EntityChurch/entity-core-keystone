@@ -57,7 +57,31 @@ Capability := Object clone do(
         c
     )
 
-    matchesScope := method(localPeer, value, scope,
+    // §5.2 id-scope match (0.8.1, F40) — operations and peers. Literal comparison with
+    // exactly two wildcard forms: bare "*" and a trailing slash-star segment-prefix.
+    // None of the §5.4 path transforms apply, so a pattern carrying path syntax is
+    // matched as a literal string: a non-match, never a fault.
+    matchesIdPattern := method(value, pattern,
+        if(pattern == "*", return true)
+        if(pattern size >= 2 and pattern endsWithSeq("/*"),
+            return value beginsWithSeq(pattern exSlice(0, pattern size - 1))
+        )
+        value == pattern
+    )
+
+    _coveredId := method(pats, value,
+        c := false
+        pats foreach(p, if(matchesIdPattern(value, p), c = true; break))
+        c
+    )
+
+    // §5.2 typed scope match. `kind` is "id" (operations, peers) or "path" (handlers,
+    // resources) and is given at every call site — there is no default, so a new one
+    // cannot inherit the wrong matcher silently, which is exactly the F40 defect.
+    matchesScope := method(localPeer, value, scope, kind,
+        if(kind == "id",
+            return _coveredId(scope at("incl"), value) and(_coveredId(scope at("excl"), value) not)
+        )
         cv := canonicalize(localPeer, value)
         _covered(localPeer, scope at("incl"), cv) and(_covered(localPeer, scope at("excl"), cv) not)
     )
@@ -166,12 +190,12 @@ Capability := Object clone do(
         resource := exec mapField("resource")
         verdict := "DENY"
         grantsOfToken(token) foreach(g,
-            okg := matchesScope(localPeer, operation, g at("operations")) and(
-                   matchesScope(localPeer, handlerPattern, g at("handlers")))
+            okg := matchesScope(localPeer, operation, g at("operations"), "id") and(
+                   matchesScope(localPeer, handlerPattern, g at("handlers"), "path"))
             if(okg,
                 peers := g at("peers")
                 if(peers == nil, peers = Map clone atPut("incl", list(localPeer)) atPut("excl", List clone))
-                okg = matchesScope(localPeer, targetPeer, peers)
+                okg = matchesScope(localPeer, targetPeer, peers, "id")
             )
             if(okg and(resource != nil),
                 okg = checkResourceScope(localPeer, granterPeer, resource, g at("resources"))

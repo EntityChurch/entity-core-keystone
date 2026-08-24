@@ -73,17 +73,49 @@ cls class compile: 'coveredByArray: anArray frame: aFrame value: aCanonVal local
 			and: [ | cp | cp := self canon: e string local: aFrame.
 				cp notNil and: [ self path: aCanonVal matchesPattern: cp ] ] ]'.
 
-"matchesScope:frame:value:local: — §5.4: covered by include AND NOT covered by exclude. `frame`
- = the peer-id that frames both the value and the patterns. A value that fails canonicalization
- is not covered."
-cls class compile: 'matchesScope: aScopeMap frame: aFrame value: aVal local: aLocal
-	| cv inc exc |
-	cv := self canon: aVal local: aFrame.
-	cv isNil ifTrue: [ ^ false ].
-	inc := self scopeArray: aScopeMap key: ''include''.
-	(self coveredByArray: inc frame: aFrame value: cv local: aLocal) ifFalse: [ ^ false ].
-	exc := self scopeArray: aScopeMap key: ''exclude''.
-	^ (self coveredByArray: exc frame: aFrame value: cv local: aLocal) not'.
+"── §5.2 id-scope literal match (0.8.1, F40) — `operations` and `peers`. Compared as the RAW
+    value, a literal string, with exactly two wildcard forms: bare `*` matches any value, and a
+    trailing `/*` matches by literal segment-prefix (the slash is KEPT, only the star is
+    dropped, so `compute/*` matches `compute/apply` but not bare `compute`). None of the §5.4
+    path transforms apply here — no leading-/ universal-scope reading, no `/*/` interior peer-
+    wildcard, no peer-relative -> /{local}/... qualification — so a pattern carrying path syntax
+    is matched AS A LITERAL STRING: a non-match, never a fault. ──"
+cls class compile: 'value: aVal matchesIdPattern: aPat
+	aPat = ''*'' ifTrue: [ ^ true ].
+	(aPat size >= 2 and: [ aPat endsWith: ''/*'' ]) ifTrue: [
+		^ aVal beginsWith: (aPat copyFrom: 1 to: aPat size - 1) ].
+	^ aVal = aPat'.
+
+"coveredByIdArray:value: — is `val` matched, as a LITERAL id-scope pattern (no
+ canonicalization, no frame), by any pattern in the array? nil array -> false."
+cls class compile: 'coveredByIdArray: anArray value: aVal
+	anArray isNil ifTrue: [ ^ false ].
+	^ anArray items anySatisfy: [ :e |
+		(e isKindOf: EcTextString) and: [ self value: aVal matchesIdPattern: e string ] ]'.
+
+"matchesScope:frame:value:local:kind: — §5.2, typed (0.8.1, F40): covered by include AND NOT
+ covered by exclude, but the cover test itself depends on the grant dimension's SCOPE TYPE.
+ `aKind` is a REQUIRED argument — #idScope or #pathScope, deliberately no default — so a new
+ call site cannot silently inherit the wrong matcher, which is exactly the F40 defect
+ re-introduced. #idScope (operations, peers): literal match, no canonicalization. #pathScope
+ (handlers, resources): unchanged §5.4 behaviour — `frame` is the peer-id that frames both the
+ value and the patterns; a value that fails canonicalization is not covered."
+cls class compile: 'matchesScope: aScopeMap frame: aFrame value: aVal local: aLocal kind: aKind
+	| inc exc |
+	aKind = #idScope
+		ifTrue: [
+			inc := self scopeArray: aScopeMap key: ''include''.
+			(self coveredByIdArray: inc value: aVal) ifFalse: [ ^ false ].
+			exc := self scopeArray: aScopeMap key: ''exclude''.
+			^ (self coveredByIdArray: exc value: aVal) not ]
+		ifFalse: [
+			| cv |
+			cv := self canon: aVal local: aFrame.
+			cv isNil ifTrue: [ ^ false ].
+			inc := self scopeArray: aScopeMap key: ''include''.
+			(self coveredByArray: inc frame: aFrame value: cv local: aLocal) ifFalse: [ ^ false ].
+			exc := self scopeArray: aScopeMap key: ''exclude''.
+			^ (self coveredByArray: exc frame: aFrame value: cv local: aLocal) not ]'.
 
 "── token field reads ──"
 "grantsOf: — the {grants:[...]} EcArray of a token, or nil."
@@ -407,12 +439,15 @@ cls class compile: 'grant: aGrant coversResourceExec: anExec local: aLocal grant
 	targets isEmpty ifTrue: [ ^ true ].
 	^ targets allSatisfy: [ :t | self resourceTargetCovered: t local: aLocal granter: aGranter grant: aGrant ]'.
 
-"grantCoversOpHandler:exec:local:granter: — one grant covers operation + handler + resources."
+"grantCoversOpHandler:exec:local:granter: — one grant covers operation + handler + resources.
+ §5.2/F40: `operations` is an id-scope dimension (literal match, kind: #idScope); `handlers` is
+ a path-scope dimension (canonicalize + §5.4 match, kind: #pathScope) — the two MUST NOT be
+ interchanged."
 cls class compile: 'grant: aGrant coversOpHandlerExec: anExec local: aLocal granter: aGranter
 	(self matchesScope: (self grantScope: aGrant key: ''operations'')
-		frame: aLocal value: (anExec textAt: ''operation'') local: aLocal) ifFalse: [ ^ false ].
+		frame: aLocal value: (anExec textAt: ''operation'') local: aLocal kind: #idScope) ifFalse: [ ^ false ].
 	(self matchesScope: (self grantScope: aGrant key: ''handlers'')
-		frame: aLocal value: (self execHandlerPath: anExec) local: aLocal) ifFalse: [ ^ false ].
+		frame: aLocal value: (self execHandlerPath: anExec) local: aLocal kind: #pathScope) ifFalse: [ ^ false ].
 	^ self grant: aGrant coversResourceExec: anExec local: aLocal granter: aGranter'.
 
 "checkPermission:cap:local:in: — ALLOW iff some grant of the resolved LEAF cap covers

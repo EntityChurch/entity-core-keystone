@@ -3,27 +3,51 @@
 #
 # Runs entirely inside the lean-toolchain container (the Go validate-peer oracle
 # is a fedora:43 ELF that runs there too, so oracle + peer share one loopback).
-# The rust codec .so must be mounted at /codec (libentitycore_codec, for crypto).
-# Builds the peer host, launches it with --debug-open-grants --validate, waits for
-# the LISTENING line, points validate-peer at it, tears the host down.
+# The rust codec .so must be built first (libentitycore_codec, for crypto) — this
+# harness does not build it, only stages + mounts it. Builds the peer host, launches
+# it with --debug-open-grants --validate, waits for the LISTENING line, points
+# validate-peer at it, tears the host down.
 #
-# Invoke from the repo root (stage the codec .so first):
-#   mkdir -p /tmp/lean-codec-mount && cp \
-#     ffi-generator/c-abi/entity-core-codec-ffi-rust/target/release/libentitycore_codec.so \
-#     /tmp/lean-codec-mount/
-#   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm -v "$PWD":/repo:z -v /tmp/lean-codec-mount:/codec:z,ro \
-#     -w /repo/protocol-generator/lean -e LD_LIBRARY_PATH=/codec \
-#     localhost/entity-core-keystone/lean-toolchain:latest sh run-s4.sh [validate-peer-args...]
+# Invoke from the repo root — bare `./run-s4.sh` self-relaunches inside the
+# container, same convention as every other peer's harness (mounts the repo at
+# /work, not the previous one-off /repo):
+#   ./protocol-generator/lean/run-s4.sh [validate-peer-args...]
+#
+# Requires the codec .so already built at
+# ffi-generator/c-abi/entity-core-codec-ffi-rust/target/release/libentitycore_codec.so
+# (build it in containers/cargo first if missing — this harness errors out with that
+# path rather than silently failing if it isn't there).
 #
 # Default args: -profile core. ORACLE/PORT/NOBUILD/VALIDATE env overrides.
+# Set INCONTAINER=1 to skip the self-relaunch (already inside the container).
 
 set -eu
+
+CODEC_DIR_HOST_REL="ffi-generator/c-abi/entity-core-codec-ffi-rust/target/release"
+
+if [ "${INCONTAINER:-0}" != "1" ]; then
+  HOSTREPO="$(cd "$(dirname "$0")/../.." && pwd)"
+  . "$HOSTREPO/tools/podman-caps.sh"
+  [ -f "$HOSTREPO/$CODEC_DIR_HOST_REL/libentitycore_codec.so" ] || {
+    echo "codec not built: $HOSTREPO/$CODEC_DIR_HOST_REL/libentitycore_codec.so missing" >&2
+    echo "build it first, e.g. inside containers/cargo:" >&2
+    echo "  podman run \$PODMAN_RUN_CAPS --rm -v \"$HOSTREPO\":/work:Z -w /work/ffi-generator/c-abi/entity-core-codec-ffi-rust localhost/entity-core-keystone/cargo:latest cargo build --release" >&2
+    exit 2
+  }
+  exec podman run $PODMAN_RUN_CAPS --rm \
+    -e INCONTAINER=1 \
+    -v "$HOSTREPO":/work:Z \
+    -v "$HOSTREPO/$CODEC_DIR_HOST_REL":/codec:z,ro \
+    -w /work/protocol-generator/lean -e LD_LIBRARY_PATH=/codec \
+    localhost/entity-core-keystone/lean-toolchain:latest sh /work/protocol-generator/lean/run-s4.sh "$@"
+fi
+
 # Keep HOME consistent across keypair provisioning, the host (IO.getEnv "HOME"),
 # and validate-peer (os.UserHomeDir → scans ~/.entity/peers/*/keypair).
 export HOME="${HOME:-/root}"
 PORT="${PORT:-7777}"
-ORACLE="${ORACLE:-/repo/output/s4-oracles/validate-peer}"
-PROJ=/repo/protocol-generator/lean
+ORACLE="${ORACLE:-/work/output/s4-oracles/validate-peer}"
+PROJ=/work/protocol-generator/lean
 cd "$PROJ"
 
 if [ "${NOBUILD:-0}" != "1" ]; then
@@ -64,6 +88,6 @@ done
 head -1 /tmp/host.out
 
 if [ "$#" -eq 0 ]; then
-  set -- -profile core -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
+  set -- -profile core -json-out "${JSON_OUT:-$PROJ/status/CONFORMANCE-REPORT.json}"
 fi
 "$ORACLE" -addr "127.0.0.1:$PORT" "$@" || true

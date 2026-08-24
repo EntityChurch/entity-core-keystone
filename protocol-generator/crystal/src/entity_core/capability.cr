@@ -146,7 +146,34 @@ module EntityCore
       path == pattern
     end
 
-    def matches_scope(local_peer : String, value : String, scope : Scope) : Bool
+    # Which §5.2 matcher a grant dimension uses (0.8.1, F40). Passed explicitly at every
+    # call site — no default — so a new one cannot inherit the wrong matcher silently,
+    # which is exactly the F40 defect.
+    enum ScopeKind
+      Id   # operations, peers   — system/capability/id-scope
+      Path # handlers, resources — system/capability/path-scope
+    end
+
+    # §5.2 id-scope match (0.8.1, F40): literal comparison with exactly two wildcard
+    # forms — bare "*" and a trailing slash-star segment-prefix. None of the §5.4 path
+    # transforms apply, so a pattern carrying path syntax is matched as a literal string:
+    # a non-match, never a fault.
+    def matches_id_pattern(value : String, pattern : String) : Bool
+      return true if pattern == "*"
+      if pattern.size >= 2 && pattern.ends_with?("/*")
+        return value.starts_with?(pattern[0...-1])
+      end
+      value == pattern
+    end
+
+    private def covered_id(pats : Array(String), value : String) : Bool
+      pats.any? { |p| matches_id_pattern(value, p) }
+    end
+
+    def matches_scope(local_peer : String, value : String, scope : Scope, kind : ScopeKind) : Bool
+      if kind.id?
+        return covered_id(scope.incl, value) && !covered_id(scope.excl, value)
+      end
       cv = canonicalize(local_peer, value)
       covered(local_peer, scope.incl, cv) && !covered(local_peer, scope.excl, cv)
     end
@@ -214,11 +241,11 @@ module EntityCore
       target_peer = extract_peer(local_peer, uri)
       resource = exec.map_field("resource")
       grants_of_token(token).each do |g|
-        ok = matches_scope(local_peer, operation, g.operations) &&
-             matches_scope(local_peer, handler_pattern, g.handlers)
+        ok = matches_scope(local_peer, operation, g.operations, ScopeKind::Id) &&
+             matches_scope(local_peer, handler_pattern, g.handlers, ScopeKind::Path)
         if ok
           peers = g.peers || Scope.new([local_peer], [] of String)
-          ok = matches_scope(local_peer, target_peer, peers)
+          ok = matches_scope(local_peer, target_peer, peers, ScopeKind::Id)
         end
         ok = check_resource_scope(local_peer, granter_peer, resource, g.resources) if ok && resource
         return true if ok

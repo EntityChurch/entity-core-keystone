@@ -185,7 +185,11 @@ module EntityCore
       def op_authenticate(ctx)
         conn = ctx.conn
         exec = ctx.exec
-        return Outcome.err(409, "connection_already_established") if conn.established
+        # RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+        # single-use nonce. The anti-replay property is the MUST and the mechanism
+        # (established-state tracking) is impl-defined, but the STATUS is pinned to
+        # 401 invalid_nonce — a 409 state-conflict under-signals the replay.
+        return Outcome.err(401, "invalid_nonce") if conn.established
         return Outcome.err(401, "invalid_nonce") if conn.issued_nonce.nil? # authenticate before hello
 
         auth = exec.entity_field("params")

@@ -44,9 +44,9 @@ internal static class Permissions
 
         foreach (GrantEntry grant in capability.Grants)
         {
-            if (!grant.Operations.Matches(operation, localPeerId)) continue;
-            if (!grant.Handlers.Matches(handlerPattern, localPeerId)) continue;
-            if (!grant.EffectivePeers(localPeerId).Matches(targetPeer, localPeerId)) continue;
+            if (!grant.Operations.Matches(operation, localPeerId, ScopeKind.Id)) continue;
+            if (!grant.Handlers.Matches(handlerPattern, localPeerId, ScopeKind.Path)) continue;
+            if (!grant.EffectivePeers(localPeerId).Matches(targetPeer, localPeerId, ScopeKind.Id)) continue;
             if (resourceTarget is not null && !CheckResourceScope(resourceTarget, grant.Resources, localPeerId, granterPeerId)) continue;
             return true;
         }
@@ -62,9 +62,9 @@ internal static class Permissions
         string canonicalPath = Paths.Canonicalize(path, localPeerId);
         foreach (GrantEntry grant in capability.Grants)
         {
-            if (!grant.Handlers.Matches(handlerPattern, localPeerId)) continue;
-            if (!grant.Operations.Matches(operation, localPeerId)) continue;
-            if (!grant.Resources.Matches(canonicalPath, localPeerId)) continue;
+            if (!grant.Handlers.Matches(handlerPattern, localPeerId, ScopeKind.Path)) continue;
+            if (!grant.Operations.Matches(operation, localPeerId, ScopeKind.Id)) continue;
+            if (!grant.Resources.Matches(canonicalPath, localPeerId, ScopeKind.Path)) continue;
             return true;
         }
         return false;

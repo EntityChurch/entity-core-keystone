@@ -114,9 +114,47 @@ final class Capability
         return $path === $pattern;
     }
 
-    /** @param array{incl:list<string>,excl:list<string>} $s */
-    public static function matchesScope(string $localPeer, string $value, array $s): bool
+    /**
+     * §5.2 id-scope match (0.8.1, F40) — `operations` and `peers`. Literal comparison
+     * with exactly two wildcard forms: bare `*` and a trailing slash-star segment-prefix.
+     * None of the §5.4 path transforms apply, so a pattern carrying path syntax is
+     * matched as a literal string: a non-match, never a fault.
+     */
+    public static function matchesIdPattern(string $value, string $pattern): bool
     {
+        if ($pattern === '*') {
+            return true;
+        }
+        if (\strlen($pattern) >= 2 && \str_ends_with($pattern, '/*')) {
+            return \str_starts_with($value, \substr($pattern, 0, -1));
+        }
+        return $value === $pattern;
+    }
+
+    /** @param list<string> $pats */
+    private static function coveredId(array $pats, string $value): bool
+    {
+        foreach ($pats as $p) {
+            if (self::matchesIdPattern($value, $p)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * §5.2 typed scope match. `$kind` is 'id' (operations, peers) or 'path' (handlers,
+     * resources) and has no default — every call site names its dimension, so a new one
+     * cannot silently inherit the wrong matcher, which is exactly the F40 defect.
+     *
+     * @param array{incl:list<string>,excl:list<string>} $s
+     * @param 'id'|'path' $kind
+     */
+    public static function matchesScope(string $localPeer, string $value, array $s, string $kind): bool
+    {
+        if ($kind === 'id') {
+            return self::coveredId($s['incl'], $value) && !self::coveredId($s['excl'], $value);
+        }
         $cv = self::canonicalize($localPeer, $value);
         return self::covered($localPeer, $s['incl'], $cv) && !self::covered($localPeer, $s['excl'], $cv);
     }
@@ -238,11 +276,11 @@ final class Capability
         $targetPeer = self::extractPeer($localPeer, $uri);
         $resource = $exec->mapField('resource');
         foreach (self::grantsOfToken($token) as $g) {
-            $ok = self::matchesScope($localPeer, $operation, $g['operations'])
-                && self::matchesScope($localPeer, $handlerPattern, $g['handlers']);
+            $ok = self::matchesScope($localPeer, $operation, $g['operations'], 'id')
+                && self::matchesScope($localPeer, $handlerPattern, $g['handlers'], 'path');
             if ($ok) {
                 $peers = $g['peers'] ?? ['incl' => [$localPeer], 'excl' => []];
-                $ok = self::matchesScope($localPeer, $targetPeer, $peers);
+                $ok = self::matchesScope($localPeer, $targetPeer, $peers, 'id');
             }
             if ($ok && $resource !== null) {
                 $ok = self::checkResourceScope($localPeer, $granterPeer, $resource, $g['resources']);

@@ -148,7 +148,41 @@ fn covered(frame: &str, value: &str, pats: &[String]) -> bool {
         .any(|p| matches_pattern(value, &canonicalize(frame, p)))
 }
 
-fn matches_scope(local_peer: &str, value: &str, s: &Scope) -> bool {
+/// Which §5.2 matcher a grant dimension uses (0.8.1, F40). No `Default` impl on
+/// purpose — every call site names its dimension, so a new one cannot silently
+/// inherit the wrong matcher, which is exactly the F40 defect.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ScopeKind {
+    /// `operations`, `peers` — `system/capability/id-scope`.
+    Id,
+    /// `handlers`, `resources` — `system/capability/path-scope`.
+    Path,
+}
+
+/// §5.2 id-scope match (0.8.1, F40): literal comparison with exactly two wildcard
+/// forms — bare `*` and a trailing `/*` segment-prefix. None of the §5.4 path
+/// transforms apply, so a pattern carrying path syntax (`/*/get`) is matched as a
+/// literal string: a non-match, never a fault.
+pub fn matches_id_pattern(value: &str, pattern: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        if prefix.ends_with('/') {
+            return value.starts_with(prefix);
+        }
+    }
+    value == pattern
+}
+
+fn covered_id(value: &str, pats: &[String]) -> bool {
+    pats.iter().any(|p| matches_id_pattern(value, p))
+}
+
+fn matches_scope(local_peer: &str, value: &str, s: &Scope, kind: ScopeKind) -> bool {
+    if kind == ScopeKind::Id {
+        return covered_id(value, &s.incl) && !covered_id(value, &s.excl);
+    }
     let cv = canonicalize(local_peer, value);
     if !covered(local_peer, &cv, &s.incl) {
         return false;
@@ -214,10 +248,10 @@ pub fn check_permission(
     let target_peer = extract_peer(local_peer, uri);
     let resource = exec.field("resource");
     for g in grants_of_token(token) {
-        if !matches_scope(local_peer, operation, &g.operations) {
+        if !matches_scope(local_peer, operation, &g.operations, ScopeKind::Id) {
             continue;
         }
-        if !matches_scope(local_peer, handler_pattern, &g.handlers) {
+        if !matches_scope(local_peer, handler_pattern, &g.handlers, ScopeKind::Path) {
             continue;
         }
         let default_peers = Scope {
@@ -225,7 +259,7 @@ pub fn check_permission(
             excl: vec![],
         };
         let peers = g.peers.as_ref().unwrap_or(&default_peers);
-        if !matches_scope(local_peer, target_peer, peers) {
+        if !matches_scope(local_peer, target_peer, peers, ScopeKind::Id) {
             continue;
         }
         let r_ok = match resource {

@@ -13,6 +13,11 @@
 -- is denied here; single-sig root-at-local is the S3 floor. Not exercised by the
 -- smoke; the map/quorum vocabulary lands with the S4 multisig category.
 
+-- Which §5.2 matcher a grant dimension uses (0.8.1, F40). Named at every call site --
+-- there is no default -- so a new one cannot inherit the wrong matcher silently, which
+-- is exactly the F40 defect. IdScope = operations/peers, PathScope = handlers/resources.
+type ScopeKind = IdScope | PathScope
+
 type Verdict = VAllow | VDeny
 
 type ReqVerdict = RAllow | RAuthnFail | RAuthzDeny | RUnresolvable | RChainTooDeep
@@ -115,11 +120,31 @@ coveredByLocal : Text -> Text -> [Text] -> Boolean
 coveredByLocal localPeer cv pats =
   anyL (p -> matchesPattern cv (canonicalize localPeer p)) pats
 
-matchesScope : Text -> Text -> Scope -> Boolean
-matchesScope localPeer value s =
-  cv = canonicalize localPeer value
-  (coveredByLocal localPeer cv (Scope.scIncl s)) &&
-    (not (coveredByLocal localPeer cv (Scope.scExcl s)))
+-- §5.2 id-scope match (0.8.1, F40) -- operations and peers. Literal comparison with
+-- exactly two wildcard forms: bare "*" and a trailing slash-star segment-prefix. None
+-- of the §5.4 path transforms apply, so a pattern carrying path syntax is matched as a
+-- literal string: a non-match, never a fault.
+matchesIdPattern : Text -> Text -> Boolean
+matchesIdPattern value pattern =
+  if pattern == "*" then true
+  else if ((Text.size pattern) >= 2) && (textEndsWith "/*" pattern) then
+    textStartsWith (dropRight 1 pattern) value
+  else value == pattern
+
+coveredById : Text -> [Text] -> Boolean
+coveredById value pats =
+  anyL (p -> matchesIdPattern value p) pats
+
+matchesScope : Text -> Text -> Scope -> ScopeKind -> Boolean
+matchesScope localPeer value s kind =
+  match kind with
+    IdScope ->
+      (coveredById value (Scope.scIncl s)) &&
+        (not (coveredById value (Scope.scExcl s)))
+    PathScope ->
+      cv = canonicalize localPeer value
+      (coveredByLocal localPeer cv (Scope.scIncl s)) &&
+        (not (coveredByLocal localPeer cv (Scope.scExcl s)))
 
 extractPeer : Text -> Text -> Text
 extractPeer localPeer uri =
@@ -255,9 +280,9 @@ checkResourceScope localPeer granterPeer resource s =
 
 grantAllows : Text -> Text -> Text -> Text -> Text -> Optional Value -> Grant -> Boolean
 grantAllows localPeer granterPeer operation handlerPattern targetPeer resource g =
-  opOk = matchesScope localPeer operation (Grant.grOperations g)
-  hOk = matchesScope localPeer handlerPattern (Grant.grHandlers g)
-  pOk = matchesScope localPeer targetPeer (optOr (Grant.grPeers g) (Scope [localPeer] []))
+  opOk = matchesScope localPeer operation (Grant.grOperations g) IdScope
+  hOk = matchesScope localPeer handlerPattern (Grant.grHandlers g) PathScope
+  pOk = matchesScope localPeer targetPeer (optOr (Grant.grPeers g) (Scope [localPeer] [])) IdScope
   rOk = match resource with
     None -> true
     Some r -> checkResourceScope localPeer granterPeer r (Grant.grResources g)

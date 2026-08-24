@@ -232,7 +232,13 @@ handle_authenticate(Peer, Env, Exec, Outcome) :-
     peer_local_peer(Peer, Local),
     peer_identity(Peer, Identity),
     peer_store(Peer, StoreId),
-    ( ent_entity(Exec, "params", Auth), unsupported_key_type(Auth)
+    % RT-6 (§4.6) anti-replay: a SECOND authenticate on an already-established
+    % connection must not be re-processed (it would re-verify the same
+    % still-cached nonce and re-issue a grant) — the nonce is documented
+    % single-use. Reject outright, before any nonce/signature work.
+    ( conn_established(Env)
+    -> error_result("invalid_nonce", "", R), Outcome = outcome(401, R, [])
+    ; ent_entity(Exec, "params", Auth), unsupported_key_type(Auth)
     -> error_result("unsupported_key_type", "", R), Outcome = outcome(400, R, [])
     ; ent_entity(Exec, "params", Auth)
     -> ( authenticate_ok(Env, Auth, Pub, Claimed)
@@ -245,6 +251,7 @@ handle_authenticate(Peer, Env, Exec, Outcome) :-
           make_entity("system/capability/grant", map(["token"-bytes(THC)]), GrantE),
           identity_peer_entity(Identity, PeerEntity),
           included_pairs([Token, PeerEntity, Sig], Included),
+          conn_mark_established(Env),
           Outcome = outcome(200, GrantE, Included)
        ;  error_result("authentication_failed", "", R), Outcome = outcome(401, R, []) )
     ;  error_result("authentication_failed", "", R), Outcome = outcome(401, R, []) ).
@@ -297,6 +304,22 @@ conn_issued_nonce(Env, Nonce) :-
     ent_entity(Exec, "params", P),
     ent_text(P, "peer_id", InitId),
     conn_state_f(InitId, conn(_, Nonce, _)).
+
+% RT-6 (§4.6): has this connection already completed a successful authenticate?
+% Fails (not established) when no conn_state_f fact exists yet, so a first-time
+% authenticate falls through to the normal nonce-echo/signature checks.
+conn_established(Env) :-
+    envelope_root(Env, Exec),
+    ent_entity(Exec, "params", P),
+    ent_text(P, "peer_id", InitId),
+    conn_state_f(InitId, conn(true, _, _)).
+
+conn_mark_established(Env) :-
+    envelope_root(Env, Exec),
+    ent_entity(Exec, "params", P),
+    ent_text(P, "peer_id", InitId),
+    retract(conn_state_f(InitId, conn(_, Nonce, InitId))),
+    assertz(conn_state_f(InitId, conn(true, Nonce, InitId))).
 
 random_nonce(Nonce) :-
     length(Codes, 32),

@@ -761,7 +761,7 @@
     (i32.const 0))
 
   ;; build the hello RESPONSE at $out; echo request_id [rid,rlen]. Returns out length.
-  ;; $sess = per-connection session state {nonce(32)@0, hello_done(4)@32}: the nonce we issue
+  ;; $sess = per-connection session state {nonce(32)@0, hello_done(4)@32, auth_done(4)@36}: the nonce we issue
   ;; here is STORED so authenticate can enforce the §4.6 nonce-echo check.
   (func $build_hello (param $out i32) (param $rid i32) (param $rlen i32) (param $sess i32) (result i32)
     (local $rdlen i32) (local $relen i32) (local $rdatalen i32) (local $ms i64)
@@ -962,8 +962,8 @@
     (i32.store (i32.add (local.get $e) (i32.const 20)) (local.get $ch)))
 
   ;; build the authenticate RESPONSE at $out. $in = full envelope, $edp = exec data map,
-  ;; $sess = per-connection session {nonce@0, hello_done@32}. Runs the §4.6 three checks
-  ;; (each → 401 with its code) + the §7.1 key_type gate (→ 400), then mints + signs the
+  ;; $sess = per-connection session {nonce@0, hello_done@32, auth_done@36}. Runs the §4.6 three
+  ;; checks (each → 401 with its code) + the §7.1 key_type gate (→ 400), then mints + signs the
   ;; §4.4 floor token and returns a 200 system/capability/grant. Returns out length.
   ;; Scratch: token 0x940000, grant 0x958000, resp 0x959000, sig 0x960000, peer 0x968000;
   ;; hashes 0x920080 auth / 0x9200c0 grantee / 0x920100 tok / 0x920140 grant / 0x920180 sig /
@@ -980,6 +980,13 @@
     (if (i32.eq (local.get $params) (i32.const -1)) (then (return (call $build_error (local.get $out) (i32.const 0x461800) (i32.const 21) (i32.const 401) (local.get $rid) (local.get $rlen)))))
     (local.set $pdata (call $map_find (local.get $params) (i32.const 0x460010) (i32.const 4)))    ;; "data"
     (if (i32.eq (local.get $pdata) (i32.const -1)) (then (return (call $build_error (local.get $out) (i32.const 0x461800) (i32.const 21) (i32.const 401) (local.get $rid) (local.get $rlen)))))
+
+    ;; --- RT-6 (§4.6) anti-replay: a SECOND authenticate on an already-established connection
+    ;; must not be re-processed (it would re-verify the same still-cached nonce and re-issue a
+    ;; grant). The nonce is documented single-use — reject outright, before any nonce/signature
+    ;; work. Does not touch $sess+32 (hello_done), which the hello path owns.
+    (if (i32.load (i32.add (local.get $sess) (i32.const 36)))                                     ;; auth_done
+      (then (return (call $build_error (local.get $out) (i32.const 0x4617c0) (i32.const 13) (i32.const 401) (local.get $rid) (local.get $rlen)))))
 
     ;; --- §7.1 key_type gate: present ⇒ must be text "ed25519", else 400 unsupported_key_type ---
     (local.set $kt (call $map_find (local.get $pdata) (i32.const 0x461440) (i32.const 8)))        ;; "key_type"
@@ -1041,6 +1048,7 @@
       (then (return (call $build_error (local.get $out) (i32.const 0x461840) (i32.const 17) (i32.const 401) (local.get $rid) (local.get $rlen)))))
 
     ;; ======================= verification passed — mint =======================
+    (i32.store (i32.add (local.get $sess) (i32.const 36)) (i32.const 1))                          ;; auth_done = 1 (RT-6)
     (drop (call $clock_time_get (i32.const 0) (i64.const 0) (i32.const 0x930040)))
     (local.set $ms (i64.div_u (i64.load (i32.const 0x930040)) (i64.const 1000000)))
 

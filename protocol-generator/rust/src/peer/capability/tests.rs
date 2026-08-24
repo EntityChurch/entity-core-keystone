@@ -192,3 +192,71 @@ fn canonicalize_peer_relative() {
         "/peerX/system/tree"
     );
 }
+
+// ── §5.2 typed scope matching (0.8.1, F40) — ACCEPT path ──────────────────────
+//
+// The oracle carried no F40 vector when this was written, and a rejection-only probe
+// would let a uniformly-canonicalizing peer pass anyway, so the accept direction is
+// the peer's own to cover. Case ids mirror the cohort-shared set in
+// `protocol-generator/shared/scope-matching/id-scope-vectors.json` — this crate is
+// dep-minimized (no JSON parser), so the cases are transcribed rather than loaded;
+// keep the ids greppable so drift against the shared file is findable.
+
+const F40_LOCAL: &str = "12D3KooWLocalPeerIdExampleAAAAAAAAAAAAAAAAAAAA";
+const F40_REMOTE: &str = "12D3KooWRemotePeerIdExampleBBBBBBBBBBBBBBBBBBB";
+
+fn f40_scope(incl: &[&str], excl: &[&str]) -> Scope {
+    Scope {
+        incl: incl.iter().map(|s| s.to_string()).collect(),
+        excl: excl.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+#[test]
+fn f40_id_scope_cases() {
+    let qualified = format!("/{F40_LOCAL}/get");
+    let peer_qualified = format!("/*/{F40_REMOTE}");
+    // (case id, value, include, exclude, expect)
+    let cases: &[(&str, &str, &[&str], &[&str], bool)] = &[
+        ("id.exact.hit", "get", &["get"], &[], true),
+        ("id.exact.miss", "put", &["get"], &[], false),
+        ("id.star", "get", &["*"], &[], true),
+        ("id.prefix.hit", "compute/apply", &["compute/*"], &[], true),
+        ("id.prefix.miss", "computex/apply", &["compute/*"], &[], false),
+        ("id.prefix.no_bare_parent", "compute", &["compute/*"], &[], false),
+        ("id.pathform.universal_prefix", "get", &["/*/get"], &[], false),
+        ("id.pathform.local_qualified", "get", &[&qualified], &[], false),
+        ("id.pathform.absolute", "get", &["/get"], &[], false),
+        ("id.peers.exact", F40_REMOTE, &[F40_REMOTE], &[], true),
+        ("id.peers.star", F40_REMOTE, &["*"], &[], true),
+        ("id.peers.other", F40_REMOTE, &[F40_LOCAL], &[], false),
+        ("id.peers.pathform.all", F40_REMOTE, &["/*/*"], &[], false),
+        ("id.peers.pathform.qualified", F40_REMOTE, &[&peer_qualified], &[], false),
+        ("id.literal.pathform.self", "/*/get", &["/*/get"], &[], true),
+        ("id.exclude.exact", "get", &["*"], &["get"], false),
+        // The discriminator: DENIES on the pre-F40 canonicalizing reading, ALLOWS here.
+        ("id.exclude.pathform", "get", &["*"], &["/*/get"], true),
+        ("id.exclude.peers.pathform", F40_REMOTE, &["*"], &["/*/*"], true),
+        ("id.exclude.prefix", "compute/apply", &["*"], &["compute/*"], false),
+    ];
+    for (id, value, incl, excl, expect) in cases {
+        let got = matches_scope(F40_LOCAL, value, &f40_scope(incl, excl), ScopeKind::Id);
+        assert_eq!(got, *expect, "{id}: expected {expect}, got {got}");
+    }
+}
+
+#[test]
+fn f40_path_scope_still_canonicalizes() {
+    // The control half: without these, "the fix" would read as a blanket removal of
+    // canonicalization rather than a split.
+    let cases: &[(&str, &str, &[&str], &[&str], bool)] = &[
+        ("path.relative.include", "system/tree", &["system/tree"], &[], true),
+        ("path.universal.include", "system/tree", &["/*/system/tree"], &[], true),
+        ("path.subtree.include", "system/type/a", &["system/type/*"], &[], true),
+        ("path.exclude.universal", "system/tree", &["*"], &["/*/system/tree"], false),
+    ];
+    for (id, value, incl, excl, expect) in cases {
+        let got = matches_scope(F40_LOCAL, value, &f40_scope(incl, excl), ScopeKind::Path);
+        assert_eq!(got, *expect, "{id}: expected {expect}, got {got}");
+    }
+}

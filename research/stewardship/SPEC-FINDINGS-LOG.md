@@ -135,6 +135,32 @@ Cross-language register of findings surfaced by keystone work. Per-language spec
 | **F38** | guidance gap (content-addressed mint aliasing) | **Mint-timestamp precision is a CORRECTNESS parameter, not formatting.** A capability token is content-addressed over `{grants, grantee, granter, created_at}`; a peer stamping `created_at` at **second** precision makes same-scope same-grantee re-mints within one second **byte-identical → same content hash → the same capability**. The oracle's `revoke_happy_path` re-mint then aliased the §4.4 **session floor cap** — revoking one revoked the session, and every later category 403-cascaded. Nastiest property: **isolated `-category` runs stay green; only the full-profile marathon exposes it** (capability runs early on a long-lived session). No spec text marks the precision as load-bearing; no vector gates it directly — the C peer's `ec_now_ms()` avoided it *implicitly*, so cohort greenness here is accidental, not spec-driven. | ENTITY-CORE-PROTOCOL.md §3.6/§5.5 token shape; GUIDE-CONFORMANCE (no note) | `arch` (GUIDE-CONFORMANCE note) | **Open — surfaced** by the **Pure Data** peer #33 (A-PD-016) at the full-gate marathon. **Keystone fixed:** ms-precision wall clock (`clock_gettime(CLOCK_REALTIME)`) at every mint site → Pd **682·0F Result: PASS** stable ×4; durable lesson pinned in AGENTS.md. **Ask arch:** GUIDE-CONFORMANCE note — `created_at` MUST be ms-precision from a real-time clock at every mint site (or mints otherwise distinguishable); a direct vector is timing-dependent, the note is the vehicle (F29 "green-can-be-vacuous" family). **HANDOFF-TO-ARCH drafted** 2026-07-15 → `research/stewardship/HANDOFF-TO-ARCH-2026-07-15-F38-mint-timestamp-precision.md` (carries F39 as companion; awaiting arch pull). |
 | **F39** | guidance gap (§5.5a consequence, open-seed form) | **An open/debug seed with bare `resources: ["*"]` cannot cover foreign namespaces** — §5.5a makes bare `*` **granter-local** (`/{granter}/*`), so the `universal_address_space` probes' writes into `/{fixturePeer}/…` have no covering grant and the category **silently SKIPs** ("connection grants do not cover") — a skip, not a fail, easy to miss. The seed must carry BOTH forms: `resources: {include: ["*", "/*/*"]}` (what the Go `-open-access` peer does internally). | V7 §5.5a bare-star ruling; `validate-peer` `universal_address_space` skip path | `arch` (one-sentence guide note; optional skip-message diagnosability) + `research` (convention doc — done) | **Mostly resolved keystone-side — surfaced** by the **Pure Data** peer #33 (A-PD-017). Pd's `EC_OPEN_GRANTS` seed fixed; the keystone-owned `protocol-generator/shared/seed-policy/README.md` degenerate-open form already documents `{resources:["*","/*/*"]}`; AGENTS.md lesson pinned. **Residual arch ask (small):** a GUIDE-CONFORMANCE/SDK-OPERATIONS §2.1 sentence on the dual form + optionally name the missing absolute form in the oracle's skip message (currently reads environmental, not seed-shape). Folded into the **F38 handoff** (companion section). |
 
+### 2026-07-27 — 0.8.1 bucket-B applied to the cohort (F47/F48 family; RT-6/RT-13/RT-14)
+
+Full write-up: [`HANDOFF-TO-ARCH-2026-07-27-bucket-B-cohort-application.md`](HANDOFF-TO-ARCH-2026-07-27-bucket-B-cohort-application.md).
+Two net-new findings, both routed to `arch`:
+
+| ID | Kind | Disposition |
+|---|---|---|
+| **F49** | spec-gap — normative pseudocode contradicts the pinned prose | The F40 id-scope pin (`entity-core-protocol` `6285c94`) landed in §5.2's prose, the scope-type paragraph, and the `operations` table row — but **not** in the `matches_scope` code block, which still canonicalizes every dimension, nor in §5.5a `scope_subset`. **Peers are generated from those blocks**, so a regeneration at `c32d2c5` reproduces F40. → `arch`: amend the pseudocode to take the scope type. **Open.** |
+| **F50** | scope question — does F40 reach `scope_subset`? | §5.5a canonicalizes `operations`/`peers` in the delegation containment test. F40 names `matches_scope` only. `scope_subset` is pattern-vs-pattern, not value-vs-pattern, so extending "compared as literal identifiers" to it is a larger change than F40 made and alters which delegations are accepted. **Every converted peer holds the existing behaviour pending arch's ruling** — guessing is how the cohort re-splits. **Open.** |
+
+Plus one gate-relevant *state* finding (not a spec defect): **RT-6's oracle vector already exists** at
+`entity-core-go` `af8a582` (`connectivity_f12.go`, `connectivity` = a core-gate category) and hard-FAILs a
+non-401 replayed-`authenticate`. 35 peer targets emit `409 connection_already_established` there; 11 more are
+unclassified and at least three appear to carry no established-gate at all. The published 43-peer
+`--profile core` 0-FAIL is pinned to `cc1970f` and **does not carry forward** to `af8a582`.
+
+RT-14 audited clean cohort-wide (the rule predates 0.8.1 as `A-CL-009`, pinned per-profile). One
+non-conformance-affecting hygiene fix in `smalltalk` (`EcStore>>hexKey:` documented lowercase, produced
+uppercase; internal store key only, never on the wire — pinned anyway so it cannot meet the path-hex builder).
+
+RT-13a/RT-13b Part-B classes declared for all 43 in
+[`../diagnostics/rt13-write-concurrency-classes.md`](../diagnostics/rt13-write-concurrency-classes.md), with
+arch's §4.1 anti-under-declaration check run from transport source. Two rows **held, not graded** (`zig` —
+serialization point is a doc-comment convention, not a resolvable symbol; `common-lisp` — unclassifiable, no
+symbol located) and two S rows carrying a caveat (`oz`, `io` — writer *queue*, not single-context writer).
+
 ## Provenance
 
 - **F1, F2** surfaced during the spec-data snapshot (bootstrap step 9); recorded in `protocol-generator/shared/spec-data/v7.56/MANIFEST.md`; both independently verified by architecture and acknowledged in review memo `c0513c8`.

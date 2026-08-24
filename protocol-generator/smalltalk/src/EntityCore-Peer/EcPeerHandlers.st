@@ -81,8 +81,11 @@ ecPeer compile: 'handleHello: ctx
 ecPeer compile: 'handleAuthenticate: ctx
 	| conn params nonce pubkey sig claimedPeerId grantee token sigEnt granteePeer result res |
 	conn := ctx connection.
+	"RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed single-use
+	 nonce. The STATUS is pinned to 401 invalid_nonce -- a 409 state-conflict under-
+	 signals the replay."
 	conn isEstablished ifTrue: [
-		^ EcHandlerResult error: 409 code: ''connection_already_established'' message: nil ].
+		^ EcHandlerResult error: 401 code: ''invalid_nonce'' message: nil ].
 	conn issuedNonce isNil ifTrue: [
 		^ EcHandlerResult error: 401 code: ''invalid_nonce'' message: ''no nonce issued'' ].
 	params := ctx params.

@@ -668,13 +668,13 @@ impl Peer {
             let gi = i as u32;
             f.scope_grant.push((leaf_id.to_string(), gi));
             let sc = |key: &str| scope_of(cbor_host::map_get(g, key));
-            if matches_scope(&self.local_peer, operation, &sc("operations")) {
+            if matches_scope(&self.local_peer, operation, &sc("operations"), ScopeKind::Id) {
                 f.g_op.push((leaf_id.to_string(), gi));
             }
             // handler pattern: for the wire request the "handler" dimension is the
             // canonicalized uri's handler (§5.4). Use the target path.
             let handler_pattern = strip_peer(uri);
-            if matches_scope(&self.local_peer, &handler_pattern, &sc("handlers")) {
+            if matches_scope(&self.local_peer, &handler_pattern, &sc("handlers"), ScopeKind::Path) {
                 f.g_handler.push((leaf_id.to_string(), gi));
             }
             let peers = match cbor_host::map_get(g, "peers") {
@@ -684,7 +684,7 @@ impl Peer {
                     excl: vec![],
                 },
             };
-            if matches_scope(&self.local_peer, target_peer, &peers) {
+            if matches_scope(&self.local_peer, target_peer, &peers, ScopeKind::Id) {
                 f.g_peer.push((leaf_id.to_string(), gi));
             }
             let r_ok = match resource {
@@ -819,7 +819,10 @@ impl Peer {
             }
             "authenticate" => {
                 if conn.established {
-                    return err_out(409, "connection_already_established");
+                    // RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the
+                    // consumed single-use nonce — pinned to 401 invalid_nonce, not a
+                    // 409 state-conflict which under-signals the replay.
+                    return err_out(401, "invalid_nonce");
                 }
                 let issued = match conn.issued_nonce {
                     Some(n) => n,
@@ -1560,7 +1563,41 @@ fn covered(frame: &str, value: &str, pats: &[String]) -> bool {
     pats.iter()
         .any(|p| matches_pattern(value, &canonicalize(frame, p)))
 }
-fn matches_scope(local_peer: &str, value: &str, s: &Scope) -> bool {
+/// Which §5.2 matcher a grant dimension uses (0.8.1, F40). No `Default` impl on purpose
+/// — every call site names its dimension, so a new one cannot silently inherit the wrong
+/// matcher, which is exactly the F40 defect.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScopeKind {
+    /// `operations`, `peers` — `system/capability/id-scope`.
+    Id,
+    /// `handlers`, `resources` — `system/capability/path-scope`.
+    Path,
+}
+
+/// §5.2 id-scope match (0.8.1, F40): literal comparison with exactly two wildcard forms
+/// — bare `*` and a trailing `/*` segment-prefix. None of the §5.4 path transforms
+/// apply, so a pattern carrying path syntax is matched as a literal string: a non-match,
+/// never a fault.
+fn matches_id_pattern(value: &str, pattern: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        if prefix.ends_with('/') {
+            return value.starts_with(prefix);
+        }
+    }
+    value == pattern
+}
+
+fn covered_id(value: &str, pats: &[String]) -> bool {
+    pats.iter().any(|p| matches_id_pattern(value, p))
+}
+
+fn matches_scope(local_peer: &str, value: &str, s: &Scope, kind: ScopeKind) -> bool {
+    if kind == ScopeKind::Id {
+        return covered_id(value, &s.incl) && !covered_id(value, &s.excl);
+    }
     let cv = canonicalize(local_peer, value);
     covered(local_peer, &cv, &s.incl) && !covered(local_peer, &cv, &s.excl)
 }

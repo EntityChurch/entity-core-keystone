@@ -77,10 +77,29 @@
      (starts-with (subseq pattern 0 (1- (length pattern))) path))
     (t (string= path pattern))))
 
-(defun matches-scope (local-peer value s)
-  (let ((cv (canonicalize local-peer value)))
-    (flet ((covered (pats) (some (lambda (p) (matches-pattern cv (canonicalize local-peer p))) pats)))
-      (and (covered (scope-incl s)) (not (covered (scope-excl s)))))))
+;; §5.2 id-scope match (0.8.1, F40) — operations and peers. Literal comparison with
+;; exactly two wildcard forms: bare "*" and a trailing slash-star segment-prefix. None
+;; of the §5.4 path transforms apply, so a pattern carrying path syntax is matched as a
+;; literal string: a non-match, never a fault.
+(defun matches-id-pattern (value pattern)
+  (cond ((string= pattern "*") t)
+        ((and (>= (length pattern) 2)
+              (string= (subseq pattern (- (length pattern) 2)) "/*"))
+         (let ((prefix (subseq pattern 0 (1- (length pattern)))))
+           (and (>= (length value) (length prefix))
+                (string= (subseq value 0 (length prefix)) prefix))))
+        (t (string= value pattern))))
+
+;; §5.2 typed scope match. KIND is :ID (operations, peers) or :PATH (handlers,
+;; resources) and has no default — every call site names its dimension, so a new one
+;; cannot silently inherit the wrong matcher, which is exactly the F40 defect.
+(defun matches-scope (local-peer value s kind)
+  (if (eq kind :id)
+      (flet ((covered-id (pats) (some (lambda (p) (matches-id-pattern value p)) pats)))
+        (and (covered-id (scope-incl s)) (not (covered-id (scope-excl s)))))
+      (let ((cv (canonicalize local-peer value)))
+        (flet ((covered (pats) (some (lambda (p) (matches-pattern cv (canonicalize local-peer p))) pats)))
+          (and (covered (scope-incl s)) (not (covered (scope-excl s))))))))
 
 ;; ── §5.2 check-permission ──────────────────────────────────────────────────────
 
@@ -139,10 +158,10 @@ frame."
          (target-peer (extract-peer local-peer uri))
          (resource (entity-field exec "resource")))
     (flet ((grant-ok (g)
-             (and (matches-scope local-peer operation (grant-rec-operations g))
-                  (matches-scope local-peer handler-pattern (grant-rec-handlers g))
+             (and (matches-scope local-peer operation (grant-rec-operations g) :id)
+                  (matches-scope local-peer handler-pattern (grant-rec-handlers g) :path)
                   (let ((peers (or (grant-rec-peers g) (make-scope (list local-peer) nil))))
-                    (matches-scope local-peer target-peer peers))
+                    (matches-scope local-peer target-peer peers :id))
                   (if (cbor-map-p resource)
                       (check-resource-scope local-peer granter-peer resource (grant-rec-resources g))
                       t))))

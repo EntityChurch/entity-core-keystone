@@ -134,8 +134,12 @@ proc ::entity::core::handlers::_connect_authenticate {peer_h ctx} {
     set conn [dict get $ctx conn]
     set exec [dict get $ctx exec]
     set included [dict get $ctx included]
+    # RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+    # single-use nonce. The anti-replay property is the MUST and the mechanism
+    # (established-state tracking) is impl-defined, but the STATUS is pinned to
+    # 401 invalid_nonce — a 409 state-conflict under-signals the replay.
     if {[::entity::core::conn::get $conn established]} {
-        return [err 409 connection_already_established]
+        return [err 401 invalid_nonce]
     }
     set issued_nonce [::entity::core::conn::get $conn issued_nonce]
     if {$issued_nonce eq ""} { return [err 401 invalid_nonce] }

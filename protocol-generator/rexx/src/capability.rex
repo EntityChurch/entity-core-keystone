@@ -153,8 +153,38 @@ _covered: procedure expose EC.
   end
   return 0
 
+/* §5.2 id-scope match (0.8.1, F40) -- operations and peers. Literal comparison with
+   exactly two wildcard forms: bare '*' and a trailing slash-star segment-prefix. None
+   of the §5.4 path transforms apply, so a pattern carrying path syntax is matched as a
+   literal string: a non-match, never a fault. */
+Cap_MatchesIdPattern: procedure expose EC.
+  parse arg value, pattern
+  if pattern == '*' then return 1
+  plen = length(pattern)
+  if plen >= 2 & right(pattern, 2) == '/*' then do
+    prefix = left(pattern, plen - 1)
+    return (left(value, plen - 1) == prefix)
+  end
+  return (value == pattern)
+
+/* is `value` covered by any id-scope pattern in packed list `pats`? (no canonicalize) */
+_covered_id: procedure expose EC.
+  parse arg pats, value
+  n = Lst_Count(pats)
+  do i = 1 to n
+    if Cap_MatchesIdPattern(value, Lst_Item(pats, i)) then return 1
+  end
+  return 0
+
+/* §5.2 typed scope match. `kind` is 'id' (operations, peers) or 'path' (handlers,
+   resources) and is given at every call site -- there is no default, so a new one
+   cannot inherit the wrong matcher silently, which is exactly the F40 defect. */
 Cap_MatchesScope: procedure expose EC.
-  parse arg local_peer, value, s
+  parse arg local_peer, value, s, kind
+  if kind == 'id' then do
+    if \_covered_id(Scope_Incl(s), value) then return 0
+    return \_covered_id(Scope_Excl(s), value)
+  end
   cv = Cap_Canonicalize(local_peer, value)
   if \_covered(local_peer, Scope_Incl(s), cv) then return 0
   return \_covered(local_peer, Scope_Excl(s), cv)
@@ -217,12 +247,12 @@ Cap_CheckPermission: procedure expose EC.
   grants = Cap_GrantsOfToken(token)
   do i = 1 to Lst_Count(grants)
     g = Lst_Item(grants, i)
-    ok = (Cap_MatchesScope(local_peer, operation, Grant_Operations(g)) & ,
-          Cap_MatchesScope(local_peer, handler_pattern, Grant_Handlers(g)))
+    ok = (Cap_MatchesScope(local_peer, operation, Grant_Operations(g), 'id') & ,
+          Cap_MatchesScope(local_peer, handler_pattern, Grant_Handlers(g), 'path'))
     if ok then do
       peers = Grant_Peers(g)
       if peers == '' then peers = Scope_Make(Lst_Add('', local_peer), '')
-      ok = Cap_MatchesScope(local_peer, target_peer, peers)
+      ok = Cap_MatchesScope(local_peer, target_peer, peers, 'id')
     end
     if ok & resource \== '' then ok = Cap_CheckResourceScope(local_peer, granter_peer, resource, Grant_Resources(g))
     if ok then return 'ALLOW'

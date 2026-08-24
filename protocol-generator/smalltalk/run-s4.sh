@@ -84,7 +84,7 @@ head -1 /tmp/host.out
 # (the real gate is the per-request cap). This peer crosses libffi for crypto per op and
 # concurrency streams many tree.gets — widen the overall budget as the cohort does.
 if [ "$#" -eq 0 ]; then
-  set -- -profile core -timeout "${ORACLE_TIMEOUT:-10m}" -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
+  set -- -profile core -timeout "${ORACLE_TIMEOUT:-10m}" -json-out "${JSON_OUT:-$PROJ/status/CONFORMANCE-REPORT.json}"
 fi
 
 "$ORACLE" -addr "127.0.0.1:$PORT" "$@" || true

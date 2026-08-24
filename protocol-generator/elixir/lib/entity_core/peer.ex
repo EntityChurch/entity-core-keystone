@@ -272,7 +272,10 @@ defmodule EntityCore.Peer do
   defp connect_authenticate(t, conn, exec, included) do
     cond do
       conn.established ->
-        {err(409, "connection_already_established"), conn}
+        # RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+        # single-use nonce — pinned to 401 invalid_nonce, not a 409 state-conflict
+        # which under-signals the replay.
+        {err(401, "invalid_nonce"), conn}
 
       conn.issued_nonce == nil ->
         # authenticate before hello (§4.6 step 1)

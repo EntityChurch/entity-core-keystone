@@ -54,9 +54,9 @@ export function checkPermission(
   const resourceTarget = execute.resource;
 
   for (const grant of capability.grants) {
-    if (!grant.operations.matches(operation, localPeerId)) continue;
-    if (!grant.handlers.matches(handlerPattern, localPeerId)) continue;
-    if (!grant.effectivePeers(localPeerId).matches(targetPeer, localPeerId)) continue;
+    if (!grant.operations.matches(operation, localPeerId, "id")) continue;
+    if (!grant.handlers.matches(handlerPattern, localPeerId, "path")) continue;
+    if (!grant.effectivePeers(localPeerId).matches(targetPeer, localPeerId, "id")) continue;
     if (resourceTarget !== null && !checkResourceScope(resourceTarget, grant.resources, localPeerId, granterPeerId)) continue;
     return true;
   }
@@ -76,9 +76,9 @@ export function checkPathPermission(
 ): boolean {
   const canonicalPath = Paths.canonicalize(path, localPeerId);
   for (const grant of capability.grants) {
-    if (!grant.handlers.matches(handlerPattern, localPeerId)) continue;
-    if (!grant.operations.matches(operation, localPeerId)) continue;
-    if (!grant.resources.matches(canonicalPath, localPeerId)) continue;
+    if (!grant.handlers.matches(handlerPattern, localPeerId, "path")) continue;
+    if (!grant.operations.matches(operation, localPeerId, "id")) continue;
+    if (!grant.resources.matches(canonicalPath, localPeerId, "path")) continue;
     return true;
   }
   return false;

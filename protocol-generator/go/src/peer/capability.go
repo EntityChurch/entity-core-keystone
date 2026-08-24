@@ -157,7 +157,40 @@ func indexByteFrom(s string, b byte, start int) int {
 	return -1
 }
 
-func covered(localPeer, value string, pats []string) bool {
+// scopeKind selects the §5.2 matcher for a grant dimension (0.8.1, F40). It has no
+// zero-value default on purpose — every call site names its dimension, so a new one
+// cannot silently inherit the wrong matcher, which is exactly the F40 defect.
+type scopeKind int
+
+const (
+	kindID   scopeKind = iota // operations, peers — system/capability/id-scope
+	kindPath                  // handlers, resources — system/capability/path-scope
+)
+
+// matchesIDPattern is the §5.2 id-scope match (0.8.1, F40): literal comparison with
+// exactly two wildcard forms — bare "*" and a trailing "/*" segment-prefix. None of
+// the §5.4 path transforms apply, so a pattern carrying path syntax ("/*/get") is
+// matched as a literal string: a non-match, never a fault.
+func matchesIDPattern(value, pattern string) bool {
+	switch {
+	case pattern == "*":
+		return true
+	case len(pattern) >= 2 && pattern[len(pattern)-2:] == "/*":
+		return startsWith(pattern[:len(pattern)-1], value)
+	default:
+		return value == pattern
+	}
+}
+
+func covered(localPeer, value string, pats []string, kind scopeKind) bool {
+	if kind == kindID {
+		for _, p := range pats {
+			if matchesIDPattern(value, p) {
+				return true
+			}
+		}
+		return false
+	}
 	cv := canon(localPeer, value)
 	for _, p := range pats {
 		if matchesPattern(cv, canon(localPeer, p)) {
@@ -167,8 +200,8 @@ func covered(localPeer, value string, pats []string) bool {
 	return false
 }
 
-func matchesScope(localPeer, value string, s scope) bool {
-	return covered(localPeer, value, s.incl) && !covered(localPeer, value, s.excl)
+func matchesScope(localPeer, value string, s scope, kind scopeKind) bool {
+	return covered(localPeer, value, s.incl, kind) && !covered(localPeer, value, s.excl, kind)
 }
 
 // ── §5.2 check-permission ───────────────────────────────────────────────────
@@ -286,17 +319,17 @@ func checkPermission(localPeer, granterPeer string, exec Entity, token Entity, h
 	resource, hasResource := exec.Field("resource")
 
 	for _, g := range grantsOfToken(token) {
-		if !matchesScope(localPeer, operation, g.operations) {
+		if !matchesScope(localPeer, operation, g.operations, kindID) {
 			continue
 		}
-		if !matchesScope(localPeer, handlerPattern, g.handlers) {
+		if !matchesScope(localPeer, handlerPattern, g.handlers, kindPath) {
 			continue
 		}
 		peers := scope{incl: []string{localPeer}}
 		if g.peers != nil {
 			peers = *g.peers
 		}
-		if !matchesScope(localPeer, targetPeer, peers) {
+		if !matchesScope(localPeer, targetPeer, peers, kindID) {
 			continue
 		}
 		if hasResource && resource.Kind == cbor.KindMap {

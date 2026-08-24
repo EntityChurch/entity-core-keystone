@@ -85,9 +85,35 @@ let rec matches_pattern (path : string) (pattern : string) : bool =
     starts_with ~prefix path
   else String.equal path pattern
 
-let matches_scope ~local_peer (value : string) (s : scope) : bool =
-  let cv = canonicalize ~local_peer value in
-  let covered pats = List.exists (fun p -> matches_pattern cv (canonicalize ~local_peer p)) pats in
+(* Which §5.2 matcher a grant dimension uses (0.8.1, F40). Named at every call site --
+   there is no default -- so a new one cannot inherit the wrong matcher silently, which
+   is exactly the F40 defect. *)
+type scope_kind =
+  | Id_scope    (* operations, peers  -- system/capability/id-scope *)
+  | Path_scope  (* handlers, resources -- system/capability/path-scope *)
+
+(* §5.2 id-scope match (0.8.1, F40): literal comparison with exactly two wildcard forms
+   -- bare "*" and a trailing slash-star segment-prefix. None of the §5.4 path
+   transforms apply, so a pattern carrying path syntax is matched as a literal string:
+   a non-match, never a fault. *)
+let matches_id_pattern (value : string) (pattern : string) : bool =
+  if String.equal pattern "*" then true
+  else
+    let plen = String.length pattern in
+    if plen >= 2 && String.equal (String.sub pattern (plen - 2) 2) "/*" then
+      let prefix = String.sub pattern 0 (plen - 1) in
+      String.length value >= plen - 1
+      && String.equal (String.sub value 0 (plen - 1)) prefix
+    else String.equal value pattern
+
+let matches_scope ~local_peer ~(kind : scope_kind) (value : string) (s : scope) : bool =
+  let covered =
+    match kind with
+    | Id_scope -> fun pats -> List.exists (fun p -> matches_id_pattern value p) pats
+    | Path_scope ->
+      let cv = canonicalize ~local_peer value in
+      fun pats -> List.exists (fun p -> matches_pattern cv (canonicalize ~local_peer p)) pats
+  in
   if not (covered s.incl) then false
   else not (covered s.excl)
 
@@ -162,10 +188,10 @@ let check_permission ~local_peer ~granter_peer (exec : Model.entity) (token : Mo
   let target_peer = extract_peer ~local_peer uri in
   let resource = Model.field exec "resource" in
   let grant_ok g =
-    matches_scope ~local_peer operation g.operations
-    && matches_scope ~local_peer handler_pattern g.handlers
+    matches_scope ~local_peer ~kind:Id_scope operation g.operations
+    && matches_scope ~local_peer ~kind:Path_scope handler_pattern g.handlers
     && (let peers = Option.value ~default:{ incl = [ local_peer ]; excl = [] } g.peers in
-        matches_scope ~local_peer target_peer peers)
+        matches_scope ~local_peer ~kind:Id_scope target_peer peers)
     && (match resource with
         | None -> true
         | Some r -> check_resource_scope ~local_peer ~granter_peer r g.resources)

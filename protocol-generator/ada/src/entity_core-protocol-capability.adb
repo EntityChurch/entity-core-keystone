@@ -15,6 +15,11 @@ package body Entity_Core.Protocol.Capability is
    Base58_Alphabet : constant String :=
      "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
+   --  Which §5.2 matcher a grant dimension uses (0.8.1, F40). Id_Scope is
+   --  Operations/Peers (system/capability/id-scope); Path_Scope is
+   --  Handlers/Resources (system/capability/path-scope).
+   type Scope_Kind is (Id_Scope, Path_Scope);
+
    --  Resolve a hash to an entity: prefer Env.included, then the store.
    function Resolve
      (Store : access Entity_Core.Protocol.Store.Safe_Store;
@@ -172,15 +177,67 @@ package body Entity_Core.Protocol.Capability is
       return False;
    end Covered_Frame;
 
-   --  Scope match (§5.4): include covers V and exclude does not (on Local_Peer).
-   function Matches_Scope (Local_Peer : String; Value : String; Scope : Ecf_Value)
+   --  §5.2 id-scope match (0.8.1, F40) — Operations and Peers. Literal comparison
+   --  with exactly two wildcard forms: bare "*" and a trailing slash-star
+   --  segment-prefix. None of the §5.4 path transforms apply, so a pattern carrying
+   --  path syntax is matched as a literal string: a non-match, never a fault.
+   function Matches_Id_Pattern (Value : String; Pattern : String) return Boolean is
+   begin
+      if Pattern = "*" then
+         return True;
+      end if;
+      if Pattern'Length >= 2
+        and then Pattern (Pattern'Last - 1 .. Pattern'Last) = "/*"
+      then
+         declare
+            Prefix : constant String :=
+              Pattern (Pattern'First .. Pattern'Last - 1);
+         begin
+            return Value'Length >= Prefix'Length
+              and then Value (Value'First .. Value'First + Prefix'Length - 1)
+                       = Prefix;
+         end;
+      end if;
+      return Value = Pattern;
+   end Matches_Id_Pattern;
+
+   --  Any id-scope pattern in Patterns covering Value — no canonicalization.
+   function Covered_Id (Patterns : Ecf_Value; Value : String) return Boolean is
+   begin
+      if Kind (Patterns) /= K_Array then
+         return False;
+      end if;
+      for I in 1 .. Array_Length (Patterns) loop
+         declare
+            P : constant Ecf_Value := Array_Element (Patterns, I);
+         begin
+            if Kind (P) = K_Text and then Matches_Id_Pattern (Value, As_Text (P))
+            then
+               return True;
+            end if;
+         end;
+      end loop;
+      return False;
+   end Covered_Id;
+
+   --  Scope match (§5.2), typed by scope kind (0.8.1, F40). Kind is named at every
+   --  call site — there is no default — so a new one cannot inherit the wrong matcher
+   --  silently, which is exactly the F40 defect.
+   function Matches_Scope (Local_Peer : String; Value : String; Scope : Ecf_Value;
+                           Kind_Of : Scope_Kind)
                            return Boolean is
-      CV   : constant String := Canonicalize (Local_Peer, Value);
       Incl : constant Ecf_Value := Field (Scope, "include");
       Excl : constant Ecf_Value := Field (Scope, "exclude");
    begin
-      return Covered_Frame (Local_Peer, Incl, CV)
-        and then not Covered_Frame (Local_Peer, Excl, CV);
+      if Kind_Of = Id_Scope then
+         return Covered_Id (Incl, Value) and then not Covered_Id (Excl, Value);
+      end if;
+      declare
+         CV : constant String := Canonicalize (Local_Peer, Value);
+      begin
+         return Covered_Frame (Local_Peer, Incl, CV)
+           and then not Covered_Frame (Local_Peer, Excl, CV);
+      end;
    end Matches_Scope;
 
    --  §PR-8 resource scope: caller targets canonicalize on Local; the grant's
@@ -907,12 +964,13 @@ package body Entity_Core.Protocol.Capability is
          declare
             G  : constant Ecf_Value := Array_Element (Grants, I);
             Ok : Boolean :=
-              Matches_Scope (Local_Peer, Operation, Field (G, "operations"))
-              and then Matches_Scope (Local_Peer, Handler_Pattern, Field (G, "handlers"));
+              Matches_Scope (Local_Peer, Operation, Field (G, "operations"), Id_Scope)
+              and then Matches_Scope (Local_Peer, Handler_Pattern, Field (G, "handlers"), Path_Scope);
          begin
             if Ok then
                Ok := Matches_Scope (Local_Peer, Target_Peer,
-                                    Peers_Or_Default (Local_Peer, G));
+                                    Peers_Or_Default (Local_Peer, G),
+                                    Id_Scope);
             end if;
             if Ok and then Kind (Resource) = K_Map then
                Ok := Check_Resource_Scope (Local_Peer, Granter_Peer, Resource,

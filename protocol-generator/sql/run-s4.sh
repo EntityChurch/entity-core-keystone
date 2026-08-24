@@ -34,7 +34,7 @@ ORACLE="${ORACLE:-/work/output/s4-oracles/validate-peer}"
 EC_NAME="${EC_NAME:-conformance}"
 
 # Default: the full core-profile gate with the JSON report.
-if [ "$#" -eq 0 ]; then set -- -profile core -json-out "$WORKDIR/status/CONFORMANCE-REPORT.json"; fi
+if [ "$#" -eq 0 ]; then set -- -profile core -json-out "${JSON_OUT:-$WORKDIR/status/CONFORMANCE-REPORT.json}"; fi
 
 podman run $PODMAN_RUN_CAPS --rm --network=none \
   -e ORACLE="$ORACLE" -e PORT="$PORT" -e EC_NAME="$EC_NAME" \

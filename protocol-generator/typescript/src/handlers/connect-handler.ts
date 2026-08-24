@@ -39,6 +39,15 @@ export class ConnectHandler implements Handler {
   }
 
   #hello(ctx: HandlerContext, conn: ConnectionState): HandlerResult {
+    // §4.2: "After connection is established, subsequent connection requests on
+    // the same connection MUST be rejected with status 409." `authenticate` gets
+    // its own more specific 401 invalid_nonce (RT-6, §4.6 — a replayed nonce
+    // under-signals as a generic 409); every other connect op, `hello` included,
+    // keeps the general 409 here.
+    if (conn.established) {
+      return errorEntity(Status.Conflict, "connection_already_established", "connection already established");
+    }
+
     const hello = ctx.params;
     if (hello.type !== TypeNames.Hello) {
       return errorEntity(Status.BadRequest, "connection_sequence_error", "expected a hello entity");
@@ -107,7 +116,11 @@ export class ConnectHandler implements Handler {
 
   #authenticate(ctx: HandlerContext, conn: ConnectionState): HandlerResult {
     if (conn.established) {
-      return errorEntity(Status.Conflict, "connection_already_established", "connection already established");
+      // RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+      // single-use nonce. The anti-replay property is the MUST and the mechanism
+      // (established-state tracking) is impl-defined, but the STATUS is pinned to
+      // 401 invalid_nonce — a 409 state-conflict under-signals the replay.
+      return errorEntity(Status.Unauthorized, "invalid_nonce", "authenticate replayed on an already-established connection");
     }
     if (!conn.helloReceived) {
       return errorEntity(Status.BadRequest, "connection_sequence_error", "authenticate before hello");

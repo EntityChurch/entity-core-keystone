@@ -106,7 +106,37 @@ bool covered(std::string_view frame, const EcfValue* pats, std::string_view cv) 
     return false;
 }
 
-bool matches_scope(std::string_view local_peer, std::string_view value, Scope s) {
+// §5.2 id-scope match (0.8.1, F40) — `operations` and `peers`. Literal comparison with
+// exactly two wildcard forms: bare "*" and a trailing "/*" segment-prefix. None of the
+// §5.4 path transforms apply, so a pattern carrying path syntax ("/*/get") is matched as
+// a literal string: a non-match, never a fault.
+bool matches_id_pattern(std::string_view value, std::string_view pattern) {
+    if (pattern == "*") return true;
+    if (pattern.size() >= 2 && pattern.substr(pattern.size() - 2) == "/*") {
+        return value.substr(0, pattern.size() - 1) == pattern.substr(0, pattern.size() - 1);
+    }
+    return value == pattern;
+}
+
+// any id-scope pattern in `pats` covering `value` — no canonicalization
+bool covered_id(const EcfValue* pats, std::string_view value) {
+    if (!pats) return false;
+    for (const auto& box : std::get<ecf::Array>(pats->as_variant())) {
+        if (!box->is<ecf::Text>()) continue;
+        if (matches_id_pattern(value, text_of(*box))) return true;
+    }
+    return false;
+}
+
+// Which §5.2 matcher a grant dimension uses (0.8.1, F40). Passed explicitly at every
+// call site — no default — so a new one cannot inherit the wrong matcher silently,
+// which is exactly the F40 defect.
+enum class ScopeKind { Id, Path };
+
+bool matches_scope(std::string_view local_peer, std::string_view value, Scope s, ScopeKind kind) {
+    if (kind == ScopeKind::Id) {
+        return covered_id(s.incl, value) && !covered_id(s.excl, value);
+    }
     auto cv = canonicalize(local_peer, value);
     if (!cv) return false;
     return covered(local_peer, s.incl, *cv) && !covered(local_peer, s.excl, *cv);
@@ -523,8 +553,8 @@ bool grant_subset(const std::string& local_peer, const std::string& child_peer,
         return scope_subset(local_peer, local_peer, parse_scope(cp), parse_scope(pp));
     }
     if (!cp && !pp) return true;  // both default [local] → subset
-    if (cp) return matches_scope(local_peer, local_peer, parse_scope(cp));
-    return matches_scope(local_peer, local_peer, parse_scope(pp));
+    if (cp) return matches_scope(local_peer, local_peer, parse_scope(cp), ScopeKind::Id);
+    return matches_scope(local_peer, local_peer, parse_scope(pp), ScopeKind::Id);
 }
 
 Verdict check_permission(const std::string& local_peer, const std::string& granter_peer,
@@ -538,12 +568,12 @@ Verdict check_permission(const std::string& local_peer, const std::string& grant
     if (!grants) return Verdict::Deny;
     for (const auto& gbox : std::get<ecf::Array>(grants->as_variant())) {
         const EcfValue& g = *gbox;
-        bool ok = matches_scope(local_peer, operation, parse_scope(grant_dim(&g, "operations"))) &&
-                  matches_scope(local_peer, handler_pattern, parse_scope(grant_dim(&g, "handlers")));
+        bool ok = matches_scope(local_peer, operation, parse_scope(grant_dim(&g, "operations")), ScopeKind::Id) &&
+                  matches_scope(local_peer, handler_pattern, parse_scope(grant_dim(&g, "handlers")), ScopeKind::Path);
         if (ok) {
             const auto* peers_v = grant_dim(&g, "peers");
             if (peers_v) {
-                ok = matches_scope(local_peer, target_peer, parse_scope(peers_v));
+                ok = matches_scope(local_peer, target_peer, parse_scope(peers_v), ScopeKind::Id);
             } else {
                 ok = (target_peer == local_peer);  // default peers = [local]
             }

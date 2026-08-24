@@ -191,8 +191,13 @@ function newSession(kernel, connId, sendFrame) {
     dpConnectPreauth(did) {
       const ctx = dispatches.get(did);
       try {
+        // RT-6 (§4.6, 0.8.1): route ALL connect-path traffic to the connect handler,
+        // established or not. A replayed authenticate on an established connection
+        // carries no author/capability (same pre-auth shape as leg 1) and MUST reach
+        // ConnectHandler's own 401 invalid_nonce check, not fall through to the
+        // generic authenticated-dispatch 401 missing_author below.
         const connectPath = "/" + localPeerId + "/" + ec.Protocols.ConnectPath;
-        if (ctx.path === connectPath && !connState.established) {
+        if (ctx.path === connectPath) {
           const connect = registry.get(ec.Protocols.ConnectPath);
           if (connect === null) {
             ctx.err = { status: ec.Status.InternalError, code: "no_connect_handler", message: "connect handler missing" };

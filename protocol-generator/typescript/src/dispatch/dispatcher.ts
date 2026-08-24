@@ -100,8 +100,17 @@ export class Dispatcher {
     }
 
     // Connection pre-authorization (§4.2, §6.5) — the sole no-auth special case.
+    // Routed unconditionally on path match, NOT gated on `!conn.established`: an
+    // established connection can still receive connect-path traffic (a replayed
+    // `authenticate`, per RT-6 §4.6, or a repeat `hello`/other connect op, per
+    // §4.2's "subsequent connection requests... MUST be rejected with 409") and
+    // that traffic is still pre-authorized (no author/capability fields) — it
+    // must reach ConnectHandler to get the correct connect-specific status
+    // (401 invalid_nonce for a replayed authenticate; 409 otherwise), not fall
+    // through to the generic authenticated-path 401 missing_author below, which
+    // is the wrong code for a connect-path request under any connection state.
     const connectPath = "/" + this.#peer.localPeerId + "/" + Protocols.ConnectPath;
-    if (path === connectPath && !conn.established) {
+    if (path === connectPath) {
       const connect = this.#registry.get(Protocols.ConnectPath);
       if (connect === null) {
         return errorEnvelope(requestId, Status.InternalError, "no_connect_handler", "connect handler missing");

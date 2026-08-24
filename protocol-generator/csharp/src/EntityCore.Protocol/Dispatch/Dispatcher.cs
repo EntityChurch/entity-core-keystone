@@ -91,8 +91,16 @@ internal sealed class Dispatcher
         }
 
         // Connection pre-authorization (§4.2, §6.5) — the sole no-auth special case.
+        // Routed here regardless of conn.Established: a connect-path EXECUTE never
+        // carries author/capability (§4.2), including a REPLAYED authenticate on an
+        // already-established connection (RT-6, §4.6) — that replay must still reach
+        // ConnectHandler.Authenticate so its established-check can reject it with the
+        // pinned 401 invalid_nonce. Falling through to the authenticated-path branch
+        // below instead hits the missing_author 401 first (wrong code) — or, with a
+        // real author/capability attached to the replay, capability_denied — neither
+        // of which is what RT-6 requires.
         string connectPath = "/" + _peer.LocalPeerId + "/" + Protocols.ConnectPath;
-        if (path == connectPath && !conn.Established)
+        if (path == connectPath)
         {
             IHandler? connect = _registry.Get(Protocols.ConnectPath);
             if (connect is null)

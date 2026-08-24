@@ -62,7 +62,10 @@ final class ConnectHandler implements Handler
         $conn = $ctx->conn;
         $exec = $ctx->exec;
         if ($conn->established) {
-            return Outcome::err(409, 'connection_already_established');
+            // RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+            // single-use nonce — pinned to 401 invalid_nonce, not a 409 state-conflict
+            // which under-signals the replay.
+            return Outcome::err(401, 'invalid_nonce');
         }
         $issuedNonce = $conn->issuedNonce;
         if ($issuedNonce === null) {

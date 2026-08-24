@@ -247,7 +247,12 @@ fn connectHandler(p: *Peer, a: std.mem.Allocator, conn: *Conn, exec: Entity, env
         const hello = try Entity.make(a, "system/protocol/connect/hello", .{ .map = try list.toOwnedSlice(a) });
         return ok(hello);
     } else if (std.mem.eql(u8, op, "authenticate")) {
-        if (conn.established) return errOut(a, 409, "connection_already_established", null);
+        // RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+        // single-use nonce. The anti-replay property is the MUST and the
+        // mechanism (established-state tracking) is impl-defined, but the
+        // STATUS is pinned to 401 invalid_nonce — a 409 state-conflict
+        // under-signals the replay.
+        if (conn.established) return errOut(a, 401, "invalid_nonce", null);
         const issued = conn.issued_nonce orelse return errOut(a, 401, "invalid_nonce", null);
         const auth = (try exec.entityField(a, "params")) orelse return errOut(a, 401, "authentication_failed", null);
         // §4.6 hardening: reject an unsupported key_type (field, non-32B pubkey, or peer_id prefix).

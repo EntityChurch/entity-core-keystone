@@ -363,7 +363,11 @@ def connectHandler (peer : Peer) (conn : Conn) (exec : Entity)
                  (.text "key_types", .array [.text "ed25519"])])
         pure (ok hello)
   | "authenticate" =>
-    if ← conn.established.get then pure (err 409 "connection_already_established")
+    -- RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+    -- single-use nonce. The anti-replay property is the MUST and the mechanism
+    -- (established-state tracking) is impl-defined, but the STATUS is pinned to
+    -- 401 invalid_nonce — a 409 state-conflict under-signals the replay.
+    if ← conn.established.get then pure (err 401 "invalid_nonce")
     else match ← conn.issuedNonce.get with
     | none => pure (err 401 "invalid_nonce")
     | some issued => match entityField exec "params" with

@@ -39,7 +39,24 @@ export async function initiate(
   return authenticate(conn, local, remoteNonce, remotePeerId, timeoutMs);
 }
 
-/** Responder side: await the inbound hello, then send the reverse `authenticate` (§4.1 E3). */
+/**
+ * Responder side: await the inbound hello, then send the reverse `authenticate`
+ * (§4.1 E3, the "leg 3" symmetric form).
+ *
+ * NOT CURRENTLY CALLED. §4.1 pins leg 3 as OPTIONAL and reachability-gated: "A
+ * responder MUST NOT proactively send a leg-3 authenticate to an initiator that
+ * has not indicated it accepts inbound dispatch... An unsolicited inbound
+ * authenticate corrupts a client-style initiator's next read," and "no
+ * reference impl currently sends leg 3 (the diagram is aspirational on that
+ * leg)... [the signaling mechanism] is deferred." `Peer#onInbound` (`../peer.js`)
+ * previously called this unconditionally on every inbound connection, which is
+ * exactly the MUST NOT above — confirmed as the root cause of the
+ * connectivity/handshake_nonce_single_use (RT-6) conformance failure (a
+ * same-connection follow-up request from a client-style initiator reliably read
+ * this function's eager outbound authenticate instead of its own response).
+ * Kept here, unwired, for when the initiator-opt-in signaling mechanism is
+ * pinned and a serving-initiator use case needs it.
+ */
 export async function respond(
   conn: PeerConnection,
   local: PeerIdentity,

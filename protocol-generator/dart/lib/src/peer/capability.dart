@@ -126,7 +126,36 @@ bool matchesPattern(String path, String pattern) {
   return path == pattern;
 }
 
-bool matchesScope(String localPeer, String value, Scope s) {
+/// Which §5.2 matcher a grant dimension uses (0.8.1, F40). Passed explicitly at every
+/// call site — no default — so a new one cannot inherit the wrong matcher silently,
+/// which is exactly the F40 defect.
+enum ScopeKind {
+  /// `operations`, `peers` — `system/capability/id-scope`.
+  id,
+
+  /// `handlers`, `resources` — `system/capability/path-scope`.
+  path,
+}
+
+/// §5.2 id-scope match (0.8.1, F40): literal comparison with exactly two wildcard forms
+/// — bare `*` and a trailing slash-star segment-prefix. None of the §5.4 path transforms
+/// apply, so a pattern carrying path syntax is matched as a literal string: a non-match,
+/// never a fault.
+bool matchesIdPattern(String value, String pattern) {
+  if (pattern == '*') return true;
+  if (pattern.length >= 2 && pattern.endsWith('/*')) {
+    return value.startsWith(pattern.substring(0, pattern.length - 1));
+  }
+  return value == pattern;
+}
+
+bool _coveredId(List<String> pats, String value) =>
+    pats.any((p) => matchesIdPattern(value, p));
+
+bool matchesScope(String localPeer, String value, Scope s, ScopeKind kind) {
+  if (kind == ScopeKind.id) {
+    return _coveredId(s.incl, value) && !_coveredId(s.excl, value);
+  }
   final cv = canonicalize(localPeer, value);
   return _covered(localPeer, s.incl, cv) && !_covered(localPeer, s.excl, cv);
 }
@@ -203,11 +232,11 @@ Verdict checkPermission(
   final targetPeer = extractPeer(localPeer, uri);
   final resource = exec.mapField('resource');
   for (final g in grantsOfToken(token)) {
-    var ok = matchesScope(localPeer, operation, g.operations) &&
-        matchesScope(localPeer, handlerPattern, g.handlers);
+    var ok = matchesScope(localPeer, operation, g.operations, ScopeKind.id) &&
+        matchesScope(localPeer, handlerPattern, g.handlers, ScopeKind.path);
     if (ok) {
       final peers = g.peers ?? Scope([localPeer], const []);
-      ok = matchesScope(localPeer, targetPeer, peers);
+      ok = matchesScope(localPeer, targetPeer, peers, ScopeKind.id);
     }
     if (ok && resource != null) {
       ok = checkResourceScope(localPeer, granterPeer, resource, g.resources);

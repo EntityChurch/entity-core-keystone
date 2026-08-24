@@ -117,7 +117,11 @@ _connect_authenticate: procedure expose EC.
   conn = Ctx_Conn(ctx)
   exec = Ctx_Exec(ctx)
   included = Ctx_Included(ctx)
-  if Conn_Get(conn, 'established') then return Out_Err(409, 'connection_already_established', '')
+  /* RT-6 (§4.6, 0.8.1): a replayed authenticate re-presents the consumed
+   * single-use nonce. The anti-replay property is the MUST and the mechanism
+   * (established-state tracking) is impl-defined, but the STATUS is pinned to
+   * 401 invalid_nonce — a 409 state-conflict under-signals the replay. */
+  if Conn_Get(conn, 'established') then return Out_Err(401, 'invalid_nonce', '')
   issued_nonce = Conn_Get(conn, 'issued_nonce')
   if issued_nonce == '' then return Out_Err(401, 'invalid_nonce', '')
   auth = Ent_EntityField(exec, 'params')
