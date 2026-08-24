@@ -1,0 +1,294 @@
+-- entity-core-protocol-unison — S3 smoke runner. Boots TWO peers in-process over
+-- real loopback TCP and drives the lifecycle scenario, all green:
+--   1. §4.1 handshake both directions (hello → authenticate; §4.4/§6.9a cap).
+--   2. UNauthenticated unknown path → 401 (§6.5 authenticates before resolving —
+--      the F31 auth-ordering: 401 wins over 404).
+--   3. authenticated unknown path → 404.
+--   4. authority-gated tree get (system/type/*) → 200.
+--   5. capability request → 200 (mints a bounded child cap).
+--   6. request_id demux (N7): 16 concurrent EXECUTEs each correlate → all 200.
+--   7. register → 200 (the §6.13a writes).
+--   8. dispatch-outbound reentry → 200 + echo value passthrough (§6.11 reentry).
+-- The client is a real second Peer built from the library's own builders + codec;
+-- it dials, runs its own dispatcher on the bidirectional connection (so the reentry
+-- leg works), and signs as a distinct identity. Green = the peer talks the wire.
+
+type Client =
+  { clIdent : Identity
+  , clCio : ConnIO
+  , clCtr : MVar Nat
+  , clCap : Ref {IO} (Optional Entity)
+  , clCapSig : Ref {IO} (Optional Entity)
+  , clGranter : Ref {IO} (Optional Entity) }
+
+seed32 : Nat -> Bytes
+seed32 b = Bytes.fromList (List.map (_ -> b) (rangeTo 0 32))
+
+nextReqId : Client ->{IO} Text
+nextReqId cl =
+  n = takeMVar (Client.clCtr cl)
+  putMVar (Client.clCtr cl) (n + 1)
+  "req-" Text.++ (Nat.toText (n + 1))
+
+-- ── response helpers ──────────────────────────────────────────────────────────
+
+statusOf : Optional Envelope -> Nat
+statusOf menv = match menv with
+  Some env -> optOr (natField (Envelope.eroot env) "status") 0
+  None -> 0
+
+optEntityOfValue : Value -> Optional Entity
+optEntityOfValue v = match entityOfCbor v with
+  Right e -> Some e
+  Left _ -> None
+
+resultEntityOf : Optional Envelope -> Optional Entity
+resultEntityOf menv = match menv with
+  Some env -> match field (Envelope.eroot env) "result" with
+    Some v -> optEntityOfValue v
+    None -> None
+  None -> None
+
+nonceOf : Optional Envelope -> Bytes
+nonceOf menv = match resultEntityOf menv with
+  Some e -> optOr (bytesField e "nonce") Bytes.empty
+  None -> Bytes.empty
+
+-- ── authed / unauthed EXECUTE construction ────────────────────────────────────
+
+capHashOf : Optional Entity -> Bytes
+capHashOf mc = match mc with
+  Some c -> Entity.ehash c
+  None -> Bytes.empty
+
+optIncl : Optional Entity -> [(Bytes, Entity)]
+optIncl me = match me with
+  Some e -> [(Entity.ehash e, e)]
+  None -> []
+
+sendAuthed : Client -> Text -> Text -> Entity -> Optional Value ->{IO} Optional Envelope
+sendAuthed cl uri operation params resource =
+  rid = nextReqId cl
+  ident = Client.clIdent cl
+  mcap = Ref.read (Client.clCap cl)
+  mcapSig = Ref.read (Client.clCapSig cl)
+  mgranter = Ref.read (Client.clGranter cl)
+  exec = makeExecute rid uri operation params resource (Identity.idHash ident) (capHashOf mcap)
+  execSig = signEntity ident exec
+  baseInc =
+    [ (Identity.idHash ident, Identity.idPeerEntity ident)
+    , (Entity.ehash execSig, execSig) ]
+  included = baseInc List.++ (optIncl mcap) List.++ (optIncl mcapSig) List.++ (optIncl mgranter)
+  sendOver (Client.clCio cl) (Envelope exec included)
+
+-- No author signature in `included` → §6.5 authn fails → 401 (proves auth-ordering).
+sendUnauthed : Client -> Text -> Text -> Entity -> Optional Value ->{IO} Optional Envelope
+sendUnauthed cl uri operation params resource =
+  rid = nextReqId cl
+  ident = Client.clIdent cl
+  exec = makeExecute rid uri operation params resource (Identity.idHash ident) Bytes.empty
+  sendOver (Client.clCio cl) (Envelope exec [(Identity.idHash ident, Identity.idPeerEntity ident)])
+
+-- ── handshake (§4.1 / §4.6) ────────────────────────────────────────────────────
+
+firstOfType : Text -> [(Bytes, Entity)] -> Optional Entity
+firstOfType typ items = match items with
+  [] -> None
+  pair +: rest ->
+    if (Entity.etype (snd2 pair)) == typ then Some (snd2 pair)
+    else firstOfType typ rest
+
+tokenFromResp : Optional Envelope -> [(Bytes, Entity)] -> Optional Entity
+tokenFromResp menv inc = match resultEntityOf menv with
+  Some r -> match bytesField r "token" with
+    Some th -> alLookupB th inc
+    None -> None
+  None -> None
+
+sigForToken : Optional Entity -> [(Bytes, Entity)] -> Optional Entity
+sigForToken mtoken inc = match mtoken with
+  Some t -> findSignature (Entity.ehash t) inc
+  None -> None
+
+captureCap : Client -> Optional Envelope ->{IO} ()
+captureCap cl menv = match menv with
+  None -> ()
+  Some env ->
+    inc = Envelope.eincluded env
+    mtoken = tokenFromResp menv inc
+    Ref.write (Client.clCap cl) mtoken
+    Ref.write (Client.clCapSig cl) (sigForToken mtoken inc)
+    Ref.write (Client.clGranter cl) (firstOfType "system/peer" inc)
+
+handshake : Client ->{IO} Boolean
+handshake cl =
+  ident = Client.clIdent cl
+  ridH = nextReqId cl
+  helloParams = makeEntity "primitive/any" (VMap [(VText "peer_id", VText (Identity.idPeerId ident))])
+  helloExec = makeExecute ridH "system/protocol/connect" "hello" helloParams None (Identity.idHash ident) Bytes.empty
+  helloResp = sendOver (Client.clCio cl) (Envelope helloExec [(Identity.idHash ident, Identity.idPeerEntity ident)])
+  okHello = (statusOf helloResp) == 200
+  nonce = nonceOf helloResp
+  ridA = nextReqId cl
+  authData =
+    [ (VText "public_key", VBytes (Identity.idPublicKey ident))
+    , (VText "nonce", VBytes nonce)
+    , (VText "peer_id", VText (Identity.idPeerId ident)) ]
+  authEntity = makeEntity "primitive/any" (VMap authData)
+  authSig = signEntity ident authEntity
+  authExec = makeExecute ridA "system/protocol/connect" "authenticate" authEntity None (Identity.idHash ident) Bytes.empty
+  authInc =
+    [ (Identity.idHash ident, Identity.idPeerEntity ident)
+    , (Entity.ehash authSig, authSig) ]
+  authResp = sendOver (Client.clCio cl) (Envelope authExec authInc)
+  okAuth = (statusOf authResp) == 200
+  captureCap cl authResp
+  okHello && okAuth
+
+-- ── request_id demux (N7): N concurrent EXECUTEs each correlate ───────────────
+
+makePromises : Nat ->{IO} [Promise Nat]
+makePromises n =
+  if n == 0 then []
+  else (io2.Promise.new ()) +: (makePromises (Nat.drop n 1))
+
+sendAndWrite : Client -> Promise Nat -> Entity -> Value ->{IO} ()
+sendAndWrite cl pr params resource =
+  r = sendAuthed cl "system/tree" "get" params (Some resource)
+  promiseWrite pr (statusOf r)
+
+forkSenders : Client -> [Promise Nat] -> Entity -> Value ->{IO} ()
+forkSenders cl proms params resource = match proms with
+  [] -> ()
+  pr +: rest ->
+    _ = io2.IO.forkComp '(sendAndWrite cl pr params resource)
+    forkSenders cl rest params resource
+
+readPromises : [Promise Nat] ->{IO} [Nat]
+readPromises proms = match proms with
+  [] -> []
+  pr +: rest -> (io2.Promise.read pr) +: (readPromises rest)
+
+allEq200 : [Nat] -> Boolean
+allEq200 xs = match xs with
+  [] -> true
+  h +: t -> if h == 200 then allEq200 t else false
+
+concurrentDemux : Client -> Nat -> Entity -> Value ->{IO} Boolean
+concurrentDemux cl n params resource =
+  proms = makePromises n
+  forkSenders cl proms params resource
+  allEq200 (readPromises proms)
+
+-- ── §7a dispatch-outbound reentry ──────────────────────────────────────────────
+
+echoPassthrough : Optional Envelope -> Optional Value
+echoPassthrough menv = match resultEntityOf menv with
+  Some res -> match field res "result" with
+    Some innerResultV -> match optEntityOfValue innerResultV with
+      Some inner -> field inner "value"
+      None -> None
+    None -> None
+  None -> None
+
+reentryTest : Client -> Identity ->{IO} Boolean
+reentryTest cl serverIdent =
+  ident = Client.clIdent cl
+  now = nowMs ()
+  openGrant = grantV ["*"] ["*", "/*/*"] ["*"] (Some ["*"])
+  reentryCapData =
+    [ (VText "granter", VBytes (Identity.idHash ident))
+    , (VText "grantee", VBytes (Identity.idHash serverIdent))
+    , (VText "grants", VArray [openGrant])
+    , (VText "created_at", VUInt now) ]
+  reentryCap = makeEntity "system/capability/token" (VMap reentryCapData)
+  reentryCapSig = signEntity ident reentryCap
+  echoInner = VText "reentry-ping"
+  echoVal = VMap [(VText "value", echoInner)]
+  dispData =
+    [ (VText "target", VText "system/validate/echo")
+    , (VText "operation", VText "echo")
+    , (VText "value", echoVal)
+    , (VText "reentry_capability", entityToCbor reentryCap)
+    , (VText "reentry_granter", entityToCbor (Identity.idPeerEntity ident))
+    , (VText "reentry_cap_signature", entityToCbor reentryCapSig) ]
+  dispParams = makeEntity "primitive/any" (VMap dispData)
+  dispRes = VMap [(VText "targets", VArray [VText "system/validate/dispatch-outbound"])]
+  rDisp = sendAuthed cl "system/validate/dispatch-outbound" "dispatch" dispParams (Some dispRes)
+  okStatus = (statusOf rDisp) == 200
+  okVal = (echoPassthrough rDisp) == (Some echoInner)
+  okStatus && okVal
+
+-- ── result formatting ──────────────────────────────────────────────────────────
+
+countTrue : [(Text, Boolean)] -> Nat
+countTrue rs = foldl (acc r -> if snd2 r then acc + 1 else acc) 0 rs
+
+fails : [(Text, Boolean)] -> Text
+fails rs = foldl (acc r -> if snd2 r then acc else acc Text.++ " FAIL:" Text.++ (fst2 r)) "" rs
+
+fmtResults : [(Text, Boolean)] -> Text
+fmtResults rs =
+  passed = countTrue rs
+  total = List.size rs
+  head = "SMOKE " Text.++ (Nat.toText passed) Text.++ "/" Text.++ (Nat.toText total)
+  head Text.++ (fails rs)
+
+capReqGrants : Value
+capReqGrants =
+  VArray
+    [ VMap
+        [ (VText "handlers", VMap [(VText "include", VArray [VText "system/tree"])])
+        , (VText "resources", VMap [(VText "include", VArray [VText "system/type/*"])])
+        , (VText "operations", VMap [(VText "include", VArray [VText "get"])]) ] ]
+
+-- ── scenario ──────────────────────────────────────────────────────────────────
+
+smokeMain : '{IO} Text
+smokeMain _ =
+  serverIdent = identityOfSeed (seed32 17)
+  server = createPeer (Identity.idSeed serverIdent) SeedDebugOpen true
+  listenRes = listenOn 0
+  lsock = fst2 listenRes
+  port = snd2 listenRes
+  _ = io2.IO.forkComp '(acceptLoop server lsock)
+  _ = io2.IO.delay.impl 200000
+  clientIdent = identityOfSeed (seed32 34)
+  clientPeer = createPeer (Identity.idSeed clientIdent) SeedStandard true
+  csock = clientConnect "127.0.0.1" port
+  connRes = runWithConn clientPeer csock
+  cio = snd2 connRes
+  ctr = io2.MVar.new 0
+  capRef = io2.IO.ref (None : Optional Entity)
+  capSigRef = io2.IO.ref (None : Optional Entity)
+  granterRef = io2.IO.ref (None : Optional Entity)
+  cl = Client clientIdent cio ctr capRef capSigRef granterRef
+
+  ep = makeEntity "primitive/any" (VMap [])
+  bogusRes = VMap [(VText "targets", VArray [VText "system/nonexistent/thing"])]
+  typeRes = VMap [(VText "targets", VArray [VText "system/type/primitive/any"])]
+  regRes = VMap [(VText "targets", VArray [VText "system/handler/smoke/test"])]
+  regManifest = VMap [(VText "name", VText "smoke-handler"), (VText "operations", VMap [(VText "ping", VMap [])])]
+
+  r1 = handshake cl
+  r2 = (statusOf (sendUnauthed cl "system/nonexistent/thing" "get" ep (Some bogusRes))) == 401
+  r3 = (statusOf (sendAuthed cl "system/nonexistent/thing" "get" ep (Some bogusRes))) == 404
+  r4 = (statusOf (sendAuthed cl "system/tree" "get" ep (Some typeRes))) == 200
+  capParams = makeEntity "primitive/any" (VMap [(VText "grants", capReqGrants)])
+  r5 = (statusOf (sendAuthed cl "system/capability" "request" capParams None)) == 200
+  r6 = concurrentDemux cl 16 ep typeRes
+  regReq = makeEntity "system/handler/register-request" (VMap [(VText "manifest", regManifest)])
+  r7 = (statusOf (sendAuthed cl "system/handler" "register" regReq (Some regRes))) == 200
+  r8 = reentryTest cl serverIdent
+
+  _ = io2.IO.closeSocket.impl csock
+  _ = io2.IO.delay.impl 50000
+  fmtResults
+    [ ("handshake", r1)
+    , ("unauth-unknown-401", r2)
+    , ("auth-unknown-404", r3)
+    , ("tree-get-200", r4)
+    , ("cap-request-200", r5)
+    , ("demux16", r6)
+    , ("register-200", r7)
+    , ("reentry", r8) ]

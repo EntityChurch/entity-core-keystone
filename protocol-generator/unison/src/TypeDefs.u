@@ -1,0 +1,390 @@
+-- entity-core-protocol-unison — core type floor (§9.5), render-from-model seam.
+--
+-- A peer renders system/type/* from an IN-CODE model through the native S2 codec
+-- (NOT by ingesting fixture bytes): the entity's content_hash is computed by our
+-- own encoder over the model, then byte-diffed against the canonical type-registry
+-- vectors (the drift target). A core peer publishes exactly the §9.5 floor — the
+-- 53 core + operational + type-system bootstrap types; extension vocabularies
+-- (compute/*, content/*, …) are NOT published by a core peer. The oracle's
+-- type_system category matches the 53 floor as a hard FAIL gate and WARNs
+-- (matched-if-present) on the non-floor types it also probes.
+--
+-- Omit-empty: an absent/false/zero field drops the key, so the rendered ECF map is
+-- byte-identical to the Go reference encoder. The codec sorts map keys canonically
+-- (length-then-lex over encoded key bytes), so field declaration order is
+-- irrelevant to the bytes — only the present key/value set matters. Faithful port
+-- of the cross-blessed Haskell/C#/TS/OCaml/Zig registry (A-UN-012 resolved at S4).
+
+-- ── FSpec — a field spec inside a TypeDef (system/type/field-spec shape) ───────
+-- Exactly one structural carrier is set: a type_ref, an array_of, a map_of, or a
+-- union_of. Rendered omit-empty into the field-spec ECF map.
+
+type FSpec =
+  { fsTypeRef : Optional Text
+  , fsOptional : Boolean
+  , fsArrayOf : Optional FSpec
+  , fsMapOf : Optional FSpec
+  , fsUnionOf : Optional [FSpec]
+  , fsKeyType : Optional Text
+  , fsByteSize : Optional Nat }
+
+emptyFSpec : FSpec
+emptyFSpec = FSpec None false None None None None None
+
+-- type_ref to a named type.
+fref : Text -> FSpec
+fref t = FSpec (Some t) false None None None None None
+
+-- mark a field-spec optional.
+opt : FSpec -> FSpec
+opt s = FSpec.fsOptional.set true s
+
+-- add a byte_size carrier.
+sized : Nat -> FSpec -> FSpec
+sized n s = FSpec.fsByteSize.set (Some n) s
+
+-- array_of the given element spec.
+farray : FSpec -> FSpec
+farray elemSpec = FSpec None false (Some elemSpec) None None None None
+
+-- map_of the given value spec, with an optional key_type.
+fmapOf : Optional Text -> FSpec -> FSpec
+fmapOf keyT valSpec = FSpec None false None (Some valSpec) None keyT None
+
+-- union_of the given variant specs.
+funion : [FSpec] -> FSpec
+funion vs = FSpec None false None None (Some vs) None None
+
+-- Render a field-spec to its ECF data map (omit-empty).
+fspecData : FSpec -> Value
+fspecData s =
+  tref = match FSpec.fsTypeRef s with
+    Some t -> [(VText "type_ref", VText t)]
+    None -> []
+  optf = if FSpec.fsOptional s then [(VText "optional", VBool true)] else []
+  arrf = match FSpec.fsArrayOf s with
+    Some a -> [(VText "array_of", fspecData a)]
+    None -> []
+  mapf = match FSpec.fsMapOf s with
+    Some m -> [(VText "map_of", fspecData m)]
+    None -> []
+  unionf = match FSpec.fsUnionOf s with
+    Some vs -> [(VText "union_of", VArray (List.map fspecData vs))]
+    None -> []
+  keyf = match FSpec.fsKeyType s with
+    Some k -> [(VText "key_type", VText k)]
+    None -> []
+  sizef = match FSpec.fsByteSize s with
+    Some n -> [(VText "byte_size", VUInt n)]
+    None -> []
+  VMap (tref List.++ optf List.++ arrf List.++ mapf List.++ unionf List.++ keyf List.++ sizef)
+
+-- ── TypeDef — a core type definition (system/type entity data) ─────────────────
+
+type TypeDef =
+  { tdName : Text
+  , tdExtends : Optional Text
+  , tdFields : [(Text, FSpec)]
+  , tdLayout : [Text] }
+
+def : Text -> TypeDef
+def n = TypeDef n None [] []
+
+withExtends : TypeDef -> Text -> TypeDef
+withExtends td e = TypeDef.tdExtends.set (Some e) td
+
+withFields : TypeDef -> [(Text, FSpec)] -> TypeDef
+withFields td fs = TypeDef.tdFields.set fs td
+
+withLayout : TypeDef -> [Text] -> TypeDef
+withLayout td ls = TypeDef.tdLayout.set ls td
+
+-- Render the system/type data map (omit-empty). The codec re-sorts keys.
+fieldKV : (Text, FSpec) -> (Value, Value)
+fieldKV kv = (VText (fst2 kv), fspecData (snd2 kv))
+
+typeDefData : TypeDef -> Value
+typeDefData td =
+  namef = [(VText "name", VText (TypeDef.tdName td))]
+  extf = match TypeDef.tdExtends td with
+    Some e -> [(VText "extends", VText e)]
+    None -> []
+  fieldsf =
+    if (List.size (TypeDef.tdFields td)) == 0 then []
+    else [(VText "fields", VMap (List.map fieldKV (TypeDef.tdFields td)))]
+  layoutf =
+    if (List.size (TypeDef.tdLayout td)) == 0 then []
+    else [(VText "layout", VArray (List.map (l -> VText l) (TypeDef.tdLayout td)))]
+  VMap (namef List.++ extf List.++ fieldsf List.++ layoutf)
+
+typeDefEntity : TypeDef -> Entity
+typeDefEntity td = makeEntity "system/type" (typeDefData td)
+
+-- ── reused nested specs ────────────────────────────────────────────────────────
+
+spString : FSpec
+spString = fref "primitive/string"
+spAny : FSpec
+spAny = fref "primitive/any"
+spHash : FSpec
+spHash = fref "system/hash"
+spCoreEntity : FSpec
+spCoreEntity = fref "core/entity"
+spTreePath : FSpec
+spTreePath = fref "system/tree/path"
+spGrantEntry : FSpec
+spGrantEntry = fref "system/capability/grant-entry"
+spMultiGranter : FSpec
+spMultiGranter = fref "system/capability/multi-granter"
+spFieldSpec : FSpec
+spFieldSpec = fref "system/type/field-spec"
+spOpSpec : FSpec
+spOpSpec = fref "system/handler/operation-spec"
+spListingEntry : FSpec
+spListingEntry = fref "system/tree/listing-entry"
+spType : FSpec
+spType = fref "system/type"
+spTypeName : FSpec
+spTypeName = fref "system/type/name"
+
+-- ── the 53 core type definitions ───────────────────────────────────────────────
+
+allTypes : [TypeDef]
+allTypes =
+  [ -- primitives (8)
+    def "primitive/any"
+  , def "primitive/bool"
+  , def "primitive/bytes"
+  , def "primitive/float"
+  , def "primitive/int"
+  , def "primitive/null"
+  , def "primitive/string"
+  , def "primitive/uint"
+
+    -- structural roots + envelopes (5)
+  , withFields (def "entity")
+      [ ("type", fref "primitive/string")
+      , ("data", fref "primitive/any") ]
+  , withFields (def "core/entity")
+      [ ("type", fref "primitive/string")
+      , ("data", fref "primitive/any")
+      , ("content_hash", fref "system/hash") ]
+  , withFields (def "core/envelope")
+      [ ("root", fref "core/entity")
+      , ("included", opt (fmapOf (Some "system/hash") spCoreEntity)) ]
+  , withExtends (def "system/envelope") "core/envelope"
+  , withExtends (def "system/protocol/envelope") "core/envelope"
+
+    -- identity / hash / signature (4)
+  , withLayout
+      (withFields (withExtends (def "system/hash") "primitive/bytes")
+        [ ("format_code", sized 1 (fref "primitive/uint"))
+        , ("digest", fref "primitive/bytes") ])
+      ["format_code", "digest"]
+  , withFields (def "system/peer")
+      [ ("key_type", fref "primitive/string")
+      , ("peer_id", fref "system/peer-id")
+      , ("public_key", fref "primitive/bytes") ]
+  , withExtends (def "system/peer-id") "primitive/string"
+  , withFields (def "system/signature")
+      [ ("algorithm", fref "primitive/string")
+      , ("signature", fref "primitive/bytes")
+      , ("signer", fref "system/hash")
+      , ("target", fref "system/hash") ]
+
+    -- protocol surface (6)
+  , withFields (def "system/protocol/connect/authenticate")
+      [ ("key_type", fref "primitive/string")
+      , ("nonce", fref "primitive/bytes")
+      , ("peer_id", fref "system/peer-id")
+      , ("public_key", fref "primitive/bytes") ]
+  , withFields (def "system/protocol/connect/hello")
+      [ ("protocols", farray spString)
+      , ("nonce", fref "primitive/bytes")
+      , ("peer_id", fref "system/peer-id")
+      , ("timestamp", fref "primitive/uint")
+      , ("compression", opt (farray spString))
+      , ("encryption", opt (farray spString))
+      , ("hash_formats", opt (farray spString))
+      , ("key_types", opt (farray spString)) ]
+  , withFields (def "system/protocol/error")
+      [ ("code", fref "primitive/string")
+      , ("message", opt (fref "primitive/string"))
+      , ("rejected_marker", opt (fref "system/hash")) ]
+  , withFields (def "system/protocol/execute")
+      [ ("operation", fref "primitive/string")
+      , ("params", fref "core/entity")
+      , ("request_id", fref "primitive/string")
+      , ("uri", fref "system/tree/path")
+      , ("author", opt (fref "system/hash"))
+      , ("bounds", opt (fref "system/bounds"))
+      , ("capability", opt (fref "system/hash"))
+      , ("deliver_to", opt (fref "system/delivery-spec"))
+      , ("deliver_token", opt (fref "system/hash"))
+      , ("durability_request", opt (fref "system/durability-request"))
+      , ("resource", opt (fref "system/protocol/resource-target")) ]
+  , withFields (def "system/protocol/execute/response")
+      [ ("request_id", fref "primitive/string")
+      , ("result", fref "core/entity")
+      , ("status", fref "primitive/uint")
+      , ("durability", opt (fref "system/durability-result")) ]
+  , withFields (def "system/protocol/resource-target")
+      [ ("targets", farray spTreePath)
+      , ("exclude", opt (farray spTreePath)) ]
+
+    -- capability (12)
+  , withFields (def "system/capability/grant")
+      [ ("token", fref "system/hash") ]
+  , withFields (def "system/capability/grant-entry")
+      [ ("handlers", fref "system/capability/path-scope")
+      , ("operations", fref "system/capability/id-scope")
+      , ("resources", fref "system/capability/path-scope")
+      , ("allowances", opt (fmapOf None spAny))
+      , ("constraints", opt (fmapOf None spAny))
+      , ("peers", opt (fref "system/capability/id-scope")) ]
+  , withFields (def "system/capability/id-scope")
+      [ ("include", farray spString)
+      , ("exclude", opt (farray spString)) ]
+  , withFields (def "system/capability/path-scope")
+      [ ("include", farray spTreePath)
+      , ("exclude", opt (farray spTreePath)) ]
+  , withFields (def "system/capability/request")
+      [ ("grants", farray spGrantEntry)
+      , ("ttl_ms", opt (fref "primitive/uint")) ]
+  , withFields (def "system/capability/revocation")
+      [ ("token", fref "system/hash")
+      , ("revoked_at", fref "primitive/uint")
+      , ("reason", opt (fref "primitive/string")) ]
+  , withFields (def "system/capability/revoke-request")
+      [ ("token", fref "system/hash")
+      , ("reason", opt (fref "primitive/string")) ]
+  , withFields (def "system/capability/delegate-request")
+      [ ("grants", farray spGrantEntry)
+      , ("parent", fref "system/hash")
+      , ("ttl_ms", opt (fref "primitive/uint")) ]
+  , withFields (def "system/capability/delegation-caveats")
+      [ ("max_delegation_depth", opt (fref "primitive/uint"))
+      , ("max_delegation_ttl", opt (fref "primitive/uint"))
+      , ("no_delegation", opt (fref "primitive/bool")) ]
+  , withFields (def "system/capability/policy-entry")
+      [ ("grants", farray spGrantEntry)
+      , ("peer_pattern", fref "primitive/string")
+      , ("notes", opt (fref "primitive/string"))
+      , ("ttl_ms", opt (fref "primitive/uint")) ]
+  , withFields (def "system/capability/token")
+      [ ("created_at", fref "primitive/uint")
+      , ("grantee", fref "system/hash")
+      , ("granter", funion [spHash, spMultiGranter])
+      , ("grants", farray spGrantEntry)
+      , ("delegation_caveats", opt (fref "system/capability/delegation-caveats"))
+      , ("expires_at", opt (fref "primitive/uint"))
+      , ("not_before", opt (fref "primitive/uint"))
+      , ("parent", opt (fref "system/hash"))
+      , ("resource_limits", opt (fref "system/resource-limits")) ]
+  , withFields (def "system/capability/multi-granter")
+      [ ("signers", farray spHash)
+      , ("threshold", fref "primitive/uint") ]
+
+    -- handler machinery (6)
+  , withFields (def "system/handler")
+      [ ("interface", fref "system/tree/path")
+      , ("expression_path", opt (fref "system/tree/path"))
+      , ("internal_scope", opt (farray spGrantEntry))
+      , ("max_scope", opt (farray spGrantEntry)) ]
+  , withFields (def "system/handler/interface")
+      [ ("name", fref "primitive/string")
+      , ("operations", fmapOf None spOpSpec)
+      , ("pattern", fref "system/tree/path") ]
+  , withFields (withExtends (def "system/handler/manifest") "system/handler/interface")
+      [ ("name", fref "primitive/string")
+      , ("operations", fmapOf None spOpSpec)
+      , ("pattern", fref "system/tree/path")
+      , ("expression_path", opt (fref "system/tree/path"))
+      , ("internal_scope", opt (farray spGrantEntry))
+      , ("max_scope", opt (farray spGrantEntry)) ]
+  , withFields (def "system/handler/operation-spec")
+      [ ("input_type", opt (fref "system/type/name"))
+      , ("output_type", opt (fref "system/type/name")) ]
+  , withFields (def "system/handler/register-request")
+      [ ("manifest", fref "system/handler/manifest")
+      , ("requested_scope", opt (farray spGrantEntry))
+      , ("types", opt (fmapOf None spType)) ]
+  , withFields (def "system/handler/register-result")
+      [ ("grant", fref "system/capability/token")
+      , ("pattern", fref "system/tree/path") ]
+
+    -- tree (5)
+  , withFields (def "system/tree/get-request")
+      [ ("limit", opt (fref "primitive/uint"))
+      , ("mode", opt (fref "primitive/string"))
+      , ("offset", opt (fref "primitive/uint"))
+      , ("tree_id", opt (fref "primitive/string")) ]
+  , withFields (def "system/tree/put-request")
+      [ ("entity", opt (fref "core/entity"))
+      , ("expected_hash", opt (fref "system/hash"))
+      , ("tree_id", opt (fref "primitive/string")) ]
+  , withFields (def "system/tree/listing")
+      [ ("count", fref "primitive/uint")
+      , ("entries", fmapOf None spListingEntry)
+      , ("offset", fref "primitive/uint")
+      , ("path", fref "system/tree/path")
+      , ("next_page", opt (fref "system/hash")) ]
+  , withFields (def "system/tree/listing-entry")
+      [ ("has_children", fref "primitive/bool")
+      , ("hash", opt (fref "system/hash")) ]
+  , withExtends (def "system/tree/path") "primitive/string"
+
+    -- type-system bootstrap (3)
+  , withFields (def "system/type")
+      [ ("name", fref "system/type/name")
+      , ("extends", opt (fref "system/type/name"))
+      , ("fields", opt (fmapOf None spFieldSpec))
+      , ("layout", opt (farray spString))
+      , ("type_args", opt (fmapOf None spTypeName))
+      , ("type_params", opt (farray spString)) ]
+  , withFields (def "system/type/field-spec")
+      [ ("type_ref", opt (fref "system/type/name"))
+      , ("optional", opt (fref "primitive/bool"))
+      , ("array_of", opt (fref "system/type/field-spec"))
+      , ("map_of", opt (fref "system/type/field-spec"))
+      , ("union_of", opt (farray spFieldSpec))
+      , ("key_type", opt (fref "system/type/name"))
+      , ("byte_size", opt (fref "primitive/uint"))
+      , ("type_param", opt (fref "primitive/string"))
+      , ("type_args", opt (fmapOf None spTypeName))
+      , ("default", opt (fref "primitive/any"))
+      , ("constraints", opt (farray spCoreEntity)) ]
+  , withExtends (def "system/type/name") "primitive/string"
+
+    -- operational (4)
+  , withFields (def "system/bounds")
+      [ ("budget", opt (fref "primitive/uint"))
+      , ("cascade_depth", opt (fref "primitive/uint"))
+      , ("chain_id", opt (fref "primitive/string"))
+      , ("parent_chain_id", opt (fref "primitive/string"))
+      , ("ttl", opt (fref "primitive/uint"))
+      , ("visited", opt (farray spTreePath)) ]
+  , withFields (def "system/resource-limits")
+      [ ("max_budget", opt (fref "primitive/uint"))
+      , ("max_ttl", opt (fref "primitive/uint"))
+      , ("max_visited_length", opt (fref "primitive/uint")) ]
+  , withFields (def "system/delivery-spec")
+      [ ("operation", fref "primitive/string")
+      , ("uri", fref "system/tree/path") ]
+  , def "system/deletion-marker" ]
+
+-- The rendered system/type entities for all core types, keyed by name.
+coreTypes : [(Text, Entity)]
+coreTypes = List.map (td -> (TypeDef.tdName td, typeDefEntity td)) allTypes
+
+publishAll : Store -> Text -> [(Text, Entity)] ->{IO} ()
+publishAll store localPeer entries = match entries with
+  [] -> ()
+  pair +: t ->
+    bind store ("/" Text.++ localPeer Text.++ "/system/type/" Text.++ (fst2 pair)) (snd2 pair)
+    publishAll store localPeer t
+
+-- Publish the core type floor at /{peer}/system/type/{name} (content-addressed via
+-- bind).
+publish : Store -> Text ->{IO} ()
+publish store localPeer = publishAll store localPeer coreTypes

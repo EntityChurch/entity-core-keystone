@@ -1,0 +1,267 @@
+# entity-core-protocol-unison — Language Profile
+#
+# Peer #43 (operator-directed; NOT on research/LANDSCAPE.md's tier roster — tier
+# classified here). Authored FRESH in S1 from the v0.8.0 (V8) spec-data snapshot +
+# Unison ecosystem research + an in-container UCM spike — NOT ported from any prior
+# profile. Where a value matches a prior peer it is by independent arrival.
+#
+# Unison is a COVERAGE / GENERATOR-ROBUSTNESS peer. The spec-discovery well is dry on
+# the current wire surface (every distinct integer/float/string/byte, crypto,
+# concurrency, object-model, and execution-mode axis has been probed since ~15 peers);
+# steady-state value is re-running the cohort against amendments, not language #N. So
+# Unison is NOT a wire-discovery bet. Its three genuine data points, none wire-shaped:
+#   1. GENERATOR-ROBUSTNESS on a content-addressed codebase build model. Unison source
+#      does NOT live in ordinary compiled text modules — code lives in a content-addressed
+#      SQLite codebase managed by UCM (interactive by design). Our pipeline is
+#      container-bound + NON-interactive. The whole build hinges on driving `.u` source
+#      HEADLESSLY via `ucm transcript` — PROVEN at S1 (see status/PHASE-S1.md). This is the
+#      novel generator stress: a transcript-driven, codebase-oriented build, not a
+#      file-compile-link loop. (Thematic aside, NOT a finding: Unison code is itself
+#      content-addressed — the hash of the typed AST — the same idea entity-core uses for
+#      entities.)
+#   2. CRYPTO-SPECTRUM DATUM: no-C-FFI managed runtime with NATIVE Ed25519 + SHA-256
+#      builtins but NO Ed448 / NO SHA-384, and — critically — NO general C FFI, so the
+#      `libentitycore_codec` hybrid-FFI escape hatch that OCaml/Zig/Swift used is
+#      STRUCTURALLY UNAVAILABLE. Agility (Ed448 + SHA-384) is therefore DEFERRED (pure-
+#      Unison is the only in-band route; large, ~zero discovery value) — WARN not gating
+#      under --profile core, cohort precedent Swift/Zig/OCaml. (A-UN-001.)
+#   3. CONCURRENCY-TAXONOMY DATUM: concurrency via ABILITIES (algebraic effects) over IO
+#      (fork / Promise / MVar / Ref / scope / structured concurrency) — a shape distinct
+#      from the existing store-safety families (actor-isolation, STM, raw-thread,
+#      single-thread-event-loop, dataflow-variable). (A-UN-004.)
+#
+# Profile authority (S6): the agent MUST use the values declared here. A "TBD" value is
+# logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase. There are NO S2-blocking
+# TBD values in this profile — notably the codec floor is BUILTINS-ONLY (zero third-party
+# dependency), so no library pin gates S2. Ed448/SHA-384 agility is DEFERRED, not TBD.
+
+[language]
+id                = "unison"
+name              = "Unison"
+tier              = "peer-43"                  # operator-directed; functional/niche-tier-equivalent (T5-class), native-codec-viable (crypto builtins). Coverage/generator-robustness, NOT wire-discovery.
+package_name      = "entity-core-protocol-unison"
+runtime           = "unison-toolchain"         # references containers/unison-toolchain/Containerfile (UCM release/1.3.0)
+
+[codec]
+# strategy: NATIVE — and a fully-native, ZERO-THIRD-PARTY-DEPENDENCY story at the core
+# floor. Two halves:
+#   (1) Crypto is native via UCM RUNTIME BUILTINS (baked into the binary, no library, no
+#       pull): crypto.hashBytes / crypto.HashAlgorithm.Sha2_256 (SHA-256), and
+#       crypto.Ed25519.sign.impl / verify.impl (Ed25519). BUILD-PROVEN at S1 (SHA-256
+#       "hello" KAT exact; Ed25519 RFC-8032 §7.1 Test-1 sign matches the vector + verify
+#       true). This is the native-stdlib crypto tier.
+#   (2) No Unison CBOR library gives ECF canonicality (the A-005 pattern every native peer
+#       hits) — AND Unison has no general C FFI, so there is no `libentitycore_codec`
+#       escape hatch to fall back to regardless. The canonical layer is hand-rolled in
+#       pure Unison over the Bytes/Nat/Float builtins. Float.toRepresentation : Float -> Nat
+#       yields the raw IEEE-754 double bits (BUILD-PROVEN at S1: 1.0 -> 4607182418800017408
+#       = 0x3FF0000000000000) — the primitive the shortest-float ladder needs.
+# Net: a core peer whose ONLY runtime is UCM itself — crypto is builtin, sockets are
+# builtin (io2.IO.*), CBOR + base58 + varint are hand-rolled in-repo. `@unison/base` is
+# OPTIONAL convenience combinators (List/Text helpers), NOT required — the floor hand-rolls
+# the handful needed. ffi is STRUCTURALLY UNAVAILABLE (no C FFI) — but is also not needed.
+# Spike to run at S2 start: push the map_keys + float ECF test-vectors through the
+# hand-rolled encoder before the full build (cheap insurance per PHASE-S1-PROFILE).
+strategy          = "native"
+# CBOR: hand-rolled canonical ECF encoder/decoder in pure Unison (src EntityCore.Codec).
+# Zero CBOR dependency. Encoder builds a Bytes value (Bytes.++ / Bytes.fromList) — length-
+# then-lexicographic map-key ordering over ENCODED key bytes (§2.2 Rule 2), shortest-float
+# incl. f16 minimization via Float.toRepresentation (§2.2 Rule 4 + special-value table),
+# recursive major-type-6 tag rejection on decode (§6.3 Option B), full uint64/nint range
+# (fixed-width Nat/Int, see [numeric]), raw-byte fidelity. Decoder walks the Bytes with a
+# Nat cursor. Decided by S1 reasoning; spike at S2 against the map_keys + float vectors.
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native" }
+# Ed25519: NATIVE UCM builtin crypto.Ed25519.sign.impl / verify.impl (from UCM release/1.3.0
+# runtime; no library, no pull). Signatures observed at S1:
+#   crypto.Ed25519.sign.impl   : Bytes -> Bytes -> Bytes -> Either Failure Bytes   (secretKey, publicKey, message) -> signature
+#   crypto.Ed25519.verify.impl : Bytes -> Bytes -> Bytes -> Either Failure Boolean (publicKey, message, signature) -> valid?
+# 32-byte pubkey (the §1.5 identity-form digest), 64-byte signature. BUILD-PROVEN at S1
+# (RFC-8032 §7.1 Test 1: sign of the empty message matches the vector's 64-byte signature;
+# verify returns true). NOTE: sign.impl takes the public key EXPLICITLY alongside the seed —
+# derive/carry the pubkey with the seed (no keygen builtin is exposed; base has a wrapper,
+# or derive via a scalar-basepoint mult if going base-free — resolve at S2/S3).
+ed25519_library   = { name = "builtin crypto.Ed25519 (UCM runtime)", version = "ucm-1.3.0", strategy = "native" }
+# Ed448 (crypto-agility HIGHER BAR, key_type 0x02): DEFERRED. NOT a UCM builtin (S1 `find
+# crypto` enumerated Ed25519, P256, Rsa — NO Ed448) and Unison has NO general C FFI, so the
+# hybrid-FFI route (OCaml A-OC-002 / the libentitycore_codec escape hatch) is STRUCTURALLY
+# UNAVAILABLE. The only in-band route is a pure-Unison Ed448 impl (large, ~zero discovery
+# value on a dry wire surface). Deferred — cohort precedent (Swift A-SW-001, Zig A-ZIG-002,
+# OCaml deferred). WARN not gating under --profile core; the agility corpus (KEY-TYPE-ED448-*,
+# HASH-FORMAT-SHA-384-*) is OUT OF SCOPE for this peer's gate. (A-UN-001.)
+ed448_library     = { name = "none", version = "n/a", strategy = "deferred", reason = "not a builtin; no C FFI escape hatch (managed runtime); pure-Unison impl deferred — WARN not gating" }
+# SHA-256 (content_hash floor, content_hash_format 0x00): NATIVE UCM builtin
+# crypto.hashBytes crypto.HashAlgorithm.Sha2_256. BUILD-PROVEN at S1
+# (sha256("hello") = 0xs2cf24dba…938b9824, exact KAT match). SHA-512 / SHA3-256/512 /
+# Blake2b are ALSO native builtins. SHA-384 (agility hashing) is NOT a builtin (S1 `find`:
+# only Sha2_256, Sha2_512, Sha3_256, Sha3_512, Blake2b/s, Md5, Sha1 — NO Sha2_384) →
+# DEFERRED with Ed448 (agility tier). (A-UN-001.)
+sha256_source     = "builtin crypto.hashBytes crypto.HashAlgorithm.Sha2_256 (UCM runtime; SHA-512/SHA3 also builtin; SHA-384 NOT builtin — agility deferred)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode; not a builtin. peer_id (§7.4 / §1.5).
+varint_handling   = "native"                  # multicodec-style LEB128 (§7.3) inline impl over Bytes/Nat; key_type/hash_type/format-code framing
+
+[numeric]
+# FIXED-WIDTH peer (like C# ulong / Zig u64 / OCaml int63 / Fortran) — NOT a bignum peer.
+# BUILD-PROVEN at S1:
+#   Nat.increment 18446744073709551615 (= 2^64-1) -> 0   ⇒ Nat is 64-bit UNSIGNED, wraps mod 2^64
+#   Int.increment +9223372036854775807 (= 2^63-1) -> -9223372036854775808 (= -2^63) ⇒ Int is 64-bit SIGNED two's-complement wrap
+# Unison has NO arbitrary-precision integer builtin, so the full uint64 range CANNOT be
+# carried free the way Elixir/CL/Python/Haskell bignum peers do. Per the durable head-form
+# lesson, the profile MUST branch fixed-width: carry the CBOR integer HEAD FORM as an
+# explicit artifact and run the self-test over [2^63, 2^64-1] (the range that needs care on
+# a fixed-width unsigned that has no wider type to promote into). Nat maps the CBOR unsigned
+# major type 0 (full 0..2^64-1); the CBOR negative major type 1 (nint) maps to a Nat-carried
+# magnitude, NOT Int (Int tops out at 2^63-1 so it cannot hold the largest nint magnitudes —
+# decode nint as `-(n+1)` with n:Nat). (A-UN-003.)
+int_model         = "fixed-width-64"          # Nat = 64-bit unsigned (wraps mod 2^64); Int = 64-bit signed two's-complement (wraps)
+nat_type          = "Nat"                     # 64-bit unsigned; the CBOR major-type-0 carrier, full 0..2^64-1
+int_type          = "Int"                     # 64-bit signed; NOT wide enough for the largest nint magnitude — carry nint magnitude as Nat
+bignum            = false                     # NO arbitrary-precision integer builtin — fixed-width discipline required
+head_form_selftest = "[2^63, 2^64-1]"         # the durable fixed-width self-test range (head-form correctness for the high-bit-set uint64s)
+float_bits        = "Float.toRepresentation : Float -> Nat"  # raw IEEE-754 double bits (BUILD-PROVEN 1.0 -> 4607182418800017408); the shortest-float-ladder primitive. Float = IEEE 754 double.
+
+[error_model]
+# DELIBERATE Unison-native split, ability-shaped. Unison models effects with ABILITIES
+# (algebraic effects). Errors have two idioms and the codec uses both at the right layer:
+#   - The PURE codec is a total function returning `Either CodecError a` (Unison's builtin
+#     Either type; an error is a VALUE, not a thrown effect — nothing to handle in the codec
+#     layer). Converges in SHAPE with Haskell's Either / OCaml's result (the error axis is
+#     low-yield, idiom-neutral across peers) but is arrived at as the Unison idiom.
+#   - IO-boundary failures use the `Exception` / `Abort` ABILITIES (the S3 transport edge:
+#     socket/handle ops return `Either Failure a` from the io2 builtins, lifted into the
+#     Exception ability via `toException` / handled with `catch` / `toEither`). Never in the
+#     pure codec.
+# Protocol-status failures (400 non_canonical_ecf / 401 / 403) map a CodecError/verdict
+# constructor -> status code at the module boundary. (A-UN-005.)
+style             = "either"                  # "exceptions" | "result" | "either" | "abilities" | "errno" | "error_union"
+error_type        = "CodecError"              # a Unison data type: type CodecError = NonCanonicalEcf | Truncated | TagRejected | DuplicateKey | BadSeed | UnsupportedKeyType | UnsupportedHashFormat | ...
+pure_codec        = true                      # the codec is a total PURE function: Either CodecError a — no abilities, no Exception in the codec layer
+io_effects_at     = "transport-boundary-only" # the Exception/Abort/IO abilities appear ONLY at the S3 socket/handle edge; never in pure code
+
+[concurrency]
+# DELIBERATE idiom decision; NOT exercised by the codec (S2 is pure/synchronous). Unison's
+# concurrency is via ABILITIES (algebraic effects) over IO — a NOVEL shape for the §7b
+# store-safety taxonomy (distinct from actor-isolation / STM / raw-thread /
+# single-thread-event-loop / dataflow-variable). Primitives (all over the IO ability):
+#   fork : '{IO} a ->{IO} ThreadId        (lightweight green threads on the Unison runtime scheduler)
+#   Promise (MVar-like once-set cell), MVar (mutable synchronised cell), Ref (mutable ref),
+#   scope / structured concurrency wrappers.
+# The §4.8/§6.11 inbound-concurrent-with-outbound requirement + the §6.13b handler outbound
+# closure + the §7a dispatch-outbound REENTRY surface + the §7b store-concurrency gate are
+# the natural fit: one forked green thread per connection; the live store is an MVar-guarded
+# single-owner cell (actor-like serialization: take-modify-put makes store mutation
+# structurally race-free) OR a Ref under single-writer discipline; request_id -> continuation
+# correlation via an MVar/Ref demux map or a per-request Promise. STORE-SAFETY SHAPE
+# CLASSIFICATION: abilities-based structured concurrency with an MVar-serialized store =
+# an actor-like structural guarantee (the take/put on the MVar serializes all store access),
+# realized through the effect system rather than a language-level actor. Taxonomy datum,
+# NOT a spec finding. Final S3 shape decided at S3. (A-UN-004.)
+style             = "abilities-structured"    # "sync" | "threaded" | "evented" | "async-await" | "actor" | "abilities-structured"
+default_surface   = "sync-codec"              # codec (S2) is pure/synchronous; concurrency enters at the peer (S3)
+primitive         = "fork + MVar/Ref/Promise (over the IO ability)"  # green threads; MVar-guarded store; per-request Promise/demux-map
+structured        = "scope / structured-concurrency (base or hand-rolled over fork)"
+race_free_shape   = "abilities-MVar-serialized-store"  # actor-like structural guarantee via MVar take/put serialization — a NEW §7b taxonomy shape
+
+[naming]
+# Unison conventions.
+type_names        = "UpperCamelCase"          # types + data constructors + abilities: Entity, ContentHash, PeerId, CborValue, CodecError, IO, Exception
+ability_names     = "UpperCamelCase"          # abilities are types: Exception, Abort, Stream (used sparingly; the codec is pure)
+function_names    = "lowerCamelCase"          # terms/functions: contentHash, signEntity, encodeEcf, derivePeerId
+variable_names    = "lowerCamelCase"          # locals + record fields: contentHash, peerId, formatCode
+constant_names    = "lowerCamelCase"          # top-level values too (Unison uses lowerCamelCase for value bindings, NOT SCREAMING_SNAKE)
+constructor_names = "UpperCamelCase"          # data constructors: Uint, Text, NonCanonicalEcf
+namespace_names   = "lowerCamelCase.dotted"   # hierarchical dotted namespaces: entityCore.codec.cbor, entityCore.peerId — OR UpperCamelCase segments per project convention (decide at S2, dotted regardless)
+file_names        = "PascalCase.u OR feature.u" # .u scratch/source files; content lives in the codebase, files are transient source (name by feature, e.g. Codec.u, PeerId.u)
+
+[build]
+# Content-addressed codebase model — NOT a file-compile-link build. UCM manages a
+# content-addressed SQLite codebase; source `.u` files are loaded into it, and the build
+# interface is HEADLESS TRANSCRIPTS (`ucm transcript <file.md>`) — PROVEN at S1. There is
+# no traditional build artifact until `compile` produces a `.uc` bytecode blob.
+build_tool        = "ucm"                     # Unison Codebase Manager release/1.3.0 (containers/unison-toolchain)
+build_command     = "ucm transcript build.md" # a transcript that loads src .u into the codebase + `add`/`update`s it (typecheck = build)
+test_command      = "ucm transcript conformance.md"  # a transcript that loads the harness + runs the conformance watch-expressions vs the ECF corpus; asserts byte-identity; emits conformance.output.md
+run_command       = "ucm run.file <file.u> <symbol>"  # headless single-run of a definition from a .u file (PROVEN at S1)
+peer_launch       = "ucm run.compiled peer.uc <args>  (compile the peer to .uc first for fast offline launch; S3/S4)"
+pack_command      = "ucm push (Unison Share release)  OR  a compiled .uc + a codebase export (S5)"
+
+[layout]
+# Unison project layout. The codebase is content-addressed SQLite; `.u` files are source,
+# `.md` files are transcripts (the build/test interface). Under protocol-generator/unison/.
+project           = "entity-core-protocol-unison"     # Unison project name (created via `project.create` inside a transcript)
+main_branch       = "main"                            # entity-core-protocol-unison/main
+src_dir           = "src/"                            # .u source files (Codec.u, PeerId.u, ContentHash.u, Peer.u, ...)
+transcripts_dir   = "transcripts/"                    # .md transcripts: build.md, conformance.md (the headless build/test drivers)
+codebase_dir      = ".unison/  (gitignored — regenerated from transcripts + Share pulls)"  # the content-addressed SQLite codebase; NOT committed (rebuilt headlessly)
+namespace_root    = "entityCore"                      # public namespace surface: entityCore.codec, entityCore.peerId, ...
+
+[publishing]
+# Unison Share (share.unison-lang.org) is Unison's package registry. "Publishing" =
+# `ucm push @<handle>/entity-core-protocol-unison/releases/<semver>` to Unison Share. The
+# handle/registry submission is the optional S5 step (decided at S5, deferred like the
+# alien-substrate cohort). The S5 artifact is a self-contained project (src + transcripts +
+# README + LICENSE) that rebuilds headlessly.
+registry          = "unison-share"
+registry_url      = "https://share.unison-lang.org"
+package_id        = "entity-core-protocol-unison"
+license_expression = "Apache-2.0"
+repository_url     = ""                          # TBD on first publish
+authors            = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default (explicit patent grant). Unison itself is MIT (the UCM/base license); the ecosystem does NOT mandate it — Apache-2.0 (broader patent grant) is the repo default and stands. No S9-override case.
+
+[testing]
+# NO test-framework dependency — the conformance harness is a HEADLESS TRANSCRIPT
+# (transcripts/conformance.md) that loads the normative v0.8.0 ECF corpus fixture into the
+# codebase and asserts byte-identity on encode + correct decode/reject via `>` watch
+# expressions whose results land in conformance.output.md (a diffable golden). This honors
+# the dependency-minimization stance (the OCaml/CL/Zig precedent: no ecosystem test-runner
+# dep). Unison's ecosystem test convention is `test>` watch expressions + @unison/base's
+# `test.verify` (optional, layerable at S5 for a richer report; not a runtime/codec dep).
+framework         = "hand-rolled-transcript"  # transcript-driven byte-identity harness; no test-framework dependency
+watch_expr_tests  = "> / test> watch expressions in transcripts/conformance.md; results diffed in conformance.output.md"
+corpus_harness    = "transcript-byte-identity" # loads the v0.8.0 ECF corpus, asserts byte-identical encode + correct decode/reject
+
+[container]
+base_image        = "entity-core-keystone/unison-toolchain:latest"
+build_in_container = true                      # BUILT + spike-verified at S1 (ucm --version + headless transcript + SHA-256 KAT + Ed25519 sign/verify + Nat/Int wrap + Float bits + socket builtins — see PHASE-S1.md)
+# UCM builtins (crypto, hashing, Bytes, io2.IO sockets/handles) are baked into the binary —
+# NO network needed to build/run against them. --network=none is honored for the WHOLE core
+# build (the codec floor is builtins-only, zero third-party dependency). The ONLY networked
+# step is the one-time toolchain pull (the container build). If a later phase elects to use
+# @unison/base convenience combinators, that adds ONE networked `pull` from Unison Share at
+# S2/S3 setup — but the core floor does not require it (hand-roll the few list/text helpers).
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/unison entity-core-keystone/unison-toolchain:latest ucm transcript transcripts/conformance.md"
+offline_after_toolchain = true                 # builtins are in the binary — the core build runs fully --network=none after the toolchain image is built (no per-build pull for the builtins-only floor)
+
+[idiom]
+# Hints that don't fit elsewhere.
+pure_codec_no_effects         = true          # the codec is pure (Either CodecError a); the IO/Exception abilities appear only at the S3 transport edge
+bytes_type                    = "Bytes"       # wire bytes = the builtin Bytes type (immutable byte array); Bytes.fromList/toList/++/take/drop/at/size are builtins
+text_type                     = "Text"        # text strings = builtin Text (UTF-8); wire length = UTF-8 BYTE count via Text.toUtf8 : Text -> Bytes, NOT Text codepoint length. Map-key sort over encoded bytes.
+utf8_byte_view_for_wire       = true          # text-string CBOR length = UTF-8 byte count (Text.toUtf8 |> Bytes.size), never Text char/grapheme count
+explicit_endianness           = true          # frame length is 4-byte big-endian (§1.6); assemble via explicit Bytes construction / Nat shifts, never host order
+fixed_width_head_form         = true          # carry the CBOR integer head form explicitly + self-test [2^63, 2^64-1] (Nat is 64-bit, no wider promotion) — the durable fixed-width lesson (A-UN-003)
+no_partial_on_wire            = true          # no unchecked List.at/Bytes.at head-of on decoded/untrusted data; every wire access is a total, bounds-checked Either
+builtins_only_floor           = true          # core codec + peer floor uses ONLY UCM runtime builtins (crypto/hash/Bytes/io2.IO sockets) + hand-rolled helpers — @unison/base OPTIONAL, not required (A-UN-002)
+no_c_ffi                      = true          # Unison is a managed runtime with NO general C FFI — the libentitycore_codec hybrid-FFI escape hatch is STRUCTURALLY UNAVAILABLE (crypto-spectrum datum; drives the Ed448/SHA-384 defer, A-UN-001)
+content_addressed_codebase    = true          # source lives in a content-addressed SQLite codebase managed by UCM; the headless build interface is `ucm transcript` (A-UN-006 — the generator-robustness datum)
+ucm_version                   = "release/1.3.0"
+
+[deps]
+# Exact pins (S11). All ≥30 days old at authoring (2026-07-19). The core floor has ZERO
+# third-party runtime dependencies — crypto/hash/Bytes/sockets are UCM builtins, CBOR/base58/
+# varint + the few list/text helpers are hand-rolled in-repo. Toolchain pin mirrored in
+# containers/unison-toolchain/Containerfile.
+ucm               = "release/1.3.0"           # published 2026-05-20 (~60 days old at authoring; clears the S11 ≥30-day floor). The newest TAGGED release before the 2026-06-19 cool-down floor. (`trunk-build` 2026-06-28 is a ROLLING build, NOT a pinned release — deliberately not used.) asset ucm-linux-x64.tar.gz sha256 0c52e223746ba36029993f38c6774675a2d61ff01dfc75c463a6e3df7d6d433b (verified in the Containerfile, fail-closed). BUILD-PROVEN at S1.
+base              = "optional / deferred-to-S2-first-pull"  # @unison/base is NOT required by the builtins-only core floor. IF a later phase elects its convenience combinators, pin an @unison/base release (Unison Share, e.g. releases/2.9.1 or newer, network one-time) at that point and record it here. NON-BLOCKING for S2 (the floor hand-rolls). (A-UN-002, A-UN-007.)
+
+[spec]
+version_pinned    = "v0.8.0"                   # spec-data/v0.8.0 (V8) — the single current snapshot; profile + codec derive from it, spec-first
+codec_corpus      = "v0.8.0"                    # ECF corpus (currently 71 vectors after the F29/F30 re-vendor); wire-conformance is the S2 ground truth
+# CORE WIRE is byte-unchanged across the V7->V8 cutover (per spec-data/v0.8.0/MANIFEST.md) — the
+# folded increments were verdict-timestamp determinism + extension type-path renames + release-prep,
+# no core map-key/wire change. AGILITY (Ed448/SHA-384) corpus is OUT OF SCOPE for this peer's gate
+# (Ed448 deferred, A-UN-001). §7a validate handlers + §7b concurrency gate come from GUIDE-CONFORMANCE.md
+# + the generator menu (NOT spec-data), picked up at S3/S4.
+peer_id_derivation = "§1.5 canonical-form table"  # derive the Ed25519 peer_id from the §1.5 canonical-form table (key_type 0x01, hash_type 0x00 identity-multihash, digest = raw 32-byte pubkey), the reconciled form — corroborates the cohort (A-CL-002/A-ZIG-001/A-OC-007, reconciled in-body). NOT the stale SHA256(pubkey) skeleton. (A-UN-008.)

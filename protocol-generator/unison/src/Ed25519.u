@@ -1,0 +1,236 @@
+-- entity-core-protocol-unison — Ed25519 (§7.3 signing floor)
+--
+-- UCM exposes crypto.Ed25519.sign.impl / verify.impl but NO key-derivation
+-- builtin, and @unison/base's Ed25519 is only a thin wrapper over the same
+-- builtins (PublicKey/PrivateKey/sign/verify, no toPublic/fromSeed). So the
+-- 32-byte public key MUST be derived in-band: this module implements Ed25519
+-- key generation in PURE Unison — GF(2^255-19) field arithmetic + twisted
+-- Edwards scalar multiplication of the basepoint — over the fixed-width Nat
+-- builtins (base-2^16 limbs; A-UN-003 fixed-width discipline: no bignum type,
+-- so a field element is a 16-limb little-endian [Nat]). Validated against the
+-- RFC 8032 §7.1 Test-1 vector at S2 (A-UN-009). SHA-512 (the seed hash) is the
+-- native builtin. Depends on Codec.u helpers (foldl, atOr0, byteAt, rangeTo).
+
+base16limb : Nat
+base16limb = 65536
+
+pad16 : [Nat] -> [Nat]
+pad16 xs =
+  n = List.size xs
+  if n >= 16 then List.take 16 xs
+  else xs List.++ (List.map (_ -> 0) (rangeTo 0 (Nat.drop 16 n)))
+
+normalize : [Nat] -> [Nat]
+normalize xs =
+  step : ([Nat], Nat) -> Nat -> ([Nat], Nat)
+  step acc limb =
+    (out, carry) = acc
+    v = limb + carry
+    (out :+ (Nat.mod v base16limb), v / base16limb)
+  res = foldl step ([], 0) xs
+  (out, carry) = res
+  flush : ([Nat], Nat) -> ([Nat], Nat)
+  flush a =
+    (o, c) = a
+    if c == 0 then (o, 0) else flush (o :+ (Nat.mod c base16limb), c / base16limb)
+  fst2 (flush (out, carry))
+
+pConst : [Nat]
+pConst = [65517,65535,65535,65535,65535,65535,65535,65535,65535,65535,65535,65535,65535,65535,65535,32767]
+
+geLimb : [Nat] -> [Nat] -> Boolean
+geLimb a b =
+  go : Nat -> Boolean
+  go i =
+    ai = atOr0 a i
+    bi = atOr0 b i
+    if i == 0 then ai >= bi
+    else if ai > bi then true else if ai < bi then false else go (Nat.drop i 1)
+  go 15
+
+subLimbs : [Nat] -> [Nat] -> [Nat]
+subLimbs a b =
+  n = maxN (List.size a) (List.size b)
+  step : ([Nat], Nat) -> Nat -> ([Nat], Nat)
+  step acc i =
+    (out, borrow) = acc
+    ai = atOr0 a i
+    bi = (atOr0 b i) + borrow
+    if ai >= bi then (out :+ (Nat.drop ai bi), 0)
+    else (out :+ (Nat.drop (ai + base16limb) bi), 1)
+  pad16 (fst2 (foldl step ([], 0) (rangeTo 0 n)))
+
+csubP : [Nat] -> [Nat]
+csubP xs = if geLimb (pad16 xs) pConst then subLimbs (pad16 xs) pConst else pad16 xs
+
+addLimbs : [Nat] -> [Nat] -> [Nat]
+addLimbs a b =
+  n = maxN (List.size a) (List.size b)
+  normalize (List.map (i -> (atOr0 a i) + (atOr0 b i)) (rangeTo 0 n))
+
+scaleLimbs : Nat -> [Nat] -> [Nat]
+scaleLimbs c xs = normalize (List.map (x -> x * c) xs)
+
+fold38 : [Nat] -> [Nat]
+fold38 xs =
+  lo = List.take 16 xs
+  hi = List.drop 16 xs
+  if (List.size hi) == 0 then pad16 lo
+  else addLimbs lo (scaleLimbs 38 hi)
+
+reduceP : [Nat] -> [Nat]
+reduceP xs =
+  a = normalize xs
+  b = fold38 a
+  c = fold38 b
+  csubP (csubP (csubP c))
+
+mulCols : [Nat] -> [Nat] -> [Nat]
+mulCols a b =
+  col : Nat -> Nat
+  col k =
+    iLo = if k > 15 then Nat.drop k 15 else 0
+    iHi = if k < 15 then k else 15
+    foldl (acc i -> acc + (atOr0 a i) * (atOr0 b (Nat.drop k i))) 0 (rangeTo iLo (iHi + 1))
+  List.map col (rangeTo 0 31)
+
+fmul : [Nat] -> [Nat] -> [Nat]
+fmul a b = reduceP (mulCols (pad16 a) (pad16 b))
+
+fsqr : [Nat] -> [Nat]
+fsqr a = fmul a a
+
+fadd : [Nat] -> [Nat] -> [Nat]
+fadd a b = csubP (addLimbs (pad16 a) (pad16 b))
+
+fsub : [Nat] -> [Nat] -> [Nat]
+fsub a b =
+  aa = pad16 a
+  bb = pad16 b
+  m = if geLimb aa bb then aa else addLimbs aa pConst
+  subLimbs m bb
+
+feOne : [Nat]
+feOne = pad16 [1]
+
+feZero : [Nat]
+feZero = pad16 []
+
+bitAtLimbs : [Nat] -> Nat -> Nat
+bitAtLimbs xs i =
+  limb = atOr0 xs (i / 16)
+  Nat.and (Nat.shiftRight limb (Nat.mod i 16)) 1
+
+pExp : [Nat]
+pExp = [65515,65535,65535,65535,65535,65535,65535,65535,65535,65535,65535,65535,65535,65535,65535,32767]
+
+finv : [Nat] -> [Nat]
+finv a =
+  go : [Nat] -> Nat -> [Nat]
+  go acc i =
+    acc2 = fsqr acc
+    acc3 = if (bitAtLimbs pExp i) == 1 then fmul acc2 a else acc2
+    if i == 0 then acc3 else go acc3 (Nat.drop i 1)
+  go feOne 254
+
+dConst : [Nat]
+dConst = [30883,4953,19914,30187,55467,16705,2637,112,59544,30585,16505,36039,65139,11119,27886,20995]
+
+d2Const : [Nat]
+d2Const = fadd dConst dConst
+
+byConst : [Nat]
+byConst = [26200,26214,26214,26214,26214,26214,26214,26214,26214,26214,26214,26214,26214,26214,26214,26214]
+
+bxConst : [Nat]
+bxConst = [54554,36645,11616,51542,42930,38181,51040,26924,56412,64982,57905,49316,21502,52590,14035,8553]
+
+type Pt = { px : [Nat], py : [Nat], pz : [Nat], pt : [Nat] }
+
+idPt : Pt
+idPt = Pt feZero feOne feOne feZero
+
+basePt : Pt
+basePt = Pt bxConst byConst feOne (fmul bxConst byConst)
+
+addPt : Pt -> Pt -> Pt
+addPt p q =
+  a = fmul (fsub (Pt.py p) (Pt.px p)) (fsub (Pt.py q) (Pt.px q))
+  b = fmul (fadd (Pt.py p) (Pt.px p)) (fadd (Pt.py q) (Pt.px q))
+  c = fmul (fmul d2Const (Pt.pt p)) (Pt.pt q)
+  dd = fmul (fadd (Pt.pz p) (Pt.pz p)) (Pt.pz q)
+  e = fsub b a
+  f = fsub dd c
+  g = fadd dd c
+  h = fadd b a
+  Pt (fmul e f) (fmul g h) (fmul f g) (fmul e h)
+
+bitOfBytes : Bytes -> Nat -> Nat
+bitOfBytes bs i =
+  byteIdx = i / 8
+  bitIdx = Nat.mod i 8
+  Nat.and (Nat.shiftRight (byteAt bs byteIdx) bitIdx) 1
+
+smul : Bytes -> Pt
+smul scalarBytes =
+  go : Pt -> Nat -> Pt
+  go acc i =
+    dbl = addPt acc acc
+    acc2 = if (bitOfBytes scalarBytes i) == 1 then addPt dbl basePt else dbl
+    if i == 0 then acc2 else go acc2 (Nat.drop i 1)
+  go idPt 255
+
+feByteAt : [Nat] -> Nat -> Nat
+feByteAt a i =
+  limb = atOr0 a (i / 2)
+  if (Nat.mod i 2) == 0 then Nat.mod limb 256 else Nat.mod (limb / 256) 256
+
+feToBytesLE : [Nat] -> Bytes
+feToBytesLE fe =
+  a = pad16 fe
+  Bytes.fromList (List.map (i -> feByteAt a i) (rangeTo 0 32))
+
+compress : Pt -> Bytes
+compress p =
+  zi = finv (Pt.pz p)
+  x = fmul (Pt.px p) zi
+  y = fmul (Pt.py p) zi
+  yb = feToBytesLE y
+  xbit = Nat.and (atOr0 (pad16 x) 0) 1
+  b31 = byteAt yb 31
+  newB31 = Nat.or b31 (xbit * 128)
+  bappend (Bytes.take 31 yb) (Bytes.fromList [newB31])
+
+clearLow3 : Nat -> Nat
+clearLow3 b = Nat.and b 248
+
+setHigh : Nat -> Nat
+setHigh b = Nat.or (Nat.and b 127) 64
+
+-- Derive the 32-byte Ed25519 public key from a 32-byte seed (RFC 8032 §5.1.5):
+-- SHA-512(seed), clamp the low 32 bytes, scalar-mult the basepoint, compress.
+ed25519Pub : Bytes -> Bytes
+ed25519Pub seed =
+  h = crypto.hashBytes crypto.HashAlgorithm.Sha2_512 seed
+  lower = Bytes.take 32 h
+  clamped0 = clearLow3 (byteAt lower 0)
+  clamped31 = setHigh (byteAt lower 31)
+  scalar = bappend (bappend (Bytes.fromList [clamped0]) (Bytes.drop 1 (Bytes.take 31 lower))) (Bytes.fromList [clamped31])
+  compress (smul scalar)
+
+-- Deterministically sign msg with a 32-byte seed → 64-byte signature. sign.impl
+-- needs the public key explicitly; the caller passes the PRECOMPUTED pubkey
+-- (Identity.idPublicKey, derived once at startup) — re-deriving it per sign via
+-- ed25519Pub (a full pure-Unison scalar-mult) would make every mint/response
+-- signature cost a keygen (the S4 security/concurrency latency root-cause).
+ed25519Sign : Bytes -> Bytes -> Bytes -> Bytes
+ed25519Sign seed pub msg =
+  match crypto.Ed25519.sign.impl seed pub msg with
+    Right sig -> sig
+    Left _ -> Bytes.empty
+
+ed25519Verify : Bytes -> Bytes -> Bytes -> Boolean
+ed25519Verify pubkey msg sig =
+  match crypto.Ed25519.verify.impl pubkey msg sig with
+    Right ok -> ok
+    Left _ -> false

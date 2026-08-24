@@ -1,0 +1,179 @@
+-- entity-core-protocol-unison — storage (§1.7): the content store (hash → entity,
+-- immutable, dedup) and the entity tree (path → hash, mutable index).
+--
+-- == §7b store-safety shape (A-UN-004) — the concurrency-taxonomy datum
+--
+-- The whole store state lives behind a SINGLE `MVar StoreState`. Every mutation is
+-- take → apply a PURE total function → put; every read is a non-removing
+-- `MVar.read`. The take/put pair serializes ALL store access through one cell, so
+-- two concurrent per-request `bind`s can never interleave — an actor-like
+-- structural guarantee realized through the effect system (fork + MVar over IO),
+-- NOT a language-level actor or an STM transaction. This is a distinct shape from
+-- the existing §7b families (actor-isolation / STM / raw-thread / single-thread
+-- event-loop / dataflow-variable). The §4.8 store data-race floor is met by
+-- construction: a bare mutable map would race; the MVar-serialized cell cannot.
+--
+-- The state is held as association lists (builtins-only floor: no Map dependency);
+-- conformance, not throughput, is the bar. The memory-primary-peer discipline
+-- (skip the transient per-request EXECUTE signature) lives in Peer.ingestSignatures,
+-- so this store does not grow an entry per request.
+
+type StoreState = { ssContent : [(Bytes, Entity)], ssTree : [(Text, Bytes)] }
+
+type Store = { stCell : MVar StoreState }
+
+-- ── MVar plumbing (the IO edge; the Either Failure is unwrapped total) ────────
+
+takeMVar : MVar a ->{IO} a
+takeMVar m = match io2.MVar.take.impl m with
+  Right a -> a
+  Left f -> bug f
+
+putMVar : MVar a -> a ->{IO} ()
+putMVar m v = match io2.MVar.put.impl m v with
+  Right _ -> ()
+  Left f -> bug f
+
+readMVar : MVar a ->{IO} a
+readMVar m = match io2.MVar.read.impl m with
+  Right a -> a
+  Left f -> bug f
+
+-- take → pure-modify → put; returns the projected result. The single-owner
+-- serialization point.
+withStore : Store -> (StoreState -> (StoreState, a)) ->{IO} a
+withStore st f =
+  cur = takeMVar (Store.stCell st)
+  res = f cur
+  putMVar (Store.stCell st) (fst2 res)
+  snd2 res
+
+-- read-only snapshot (non-removing; readers never block writers on the take).
+peekStore : Store ->{IO} StoreState
+peekStore st = readMVar (Store.stCell st)
+
+newStore : '{IO} Store
+newStore _ = Store (io2.MVar.new (StoreState [] []))
+
+-- ── generic association-list ops ──────────────────────────────────────────────
+
+alInsert : k -> v -> [(k, v)] -> [(k, v)]
+alInsert k v xs = match xs with
+  [] -> [(k, v)]
+  pair +: rest -> if (fst2 pair) == k then (k, v) +: rest else pair +: (alInsert k v rest)
+
+alGet : k -> [(k, v)] -> Optional v
+alGet k xs = match xs with
+  [] -> None
+  pair +: rest -> if (fst2 pair) == k then Some (snd2 pair) else alGet k rest
+
+alDelete : k -> [(k, v)] -> [(k, v)]
+alDelete k xs = match xs with
+  [] -> []
+  pair +: rest -> if (fst2 pair) == k then rest else pair +: (alDelete k rest)
+
+alMember : k -> [(k, v)] -> Boolean
+alMember k xs = match alGet k xs with
+  Some _ -> true
+  None -> false
+
+-- ── content store ─────────────────────────────────────────────────────────────
+
+-- §6.10 Store step: dedup by content_hash (a re-put of an existing hash is inert).
+putEntity : Store -> Entity ->{IO} ()
+putEntity st e = withStore st (putEntityF e)
+
+putEntityF : Entity -> StoreState -> (StoreState, ())
+putEntityF e s =
+  if alMember (Entity.ehash e) (StoreState.ssContent s) then (s, ())
+  else (StoreState.ssContent.set (alInsert (Entity.ehash e) e (StoreState.ssContent s)) s, ())
+
+getByHash : Store -> Bytes ->{IO} Optional Entity
+getByHash st h = alGet h (StoreState.ssContent (peekStore st))
+
+-- ── entity tree (location index) ──────────────────────────────────────────────
+
+-- §6.10 Bind step: content-put + tree-bind in one serialized transaction.
+bind : Store -> Text -> Entity ->{IO} ()
+bind st path e = withStore st (bindF path e)
+
+bindF : Text -> Entity -> StoreState -> (StoreState, ())
+bindF path e s =
+  c2 = if alMember (Entity.ehash e) (StoreState.ssContent s)
+       then StoreState.ssContent s
+       else alInsert (Entity.ehash e) e (StoreState.ssContent s)
+  t2 = alInsert path (Entity.ehash e) (StoreState.ssTree s)
+  (StoreState c2 t2, ())
+
+unbind : Store -> Text ->{IO} ()
+unbind st path = withStore st (unbindF path)
+
+unbindF : Text -> StoreState -> (StoreState, ())
+unbindF path s = (StoreState.ssTree.set (alDelete path (StoreState.ssTree s)) s, ())
+
+hashAt : Store -> Text ->{IO} Optional Bytes
+hashAt st path = alGet path (StoreState.ssTree (peekStore st))
+
+getAt : Store -> Text ->{IO} Optional Entity
+getAt st path = match hashAt st path with
+  Some h -> getByHash st h
+  None -> None
+
+-- ── N8 snapshots: a pure resolver / membership predicate over a fixed state ────
+
+-- The capability verdict is a pure function of this snapshot (captured once per
+-- dispatch), so timing cannot perturb it.
+snapshotContent : Store ->{IO} (Bytes -> Optional Entity)
+snapshotContent st =
+  s = peekStore st
+  content = StoreState.ssContent s
+  h -> alGet h content
+
+snapshotTreeMember : Store ->{IO} (Text -> Boolean)
+snapshotTreeMember st =
+  s = peekStore st
+  tree = StoreState.ssTree s
+  path -> alMember path tree
+
+-- ── one-level listing (§3.9) — direct children + has_children under a prefix ──
+
+listing : Store -> Text ->{IO} [(Text, Optional Bytes, Boolean)]
+listing st prefix0 =
+  s = peekStore st
+  tree = StoreState.ssTree s
+  content = StoreState.ssContent s
+  prefix = if textEndsWith "/" prefix0 then prefix0 else prefix0 Text.++ "/"
+  plen = Text.size prefix
+  -- §6.3 filter: a path bound to a system/deletion-marker appears ABSENT in
+  -- listings (CORE-TREE-DELETE-1) — get still returns the marker (§1.2a).
+  isDeletionMarker : Bytes -> Boolean
+  isDeletionMarker h = match alGet h content with
+    Some e -> (Entity.etype e) == "system/deletion-marker"
+    None -> false
+  -- accumulate (segment -> (hash?, has_children)) over matching tree paths
+  step : [(Text, (Optional Bytes, Boolean))] -> (Text, Bytes) -> [(Text, (Optional Bytes, Boolean))]
+  step acc entry =
+    path = fst2 entry
+    h = snd2 entry
+    if isDeletionMarker h then acc
+    else if ((Text.size path) > plen) && ((Text.take plen path) == prefix) then
+      rest = Text.drop plen path
+      match splitSlash rest with
+        seg +: more -> match more with
+          [] -> mergeSeg acc seg (Some h) false
+          _ -> mergeSeg acc seg None true
+        [] -> acc
+    else acc
+  acc = foldl step [] tree
+  List.map (p -> (fst2 p, fst2 (snd2 p), snd2 (snd2 p))) acc
+
+mergeSeg :
+  [(Text, (Optional Bytes, Boolean))] -> Text -> Optional Bytes -> Boolean
+  -> [(Text, (Optional Bytes, Boolean))]
+mergeSeg acc seg hOpt deeper = match alGet seg acc with
+  None -> alInsert seg (hOpt, deeper) acc
+  Some existing ->
+    hMerged = match hOpt with
+      Some _ -> hOpt
+      None -> fst2 existing
+    alInsert seg (hMerged, (snd2 existing) || deeper) acc

@@ -1,0 +1,411 @@
+-- entity-core-protocol-unison — canonical ECF CBOR codec (S2)
+--
+-- Hand-rolled canonical Entity Canonical Form over the UCM Bytes/Nat builtins
+-- (no CBOR library; none gives ECF's guarantees — the A-005 pattern). Pure,
+-- total, returns `Either CodecError a` (A-UN-005). Fixed-width discipline
+-- (A-UN-003): `Nat` is the 64-bit unsigned major-type-0 carrier; a negative
+-- integer's magnitude rides as the wire ARGUMENT in `VNInt` (value = -1 - arg),
+-- so the full nint range fits without a wider type.
+--
+--   * map keys sorted by ENCODED length then lexicographically (ECF §2.2 Rule 2)
+--   * minimal integer head form (Rule 1) over the full uint64 range
+--   * shortest-form float ladder f16/f32/f64 (Rule 4 + Rule 4a specials)
+--   * definite lengths only (Rule 3); indefinite heads rejected on decode
+--   * recursive major-type-6 (tag) rejection on decode (§6.3 Option B) — N2
+--   * empty map = single byte 0xA0 (N3); empty array = 0x80
+--   * varint framing via real LEB128 primitives (N1) — see varintEncode/Decode
+
+type Value
+  = VUInt Nat          -- major 0, full 0..2^64-1
+  | VNInt Nat          -- major 1, wire argument n; represented value = -1 - n
+  | VBytes Bytes       -- major 2
+  | VText Text         -- major 3 (UTF-8; wire length is the BYTE count)
+  | VArray [Value]     -- major 4 (definite)
+  | VMap [(Value, Value)]  -- major 5 (definite; entries in decoded order)
+  | VFloat Nat         -- major 7 float, carried as the raw IEEE-754 f64 bit pattern
+  | VBool Boolean      -- 0xF5 / 0xF4
+  | VNull              -- 0xF6
+
+type CodecError
+  = NonCanonicalEcf Text
+  | Truncated Text
+  | TagRejected Text
+  | DuplicateKey Text
+  | UnsupportedItem Text
+  | BadBase58 Text
+
+-- ── generic helpers (shared prelude; reused by Protocol.u / Ed25519.u) ────────
+
+fst2 : (a, b) -> a
+fst2 p = match p with (x, _) -> x
+
+snd2 : (a, b) -> b
+snd2 p = match p with (_, y) -> y
+
+foldl : (b ->{g} a ->{g} b) -> b -> [a] ->{g} b
+foldl f z xs = match xs with
+  [] -> z
+  h +: t -> foldl f (f z h) t
+
+rangeTo : Nat -> Nat -> [Nat]
+rangeTo lo hi = if lo >= hi then [] else lo +: rangeTo (lo + 1) hi
+
+maxN : Nat -> Nat -> Nat
+maxN a b = if a >= b then a else b
+
+atOr0 : [Nat] -> Nat -> Nat
+atOr0 xs i = match List.at i xs with
+  Some x -> x
+  None -> 0
+
+byteAt : Bytes -> Nat -> Nat
+byteAt bs i = match Bytes.at i bs with
+  Some v -> v
+  None -> 0
+
+bappend : Bytes -> Bytes -> Bytes
+bappend a b = a Bytes.++ b
+
+concatBytes : [Bytes] -> Bytes
+concatBytes bss = foldl (a b -> bappend a b) Bytes.empty bss
+
+mapRight : Either e a -> (a ->{g} b) ->{g} Either e b
+mapRight ea f = match ea with
+  Left e -> Left e
+  Right a -> Right (f a)
+
+insertBy : (a -> a -> Boolean) -> a -> [a] -> [a]
+insertBy lt x xs = match xs with
+  [] -> [x]
+  h +: t -> if lt x h then x +: (h +: t) else h +: (insertBy lt x t)
+
+sortBy : (a -> a -> Boolean) -> [a] -> [a]
+sortBy lt xs = foldl (acc x -> insertBy lt x acc) [] xs
+
+-- ── UTF-8 text ↔ bytes ───────────────────────────────────────────────────────
+
+bytesToText : Bytes -> Text
+bytesToText bs = match Text.fromUtf8.impl bs with
+  Right t -> t
+  Left _ -> ""
+
+-- ── encode (total; canonical by construction) ────────────────────────────────
+
+-- CBOR head: major type (top 3 bits) then minimal-length argument (Rule 1),
+-- full 64-bit argument range.
+buildHead : Nat -> Nat -> Bytes
+buildHead major arg =
+  mt = major * 32
+  if arg < 24 then Bytes.fromList [mt + arg]
+  else if arg <= 255 then Bytes.fromList [mt + 24, arg]
+  else if arg <= 65535 then bappend (Bytes.fromList [mt + 25]) (Bytes.encodeNat16be arg)
+  else if arg <= 4294967295 then bappend (Bytes.fromList [mt + 26]) (Bytes.encodeNat32be arg)
+  else bappend (Bytes.fromList [mt + 27]) (Bytes.encodeNat64be arg)
+
+encode : Value -> Bytes
+encode v = match v with
+  VUInt n -> buildHead 0 n
+  VNInt n -> buildHead 1 n
+  VBytes bs -> bappend (buildHead 2 (Bytes.size bs)) bs
+  VText t ->
+    enc = Text.toUtf8 t
+    bappend (buildHead 3 (Bytes.size enc)) enc
+  VArray xs -> bappend (buildHead 4 (List.size xs)) (concatBytes (List.map encode xs))
+  VMap kvs -> buildMap kvs
+  VFloat bits -> encodeFloatBits bits
+  VBool b -> Bytes.fromList [if b then 245 else 244]
+  VNull -> Bytes.fromList [246]
+
+-- Encode a map: sort entries by (encoded-key-length, encoded-key-bytes) then
+-- emit head + each key/value (ECF §2.2 Rule 2, over the ENCODED key bytes).
+buildMap : [(Value, Value)] -> Bytes
+buildMap kvs =
+  encoded = List.map (kv -> (encode (fst2 kv), encode (snd2 kv))) kvs
+  sorted = sortBy (a b -> keyLt (fst2 a) (fst2 b)) encoded
+  body = concatBytes (List.map (p -> bappend (fst2 p) (snd2 p)) sorted)
+  bappend (buildHead 5 (List.size sorted)) body
+
+-- canonical key order: by encoded length, then lexicographic over the bytes.
+keyLt : Bytes -> Bytes -> Boolean
+keyLt a b =
+  sa = Bytes.size a
+  sb = Bytes.size b
+  if sa < sb then true
+  else if sa > sb then false
+  else lexLt a b 0 sa
+
+lexLt : Bytes -> Bytes -> Nat -> Nat -> Boolean
+lexLt a b i n =
+  if i >= n then false
+  else
+    ba = byteAt a i
+    bb = byteAt b i
+    if ba < bb then true else if ba > bb then false else lexLt a b (i + 1) n
+
+-- ── shortest-form float (Rule 4 / Rule 4a) over the raw f64 bit pattern ───────
+
+highBit : Nat -> Nat -> Nat
+highBit v start =
+  if (Nat.and (Nat.shiftRight v start) 1) == 1 then start
+  else if start == 0 then 0 else highBit v (Nat.drop start 1)
+
+halfToF64bits : Nat -> Nat
+halfToF64bits h =
+  s = Nat.and (Nat.shiftRight h 15) 1
+  he = Nat.and (Nat.shiftRight h 10) 31
+  hm = Nat.and h 1023
+  signf = s * 9223372036854775808
+  if he == 0 then
+    if hm == 0 then signf
+    else
+      k = highBit hm 9
+      f64exp = k + 999
+      f64mant = Nat.shiftLeft (Nat.drop hm (Nat.shiftLeft 1 k)) (Nat.drop 52 k)
+      Nat.or signf (Nat.or (Nat.shiftLeft f64exp 52) f64mant)
+  else if he == 31 then
+    if hm == 0 then Nat.or signf (Nat.shiftLeft 2047 52)
+    else Nat.or signf (Nat.or (Nat.shiftLeft 2047 52) (Nat.shiftLeft 1 51))
+  else
+    f64exp = he + 1008
+    f64mant = Nat.shiftLeft hm 42
+    Nat.or signf (Nat.or (Nat.shiftLeft f64exp 52) f64mant)
+
+doubleToHalfCand : Nat -> Nat
+doubleToHalfCand bits =
+  signl = Nat.shiftRight bits 63
+  sign16 = signl * 32768
+  expo = Nat.and (Nat.shiftRight bits 52) 2047
+  mant = Nat.and bits 4503599627370495
+  if expo == 0 then sign16
+  else if (expo >= 1009) && (expo <= 1038) then
+    he = Nat.drop expo 1008
+    hm = Nat.and (Nat.shiftRight mant 42) 1023
+    Nat.or sign16 (Nat.or (Nat.shiftLeft he 10) hm)
+  else if (expo >= 999) && (expo <= 1008) then
+    shiftAmt = Nat.drop 1009 expo
+    mant23 = Nat.shiftRight (Nat.or mant 4503599627370496) (42 + shiftAmt)
+    Nat.or sign16 (Nat.and mant23 1023)
+  else if expo > 1038 then Nat.or sign16 31744
+  else sign16
+
+f32ToF64bits : Nat -> Nat
+f32ToF64bits w =
+  s = Nat.and (Nat.shiftRight w 31) 1
+  e = Nat.and (Nat.shiftRight w 23) 255
+  m = Nat.and w 8388607
+  signf = s * 9223372036854775808
+  if e == 0 then
+    if m == 0 then signf
+    else
+      k = highBit m 22
+      f64exp = k + 874
+      f64mant = Nat.shiftLeft (Nat.drop m (Nat.shiftLeft 1 k)) (Nat.drop 52 k)
+      Nat.or signf (Nat.or (Nat.shiftLeft f64exp 52) f64mant)
+  else if e == 255 then
+    if m == 0 then Nat.or signf (Nat.shiftLeft 2047 52)
+    else Nat.or signf (Nat.or (Nat.shiftLeft 2047 52) (Nat.shiftLeft 1 51))
+  else
+    f64exp = e + 896
+    f64mant = Nat.shiftLeft m 29
+    Nat.or signf (Nat.or (Nat.shiftLeft f64exp 52) f64mant)
+
+doubleToF32Cand : Nat -> Nat
+doubleToF32Cand bits =
+  signl = Nat.shiftRight bits 63
+  sign32 = signl * 2147483648
+  expo = Nat.and (Nat.shiftRight bits 52) 2047
+  mant = Nat.and bits 4503599627370495
+  if expo == 0 then sign32
+  else if (expo >= 897) && (expo <= 1150) then
+    e32 = Nat.drop expo 896
+    m32 = Nat.and (Nat.shiftRight mant 29) 8388607
+    Nat.or sign32 (Nat.or (Nat.shiftLeft e32 23) m32)
+  else if (expo >= 874) && (expo <= 896) then
+    shiftAmt = Nat.drop 897 expo
+    mantf = Nat.shiftRight (Nat.or mant 4503599627370496) (29 + shiftAmt)
+    Nat.or sign32 (Nat.and mantf 8388607)
+  else if expo > 1150 then Nat.or sign32 2139095040
+  else sign32
+
+encodeFloatBits : Nat -> Bytes
+encodeFloatBits bits =
+  expo = Nat.and (Nat.shiftRight bits 52) 2047
+  mant = Nat.and bits 4503599627370495
+  signl = Nat.shiftRight bits 63
+  if expo == 2047 then
+    if mant == 0 then
+      (if signl == 1 then Bytes.fromList [249, 252, 0] else Bytes.fromList [249, 124, 0])
+    else Bytes.fromList [249, 126, 0]
+  else
+    h = doubleToHalfCand bits
+    if (halfToF64bits h) == bits then bappend (Bytes.fromList [249]) (Bytes.encodeNat16be h)
+    else
+      w = doubleToF32Cand bits
+      if (f32ToF64bits w) == bits then bappend (Bytes.fromList [250]) (Bytes.encodeNat32be w)
+      else bappend (Bytes.fromList [251]) (Bytes.encodeNat64be bits)
+
+-- ── varint LEB128 (N1) — all format-code / key-type / hash-type framing ──────
+
+varintEncode : Nat -> Bytes
+varintEncode n =
+  low = Nat.and n 127
+  rest = Nat.shiftRight n 7
+  if rest == 0 then Bytes.fromList [low]
+  else bappend (Bytes.fromList [Nat.or low 128]) (varintEncode rest)
+
+varintDecode : Bytes -> Nat -> Either CodecError (Nat, Nat)
+varintDecode bs off =
+  go : Nat -> Nat -> Nat -> Either CodecError (Nat, Nat)
+  go shift acc i =
+    match Bytes.at i bs with
+      None -> Left (Truncated "varint: ran out of bytes")
+      Some b ->
+        acc2 = Nat.or acc (Nat.shiftLeft (Nat.and b 127) shift)
+        if (Nat.and b 128) == 128 then go (shift + 7) acc2 (i + 1)
+        else if (shift > 0) && (b == 0) then Left (NonCanonicalEcf "varint: non-minimal trailing group")
+        else Right (acc2, i + 1)
+  go 0 0 off
+
+-- ── decode (total Either; canonical-enforcing; recursive tag rejection N2) ────
+
+decode : Bytes -> Either CodecError Value
+decode bs = match decodeItem bs 0 with
+  Left e -> Left e
+  Right (v, off) ->
+    if off == Bytes.size bs then Right v
+    else Left (NonCanonicalEcf "trailing bytes after top-level item")
+
+-- read a big-endian n-byte unsigned starting at off
+readBE : Bytes -> Nat -> Nat -> Either CodecError (Nat, Nat)
+readBE bs off n =
+  go : Nat -> Nat -> Either CodecError (Nat, Nat)
+  go acc i =
+    if i >= n then Right (acc, off + n)
+    else match Bytes.at (off + i) bs with
+      None -> Left (Truncated "readBE: short")
+      Some b -> go ((acc * 256) + b) (i + 1)
+  go 0 0
+
+-- read a head argument per additional-info, enforcing MINIMAL encoding (Rule 1)
+readArg : Bytes -> Nat -> Nat -> Either CodecError (Nat, Nat)
+readArg bs off ai =
+  if ai < 24 then Right (ai, off)
+  else if ai == 24 then
+    match Bytes.at off bs with
+      None -> Left (Truncated "arg8")
+      Some b -> if b < 24 then Left (NonCanonicalEcf "int: non-minimal 1-byte arg") else Right (b, off + 1)
+  else if ai == 25 then
+    match readBE bs off 2 with
+      Left e -> Left e
+      Right (v, o) -> if v <= 255 then Left (NonCanonicalEcf "int: non-minimal 2-byte arg") else Right (v, o)
+  else if ai == 26 then
+    match readBE bs off 4 with
+      Left e -> Left e
+      Right (v, o) -> if v <= 65535 then Left (NonCanonicalEcf "int: non-minimal 4-byte arg") else Right (v, o)
+  else if ai == 27 then
+    match readBE bs off 8 with
+      Left e -> Left e
+      Right (v, o) -> if v <= 4294967295 then Left (NonCanonicalEcf "int: non-minimal 8-byte arg") else Right (v, o)
+  else if ai == 31 then Left (NonCanonicalEcf "indefinite-length head forbidden in ECF")
+  else Left (NonCanonicalEcf "reserved additional-info")
+
+decodeItem : Bytes -> Nat -> Either CodecError (Value, Nat)
+decodeItem bs off =
+  match Bytes.at off bs with
+    None -> Left (Truncated "decode: eof")
+    Some ib ->
+      major = Nat.shiftRight ib 5
+      ai = Nat.and ib 31
+      off1 = off + 1
+      if major == 0 then mapRight (readArg bs off1 ai) (r -> (VUInt (fst2 r), snd2 r))
+      else if major == 1 then mapRight (readArg bs off1 ai) (r -> (VNInt (fst2 r), snd2 r))
+      else if major == 2 then
+        match readArg bs off1 ai with
+          Left e -> Left e
+          Right (len, o) -> takeBytes bs o len
+      else if major == 3 then
+        match readArg bs off1 ai with
+          Left e -> Left e
+          Right (len, o) -> match takeBytes bs o len with
+            Left e -> Left e
+            Right (vb, o2) -> match vb with
+              VBytes payload -> Right (VText (bytesToText payload), o2)
+              _ -> Left (NonCanonicalEcf "text: internal")
+      else if major == 4 then
+        match readArg bs off1 ai with
+          Left e -> Left e
+          Right (len, o) -> decodeArray bs o len
+      else if major == 5 then
+        match readArg bs off1 ai with
+          Left e -> Left e
+          Right (len, o) -> decodeMap bs o len
+      else if major == 6 then Left (TagRejected "CBOR major-type-6 tag on the wire (ECF §6.3)")
+      else decodeSimpleOrFloat bs off1 ai
+
+takeBytes : Bytes -> Nat -> Nat -> Either CodecError (Value, Nat)
+takeBytes bs off len =
+  avail = Bytes.drop off bs
+  if (Bytes.size avail) < len then Left (Truncated "byte/text string short")
+  else Right (VBytes (Bytes.take len avail), off + len)
+
+decodeArray : Bytes -> Nat -> Nat -> Either CodecError (Value, Nat)
+decodeArray bs off count =
+  go : [Value] -> Nat -> Nat -> Either CodecError (Value, Nat)
+  go acc k o =
+    if k == 0 then Right (VArray acc, o)
+    else match decodeItem bs o with
+      Left e -> Left e
+      Right (v, o2) -> go (acc :+ v) (Nat.drop k 1) o2
+  go [] count off
+
+-- decode a map of `count` entries, enforcing canonical key order
+-- (length-then-lex over encoded key bytes) AND duplicate-key rejection.
+decodeMap : Bytes -> Nat -> Nat -> Either CodecError (Value, Nat)
+decodeMap bs off count =
+  go : [(Value, Value)] -> Optional Bytes -> Nat -> Nat -> Either CodecError (Value, Nat)
+  go acc prev k o =
+    if k == 0 then Right (VMap acc, o)
+    else match decodeItem bs o with
+      Left e -> Left e
+      Right (key, o1) -> match decodeItem bs o1 with
+        Left e -> Left e
+        Right (val, o2) ->
+          kb = encode key
+          match orderCheck prev kb with
+            Left e -> Left e
+            Right _ -> go (acc :+ (key, val)) (Some kb) (Nat.drop k 1) o2
+  go [] None count off
+
+orderCheck : Optional Bytes -> Bytes -> Either CodecError ()
+orderCheck prev kb = match prev with
+  None -> Right ()
+  Some pb ->
+    if keyLt pb kb then Right ()
+    else if pb == kb then Left (DuplicateKey "map: duplicate key")
+    else Left (NonCanonicalEcf "map: keys not in canonical order")
+
+decodeSimpleOrFloat : Bytes -> Nat -> Nat -> Either CodecError (Value, Nat)
+decodeSimpleOrFloat bs off ai =
+  if ai == 20 then Right (VBool false, off)
+  else if ai == 21 then Right (VBool true, off)
+  else if ai == 22 then Right (VNull, off)
+  else if ai == 25 then
+    match readBE bs off 2 with
+      Left e -> Left e
+      Right (h, o) -> Right (VFloat (halfToF64bits h), o)
+  else if ai == 26 then
+    match readBE bs off 4 with
+      Left e -> Left e
+      Right (w, o) ->
+        d = f32ToF64bits w
+        if (encodeFloatBits d) == (bappend (Bytes.fromList [250]) (Bytes.encodeNat32be w))
+          then Right (VFloat d, o)
+          else Left (NonCanonicalEcf "float32 not shortest")
+  else if ai == 27 then
+    match readBE bs off 8 with
+      Left e -> Left e
+      Right (w, o) ->
+        if (encodeFloatBits w) == (bappend (Bytes.fromList [251]) (Bytes.encodeNat64be w))
+          then Right (VFloat w, o)
+          else Left (NonCanonicalEcf "float64 not shortest")
+  else Left (UnsupportedItem "simple/float form not in ECF")

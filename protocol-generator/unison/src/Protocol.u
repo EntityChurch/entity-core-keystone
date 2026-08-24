@@ -1,0 +1,139 @@
+-- entity-core-protocol-unison — protocol-surface constructions (S2, Class B)
+--
+-- content_hash (§4.2 / §7.3), peer_id (§1.5 / §7.4), base58 (Bitcoin alphabet).
+-- Depends on Codec.u (encode, varintEncode, helpers). SHA-256 is the native UCM
+-- builtin crypto.hashBytes Sha2_256 (agility SHA-384 deferred, A-UN-001).
+
+-- ── content_hash = varint(format_code) ‖ SHA256(ECF{type, data}) ─────────────
+
+-- Canonical ECF bytes of the entity carrier {type, data} — the content_hash
+-- preimage AND the message the corpus signature.* vectors sign over.
+ecfOfEntity : Text -> Value -> Bytes
+ecfOfEntity typ dataV =
+  encode (VMap [(VText "type", VText typ), (VText "data", dataV)])
+
+-- content_hash under a caller-supplied format code. Every corpus vector (incl.
+-- the synthetic code 128) uses SHA-256 as the digest; the construction path
+-- serialises whatever format code is supplied (§4.7 construction-vs-verification
+-- asymmetry) — the multi-byte varint prefix is exercised by content_hash.4 (N1).
+contentHash : Nat -> Text -> Value -> Bytes
+contentHash fmtCode typ dataV =
+  preimage = ecfOfEntity typ dataV
+  digest = crypto.hashBytes crypto.HashAlgorithm.Sha2_256 preimage
+  bappend (varintEncode fmtCode) digest
+
+-- content_hash under the ecfv1-sha256 floor (format_code 0x00).
+entityContentHash : Text -> Value -> Bytes
+entityContentHash typ dataV = contentHash 0 typ dataV
+
+-- ── base58 (Bitcoin alphabet), leading-zero preserving ───────────────────────
+
+base58Alphabet : [Nat]
+base58Alphabet =
+  [ 49,50,51,52,53,54,55,56,57
+  , 65,66,67,68,69,70,71,72
+  , 74,75,76,77,78
+  , 80,81,82,83,84,85,86,87,88,89,90
+  , 97,98,99,100,101,102,103,104,105,106,107
+  , 109,110,111,112,113,114,115,116,117,118,119,120,121,122 ]
+
+-- multiply the current LE base-58 digit list by 256 and add a new byte,
+-- propagating carry; append any residual carry digits.
+b58AddByte : [Nat] -> Nat -> [Nat]
+b58AddByte digits byte =
+  emit : Nat -> [Nat]
+  emit c = if c == 0 then [] else (Nat.mod c 58) +: emit (c / 58)
+  go : [Nat] -> Nat -> [Nat]
+  go ds carry = match ds with
+    [] -> emit carry
+    d +: rest ->
+      acc = (d * 256) + carry
+      (Nat.mod acc 58) +: go rest (acc / 58)
+  go digits byte
+
+reverseL : [a] -> [a]
+reverseL xs = foldl (acc x -> x +: acc) [] xs
+
+countLeadingZeros : [Nat] -> Nat
+countLeadingZeros xs = match xs with
+  [] -> 0
+  h +: t -> if h == 0 then 1 + countLeadingZeros t else 0
+
+base58Encode : Bytes -> Text
+base58Encode input =
+  bytes = Bytes.toList input
+  zeros = countLeadingZeros bytes
+  body = List.drop zeros bytes
+  digitsLE = foldl b58AddByte [] body
+  digitsMS = reverseL digitsLE
+  ones = List.map (_ -> 49) (rangeTo 0 zeros)          -- '1' for each leading 0x00
+  chars = List.map (d -> atOr0 base58Alphabet d) digitsMS
+  bytesToText (Bytes.fromList (ones List.++ chars))
+
+-- ── base58 DECODE (inverse of base58Encode) ──────────────────────────────────
+-- Mirror of b58AddByte with the 256↔58 radices swapped: multiply the current LE
+-- base-256 byte list by 58 and add the next digit. Used to recover the key_type
+-- varint from a presented peer_id (§4.4 agility: reject an unsupported key_type).
+
+b58IndexOf : Nat -> Optional Nat
+b58IndexOf c =
+  go : Nat -> Optional Nat
+  go i =
+    if i >= 58 then None
+    else if (atOr0 base58Alphabet i) == c then Some i else go (i + 1)
+  go 0
+
+b58MulAdd58 : [Nat] -> Nat -> [Nat]
+b58MulAdd58 limbs v =
+  emit : Nat -> [Nat]
+  emit c = if c == 0 then [] else (Nat.mod c 256) +: emit (c / 256)
+  go : [Nat] -> Nat -> [Nat]
+  go ls carry = match ls with
+    [] -> emit carry
+    x +: rest ->
+      acc = (x * 58) + carry
+      (Nat.mod acc 256) +: go rest (acc / 256)
+  go limbs v
+
+-- Decode a Base58 string to its big-endian byte list (leading '1' zero-bytes are
+-- not reconstructed — irrelevant for the key_type MSB which is always ≥ 0x01).
+base58DecodeBE : Text -> [Nat]
+base58DecodeBE s =
+  bs = Text.toUtf8 s
+  n = Bytes.size bs
+  go : Nat -> [Nat] -> [Nat]
+  go i limbs =
+    if i >= n then limbs
+    else match b58IndexOf (byteAt bs i) with
+      Some v -> go (i + 1) (b58MulAdd58 limbs v)
+      None -> go (i + 1) limbs
+  reverseL (go 0 [])
+
+-- The leading byte of a presented peer_id = its key_type varint's first byte
+-- (0x01 for Ed25519). A value ≥ 0x80 is a multi-byte varint (an experimental /
+-- future code); any value other than 0x01 is a key_type this peer does not support.
+peerIdKeyType : Text -> Optional Nat
+peerIdKeyType pid = match base58DecodeBE pid with
+  b +: _ -> Some b
+  [] -> None
+
+-- ── peer_id = Base58( varint(key_type) ‖ varint(hash_type) ‖ digest ) ────────
+
+formatPeerId : Nat -> Nat -> Bytes -> Text
+formatPeerId kt ht digest =
+  payload = bappend (bappend (varintEncode kt) (varintEncode ht)) digest
+  base58Encode payload
+
+-- Derive an Ed25519 peer_id per the §1.5 canonical-form table (key_type 0x01,
+-- hash_type 0x00 identity-multihash, digest = the raw 32-byte public key)
+-- (A-UN-008). Ed448/other keys hash the pubkey under SHA-256 (agility deferred).
+canonicalHashType : Nat -> Nat
+canonicalHashType kt = if kt == 1 then 0 else 1
+
+derivePeerId : Nat -> Bytes -> Text
+derivePeerId kt pubkey =
+  ht = canonicalHashType kt
+  digest =
+    if ht == 0 then pubkey
+    else crypto.hashBytes crypto.HashAlgorithm.Sha2_256 pubkey
+  formatPeerId kt ht digest

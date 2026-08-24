@@ -1,0 +1,151 @@
+-- entity-core-protocol-unison — standalone peer host (the S4 conformance target).
+-- Boots one Peer listener on a TCP port and blocks, so the entity-core-go
+-- validate-peer oracle can drive the live wire surface. Twin of the Haskell
+-- app/Host.hs.
+--
+--   --port N               listen port (default 7777; 0 = auto-assign)
+--   --name NAME            load a persistent Ed25519 identity from
+--                          ~/.entity/peers/NAME/keypair (entity-core PEM = base64
+--                          of a 32-byte seed between BEGIN/END lines — the Go
+--                          entity-peer --name / peer-manager convention). Without
+--                          --name a fixed test seed is used.
+--   --debug-open-grants    the degenerate `default → *` seed policy (deprecated).
+--   --validate             register the system/validate/* §7a handlers (OFF by
+--                          default — dispatch-outbound is a standing dialer).
+--
+-- Emits a `LISTENING 127.0.0.1:<port> peer_id=<id> ...` line so a harness can wait.
+
+type Opts = { optPort : Nat, optOpen : Boolean, optValidate : Boolean, optSeed : Bytes }
+
+defaultSeed : Bytes
+defaultSeed = Bytes.fromList (List.map (_ -> 17) (rangeTo 0 32))
+
+-- ── base64 (standard alphabet) — skips whitespace / '=' / '-' PEM markers ─────
+
+b64Value : Nat -> Optional Nat
+b64Value c =
+  if (c >= 65) && (c <= 90) then Some (Nat.drop c 65)
+  else if (c >= 97) && (c <= 122) then Some (Nat.drop c 71)
+  else if (c >= 48) && (c <= 57) then Some (c + 4)
+  else if c == 43 then Some 62
+  else if c == 47 then Some 63
+  else None
+
+b64Decode : Bytes -> [Nat]
+b64Decode input =
+  n = Bytes.size input
+  go : Nat -> Nat -> Nat -> [Nat] -> [Nat]
+  go i acc bits out =
+    if i >= n then out
+    else match b64Value (byteAt input i) with
+      None -> go (i + 1) acc bits out
+      Some v ->
+        acc2 = Nat.or (Nat.shiftLeft acc 6) v
+        bits2 = bits + 6
+        emit = bits2 >= 8
+        bits3 = if emit then Nat.drop bits2 8 else bits2
+        out2 = if emit then out :+ (Nat.and (Nat.shiftRight acc2 bits3) 255) else out
+        go (i + 1) acc2 bits3 out2
+  go 0 0 0 []
+
+-- ── PEM line stripping (drop lines beginning with '-') ────────────────────────
+
+startsWithDash : Bytes -> Boolean
+startsWithDash b = (byteAt b 0) == 45
+
+splitByte : Nat -> Bytes -> [Bytes]
+splitByte sep bs =
+  n = Bytes.size bs
+  slice = a b -> Bytes.take (Nat.drop b a) (Bytes.drop a bs)
+  go : Nat -> Nat -> [Bytes] -> [Bytes]
+  go start i acc =
+    if i >= n then acc :+ (slice start i)
+    else if (byteAt bs i) == sep then go (i + 1) (i + 1) (acc :+ (slice start i))
+    else go start (i + 1) acc
+  go 0 0 []
+
+keepNonDash : [Bytes] -> [Bytes]
+keepNonDash xs = match xs with
+  [] -> []
+  h +: t -> if startsWithDash h then keepNonDash t else h +: (keepNonDash t)
+
+stripPemLines : Bytes -> Bytes
+stripPemLines contents = concatBytes (keepNonDash (splitByte 10 contents))
+
+-- ── seed load (Go entity-peer --name convention) ──────────────────────────────
+
+envOr : Text -> Text ->{IO} Text
+envOr key d = match io2.IO.getEnv.impl key with
+  Right v -> v
+  Left _ -> d
+
+loadSeedFromName : Text ->{IO} Bytes
+loadSeedFromName name =
+  home = envOr "HOME" "/root"
+  path = home Text.++ "/.entity/peers/" Text.++ name Text.++ "/keypair"
+  fh = unwrapF (io2.IO.openFile.impl path io2.FileMode.Read)
+  contents = unwrapF (io2.IO.getBytes.impl fh 65536)
+  Bytes.fromList (b64Decode (stripPemLines contents))
+
+-- ── arg parse ─────────────────────────────────────────────────────────────────
+
+parseNat : Text -> Nat
+parseNat s =
+  bs = Text.toUtf8 s
+  n = Bytes.size bs
+  go : Nat -> Nat -> Nat
+  go i acc =
+    if i >= n then acc
+    else
+      d = byteAt bs i
+      if (d >= 48) && (d <= 57) then go (i + 1) ((acc * 10) + (Nat.drop d 48)) else acc
+  go 0 0
+
+parseArgs : Opts -> [Text] ->{IO} Opts
+parseArgs o args = match args with
+  [] -> o
+  flag +: rest -> parseFlag o flag rest
+
+parseFlag : Opts -> Text -> [Text] ->{IO} Opts
+parseFlag o flag rest =
+  if flag == "--port" then match rest with
+    n +: more -> parseArgs (Opts.optPort.set (parseNat n) o) more
+    [] -> o
+  else if flag == "--name" then match rest with
+    nm +: more -> parseArgs (Opts.optSeed.set (loadSeedFromName nm) o) more
+    [] -> o
+  else if flag == "--debug-open-grants" then parseArgs (Opts.optOpen.set true o) rest
+  else if flag == "--validate" then parseArgs (Opts.optValidate.set true o) rest
+  else parseArgs o rest
+
+-- ── stdout ────────────────────────────────────────────────────────────────────
+
+putLine : Text ->{IO} ()
+putLine t =
+  h = io2.IO.stdHandle io2.StdHandle.StdOut
+  _ = io2.IO.putBytes.impl h (Text.toUtf8 (t Text.++ "\n"))
+  ()
+
+boolText : Boolean -> Text
+boolText b = if b then "true" else "false"
+
+main : '{IO} ()
+main _ =
+  -- Line-buffer stdout so the LISTENING banner flushes to a redirected file
+  -- (a pipe/file handle is block-buffered by default → a harness waiting on the
+  -- banner would hang while the peer is in fact already listening).
+  _ = io2.IO.setBuffering.impl (io2.IO.stdHandle io2.StdHandle.StdOut) io2.BufferMode.LineBuffering
+  args = unwrapF (io2.IO.getArgs.impl ())
+  opts = parseArgs (Opts 7777 false false defaultSeed) args
+  policy = if Opts.optOpen opts then SeedDebugOpen else SeedStandard
+  peer = createPeer (Opts.optSeed opts) policy (Opts.optValidate opts)
+  listenRes = listenOn (Opts.optPort opts)
+  lsock = fst2 listenRes
+  bound = snd2 listenRes
+  banner =
+    "LISTENING 127.0.0.1:" Text.++ (Nat.toText bound)
+      Text.++ " peer_id=" Text.++ (Peer.pLocal peer)
+      Text.++ " open_grants=" Text.++ (boolText (Opts.optOpen opts))
+      Text.++ " validate=" Text.++ (boolText (Opts.optValidate opts))
+  putLine banner
+  acceptLoop peer lsock

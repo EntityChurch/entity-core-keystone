@@ -1,0 +1,808 @@
+-- entity-core-protocol-unison — peer assembly (L1–L4 + foundation). The protocol
+-- brain: the four MUST system handlers (§6.2 connect/tree/capability/handler), the
+-- §6.5 dispatch chain (verify → resolve → check_permission → handler), §6.6
+-- backward handler resolution, §6.9 bootstrap + §6.9a Peer Authority Bootstrap,
+-- §6.13b handler outbound closure, and the §7a conformance handlers.
+--
+-- Store mutation runs in IO over the MVar-serialized store (Store.u, §7b-safe);
+-- the capability verdict is a PURE function of a one-time snapshot (Capability.u,
+-- N8). Transport lives in Transport.u — this module is a function from inbound
+-- envelope to outbound response envelope + per-connection state.
+
+type Peer =
+  { pIdentity : Identity, pStore : Store, pLocal : Text
+  , pSeedPolicy : SeedPolicy, pConformance : Boolean }
+
+-- Per-connection state (§4.2): mutable handshake fields + the §6.13b outbound seam
+-- (set by the transport when the connection is reentrant; None otherwise).
+type Conn =
+  { cEstablished : Ref {IO} Boolean
+  , cNonce : Ref {IO} (Optional Bytes)
+  , cHelloPeer : Ref {IO} (Optional Text)
+  , cOutbound : Ref {IO} (Optional (Envelope ->{IO} Optional Envelope))
+  , cOutCounter : MVar Nat }
+
+newConn : '{IO} Conn
+newConn _ =
+  est = io2.IO.ref false
+  non = io2.IO.ref (None : Optional Bytes)
+  hp = io2.IO.ref (None : Optional Text)
+  ob = io2.IO.ref (None : Optional (Envelope ->{IO} Optional Envelope))
+  ctr = io2.MVar.new 0
+  Conn est non hp ob ctr
+
+-- ── outcome ───────────────────────────────────────────────────────────────────
+
+type Outcome = { ocStatus : Nat, ocResult : Entity, ocIncluded : [(Bytes, Entity)] }
+
+okOc : Entity -> Outcome
+okOc result = Outcome 200 result []
+
+okI : [(Bytes, Entity)] -> Entity -> Outcome
+okI included result = Outcome 200 result included
+
+errOc : Nat -> Text -> Outcome
+errOc status code = Outcome status (errorResult None code) []
+
+errMsg : Nat -> Text -> Text -> Outcome
+errMsg status code msg = Outcome status (errorResult (Some msg) code) []
+
+-- ── clock + nonce ─────────────────────────────────────────────────────────────
+
+nowMs : '{IO} Nat
+nowMs _ = match io2.Clock.internals.realtime () with
+  Right ts ->
+    ((Int.truncate0 (io2.Clock.internals.sec ts)) * 1000) +
+      ((io2.Clock.internals.nsec ts) / 1000000)
+  Left _ -> 0
+
+nowMicros : '{IO} Nat
+nowMicros _ = match io2.Clock.internals.realtime () with
+  Right ts ->
+    ((Int.truncate0 (io2.Clock.internals.sec ts)) * 1000000) +
+      ((io2.Clock.internals.nsec ts) / 1000)
+  Left _ -> 0
+
+-- §4.6 SHOULD ≥32-byte nonce. Builtins-only: SHA-256 of the current µs clock (no
+-- /dev/urandom dependency). Unique per handshake; entropy is not conformance-gated.
+randomBytes : Nat ->{IO} Bytes
+randomBytes n =
+  micros = nowMicros ()
+  h = crypto.hashBytes crypto.HashAlgorithm.Sha2_256 (Bytes.encodeNat64be micros)
+  Bytes.take n h
+
+-- ── grant construction (§4.4 / §5.4) ──────────────────────────────────────────
+
+textArr : [Text] -> Value
+textArr xs = VArray (List.map (s -> VText s) xs)
+
+scopeV : [Text] -> [Text] -> Value
+scopeV incl excl =
+  base = [(VText "include", textArr incl)]
+  withExcl = if (List.size excl) == 0 then base else base :+ (VText "exclude", textArr excl)
+  VMap withExcl
+
+grantV : [Text] -> [Text] -> [Text] -> Optional [Text] -> Value
+grantV handlers resources operations peers =
+  base =
+    [ (VText "handlers", scopeV handlers [])
+    , (VText "resources", scopeV resources [])
+    , (VText "operations", scopeV operations []) ]
+  withPeers = match peers with
+    Some pl -> base :+ (VText "peers", scopeV pl [])
+    None -> base
+  VMap withPeers
+
+discoveryFloor : [Value]
+discoveryFloor =
+  [ grantV ["system/tree"] ["system/type/*", "system/handler/*"] ["get"] None
+  , grantV ["system/capability"] [] ["request"] None ]
+
+openGrantsScope : [Value]
+openGrantsScope = [ grantV ["*"] ["*", "/*/*"] ["*"] (Some ["*"]) ]
+
+ownerGrants : Peer -> [Value]
+ownerGrants p = [ grantV ["*"] ["*"] ["*"] (Some [Peer.pLocal p]) ]
+
+-- ── token mint (§4.4 / §5.4) — created_at at MS precision (A-PD-016) ──────────
+
+mintToken : Peer -> Bytes -> Optional Bytes -> [Value] ->{IO} (Entity, Entity)
+mintToken p granteeHash parent grants =
+  t = nowMs ()
+  base =
+    [ (VText "granter", VBytes (Identity.idHash (Peer.pIdentity p)))
+    , (VText "grantee", VBytes granteeHash)
+    , (VText "grants", VArray grants)
+    , (VText "created_at", VUInt t) ]
+  withParent = match parent with
+    Some ph -> base :+ (VText "parent", VBytes ph)
+    None -> base
+  token = makeEntity "system/capability/token" (VMap withParent)
+  sgn = signEntity (Peer.pIdentity p) token
+  (token, sgn)
+
+-- ── §6.9a seed policy ─────────────────────────────────────────────────────────
+
+seedEntryGrants : Entity -> [Value]
+seedEntryGrants e = match field e "grants" with
+  Some (VArray l) -> l
+  _ -> []
+
+firstStored : Store -> [Text] ->{IO} Optional Entity
+firstStored store paths = match paths with
+  [] -> None
+  h +: t -> match getAt store h with
+    Some e -> Some e
+    None -> firstStored store t
+
+deriveSeedGrants : Peer -> Entity -> Text ->{IO} [Value]
+deriveSeedGrants p remotePeer remotePeerId =
+  policyBase = "/" Text.++ (Peer.pLocal p) Text.++ "/system/capability/policy/"
+  candidates =
+    [ policyBase Text.++ (hexOf (Entity.ehash remotePeer))
+    , policyBase Text.++ remotePeerId
+    , policyBase Text.++ "default" ]
+  policyGrants = match firstStored (Peer.pStore p) candidates with
+    Some e -> seedEntryGrants e
+    None -> []
+  if (List.size policyGrants) == 0 then discoveryFloor
+  else discoveryFloor List.++ policyGrants
+
+-- ── §6.13b handler-facing outbound dispatch ───────────────────────────────────
+
+bumpCounter : Conn ->{IO} Nat
+bumpCounter conn =
+  cur = takeMVar (Conn.cOutCounter conn)
+  putMVar (Conn.cOutCounter conn) (cur + 1)
+  cur + 1
+
+outboundDispatch :
+  Peer -> Conn -> Text -> Text -> Entity -> Optional Value -> Entity -> Entity -> Entity
+  ->{IO} Optional Envelope
+outboundDispatch p conn uri operation params resource capability granterPeer capabilitySignature =
+  match Ref.read (Conn.cOutbound conn) with
+    None -> None
+    Some send ->
+      n = bumpCounter conn
+      requestId = "out-" Text.++ (Nat.toText n)
+      exec = makeExecute requestId uri operation params resource
+               (Identity.idHash (Peer.pIdentity p)) (Entity.ehash capability)
+      execSig = signEntity (Peer.pIdentity p) exec
+      included =
+        [ (Entity.ehash capability, capability)
+        , (Entity.ehash granterPeer, granterPeer)
+        , (Identity.idHash (Peer.pIdentity p), Identity.idPeerEntity (Peer.pIdentity p))
+        , (Entity.ehash capabilitySignature, capabilitySignature)
+        , (Entity.ehash execSig, execSig) ]
+      send (Envelope exec included)
+
+-- ── connect handler (§4.1 / §4.6) ─────────────────────────────────────────────
+
+paramTextField : Optional Entity -> Text -> Optional Text
+paramTextField params key = match params with
+  Some pr -> textField pr key
+  None -> None
+
+strArrayHas : Optional Entity -> Text -> Text -> Boolean
+strArrayHas params key val = match params with
+  None -> true
+  Some pr -> match field pr key with
+    Some (VArray l) -> anyL (v -> v == VText val) l
+    _ -> true
+
+connectHandler : Peer -> Conn -> Entity -> [(Bytes, Entity)] ->{IO} Outcome
+connectHandler p conn exec included =
+  op = optOr (textField exec "operation") ""
+  established = Ref.read (Conn.cEstablished conn)
+  if op == "hello" then helloOp p conn exec established
+  else if op == "authenticate" then authOp p conn exec included established
+  else errMsg 501 "unsupported_operation" ("connect: " Text.++ op)
+
+helloOp : Peer -> Conn -> Entity -> Boolean ->{IO} Outcome
+helloOp p conn exec established =
+  if established then errOc 409 "connection_already_established"
+  else
+    params = entityField exec "params"
+    hashOk = strArrayHas params "hash_formats" "ecfv1-sha256"
+    keyOk = strArrayHas params "key_types" "ed25519"
+    if not hashOk then errOc 400 "incompatible_hash_format"
+    else if not keyOk then errOc 400 "unsupported_key_type"
+    else helloReply p conn params
+
+helloReply : Peer -> Conn -> Optional Entity ->{IO} Outcome
+helloReply p conn params =
+  Ref.write (Conn.cHelloPeer conn) (paramTextField params "peer_id")
+  nonce = randomBytes 32
+  Ref.write (Conn.cNonce conn) (Some nonce)
+  t = nowMs ()
+  helloData =
+    [ (VText "peer_id", VText (Peer.pLocal p))
+    , (VText "nonce", VBytes nonce)
+    , (VText "protocols", VArray [VText "entity-core/1.0"])
+    , (VText "timestamp", VUInt t)
+    , (VText "hash_formats", VArray [VText "ecfv1-sha256"])
+    , (VText "key_types", VArray [VText "ed25519"]) ]
+  okOc (makeEntity "system/protocol/connect/hello" (VMap helloData))
+
+badKeyType : Entity -> Boolean
+badKeyType auth =
+  ktBad = match textField auth "key_type" with
+    Some kt -> not (kt == "ed25519")
+    None -> false
+  pkBad = match bytesField auth "public_key" with
+    Some pk -> not ((Bytes.size pk) == 32)
+    None -> false
+  ktBad || pkBad
+
+popOk : [(Bytes, Entity)] -> Entity -> Bytes -> Boolean
+popOk included auth publicKey = match findSignature (Entity.ehash auth) included with
+  Some sgn -> match bytesField sgn "signature" with
+    Some sb -> ed25519VerifyRaw publicKey (Entity.ehash auth) sb
+    None -> false
+  None -> false
+
+authOp : Peer -> Conn -> Entity -> [(Bytes, Entity)] -> Boolean ->{IO} Outcome
+authOp p conn exec included established =
+  if established then errOc 409 "connection_already_established"
+  else match Ref.read (Conn.cNonce conn) with
+    None -> errOc 401 "invalid_nonce"
+    Some issued -> match entityField exec "params" with
+      None -> errOc 401 "authentication_failed"
+      Some auth -> authWithParams p conn included issued auth
+
+authWithParams : Peer -> Conn -> [(Bytes, Entity)] -> Bytes -> Entity ->{IO} Outcome
+authWithParams p conn included issued auth =
+  echoed = bytesField auth "nonce"
+  claimedPeer = textField auth "peer_id"
+  if badKeyType auth then errOc 400 "unsupported_key_type"
+  else if not (echoed == (Some issued)) then errOc 401 "invalid_nonce"
+  else match bytesField auth "public_key" with
+    None -> errOc 401 "authentication_failed"
+    Some publicKey -> authVerify p conn included auth publicKey claimedPeer
+
+-- §4.4/§7.1 agility: a presented peer_id whose key_type varint is not 0x01
+-- (Ed25519, the only key type this peer supports) → 400 unsupported_key_type,
+-- BEFORE the identity check (else the mismatch surfaces as a misleading 401
+-- identity_mismatch — AGILITY-UNKNOWN-1). Ed448 (0x02) and the experimental range
+-- (0xF0–0xFD) are all unsupported here (agility deferred, A-UN-001).
+claimedKeyTypeUnsupported : Optional Text -> Boolean
+claimedKeyTypeUnsupported cp = match cp with
+  Some pid -> match peerIdKeyType pid with
+    Some kt -> not (kt == 1)
+    None -> false
+  None -> false
+
+authVerify :
+  Peer -> Conn -> [(Bytes, Entity)] -> Entity -> Bytes -> Optional Text ->{IO} Outcome
+authVerify p conn included auth publicKey claimedPeer =
+  if claimedKeyTypeUnsupported claimedPeer then errOc 400 "unsupported_key_type"
+  else if not (popOk included auth publicKey) then errOc 401 "authentication_failed"
+  else if not (claimedPeer == (Some (peerIdOfPubkey publicKey))) then errOc 401 "identity_mismatch"
+  else authSucceed p conn auth publicKey claimedPeer
+
+authSucceed : Peer -> Conn -> Entity -> Bytes -> Optional Text ->{IO} Outcome
+authSucceed p conn auth publicKey claimedPeer =
+  helloPid = Ref.read (Conn.cHelloPeer conn)
+  mismatch = (not (helloPid == None)) && (not (helloPid == claimedPeer))
+  if mismatch then errOc 401 "identity_mismatch"
+  else mintInitial p conn publicKey claimedPeer
+
+mintInitial : Peer -> Conn -> Bytes -> Optional Text ->{IO} Outcome
+mintInitial p conn publicKey claimedPeer =
+  remotePeer = peerEntityOfPubkey publicKey
+  grants = deriveSeedGrants p remotePeer (optOr claimedPeer "")
+  tokPair = mintToken p (Entity.ehash remotePeer) None grants
+  token = fst2 tokPair
+  sgn = snd2 tokPair
+  Ref.write (Conn.cEstablished conn) true
+  grantResult = makeEntity "system/capability/grant" (VMap [(VText "token", VBytes (Entity.ehash token))])
+  okI
+    [ (Entity.ehash token, token)
+    , (Identity.idHash (Peer.pIdentity p), Identity.idPeerEntity (Peer.pIdentity p))
+    , (Entity.ehash sgn, sgn) ]
+    grantResult
+
+-- ── tree handler (§6.3) ────────────────────────────────────────────────────────
+
+firstTarget : Value -> Optional Text
+firstTarget r = match mapField r "targets" with
+  Some (VArray l) -> match l with
+    (VText t) +: _ -> Some t
+    _ -> None
+  _ -> None
+
+resourceTarget : Entity -> Optional Text
+resourceTarget exec = match field exec "resource" with
+  Some r -> firstTarget r
+  None -> None
+
+listingEntryKV : (Text, Optional Bytes, Boolean) -> (Value, Value)
+listingEntryKV entry = match entry with
+  (seg, mh, hasCh) ->
+    base = [(VText "has_children", VBool hasCh)]
+    withHash = match mh with
+      Some h -> base :+ (VText "hash", VBytes h)
+      None -> base
+    (VText seg, entityToCbor (makeEntity "system/tree/listing-entry" (VMap withHash)))
+
+buildListing : Peer -> Text ->{IO} Outcome
+buildListing p path =
+  entries = listing (Peer.pStore p) path
+  entryMap = List.map listingEntryKV entries
+  listingData =
+    [ (VText "path", VText path)
+    , (VText "entries", VMap entryMap)
+    , (VText "count", VUInt (List.size entries))
+    , (VText "offset", VUInt 0) ]
+  okOc (makeEntity "system/tree/listing" (VMap listingData))
+
+treeGetOne : Peer -> Text ->{IO} Outcome
+treeGetOne p path = match getAt (Peer.pStore p) path with
+  Some e -> okOc e
+  None -> errMsg 404 "not_found" path
+
+treeGet : Peer -> Optional Text ->{IO} Outcome
+treeGet p tgt =
+  rootPath = "/" Text.++ (Peer.pLocal p) Text.++ "/"
+  match tgt with
+    None -> buildListing p rootPath
+    Some target ->
+      if (Text.size target) == 0 then buildListing p rootPath
+      else if rejectCallerPath target then errMsg 400 "invalid_path" ("tree get: " Text.++ target)
+      else if textEndsWith "/" target then buildListing p (canonicalize (Peer.pLocal p) target)
+      else treeGetOne p (canonicalize (Peer.pLocal p) target)
+
+paramEntityField : Optional Entity -> Text -> Optional Entity
+paramEntityField mp key = match mp with
+  Some pr -> entityField pr key
+  None -> None
+
+paramBytesField : Optional Entity -> Text -> Optional Bytes
+paramBytesField mp key = match mp with
+  Some pr -> bytesField pr key
+  None -> None
+
+-- §CAS (put-request.expected_hash, spec §6.3): ABSENT → unconditional; PRESENT and
+-- non-zero → current binding MUST have this hash (else 409); PRESENT and the ZERO
+-- hash → CAS-create, path MUST be currently UNBOUND (else 409).
+casAllowed : Optional Bytes -> Optional Bytes -> Boolean
+casAllowed expected current = match expected with
+  None -> true
+  Some h ->
+    if isZeroBytes h then (current == None)
+    else (current == (Some h))
+
+treePut : Peer -> Entity -> Optional Text ->{IO} Outcome
+treePut p exec tgt = match tgt with
+  None -> errMsg 400 "ambiguous_resource" "tree: missing resource target"
+  Some target ->
+    if rejectCallerPath target then errMsg 400 "invalid_path" ("tree put: " Text.++ target)
+    else
+      params = entityField exec "params"
+      canonPath = canonicalize (Peer.pLocal p) target
+      expected = paramBytesField params "expected_hash"
+      current = hashAt (Peer.pStore p) canonPath
+      if not (casAllowed expected current) then errMsg 409 "hash_mismatch" ("tree put: " Text.++ target)
+      else match paramEntityField params "entity" with
+        Some e ->
+          bind (Peer.pStore p) canonPath e
+          okOc (makeEntity "system/hash" (VBytes (Entity.ehash e)))
+        None -> errMsg 400 "unexpected_params" "put: missing entity"
+
+treeHandler : Peer -> Entity ->{IO} Outcome
+treeHandler p exec =
+  op = optOr (textField exec "operation") ""
+  tgt = resourceTarget exec
+  if op == "get" then treeGet p tgt
+  else if op == "put" then treePut p exec tgt
+  else errMsg 501 "unsupported_operation" ("tree: " Text.++ op)
+
+-- ── capability handler (§6.2) ──────────────────────────────────────────────────
+
+grantsArrayOf : Entity -> [Value]
+grantsArrayOf pr = match field pr "grants" with
+  Some (VArray l) -> l
+  _ -> []
+
+reqGrantsOf : Optional Entity -> [Value]
+reqGrantsOf params = match params with
+  Some pr -> grantsArrayOf pr
+  None -> []
+
+grantBoundedBy : Peer -> [Grant] -> Grant -> Boolean
+grantBoundedBy p parentGrants c =
+  anyL (pg -> grantSubset (Peer.pLocal p) (Peer.pLocal p) (Peer.pLocal p) c pg) parentGrants
+
+checkBounded : Peer -> Optional Entity -> [Value] -> Boolean
+checkBounded p callerCap reqGrants = match callerCap with
+  None -> false
+  Some cap ->
+    parentGrants = grantsOfToken cap
+    allL (cg -> grantBoundedBy p parentGrants (parseGrant cg)) reqGrants
+
+mintBounded : Peer -> Optional Entity -> [Value] -> Bytes -> Optional Bytes ->{IO} Outcome
+mintBounded p callerCap reqGrants granteeHash parent =
+  if not (checkBounded p callerCap reqGrants) then errOc 403 "scope_exceeds_authority"
+  else
+    tokPair = mintToken p granteeHash parent reqGrants
+    token = fst2 tokPair
+    sgn = snd2 tokPair
+    grantResult = makeEntity "system/capability/grant" (VMap [(VText "token", VBytes (Entity.ehash token))])
+    okI
+      [ (Entity.ehash token, token)
+      , (Identity.idHash (Peer.pIdentity p), Identity.idPeerEntity (Peer.pIdentity p))
+      , (Entity.ehash sgn, sgn) ]
+      grantResult
+
+capRevoke : Peer -> Optional Entity ->{IO} Outcome
+capRevoke p params = match params with
+  None -> errMsg 400 "unexpected_params" "revoke: missing params"
+  Some pr -> match bytesField pr "token" with
+    Some tokenH ->
+      if isZeroBytes tokenH then errMsg 400 "invalid_token" "revoke: token MUST be non-zero"
+      else
+        t = nowMs ()
+        marker = makeEntity "system/capability/revocation" (VMap [(VText "token", VBytes tokenH), (VText "revoked_at", VUInt t)])
+        revPath = "/" Text.++ (Peer.pLocal p) Text.++ "/system/capability/revocations/" Text.++ (hexOf tokenH)
+        bind (Peer.pStore p) revPath marker
+        okOc emptyParams
+    None -> errMsg 400 "unexpected_params" "revoke: missing token"
+
+capConfigure : Peer -> Optional Entity ->{IO} Outcome
+capConfigure p params = match params with
+  None -> errMsg 400 "unexpected_params" "configure: missing params"
+  Some pr -> match textField pr "peer_pattern" with
+    Some pp ->
+      if not (validPeerPattern pp) then
+        errMsg 400 "invalid_peer_pattern" ("configure: partial-prefix peer_pattern rejected: " Text.++ pp)
+      else
+        bind (Peer.pStore p)
+          ("/" Text.++ (Peer.pLocal p) Text.++ "/system/capability/policy/" Text.++ pp) pr
+        okOc emptyParams
+    None -> errMsg 400 "unexpected_params" "configure: missing peer_pattern"
+
+capabilityHandler : Peer -> Entity -> Optional Entity ->{IO} Outcome
+capabilityHandler p exec callerCap =
+  op = optOr (textField exec "operation") ""
+  params = entityField exec "params"
+  author = bytesField exec "author"
+  if op == "request" then match author with
+    None -> errOc 403 "capability_denied"
+    Some granteeHash -> mintBounded p callerCap (reqGrantsOf params) granteeHash None
+  else if op == "revoke" then capRevoke p params
+  else if op == "configure" then capConfigure p params
+  else errMsg 501 "unsupported_operation" ("capability: " Text.++ op)
+
+-- ── handler register/unregister (§6.2 / §6.13a) ────────────────────────────────
+
+absPath : Peer -> Text -> Text
+absPath p rel = "/" Text.++ (Peer.pLocal p) Text.++ "/" Text.++ rel
+
+registerPatternOf : Entity -> Optional Text
+registerPatternOf exec = match resourceTarget exec with
+  None -> None
+  Some target ->
+    prefix = "system/handler/"
+    ok = (textStartsWith prefix target) && ((Text.size target) > (Text.size prefix))
+    if ok then Some (Text.drop (Text.size prefix) target) else None
+
+manifestName : Value -> Text -> Text
+manifestName manifest fallback = match mapField manifest "name" with
+  Some (VText s) -> s
+  _ -> fallback
+
+registerScope : Entity -> Value -> [Value]
+registerScope req manifest = match field req "requested_scope" with
+  Some (VArray l) -> l
+  _ -> match mapField manifest "internal_scope" with
+    Some (VArray l) -> l
+    _ -> []
+
+doRegister : Peer -> Text -> Entity ->{IO} Outcome
+doRegister p pattern req =
+  manifest = optOr (field req "manifest") (VMap [])
+  name = manifestName manifest pattern
+  operations = optOr (mapField manifest "operations") (VMap [])
+  interfaceRel = "system/handler/" Text.++ pattern
+  handlerE = makeEntity "system/handler" (VMap [(VText "interface", VText interfaceRel)])
+  bind (Peer.pStore p) (absPath p pattern) handlerE
+  tokPair = mintToken p (Identity.idHash (Peer.pIdentity p)) None (registerScope req manifest)
+  token = fst2 tokPair
+  sgn = snd2 tokPair
+  bind (Peer.pStore p) (absPath p ("system/capability/grants/" Text.++ pattern)) token
+  bind (Peer.pStore p) (absPath p ("system/signature/" Text.++ (hexOf (Entity.ehash token)))) sgn
+  ifaceData = [(VText "pattern", VText pattern), (VText "name", VText name), (VText "operations", operations)]
+  ifaceE = makeEntity "system/handler/interface" (VMap ifaceData)
+  bind (Peer.pStore p) (absPath p interfaceRel) ifaceE
+  resultData = [(VText "pattern", VText pattern), (VText "grant", Entity.edata token)]
+  result = makeEntity "system/handler/register-result" (VMap resultData)
+  okOc result
+
+registerHandler : Peer -> Entity ->{IO} Outcome
+registerHandler p exec = match registerPatternOf exec with
+  None -> errMsg 400 "invalid_resource" "register requires system/handler/{pattern} target"
+  Some pattern -> match entityField exec "params" with
+    None -> errMsg 400 "unexpected_params" "register: missing params"
+    Some req -> doRegister p pattern req
+
+-- §3.4 writer/unregister symmetry: unregister MUST tear down ALL five register
+-- writes — the handler, the interface, the grant token, AND the grant's signature
+-- pointer (system/signature/{token_hash}). Locate the token via its grants path to
+-- recover its hash, then unbind the signature it wrote.
+unregisterHandler : Peer -> Entity ->{IO} Outcome
+unregisterHandler p exec = match registerPatternOf exec with
+  None -> errMsg 400 "invalid_resource" "unregister requires system/handler/{pattern} target"
+  Some pattern ->
+    grantPath = absPath p ("system/capability/grants/" Text.++ pattern)
+    _ = match getAt (Peer.pStore p) grantPath with
+      Some token ->
+        unbind (Peer.pStore p) (absPath p ("system/signature/" Text.++ (hexOf (Entity.ehash token))))
+      None -> ()
+    unbind (Peer.pStore p) (absPath p pattern)
+    unbind (Peer.pStore p) (absPath p ("system/handler/" Text.++ pattern))
+    unbind (Peer.pStore p) grantPath
+    okOc emptyParams
+
+handlersHandler : Peer -> Entity ->{IO} Outcome
+handlersHandler p exec =
+  op = optOr (textField exec "operation") ""
+  if op == "register" then registerHandler p exec
+  else if op == "unregister" then unregisterHandler p exec
+  else errMsg 501 "unsupported_operation" ("handler: " Text.++ op)
+
+typesHandler : Peer -> Entity ->{IO} Outcome
+typesHandler p exec =
+  errMsg 501 "unsupported_operation" ("type: " Text.++ (optOr (textField exec "operation") ""))
+
+-- ── §7a conformance handlers (system/validate/*) — off by default ─────────────
+
+echoHandler : Peer -> Entity ->{IO} Outcome
+echoHandler p exec = match entityField exec "params" with
+  Some prm -> okOc prm
+  None -> errMsg 400 "invalid_params" "echo requires a params entity"
+
+wrapRelay : Envelope -> Outcome
+wrapRelay env =
+  status = optOr (natField (Envelope.eroot env) "status") 0
+  resultCbor = optOr (field (Envelope.eroot env) "result") (VMap [])
+  relayData = [(VText "status", VUInt status), (VText "result", resultCbor)]
+  okOc (makeEntity "primitive/any" (VMap relayData))
+
+doDispatchOutbound : Peer -> Conn -> Entity ->{IO} Outcome
+doDispatchOutbound p conn prm =
+  target = optOr (textField prm "target") ""
+  operation = optOr (textField prm "operation") ""
+  fields =
+    ( field prm "value"
+    , entityField prm "reentry_capability"
+    , entityField prm "reentry_granter"
+    , entityField prm "reentry_cap_signature" )
+  match fields with
+    (Some value, Some capability, Some granterPeer, Some capabilitySignature) ->
+      inner = makeEntity "primitive/any" value
+      resource = VMap [(VText "targets", VArray [VText ("system/handler/" Text.++ target)])]
+      menv = outboundDispatch p conn target operation inner (Some resource)
+               capability granterPeer capabilitySignature
+      match menv with
+        None -> errMsg 503 "no_outbound_seam" "no live reentry connection"
+        Some env -> wrapRelay env
+    _ -> errMsg 400 "invalid_params" "dispatch-outbound requires value + reentry authority"
+
+dispatchOutboundHandler : Peer -> Conn -> Entity ->{IO} Outcome
+dispatchOutboundHandler p conn exec = match entityField exec "params" with
+  None -> errMsg 400 "invalid_params" "dispatch-outbound requires a params entity"
+  Some prm -> doDispatchOutbound p conn prm
+
+-- ── §6.5 dispatcher-level signature ingestion (memory-primary discipline) ─────
+-- Ingest handler-discoverable signatures; SKIP the transient per-request EXECUTE
+-- signature (target == the root exec hash) so the in-memory store does not grow an
+-- entry per request (A-UN-013; the Io A-IO-022 / Rexx A-RX-014 lesson).
+
+bindSigPointer : Peer -> Entity -> Entity ->{IO} ()
+bindSigPointer p e signerPeer = match (bytesField e "target", bytesField signerPeer "public_key") with
+  (Some target, Some pk) ->
+    pid = peerIdOfPubkey pk
+    bind (Peer.pStore p)
+      ("/" Text.++ pid Text.++ "/system/signature/" Text.++ (hexOf target)) e
+  _ -> ()
+
+ingestSig : Peer -> Envelope -> Entity ->{IO} ()
+ingestSig p env e =
+  putEntity (Peer.pStore p) e
+  match bytesField e "signer" with
+    Some signerH -> match includedGet env signerH with
+      Some signerPeer ->
+        putEntity (Peer.pStore p) signerPeer
+        bindSigPointer p e signerPeer
+      None -> ()
+    None -> ()
+
+ingestOne : Peer -> Envelope -> Bytes -> Entity ->{IO} ()
+ingestOne p env execHash e =
+  if (Entity.etype e) == "system/signature" then
+    tgt = optOr (bytesField e "target") Bytes.empty
+    if tgt == execHash then ()
+    else ingestSig p env e
+  else ()
+
+ingestList : Peer -> Envelope -> Bytes -> [(Bytes, Entity)] ->{IO} ()
+ingestList p env execHash items = match items with
+  [] -> ()
+  pair +: rest ->
+    ingestOne p env execHash (snd2 pair)
+    ingestList p env execHash rest
+
+ingestSignatures : Peer -> Envelope ->{IO} ()
+ingestSignatures p env =
+  ingestList p env (Entity.ehash (Envelope.eroot env)) (Envelope.eincluded env)
+
+-- ── §6.6 backward handler resolution ──────────────────────────────────────────
+
+resolveHandler : Peer -> Text ->{IO} Optional Text
+resolveHandler p path =
+  segs = splitSlash path
+  n = List.size segs
+  tryLen : Nat ->{IO} Optional Text
+  tryLen i =
+    if i < 1 then None
+    else
+      prefix = joinSlash (List.take i segs)
+      match getAt (Peer.pStore p) prefix with
+        Some e ->
+          if (Entity.etype e) == "system/handler" then Some prefix
+          else tryLen (Nat.drop i 1)
+        None -> tryLen (Nat.drop i 1)
+  tryLen n
+
+stripLocal : Peer -> Text -> Text
+stripLocal p pattern =
+  prefix = "/" Text.++ (Peer.pLocal p) Text.++ "/"
+  if textStartsWith prefix pattern then Text.drop (Text.size prefix) pattern else pattern
+
+routeHandler : Peer -> Conn -> Entity -> Entity -> Text ->{IO} Outcome
+routeHandler p conn exec cap stripped = match stripped with
+  "system/tree" -> treeHandler p exec
+  "system/capability" -> capabilityHandler p exec (Some cap)
+  "system/handler" -> handlersHandler p exec
+  "system/type" -> typesHandler p exec
+  "system/validate/echo" -> echoHandler p exec
+  "system/validate/dispatch-outbound" -> dispatchOutboundHandler p conn exec
+  _ -> errMsg 501 "no_handler_body" stripped
+
+-- ── §6.5 dispatch chain ────────────────────────────────────────────────────────
+
+internalErrorResponse : Envelope -> Optional Envelope
+internalErrorResponse env =
+  requestId = optOr (textField (Envelope.eroot env) "request_id") ""
+  Some (Envelope (makeResponse requestId 500 (errorResult None "internal_error")) [])
+
+mkResolve : (Bytes -> Optional Entity) -> [(Bytes, Entity)] -> Bytes -> Optional Entity
+mkResolve contentSnap included h = match alLookupB h included with
+  Some e -> Some e
+  None -> contentSnap h
+
+mkRevoked : (Text -> Boolean) -> Text -> Bytes -> Boolean
+mkRevoked treeSnap localPeer h =
+  treeSnap ("/" Text.++ localPeer Text.++ "/system/capability/revocations/" Text.++ (hexOf h))
+
+dispatchAllowed :
+  Peer -> Conn -> Envelope -> Entity -> Text -> (Bytes -> Optional Entity) ->{IO} Outcome
+dispatchAllowed p conn env exec uri resolve =
+  path = canonicalize (Peer.pLocal p) (normalizeUri uri)
+  if not ((extractPeer (Peer.pLocal p) path) == (Peer.pLocal p)) then
+    errMsg 404 "handler_not_found" "not local peer"
+  else match resolveHandler p path with
+    None -> errMsg 404 "handler_not_found" path
+    Some pattern -> match optIncludedResolve env (bytesField exec "capability") with
+      None -> errOc 403 "capability_denied"
+      Some cap -> dispatchWithCap p conn env exec resolve pattern cap
+
+dispatchWithCap :
+  Peer -> Conn -> Envelope -> Entity -> (Bytes -> Optional Entity) -> Text -> Entity
+  ->{IO} Outcome
+dispatchWithCap p conn env exec resolve pattern cap =
+  granterPeer = optOr (resolveGranterPeerId resolve cap) (Peer.pLocal p)
+  match checkPermission (Peer.pLocal p) granterPeer exec cap pattern with
+    VDeny -> errOc 403 "capability_denied"
+    VAllow -> routeHandler p conn exec cap (stripLocal p pattern)
+
+dispatchOutcome : Peer -> Conn -> Envelope -> Entity -> Text ->{IO} Outcome
+dispatchOutcome p conn env exec uri =
+  if uri == "system/protocol/connect" then connectHandler p conn exec (Envelope.eincluded env)
+  else
+    ingestSignatures p env
+    contentSnap = snapshotContent (Peer.pStore p)
+    treeSnap = snapshotTreeMember (Peer.pStore p)
+    resolve = mkResolve contentSnap (Envelope.eincluded env)
+    revoked = mkRevoked treeSnap (Peer.pLocal p)
+    t = nowMs ()
+    match verifyRequest (Peer.pLocal p) t revoked resolve env with
+      RUnresolvable -> errOc 401 "unresolvable_grantee"
+      RAuthnFail -> errOc 401 "authentication_failed"
+      RAuthzDeny -> errOc 403 "capability_denied"
+      RChainTooDeep -> errOc 400 "chain_depth_exceeded"
+      RAllow -> dispatchAllowed p conn env exec uri resolve
+
+-- §3.3: the server side ignores a non-EXECUTE root (None → no response frame).
+dispatch : Peer -> Conn -> Envelope ->{IO} Optional Envelope
+dispatch p conn env =
+  exec = Envelope.eroot env
+  if not ((Entity.etype exec) == "system/protocol/execute") then None
+  else
+    requestId = optOr (textField exec "request_id") ""
+    uri = optOr (textField exec "uri") ""
+    outcome = dispatchOutcome p conn env exec uri
+    response = makeResponse requestId (Outcome.ocStatus outcome) (Outcome.ocResult outcome)
+    Some (Envelope response (Outcome.ocIncluded outcome))
+
+-- ── bootstrap (§6.9 / §6.9a) ───────────────────────────────────────────────────
+
+-- A handler interface's `operations` map (§6.2) — the oracle's handler_*_operations
+-- checks read the operation NAMES from the interface. Each value is a
+-- system/handler/operation-spec (empty here — both input/output types optional).
+opSpecEntity : Entity
+opSpecEntity = makeEntity "system/handler/operation-spec" (VMap [])
+
+operationsMap : [Text] -> Value
+operationsMap ops = VMap (List.map (o -> (VText o, entityToCbor opSpecEntity)) ops)
+
+installBootstrapHandlerOps : Peer -> Text -> Text -> [Text] ->{IO} ()
+installBootstrapHandlerOps p pattern name ops =
+  handlerE = makeEntity "system/handler" (VMap [(VText "interface", VText ("system/handler/" Text.++ pattern))])
+  bind (Peer.pStore p) ("/" Text.++ (Peer.pLocal p) Text.++ "/" Text.++ pattern) handlerE
+  ifaceBase = [(VText "pattern", VText pattern), (VText "name", VText name)]
+  ifaceData =
+    if (List.size ops) == 0 then ifaceBase
+    else ifaceBase :+ (VText "operations", operationsMap ops)
+  interfaceE = makeEntity "system/handler/interface" (VMap ifaceData)
+  ifacePath = "/" Text.++ (Peer.pLocal p) Text.++ "/system/handler/" Text.++ pattern
+  bind (Peer.pStore p) ifacePath interfaceE
+
+installBootstrapHandler : Peer -> Text -> Text ->{IO} ()
+installBootstrapHandler p pattern name = installBootstrapHandlerOps p pattern name []
+
+installCoreHandlers : Peer ->{IO} ()
+installCoreHandlers p =
+  installBootstrapHandlerOps p "system/tree" "Tree" ["get", "put", "list"]
+  installBootstrapHandlerOps p "system/capability" "Capability" ["request", "revoke", "configure", "delegate"]
+  installBootstrapHandlerOps p "system/handler" "Handlers" ["register", "unregister"]
+  installBootstrapHandlerOps p "system/type" "Types" ["validate"]
+  installBootstrapHandlerOps p "system/protocol/connect" "Connect" ["hello", "authenticate"]
+
+installSeedPolicy : Peer ->{IO} ()
+installSeedPolicy p =
+  policyBase = "/" Text.++ (Peer.pLocal p) Text.++ "/system/capability/policy/"
+  ownerPair = mintToken p (Identity.idHash (Peer.pIdentity p)) None (ownerGrants p)
+  ownerToken = fst2 ownerPair
+  ownerSig = snd2 ownerPair
+  bind (Peer.pStore p)
+    (policyBase Text.++ (hexOf (Identity.idHash (Peer.pIdentity p)))) ownerToken
+  bind (Peer.pStore p)
+    ("/" Text.++ (Peer.pLocal p) Text.++ "/system/signature/" Text.++ (hexOf (Entity.ehash ownerToken)))
+    ownerSig
+  defaultGrants = match Peer.pSeedPolicy p with
+    SeedDebugOpen -> openGrantsScope
+    SeedStandard -> discoveryFloor
+  defaultData = [(VText "peer_pattern", VText "default"), (VText "grants", VArray defaultGrants)]
+  defaultEntry = makeEntity "system/capability/policy-entry" (VMap defaultData)
+  bind (Peer.pStore p) (policyBase Text.++ "default") defaultEntry
+
+installValidateHandlers : Peer -> Boolean ->{IO} ()
+installValidateHandlers p conformance =
+  if conformance then
+    installBootstrapHandler p "system/validate/echo" "validate-echo"
+    installBootstrapHandler p "system/validate/dispatch-outbound" "validate-dispatch-outbound"
+  else ()
+
+createPeer : Bytes -> SeedPolicy -> Boolean ->{IO} Peer
+createPeer seed seedPolicy conformance =
+  identity = identityOfSeed seed
+  store = newStore ()
+  localPeer = Identity.idPeerId identity
+  p = Peer identity store localPeer seedPolicy conformance
+  putEntity store (Identity.idPeerEntity identity)
+  publish store localPeer
+  installCoreHandlers p
+  installSeedPolicy p
+  installValidateHandlers p conformance
+  p

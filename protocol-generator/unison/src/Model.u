@@ -1,0 +1,263 @@
+-- entity-core-protocol-unison — the materialized entity + envelope (S3 foundation)
+--
+-- Entity = {type, data, content_hash} (§1.1/§3.4); Envelope = {root, included}
+-- (§3.1). Sits directly on the S2 codec: `ehash` is varint(0x00) ‖ SHA-256(ECF
+-- {type,data}) via `entityContentHash` (Protocol.u). Field accessors read the
+-- entity's `data` CBOR map. Entity fidelity (§1.8) is validated on decode:
+-- recompute the hash from {type,data}, never trust the wire content_hash.
+--
+-- Idiom: records over the S2 `Value` ADT; pure helpers; no IO. Reuses the Codec.u
+-- prelude (fst2/snd2/foldl/bytesToText/bappend).
+
+type Entity = { etype : Text, edata : Value, ehash : Bytes }
+
+type Envelope = { eroot : Entity, eincluded : [(Bytes, Entity)] }
+
+-- Construct a materialized entity, computing its content_hash under the
+-- ecfv1-sha256 floor (format_code 0x00) via the S2 protocol layer.
+makeEntity : Text -> Value -> Entity
+makeEntity typ dataV = Entity typ dataV (entityContentHash typ dataV)
+
+-- ── CBOR map field access (data is a VMap) ────────────────────────────────────
+
+mapField : Value -> Text -> Optional Value
+mapField v k = match v with
+  VMap kvs -> lookupKV k kvs
+  _ -> None
+
+lookupKV : Text -> [(Value, Value)] -> Optional Value
+lookupKV k kvs = match kvs with
+  [] -> None
+  pair +: rest ->
+    if (fst2 pair) == VText k then Some (snd2 pair) else lookupKV k rest
+
+field : Entity -> Text -> Optional Value
+field e k = mapField (Entity.edata e) k
+
+textField : Entity -> Text -> Optional Text
+textField e k = match field e k with
+  Some (VText s) -> Some s
+  _ -> None
+
+bytesField : Entity -> Text -> Optional Bytes
+bytesField e k = match field e k with
+  Some (VBytes b) -> Some b
+  _ -> None
+
+natField : Entity -> Text -> Optional Nat
+natField e k = match field e k with
+  Some (VUInt n) -> Some n
+  _ -> None
+
+-- Decode a nested `value` at `key` as an entity (recomputing + validating its
+-- hash). None if the field is absent or not a well-formed entity map.
+entityField : Entity -> Text -> Optional Entity
+entityField e k = match field e k with
+  Some v -> match entityOfCbor v with
+    Right ent -> Some ent
+    Left _ -> None
+  None -> None
+
+optOr : Optional a -> a -> a
+optOr o d = match o with
+  Some x -> x
+  None -> d
+
+-- ── wire form: an entity carries its content_hash (§3.1) ──────────────────────
+
+entityToCbor : Entity -> Value
+entityToCbor e =
+  VMap [ (VText "type", VText (Entity.etype e))
+       , (VText "data", Entity.edata e)
+       , (VText "content_hash", VBytes (Entity.ehash e)) ]
+
+-- Parse a wire entity, recomputing the hash from {type,data} and validating it
+-- against the carried content_hash (§1.8 entity fidelity). We trust our own hash
+-- (§5.2 validate-before-trust), not the wire bytes.
+entityOfCbor : Value -> Either CodecError Entity
+entityOfCbor c =
+  match mapField c "type" with
+    Some (VText typ) -> match mapField c "data" with
+      Some dataV ->
+        e = makeEntity typ dataV
+        match mapField c "content_hash" with
+          Some (VBytes h) ->
+            if h == (Entity.ehash e) then Right e
+            else Left (NonCanonicalEcf "entity: content_hash mismatch (§1.8 fidelity)")
+          _ -> Right e
+      None -> Left (UnsupportedItem "entity: missing data")
+    _ -> Left (UnsupportedItem "entity: missing/invalid type")
+
+-- ── envelope (§3.1) — the `included` set MUST survive every surface (N5) ──────
+
+includedGet : Envelope -> Bytes -> Optional Entity
+includedGet env h = alLookupB h (Envelope.eincluded env)
+
+alLookupB : Bytes -> [(Bytes, a)] -> Optional a
+alLookupB k xs = match xs with
+  [] -> None
+  pair +: rest -> if (fst2 pair) == k then Some (snd2 pair) else alLookupB k rest
+
+envelopeToCbor : Envelope -> Value
+envelopeToCbor env =
+  inc = List.map (p -> (VBytes (fst2 p), entityToCbor (snd2 p))) (Envelope.eincluded env)
+  VMap [ (VText "root", entityToCbor (Envelope.eroot env))
+       , (VText "included", VMap inc) ]
+
+envelopeOfCbor : Value -> Either CodecError Envelope
+envelopeOfCbor c =
+  match mapField c "root" with
+    Some r -> match entityOfCbor r with
+      Left e -> Left e
+      Right root -> match mapField c "included" with
+        Some (VMap kvs) -> match parseIncluded kvs with
+          Left e -> Left e
+          Right inc -> Right (Envelope root inc)
+        None -> Right (Envelope root [])
+        Some _ -> Left (UnsupportedItem "envelope: included not a map")
+    None -> Left (UnsupportedItem "envelope: missing root")
+
+parseIncluded : [(Value, Value)] -> Either CodecError [(Bytes, Entity)]
+parseIncluded kvs = match kvs with
+  [] -> Right []
+  pair +: rest -> match pair with
+    (VBytes h, v) -> match entityOfCbor v with
+      Left e -> Left e
+      Right ent ->
+        if h == (Entity.ehash ent) then
+          match parseIncluded rest with
+            Left e -> Left e
+            Right more -> Right ((h, ent) +: more)
+        else Left (NonCanonicalEcf "envelope: included key != entity content_hash")
+    _ -> Left (UnsupportedItem "envelope: included key not a byte string")
+
+-- lowercase hex of a byte string (§3.5 pointer paths).
+hexOf : Bytes -> Text
+hexOf b = bytesToText (Bytes.toBase16 b)
+
+-- ── text / path helpers (ASCII paths; §1.4 / §5.4 / §6.6) ─────────────────────
+
+textStartsWith : Text -> Text -> Boolean
+textStartsWith prefix s =
+  ps = Text.size prefix
+  if (Text.size s) >= ps then (Text.take ps s) == prefix else false
+
+textEndsWith : Text -> Text -> Boolean
+textEndsWith suffix s =
+  ss = Text.size suffix
+  n = Text.size s
+  if n >= ss then (Text.drop (Nat.drop n ss) s) == suffix else false
+
+-- split a path on '/' into segments (empty leading segment for absolute paths).
+splitSlash : Text -> [Text]
+splitSlash t =
+  bs = Text.toUtf8 t
+  n = Bytes.size bs
+  slice = a b -> bytesToText (Bytes.take (Nat.drop b a) (Bytes.drop a bs))
+  go : Nat -> Nat -> [Text] -> [Text]
+  go start i acc =
+    if i >= n then acc :+ (slice start i)
+    else if (byteAt bs i) == 47 then go (i + 1) (i + 1) (acc :+ (slice start i))
+    else go start (i + 1) acc
+  go 0 0 []
+
+joinSlash : [Text] -> Text
+joinSlash xs = match xs with
+  [] -> ""
+  h +: [] -> h
+  h +: t -> h Text.++ "/" Text.++ (joinSlash t)
+
+-- first path segment (strips a leading '/').
+firstSegment : Text -> Text
+firstSegment uri0 =
+  uri = if textStartsWith "/" uri0 then Text.drop 1 uri0 else uri0
+  match splitSlash uri with
+    seg +: _ -> seg
+    [] -> uri
+
+-- Base58 (Bitcoin alphabet) recognizer: a peer_id segment is ≥46 base58 chars.
+base58CharsText : Text
+base58CharsText = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+isBase58Byte : Nat -> Boolean
+isBase58Byte b =
+  bs = Text.toUtf8 base58CharsText
+  anyByte bs b
+
+anyByte : Bytes -> Nat -> Boolean
+anyByte bs target =
+  go : Nat -> Boolean
+  go i =
+    if i >= (Bytes.size bs) then false
+    else if (byteAt bs i) == target then true else go (i + 1)
+  go 0
+
+isPeerId : Text -> Boolean
+isPeerId seg =
+  bs = Text.toUtf8 seg
+  n = Bytes.size bs
+  allB : Nat -> Boolean
+  allB i =
+    if i >= n then true
+    else if isBase58Byte (byteAt bs i) then allB (i + 1) else false
+  if n >= 46 then allB 0 else false
+
+-- ── validation helpers (§1.4 path rules, §CAS/revoke zero-hash, §3013 pattern) ──
+
+-- all bytes zero (or empty) — the reserved "zero hash" sentinel (CAS-create /
+-- §revoke non-zero token MUST).
+isZeroBytes : Bytes -> Boolean
+isZeroBytes b =
+  n = Bytes.size b
+  go : Nat -> Boolean
+  go i = if i >= n then true else if (byteAt b i) == 0 then go (i + 1) else false
+  go 0
+
+dropLastChar : Text -> Text
+dropLastChar t = Text.take (Nat.drop (Text.size t) 1) t
+
+anyEmptySeg : [Text] -> Boolean
+anyEmptySeg xs = match xs with
+  [] -> false
+  h +: t -> if h == "" then true else anyEmptySeg t
+
+-- interior empty segment (`//`), ignoring a single trailing `/` (listing form).
+emptyInteriorSegment : Text -> Boolean
+emptyInteriorSegment t =
+  base = if textEndsWith "/" t then dropLastChar t else t
+  segs = match splitSlash base with
+    "" +: rest -> rest
+    other -> other
+  anyEmptySeg segs
+
+-- Reject a caller-supplied tree path per §1.4 R1: null byte, `./`|`../` relative
+-- prefix, a leading `/` whose first segment is NOT a peer_id (a malformed absolute
+-- path — a real cached-remote path `/{peer_id}/...` passes through), or an interior
+-- empty segment (`//`). Caller paths are peer-relative; the peer canonicalizes.
+rejectCallerPath : Text -> Boolean
+rejectCallerPath t =
+  nullByte = anyByte (Text.toUtf8 t) 0
+  relPrefix =
+    (textStartsWith "./" t) || (textStartsWith "../" t) || (t == ".") || (t == "..")
+  badLeadingSlash = (textStartsWith "/" t) && (not (isPeerId (firstSegment t)))
+  nullByte || relPrefix || badLeadingSlash || (emptyInteriorSegment t)
+
+-- §3013 policy peer_pattern: EXACTLY one of two forms — `default`, or a full
+-- {caller_peer_hex} (33-byte content hash → 66 lowercase-hex chars). Partial-prefix
+-- matchers (`00abc*`, `00abcdef*`) are NOT valid; impls MUST NOT accept them.
+isHexByte : Nat -> Boolean
+isHexByte c = ((c >= 48) && (c <= 57)) || ((c >= 97) && (c <= 102))
+
+isFullHexHash : Text -> Boolean
+isFullHexHash t =
+  bs = Text.toUtf8 t
+  n = Bytes.size bs
+  allHex : Nat -> Boolean
+  allHex i = if i >= n then true else if isHexByte (byteAt bs i) then allHex (i + 1) else false
+  (n == 66) && (allHex 0)
+
+-- §3013 exact-forms PLUS the v7.65 §3.6 rule-3 lazy-canonicalization form: a
+-- Base58 peer_id presented for an as-yet-unknown peer is accepted in the
+-- pending-canonicalization state (canonicalized to hex on first contact).
+validPeerPattern : Text -> Boolean
+validPeerPattern pp = (pp == "default") || (isFullHexHash pp) || (isPeerId pp)

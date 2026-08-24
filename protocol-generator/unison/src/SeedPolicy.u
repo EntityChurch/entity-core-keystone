@@ -1,0 +1,12 @@
+-- entity-core-protocol-unison — seed-policy selection (the keystone §6.9a
+-- bootstrap convention). §6.9a pins the invariant (a peer establishes owner
+-- authority at init + derives authenticate-time grants from a declared identity →
+-- capability seed policy). The cross-peer file format is keystone's
+-- (shared/seed-policy/). This is the Unison builder shape.
+--
+-- The S3 floor mirrors the cohort: `SeedStandard` (the conformant default —
+-- `default` → the §4.4 discovery floor) and `SeedDebugOpen` (the degenerate
+-- `default` → *, the retired --debug-open-grants). File-parse of the shared JSON
+-- schema is the next increment (A-UN-010), not the floor.
+
+type SeedPolicy = SeedStandard | SeedDebugOpen

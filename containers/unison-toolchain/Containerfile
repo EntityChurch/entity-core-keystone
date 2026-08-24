@@ -1,0 +1,90 @@
+# Unison (UCM) toolchain image — builds the native Unison peer
+# (entity-core-protocol-unison) per protocol-generator/unison/profile.toml.
+# Mirrors containers/ghc-toolchain + containers/swift-toolchain + containers/zig-toolchain:
+# an official prebuilt bindist pinned to an exact version + exact sha256, fail-closed.
+#
+# Peer #43 (operator-directed). S1: AUTHORED **AND BUILD-VERIFIED** this phase — the whole
+# build hinges on one de-risk: Unison source does NOT live in ordinary text modules, it lives
+# in a content-addressed codebase (SQLite) managed by UCM, and UCM is interactive by design,
+# while our pipeline is container-bound + NON-interactive. The container therefore had to be
+# PROVEN NOW to drive a `.u` file headlessly (`ucm transcript`), not merely authored — else S2
+# is a dead-end. (Deliberate deviation from the author-only S1 convention, per the S1 task
+# contract for this peer — the same stance the ghc-toolchain took for GHC-on-Fedora.)
+# S11: pin the toolchain to an exact version; verify the download cryptographically.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11), build-verified 2026-07-19.
+#   UCM release/1.3.0 — published 2026-05-20 (~60 days old at authoring; clears the ≥30-day
+#                       cool-down). The newest tagged, dated release before the 2026-06-19
+#                       floor. (`trunk-build`, 2026-06-28, is a ROLLING build, not a pinned
+#                       release — deliberately NOT used.)
+#   Asset  ucm-linux-x64.tar.gz — sha256 verified against the downloaded artifact,
+#                       fail-closed on mismatch. GitHub release assets carry no published
+#                       SHA256SUMS, so the pin is the sha256 of the exact artifact we
+#                       downloaded + inspected at S1 (recorded in PROFILE-RATIONALE.md).
+#
+# WHY THE OFFICIAL PREBUILT TARBALL, NOT `dnf`/`brew`/the `unisonweb` deb repo:
+#   Fedora 43 ships no `ucm`. Unison's own install channels are the GitHub release tarballs,
+#   Homebrew, and a Debian/Ubuntu apt repo — none is a Fedora pin we control. We pin the EXACT
+#   ucm-linux-x64.tar.gz for release/1.3.0 and verify it against an exact sha256, fail-closed.
+#   This is the zig/swift/ghc "official tarball + pinned sha256, fail-closed" discipline.
+#
+# WHAT THE TARBALL CONTAINS (inspected at S1):
+#   ./ucm             — a small bash wrapper that sets UCM_WEB_UI and execs the real binary
+#   ./unison/unison   — the actual UCM binary (ELF x86-64, dynamically linked)
+#   ./ui/             — the bundled local codebase web UI (unused in headless/transcript mode)
+#   `ldd unison` → libm, libz, libgmp, libc only (all from fedora:43's own repos).
+#
+# NETWORK: the toolchain pull needs network at BUILD time. UCM's `base`/`distributed` library
+#   (for `lib.base` crypto/IO/net) is fetched from Unison Share on first `pull`; the S2 setup
+#   populates the codebase once (network on), after which the transcript build runs offline
+#   (--network=none) against the warm codebase. The crypto/hashing/IO/net builtins UCM needs
+#   for the codec + peer are RUNTIME builtins baked into the binary (proven at S1), not a pull.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build:
+#   podman build -t entity-core-keystone/unison-toolchain:latest \
+#     -f containers/unison-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# ── Runtime libs the UCM binary is dynamically linked against ─────────────────
+# ldd unison → libm (glibc), libz (zlib), libgmp (gmp), libc (glibc). tar/gzip
+# unpack the tarball; curl fetches it; ca-certificates for the https pull to
+# Unison Share; git is used by UCM for some project/transcript flows; findutils/
+# which for the run-scripts; glibc-langpack-en for a UTF-8 locale (UCM prints
+# unicode). gcc is NOT needed (no C compilation — UCM is a prebuilt binary and
+# Unison has no general C FFI).
+RUN dnf install -y \
+        curl ca-certificates tar gzip xz \
+        git findutils which \
+        gmp zlib \
+        glibc-langpack-en \
+    && dnf clean all
+
+ENV LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8
+
+# ── Pinned UCM release/1.3.0 (linux x64 prebuilt bindist) ────────────────────
+# Pin exact version + exact sha256 (of the artifact downloaded + inspected 2026-07-19).
+# Fail-closed if the sha256 does not match. Installed under /opt/ucm; the `ucm`
+# wrapper (which sets UCM_WEB_UI + execs ./unison/unison) is symlinked onto PATH.
+ARG UCM_VERSION=1.3.0
+ARG UCM_TARBALL=ucm-linux-x64.tar.gz
+ARG UCM_SHA256="0c52e223746ba36029993f38c6774675a2d61ff01dfc75c463a6e3df7d6d433b"
+
+RUN set -eux; \
+    mkdir -p /opt/ucm; \
+    cd /opt/ucm; \
+    curl -fsSLO "https://github.com/unisonweb/unison/releases/download/release/${UCM_VERSION}/${UCM_TARBALL}"; \
+    echo "${UCM_SHA256}  ${UCM_TARBALL}" | sha256sum -c -; \
+    tar -xzf "${UCM_TARBALL}"; \
+    rm -f "${UCM_TARBALL}"; \
+    ln -s /opt/ucm/ucm /usr/local/bin/ucm; \
+    ucm --version
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="unison-toolchain"
+LABEL org.entity-core-keystone.version="1"
+
+CMD ["/bin/bash"]

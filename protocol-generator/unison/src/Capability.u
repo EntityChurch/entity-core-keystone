@@ -1,0 +1,513 @@
+-- entity-core-protocol-unison — capability system (L3): the §5 verification core.
+-- Pattern matching (§5.4), request verification (§5.2 verifyRequest /
+-- checkPermission), single-sig delegation-chain verification (§5.5) + per-link
+-- granter frame (§5.5a / §PR-8), attenuation (§5.6), revocation (§5.1), and the
+-- §4.10(b) chain-depth structural pre-check.
+--
+-- Verdict determinism (N8): the verdict is a PURE function of a resolver
+-- (Bytes -> Optional Entity, closing over an included ∪ content snapshot) + a
+-- revocation-membership predicate + a supplied nowMs. No IO in the verdict path,
+-- so timing cannot perturb it.
+--
+-- Multi-signature roots (§3.6) are DEFERRED to S4 (A-UN-011): a map-granter root
+-- is denied here; single-sig root-at-local is the S3 floor. Not exercised by the
+-- smoke; the map/quorum vocabulary lands with the S4 multisig category.
+
+type Verdict = VAllow | VDeny
+
+type ReqVerdict = RAllow | RAuthnFail | RAuthzDeny | RUnresolvable | RChainTooDeep
+
+type Scope = { scIncl : [Text], scExcl : [Text] }
+
+type Grant =
+  { grHandlers : Scope, grResources : Scope, grOperations : Scope, grPeers : Optional Scope }
+
+-- ── list quantifiers ──────────────────────────────────────────────────────────
+
+anyL : (a -> Boolean) -> [a] -> Boolean
+anyL p xs = match xs with
+  [] -> false
+  h +: t -> if p h then true else anyL p t
+
+allL : (a -> Boolean) -> [a] -> Boolean
+allL p xs = match xs with
+  [] -> true
+  h +: t -> if p h then allL p t else false
+
+-- ── parse ─────────────────────────────────────────────────────────────────────
+
+collectText : [Text] -> Value -> [Text]
+collectText acc x = match x with
+  VText s -> acc :+ s
+  _ -> acc
+
+textList : Value -> [Text]
+textList v = match v with
+  VArray l -> foldl collectText [] l
+  _ -> []
+
+textListAt : Value -> Text -> [Text]
+textListAt c key = match mapField c key with
+  Some v -> textList v
+  None -> []
+
+parseScope : Value -> Scope
+parseScope c = Scope (textListAt c "include") (textListAt c "exclude")
+
+emptyScope : Scope
+emptyScope = Scope [] []
+
+scopeAt : Value -> Text -> Scope
+scopeAt c key = match mapField c key with
+  Some v -> parseScope v
+  None -> emptyScope
+
+optScopeAt : Value -> Text -> Optional Scope
+optScopeAt c key = match mapField c key with
+  Some v -> Some (parseScope v)
+  None -> None
+
+parseGrant : Value -> Grant
+parseGrant c =
+  Grant (scopeAt c "handlers") (scopeAt c "resources") (scopeAt c "operations") (optScopeAt c "peers")
+
+grantsOfToken : Entity -> [Grant]
+grantsOfToken token = match field token "grants" with
+  Some (VArray l) -> List.map parseGrant l
+  _ -> []
+
+-- ── §5.4 pattern matching ─────────────────────────────────────────────────────
+
+normalizeUri : Text -> Text
+normalizeUri uri =
+  if textStartsWith "entity://" uri then "/" Text.++ (Text.drop 9 uri) else uri
+
+canonicalize : Text -> Text -> Text
+canonicalize localPeer path =
+  if textStartsWith "/" path then path
+  else "/" Text.++ localPeer Text.++ "/" Text.++ path
+
+indexOfSlash : Text -> Optional Nat
+indexOfSlash t =
+  bs = Text.toUtf8 t
+  n = Bytes.size bs
+  go : Nat -> Optional Nat
+  go i = if i >= n then None else if (byteAt bs i) == 47 then Some i else go (i + 1)
+  go 0
+
+dropRight : Nat -> Text -> Text
+dropRight k t = Text.take (Nat.drop (Text.size t) k) t
+
+matchesPattern : Text -> Text -> Boolean
+matchesPattern path pattern =
+  if pattern == "*" then true
+  else if textStartsWith "/*/" pattern then
+    remainder = Text.drop 3 pattern
+    match indexOfSlash (Text.drop 1 path) with
+      None -> false
+      Some i -> matchesPattern (Text.drop (i + 2) path) remainder
+  else if textEndsWith "/*" pattern then
+    prefix = dropRight 1 pattern
+    textStartsWith prefix path
+  else path == pattern
+
+coveredByLocal : Text -> Text -> [Text] -> Boolean
+coveredByLocal localPeer cv pats =
+  anyL (p -> matchesPattern cv (canonicalize localPeer p)) pats
+
+matchesScope : Text -> Text -> Scope -> Boolean
+matchesScope localPeer value s =
+  cv = canonicalize localPeer value
+  (coveredByLocal localPeer cv (Scope.scIncl s)) &&
+    (not (coveredByLocal localPeer cv (Scope.scExcl s)))
+
+extractPeer : Text -> Text -> Text
+extractPeer localPeer uri =
+  first = firstSegment (normalizeUri uri)
+  if isPeerId first then first else localPeer
+
+-- ── signatures ────────────────────────────────────────────────────────────────
+
+sigTargets : Entity -> Bytes -> Boolean
+sigTargets e target = match bytesField e "target" with
+  Some t -> t == target
+  None -> false
+
+findSignature : Bytes -> [(Bytes, Entity)] -> Optional Entity
+findSignature target included = match included with
+  [] -> None
+  pair +: rest ->
+    e = snd2 pair
+    isSig = (Entity.etype e == "system/signature") && (sigTargets e target)
+    if isSig then Some e else findSignature target rest
+
+-- ── §PR-8 granter frame ───────────────────────────────────────────────────────
+
+resolveGranterPeerId : (Bytes -> Optional Entity) -> Entity -> Optional Text
+resolveGranterPeerId resolve cap = match bytesField cap "granter" with
+  None -> None
+  Some gh -> match resolve gh with
+    Some g -> match bytesField g "public_key" with
+      Some pk -> Some (peerIdOfPubkey pk)
+      None -> None
+    None -> None
+
+-- multi-sig root (map granter) → local frame; single-sig → derive from
+-- public_key; unresolvable → None (deny, never a silent local fallback).
+linkGranterPeer : (Bytes -> Optional Entity) -> Text -> Entity -> Optional Text
+linkGranterPeer resolve localPeer cap = match field cap "granter" with
+  Some (VBytes gh) -> match resolve gh with
+    Some g -> match bytesField g "public_key" with
+      Some pk -> Some (peerIdOfPubkey pk)
+      None -> None
+    None -> None
+  Some (VMap _) -> Some localPeer
+  None -> Some localPeer
+  _ -> None
+
+-- ── §3.6 multi-signature granter (K-of-N quorum root) ──────────────────────────
+-- A cap whose `granter` is a system/capability/multi-granter {signers, threshold}
+-- is rooted at a K-of-N quorum. The peer honors it when (a) the local peer is one
+-- of the listed signers (mgLocalRoot — the quorum backs the peer's own authority)
+-- and (b) ≥threshold distinct listed signers each carry a VALID signature over the
+-- capability hash (multiGranterOk — the genuine K-of-N accept path, §5.5 M4/M6).
+
+collectBytes : [Bytes] -> Value -> [Bytes]
+collectBytes acc v = match v with
+  VBytes b -> acc :+ b
+  _ -> acc
+
+mgSignerHashes : Value -> [Bytes]
+mgSignerHashes mg = match mapField mg "signers" with
+  Some (VArray l) -> foldl collectBytes [] l
+  _ -> []
+
+mgThreshold : Value -> Nat
+mgThreshold mg = match mapField mg "threshold" with
+  Some (VUInt n) -> n
+  _ -> 0
+
+collectSigFor : Bytes -> [Entity] -> (Bytes, Entity) -> [Entity]
+collectSigFor target acc pair =
+  e = snd2 pair
+  if ((Entity.etype e) == "system/signature") && (sigTargets e target) then acc :+ e
+  else acc
+
+allSignaturesFor : Bytes -> [(Bytes, Entity)] -> [Entity]
+allSignaturesFor target included = foldl (collectSigFor target) [] included
+
+-- one candidate signature verifies for the claimed signer hash.
+sigVerifiesFor : (Bytes -> Optional Entity) -> Bytes -> Entity -> Boolean
+sigVerifiesFor resolve sh sgn =
+  signerMatch = sigSignerOk sgn sh
+  peerOk = match resolve sh with
+    Some peer -> verifySignature sgn peer
+    None -> false
+  signerMatch && peerOk
+
+signerHasValidSig : (Bytes -> Optional Entity) -> [Entity] -> Bytes -> Boolean
+signerHasValidSig resolve sigs sh = anyL (sgn -> sigVerifiesFor resolve sh sgn) sigs
+
+countValidSigners : (Bytes -> Optional Entity) -> [Entity] -> Nat -> Bytes -> Nat
+countValidSigners resolve sigs acc sh =
+  if signerHasValidSig resolve sigs sh then acc + 1 else acc
+
+multiGranterOk : (Bytes -> Optional Entity) -> [(Bytes, Entity)] -> Entity -> Value -> Boolean
+multiGranterOk resolve included current mg =
+  target = Entity.ehash current
+  sigs = allSignaturesFor target included
+  signers = mgSignerHashes mg
+  threshold = mgThreshold mg
+  countValid = foldl (countValidSigners resolve sigs) 0 signers
+  (threshold > 0) && (countValid >= threshold)
+
+signerIsLocal : Text -> (Bytes -> Optional Entity) -> Bytes -> Boolean
+signerIsLocal localPeer resolve sh = match resolve sh with
+  Some g -> match bytesField g "public_key" with
+    Some pk -> (peerIdOfPubkey pk) == localPeer
+    None -> false
+  None -> false
+
+mgLocalRoot : Text -> (Bytes -> Optional Entity) -> Value -> Boolean
+mgLocalRoot localPeer resolve mg =
+  anyL (sh -> signerIsLocal localPeer resolve sh) (mgSignerHashes mg)
+
+-- ── §5.2 checkPermission ──────────────────────────────────────────────────────
+
+coveredByFrame : Text -> [Text] -> Text -> Boolean
+coveredByFrame framePeer pats v =
+  anyL (p -> matchesPattern v (canonicalize framePeer p)) pats
+
+resTargetOk : Text -> Text -> Scope -> [Text] -> Text -> Boolean
+resTargetOk localPeer granterPeer s callerExcl tgt =
+  ct = canonicalize localPeer tgt
+  inclHit = coveredByFrame granterPeer (Scope.scIncl s) ct
+  exclHit = coveredByFrame granterPeer (Scope.scExcl s) ct
+  grantCovers = inclHit && (not exclHit)
+  if coveredByFrame localPeer callerExcl ct then true else grantCovers
+
+checkResourceScope : Text -> Text -> Value -> Scope -> Boolean
+checkResourceScope localPeer granterPeer resource s =
+  targets = textListAt resource "targets"
+  callerExcl = textListAt resource "exclude"
+  ((List.size targets) > 0) &&
+    (allL (t -> resTargetOk localPeer granterPeer s callerExcl t) targets)
+
+grantAllows : Text -> Text -> Text -> Text -> Text -> Optional Value -> Grant -> Boolean
+grantAllows localPeer granterPeer operation handlerPattern targetPeer resource g =
+  opOk = matchesScope localPeer operation (Grant.grOperations g)
+  hOk = matchesScope localPeer handlerPattern (Grant.grHandlers g)
+  pOk = matchesScope localPeer targetPeer (optOr (Grant.grPeers g) (Scope [localPeer] []))
+  rOk = match resource with
+    None -> true
+    Some r -> checkResourceScope localPeer granterPeer r (Grant.grResources g)
+  opOk && hOk && pOk && rOk
+
+checkPermission : Text -> Text -> Entity -> Entity -> Text -> Verdict
+checkPermission localPeer granterPeer exec token handlerPattern =
+  operation = optOr (textField exec "operation") ""
+  uri = optOr (textField exec "uri") ""
+  targetPeer = extractPeer localPeer uri
+  resource = field exec "resource"
+  ok = g -> grantAllows localPeer granterPeer operation handlerPattern targetPeer resource g
+  if anyL ok (grantsOfToken token) then VAllow else VDeny
+
+-- ── §5.6 attenuation ──────────────────────────────────────────────────────────
+
+inclCovered : Text -> Text -> Scope -> Text -> Boolean
+inclCovered childPeer parentPeer parent cp =
+  anyL (pp -> matchesPattern (canonicalize childPeer cp) (canonicalize parentPeer pp))
+       (Scope.scIncl parent)
+
+exclCovered : Text -> Text -> Scope -> Text -> Boolean
+exclCovered childPeer parentPeer child pe =
+  anyL (ce -> matchesPattern (canonicalize parentPeer pe) (canonicalize childPeer ce))
+       (Scope.scExcl child)
+
+scopeSubset : Text -> Text -> Scope -> Scope -> Boolean
+scopeSubset childPeer parentPeer child parent =
+  inclOk = allL (cp -> inclCovered childPeer parentPeer parent cp) (Scope.scIncl child)
+  exclOk = allL (pe -> exclCovered childPeer parentPeer child pe) (Scope.scExcl parent)
+  inclOk && exclOk
+
+grantSubset : Text -> Text -> Text -> Grant -> Grant -> Boolean
+grantSubset localPeer childPeer parentPeer child parent =
+  cp = optOr (Grant.grPeers child) (Scope [localPeer] [])
+  pp = optOr (Grant.grPeers parent) (Scope [localPeer] [])
+  hOk = scopeSubset localPeer localPeer (Grant.grHandlers child) (Grant.grHandlers parent)
+  oOk = scopeSubset localPeer localPeer (Grant.grOperations child) (Grant.grOperations parent)
+  rOk = scopeSubset childPeer parentPeer (Grant.grResources child) (Grant.grResources parent)
+  pOk = scopeSubset localPeer localPeer cp pp
+  hOk && oOk && rOk && pOk
+
+isAttenuated : Text -> Text -> Text -> Entity -> Entity -> Boolean
+isAttenuated localPeer childPeer parentPeer child parent =
+  cg = grantsOfToken child
+  pg = grantsOfToken parent
+  scopeOk = allL (c -> anyL (p -> grantSubset localPeer childPeer parentPeer c p) pg) cg
+  ttlOk = match (natField parent "expires_at", natField child "expires_at") with
+    (Some _, None) -> false
+    (Some pe, Some ce) -> ce <= pe
+    (None, _) -> true
+  scopeOk && ttlOk
+
+-- ── §5.5 chain walk ───────────────────────────────────────────────────────────
+
+collectChain : (Bytes -> Optional Entity) -> Entity -> Optional [Entity]
+collectChain resolve cap =
+  go : Nat -> [Entity] -> Entity -> Optional [Entity]
+  go depth acc current =
+    if depth > 64 then None
+    else
+      acc2 = current +: acc
+      match bytesField current "parent" with
+        None -> Some (reverseL acc2)
+        Some ph -> match resolve ph with
+          Some parent -> go (depth + 1) acc2 parent
+          None -> None
+  go 0 [] cap
+
+-- §4.10(b) structural pre-check: True if the authority chain exceeds max depth
+-- (64), walking parent pointers WITHOUT verifying signatures. Gated BEFORE the
+-- per-link authz walk → 400 chain_depth_exceeded (structural excess), distinct
+-- from 403 capability_denied. An unreachable parent is NOT a depth problem (False
+-- here; left for the chain walk to deny 403). The one net-new v7.75 helper.
+chainExceedsDepth : (Bytes -> Optional Entity) -> Entity -> Boolean
+chainExceedsDepth resolve cap =
+  go : Nat -> Entity -> Boolean
+  go depth current =
+    if depth > 64 then true
+    else match bytesField current "parent" with
+      None -> false
+      Some ph -> match resolve ph with
+        Some parent -> go (depth + 1) parent
+        None -> false
+  go 0 cap
+
+lastL : [a] -> a -> a
+lastL xs d = match xs with
+  [] -> d
+  h +: [] -> h
+  _ +: t -> lastL t d
+
+notBeforeOk : Nat -> Entity -> Boolean
+notBeforeOk nowMs cap = match natField cap "not_before" with
+  Some nb -> nowMs >= nb
+  None -> true
+
+notExpiredOk : Nat -> Entity -> Boolean
+notExpiredOk nowMs cap = match natField cap "expires_at" with
+  Some ex -> ex >= nowMs
+  None -> true
+
+temporalOk : Nat -> Entity -> Boolean
+temporalOk nowMs cap = (notBeforeOk nowMs cap) && (notExpiredOk nowMs cap)
+
+-- Verify a single-sig chain. Returns (verdict, unresolvableCarveout). The §5.5
+-- unresolvable-grantee carve-out (True) maps to 401, taking precedence over Deny.
+verifyCapabilityChain :
+  Text -> Nat -> (Bytes -> Optional Entity) -> [(Bytes, Entity)] -> Entity
+  -> (Verdict, Boolean)
+verifyCapabilityChain localPeer nowMs resolve included capability =
+  match collectChain resolve capability with
+    None -> (VDeny, false)
+    Some chain ->
+      root = lastL chain capability
+      rootOk = rootAtLocal localPeer resolve root
+      if not rootOk then (VDeny, false)
+      else
+        results = stepChain localPeer nowMs resolve included chain
+        anyUnres = anyL fst2 results
+        allOk = allL snd2 results
+        if anyUnres then (VDeny, true)
+        else if allOk then (VAllow, false) else (VDeny, false)
+
+-- single-sig root: granter resolves to a peer whose peer_id == localPeer.
+-- multi-sig root (§3.6): the granter is a multi-granter map and the local peer is
+-- one of the listed signers (A-UN-011 resolved at S4).
+rootAtLocal : Text -> (Bytes -> Optional Entity) -> Entity -> Boolean
+rootAtLocal localPeer resolve root = match field root "granter" with
+  Some (VBytes gh) -> match resolve gh with
+    Some g -> match bytesField g "public_key" with
+      Some pk -> (peerIdOfPubkey pk) == localPeer
+      None -> false
+    None -> false
+  Some (VMap mg) -> mgLocalRoot localPeer resolve (VMap mg)
+  _ -> false
+
+sigSignerOk : Entity -> Bytes -> Boolean
+sigSignerOk sgn gh = match bytesField sgn "signer" with
+  Some s -> s == gh
+  None -> false
+
+linkSigOk : (Bytes -> Optional Entity) -> [(Bytes, Entity)] -> Entity -> Boolean
+linkSigOk resolve included current = match field current "granter" with
+  Some (VBytes gh) -> match (findSignature (Entity.ehash current) included, resolve gh) with
+    (Some sgn, Some granter) -> (sigSignerOk sgn gh) && (verifySignature sgn granter)
+    _ -> false
+  Some (VMap mg) -> multiGranterOk resolve included current (VMap mg)
+  _ -> false
+
+unresolved : (Bytes -> Optional Entity) -> Bytes -> Boolean
+unresolved resolve h = match resolve h with
+  Some _ -> false
+  None -> true
+
+granteeUnresolvable : (Bytes -> Optional Entity) -> Entity -> Boolean
+granteeUnresolvable resolve current = match bytesField current "grantee" with
+  Some gh -> unresolved resolve gh
+  None -> true
+
+granteeGranterMatch : Entity -> Entity -> Boolean
+granteeGranterMatch parent current =
+  match (bytesField parent "grantee", bytesField current "granter") with
+    (Some pg, Some cg) -> pg == cg
+    _ -> false
+
+childParentOk : Text -> (Bytes -> Optional Entity) -> Entity -> Entity -> Boolean
+childParentOk localPeer resolve current parent =
+  match (linkGranterPeer resolve localPeer current, linkGranterPeer resolve localPeer parent) with
+    (Some childPeer, Some parentPeer) ->
+      linkAtten = isAttenuated localPeer childPeer parentPeer current parent
+      (granteeGranterMatch parent current) && linkAtten
+    _ -> false
+
+headOpt : [a] -> Optional a
+headOpt xs = match xs with
+  [] -> None
+  h +: _ -> Some h
+
+-- one chain link → (granteeUnresolvable, linkOk). `parentOpt` = the next chain
+-- element (None ⇒ this is the root link, which carries no per-link obligation).
+stepLink :
+  Text -> Nat -> (Bytes -> Optional Entity) -> [(Bytes, Entity)] -> Entity -> Optional Entity
+  -> (Boolean, Boolean)
+stepLink localPeer nowMs resolve included current parentOpt =
+  linkOk = match parentOpt with
+    None -> true
+    Some parent -> childParentOk localPeer resolve current parent
+  ( granteeUnresolvable resolve current
+  , (linkSigOk resolve included current) && (temporalOk nowMs current) && linkOk )
+
+-- Walk the chain root-ward, pairing each link with its successor (its parent).
+stepChain :
+  Text -> Nat -> (Bytes -> Optional Entity) -> [(Bytes, Entity)] -> [Entity]
+  -> [(Boolean, Boolean)]
+stepChain localPeer nowMs resolve included chain = match chain with
+  [] -> []
+  current +: rest ->
+    r = stepLink localPeer nowMs resolve included current (headOpt rest)
+    r +: (stepChain localPeer nowMs resolve included rest)
+
+-- ── §5.1 revocation ───────────────────────────────────────────────────────────
+
+isRevoked : (Bytes -> Boolean) -> (Bytes -> Optional Entity) -> Entity -> Boolean
+isRevoked revoked resolve capability =
+  rootHash = match collectChain resolve capability with
+    Some chain -> Entity.ehash (lastL chain capability)
+    None -> Entity.ehash capability
+  (revoked (Entity.ehash capability)) || (revoked rootHash)
+
+-- ── §5.2 request verification → 3-way verdict (§4.6 / F20 status boundary) ────
+
+optIncludedResolve : Envelope -> Optional Bytes -> Optional Entity
+optIncludedResolve env mh = match mh with
+  Some h -> includedGet env h
+  None -> None
+
+verifyRequest :
+  Text -> Nat -> (Bytes -> Boolean) -> (Bytes -> Optional Entity) -> Envelope
+  -> ReqVerdict
+verifyRequest localPeer nowMs revoked resolve env =
+  exec = Envelope.eroot env
+  included = Envelope.eincluded env
+  -- 2. signature / author — authentication class (→ 401).
+  match findSignature (Entity.ehash exec) included with
+    None -> RAuthnFail
+    Some sgn ->
+      authorH = bytesField exec "author"
+      signerOk = match (bytesField sgn "signer", authorH) with
+        (Some s, Some a) -> s == a
+        _ -> false
+      if not signerOk then RAuthnFail
+      else match optIncludedResolve env authorH with
+        None -> RAuthnFail
+        Some author ->
+          if not (verifySignature sgn author) then RAuthnFail
+          else
+            -- 3. capability / chain — authorization class (→ 403).
+            match optIncludedResolve env (bytesField exec "capability") with
+              None -> RAuthzDeny
+              Some capability ->
+                -- §4.10(b): over-deep chain → 400 BEFORE the per-link walk.
+                if chainExceedsDepth resolve capability then RChainTooDeep
+                else match verifyCapabilityChain localPeer nowMs resolve included capability with
+                  (_, true) -> RUnresolvable
+                  (VDeny, _) -> RAuthzDeny
+                  (VAllow, _) ->
+                    granteeOk = match (bytesField capability "grantee", authorH) with
+                      (Some g, Some a) -> g == a
+                      _ -> false
+                    if not granteeOk then RAuthzDeny
+                    else if isRevoked revoked resolve capability then RAuthzDeny
+                    else RAllow

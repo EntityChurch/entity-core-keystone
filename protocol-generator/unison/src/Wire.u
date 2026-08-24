@@ -1,0 +1,70 @@
+-- entity-core-protocol-unison — wire framing (§1.6) + the two message builders
+-- (§3.2 EXECUTE / §3.3 EXECUTE_RESPONSE). Frame := [4-byte BE length][CBOR
+-- payload]; the payload is a CBOR-encoded envelope (§3.1). Pure layer only — the
+-- blocking socket read/write lives in Transport.u (the IO edge). Frame length is
+-- explicit 4-byte big-endian (`explicit_endianness`).
+
+-- §1.6 SHOULD bound — 16 MiB (§4.10 informative default).
+maxFrame : Nat
+maxFrame = 16777216
+
+frameHeader : Nat -> Bytes
+frameHeader len = Bytes.encodeNat32be len
+
+parseFrameLength : Bytes -> Nat
+parseFrameLength hdr =
+  b0 = byteAt hdr 0
+  b1 = byteAt hdr 1
+  b2 = byteAt hdr 2
+  b3 = byteAt hdr 3
+  (b0 * 16777216) + (b1 * 65536) + (b2 * 256) + b3
+
+-- ── envelope <-> frame ────────────────────────────────────────────────────────
+
+envelopeOfFrame : Bytes -> Either CodecError Envelope
+envelopeOfFrame payload = match decode payload with
+  Left e -> Left e
+  Right v -> envelopeOfCbor v
+
+frameOfEnvelope : Envelope -> Bytes
+frameOfEnvelope env =
+  payload = encode (envelopeToCbor env)
+  bappend (frameHeader (Bytes.size payload)) payload
+
+-- ── EXECUTE_RESPONSE builder (§3.3) ───────────────────────────────────────────
+
+makeResponse : Text -> Nat -> Entity -> Entity
+makeResponse requestId status result =
+  makeEntity "system/protocol/execute/response"
+    (VMap [ (VText "request_id", VText requestId)
+          , (VText "status", VUInt status)
+          , (VText "result", entityToCbor result) ])
+
+-- ── EXECUTE builder (§3.2) — the §6.13b handler outbound seam + the smoke client ─
+
+makeExecute : Text -> Text -> Text -> Entity -> Optional Value -> Bytes -> Bytes -> Entity
+makeExecute requestId uri operation params resource author capability =
+  base = [ (VText "request_id", VText requestId)
+         , (VText "uri", VText uri)
+         , (VText "operation", VText operation)
+         , (VText "params", entityToCbor params)
+         , (VText "author", VBytes author)
+         , (VText "capability", VBytes capability) ]
+  withRes = match resource with
+    Some r -> base :+ (VText "resource", r)
+    None -> base
+  makeEntity "system/protocol/execute" (VMap withRes)
+
+-- system/protocol/error result entity (§3.3).
+errorResult : Optional Text -> Text -> Entity
+errorResult message code =
+  base = [ (VText "code", VText code) ]
+  withMsg = match message with
+    Some m -> base :+ (VText "message", VText m)
+    None -> base
+  makeEntity "system/protocol/error" (VMap withMsg)
+
+-- Empty-params shape (§3.2): primitive/any whose data is the canonical empty map
+-- (the 0xA0 encoding, N3).
+emptyParams : Entity
+emptyParams = makeEntity "primitive/any" (VMap [])

@@ -1,0 +1,209 @@
+-- entity-core-protocol-unison — transport (L4). TCP listener + dialer over the
+-- builtin io2.IO sockets, using ABILITIES-over-IO concurrency (A-UN-004):
+--
+--   * one forked green thread (io2.IO.forkComp) per connection reads + demuxes
+--     inbound frames (§6.11); an EXECUTE_RESPONSE routes to its awaiting outbound
+--     caller by request_id through a Promise; an EXECUTE is dispatched on its OWN
+--     forked thread (§4.8, N6) so a handler that originates an outbound EXECUTE
+--     (§6.13b) and awaits its reply does NOT block the reader.
+--   * the §6.11 outbound await is a Promise per request: the caller registers a
+--     Promise keyed by request_id, sends, then Promise.read blocks until the reader
+--     writes it — the dataflow-variable-like demux, no condition variable, no lost
+--     wakeup. Connection close fills every pending Promise with None so no waiter
+--     hangs (§4.9 deliver-or-signal).
+--   * writes (inbound responses + outbound requests share the socket) serialize
+--     through an MVar write-lock held only around the send syscall.
+--
+-- §4.9 resilience root-catch: each inbound EXECUTE is dispatched under `tryCatch`
+-- (io2.IO.tryEval + an Exception handler) so an UNCAUGHT per-request failure — the
+-- host's ROOT error class, not just the codec's CodecError — becomes a 500
+-- response, never a hung request (the Oz/Smalltalk cohort lesson §4.9(c)).
+--
+-- §4.10 payload bound: readFrame checks the 4-byte length prefix and closes an
+-- over-limit connection BEFORE buffering the body (a request_id is only in the body,
+-- so a 413 result frame is not constructable pre-buffer; reject-by-close keeps the
+-- peer alive — the S3 floor, refined at S4). §7b: TCP_NODELAY is NOT exposed by the
+-- UCM socket builtins (no setSocketOption) — logged, not settable (A-UN-014).
+
+type ConnIO =
+  { ioSock : Socket
+  , ioWriteLock : MVar ()
+  , ioPending : MVar [(Text, Promise (Optional Envelope))]
+  , ioClosed : Ref {IO} Boolean }
+
+unwrapF : Either Failure a -> a
+unwrapF e = match e with
+  Right a -> a
+  Left f -> bug f
+
+promiseWrite : Promise a -> a ->{IO} ()
+promiseWrite pr v =
+  _ = io2.Promise.write pr v
+  ()
+
+makeConnIO : Socket ->{IO} ConnIO
+makeConnIO sock =
+  wl = io2.MVar.new ()
+  pend = io2.MVar.new ([] : [(Text, Promise (Optional Envelope))])
+  closed = io2.IO.ref false
+  ConnIO sock wl pend closed
+
+-- ── blocking framed read (the IO edge — failures stay Either, not raises) ─────
+
+recvExact : Socket -> Nat ->{IO} Optional Bytes
+recvExact sock n =
+  go : Bytes ->{IO} Optional Bytes
+  go acc =
+    if (Bytes.size acc) >= n then Some (Bytes.take n acc)
+    else match io2.IO.socketReceive.impl sock (Nat.drop n (Bytes.size acc)) with
+      Right chunk -> if (Bytes.size chunk) == 0 then None else go (acc Bytes.++ chunk)
+      Left _ -> None
+  go Bytes.empty
+
+readFrame : Socket ->{IO} Optional Bytes
+readFrame sock = match recvExact sock 4 with
+  None -> None
+  Some hdr ->
+    len = parseFrameLength hdr
+    if len > maxFrame then None
+    else recvExact sock len
+
+writeFramed : ConnIO -> Envelope ->{IO} ()
+writeFramed cio env =
+  _ = takeMVar (ConnIO.ioWriteLock cio)
+  _ = io2.IO.socketSend.impl (ConnIO.ioSock cio) (frameOfEnvelope env)
+  putMVar (ConnIO.ioWriteLock cio) ()
+
+-- ── §6.11 demux ────────────────────────────────────────────────────────────────
+
+registerPending : ConnIO -> Text -> Promise (Optional Envelope) ->{IO} ()
+registerPending cio rid promise =
+  cur = takeMVar (ConnIO.ioPending cio)
+  putMVar (ConnIO.ioPending cio) (alInsert rid promise cur)
+
+removePending : ConnIO -> Text ->{IO} ()
+removePending cio rid =
+  cur = takeMVar (ConnIO.ioPending cio)
+  putMVar (ConnIO.ioPending cio) (alDelete rid cur)
+
+-- Route an inbound EXECUTE_RESPONSE to its awaiting outbound caller by request_id.
+routeResponse : ConnIO -> Envelope ->{IO} ()
+routeResponse cio env =
+  rid = optOr (textField (Envelope.eroot env) "request_id") ""
+  cur = readMVar (ConnIO.ioPending cio)
+  match alGet rid cur with
+    Some promise -> promiseWrite promise (Some env)
+    None -> ()
+
+-- §6.13b outbound primitive: register a reply Promise, send, block on it until the
+-- reader fills it (or the connection closes → None).
+outbound : ConnIO -> Envelope ->{IO} Optional Envelope
+outbound cio request =
+  rid = optOr (textField (Envelope.eroot request) "request_id") ""
+  promise = io2.Promise.new ()
+  registerPending cio rid promise
+  writeFramed cio request
+  result = io2.Promise.read promise
+  removePending cio rid
+  result
+
+fillNone : [(Text, Promise (Optional Envelope))] ->{IO} ()
+fillNone items = match items with
+  [] -> ()
+  pair +: rest ->
+    promiseWrite (snd2 pair) None
+    fillNone rest
+
+-- Wake every pending outbound waiter on connection close (§4.9 deliver-or-signal).
+closeConnIO : ConnIO ->{IO} ()
+closeConnIO cio =
+  Ref.write (ConnIO.ioClosed cio) true
+  cur = readMVar (ConnIO.ioPending cio)
+  fillNone cur
+
+-- ── §4.9 resilience root-catch ─────────────────────────────────────────────────
+
+tryCatch : '{IO} a ->{IO} Either Failure a
+tryCatch body =
+  h : Request {Exception} r -> Either Failure r
+  h req = match req with
+    { a } -> Right a
+    { Exception.raise f -> _ } -> Left f
+  handle io2.IO.tryEval body with h
+
+-- ── reader loop (§6.11 demux + §4.8 concurrent dispatch, N6) ──────────────────
+
+onExecute : Peer -> Conn -> ConnIO -> Envelope ->{IO} ()
+onExecute peer conn cio env =
+  result = tryCatch '(dispatch peer conn env)
+  out = match result with
+    Right r -> r
+    Left _ -> internalErrorResponse env
+  match out with
+    Some r -> writeFramed cio r
+    None -> ()
+
+routeOrDispatch : Peer -> Conn -> ConnIO -> Envelope ->{IO} ()
+routeOrDispatch peer conn cio env =
+  if (Entity.etype (Envelope.eroot env)) == "system/protocol/execute/response" then
+    routeResponse cio env
+  else
+    _ = io2.IO.forkComp '(onExecute peer conn cio env)
+    ()
+
+readLoop : Peer -> Conn -> ConnIO ->{IO} ()
+readLoop peer conn cio = match readFrame (ConnIO.ioSock cio) with
+  None -> ()
+  Some payload -> match envelopeOfFrame payload with
+    Left _ -> readLoop peer conn cio
+    Right env ->
+      routeOrDispatch peer conn cio env
+      readLoop peer conn cio
+
+-- ── connection serving ──────────────────────────────────────────────────────────
+
+serveConnection : Peer -> Socket ->{IO} ()
+serveConnection peer sock =
+  cio = makeConnIO sock
+  conn = newConn ()
+  Ref.write (Conn.cOutbound conn) (Some (outbound cio))
+  readLoop peer conn cio
+  closeConnIO cio
+  _ = io2.IO.closeSocket.impl sock
+  ()
+
+listenOn : Nat ->{IO} (Socket, Nat)
+listenOn port =
+  sock = unwrapF (io2.IO.serverSocket.impl (Some "127.0.0.1") (Nat.toText port))
+  _ = unwrapF (io2.IO.listen.impl sock)
+  bound = unwrapF (io2.IO.socketPort.impl sock)
+  (sock, bound)
+
+acceptLoop : Peer -> Socket ->{IO} ()
+acceptLoop peer lsock = match io2.IO.socketAccept.impl lsock with
+  Left _ -> ()
+  Right conn ->
+    _ = io2.IO.forkComp '(serveConnection peer conn)
+    acceptLoop peer lsock
+
+-- Bidirectional connection for the smoke client: the dialing peer ALSO serves
+-- reentrant EXECUTEs on the same connection so the §6.11 reentry surface works both
+-- directions. Returns the Conn + the ConnIO whose `outbound` originates requests.
+runReader : Peer -> Conn -> ConnIO ->{IO} ()
+runReader peer conn cio =
+  readLoop peer conn cio
+  closeConnIO cio
+
+runWithConn : Peer -> Socket ->{IO} (Conn, ConnIO)
+runWithConn peer sock =
+  cio = makeConnIO sock
+  conn = newConn ()
+  Ref.write (Conn.cOutbound conn) (Some (outbound cio))
+  _ = io2.IO.forkComp '(runReader peer conn cio)
+  (conn, cio)
+
+sendOver : ConnIO -> Envelope ->{IO} Optional Envelope
+sendOver cio env = outbound cio env
+
+clientConnect : Text -> Nat ->{IO} Socket
+clientConnect host port = unwrapF (io2.IO.clientSocket.impl host (Nat.toText port))

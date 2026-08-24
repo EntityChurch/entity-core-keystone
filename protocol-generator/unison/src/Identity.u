@@ -1,0 +1,61 @@
+-- entity-core-protocol-unison — Identity (L1). A peer's keypair + the entities
+-- derived from it (§1.5, §3.5, §7.3, §7.4). The identity is a 32-byte Ed25519
+-- seed; everything else derives:
+--
+--   public_key    = Ed25519 pub of seed (32 bytes, ed25519Pub — pure-Unison keygen)
+--   peer_id       = Base58(varint(1) ‖ varint(0) ‖ public_key)   (§1.5 identity-multihash)
+--   peer entity   = system/peer {public_key, key_type}           (§3.5)
+--   identity_hash = content_hash(peer entity)
+--
+-- Signing is over the full 33-byte content_hash (§7.3), binding a signature to the
+-- hash format. peer_id follows the §1.5 table (A-UN-008), NOT the stale §7.4
+-- SHA-256 skeleton.
+
+type Identity =
+  { idSeed : Bytes            -- 32-byte Ed25519 seed
+  , idPublicKey : Bytes       -- 32 bytes
+  , idPeerId : Text           -- Base58 (ASCII)
+  , idPeerEntity : Entity
+  , idHash : Bytes }          -- content_hash(peer entity), 33 bytes
+
+-- The system/peer entity for a public key (§3.5; no peer_id in the hashable basis).
+peerEntityOfPubkey : Bytes -> Entity
+peerEntityOfPubkey publicKey =
+  makeEntity "system/peer"
+    (VMap [ (VText "public_key", VBytes publicKey)
+          , (VText "key_type", VText "ed25519") ])
+
+-- The Ed25519 canonical peer_id (§1.5 identity-multihash).
+peerIdOfPubkey : Bytes -> Text
+peerIdOfPubkey publicKey = derivePeerId 1 publicKey
+
+-- Build the local identity from a 32-byte seed. All derived fields precomputed.
+identityOfSeed : Bytes -> Identity
+identityOfSeed seed =
+  publicKey = ed25519Pub seed
+  peerEntity = peerEntityOfPubkey publicKey
+  Identity seed publicKey (peerIdOfPubkey publicKey) peerEntity (Entity.ehash peerEntity)
+
+-- Sign an entity's content_hash → a system/signature entity (§3.5): target = the
+-- signed entity hash, signer = our identity hash.
+signEntity : Identity -> Entity -> Entity
+signEntity ident target =
+  sigBytes = ed25519Sign (Identity.idSeed ident) (Identity.idPublicKey ident) (Entity.ehash target)
+  makeEntity "system/signature"
+    (VMap [ (VText "target", VBytes (Entity.ehash target))
+          , (VText "signer", VBytes (Identity.idHash ident))
+          , (VText "algorithm", VText "ed25519")
+          , (VText "signature", VBytes sigBytes) ])
+
+-- Verify a system/signature entity against the signer's system/peer entity. The
+-- §5.2 signer-hash check is the caller's responsibility.
+verifySignature : Entity -> Entity -> Boolean
+verifySignature signature signerPeer =
+  match (bytesField signature "target", bytesField signature "signature", bytesField signerPeer "public_key") with
+    (Some target, Some sigBytes, Some pub) -> ed25519Verify pub target sigBytes
+    _ -> false
+
+-- Verify a raw Ed25519 signature over msg under pubkey (§4.6 proof-of-possession,
+-- where there is no system/signature entity yet).
+ed25519VerifyRaw : Bytes -> Bytes -> Bytes -> Boolean
+ed25519VerifyRaw pubkey msg sigBytes = ed25519Verify pubkey msg sigBytes
