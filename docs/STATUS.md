@@ -1,13 +1,13 @@
 # entity-core-keystone — status
 
-_Updated: 2026-08-22 · oracle pin: the 755-check set `95edd774…` · spec snapshot `v0.8.2`_
+_Updated: 2026-08-23 · oracle pin: the 755-check set `95edd774…` · spec snapshot `v0.8.2`_
 
 > **`CONFORMANCE-MATRIX.md` is authoritative for every per-peer number.** This file is a
 > short orientation note, deliberately kept thin. When the two disagree, the matrix wins —
 > a dated status narrative is exactly the artifact that goes stale first, and the previous
-> revision of this file did (archived at
-> `docs/archive/STATUS-2026-07-12-28-peer-cc1970f.md`, six weeks and three oracle re-pins
-> behind, still advertising a "uniformly conformant" 28-peer cohort).
+> revision of this file did — it sat six weeks and three oracle re-pins behind, still
+> advertising a "uniformly conformant" 28-peer cohort. It is archived internally rather than
+> corrected, because a status snapshot that gets back-edited stops being evidence of anything.
 
 ## Where it is
 
@@ -36,10 +36,13 @@ Nothing is carried forward from an earlier pin.
 | **INVALID MEASUREMENT** — not scores | 3 | `asm-x86_64` · `asm-arm64` · `riscv64` |
 | Not measured | 1 | `apl` — upstream-blocked |
 
+The CAP-gap row splits 23 at 3F · 2 at 2F · 3 at 4F (`forth` `nim` `smalltalk`, one further
+`capability` check each). `CONFORMANCE-MATRIX.md` §1 is the row-by-row source.
+
 **The headline is one sentence:** `--profile core` gained three `capability` checks at this
 pin, and every peer that has not been fixed fails exactly those. This is **one unimplemented
 spec feature (§5.6's MIN_DEFINED mint ceiling) measured across the cohort, not dozens of
-regressions.** The seven fixed peers show the fixed state and their diffs are the reference for
+regressions.** The thirteen fixed peers show the fixed state and their diffs are the reference for
 the rest (`CONFORMANCE-MATRIX.md` §3).
 
 **Recent work (2026-08-22) — tiers M1 and M2 are both complete.** `typescript` went 84F → 0F and
@@ -60,19 +63,47 @@ share a generation lineage and, for the FFI-hybrid peers, one codec `.so`.
 1. **Propagate the CAP fix to the remaining 32 peers** (tier M3, the probes, `node-red`/wasm).
    Rules and thirteen reference commits are in `CONFORMANCE-MATRIX.md` §3; the fix shape is uniform
    (~200 lines over 5–6 files) and has now held across **thirteen** languages unchanged.
-2. **The asm/ISA trio's connection-pressure family** — its own session (§1a). Also what makes
-   `tools/check-set-gate.py` exit non-zero cohort-wide today (42/45 comparable, by design).
+2. **The asm/ISA trio's connection-pressure family** — its own session (§1a). It is also why the
+   cohort-wide mode of `tools/check-set-gate.py` exits non-zero: their runs starved, so they are
+   not comparable and are quarantined rather than scored. (`--tracked`, the mode `make lint` runs,
+   gates only the publishable set and passes.)
 3. **`cobol`'s standing 27-FAIL liveness cascade** — a separate investigation.
 4. **Package-registry publish** and **Ed448/SHA-384 agility** stay demand-driven.
 
-**Closed 2026-08-22 — the committed reports now match what we publish.** Every tracked per-peer
-`status/CONFORMANCE-REPORT.{md,json}` had drifted a full oracle pin behind the matrix (740-check set
-or older; none at 755), so a clone showed each peer contradicting its own published row. §1 was never
-wrong — it is census-backed — but nothing gated those files, and the only cohort driver structurally
-refused to write them. All 13 publishable peers were **re-measured** (each reproduced its published
-number exactly), `run-cohort-census.sh --to-status` adds the missing destination, and `make lint` now
-runs `check-set-gate.py --tracked` so it cannot silently return. The 32 unfixed peers' reports stay
-behind by design — they owe the *fix*, not the paperwork.
+**Closed 2026-08-23 — the release-readiness pass.** Three defects routed in from DevOps, plus five
+more found by walking the published tree by hand:
+
+- **The 25 spec findings now publish.** They moved `research/stewardship/` →
+  `protocol-generator/shared/findings/` under undated names. `SPEC-FINDINGS-LOG.md` — declared
+  canonical, and therefore shipping — indexed all of them, called one a front door, and every
+  document it named was being deleted from the public tree by the release keep-list. The register
+  itself deliberately did **not** move (canon-filter is fail-closed on a declared path that is
+  absent). Two of the 25 were archived findings cited from *published* fortran files at paths that
+  had not existed for weeks.
+- **Nine more files that the published surface names were being deleted** — four diagnostics and
+  five cross-cutting paradigm surveys, now under `protocol-generator/shared/{diagnostics,
+  evaluations}/`. The sharpest was not a doc link: `check-set-gate.py` prints the starved-categories
+  probe's path *at runtime* as the reader's next step.
+  **The fix for this class is to MOVE the file, not to declare it.** `CANONICAL-DOCS.toml` declares
+  canonical documents; `protocol-generator/**` is outside every doc-root prefix and publishes with
+  no declaration at all. Net keep-list change for the whole pass: **+1 entry, this file.**
+- **This file moved `docs/status/` → `docs/`** and publishes again, per [ADR-0031] as corrected: the
+  *dated* snapshots are working memory, the single rolling log is canonical. The move is the durable
+  half — the two kinds are now separable by path instead of by remembering a filename.
+- **Two internal-token leaks fixed** on files that already publish. Post-move re-scan: 0 hits across
+  2,706 publishable files.
+- **README self-contradiction** ("13 of 45 publishable" then "binds 40 peers"), plus a missing 4F
+  group that had it accounting for 43 of 46 peers.
+- **New gate — `tools/link-gate.py`, in `make lint`.** Nine gates run across this repo and the
+  release pipeline and none asked whether a published document points at something a reader can
+  open. It caught three breaks the findings rename itself introduced.
+
+**Closed 2026-08-22 — the committed reports match what we publish.** Every tracked per-peer
+`status/CONFORMANCE-REPORT.{md,json}` had drifted a full oracle pin behind the matrix, so a clone
+showed each peer contradicting its own published row. §1 was never wrong — it is census-backed — but
+nothing gated those files. All 13 publishable peers were **re-measured** (each reproduced its
+published number exactly) and `make lint` now runs `check-set-gate.py --tracked`. The 32 unfixed
+peers' reports stay behind by design — they owe the *fix*, not the paperwork.
 
 ## Where the detail lives
 
@@ -80,6 +111,7 @@ behind by design — they owe the *fix*, not the paperwork.
 |---|---|
 | Per-peer conformance, tiers, catch-up backlog | `CONFORMANCE-MATRIX.md` |
 | What the substrates taught us | `research/SUBSTRATE-TAKEAWAYS.md` |
-| Session records / handoffs | `research/stewardship/` |
+| What 46 implementations found wrong with the spec | `protocol-generator/shared/findings/` |
+| Session records / in-flight escalations | `research/stewardship/`, `docs/status/` |
 | Oracle + spec pin provenance | `tools/oracle-pin.env` |
 | Maintenance tier roster | `tools/peer-tiers.tsv` |

@@ -37,6 +37,7 @@ Then, depending on what you came for:
 | Read the cross-language cryptography survey | [`research/CRYPTO-LANDSCAPE.md`](research/CRYPTO-LANDSCAPE.md) |
 | See the whole language territory + what's viable | [`research/PARADIGM-MAP.md`](research/PARADIGM-MAP.md) |
 | Read the narrative capstone | [`research/PROJECT-RETROSPECTIVE.md`](research/PROJECT-RETROSPECTIVE.md) |
+| See what 46 implementations found wrong with the spec | [`protocol-generator/shared/findings/`](protocol-generator/shared/findings/README.md) |
 | Add a peer in your language | [Adding a peer](#adding-a-peer) ↓ |
 | Work in this repo as an agent or contributor | [`AGENTS.md`](AGENTS.md) + [`AGENTS-STANDARD.md`](AGENTS-STANDARD.md) |
 
@@ -83,8 +84,8 @@ tools/oracle-bootstrap.sh     # build validate-peer + entity-peer into output/s4
 
 `oracle-bootstrap.sh` needs network **once** (Go module download). Every conformance run after that is
 sealed offline. It verifies what it built against the content digests in
-[`tools/oracle-pin.env`](tools/oracle-pin.env) and **refuses with exit 3 if they do not match** — see the
-honest caveat below, because today that refusal is the expected outcome.
+[`tools/oracle-pin.env`](tools/oracle-pin.env) and **refuses with exit 3 if they do not match**, rather
+than building a different oracle and reporting a green run against it.
 
 Run a peer's conformance harness:
 
@@ -100,44 +101,26 @@ its own exact invocation in its header comment. Runs are sealed offline (`--netw
 container carries hard memory/pid/cpu ceilings so a runaway build cannot take the host down. Per-machine
 overrides go in a gitignored `caps.local.mk`; see [`RESOURCE-CAPS.md`](RESOURCE-CAPS.md).
 
-**Other useful verbs:** `make images` (every toolchain), `make lint` (spec-snapshot integrity + the
-published-anchor and committed-report gates), `make check` (lint + test), `make clean`.
+**Other useful verbs:** `make images` (every toolchain), `make lint` (spec-snapshot integrity plus the
+committed-report, published-anchor and link-integrity gates), `make check` (lint + test), `make clean`.
 
-> ### ⚠ Known limitation right now — you cannot yet obtain the pinned oracle
+> ### If `oracle-bootstrap.sh` exits 3
 >
-> **Read this before you conclude something is broken.** `tools/oracle-bootstrap.sh` will most likely
-> **exit 3** for you today, saying the built oracle is not the pinned oracle. That is the gate working
-> correctly, and the cause is upstream sequencing, not your setup.
+> It is telling you the oracle it built is not the oracle these numbers were measured on, and it
+> names both digests. That is the gate working — the alternative is a clean build of the *wrong*
+> check set and a green run that means nothing.
 >
-> The oracle these numbers were measured on has **not been published yet.** As of 2026-08-23
-> `entity-core-go`'s public `master` is the v0.8.0 release and its development line is **514 commits**
-> past it, so the pinned check set is genuinely not in a public clone. Published commits are also
-> authored fresh at the release boundary ([ADR-0012] Amendment 1), which is why every number in this
-> project is anchored on a **content digest** rather than a commit hash — a hash from an internal
-> history resolves for nobody, and a digest survives the re-authoring.
+> The usual cause is that your `entity-core-go` clone predates the pinned oracle. Update it and
+> re-run. Every published number here is anchored on a **content digest** of the oracle's check set
+> rather than a commit hash ([ADR-0012] Amendment 1, and [The pin](CONFORMANCE-MATRIX.md) for the
+> full anchor set), so the check succeeds against any clone carrying that oracle regardless of what
+> the commit is called — verified against a republished history, byte-identical result.
 >
-> **What we measured, so you know exactly where you stand** (fresh clone + public `master` of go):
->
-> | | |
-> |---|---|
-> | Does the build succeed? | **Yes** — Go, containers, everything works |
-> | Do you get the *right* oracle? | **No.** You get the v0.8.0-era check set |
-> | Is the difference detectable? | **Yes, and it now stops you.** Exit 3, naming both digests |
-> | Would the wrong oracle mislead you? | **Badly** — it lacks the three `capability` checks that are this release's entire finding, so peers this project reports as failing would come back green |
->
-> Until then the honest position: **the conformance claims here are reproducible in principle and not
-> yet reproducible by you.** Everything else in the repo — generating a peer, reading the research,
-> building any toolchain image, `make lint` — works from a clean clone with no oracle at all.
->
-> **When go publishes, this resolves with no action from us and no new pin.** We verified it: against a
-> republished `master` carrying a freshly-authored commit we have never seen, `oracle-bootstrap.sh`
-> falls back, matches both content anchors, and builds a `validate-peer` that is **byte-identical** to
-> the one these numbers came from. That is the property content-anchoring buys, and it is tested rather
-> than asserted.
->
-> **Other sibling repos** (`entity-core-protocol` for spec sources, `entity-system-architecture` for
-> guides) are *not* required to build or run anything here — the spec snapshot is vendored and
-> SHA-256-pinned under `protocol-generator/shared/spec-data/`. Only `entity-core-go` is load-bearing.
+> **Only `entity-core-go` is load-bearing.** The other siblings (`entity-core-protocol` for spec
+> sources, `entity-system-architecture` for guides) are not needed to build or run anything here —
+> the spec snapshot is vendored and SHA-256-pinned under `protocol-generator/shared/spec-data/`.
+> Generating a peer, reading the research, building any toolchain image and `make lint` all work
+> from a clean clone with no oracle at all.
 
 ## Generating a peer
 
@@ -166,15 +149,14 @@ agent doesn't.** Library choice, error model, async style, naming, and packaging
 Two oracles built from `entity-core-go` are ground truth. **They are never doctored.** If an oracle
 disagrees with a generated peer, the peer is wrong — and a genuine oracle bug is escalated to
 architecture, never patched here. They are gitignored local tools, not committed source — see
-[Quick start](#you-need-entity-core-go-cloned-beside-this-repo) for how to get them and for the
-current limitation on obtaining the exact pinned build.
+[Quick start](#you-need-entity-core-go-cloned-beside-this-repo) for how to build them.
 
 - **`wire-conformance`** — the pure codec oracle. Byte-identical output or nothing.
 - **`validate-peer`** — the live-peer oracle, driven per language by `run-s4.sh`.
   **`--profile core` is the gating profile.**
 
-Every published number is **anchored on a content digest with its full breakdown** — `755 · 3F —
-309P/337W/3F/106S @ 95edd774…` — never a bare percentage, and never a commit hash ([ADR-0012]
+Every published number is **anchored on a content digest with its full breakdown** — the `go` peer
+reads `755 · 0F — 312P/337W/0F/106S @ 95edd774…` — never a bare percentage, and never a commit hash ([ADR-0012]
 Amendment 1: published commits are authored fresh at the release boundary, so a hash from our
 internal history resolves for no outside reader, while a digest of the oracle's own check set
 survives it — `CONFORMANCE-MATRIX.md` §"The pin" carries the full anchor set). A skip counts as a failure. A peer measured on a different set of
@@ -204,7 +186,9 @@ Three arms, each owning its own status; cross-arm coordination flows through `re
 
 Each peer holds `src/` (generated source), `profile.toml`, `templates/`, `status/` (phase reports,
 `CONFORMANCE-REPORT.{md,json}`, `SPEC-AMBIGUITY-LOG.md`), `reference/` (golden drift files), and
-`run-s4.sh`. Shared, language-agnostic inputs are in `protocol-generator/shared/`.
+`run-s4.sh`. Shared, language-agnostic material is in `protocol-generator/shared/` — the pinned spec
+snapshot and test vectors, the lifecycle prompts, and the cross-cutting output: `findings/` (the spec
+findings routed to architecture), `evaluations/` (the paradigm-frontier verdicts) and `diagnostics/`.
 
 The **codec C-ABI** (`ffi-generator/c-abi/spec/`) is a language-agnostic contract with interchangeable
 implementations — `entity-core-codec-ffi-{rust,c}`, both building the same `libentitycore_codec` +
@@ -240,9 +224,10 @@ spec snapshot `v0.8.2` — from a single full census over all 45 measurable peer
 - **13 peers pass `--profile core` 0-FAIL** — **tiers M1 and M2 are both complete**: `go` `haskell`
   `lean` `ocaml` `swift` (M1, 5/5) and `common-lisp` `csharp` `elixir` `java` `kotlin` `python`
   `rust` `typescript` (M2, 8/8, all fixed 2026-08-22). The maintenance-tier gate is green.
-- **25 more fail nothing but three new `capability` checks** — 23 at exactly 3F with a
+- **25 more fail nothing but the new `capability` checks** — 23 at exactly 3F with a
   byte-identical breakdown, 2 at 2F. That uniformity is the point: it is **one unimplemented spec
   feature measured many times**, not many defects. (It was 31 before the M2 pass.)
+- **3 peers at 4F** — `forth` `nim` `smalltalk`: the CAP trio plus one further `capability` check.
 - **`cobol` 30F** is the CAP trio plus its standing 27-FAIL liveness cascade.
   *(`typescript`'s 84F — 3 real + 81 cascade — was fixed 2026-08-22 and is now `755 · 0F`.)*
 - **3 peers produce INVALID MEASUREMENTS** (`asm-x86_64`, `asm-arm64`, `riscv64`) — starved runs

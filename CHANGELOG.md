@@ -11,6 +11,45 @@ Work since the initial public research-preview. No release has been cut; this se
 running record, not a version claim. **`CONFORMANCE-MATRIX.md` is the authoritative per-peer
 state** — the entries here are a summary of what moved and why, and they defer to it on numbers.
 
+### Release readiness (2026-08-23) — the published tree is what we actually claim it is
+
+No peer changed and no number moved. This was the pass that asked, for the first time, whether the
+tree a reader receives matches the tree we describe — and the answer was no in eight places.
+
+- **Every published number is anchored on a CONTENT DIGEST, not a commit** ([ADR-0012] Amendment 1).
+  Published commits are authored fresh at the release boundary, so a hash from our internal history
+  resolves for no outside reader — and it had already fired: the matrix on public `master` anchored
+  its 665-check counts on an oracle commit that exists in no repo in the ecosystem, killed by a
+  mirror history rewrite six weeks earlier. (Naming that commit here would repeat the defect this
+  entry describes, which is how it got into the ecosystem standard's own copy.) The three anchors are now
+  published beside the numbers with the reproduction recipe; `tools/pin-gate.py` gates against the
+  column reverting to a commit and against a hand-copied digest drifting from `tools/oracle-pin.env`.
+- **A fresh clone built the WRONG oracle and exited 0.** `oracle-bootstrap.sh` fell back to a public
+  commit whose check set is missing the three `capability` checks that are this release's entire
+  finding, printed a NOTE, and installed it — so an adopter got a clean build, a green run, and 32
+  peers passing that the matrix says fail. An anchor mismatch is now a **hard stop, exit 3**. A
+  second bug in the same script compared the install against itself and reported agreement.
+  All 46 peer harnesses gained a preflight; they had been exiting 0 with no oracle present.
+- **The 25 spec findings now publish.** `SPEC-FINDINGS-LOG.md` is declared canonical, ships, indexes
+  every finding and calls one a front door — and every document it named was being deleted from the
+  public tree. They moved to `protocol-generator/shared/findings/` under undated names, with an
+  index. Two of them were already dangling from *published* peer status docs at paths that had not
+  existed for weeks.
+- **Nine more named-but-deleted files** — four diagnostics and five cross-cutting paradigm surveys,
+  moved to `protocol-generator/shared/{diagnostics,evaluations}/`. One of them was printed by
+  `check-set-gate.py` at runtime as the reader's next step.
+- **Eight already-public top-level files were one release from silent deletion** — `AGENTS.md`,
+  `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md` and four more sat undeclared under a keep-list
+  the repo had documented as a scrub-list. Declaring them is the whole fix.
+- **`docs/STATUS.md`** — the rolling log moved out of `docs/status/` and publishes again; the dated
+  snapshots beside it do not. Separable by path rather than by filename.
+- **New gate:** `tools/link-gate.py` (in `make lint`) resolves every relative markdown link against
+  disk. Nine gates ran across this repo and the release pipeline and none asked whether a published
+  document points at something a reader can open.
+- **Two internal-token leaks** removed from files that already publish.
+- **README** corrected a self-contradicting peer count and a cohort breakdown that accounted for 43
+  of 46 peers.
+
 ### Tier M2 complete (2026-08-22) — **13 of 45 peers publishable**, and the CAP-6a fail-open has two mechanisms
 
 - **Tier M2 is 8/8 at `--profile core` 0-FAIL**, so M1 and M2 are both complete and **13 peers are
