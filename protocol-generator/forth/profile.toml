@@ -1,0 +1,232 @@
+# entity-core-protocol-forth — Language Profile
+#
+# ALIEN-SUBSTRATE PROBE (STACK-MACHINE / CONCATENATIVE / TYPELESS). Peer #25.
+# Authored FRESH in S1 from the V8 spec-data + gforth research — NOT ported from any
+# prior peer's profile. Forth is the FIRST stack-machine peer: an RPN, concatenative
+# language with NO static types, NO named local variables by default, and a single
+# shared data stack every word consumes from and produces onto. Words compose by
+# juxtaposition; control flow and data flow are both the stack.
+#
+# *** THE EXPERIMENTAL QUESTION THIS PROFILE EXISTS TO ANSWER ***
+# Every prior peer had named variables / typed values / structured records to hang a
+# recursive canonical-CBOR encoder and the §5 capability chain-walk on. Forth removes
+# all three: recursion carries state on the data + return stacks, there are no field
+# names (a "struct" is an offset into an allocated buffer), and no value carries a
+# type. The GENERATOR-STRESS question: can a recursive canonical-CBOR encoder + the
+# capability chain-walk be expressed IDIOMATICALLY on a stack substrate, or does it
+# force awkward stack choreography (deep dup/roll/pick gymnastics, an ad-hoc "object"
+# convention) that reads as translated, not native? This is the axis LANDSCAPE marks
+# for Forth ("stack machine / no types — generator stress"). Corroboration-first: the
+# spec-discovery well is dry on the current wire surface (15+ peers), so a fresh spec
+# finding is the UPSIDE, not the expectation — the primary payoff is generator
+# robustness on a maximally-unlike control/data model. See arch/PROFILE-RATIONALE.md.
+#
+# Profile authority (PROMPT-CONSTANTS): the agent MUST use the values declared here.
+# A "TBD" value is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "forth"
+name              = "Forth"
+tier              = "alien-substrate-probe"   # not a Tier-1..5 cohort slot; a stack-machine/typeless generator-stress probe
+package_name      = "entity-core-protocol-forth"   # keystone peer id
+runtime           = "forth-toolchain"         # references containers/forth-toolchain/Containerfile
+interpreter       = "gforth 0.7.3"            # GNU Forth (the only Forth fedora:43 packages). ANS-Forth core + the
+                                              # FP wordset + libffi C interface (libcc.fs) + unix/socket.fs. Confirmed
+                                              # at S1 container build: gforth-0.7.3-36.fc43.
+
+[codec]
+# strategy: FFI-HYBRID — hand-rolled canonical CBOR in PURE FORTH (the stack-machine
+# probe lives here), crypto over the C-ABI (libentitycore_codec). Same shape as COBOL
+# (#22), Tcl (#23), Rexx (#24): a native value-codec for the parts the language CAN
+# do, the C-ABI for the crypto it cannot. Rationale for each half:
+#
+#   (1) CBOR: hand-rolled canonical encoder/decoder in pure Forth (src/cbor.fs). No
+#       Forth CBOR library exists (the A-005 pattern, now 9th peer). Forth's byte/cell
+#       words ARE a competent byte assembler:
+#         C! / C@ / C,        → store/fetch/lay one byte into an ALLOTed buffer
+#         RSHIFT / LSHIFT / AND / OR / XOR → the bit engine (native cell ops)
+#         cells are FIXED-WIDTH 64-bit (CONFIRMED at S1) → uint64 fits ONE unsigned
+#         cell; the integer tower carries the CBOR HEAD FORM + a [2^63, 2^64-1]
+#         boundary self-test (the fixed-width-int CLASS: Zig/C#/OCaml/C — A-FT-001).
+#       Big-endian byte assembly is a mask+shift loop into a buffer (native; §5.1
+#       frame is BE u32; ints are BE per head width). Contrast Rexx (D2C native BE);
+#       Forth lays bytes explicitly but cleanly.
+#       The FLOAT tower (mt7) is REACHABLE NATIVELY (a real win over Rexx): gforth's
+#       FP wordset has an IEEE f64 float type with DF@/DF! (f64) and SF@/SF! (f32)
+#       MEMORY words — writing a float then reading its 8/4 bytes yields the true
+#       IEEE-754 bits (CONFIRMED at S1: DF! of 1.0e0 → 0x3F MSB). So f32/f64 encode is
+#       native bits (assemble big-endian from the SF!/DF! image). The f16 half-float
+#       leg + the shortest-float ladder (does the value round-trip through f16/f32
+#       exactly?) are still hand-rolled bit arithmetic — but from REAL float bits, not
+#       decimal computation (A-FT-002; far less hand-roll than Rexx's decimal float).
+#
+#   (2) Crypto: NO native crypto in gforth. So the §9.1 signature floor is an FFI
+#       obligation from the start (like COBOL/Tcl/Rexx): bind libentitycore_codec via
+#       gforth's LIBFFI-BASED C interface (libcc.fs: c-library / c-function / add-lib).
+#       Unlike Rexx (whose rxfuncadd was NON-FUNCTIONAL → subprocess co-process pivot,
+#       A-RX-005/011), gforth's c-function is a GENUINE IN-PROCESS FFI: libcc.fs uses
+#       libtool+gcc to compile a wrapper .so and dlopen it; `s" entitycore_codec"
+#       add-lib` links -lentitycore_codec. CONFIRMED at S1: an external libecfake.so
+#       exporting an ec_*-shaped symbol (ptr,len,out)->int32 was bound and called
+#       correctly. This is the CLEANEST crypto binding in the FFI-hybrid family — no
+#       subprocess, no FIFO, no co-process daemon (Rexx's whole S3 transport pain
+#       around A-RX-011 does NOT arise: crypto is a direct in-process call).
+strategy          = "ffi-hybrid"
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native", impl = "pure-Forth over C!/C@/RSHIFT/AND into ALLOTed buffers; f32/f64 via native SF!/DF! IEEE bits; f16 + shortest-float ladder hand-rolled bit arithmetic" }
+ed25519_library   = { name = "libentitycore_codec (gforth libcc c-function, in-process libffi)", version = "C-ABI 1.1", api = "ec_ed25519_{seed_to_pubkey,sign,verify} + ec_sha256/384" }
+ed448_library     = { name = "libentitycore_codec (gforth libcc c-function)", version = "C-ABI 1.1", strategy = "ffi", api = "ec_ed448_{seed_to_pubkey,sign,verify}" }
+sha256_source     = "libentitycore_codec ec_sha256 (FFI via libcc c-function); no pure-Forth SHA fallback (gforth has no crypto)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (src/base58.fs); base-256->base-58 over cell arithmetic
+varint_handling   = "native"                  # LEB128 multikey varint (N1, §7.3), src/varint.fs — pure Forth over RSHIFT/AND + C!
+numeric_model     = "fixed-width-cell"        # 64-bit cells (CONFIRMED S1); uint64 in one unsigned cell; head-form + [2^63,2^64-1] self-test (A-FT-001)
+
+[error_model]
+# Forth's idiomatic error mechanism is THROW / CATCH (ANS-Forth): `n THROW` unwinds to
+# the nearest `CATCH`, which returns the thrown integer code (0 = no throw). This is a
+# clean structured-unwind, unlike Rexx's SIGNAL (which A-RX-010 showed does NOT
+# propagate across a CALL). gforth's CATCH restores the data + return + FP stack depth,
+# so a codec reject unwinds cleanly to the public entry. Reject-KINDs map to a
+# NAMESPACED integer code table (a THROW code carries only an integer, so the KIND is
+# the code itself — reserve a private range, e.g. -25000.. to avoid colliding with the
+# ANS/gforth system THROW codes). Absent/"not found" is an in-band tagged marker (NOT
+# a THROW): the empty byte/text string is a legitimate wire value (A-FT-007), so absent
+# is a distinguished tag in the value's representation, never the empty string.
+style             = "throw-catch"             # ANS-Forth n THROW / xt CATCH (restores stack depths); the idiomatic structured unwind
+exception_family  = "n THROW  caught by  xt CATCH  ( -- ... n )"   # KIND travels AS the integer throw code
+throw_code_base   = -25000                    # private reject-code range base (below the ANS/gforth system codes); each leaf_kind = base - offset
+leaf_kinds        = "NON_CANONICAL_ECF | TRUNCATED_INPUT | TAG_REJECTED | BAD_SEED | UNSUPPORTED_CONTENT_HASH_FORMAT | UNSUPPORTED_KEY_TYPE"
+absent_sentinel   = "a tagged marker in the value rep (a present value is always a non-empty tagged record); NOT the empty string (A-FT-007)"
+
+[async]
+# gforth is SINGLE-THREADED for our purposes (0.7.3 has no portable in-image threading
+# we rely on). The peer is a SINGLE-THREAD SELECT LOOP (the COBOL/Rexx pattern).
+# Sockets come from gforth's unix/socket.fs BSD-socket wordset (CONFIRMED loadable at
+# S1) — a genuine native socket path (NO co-process daemon needed, unlike Rexx's
+# A-RX-008/011 FIFO pivot; gforth links the socket syscalls in-process). The event
+# primitive is a select()/poll() over the listen socket + every connection; each
+# inbound frame is dispatched to completion before the next. §7b store-safety is
+# STRUCTURAL (one interp, one thread, no concurrent store access → no lock, no race).
+# The §6.11 handler-initiated outbound-dispatch reentry is a MANUAL correlation pump
+# (as in COBOL/Rexx): the handler sends then re-enters a bounded select/recv loop to
+# await the correlated reply by request_id — no thread (a dedicated reentry pump, the
+# correlation-map tax the non-actor/non-CSP peers pay).
+style             = "single-thread-select"    # native unix/socket.fs select loop; no threads
+socket_source     = "gforth unix/socket.fs (BSD-socket wordset, in-process — CONFIRMED loadable at S1; NO co-process daemon)"
+event_primitive   = "select()/poll() over the listen socket + per-connection sockets; recv/send words from unix/socket.fs"
+request_demux     = "request_id -> a pending record (a stack-allocated table keyed by req_id) in the one interp; matched in the reentry pump"
+store_model       = "content store + tree as ALLOTed buffers / a hashed dictionary in the one interp — structurally race-free (single thread)"   # §4.8/§7b; no lock
+tcp_nodelay       = true                       # setsockopt TCP_NODELAY on accepted/dialed sockets (§7b) — via socket.fs or a libc c-function
+blocking_discipline = "select() gates every recv/send so no call blocks the single loop indefinitely; a per-op timeout bounds the reentry pump"
+
+[naming]
+# Forth is CASE-INSENSITIVE (traditionally UPPERCASE; gforth accepts any case, most
+# modern code is lowercase). Words are the unit (no functions/methods distinction);
+# there is NO namespace/module system in ANS-Forth core (gforth has WORDLISTS +
+# VOCABULARY / the `Root`/`Forth` wordlist mechanism, but a plain flat dictionary is
+# the common idiom for a library loaded via `require`/`include`). We prefix public
+# words with a module tag to keep the flat dictionary readable and avoid clashes:
+# `cbor-encode`, `ent-make`, `cap-verify-request`. Words are hyphenated lowercase
+# (the dominant modern-Forth convention); "constants" are CONSTANT/VALUE definitions;
+# a "struct" is a set of named field-offset words over an ALLOTed buffer.
+proc_names        = "module-verb  (hyphenated lowercase tag + verb: cbor-encode, peer-dispatch, cap-verify-request)"
+namespace_scheme  = "word-prefix (flat dictionary; no ANS namespaces): <tag>-<verb>; internal helpers get a leading tag+'-' too, or a private wordlist"
+aggregate_unit    = "an ALLOTed buffer + named field-offset words (the struct analogue: `>type`, `>data`, `>hash` return offsets); no records in the language"
+variable_names    = "hyphenated lowercase (pub-key, seed-bytes, req-id); globals via VARIABLE / VALUE"
+constant_names    = "UPPER or hyphenated via CONSTANT/VALUE (MAX-DEPTH 64 CONSTANT); Forth has real CONSTANT/VALUE, unlike Rexx"
+file_names        = "hyphenated-or-lower.fs (cbor.fs, entity.fs, capability.fs); one module per file, loaded via require"
+main_program      = "entity-core.fs umbrella: require's every module file + the libcc crypto binding"
+
+[build]
+# gforth is INTERPRETED/incremental-compiled — no separate compile gate like C/Rust
+# (a word is compiled to threaded code as it is defined, but there is no build ARTIFACT
+# to link for the pure-Forth part). "Build" = the libcc crypto wrapper .so (gforth
+# generates + libtool/gcc-compiles it on first `c-library ... end-c-library`) + a load
+# smoke (`require` the umbrella + call a word). No cargo/dotnet-class build tool; the
+# "package" is a directory of .fs files + a build recipe for libentitycore_codec.
+# libentitycore_codec is a runtime .so bound via libcc's add-lib.
+build_tool        = "gforth (interpreter/compiler) + gcc/libtool for the libcc FFI wrapper"
+build_command     = "make ffi   # build libentitycore_codec (its CMake) + warm the libcc crypto wrapper (first c-library compile)"
+test_command      = "gforth test/all.fs   # hand-rolled harness (no Forth test framework)"
+package_command   = "make dist  # tar the .fs tree + the libentitycore_codec build recipe + a load stub"
+
+[layout]
+src_dir           = "src/"                     # the *.fs module files (cbor, varint, base58, peer-id, entity, capability, ...)
+test_dir          = "test/"                    # hand-rolled conformance + smoke harnesses
+ffi_dir           = "src/ffi/"                 # the libcc crypto binding (crypto.fs: c-library over libentitycore_codec)
+entry_point       = "src/entity-core.fs"       # umbrella loader: require's every module + the libcc crypto binding
+ffi_binding       = "src/ffi/crypto.fs"        # gforth libcc c-library binding libentitycore_codec's ec_* symbols
+
+[publishing]
+# Forth has NO package registry (no CPAN/PyPI/crates analogue). Distribution norms:
+# a tarball / git repo of .fs files a user `require`s, optionally listed on the Forth
+# community sites. Publish = tag a git release with the .fs tree + the
+# libentitycore_codec build recipe; there is no registry inclusion step. Analogous to
+# COBOL/Rexx (make dist) — a source distribution, not a binary registry.
+registry          = "git + tarball (no Forth registry exists)"
+registry_url      = ""                          # TBD on first publish
+package_id        = "entity-core-protocol-forth"
+license_expression = "Apache-2.0"
+repository_url     = ""                          # TBD on first publish
+
+[license]
+generated_outputs = "Apache-2.0"               # S9 default. gforth itself is GPLv3+; the ecosystem is license-mixed with no mandate — keep the Apache-2.0 default (explicit patent grant). Note: distributing .fs SOURCE that runs on gforth does not make the source GPL (mere aggregation / interpretation), but flag the GPL-runtime interaction in S5 packaging.
+
+[testing]
+# NO standard Forth unit-test framework in the fedora gforth (some communities use
+# ttester / Forth-2012 test harnesses, but nothing bundled + pinnable here). The
+# harness is hand-rolled (the COBOL/Rexx pattern): a test/all.fs that require's the
+# modules, walks the pinned v0.8.0 fixture, and asserts byte-identity against the
+# hand-rolled codec + the crypto binding. Zero test-dependency cost; also zero
+# framework help.
+framework         = "hand-rolled (no bundled Forth test framework in fedora gforth)"
+runner            = "test/all.fs (+ test/conformance.fs, test/smoke.fs)"
+conformance_probe = "load spec-data v0.8.0 fixtures; assert byte-identity vs hand-rolled codec + crypto binding"
+
+[container]
+base_image        = "entity-core-keystone/forth-toolchain:latest"
+build_in_container = true
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/forth entity-core-keystone/forth-toolchain:latest sh -c 'gforth test/all.fs'"
+
+[idiom]
+# STACK-MACHINE / TYPELESS hints — the seams where this substrate is unlike every
+# prior peer.
+stack_machine           = true                # THE headline. RPN, concatenative, single shared data stack + return stack + FP stack. No named locals by default (gforth has `locals|` / `{: :}` but idiomatic Forth composes on the stack). State for the recursive codec lives on the stacks; a "struct" is offset words over an ALLOTed buffer. The generator-stress axis (A-FT-000).
+typeless_values         = true                # A value on the stack is an untyped cell (an int, a byte address, a flag — all cells). No value carries a CBOR major type; the codec's value representation MUST tag int-vs-float, bytes-vs-text EXPLICITLY (a tagged record: a type-tag cell + payload), never infer from the cell. Same explicit-intent discipline as Tcl/Rexx (A-FT-003), sharper here (a cell has literally no type).
+fixed_width_cell        = true                # A-FT-001: cells are 64-bit (CONFIRMED S1: `1 cells` = 8). uint64 fits ONE unsigned cell; int64 the same cell signed. The integer tower carries the CBOR head form + a [2^63,2^64-1] boundary self-test (the fixed-width class: Zig/C#/OCaml/C). Values > 2^64-1 need double-cell (128-bit) or bignum — but ECF's int tower tops out at 2^64-1 / -2^64, so a single unsigned cell + careful signed/unsigned handling covers it; bignum only for CBOR tag 2/3 (out of core scope).
+native_float_bits       = true                # A-FT-002: gforth has a REAL IEEE f64 float type + SF!/DF! memory words (CONFIRMED S1). f32/f64 encode reads the true IEEE bits (SF!/DF! into a buffer, assemble big-endian) — NATIVE, far less hand-roll than Rexx's decimal float. The f16 half-float leg + the shortest-float ladder are still hand-rolled bit arithmetic, but operate on real float bits.
+byte_string_native      = true                # A-FT-004: a Forth string is an (addr, len) byte pair; the count IS the wire byte count (no char-vs-byte trap like Tcl A-TCL-002 — gforth strings are byte-oriented, no Unicode string type). byte-vs-text (mt2 vs mt3) intent still carried EXPLICITLY in the tagged record.
+addr_len_strings        = true                # strings are (c-addr u) pairs everywhere; s" ..." lays a counted string; the codec works in (addr,len) throughout. UTF-8 text is just its bytes (gforth is byte-oriented); the length is already the UTF-8 byte length.
+throw_catch_unwind      = true                # ANS THROW/CATCH restores data+return+FP stack depth on a reject — a clean structured unwind (unlike Rexx A-RX-010's non-propagating SIGNAL). The codec reject is a THROW; the public entry CATCHes and maps the code to a §5.2/§4 status.
+in_process_ffi          = true                # A-FT-005 (KEY differentiator): gforth's libcc c-function is a GENUINE IN-PROCESS libffi binding (libtool+gcc wrapper .so, dlopen'd). Crypto is a direct in-process call to libentitycore_codec — NO subprocess/FIFO/co-process daemon (Rexx's A-RX-011 transport pain does NOT arise). GOTCHA: the wrapper .so is CACHED in ~/.gforth/libcc-named keyed by c-library NAME; clear the cache on a symbol-set change or a stale .so binds old symbols.
+native_sockets          = true                # unix/socket.fs is an in-process BSD-socket wordset (CONFIRMED loadable S1) — a real native socket path; NO co-process daemon (contrast Rexx A-RX-008). Single-thread select loop.
+single_thread_select    = true                # §7b store-safety structural (single thread); §6.11 reentry a manual pump (COBOL/Rexx-shape, correlation-map tax).
+no_compile_gate         = true                # incrementally compiled; NO static type check (typeless cells). Correctness rests on the conformance corpus (the dynamic caveat; sharpest here — typeless cells erase even value-level types, like Tcl/Rexx).
+gforth_version          = "0.7.3 (GNU Forth; the fedora:43-packaged Forth)"
+
+[deps]
+# Exact pins (S11). Toolchain pins mirrored in containers/forth-toolchain/Containerfile.
+# The third-party RUNTIME surface is small: gforth core (+ its FP wordset, libcc C
+# interface, unix/socket.fs — all bundled) + libentitycore_codec (bound via libcc).
+# No pure-Forth crypto exists.
+gforth            = "0.7.3"                     # gforth 0.7.3-36.fc43 — the fedora:43-packaged GNU Forth. 0.7.3 is the long-stable release line (0.7.3 released 2014-09; far over the S11 30-day floor). Provides gforth (interp/compiler), the FP wordset (f64/f32 + SF!/DF!), the libcc C interface (c-library/c-function/add-lib), and unix/socket.fs (BSD sockets). CONFIRMED at the S1 container build: cell=64-bit, native IEEE float bits, in-process C FFI to an external .so, socket.fs loads.
+libentitycore_codec = "C-ABI 1.1"              # the crypto floor .so (pinned at the ffi-generator layer). Bound via libcc `s" entitycore_codec" add-lib`; placed on LIBRARY_PATH (link) + LD_LIBRARY_PATH (dlopen) at build/run — the S1-verified mechanism.
+libsodium         = "1.0.22 (image-provided, fedora:43)"  # statically+privately linked into libentitycore_codec by its CMake
+libffi            = "image-provided (fedora:43)"  # gforth's c-function marshals args via libffi; recorded at build
+libtool           = "image-provided (fedora:43)"  # gforth's c-library drives libtool+gcc to compile/link the FFI wrapper .so
+
+[spec]
+spec_version_pinned = "0.8.0"                  # spec-data snapshot protocol-generator/shared/spec-data/v0.8.0/ (V8). Confirm the three SHA-256 pins in MANIFEST.md unchanged at S2.
+codec_corpus      = "v0.8.0"                    # ECF corpus protocol-generator/shared/test-vectors/v0.8.0/ (conformance-vectors-v1.cbor); core wire byte-unchanged across V7->V8.
+oracle_commit     = "cc1970f"                   # go oracle for S4 (public HEAD, re-normalized 2026-07-10). core-gate fingerprint 8261a033… ; target --profile core = 0 FAIL. Build via tools/oracle-bootstrap.sh.
+# PEER_ID CONSTRUCTION (corroborates the cohort — Zig/OCaml/CL/Prolog/Tcl/Rexx): derive
+# the Ed25519 peer_id from the §1.5 CANONICAL-FORM TABLE — hash_type = 0x00
+# identity-multihash, digest = the RAW 32-byte public key (NO SHA256(pubkey)
+# skeleton). peer_id wire form = Base58(key_type || hash_type || digest). §7.4 already
+# defers to the §1.5 table on the v0.8.0 snapshot — settled, baked in to avoid the S4
+# handshake debug cycle.
+# COHORT-SETTLED TRAPS pre-resolved here (do NOT re-burn): lowercase %02x hex for
+# §3.4/§3.5 tree-paths (A-CL-009); §5.2 401/403/401-unresolvable authz trichotomy;
+# entity `data` is an arbitrary ECF value, NOT necessarily a map (A-JAVA-010);
+# §4.10 chain-depth pre-check -> 400 chain_depth_exceeded (depth 64), 16 MiB payload
+# -> 413 payload_too_large; §7b store-race-safety (structural here) + TCP_NODELAY +
+# no blocking calls on the select path.

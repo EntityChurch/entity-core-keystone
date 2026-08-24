@@ -1,0 +1,90 @@
+# CI — entity-core-protocol-forth (the cohort's stack-machine / typeless probe #25) conformance
+# gates. Authored at S5 (PHASE-S5 §"CI config"), matching the Prolog/Zig/Haskell/Swift cohort
+# offline-gate pattern. Runs the three green gates entirely inside the pinned `forth-toolchain`
+# Podman image, sealed-offline (`--network=none`): the C-ABI codec `.so` + the gforth `libcc`
+# crypto wrapper are byte-built by run-s2.sh inside the image (nothing fetched at build time),
+# and the Go `validate-peer` oracle is a CGO_ENABLED=0 ELF that runs in the same image sharing
+# one loopback.
+#
+# DELIBERATELY NOT WIRED TO ANY REMOTE/CD. There is no deploy step, no registry push, no
+# publish — `/entity-rosetta` never publishes (lifecycle §Publishing); the operator decides.
+# This file documents the reproducible offline gate; whether/where it actually runs (this peer's
+# standalone repo's CI, or a keystone-wide CI home) is an operator/arch decision. It is committed
+# for reviewability, not because a runner is attached. (Rexx/Tcl/COBOL — the closest `make dist`
+# probes — ship none; this is the additive offline-gate pattern the FFI cohort peers carry.)
+#
+# Assumptions when wired: the runner has Podman, the `forth-toolchain:latest` image is built
+# (containers/forth-toolchain/Containerfile) and the oracle ELFs are vendored to
+# output/s4-oracles/ (rebuild per status/CONFORMANCE-REPORT.md). Paths below assume the keystone
+# repo root is the checkout root. Cap every podman run per RESOURCE-CAPS.md.
+
+name: forth-conformance
+
+on:
+  push:
+    paths:
+      - 'protocol-generator/forth/**'
+      - 'protocol-generator/shared/spec-data/**'
+      - 'protocol-generator/shared/test-vectors/**'
+      - 'ffi-generator/c-abi/**'
+  pull_request:
+    paths:
+      - 'protocol-generator/forth/**'
+  workflow_dispatch: {}
+
+# No deploy/publish permissions — read-only.
+permissions:
+  contents: read
+
+env:
+  IMAGE: entity-core-keystone/forth-toolchain:latest
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The toolchain image is built from containers/forth-toolchain/Containerfile and the oracle
+      # ELFs rebuilt from entity-core-go @cc1970f per the CONFORMANCE-REPORT runbook. In a
+      # standalone-repo lift-out these become a `podman build` + an oracle-vendor step (or a
+      # pre-built image pulled from a trusted internal registry); kept explicit, not assumed.
+      - name: Verify toolchain image + oracle present
+        run: |
+          . tools/podman-caps.sh
+          podman image exists "$IMAGE" || { echo "::error::build $IMAGE from containers/forth-toolchain/Containerfile first"; exit 1; }
+          test -x output/s4-oracles/validate-peer || { echo "::error::vendor the validate-peer oracle ELF (CONFORMANCE-REPORT.md)"; exit 1; }
+
+      # Gate 1 — S2 FFI-hybrid codec wire-conformance (must stay 69/69) + crypto accept-path +
+      # the uint64 [2^63, 2^64-1] boundary self-test, sealed offline. run-s2.sh byte-builds
+      # libentitycore_codec.so + warms the libcc crypto wrapper, then runs the 69-vector corpus.
+      - name: S2 — codec 69/69 + crypto accept + uint64 boundary
+        run: |
+          . tools/podman-caps.sh
+          podman run $PODMAN_RUN_CAPS --rm --network=none -v "$PWD":/work:Z -w /work \
+            "$IMAGE" protocol-generator/forth/run-s2.sh
+
+      # Gate 2 — S3 peer machinery: foundation self-test 20/20 + two-peer loopback smoke 6/6
+      # (in-process sockets + crypto; loopback works under --network=none).
+      - name: S3 — foundation self-test 20/20 + loopback smoke 6/6
+        run: |
+          . tools/podman-caps.sh
+          podman run $PODMAN_RUN_CAPS --rm --network=none -v "$PWD":/work:Z -w /work \
+            "$IMAGE" protocol-generator/forth/run-s3.sh
+
+      # Gate 3 — S4 live-peer validate-peer --profile core (must stay 0 FAIL). The gforth host +
+      # the Go oracle ELF run together in the image over loopback, --network=none. run-s4.sh
+      # writes status/CONFORMANCE-REPORT.json; we assert summary.failed == 0 (the green gate).
+      - name: S4 — validate-peer --profile core (0 FAIL)
+        run: |
+          . tools/podman-caps.sh
+          podman run $PODMAN_RUN_CAPS --rm --network=none -v "$PWD":/work:Z -w /work -e ORACLE_TIMEOUT=300s \
+            "$IMAGE" protocol-generator/forth/run-s4.sh
+          python3 - <<'PY'
+          import json, sys
+          s = json.load(open("protocol-generator/forth/status/CONFORMANCE-REPORT.json"))["summary"]
+          print("summary:", s)
+          if s.get("failed", 1) != 0:
+              print("::error::validate-peer core has FAILs — gate not green"); sys.exit(1)
+          PY

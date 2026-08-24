@@ -339,7 +339,7 @@ best-guess or a measured resolution. Final disposition of all 18 entries:
 | A-FTN-009 | operator | Open-cosmetic — test-drive is the intended framework; vendoring `testdrive.F90` offline deferred (see A-FTN-010). No coverage lost. |
 | A-FTN-010 | operator | Open-cosmetic — S2/S4 unit suite is plain-Fortran assertions; re-expressing in vendored test-drive is deferred hygiene, no coverage impact. |
 | A-FTN-011 | research | Closed (durable lesson) — pointer-component value model avoids the gfortran recursive-dtor double-free. Banked for the Fortran family. |
-| **A-FTN-012** | **arch** | **ESCALATED — `research/stewardship/HANDOFF-TO-ARCH-2026-07-11-ftn-tag-reject-corpus.md` + SPEC-FINDINGS-LOG F29.** Corpus `tag_reject.1/2/3/5` reject via trailing-data, not the §6.3 tag scanner; only `.4` exercises N2. Real N2 coverage added in `test/unit_tests.f90`; does not block the gate. |
+| **A-FTN-012** | **arch** | **ESCALATED — `research/stewardship/HANDOFF-TO-ARCH-2026-07-11-ftn-tag-reject-corpus.md` + SPEC-FINDINGS-LOG F30** (F29 at authoring; renumbered at the 2026-07-12 two-branch merge). Corpus `tag_reject.1/2/3/5` reject via trailing-data, not the §6.3 tag scanner; only `.4` exercises N2. Real N2 coverage added in `test/unit_tests.f90`; does not block the gate. |
 | A-FTN-013 | research | Closed — measured within the 4 GiB cap under the §4.9 flood (160k gets); bump-arena is documented deferred hardening, not a gate blocker. |
 | A-FTN-014 | arch | Closed — confirmed status-only: `resource_bounds.r1` checks 413 + keep-serving, not request_id correlation. No arch action needed. |
 | A-FTN-015 | research | Closed (durable lesson) — gfortran `.and.`/`.or.` non-short-circuit; nested-conditional guard discipline. |
@@ -347,7 +347,7 @@ best-guess or a measured resolution. Final disposition of all 18 entries:
 | A-FTN-017 | research | Closed (durable lesson) — single-thread select-pump re-polls on `EV_NONE`, never terminates on an empty poll. |
 | A-FTN-018 | none | Closed — §6.13(b) dispatch-outbound reentry wired live (`concurrency.t1_2` PASS). |
 
-**Arch-routed at S5:** A-FTN-012 (corpus defect → F29). **Research-banked durable lessons
+**Arch-routed at S5:** A-FTN-012 (corpus defect → F30, F29 at authoring; renumbered at the 2026-07-12 merge). **Research-banked durable lessons
 (no arch action):** A-FTN-011 / A-FTN-015 / A-FTN-016 / A-FTN-017 (gfortran/Fortran-family +
 raw-socket traps). **All other items are operator-local, resolved.** No spec-vs-oracle
 divergence surfaced at S4 (every S4 fix was a peer bug derived from the spec).

@@ -1,0 +1,206 @@
+# Forth toolchain image — builds the ALIEN-SUBSTRATE peer
+# (entity-core-protocol-forth) per protocol-generator/forth/profile.toml.
+# Mirrors the structure of containers/rexx-toolchain + containers/tcl-toolchain +
+# containers/cobol-toolchain (the FFI-hybrid single-threaded family).
+#
+# ALIEN-SUBSTRATE PROBE: STACK-MACHINE / CONCATENATIVE / TYPELESS. gforth is an
+# RPN stack machine: no static types, no named local variables by default, every
+# word consumes/produces cells on a shared data stack. The headline question is
+# GENERATOR STRESS: can a recursive canonical-CBOR encoder + the capability
+# chain-walk be expressed idiomatically on a stack substrate, or does it force
+# awkward stack choreography? Corroboration-first (the spec-discovery well is dry
+# on the current wire surface).
+#
+# Codec split (FFI-hybrid, the Rexx/Tcl/COBOL shape):
+#   - CBOR/varint/base58/peer_id: hand-rolled pure Forth (the A-005 no-lib pattern,
+#     now 9th peer). Cells are FIXED-WIDTH 64-bit (confirmed below) → this is the
+#     fixed-width-int CLASS (like Zig/C#/OCaml): the codec carries the CBOR integer
+#     HEAD FORM + a self-test on the [2^63, 2^64-1] boundary. Big-endian byte
+#     assembly is native (mask+shift + C! into a buffer). The IEEE FLOAT tower is
+#     REACHABLE NATIVELY: gforth has a floating-point wordset with real f64 (DF@/DF!)
+#     + f32 (SF@/SF!) memory words, so reading/writing IEEE bits is native (unlike
+#     Rexx, which had to compute every bit in decimal). The f16 half-float leg + the
+#     shortest-float ladder are still hand-rolled bit arithmetic (as everywhere).
+#   - Crypto (Ed25519 + SHA-256/384): NO native crypto in gforth → FFI over the
+#     C-ABI (libentitycore_codec) via gforth's LIBFFI-BASED C INTERFACE
+#     (lib.fs: c-library / c-function). Unlike Rexx (whose rxfuncadd was DEAD,
+#     forcing a subprocess co-process pivot — A-RX-005/011), gforth's c-function
+#     loads a shared library IN-PROCESS via libffi and libtool: a genuine in-process
+#     FFI. This is the cleanest crypto binding in the FFI-hybrid family.
+#   - Sockets: gforth ships unix/socket.fs (BSD-socket wordset over the libc
+#     syscalls). Confirmed loadable below. The peer is a SINGLE-THREAD SELECT LOOP
+#     (the COBOL/Rexx pattern) → §7b store-safety is STRUCTURAL; the §6.11
+#     handler-outbound reentry is a manual correlation pump.
+#
+# S11: pin the toolchain + every dependency to an exact version. gforth 0.7.3 is
+#      the long-stable release line (0.7.3 released 2014-09; far over the 30-day
+#      cool-down). fedora packages exactly one gforth. libentitycore_codec
+#      statically+privately links the image's libsodium.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Versions confirmed available on fedora:43 (2026-07-11):
+#   gforth        0.7.3-36.fc43  — GNU Forth (the fedora-packaged Forth; the only
+#                                  one). Provides gforth (interp/compiler),
+#                                  the FP wordset (f64/f32 + DF@/SF@ memory words),
+#                                  the libffi C interface (c-library/c-function via
+#                                  lib.fs), and unix/socket.fs (BSD sockets).
+#   libtool       (image)        — gforth's c-library uses libtool to compile+link
+#                                  the generated C wrapper for an FFI binding.
+#   gcc           (image)        — the C compiler libtool drives; also builds the
+#                                  C-ABI codec (libentitycore_codec) via its CMake.
+#   libffi        (image)        — gforth's c-function marshals args via libffi.
+#   libsodium     1.0.22         — statically+privately linked into
+#                                  libentitycore_codec.{so,a} by its CMake.
+# CBOR + base58 + varint are hand-rolled pure Forth in-repo (no Forth pkg gives
+# canonical ECF; A-005, 9th peer to hit it). No pure-Forth crypto exists → the
+# C-ABI FFI binding is mandatory (like COBOL/Rexx/Tcl). No Forth unit-test
+# framework → the test harness is hand-rolled.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (S1 this session — verifies the substrate probes at image-build time):
+#   podman build -t entity-core-keystone/forth-toolchain:latest \
+#     -f containers/forth-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps.
+# gforth: the interpreter/compiler + its FP wordset, libffi C interface, and the
+#   unix/socket.fs BSD-socket wordset.
+# libffi/libffi-devel: gforth's c-function marshals FFI calls via libffi.
+# libtool: gforth's c-library compiles+links the generated C wrapper for a binding.
+# gcc/gcc-c++/cmake/make/pkgconfig: build the C-ABI codec (libentitycore_codec) via
+#   its CMake, and the C wrapper libtool drives for the FFI binding.
+# libsodium-static + libsodium-devel: the C-ABI CMake STATICALLY + PRIVATELY links
+#   libsodium into libentitycore_codec.{so,a}. Without these the C-ABI build FATALs.
+RUN dnf install -y \
+        gforth \
+        libffi libffi-devel libtool \
+        gcc gcc-c++ cmake make pkgconfig \
+        libsodium-static libsodium-devel \
+        git curl ca-certificates findutils which glibc-langpack-en tar \
+    && dnf clean all
+
+# Wire data is byte-oriented; pin a UTF-8 locale so non-ASCII text vectors + argv
+# load cleanly (gforth is byte/cell-oriented but the shell/env needs a sane locale).
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# ── Verify the gforth pin + the STACK-MACHINE / fixed-width-cell / byte / float
+#    probe primitives the codec depends on ──
+#   - cell width is 64-bit (uint64 fits one unsigned cell; the fixed-width class)
+#   - big-endian byte assembly of a uint64 (mask/shift + C! into a buffer)
+#   - IEEE float bits are reachable natively (DF! writes an f64; then read bytes)
+#   - stack + recursion work (RECURSE — the CBOR encoder is recursive)
+RUN cat > /tmp/probe.fs <<'FORTH'
+\ --- cell width: must be 8 bytes (64-bit) for the uint64-in-one-cell class ---
+cr ." cell size = " 1 cells . ." bytes"
+1 cells 8 <> [IF] cr ." FATAL: cell not 64-bit" bye [THEN]
+cr ." cell-width 64-bit OK"
+
+\ --- big-endian byte assembly of a uint64 into a buffer ---
+\ Lay 0xFFFFFFFFFFFFFFFF (2^64-1, all ones) big-endian; verify byte 0 = 0xFF.
+\ Use an unsigned cell literal via HEX. -1 in two's complement is all-ones = 2^64-1.
+create buf 8 allot
+: put-be-u64 ( u addr -- )  \ store u big-endian into 8 bytes at addr
+  8 0 do
+    over 56 i 8 * - rshift 255 and  \ ( u addr byte ) i-th BE byte of u
+    over i + c!                     \ store at addr+i
+  loop  2drop ;
+-1 buf put-be-u64   \ -1 == 0xFFFF...FF as an unsigned cell
+buf c@ 255 <> [IF] cr ." FATAL: BE byte0 wrong" bye [THEN]
+buf 7 + c@ 255 <> [IF] cr ." FATAL: BE byte7 wrong" bye [THEN]
+cr ." big-endian uint64 assembly OK (byte0=0xFF byte7=0xFF)"
+
+\ Minimal-int head-form sanity: 42 -> 0x18 0x2A ; 256 -> 0x19 0x0100 (checked in S2,
+\ here just confirm shift/mask arithmetic on cells)
+: hi8 ( u -- b )  256 / 255 and ;
+256 hi8 1 <> [IF] cr ." FATAL: hi8" bye [THEN]
+cr ." shift/mask head arithmetic OK"
+
+\ --- native IEEE float bits: write an f64 with DF!, read its 8 bytes ---
+\ 1.0 as f64 = 0x3FF0000000000000. Byte order in memory is host (little-endian on
+\ x86_64); the codec assembles BIG-ENDIAN for the wire from the raw bits. Here we
+\ confirm DF! writes real IEEE-754 bits we can read byte-wise (native, unlike Rexx).
+create fbuf 8 allot
+1.0e0 fbuf df!
+\ On x86_64 (LE) the most-significant IEEE byte 0x3F lands at offset 7.
+fbuf 7 + c@ 63 <> [IF] cr ." FATAL: df! not IEEE (want 0x3F at MSB)" bye [THEN]
+cr ." native IEEE f64 bits via DF! OK (0x3F MSB present)"
+
+\ f32 path (SF!): 1.0 as f32 = 0x3F800000 ; MSB 0x3F at offset 3 on LE.
+create f32buf 4 allot
+1.0e0 f32buf sf!
+f32buf 3 + c@ 63 <> [IF] cr ." FATAL: sf! not IEEE f32" bye [THEN]
+cr ." native IEEE f32 bits via SF! OK"
+
+\ --- recursion (the CBOR encoder is recursive) ---
+: fact ( n -- n! )  dup 1 > if dup 1- recurse * then ;
+5 fact 120 <> [IF] cr ." FATAL: RECURSE" bye [THEN]
+cr ." RECURSE (recursive words) OK"
+
+cr ." === all forth substrate probes passed ==="
+bye
+FORTH
+RUN gforth /tmp/probe.fs && rm -f /tmp/probe.fs
+
+# ── Verify the C FFI mechanism (the crypto binding path) compiles + loads a
+#    c-function IN-PROCESS with the exact ec_* shape: an EXTERNAL .so symbol taking
+#    borrowed (ptr,len) inputs + an out-ptr, returning an int32 status. This is the
+#    critical FFI-hybrid probe: gforth's c-library uses libtool+gcc to build a
+#    wrapper .so and dlopen it (contrast Rexx, whose rxfuncadd was non-functional —
+#    A-RX-005). We build a tiny external libecfake.so exporting an ec_*-shaped
+#    symbol and link it via `s" ecfake" add-lib` — the exact mechanism used to bind
+#    libentitycore_codec (`s" entitycore_codec" add-lib`). If this works, the crypto
+#    C-ABI binding works.
+#    GOTCHA (banked A-FT-005): gforth caches the compiled wrapper .so in
+#    ~/.gforth/libcc-named keyed by the c-library NAME. A stale cache silently
+#    binds an OLD .so missing new symbols → clear it before each build.
+RUN cat > /tmp/ecfake.c <<'C' && \
+    gcc -shared -fPIC -o /tmp/ecfakelib/libecfake.so /tmp/ecfake.c 2>/dev/null || \
+    ( mkdir -p /tmp/ecfakelib && gcc -shared -fPIC -o /tmp/ecfakelib/libecfake.so /tmp/ecfake.c )
+#include <stdint.h>
+#include <stddef.h>
+int32_t ec_fakefold(const uint8_t *d, size_t n, uint8_t *out) {
+  uint8_t x = 0; for (size_t i=0;i<n;i++) x ^= d[i]; *out = x; return 0;
+}
+C
+RUN cat > /tmp/ffi.fs <<'FORTH'
+require libcc.fs           \ gforth's C interface (c-library / c-function / lib.fs)
+c-library ecffiprobe
+  s" ecfake" add-lib       \ link -lecfake (the libentitycore_codec add-lib path)
+  \c #include <stdint.h>
+  \c #include <stddef.h>
+  \c extern int32_t ec_fakefold(const uint8_t*, size_t, uint8_t*);
+  c-function ec-fakefold ec_fakefold a n a -- n   \ (ptr,len,outptr) -> int32
+end-c-library
+create ib 1 c, 2 c, 4 c, 8 c,    \ xor-fold = 0x0F = 15
+create ob 1 allot
+ib 4 ob ec-fakefold 0 <> [IF] cr ." FATAL: ec-shaped c-function status != 0" bye [THEN]
+ob c@ 15 <> [IF] cr ." FATAL: ec-shaped c-function wrong result" bye [THEN]
+cr ." gforth in-process C FFI OK — external .so ec_*-shape (ptr,len,out)->int bound + called"
+bye
+FORTH
+# The wrapper compile+link needs the lib on LIBRARY_PATH (link) + LD_LIBRARY_PATH
+# (dlopen) — exactly how S2 places libentitycore_codec. GOTCHA A-FT-005: clear the
+# libcc wrapper cache first (keyed by c-library name; a stale .so binds old symbols).
+RUN rm -rf /root/.gforth/libcc-named /root/.gforth/libcc-tmp && \
+    LIBRARY_PATH=/tmp/ecfakelib LD_LIBRARY_PATH=/tmp/ecfakelib gforth /tmp/ffi.fs && \
+    rm -rf /tmp/ffi.fs /tmp/ecfake.c /tmp/ecfakelib
+
+# ── Verify the BSD-socket wordset loads (the S3 TCP substrate). unix/socket.fs
+#    wraps the libc socket syscalls. Informational at build (transport is S3's
+#    gate); records that the socket path is present so S3 doesn't rediscover it.
+RUN cat > /tmp/sock.fs <<'FORTH'
+require unix/socket.fs
+cr ." unix/socket.fs loaded OK (BSD-socket wordset present for S3 transport)"
+bye
+FORTH
+RUN gforth /tmp/sock.fs 2>&1 || echo "socket.fs load note (S3 will confirm the socket path)"
+RUN rm -f /tmp/sock.fs
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="forth-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.gforth="0.7.3"
+LABEL org.entity-core-keystone.experimental="stack-machine-typeless-alien-substrate-probe"
+
+CMD ["/bin/bash"]

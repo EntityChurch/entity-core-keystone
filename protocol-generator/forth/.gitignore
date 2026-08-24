@@ -1,0 +1,4 @@
+# S2/S5 build + local artifacts (not committed)
+dist/
+*.tmp
+# gforth libcc wrapper cache is under ~/.gforth (outside the tree) — noted for reference
