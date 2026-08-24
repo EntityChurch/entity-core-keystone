@@ -22,8 +22,10 @@ doc pins down what that dependency is, how we keep it reproducible, and the rule
 Both binaries are **gitignored** (`**/output/`) and live **only** at repo-root
 `output/s4-oracles/{validate-peer,entity-peer}`. They are *local tools*, not committed
 source — the keystone validates *against* them, it does not derive peer code *from* them
-(clean-room boundary). The pinned commit is recorded in each peer's `status/PHASE-S4.md`
-and in `CONFORMANCE-MATRIX.md` (the "Oracle commit" column).
+(clean-room boundary). The pin is recorded in `tools/oracle-pin.env` and published in
+`CONFORMANCE-MATRIX.md` (the "Oracle pin" column) **as a content digest, not a commit**;
+each peer's `status/PHASE-S4.md` additionally carries the local build's commit as internal
+provenance.
 
 > **Strategic note for release.** Our conformance story currently requires a consumer to
 > be able to *build the Go oracle*. That is fine for the keystone (we have the toolchain)
@@ -47,9 +49,18 @@ Rules:
    peer's `run-s4.sh` / `run-origination-core.sh` defaults `ORACLE`/`REFPEER` to
    `/work/output/s4-oracles/...` (the mount maps repo-root → `/work`). Never build a
    per-peer copy under `protocol-generator/<lang>/output/`.
-2. **Record the commit, not just the label.** "33f35fd" is not enough provenance if two
-   builds disagree — the figure is `N·0F @ <commit>`, and the binary under
-   `output/s4-oracles/` is the one source of truth at any moment.
+2. **Record the CONTENT ANCHOR, not the commit.** *(Rewritten 2026-08-23 — this rule used to
+   read "record the commit, not just the label," and the commit turned out to be the weaker
+   half of the same mistake.)* A commit label is not provenance for anyone but us: published
+   commits are authored fresh at the release boundary ([ADR-0027]), so a `dev` SHA resolves for
+   no outside reader, and a mirror history rewrite can take it away from us too. **This
+   document proves it against itself** — the two commits its own worked example is built on,
+   `33f35fd` and `e8524ed`, resolve in no repo in the checkout today. The figure is
+   `N·0F @ <core_executed_check_set_digest>`, backed by `core_gate_fingerprint` +
+   `check_set_digest` for the oracle build; all three are in `tools/oracle-pin.env`, all three
+   are derived from the oracle's own content, and all three survive anything that happens to a
+   hash. Keep the commit in the local build record (`output/s4-oracles/PROVENANCE.txt`) as a
+   convenience for whoever is at this machine; never publish a number against it.
 3. **Preserve the prior binary** as `*.<oldcommit>.bak` on re-vendor, so a regression is
    bisectable.
 
@@ -65,15 +76,29 @@ Rules:
 
 **Mirror-stable provenance (the R1 fix).** The pin in `tools/oracle-pin.env` is *committed*
 (the binaries are gitignored, so this env file is the only committed record of the gate).
-It carries `core_gate_sha256` = `sha256(cmd/internal/validate/profile.go)` — the category
-set that defines `--profile core`. **That hash, not the commit, is the identity that
-matters:** if a rebuilt oracle reproduces it, its core surface is identical to what the
-17-peer cohort converged against, regardless of what the commit hash became after a public
-mirror-cutover. The script's fallback: if the pinned `ref` no longer resolves in the
-sibling repo (history rewritten by the mirror), it builds the **sibling working-tree HEAD**
-and warns — so "clone keystone + have entity-core-go next to it → run conformance" keeps
-working with no commit-hash dependency. (`ec048…`-style hashes become decoration; the
-`core_gate_sha256` is the contract.)
+**Content anchors, not the commit, are the identity that matters** — if a rebuilt oracle
+reproduces them, its core surface is what the cohort converged against, regardless of what
+the commit hash became after a public mirror cutover, and regardless of the fact that
+published commits are re-authored at the release boundary and so never carry a `dev` hash at
+all. Two anchors, and **both** must match:
+
+| | | |
+|---|---|---|
+| `core_gate_fingerprint` | **AUTHORITATIVE** | The *normalized* category set + 53-type floor from `profile.go` — comment- and format-invariant. Answers **which categories run**. |
+| `check_set_digest` | **AUTHORITATIVE for carry-forward** | The sorted set of check names declared across the non-test `cmd/internal/validate` sources. Answers **what those categories assert**. |
+| `core_gate_sha256` | *informational only* | Raw `sha256(profile.go)`. Moves on any edit including a comment reword, so it false-alarms; it is recorded, not relied on. |
+
+*(This paragraph named `core_gate_sha256` as "the contract" until 2026-08-23. That was true
+of the original R1 fix and stopped being true twice over: the fingerprint superseded it on
+2026-07-10 precisely because the raw hash false-alarmed on a comment reword, and
+`check_set_digest` was added on 2026-07-27 when four hard-FAIL vectors landed inside existing
+core categories under a **byte-identical** fingerprint. A fingerprint match alone is not
+evidence a verdict carries forward.)*
+
+The script's fallback: if the pinned `ref` no longer resolves in the sibling repo (history
+rewritten, or simply a reader who only has public `master`), it builds the **sibling
+working-tree HEAD**, warns, and verifies by digest anyway — so "clone keystone + have
+entity-core-go next to it → run conformance" keeps working with no commit-hash dependency.
 
 The manual procedure, done entirely in the `entity-core-keystone/go:latest` container,
 against an **isolated archive** of the go commit (NOT the live `entity-core-go` working
@@ -124,7 +149,7 @@ git diff --stat <VENDORED>..<TARGET> -- cmd/internal/validate/         # gate im
 | Only **extension** categories changed (relay, route, network, transport_family, WebSocket, encryption, peer-issued/registry, published_root, discovery…) | **Optional / cosmetic** | These auto-skip or matched-if-present-WARN under `--profile core`; they move the *total* and *warn/skip* counts but never `passed`/`failed`. Re-vendoring only changes the headline number, not the verdict. |
 | Provenance/hygiene re-pin (no source change) | No | Don't rebuild "the same" commit — you risk a phantom warn delta (§2). |
 
-**Worked example (`33f35fd` → go HEAD `e8524ed`):** the full `cmd/`
+**Worked example (a 2026-07 re-vendor; both commits below are dead — see rule 2):** the full `cmd/`
 diff was ~5,300 insertions, but `validate-peer/main.go` was **+15 lines** (a `-ws-peers`
 flag, extension), `profile.go` was **unchanged**, and everything else under
 `cmd/internal/validate/` was relay/route/transport/publish (extension). Predicted impact:

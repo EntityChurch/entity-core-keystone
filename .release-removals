@@ -1,0 +1,28 @@
+# .release-removals — deliberate deletions against the PUBLISHED tree.
+#
+# One path or path-prefix per line; `#` comments allowed. The `[6/6] public-regress`
+# gate blocks any release that removes a file already on public `master` unless it is
+# declared here. A deletion is not forbidden — it must be intended, and this file is
+# the reviewed record that it was. Read by dev-pipeline/promote/promote.sh.
+#
+# A comment-only or blank file is NOT an allow-all; it declares nothing.
+
+# ── [ADR-0031], 2026-08-23 — rolling status docs are not a publication surface ──
+# `docs/status/STATUS.md` has been public since the last release and its `[[doc]]`
+# block is removed from CANONICAL-DOCS.toml in the same commit as this line.
+#
+# Why: a rolling status file is working memory — dated measurements, seat names,
+# blockers, half-verified numbers. The ecosystem pin measurement found 466 of 670
+# unreachable commit citations fleet-wide living in exactly these files, and
+# sweeping them is the wrong fix because they regenerate the problem by being used
+# as intended. Our own STATUS.md already opened by deferring to
+# CONFORMANCE-MATRIX.md for every number, which is the argument for this.
+#
+# What a reader loses: nothing they came for. README.md answers "what is this",
+# CHANGELOG.md answers "what changed", CONFORMANCE-MATRIX.md answers "is it
+# conformant and against what" — all three declared canonical and written for that
+# reader. Reversible: restore the `[[doc]]` block and drop this line.
+#
+# Prefix, not just the one file: the dated STATUS-*/HANDOFF-*/CHECKPOINT-* snapshots
+# beside it are internal too, and none should reach public master again.
+docs/status

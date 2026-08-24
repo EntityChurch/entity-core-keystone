@@ -1,31 +1,42 @@
-# Canonical-docs declaration — the publishable doc surface the content leaf
-# ingests for the keystone domain ([internal] CANONICAL-DOCS-FORMAT.md).
-# Only docs at NON-scrubbed paths are listed: the release builder drops
-# **/HANDOFF*, *REVIEW*, *EXPLORATION*, PROPOSAL-*, RESPONSE-*, WORKSTREAMS.md,
-# .claude/, CLAUDE.md — so the canonical surface (conformance matrix + research
-# diagnostics) lives under names that survive the cut. The internal
-# WORKSTREAMS.md is intentionally NOT declared (ephemeral steward planning,
-# honest absence per ADR-0012); the project's workstream shape is conveyed by the
-# README's three-arms section.
+# Canonical-docs declaration — the publishable doc surface for the keystone domain
+# ([internal] CANONICAL-DOCS-FORMAT.md).
 #
-# ** THE STATUS RULE (operator-confirmed 2026-08-22 — this header had it wrong). **
-# The scrub is `STATUS-*` (the DATED ones), NOT `STATUS*`. The distinction is
-# load-bearing and the two kinds of file are not the same artifact:
+# ** THIS IS A KEEP-LIST, NOT A SCRUB-LIST. Read that before adding or removing. **
+# `canon-filter` (entity-core-devops release-builder, `internal/canon`) deletes every
+# file it does NOT find declared here, within its scope. Undeclared is not "left
+# alone" — it is "removed from the public tree." The scope is exact and worth
+# knowing, because it decides what a mistake here can destroy:
 #
-#   docs/status/STATUS.md    — SINGULAR, undated, PUBLIC and CANONICAL. A tracked,
-#                              managed, point-in-time snapshot of what the project
-#                              has been working on, published so adopters can
-#                              follow along. Not a changelog (CHANGELOG.md is that,
-#                              and is stricter), and not ephemeral. It is DECLARED
-#                              below and is meant to survive the release cut.
-#   docs/status/STATUS-*.md  — DATED snapshots, and HANDOFF-*/CHECKPOINT-* beside
-#   docs/status/HANDOFF-*.md   them: ephemeral working traffic that flies left and
-#                              right during a session. Scrubbed. Never declared.
+#   * loose TOP-LEVEL prose (`.md .markdown .rst .txt .adoc`, no `/` in the path) —
+#     droppable. Top-level non-prose (LICENSE, NOTICE, VERSION, Makefile) is safe.
+#   * anything under a doc-root PREFIX — `docs/ research/ reviews/ status/
+#     validation/ stewardship/ proposals/ notes/ handoffs/ audits/ design/ …` —
+#     droppable regardless of extension. Prefix means at the START of the path, so
+#     `protocol-generator/<lang>/status/*.md` is NOT in scope and never has been.
+#   * everything else — source, configs, vectors, spec-data — always kept.
 #
-# So the STATUS.md entry below is correct as written; this comment previously
-# claimed the builder dropped it and that it was "intentionally NOT declared,"
-# which contradicted the declaration and mis-stated the standard. Corrected rather
-# than resolved by removing the entry — the entry was always the right half.
+# `README.md` is force-kept by the tool even if omitted. `CANONICAL-DOCS.toml`
+# keeps itself.
+#
+# The header that used to sit here described a scrub-list of name patterns
+# (`**/HANDOFF*`, `PROPOSAL-*`, `CLAUDE.md`, …). That was the wrong mental model in
+# the dangerous direction: it reads as "undeclared files are dropped only if they
+# match a pattern," and under it eight already-public top-level files sat undeclared
+# for months, one release away from silent deletion. Declaring is the only thing
+# that keeps a file.
+#
+# ** WHAT `docs/status/` PUBLISHES: NOTHING ([ADR-0031], 2026-08-23). **
+# Both kinds — the singular rolling `STATUS.md` and the dated `STATUS-*`/`HANDOFF-*`/
+# `CHECKPOINT-*` snapshots beside it — are internal working memory now, with no scrub
+# obligation, no pin hygiene, and no audience. `STATUS.md` was the single declared
+# exception until today; the entry is removed below with the reasoning inline.
+# (This header asserted the opposite twice, in opposite directions, within a week.
+# The rule is now in an ADR that ships into this repo at `docs/adr/ecosystem/`, which
+# is where it should have been.)
+#
+# `docs/adr/ecosystem/` is injected and read-only ([ADR-0030]) and is deliberately
+# NOT declared. `WORKSTREAMS.md` stays undeclared too — ephemeral steward planning,
+# honest absence per [ADR-0012]; the README's three-arms section conveys the shape.
 
 [project]
 name   = "Entity Core Keystone"
@@ -36,22 +47,26 @@ intro  = """
 The keystone of the Entity Core arch: a generator that emits a full core
 protocol peer (entity-core-protocol-<lang>) for any target language from the
 pinned spec snapshot (currently v0.8.2), plus a language-agnostic codec C-ABI.
-The cohort is 46 generated core peers, 45 of them measured — all 45 at ONE oracle
-pin (c1b0708, 2026-08-21), nothing carried forward. Conformance state is NOT
-uniformly green: 5 peers (the M1 lockstep tier) pass --profile core 0-FAIL and are
-the only ones publishable today; the other 40 fail the newly-landed core capability
-checks, 31 of them failing nothing else and with a byte-identical breakdown. Those
-failures are one unimplemented spec feature (the section 5.6 minted-capability
-temporal ceiling) measured 40 times, rather than 40 regressions. Four further peers
-produced INVALID MEASUREMENTS — starved runs that are quarantined, not scored. The
-conformance
-matrix is authoritative and carries the per-peer transparency contract — spec
-version, oracle commit, codec/crypto strategy, known gaps — and it states plainly
-which rows are current and which are historical. Honest scope: these peers are
-generated, so they share a generation lineage — the strong claim is spec-forced
-convergence across many different languages/runtimes, not 46 independently-authored
-code bases (ADR-0012). This is a 0.8 pre-release surface: oracle-pinned and
-reproducible, still evolving as spec amendments run through the generator.
+The cohort is 46 generated core peers, 45 of them measured — all 45 against ONE
+oracle pin, the 755-check set 95edd774..., nothing carried forward. That pin is a
+content digest of the oracle's own check set rather than a commit hash, per
+ADR-0012 Amendment 1: published commits are authored fresh at the release
+boundary, so a hash from our internal history resolves for no outside reader,
+while a digest survives it. Conformance state is NOT uniformly green: 13 peers
+pass --profile core at 0-FAIL and are the only ones publishable today (tiers M1
+and M2, five and eight); 29 more are scored and fail the newly-landed core
+capability checks, 25 of them failing nothing else and with a byte-identical
+breakdown. Those failures are one unimplemented spec feature (the section 5.6
+minted-capability temporal ceiling) measured across the cohort, rather than 29
+regressions. Three further peers produced INVALID MEASUREMENTS — starved runs
+that are quarantined, not scored — and one is unmeasured. The conformance matrix
+is authoritative and carries the per-peer transparency contract: spec version,
+oracle pin, codec/crypto strategy, known gaps, and which rows are current versus
+historical. Honest scope: these peers are generated, so they share a generation
+lineage — the strong claim is spec-forced convergence across many different
+languages and runtimes, not 46 independently-authored code bases (ADR-0012).
+This is a 0.8 pre-release surface: digest-anchored and reproducible, still
+evolving as spec amendments run through the generator.
 """
 
 # ── Overview ────────────────────────────────────────────────────────────────
@@ -61,11 +76,17 @@ title = "entity-core-keystone — overview, build, honest independence"
 blurb = "What the keystone is, the three arms (protocol-generator / ffi-generator / research), the make+podman bare-host build, and the precise independence framing."
 group = "Overview"
 
-[[doc]]
-path  = "docs/status/STATUS.md"
-title = "Status"
-blurb = "Current project status — where the project is, recent work, backlog, and what's next."
-group = "Overview"
+# `docs/status/STATUS.md` WAS declared here and is NO LONGER — [ADR-0031], 2026-08-23.
+# `docs/status/` now publishes nothing. A rolling status file is working memory: dated
+# measurements, seat names, blockers, half-verified numbers. Publishing it put exactly the
+# material the *spec text is not our log* rule exists to keep out onto the public surface,
+# and the ecosystem measurement found 466 of 670 unreachable commit citations living in
+# these files fleet-wide. Sweeping them was the wrong fix — they regenerate the problem by
+# being used as intended. This is one line instead, and our own STATUS.md already opened by
+# deferring to CONFORMANCE-MATRIX.md for every number, which is the argument for it.
+# It is currently on public `master`, so removing the declaration is a DELETION against the
+# published tree: declared in `.release-removals` at the repo root, which is what makes the
+# `public-regress` gate pass. Reversible — restore the `[[doc]]` block.
 
 # ── Conformance ─────────────────────────────────────────────────────────────
 [[doc]]
@@ -192,3 +213,80 @@ path  = "research/architecture-reviews/typescript.md"
 title = "Architecture review — TypeScript"
 blurb = "The running record of architecture decisions, friction, and deviations for the TypeScript generated peer."
 group = "Research"
+
+# ── Project files ─────────────────────────────────────────────────────────────
+# RELEASE BLOCKER, fixed 2026-08-23. These are on public `master` today and were
+# never declared — and `canon-filter` is a KEEP-LIST that drops loose top-level
+# prose it does not find here. Undeclared meant the next release would have
+# DELETED all eight from the public repo, silently: no other gate asks "does this
+# still contain what we already gave people" (leak-audit asks whether it is safe
+# to publish, conform-audit whether it conforms, the build whether it works).
+# Declaring them is the whole fix. Found fleet-wide by the arch-tools first full
+# pass 2026-08-22 and now caught by `[6/6] public-regress`.
+#
+# Verified against `origin/master` (== github/master == codeberg/master, d8c2b0a)
+# rather than taken from the routing packet, which listed seven and said
+# RESOURCE-CAPS.md was not on our public tree. It is. The pipeline's own comment
+# in `dev-pipeline/promote/promote.sh` says so too — "and keystone
+# RESOURCE-CAPS.md". Eight, not seven.
+
+[[doc]]
+path  = "CHANGELOG.md"
+title = "Changelog"
+blurb = "What changed in each release, newest first."
+group = "Project"
+
+[[doc]]
+path  = "CONTRIBUTING.md"
+title = "Contributing"
+blurb = "How to propose a change, and the DCO sign-off the project requires."
+group = "Project"
+
+[[doc]]
+path  = "CODE_OF_CONDUCT.md"
+title = "Code of Conduct"
+blurb = "What we expect of each other."
+group = "Project"
+
+[[doc]]
+path  = "SECURITY.md"
+title = "Security"
+blurb = "How to report a vulnerability."
+group = "Project"
+
+[[doc]]
+path  = "RESOURCE-CAPS.md"
+title = "Resource caps"
+blurb = "The podman memory/swap ceilings every build and conformance run is capped at, and how to tune them per host."
+group = "Project"
+
+# ── Agent + methodology overlay ───────────────────────────────────────────────
+# Shared, byte-identical, injected fleet-wide (ADR-0010 / ADR-0028). The first four
+# are already public and stay so. METHODOLOGY.md is contributor-facing and publishes
+# with the repo by ADR-0028, but is NEW to our public surface — a file that was never
+# published cannot show up as a deletion, so `public-regress` cannot vouch for it and
+# declaring it is the only thing that ships it.
+
+[[doc]]
+path  = "AGENTS.md"
+title = "AGENTS.md"
+blurb = "The durable agent context and operating agreement for this repo."
+group = "Working here"
+
+[[doc]]
+path  = "AGENTS-STANDARD.md"
+title = "Agent standard"
+blurb = "The shared cross-repo standard every repo's AGENTS.md builds on."
+group = "Working here"
+
+[[doc]]
+path  = "METHODOLOGY.md"
+title = "Methodology"
+blurb = "Disciplines, doctrines, the ratchet, and the promotion ladder (ADR-0028)."
+group = "Working here"
+
+[[doc]]
+path  = "CLAUDE.md"
+title = "CLAUDE.md"
+blurb = "A one-line shim to AGENTS.md (ADR-0016)."
+group = "Working here"

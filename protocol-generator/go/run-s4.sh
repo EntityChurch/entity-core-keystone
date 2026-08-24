@@ -8,7 +8,8 @@
 # at it, tears the host down.
 #
 # CLEAN-ROOM NOTE: the Go peer is built from the spec; the oracle binaries under
-# output/s4-oracles/ are the conformance TOOL (built from entity-core-go 75c532e
+# output/s4-oracles/ are the conformance TOOL (built from entity-core-go at the pinned
+# oracle content digest — tools/oracle-pin.env; the commit is internal, see README
 # in an isolated temp dir, NOT read as source while building the peer). The peer
 # is byte-VALIDATED against the oracle here, not derived from it.
 #
@@ -25,6 +26,17 @@
 set -eu
 PORT="${PORT:-7778}"
 ORACLE="${ORACLE:-/work/output/s4-oracles/validate-peer}"
+
+# Preflight: the oracle must actually be there. The run below ends in `|| true` so a
+# conformance FAIL does not abort the harness — but that also swallowed a MISSING
+# binary, and the script exited 0 having validated nothing. Measured 2026-08-23: a
+# fresh clone with no sibling entity-core-go printed one "No such file or directory"
+# line and exited 0, i.e. the documented Quick-start command appeared to succeed.
+[ -x "$ORACLE" ] || { echo "run-s4: ERROR conformance oracle not found at $ORACLE" >&2
+  echo "  The oracle is a gitignored local tool built from the sibling entity-core-go" >&2
+  echo "  repo. Clone it NEXT TO this one, then run tools/oracle-bootstrap.sh." >&2
+  echo "  See the Quick start in README.md." >&2
+  exit 3; }
 PROJ=/work/protocol-generator/go
 cd "$PROJ/src"
 

@@ -46,7 +46,7 @@ EOF
   echo "peer build failed:" >&2; cat /tmp/build.err >&2; exit 1; }
 HOST_BIN="$PROJ/target/release/entity-peer-host"
 
-# Reference Go entity-peer (B-role), open-access (degenerate seed policy at 33f35fd).
+# Reference Go entity-peer (B-role), open-access (degenerate seed policy).
 "$REFPEER" -addr "127.0.0.1:$RPORT" -open-access >/tmp/ref.out 2>/tmp/ref.err &
 REF_PID=$!
 # Target Rust host (A-role) — --validate makes system/validate/dispatch-outbound live.

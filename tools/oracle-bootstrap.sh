@@ -142,11 +142,50 @@ CHECK_SET=$(validate_sources "$ARCHIVE_REF" | check_set_digest)
 EXPECT_CS=""
 [ -f "$PIN_FILE" ] && EXPECT_CS=$(awk -F'= *' '/^check_set_digest/{print $2; exit}' "$PIN_FILE" | awk '{print $1}')
 if [ -n "$EXPECT_CS" ] && [ "$EXPECT_CS" != "$CHECK_SET" ]; then
-  echo "oracle-bootstrap: NOTE check-set digest differs from committed pin" >&2
-  echo "  committed: $EXPECT_CS" >&2
-  echo "  building:  $CHECK_SET" >&2
-  echo "  => the oracle's CHECK SET moved (vectors added/removed/renamed). No verdict" >&2
-  echo "     carries forward, even if core_gate_fingerprint is unchanged — RE-RUN THE COHORT." >&2
+  # THIS IS A HARD STOP, and it used to be a NOTE that exited 0. Measured 2026-08-23
+  # against a genuine fresh clone (keystone worktree + `git clone --no-local
+  # --single-branch --branch master` of go, 2 commits, pinned ref absent):
+  #
+  #   * `ref = c1b0708` did not resolve, so R1 fell back to HEAD = cc1970f.
+  #   * core_gate_fingerprint MATCHED BYTE-FOR-BYTE (8261a033…) — it has been
+  #     identical across all five pins, so it raises nothing.
+  #   * check_set_digest differed, printed a NOTE, and the script BUILT AND
+  #     INSTALLED ANYWAY, exit 0.
+  #   * The installed oracle is missing request_mint_temporal_ceiling,
+  #     ingest_rejects_unrepresentable_expiry and configure_empty_grants_withdrawal
+  #     — verified with `strings`. Those three ARE the release's entire finding.
+  #
+  # So an adopter following the documented path got a clean build, a green run, and
+  # 32 peers passing that CONFORMANCE-MATRIX.md says fail. A falsely-GREEN result
+  # from a successful build is the worst outcome this repo can produce, and every
+  # honesty discipline here exists to prevent exactly it. A warning on stderr in the
+  # middle of a wall of `go: downloading` lines is not a control.
+  echo "oracle-bootstrap: ERROR the built oracle is NOT the pinned oracle." >&2
+  echo "  committed check_set_digest (tools/oracle-pin.env): $EXPECT_CS" >&2
+  echo "  built from $SRC:  $CHECK_SET" >&2
+  echo >&2
+  echo "  The CHECK SET differs — different vectors, so no verdict in" >&2
+  echo "  CONFORMANCE-MATRIX.md carries over to a run against this build, even though" >&2
+  echo "  core_gate_fingerprint may match (it tracks WHICH CATEGORIES RUN, never WHAT" >&2
+  echo "  THEY ASSERT, and it has been byte-identical across all five pins)." >&2
+  echo >&2
+  if [ "$ARCHIVE_REF" = "HEAD" ]; then
+    echo "  CAUSE: the pinned ref '$ORACLE_REF' does not exist in $GO_REPO, so this fell" >&2
+    echo "  back to its HEAD. If that repo is a clone of public 'master', the pinned" >&2
+    echo "  oracle is genuinely not there: published commits are authored fresh at the" >&2
+    echo "  release boundary ([ADR-0027]), and as of 2026-08-23 entity-core-go's public" >&2
+    echo "  master is 514 commits behind the oracle this cohort was measured on." >&2
+    echo "  FIX: build against a tree whose content matches the pin. The digests above" >&2
+    echo "  are how you confirm you have one — the commit hash does not matter." >&2
+  else
+    echo "  CAUSE: ref '$ORACLE_REF' resolved, but its check set is not the pinned one." >&2
+  fi
+  echo >&2
+  echo "  If you are DELIBERATELY re-pinning: REPIN=1 tools/oracle-bootstrap.sh, then" >&2
+  echo "  re-measure the cohort and update tools/oracle-pin.env. Never publish a number" >&2
+  echo "  measured on a build this check rejected." >&2
+  [ "${REPIN:-0}" = "1" ] || exit 3
+  echo "oracle-bootstrap: REPIN=1 — proceeding anyway. RE-RUN THE COHORT." >&2
 fi
 EXPECT=""
 [ -f "$PIN_FILE" ] && EXPECT=$(awk -F'= *' '/^core_gate_fingerprint/{print $2; exit}' "$PIN_FILE" | awk '{print $1}')
@@ -164,10 +203,28 @@ fi
 # vectors, so this short-circuit would have declared a stale oracle current and
 # silently run the OLD check set over the whole cohort — the exact failure mode
 # AGENTS.md warns about, mechanized.
+#
+# AND IT MUST COMPARE AGAINST THE COMMITTED PIN, NOT AGAINST ITSELF. Found the same
+# way, 2026-08-23: HAVE/HAVE_CS come from PROVENANCE.txt (what is installed) and
+# CORE_FP/CHECK_SET from the ref being built. On a second run in the fresh clone both
+# describe the same wrong cc1970f oracle, so they agreed trivially and the script
+# printed, three lines apart:
+#
+#   NOTE check-set digest differs from committed pin
+#   installed oracle matches BOTH … — nothing to do
+#
+# A self-consistency check reads exactly like a correctness check and is not one.
+# The comparison below is now against EXPECT_CS/EXPECT — the committed pin — with the
+# installed-vs-built check kept as the second condition, so "nothing to do" means
+# "installed == built == pinned" and nothing weaker.
 if [ "${FORCE:-0}" != "1" ] && [ -x "$OUT/validate-peer" ] && [ -f "$PROV_FILE" ]; then
   HAVE=$(awk -F'= *' '/^core_gate_fingerprint/{print $2; exit}' "$PROV_FILE" | awk '{print $1}')
   HAVE_CS=$(awk -F'= *' '/^check_set_digest/{print $2; exit}' "$PROV_FILE" | awk '{print $1}')
-  if [ "$HAVE" = "$CORE_FP" ] && [ "$HAVE_CS" = "$CHECK_SET" ]; then
+  if [ -n "$EXPECT_CS" ] && [ "$HAVE_CS" != "$EXPECT_CS" ]; then
+    echo "oracle-bootstrap: installed oracle does not match the COMMITTED pin — rebuilding." >&2
+    echo "  installed (output/s4-oracles/PROVENANCE.txt): $HAVE_CS" >&2
+    echo "  committed (tools/oracle-pin.env):             $EXPECT_CS" >&2
+  elif [ "$HAVE" = "$CORE_FP" ] && [ "$HAVE_CS" = "$CHECK_SET" ]; then
     echo "oracle-bootstrap: installed oracle matches BOTH the core-gate fingerprint ($CORE_FP)"
     echo "                  and the check-set digest ($CHECK_SET) — nothing to do (FORCE=1 to rebuild)."
     exit 0
@@ -203,7 +260,11 @@ done
   echo "# Local oracle provenance — what is installed in this output/ tree right now."
   echo "# Authoritative committed anchor lives in tools/oracle-pin.env. Regenerate via"
   echo "# tools/oracle-bootstrap.sh. core_gate_fingerprint matching the pin => core surface intact."
-  echo "ref                   = ${ORACLE_REF:-HEAD}"
+  # Record what was BUILT, not what was asked for. This said `ref = c1b0708` beside
+  # `commit = cc1970f…` in the fresh-clone test — the pin's name attached to a
+  # different oracle, which is the confusion this whole class is made of.
+  echo "ref                   = ${ARCHIVE_REF}"
+  echo "requested_ref         = ${ORACLE_REF:-HEAD}"
   echo "commit                = $COMMIT"
   echo "built_from            = $SRC"
   echo "core_gate_fingerprint = $CORE_FP   # normalized category set + type floor (AUTHORITATIVE)"

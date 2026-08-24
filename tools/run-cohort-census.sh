@@ -271,6 +271,37 @@ export DEST
 
 CUR_REF="$(awk -F= '/^ref[ \t]*=/{gsub(/[ \t]/,"",$2); print $2; exit}' "$REPO_ROOT/tools/oracle-pin.env")"
 
+# PREFLIGHT — is the INSTALLED oracle the pinned one? (added 2026-08-23)
+#
+# `ref` above is used only as a LABEL: it stamps the roster and names the run. Nothing
+# here ever compared it to the binary that actually executes, so a census could run a
+# stale or wrong oracle end-to-end and stamp all 45 rows "@ c1b0708" regardless.
+# Measured the same day in a genuine fresh clone: oracle-bootstrap warned and installed
+# a cc1970f build anyway, and that binary is missing all three CAP checks that are this
+# release's entire finding — every peer would have come back green.
+#
+# check-set-gate.py does catch it afterwards, from the reports' executed digest, and
+# this script already runs it. But it catches it as "42 peers are not comparable",
+# which reads as a peer problem and sends you looking in the wrong place after a
+# multi-hour run. Ask the cheap question first, before spending the hours.
+PIN_CS="$(awk -F'= *' '/^check_set_digest/{print $2; exit}' "$REPO_ROOT/tools/oracle-pin.env" | awk '{print $1}')"
+PROV="$REPO_ROOT/output/s4-oracles/PROVENANCE.txt"
+if [ -n "$PIN_CS" ] && [ -f "$PROV" ]; then
+  HAVE_CS="$(awk -F'= *' '/^check_set_digest/{print $2; exit}' "$PROV" | awk '{print $1}')"
+  if [ -n "$HAVE_CS" ] && [ "$HAVE_CS" != "$PIN_CS" ]; then
+    echo "census: ERROR the installed oracle is not the pinned oracle — refusing to run." >&2
+    echo "  installed (output/s4-oracles/PROVENANCE.txt): $HAVE_CS" >&2
+    echo "  pinned    (tools/oracle-pin.env):             $PIN_CS" >&2
+    echo "  A census against this binary would produce numbers that are not comparable" >&2
+    echo "  to CONFORMANCE-MATRIX.md, and would stamp the roster '@ $CUR_REF' anyway." >&2
+    echo "  Run tools/oracle-bootstrap.sh (it now refuses a mismatched build too)." >&2
+    exit 3
+  fi
+elif [ ! -f "$PROV" ]; then
+  echo "census: WARN no output/s4-oracles/PROVENANCE.txt — cannot confirm the installed" >&2
+  echo "  oracle matches the pin. Run tools/oracle-bootstrap.sh first." >&2
+fi
+
 PEERS=("${ARGS[@]+"${ARGS[@]}"}")
 if [ "${#PEERS[@]}" -eq 0 ]; then
   if [ -n "$STALE_ONLY" ]; then

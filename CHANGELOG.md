@@ -1,0 +1,178 @@
+# Changelog
+
+All notable changes to this project are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+Work since the initial public research-preview. No release has been cut; this section is a
+running record, not a version claim. **`CONFORMANCE-MATRIX.md` is the authoritative per-peer
+state** — the entries here are a summary of what moved and why, and they defer to it on numbers.
+
+### Tier M2 complete (2026-08-22) — **13 of 45 peers publishable**, and the CAP-6a fail-open has two mechanisms
+
+- **Tier M2 is 8/8 at `--profile core` 0-FAIL**, so M1 and M2 are both complete and **13 peers are
+  publishable, up from 5.** `rust` `python` `java` `kotlin` `elixir` at `755 · 0F —
+  312P/337W/0F/106S`; `common-lisp` at `755 · 0F — 311P/338W/0F/106S`; plus `typescript`
+  (`312P/337W`) and `csharp` (`313P/336W`). All six new reports are check-set-comparable with zero
+  `budget_exhausted` categories.
+- **`typescript` (84F) and `csharp` (INVALID) were ONE defect, not two.** Both were §6.3's missing
+  `400 non_canonical_ecf`; the only difference is what the peer does with the connection after
+  refusing. `typescript` **closes** → every later check fails instantly → 84F on a valid, complete
+  755-check run. `csharp` **drops and holds the connection open** → every later check waits out a
+  timeout (CAP-6a alone: 120 060 ms) → budget expires, 9 categories never run → quarantined as an
+  INVALID measurement with a *smaller* FAIL count (52). **The hang-form is strictly harder to see:
+  it scores lower and files under "harness problem."** The diagnostic that resolved it was cheap —
+  compare the first-FAIL index and first-transport-error index against a peer known to carry the
+  defect; identical (558/559/560, onset 563) means same bug. `csharp`: 18 m 20 s → **7.2 s**.
+- **CAP-6a's fail-open has TWO mechanisms, and the grep that catches one misses the other.** M1
+  found only the first. **Null-collapse** (`rust`, `python`, `elixir` + all five M1 peers): the
+  accessor answers the same "nothing" for absent and for present-but-negative, so the check is
+  **skipped**. **Arithmetic fail-open** (`java`, `kotlin`, `common-lisp`): `Cbor.uint` returns the
+  `BigInteger` of *any* int, `entity-uint` is `(when (integerp v) v)` — a negative flows straight
+  through, so the check **is not skipped; it runs and returns the wrong answer**, because
+  `now < not_before` is false for a negative `not_before`. No null, no `Option`, no skip. **The
+  invariant is the ordering, not the null-handling:** a representability check must run *before* the
+  range comparison in either shape. Both greps are named in `AGENTS.md`.
+- **§6.3 is not optional even when the FAIL count is already zero.** `rust` and `common-lisp` reached
+  0F while still scoring CAP-6a **WARN**: the `>2^64` half can only arrive as a major-type-6 tag and
+  is rejected at decode, so it needs the §6.3 answer to be *scored* as a refusal at all.
+- **The fix shape did not change once across thirteen languages** — ~200 lines over 5–6 files, the
+  same five places (capability mint, codec salvage, wire 400, read loop, policy lookup). That
+  invariance is itself evidence the spec reading is right, not merely that the tests pass.
+- **Tooling fix:** `check-set-gate.py`'s `output/scratch/reverify/` overlay was **unconditional**,
+  and that directory is scoped to neither a run nor a pin. Three reports left there on 2026-08-17 at
+  the retired 740-check pin outranked the fresh 755-check census indefinitely,
+  condemning `node-red`/`rust-wasm`/`rust-wasm-wasmtime` as non-comparable — **7 bad peers reported
+  where the truth was 4**, on four-day-old evidence. The overlay now applies only when *newer* than
+  what it would replace. **An input that predates what it supersedes is not an override, it is drift.**
+- **Committed per-peer reports had drifted a pin behind the matrix — found AND fixed this session.**
+  Every tracked `protocol-generator/<lang>/status/CONFORMANCE-REPORT.{md,json}` was at the retired
+  740-check set or older (38 at 740, 4 at 682, 1 at 645, none at 755); several `.md` files still led
+  with two-pins-ago banners quoting `552`/`576` totals. §1 of the matrix was never wrong —
+  it is census-backed — but **a clone showed each peer's own committed report contradicting its
+  published row**, and nothing gated those files. The cause was structural, not an oversight:
+  `run-cohort-census.sh` deliberately never writes tracked reports (a census must not silently
+  rewrite 45 signed-off records) and `output/` is gitignored, so no driver could refresh them.
+  **Fixed three ways:** `run-cohort-census.sh --to-status` adds the missing destination to the *same*
+  per-peer dispatch table (explicit opt-in, never the default — a second copy of that table is how
+  the destinations would drift apart again); all **13 publishable peers were re-measured** against the
+  pinned oracle, each reproducing its published number exactly (13/13 comparable); and
+  `tools/check-set-gate.py --tracked` — now run by `make lint` — fails if a peer published as 0-FAIL
+  carries a report from an older check set. Regression-tested by planting a 740-check report on `go`.
+  That gate also fixed a real bug of its own: `collect()` keyed reports by path stem, and every
+  tracked report is named `CONFORMANCE-REPORT.json`, so 45 peers collapsed to a single entry.
+  The 32 unfixed peers' reports remain behind **by design** — they owe the *fix*, not the paperwork,
+  and rejoin the gated set as the CAP fix reaches them. **Refreshing a tracked report is a
+  MEASUREMENT — never hand-copy a census JSON onto one.**
+
+### Release re-pin (2026-08-21) — both anchors moved, **M1 fixed, re-pin landed, full cohort re-measured**
+
+- **Spec snapshot re-pinned `v0.8.0` → `v0.8.2`** (`protocol-generator/shared/spec-data/v0.8.2/`,
+  a verbatim `cmp`-verified copy from `entity-core-protocol`, SHA-256-pinned per file in the snapshot's `MANIFEST.md`). **No peer has been
+  regenerated against it yet** — that is a tracked gap; `pd`'s F37 `system/identity/peer-id` debt
+  (3 files, the only peer affected, grep-verified) is its one known consequence.
+- **`GUIDE-CONFORMANCE.md` is now pinned by hash** (`7d59fee6…`, `Status: Draft`) in that
+  snapshot's `MANIFEST.md`. It stays out of `spec-data/` (non-normative, arch-owned), but
+  "operator-carried" meant *unpinned* while every generated peer derives its conformance
+  scaffolding from it — so no generation was reproducible. Now it is.
+- **Oracle re-pinned — the 740-check set `8537d875…` → the 755-check set `95edd774…`.** 18 declared checks added; **5 gate `--profile core`,
+  all in the `capability` category** (CAP-5, CAP-6, CAP-6a, CAP-2/3, CAP-7), the other 13
+  extension-only. Attributed by resolving each check to its category *constant* and testing that
+  against `coreProfileCategories` — never from commit messages. `core_gate_fingerprint` stayed
+  byte-identical for the **fourth** consecutive time in this shape.
+- **`--tier M1` re-run: all 5 peers FAILED, and all 5 were then FIXED** — `go` `haskell` `lean`
+  `ocaml` `swift` now sit at **`755 · 0F — 312P/337W/0F/106S`**, identical across the five.
+  `tools/tier-status.py --gate` exits 0; **the re-pin is landed.**
+- **The failures were never regressions — they were a spec feature nobody had implemented.** §5.6's
+  MIN_DEFINED temporal ceiling was **absent in every peer**: `mintToken` set no `expires_at` at all,
+  so a `request`-minted ROOT token had no lifetime bound. No vector exercised it until this pin.
+  Three defect classes came out of the fix, each ratcheted in `AGENTS.md` with an enforcement point:
+  **(1)** §6.3's *"Rejection returns `400 non_canonical_ecf`"* — every peer rejected an undecodable
+  frame and then said nothing, and on a peer that closes, one bad frame kills the connection (that
+  is `lean`'s 81 cascade FAILs, and `typescript`'s 81); **(2)** CAP-6a fails **OPEN** because the
+  idiomatic accessor collapses "absent" and "present but not a uint", so a capability with
+  `expires_at: -1` skipped the expiry check and was honored with 200 — three of five peers;
+  **(3)** `swift` only, §5.5a's per-link granter frames scope the **resource dimension only**, and
+  over-applying them made a universal parent grant cover no child grant the moment a delegated cap
+  arrived.
+- **Full 45-peer census then run at that pin** — so every cell in `CONFORMANCE-MATRIX.md` is a
+  fresh measurement at one pin, and the two-pin split is gone. **31 of the 40 unfixed peers fail
+  nothing but the new CAP checks** (29 at exactly 3F with a byte-identical breakdown, 2 at 2F):
+  **one missing feature measured 31 times, not 31 defects.** `typescript` 84F is 3 real + 81
+  cascade (lean's defect); `cobol` 30F is the CAP trio plus its standing 27. **Four peers produced
+  INVALID MEASUREMENTS** — `csharp` (new at this pin, 698/755) and the `asm`/`riscv64` trio
+  (714/755), all starved; quarantined, not scored.
+- **Tooling fix (found by arch):** `check_set_digest` was computed over `git archive` of
+  `cmd/internal/validate`, which **includes `_test.go`** — so the anchor this repo makes
+  authoritative for carry-forward was hashing go's test fixtures, and a fixture edit could order a
+  45-peer census. Measured: the old method moved `ca0c988f… → 3e749f37…` while the real declared
+  set was identical at 1137 names. Fixed via a non-test path filter. Digests recorded before this
+  fix are **not** comparable to ones after it.
+
+### Conformance oracle
+
+- Re-pinned four times, ending at the current 755-check set `95edd774…`. (The intermediate pins
+  are recorded by content in `tools/oracle-pin.env`; the commit hashes they were built from are
+  internal and resolve for no public reader — [ADR-0012] Amendment 1.)
+  Each carried a full cohort re-measurement. `tools/oracle-pin.env` records what moved at every
+  step — including the 2026-08-21 note that `check_set_digest` values before the test-file fix are
+  not comparable to ones after it.
+- **`check_set_digest` added alongside `core_gate_fingerprint`, and both are now required to
+  match** before `oracle-bootstrap.sh` will call an oracle current. The fingerprint tracks
+  *which categories run*, never *what they assert* — at the 2026-07-27 cutover four hard-FAIL
+  vectors landed inside existing core categories under a byte-identical fingerprint, so the
+  old "same fingerprint ⇒ the verdict carries forward" rule was unsound and is withdrawn.
+
+### Conformance fixes, cohort-wide
+
+- **RT-6 (§4.6 nonce single-use)** — closed on all measured peers. 31 wrong-status peers fixed
+  mechanically; 7 peers had a real anti-replay hole (a replayed authenticate was re-accepted
+  with 200). Root-caused an unrelated unsolicited §4.1 "leg 3" reverse-authenticate,
+  independently implemented and independently buggy in three peers.
+- **F40 (§5.2 typed scope matching)** — closed cohort-wide via the shared id-scope literal
+  matcher (`protocol-generator/shared/scope-matching/`).
+- **§6.2 register-reserved-pattern guard** — a register at a reserved `system/*` pattern must be
+  refused with 403. Normative pre-existing text that no peer enforced, because the oracle's
+  negative-half check did not exist until 2026-08-11. Now enforced by 44 of 45 measured peers.
+
+### Cohort
+
+- Grew well past the original 21 peers; **46 now in the tree, 45 measured, 13 at `--profile core`
+  0-FAIL** — tiers M1 (5, fixed 2026-08-21) and M2 (8, fixed 2026-08-22) — **at the 755-check pin**
+  (the other 32 owe the §5.6 mint-ceiling fix — see the two entries above; they were 40-at-0-FAIL
+  against the superseded 740-check set). Added the ISA ports (`asm-arm64`, `riscv64`), the WebAssembly siblings, the
+  visual-paradigm probes (Node-RED, TurboWarp, Pure Data), the authority-as-query probes
+  (SQL, Datalog), and the alien-substrate sweep (Tcl, Rexx, Forth, Smalltalk, Fortran, APL, Io,
+  Oz, Unison, …). These are **cohort-consistent, not independent convergence** — see the README.
+- `tools/run-cohort-census.sh` added: the first re-runnable cohort-wide driver.
+
+### Known-open (not hidden)
+
+- `asm-x86_64` / `asm-arm64` / `riscv64` — **INVALID MEASUREMENTS** at that pin (714 of 755
+  checks, 7 starved categories each) on top of a connection-pressure failure family.
+  `CONFORMANCE-MATRIX.md` §1a. **These three are why `tools/check-set-gate.py` exits non-zero
+  cohort-wide (42/45 conforming); that exit code is the expected, documented state, not a
+  regression.** *(`csharp` was a fourth at this pin until 2026-08-22, when it was root-caused as
+  `typescript`'s §6.3 defect in its hang-form and fixed — §1c.)*
+- ~~`typescript` 84F~~ **fixed 2026-08-22** — it was 3 real FAILs + 81 cascade from one
+  connection-killing §6.3 defect, the same one `lean` had. Now `755 · 0F`. `CONFORMANCE-MATRIX.md` §1b.
+- ~~Per-peer `status/CONFORMANCE-REPORT.{md,json}` records one pin behind, cohort-wide~~ **fixed
+  2026-08-22 for all 13 publishable peers**, and now gated by `make lint`
+  (`check-set-gate.py --tracked`). The 32 unfixed peers' reports stay behind by design — they owe
+  the CAP *fix*, not the paperwork. See the 2026-08-22 entry above and matrix §3.
+- **`python` and `kotlin` unit suites were not run** in the M2 pass — they need pytest / Gradle-plugin
+  downloads and the toolchain images are sealed offline. A pre-existing environment limit, not a
+  regression, and explicitly not claimed as run. Their 755-check `--profile core` conformance runs are
+  the actual gate and are 0F. Suites that did run: `rust` 37/37, `elixir` 28/28, `java` smoke 11/11,
+  `common-lisp` smoke PASS.
+- **`common-lisp` scores one WARN off the cohort** (311P/338W vs 312P/337W):
+  `concurrency/t1_1_concurrent_demux` reports no parallel speedup under load, reproduced on two
+  consecutive runs. The check names itself informational and explicitly **not** a §6.11 violation, so
+  it does not gate — but it is a real difference and it is in the matrix row, not hidden.
+- **`go`'s `concurrency/t1_2_concurrent_reentry`** failed once in a census run and passed 3/3
+  isolated plus on the re-run. Load- or timing-dependent, not root-caused, in no published cell.
+- `cobol` carries a standing 27-FAIL liveness cascade. `apl` is upstream-blocked and unmeasured.
+- `turbowarp` remains an exploratory, non-deployable probe and is not gated.

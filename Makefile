@@ -147,6 +147,16 @@ lint:
 	@# reported but do not fail the gate (disclosed debt, matrix §3); the gated set is
 	@# the publishable one, so this can only ratchet tighter.
 	@python3 tools/check-set-gate.py --tracked --quiet
+	@echo "lint: gating PUBLISHED conformance anchors (read-only)…"
+	@# Third root-level invariant. A published number must be anchored by a digest of
+	@# the oracle's content, not by a commit: [ADR-0027] authors published commits fresh
+	@# at the release boundary, so a dev SHA resolves for no outside reader. We learned
+	@# this on 2026-07-10 when go's mirror rewrote history and killed the pinned e8524ed,
+	@# built core_gate_fingerprint in response, and then left the documents citing the
+	@# commit for six more weeks. This gate watches the two ways the content anchor stops
+	@# being trustworthy: the §1 pin column reverting to a commit, and a hand-copied
+	@# 64-hex digest drifting from tools/oracle-pin.env (which no human proofreads).
+	@python3 tools/pin-gate.py --quiet
 
 # fmt = autoformat (writes). Intentionally a no-op: generated source is formatted
 # by its own toolchain, and spec-data/<version>/ is a SHA-256-pinned immutable

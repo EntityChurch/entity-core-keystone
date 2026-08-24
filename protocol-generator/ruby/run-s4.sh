@@ -9,7 +9,7 @@
 #
 #   ./run-s4.sh            # validate-peer --profile core; writes status/CONFORMANCE-REPORT.json
 #
-# Oracle pin: entity-core-go @75c532e, vendored + built into
+# Oracle pin: entity-core-go at the pinned oracle digest, vendored + built into
 # output/s4-oracles/{validate-peer,entity-peer} (gitignored). See
 # status/PHASE-S4.md for the build isolation procedure. The §10.2 origination-
 # core probe (reference-peer-gated) runs separately via ./run-origination-core.sh.
@@ -23,6 +23,17 @@ IMAGE="entity-core-keystone/ruby-toolchain:latest"
 WORKDIR="/work/protocol-generator/ruby"
 PORT="${PORT:-7777}"
 ORACLE="${ORACLE:-/work/output/s4-oracles/validate-peer}"
+
+# Preflight: the oracle must actually be there. The run below ends in `|| true` so a
+# conformance FAIL does not abort the harness — but that also swallowed a MISSING
+# binary, and the script exited 0 having validated nothing. Measured 2026-08-23: a
+# fresh clone with no sibling entity-core-go printed one "No such file or directory"
+# line and exited 0, i.e. the documented Quick-start command appeared to succeed.
+[ -x "$ORACLE" ] || { echo "run-s4: ERROR conformance oracle not found at $ORACLE" >&2
+  echo "  The oracle is a gitignored local tool built from the sibling entity-core-go" >&2
+  echo "  repo. Clone it NEXT TO this one, then run tools/oracle-bootstrap.sh." >&2
+  echo "  See the Quick start in README.md." >&2
+  exit 3; }
 JSON_OUT="${JSON_OUT:-/work/protocol-generator/ruby/status/CONFORMANCE-REPORT.json}"
 
 podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WORKDIR" "$IMAGE" \

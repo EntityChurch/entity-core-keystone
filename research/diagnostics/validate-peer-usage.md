@@ -39,7 +39,7 @@ Flags:
 | `-category name` | Run only this category; otherwise runs all |
 | `-exclude cats` | Comma-separated categories to exclude (useful: `-exclude tree_operations,local_files` for extension-free peers) |
 | `-reference-peer host:port` | Known-good reference for origination (A-role) tests; single-peer mode can't catch outbound-dispatch bugs without it |
-| `-timeout duration` | **GLOBAL** budget for the whole run, not per-category. **Default is `10m` at the `de8f807` oracle** (it was `60s` at earlier pins — always confirm with `validate-peer -h`, don't trust a written-down default). When it expires mid-suite, the remaining categories are recorded as `budget_exhausted` and **never run** — see "Budget starvation" below. |
+| `-timeout duration` | **GLOBAL** budget for the whole run, not per-category. **Default is `10m` as of the 740-check pin (`8537d875…`) and unchanged at the current 755-check pin** (it was `60s` at earlier pins — always confirm with `validate-peer -h`, don't trust a written-down default). When it expires mid-suite, the remaining categories are recorded as `budget_exhausted` and **never run** — see "Budget starvation" below. |
 | `-verbose` | Wire request/response traces on stderr |
 | `-failures-only` | Suppress passing checks; show only FAIL/SKIP/WARN |
 | `-json` | JSON to stdout |

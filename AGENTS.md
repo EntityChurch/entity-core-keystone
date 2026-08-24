@@ -1,0 +1,973 @@
+
+# entity-core-keystone — AGENTS.md
+
+Read **AGENTS-STANDARD.md** first. This file adds entity-core-keystone specifics.
+
+## Overview
+
+The **canonical conformance anchor** for the ecosystem (provided, not mandatory — anyone
+may build a ground-up implementation instead). The `/entity-rosetta` generator skill
+produces a full core-protocol peer (`entity-core-protocol-<lang>`) for any target language
+from the pinned spec snapshot + conformance oracles + per-language profiles. **Generating
+peers is the means; spec refinement is the end** — every run surfaces spec ambiguities that
+feed back to architecture. A generated peer is *done* when the oracle loop says so
+(statistical convergence on conformance — see the shared standard), not when it is provably
+bug-free; other language communities pull it in and surface the rest.
+
+Also owns the **codec C-ABI**: a language-agnostic contract (`ffi-generator/c-abi/spec/`)
+with interchangeable implementations (`entity-core-codec-ffi-{rust,c}`), all building the
+same `libentitycore_codec.{so,dylib,dll}` + `entitycore_codec.h` (provenance via
+`ec_impl_info()`, not the filename). Languages without mature canonical-CBOR + Ed25519
+stacks consume it; native-codec languages cross-check against it.
+
+Out of scope: standard-extension implementations (TREE, CONTENT, IDENTITY, ATTESTATION,
+QUORUM, REGISTRY, RELAY). Community installs those atop the generated peer.
+
+## How we work here — tier **CORE**
+
+This repo runs the entity-OS methodology at the **Core** tier — the framework is
+`METHODOLOGY.md` (injected, identical everywhere; read it once). Conformance gates the wire
+here. It does **not** catch process drift, stale build-state claims, unaccounted accumulation,
+or a discipline quietly eaten by a competing legitimate pressure. Those need the ratchet.
+
+What binds today:
+
+- **Universal disciplines D1–D12** (`METHODOLOGY.md` §4) — apply as written; nothing to re-derive.
+- **The review questions** (§6) — run on every diff.
+- **The Audit Doctrine A0–A12** (§7.2) — open it for *"Y is broken"* or *"something feels
+  wrong,"* including when the thing that feels wrong is our own process. **A1 is the prime:
+  trace a value before you theorize.** The Foundation Audit Doctrine (§7.3) when opening a new
+  surface to design against.
+- **The ratchet** — every audit ends by syncing what it taught into this file, same session.
+  **If it didn't land here, it didn't land.**
+- **The promotion ladder** (§3) — bit us once → an anti-pattern entry; a second time in a
+  different shape → a ratified discipline. Candidates are applied, not yet claimed to generalize.
+  **A discipline with no enforcement point is theater** — name the grep, the lint rule, or the
+  gate test.
+
+**Owed:** a standing `DISCIPLINE-*` doc assembling this repo's own rules with an anti-pattern
+catalog. The disciplines that bind hardest here are the **honesty** ones ([ADR-0012],
+`METHODOLOGY.md` §4 D8/D10), because this repo is the conformance anchor and an overclaim from
+here propagates to every implementer: every number oracle-pinned with its P/W/F/S breakdown and
+never a bare percentage; a skip counts as a failure; never label a failure "pre-existing"
+without bisecting; and **cohort-consistent is not independent convergence** — a cohort of
+generated peers all passing one author's vectors shares a generation lineage, and that
+distinction is stated precisely or not at all.
+
+## Setup / environment
+
+- **Containers everywhere (Podman, no host writes).** Every build, test, and conformance
+  run happens inside a per-toolchain `containers/<toolchain>/` image (`fedora:43` base; e.g.
+  `containers/base/`, `containers/go/`, `containers/lean-toolchain/`). No host filesystem
+  writes outside the working tree's `output/` dirs; use the `make extract` pattern to pull
+  outputs back out for inspection. **Cap resources on every podman run/build** (the
+  `PODMAN_BUILD_CAPS`/`PODMAN_RUN_CAPS` `--memory`/`--memory-swap` ceilings; `CAP_SWAP ==
+  CAP_MEM` → a runaway container is OOM-killed cleanly at the cap instead of dragging the
+  host into swap; tune per-host via `caps.local.mk`, see `RESOURCE-CAPS.md`).
+- **Pin dnf packages to Koji, not just an exact NVR.** Every `containers/*/Containerfile`
+  pins exact Fedora RPM NVRs (`gcc-15.2.1-7.fc43`), but the `fedora`/`updates` dnf repos only
+  carry the CURRENT + recent build of each package — once a newer build ships, the pinned
+  NVR vanishes from the repo metadata and `dnf install` dies with `No match for argument`,
+  months (2026-07-27: eleven images) or even **hours** (`clang` 21.1.8-4→6.fc43 rotted mid-
+  session the same day) later, with no warning until the next rebuild. **Koji** — the build
+  system that produces those RPMs — retains every NVR ever built, forever, at a stable URL
+  (`https://kojipkgs.fedoraproject.org/packages/<source-pkg>/<ver>/<rel>/<arch>/<binary-
+  pkg>-<ver>-<rel>.<arch>.rpm`); fetching the volatile packages (gcc family, binutils, rust
+  family, dotnet-sdk — anything that has ever rotted) from there via `containers/koji-
+  fetch.sh` instead of `dnf install <NVR>` makes the pin reproducible from any machine,
+  indefinitely, no machine-local cache required. `<source-pkg>` is the SRPM name, not always
+  the binary name (gcc/gcc-c++/libstdc++*/libasan/libubsan ⇐ `gcc`; rust/cargo/clippy/
+  rustfmt ⇐ `rust`; clang/libcxx* ⇐ `llvm`, NOT `clang`; dotnet-sdk-9.0 ⇐ `dotnet9.0`) —
+  verify with a HEAD request before assuming otherwise. Koji's raw archive predates distro
+  GPG signing, so integrity rides on a SHA-256 recorded at fetch time (the same trust model
+  already used for the Nim/APL source tarballs), not GPG. Packages that haven't yet been
+  observed to rot stay on a plain `dnf install <NVR>` pin; convert them the same way the
+  first time they do.
+- **Per-language worktree model:** each target lives under `protocol-generator/<lang>/`
+  (generated `src/`, `profile.toml`, `templates/`, `status/`, `reference/`, `run-s4.sh`,
+  `run-origination-core.sh`). Shared, language-agnostic inputs are in
+  `protocol-generator/shared/`.
+- **Three-arm split** — each arm owns its own status; cross-arm coordination flows through
+  `research/`:
+
+  | Arm | Owns | Lives in |
+  |---|---|---|
+  | protocol-generator | Per-language full-peer generation; profile authoring; per-language status + ambiguity logs | `protocol-generator/<lang>/` |
+  | ffi-generator | FFI binding generation (codec FFI first; future WASM) | `ffi-generator/<shape>/` |
+  | research | Landscape eval, validate-peer + diagnostics knowledge, stewardship + escalation | `research/` |
+
+## Build & test
+
+User-facing surface is the `/entity-rosetta` skill (`skills/entity-rosetta/` — a
+tool-neutral Agent-Skill, not in a vendor dir; any SKILL.md-aware agent can run it):
+
+```
+/entity-rosetta <lang>                 # full S1 → S5 pipeline
+/entity-rosetta <lang> --phase codec   # codec layer only
+/entity-rosetta <lang> --phase peer    # peer machinery only
+/entity-rosetta <lang> --phase verify  # conformance only
+/entity-rosetta --profile-only <lang>  # S1 only: research + author profile
+/entity-rosetta --list                 # status across all language targets
+```
+
+Two conformance **oracles** are ground truth (built from `entity-core-go`, see Boundaries):
+
+- **`wire-conformance`** — pure codec oracle (lower bar). Codec + types must pass
+  byte-identical to `entity-core-codec-ffi`.
+- **`validate-peer`** — live-peer oracle (higher bar). Full peer passes the extension-free
+  categories; driven per language via `run-s4.sh`.
+- **`--profile core` is the gating profile** (extension-free categories); `--profile full`
+  exists for full peers. Run a single category with `validate-peer ... -category <name>`
+  (e.g. `-category multisig`, `-category type_system`).
+- Reference peer `entity-peer` + the oracle binaries are rebuilt from `entity-core-go` HEAD
+  with `CGO_ENABLED=0 GOWORK=off` in `containers/go` (`cmd/` is its own module with local
+  `replace`; without `GOWORK=off` the workspace forces `-mod=mod` errors). They are
+  gitignored local tools placed in `output/s4-oracles/` — **not auto-rebuilt**, so when arch
+  adds validator vectors the vendored binary is stale and silently runs the OLD check set;
+  always rebuild from go HEAD and verify the new vectors compiled
+  (`strings .../validate-peer | grep <vector_name>`).
+- **The core-gate FINGERPRINT does not certify the gate — the CHECK-SET DIGEST does.**
+  `core_gate_fingerprint` hashes the category set + type floor, i.e. *which categories run*.
+  It is blind to *what those categories assert*. Measured at the `cc1970f → af8a582`
+  bucket-B cutover: four hard-FAIL vectors were added **inside existing core categories**
+  (`connectivity/handshake_nonce_single_use`, `authz/f40_id_scope_{exclude_literal,
+  include_no_overgrant}`, `concurrency/t1_4_frame_write_atomicity`), most of the cohort
+  flipped PASS → FAIL, and the fingerprint stayed **byte-identical** (`8261a033…`). So
+  "same fingerprint ⇒ the verdict carries forward" is unsound and is withdrawn.
+  `tools/oracle-pin.env` now also carries `check_set_digest` (sorted set of declared check
+  names); `oracle-bootstrap.sh` requires **both** to match before it says "nothing to do"
+  — comparing the fingerprint alone would have declared a stale oracle current and run the
+  old check set over all 43 peers.
+- **Never raise `-timeout` to make a red run green — and read the human output, not just the
+  JSON, to find out whether the budget held.** `-timeout` is a **GLOBAL** budget, not
+  per-category. **Its default is `10m` as of the `de8f807` oracle** (verify with
+  `output/s4-oracles/validate-peer -h | grep -A2 timeout` — it was 60 s at earlier pins, and
+  this file recorded 60 s until 2026-08-17; the nine harnesses once flagged for defaulting to
+  5–15 min are mostly at-or-under the current default, so re-check before citing that as drift).
+  Record the budget a run used alongside its P/W/F/S, or the number is not comparable.
+  **The starvation asymmetry is the trap** (2026-08-17, asm/ISA trio — `research/stewardship/
+  SESSION-2026-08-17-asm-budget-starvation.md`): when the budget expires mid-suite the oracle's
+  *human* output shouts `!! WHOLE CATEGORIES NEVER RAN … this is coverage loss, not a slow
+  peer`, but the *JSON* files those categories under `skipped` — so `{"failed": 1}` is all a
+  summary-only reader sees. One hung check (`t2_2_connection_churn`, 599 s of a 600 s budget)
+  starved **seven** categories including the core `resource_bounds`, hiding **two more real
+  core FAILs**. Grep any census JSON for `budget_exhausted` before trusting its summary; a
+  starved run is an **incomplete measurement**, and its P/W/F/S is a floor, not a result.
+  Raising `-timeout` to *surface* a starved category as a one-off diagnostic is legitimate and
+  is not what this rule forbids — but prefer `-category <name>`, which drives the hidden
+  categories directly in seconds instead of re-running the whole suite behind the hang.
+- **An anchor is only as good as its INPUT — `check_set_digest` was reading go's test fixtures.**
+  Found by arch 2026-08-21 (`ROUTING-2026-08-21-m` §3), measured here before fixing.
+  `oracle-bootstrap.sh` computed the digest over `git archive <ref> cmd/internal/validate | tar -xO`,
+  and **`git archive` of a DIRECTORY includes `_test.go`** — so the anchor this repo makes
+  *authoritative for carry-forward* ("Both must match, or the cohort re-runs") was hashing test
+  fixtures alongside real checks. **A test fixture could order a 45-peer census.** Measured
+  `d697b9a → c1b0708`: directory-with-tests moved `ca0c988f… → 3e749f37…` while the non-test declared
+  set was **identical at 1137 names both sides**; the entire move was three strings in
+  `runner_test.go` (`before_gate`, `behavioral_body_ran`, `behavioral_root`), none of which exists in
+  the built binary. **Fixed** — `validate_sources()` enumerates non-test `.go` paths explicitly.
+  The generalizable half: `core_gate_fingerprint`, one function down, had normalized against exactly
+  this class for months (hash the *semantic content*, not the raw bytes) and **the normalization was
+  never carried across to the neighbouring anchor** — when you harden one anchor, check its siblings
+  for the same defect the same day. **Rule: a file the built oracle cannot contain must not be able to
+  move the pin.** Enforcement: the path filter in `validate_sources()`; regression-test it by adding a
+  `.Declare("x")` inside any `_test.go` and confirming the digest does not move. **Comparison
+  consequence:** every digest recorded before this fix (`43c23708…`, `3cfd272f…`, `f3a1516d…`,
+  `8574f9d6…`) used the old method and is NOT comparable to a new one — `de8f807` recomputed under the
+  new method is `06ca8e10…` (1120 names). Never diff across the method boundary.
+- **RATIFIED (third occurrence — and a FOURTH landed 2026-08-21 at `de8f807 → c1b0708`): an upstream
+  that is "all extension work" can still move the
+  core gate through ONE file — attribute new checks BY CATEGORY, never by commit message.**
+  Measured 2026-08-20 at `de8f807 → d697b9a`: 60+ go commits whose subjects are almost entirely
+  REGISTRY/REVISION/subscription work (`registry v1.19`, daily three-way rounds with arch), which
+  reads as "extension churn, the pin is fine." It is not. `check_set_digest` moved
+  `43c23708… → ca0c988f…` (1139 → 1156 declared checks) and **5 of the 17 new checks are inside
+  the core `capability` category** — the 0.8.1 CAP fold's (r)–(v) plus the later CAP-6a ingest
+  check (`configure_empty_grants_withdrawal`, `configure_rejects_base58_partial_prefix`,
+  `request_mint_temporal_ceiling`, `request_ttl_zero_and_overflow`,
+  `ingest_rejects_unrepresentable_expiry`). `core_gate_fingerprint` stayed byte-identical
+  (`8261a033…`) for the **third** time in this exact shape (`cc1970f→af8a582`,
+  `fceb61f→de8f807`, now this) — the pattern is reliable enough to plan around: **new hard
+  checks land inside EXISTING core categories, so the fingerprint never moves.**
+  **Enforcement, cheap and exact:** diff declared check names *per file*, then map each file to
+  its category constant and test that constant against `coreProfileCategories` in
+  `cmd/internal/validate/profile.go` — a file whose `cat…` const is not in that map cannot gate,
+  and one that is, does. Nine files changed here; only `capability.go` was in the core set.
+  Do NOT reason from `git log --oneline`, and do not treat a quiet-looking subject line as
+  evidence. (Corollary, same session: **a sibling-repo audit conclusion has a shelf life of
+  hours when the sibling is actively moving.** Our `4d47573` audit read arch at `cb5df2c` and
+  correctly concluded "we owe nothing yet"; the CAP fold landed at `bdb48f2` **83 minutes
+  later**. Record the sibling HEAD an audit was taken against — `4d47573` did — and re-resolve
+  it at sign-off, not at audit time.)
+- **`-category <name>` OVERRIDES the `--profile core` carve-out — a category driven directly is NOT
+  the same measurement as that category inside a core run.** Cost real time 2026-08-21 while
+  diagnosing `lean`: `run-s4.sh -profile core -category tree_operations` ran the EXTENSION-TREE ops
+  (snapshot/diff/extract/merge) that `--profile core` skips wholesale, producing 29 FAILs that look
+  like a catastrophic regression and mean nothing — the peer is a core peer and correctly does not
+  implement them. Naming a category forces its whole check set regardless of profile. This does not
+  retract the standing advice to drive a starved category with `-category` instead of re-running the
+  suite — it sharpens it: **read such a run for the specific check you are chasing, never for its
+  Summary line**, and never compare its P/W/F/S to a `--profile core` row.
+- **`output/scratch/census/` is NOT scoped to the last run — stale per-peer JSONs from earlier
+  censuses sit beside the fresh ones.** A `--tier M1` run leaves the other 40 peers' files untouched,
+  so `grep -l budget_exhausted output/scratch/census/*.json` returns the `asm`/`riscv64` trio from a
+  *previous* census and reads exactly like "this run starved." Scope every census-wide grep to the
+  peers the run actually measured (or check mtimes) before drawing a conclusion from it — the
+  starvation check itself is mandatory and unchanged, but it must be asked of the right files.
+- **A source grep is not a conformance census.** The bucket-B RT-6 audit was grep-derived
+  and was wrong in both directions once measured: `ruby` was listed as having no
+  established-gate yet returns 409; `sql` carries the 409 string yet returns **200**;
+  `rust-wasm`/`rust-wasm-wasmtime` carry neither string yet return **401** (they are thin
+  transport seams over the `rust` crate and inherit its fix — corroboration, not independent
+  data points). Ask the running peer.
+- **Peer startup convention: `--name NAME`** loads the peer's Ed25519 identity from
+  `~/.entity/peers/NAME/keypair` (entity-core PEM = base64 of a 32-byte seed) — persistent
+  identity + peer-manager interop. `--validate` enables the `system/validate/*` conformance
+  handlers, **off by default** (`dispatch-outbound` is a standing dialer, never live in
+  production). `--debug-open-grants` is the degenerate seed policy `default→*`, deprecated.
+- **Origination-core probes are reference-peer-gated** — a single-peer `run-s4` honest-SKIPs
+  them; run them via `run-origination-core.sh`.
+
+**No green report → no publish** (the shared standard's conformance gate).
+
+## Project structure
+
+Per-language layout under `protocol-generator/<lang>/`: `src/` (generated source),
+`profile.toml`, `templates/`, `status/` (`PHASE-S*.md`, `CONFORMANCE-REPORT.{md,json}`,
+`SPEC-AMBIGUITY-LOG.md`), `reference/` (golden drift files), `run-s4.sh`,
+`run-origination-core.sh`.
+
+Shared, language-agnostic — `protocol-generator/shared/`: `spec-data/<version>/` (pinned
+spec snapshot — **`v0.8.2`** is the current pin as of 2026-08-21 (from `entity-core-protocol`
+`106834c`; `v0.8.0` retained as a point-in-time pin, `v7.*` retired at the V8 cutover). **No peer
+has been regenerated against `v0.8.2` yet** — every peer in the tree was generated against `v0.8.0`,
+which is a tracked gap, not an oversight; `pd`'s F37 `system/identity/peer-id` debt is its one known
+consequence. `GUIDE-CONFORMANCE.md` is now pinned BY HASH in that snapshot's `MANIFEST.md`
+(`7d59fee6…`, `Status: Draft`) — it stays out of `spec-data/` (non-normative, arch-owned) but
+"operator-carried" meant unpinned, and peers derive their whole conformance scaffolding from it), `lifecycle/` (S1–S5 phase prompts),
+`seed-policy/` (peer-authority bootstrap convention, keystone-authored). FFI:
+`ffi-generator/c-abi/spec/` (canonical C-ABI), `ffi-generator/<shape>/output/`.
+
+**All-source-in-repo until stabilization** — generated source stays in
+`protocol-generator/<lang>/src/`; FFI outputs in `ffi-generator/<shape>/output/`. Migration
+to per-language sibling repos is deferred until the pipeline stabilizes / package-manager
+friction demands it / a community asks. (FFI impls are *named* as future repos so they lift
+out cleanly.)
+
+The generator's phases are **loose LLM guidance, not a deterministic pipeline** — document
+process as plain prose (a README), don't formalize it into state machines / DAGs / rigid
+gates. Live status lives in each peer's `status/` + `research/stewardship/` session notes;
+`CONFORMANCE-MATRIX.md` (repo root) is the adopter-facing per-peer/tier transparency
+contract — check it (not the dated STATUS narrative) first.
+
+## Boundaries — do NOT modify
+
+- **`protocol-generator/shared/spec-data/<version>/`** — a verbatim, byte-for-byte,
+  **SHA-256-pinned** snapshot of the authoritative normative specs, pinned to a source commit
+  in `MANIFEST.md`. **Architecture's to author.** Never paraphrase, restructure, or "extract
+  facts" into it (a literal copy *is* the maximally faithful reading of the no-paraphrase
+  rule); each `<version>/` is **immutable** once stamped — amendments get a new subdirectory,
+  never an in-place edit.
+- **Conformance oracles never doctored.** If the oracle disagrees with the generated codec,
+  the *generated* code is wrong — fix the code, don't relax the test. Oracle bugs escalate to
+  arch/Go (a `HANDOFF-TO-ARCH-*.md`), never patched here. Derive behavior from the **spec**,
+  not from the oracle's Go source — reading the oracle to match its code inverts the
+  keystone's purpose; spec-vs-oracle divergence is a *finding*. (Authoring against the
+  oracle's *type-registry shapes* is the one legitimate byte-exact exception — those shapes
+  are the spec's type definitions.)
+- **`protocol-generator/<lang>/reference/` golden files** — a drift signal (diff across runs),
+  not a determinism guarantee; never edited to mask a regression.
+- **Never write to the architecture repo** (or any sibling). Reviews, proposals, and feedback
+  go in THIS repo's `research/stewardship/` as `HANDOFF-TO-ARCH-*.md`; architecture pulls them
+  in on its own schedule. A direct cross-repo commit, even with good content, lands as an
+  unprovenanced surprise that can't be cleanly undone — the damage is the broken process.
+- **After any repo-wide mechanical commit** (global find/replace, date-stamp, rename), don't
+  trust the "just docs" framing — re-verify the SHA-256 spec-data pins and machine-consumed
+  values (lockfile build-metadata, Containerfile `ARG …=DATE`, Go pseudo-versions) before
+  accepting. Run such transforms on prose `.md` only.
+- Secrets: never read `config.secret` values (see the shared standard).
+
+## Durable cross-language lessons
+
+Reusable peer-build knowledge worth carrying across runs (the per-session `vNNN` / `peer-sN`
+diary lives in `research/stewardship/`, not here). For the *synthesized* narrative version —
+**what translates across substrates, what needs a seam, what doesn't** — see
+`research/SUBSTRATE-TAKEAWAYS.md`; the bullets below are its operational source:
+
+- **Profile decides; the agent doesn't.** Library, error-model, async-style, naming, and
+  packaging choices are all driven by `profile.toml` + `templates/`. Unauthorized decisions
+  go to the ambiguity log — no picking "the popular logger." No language-specific syntax
+  (Go tags, C# attributes, Rust derives) ever leaks into `shared/`.
+- **No platform CBOR lib suffices for canonical ECF** (incl. Rust `ciborium`, .NET
+  `System.Formats.Cbor`): every peer hand-rolls the shortest-float ladder + recursive
+  major-type-6 tag-reject + length-then-lex key sort on top. This is why a from-spec C codec
+  is reasonable, and why the FFI layer exists.
+- **Integer head-form is a fixed-width artifact, not a protocol property.** Branch the
+  profile by language class: fixed-width ints (OCaml int63 / C# ulong / TS bigint / Zig u64)
+  must carry the head form + self-test `[2⁶³, 2⁶⁴−1]`; bignum languages
+  (Elixir/Python/Ruby/Lisp/Haskell) carry the full range free.
+- **Crypto availability is a spectrum** that the S1 profile must classify: native-stdlib /
+  native-audited-lib-incl-Ed448 (Haskell crypton, Elixir OTP `:crypto`) / native-pure-lang
+  (Common Lisp) / gap → **hybrid-FFI** via `libentitycore_codec` (OCaml/Zig/Swift; Ed448
+  only, Ed25519+SHA stay native). Hybrid-FFI is scoped to an **opt-in sub-library** so the
+  shipped default core peer stays self-contained + FFI-free.
+  **Fifth tier — managed-runtime-NO-C-FFI (Unison #43):** the hybrid-FFI hatch is
+  *structurally unavailable*, so agility can only be pure-language or **deferred** (deferral is
+  fine — Ed448/SHA-384 WARN, they don't gate `--profile core`). Classify this at S1, since it
+  removes the cohort's standard fallback. Sub-case worth its own probe: **a runtime can ship
+  sign/verify and still ship no KEY DERIVATION.** UCM exposes `crypto.Ed25519.sign.impl` /
+  `verify.impl` — and `sign.impl` takes the pubkey as an *argument* — but no keygen, forcing a
+  hand-written GF(2²⁵⁵−19) implementation (base-2¹⁶ limb arithmetic + twisted-Edwards scalar
+  mult + point compression). So at S1 probe for **keygen specifically**, not just "is Ed25519
+  present". And on such a substrate treat the pubkey as *part of the identity* — derived once
+  and carried; exposing `sign(seed, msg)` silently makes every signature pay a full keygen.
+- **Concurrency taxonomy (§7b store-safety) — now FOUR structural shapes:** actor-isolation
+  (Swift/Elixir) *or* STM-transactions (Haskell) satisfy store-safety structurally; raw-thread/image
+  runtimes (Zig/CL) enforce it manually; single-thread event loops (Pd/TurboWarp/**Io**) serialize +
+  cooperatively yield; **dataflow-variable (Oz/Mozart)** is the fourth — a single-assignment variable
+  per pending request, no shared mutable state to guard. The §6.11 handler-outbound demux is ~free on
+  actor/CSP **and dataflow** substrates (the dataflow variable *is* the demux — reader binds it, the
+  handler `{Wait}`s, dispatch never blocks — A-OZ-006), a correlation-map tax on thread/async peers,
+  and a **cooperative-yield** tax on single-thread event loops — factor into effort estimates. On a
+  single event loop every per-request primitive must be non-blocking + non-accumulating (Io's S4 fail
+  was a blocking send + a per-request `try`-coroutine leak, NOT a throughput ceiling — A-IO-025/026).
+  **Algebraic-effects/abilities (Unison #43) is a fifth ROUTE, not a fifth shape** — worth stating
+  precisely rather than inflating: `fork` green threads + a single `MVar` store (`take → pure fn →
+  put`) lands on the *actor* guarantee (one owner, serialized mutation) but reaches it through the
+  effect system rather than a mailbox. §6.11 demux is a per-request `Promise` — the dataflow-variable
+  pattern in a different dress, so it sits with the ~free column, not the correlation-map tax (A-UN-004).
+- **Prototype/delegation substrates: fence dynamic dispatch with the declared-op set.** Where §6.2
+  op-dispatch is a real dynamic message-send (Io `perform`), every inherited slot (`clone`, `type`,
+  `print`) becomes wire-reachable — check the op against the handler's manifest `operations` map
+  *before* sending, and name methods out of the wire namespace (`op_get`, not `get`) (A-IO-004/007).
+- **RATIFIED, cohort-wide, first landed 2026-08-21 in all five M1 peers: §6.3's rejection is a
+  STATUS, not silence — "Rejection returns `400 non_canonical_ecf`" is the second half of the
+  sentence and every peer was ignoring it.** `ENTITY-CBOR-ENCODING.md` §6.3 says implementations
+  MUST reject a frame carrying a CBOR tag in a data field **and** that "Rejection returns
+  `400 non_canonical_ecf`". Every M1 peer did the first half and dropped the frame on the floor for
+  the second — `continue` (go, ocaml), a logged skip (haskell), `break`/close (swift), or a `none`
+  that ended the read loop (lean). §4.9(c) deliver-or-signal says the same thing from the other
+  direction. **Three distinct symptoms, one rule:** (a) the sender blocks until its own timeout, so
+  a refusal is indistinguishable from a dead peer — 60 s of go's CAP-6a check was three of these;
+  (b) the CAP-6a `ingest_rejects_unrepresentable_expiry` check scores it WARN, because a
+  transport-level drop is a refusal but not the §5.2 disposition; (c) on a peer that *closes*
+  instead of dropping it takes the whole connection with it — **that is where lean's 81 cascade
+  FAILs came from.** *(The bignum shape can only reach a peer as a major-type-6 tag, so this is the
+  only way CAP-6a's `>2^64` half is reachable at all.)*
+  **Implementation shape, identical in all five:** keep the strict decoder byte-unchanged, add a
+  salvage decode that yields/unwraps the tag instead of erroring, use it ONLY to recover
+  `request_id`, answer 400, and keep serving. The frame is still rejected — no entity is built,
+  nothing stored, the tag never interpreted — so §6.3's MUST NOT strip / preserve / interpret all
+  still hold, and the `tag_reject` wire-conformance vectors keep their meaning because the
+  ingestion path never sees the flag. **Enforcement:** grep each peer's read loop for a decode
+  failure that neither responds nor is EOF — `envelopeOf*`/`decodeEnvelope` returning
+  none/err with no `writeFramed` on that branch is the defect. Check the *reference* peer when
+  unsure: `entity-peer` answers this check 6/6 in 1 ms.
+  **(a) and (c) are the SAME BUG but present as two different failure classes — and one of them
+  does not look like a conformance failure at all.** Measured 2026-08-22 across `typescript` and
+  `csharp`, whose census reports are identical where it counts: same 3 real FAILs at the same
+  indices (558/559/560), same first-transport-error index (563). The *only* difference is what the
+  peer does with the connection after refusing. `typescript` **closes** → every later check fails
+  instantly → **84F on a valid, complete 755-check measurement**. `csharp` **drops and holds the
+  connection open** → every later check waits out a timeout → CAP-6a alone burns **120 060 ms**
+  (six variants × a 20 s block, against `go`'s 1 ms), `security` 600 s, `tree_operations` 380 s,
+  the global budget expires, nine categories never run → **quarantined as an INVALID MEASUREMENT
+  with a *smaller* FAIL count (52)**. So the hang-form is strictly harder to see: it scores lower,
+  it is filed under "starved run / harness problem," and it reads as unrelated to the peers whose
+  numbers went up. **Diagnostic, cheap, run it FIRST on any starved peer before theorizing about
+  latency or resources: compare the first-FAIL index and the first-transport-error index against a
+  known peer carrying this defect.** Matching indices means same bug, and the starvation is a
+  symptom rather than a finding. That one comparison is what turned `csharp` from "new at this pin,
+  not root-caused" into "it is `typescript`." **Corollary for the fix log: a §6.3 fix can move a
+  peer out of INVALID entirely — do not budget it as two separate work items.** (Detail:
+  `CONFORMANCE-MATRIX.md` §1c.)
+- **A LANGUAGE'S "absent" AND "present but wrong type" COLLAPSE IN THE OBVIOUS ACCESSOR — and on a
+  temporal field that is a fail-OPEN.** The CAP-6a mechanism, found identically in go
+  (`Entity.Uint` → `(0,false)`), ocaml (`Model.uint_field` → `None`), haskell (`uintField` →
+  `Nothing`), lean (`uintField` → `none`) and swift (`uintAt` → `nil`). Every one of these answers
+  the same thing for a missing field and for `expires_at: -1`, so `if let ex = uintField(...)`
+  silently **skips** the expiry check and honors a capability with a negative or bignum expiry —
+  status 200. §6.2 CAP-6a names this exactly: a verifier "MUST NOT treat the unrepresentable field
+  as absent." **The fix must run BEFORE the range check it protects**, because the range check is
+  the thing the ambiguity defeats. Five languages, five different type systems, one bug — treat any
+  `optional-typed` accessor over wire data as answering "unusable", never "absent", wherever the
+  distinction is security-relevant.
+  **RATIFIED and BROADENED 2026-08-22 across all 8 M2 peers — the fail-open has TWO mechanisms, and
+  the second one does not involve a null at all.** The entry above describes only the first. Both
+  were found in the same session, six peers, and the grep that catches one misses the other:
+  - **Null-collapse** (rust `uint_field`→`None`, python `is_integer(v) and v >= 0`→`None`, elixir's
+    guard→`nil`, plus the five M1 peers): the accessor answers the same "nothing" for absent and for
+    present-but-negative, so the check **is skipped**.
+  - **Arithmetic fail-open** (java/kotlin `Cbor.uint`→the `BigInteger` of ANY int, common-lisp
+    `entity-uint`→`(when (integerp v) v)`): the accessor happily returns a NEGATIVE value, so the
+    check **is not skipped — it runs and returns the wrong answer.** For a negative `not_before`,
+    `now < not_before` is simply false, so the capability passes. No null, no `Option`, no skip; a
+    reviewer grepping for "optional accessor over a temporal field" finds nothing here.
+  **The rule is the same for both and it is the ordering, not the null-handling:** a representability
+  check (`absent → legal · present-and-uint64 → legal · anything else → MALFORMED`) must run **before**
+  the range comparison, because the range comparison is what the ambiguity defeats *in either shape*.
+  **Enforcement, and it must be two greps, not one:** (a) any optional-typed accessor reaching a
+  temporal field, and (b) any comparison against a temporal field whose accessor cannot itself reject
+  a negative. **On a bignum substrate the `>2^64` half is a DELIBERATE range check, not an overflow
+  trap** — python/elixir/CL/java/kotlin integers do not wrap, so a peer that "just does the
+  arithmetic" never fires §5.6 rule 3 and silently saturates instead of dropping the term.
+- **§5.5a's per-link granter frames scope the RESOURCE dimension ONLY — applying them to
+  handlers/operations/peers is invisible until a DELEGATED cap arrives.** Found on swift 2026-08-21
+  (candidate — one peer, but the enforcement point is exact and go/ocaml both carry the correct form
+  with a comment). swift passed `childFrame`/`parentFrame` to all four dimensions of `grantSubset`
+  and defaulted the `peers` scope to them too. That is **identical to correct behaviour whenever
+  child and parent share a granter** — every self-issued path — which is why 745 of 755 checks
+  passed. It breaks for exactly one case: a cap whose granter is the *caller*, where a parent
+  handler scope of `["*"]` canonicalizes to `/<thisPeer>/*` while the child's canonicalizes to
+  `/<callerPeer>/…`, so a **universal parent grant cannot cover any child grant** and every request
+  presenting a delegated cap returns 403. Same trap on the §6.2 **mint-time** subset check, which
+  must stay on the local frame on BOTH sides (go and ocaml say so in a comment; swift did not).
+  **This is A-PD-017's "bare-star is granter-local, never universal" reached from the frame side
+  rather than the seed side** — the two are the same defect wearing different clothes. **Enforcement:
+  `grep -n 'scopeSubset\|grantSubset' <peer>` and check that only the RESOURCES call receives the
+  granter frames.** Symptom to recognize: several unrelated-looking capability checks failing at
+  once with 403 while everything self-issued passes.
+- **A REFUSAL IMPLEMENTED AT THE WRONG LAYER cascades exactly like a crash — and reads like one.**
+  New shape of the standing cascade class, found on `lean` 2026-08-21 (candidate; the class is
+  ratified, this *shape* is first-occurrence). Every prior instance was an *uncaught* fault — a bad
+  string, a `doesNotUnderstand:`, a raise escaping a narrow catch. This one is a **deliberate,
+  correct-in-intent refusal** delivered as a **transport drop**: `lean` refuses all six malformed-
+  temporal capability variants (CAP-6a) by closing the connection instead of returning the §5.2
+  `capability_denied` disposition the rule mandates. The oracle reuses that connection, so every
+  check after `capability` gets `broken pipe` — **81 cascade FAILs from one refusal path**, scoring
+  `83F` against its siblings' `2F`/`3F`. **What makes this shape distinct and worth its own entry:
+  the peer is completely healthy.** Clean stderr, exit code 0, never crashes — so every reflex the
+  crash-cascade lesson trains (look for the uncaught exception, grep the peer log, check for a
+  non-ASCII literal) finds nothing, and the natural next inference — "the peer died" — is wrong.
+  **Diagnosis that worked, and the order matters:** the oracle's own check message named the defect
+  outright (*"0 capability_denied, 6 transport-drop"*) — read it before theorizing; then bisect by
+  scope (`-category capability` alone → 2F no cascade; `-category tree_operations` alone against a
+  fresh peer → 0F; full core run → first FAIL at idx 559 is a `capability` check and the last check
+  before the first `broken pipe` at idx 563 is the CAP-6a one). **Cohort rule: "refuse" means emit
+  the protocol-level disposition the spec names — a transport-layer close is not a refusal, it is a
+  refusal *and* a denial of service to every subsequent request on that connection.** Enforcement:
+  when a peer's FAIL count is an order of magnitude off its cohort siblings, find the first FAIL in
+  *run order* and the last check before the first transport error — the gap between them is the
+  defect, and the count is noise. (Pairs with the standing "diff the per-check severities before
+  believing the headline number" rule, in the opposite direction: that one catches a peer looking
+  unfairly *good*, this one catches a peer looking unfairly *terrible*.)
+- **On any no-static-check substrate, the resilience frame catches the host's ROOT error class →
+  500**, not just the codec's condition family — an uncaught per-request exception is a hang and
+  violates deliver-or-signal (§4.9(c)). Two peers landed this independently: Oz (`""` IS `nil` → a
+  raise escaped a narrow catch, hung the request; also never use `== nil` as a string sentinel —
+  A-OZ-005) and Smalltalk (one `doesNotUnderstand:` cascaded 229 FAILs — A-ST-016). Cohort rule.
+- **A sibling clearing the bar with a costlier seam disproves a "substrate can't" ceiling.** Io's
+  "single-threaded throughput ceiling" verdict was contradicted by Oz passing the same checks with
+  *slower* co-process crypto → forced re-measurement → two fixable bugs, ceiling retracted. Cross-peer
+  differentials are a first-class diagnostic; an unreconciled ceiling contradicted by the cohort is a
+  pessimistic-direction overclaim, as much a misreport as a false green.
+- **Memory-primary peers: scope §6.5 signature ingestion to *handler-discoverable* signatures.** The
+  EXECUTE's own request signature (target == the root EXECUTE hash) is consumed inline by
+  `verify_request` and never looked up post-dispatch — binding one per request grows an in-memory store
+  by a unique entity per request → GC thrash → later-category timeouts under load. Ingest cap /
+  identity / handshake signatures (reused → idempotent), skip the transient request sig. Two peers hit
+  this independently (Io A-IO-022, Rexx A-RX-014) — an implementation discipline, not a spec gap (spec
+  §6.5 is fine); pair it with a §4.10 connection-admission cap for the full resilience story.
+- **Type registry: render natively, don't ingest bytes.** A peer publishes `system/type/*`
+  via its language's reflection over its *own* data model + an override table for entity-type
+  pins — single source of truth in code, with the Go-rendered vectors as a byte-exact
+  diff/drift target. "Output these bytes to hit the check mark" adds zero independent signal.
+  Scope to **core + operational + the type-system bootstrap** only; a core peer never
+  pre-publishes extension vocabularies (extensions bring their own types when installed).
+  **This rule now has an enforcement point and a known violator** (2026-08-17):
+  `grep -rl 'system/type/compute/apply' protocol-generator/*/src/` should return **nothing**;
+  it currently returns `asm-x86_64`, `asm-arm64`, `riscv64`, whose `src/typestore.s` publishes
+  ~200 type entries including whole COMPUTE / CONTENT / CLOCK / CONTINUATION extension
+  vocabularies. The oracle scores those *matched-if-present*, so over-publishing **converts
+  283 `type_system` WARNs into PASSes** and makes those three peers read as `545P/42W` beside
+  the cohort's `307P/327W` — **a higher pass count that means a scope violation, not better
+  conformance.** The lesson generalizes past the type registry: when one peer's P/W split is
+  structurally unlike the cohort's, diff the per-check severities before believing the
+  headline number — a peer can look *better* than its siblings by doing something it
+  shouldn't. (Detail: `CONFORMANCE-MATRIX.md` §1a.)
+- **FFI shared-lib gotchas** (every `entity-core-codec-ffi-<lang>` + any dual-impl
+  differential): with a verbatim header + linker version-script, do **not** use
+  `-fvisibility=hidden` (hidden symbols can't be promoted by `global:` → zero exports; let
+  the version script alone control exports, verify with `nm -D`). A same-soname differential
+  needs `dlmopen(LM_ID_NEWLM, …)`, not `dlopen` (glibc dedups by soname → silently compares a
+  lib against itself).
+- **A blanket `**/bin/` gitignore rule with a per-peer allowlist silently swallows a new
+  peer's entrypoint if nobody adds its exception.** Found 2026-08-17 (W-REGISTER-GUARD
+  remediation): `.gitignore` un-ignores `bin/` for ocaml/rust/cobol/apl/smalltalk/fortran/
+  julia (interpreted/JIT entrypoint SOURCE, not a compiled-binary dir) but never gained an
+  entry for forth — so `protocol-generator/forth/bin/peer.fs` was **never committed**, from
+  S3 (`0267303`) through S4/S5-complete, even though every prior session's green report
+  (`682·0F` etc.) was real and reproducible *from that session's own working tree*: the file
+  existed locally, `git add .` silently skipped it every time (no error, no warning), and it
+  never propagated to a fresh clone or `git worktree add` — which is exactly how this session
+  found it missing. Rexx/Tcl's `bin/peer.{rex,tcl}` happened to already be tracked before a
+  matching blanket rule could apply to them (git doesn't retroactively untrack), which is why
+  only forth hit this. **Enforcement:** any peer whose `run-s4.sh`/`Makefile`/`LOAD.md` names
+  a `bin/<entry-file>` must have a matching `!protocol-generator/<lang>/bin/` pair in the root
+  `.gitignore`, or `git ls-files protocol-generator/<lang>/bin/` returns empty while the file
+  sits untracked on disk — check that grep whenever a peer's own gate can't reproduce a status
+  doc's claimed green from a clean clone/worktree.
+- **Conformance-green can be vacuous.** A rejection-only oracle category lets a fail-closed
+  peer pass without implementing the primitive — and a non-core category never gates. The
+  keystone payoff is the *finding* (an untested, inconsistently-implemented core primitive)
+  as much as the fix; always add an accept-path unit test in the direction the oracle can't
+  cover. **Pin-scoped correction (Unison #43, 2026-07-19): `multisig` is NO LONGER the
+  example.** The standing text cited it as "100% malformed→403"; at `cc1970f` the category
+  ships a genuine accept vector, `valid_2of3_peer_signed_accepted`, which was a hard FAIL
+  against the Unison peer until real K-of-N landed and passes after. The *lesson* stands;
+  that *factual claim* is stale — do not treat a green `multisig` as automatically vacuous,
+  and re-check any category's accept/reject mix against the CURRENT oracle pin before
+  calling it rejection-only.
+- **A score is only a score if every peer was measured on the same checks — and that is now
+  ENFORCED, not assumed.** `tools/check-set-gate.py` requires every report in a census to have
+  executed the identical check set, pinned as `core_executed_check_set_digest` in
+  `tools/oracle-pin.env` (**`95edd774…` = 755 checks @ `c1b0708`**; was `8537d875…` = 740 @
+  `de8f807` — the two are NOT comparable, so never diff a row across a re-pin), and hard-fails on any
+  `budget_exhausted` category; `tools/run-cohort-census.sh` runs it automatically and **exits
+  non-zero when a census is not comparable**. Note the distinction from the neighbouring pin:
+  `check_set_digest` is what the oracle SOURCE declares, `core_executed_check_set_digest` is
+  what a run EXECUTED — **the gap between them is exactly where a bad number hides**, and only
+  the second one can catch a run that quietly stopped early. Re-measure the cohort and re-pin
+  it whenever `ref` changes. **A peer that deviates is not a low-scoring peer, it is an
+  INVALID MEASUREMENT** — quarantine it, never list it in the same column as the others.
+  *(Measured 2026-08-17: 42 of 45 peers produced a byte-identical 740-check set, so the oracle
+  itself is deterministic and consistent — the failure mode is a run that stops early, not an
+  oracle that tests different things.)*
+  **The gate itself had this bug, in the input it reads (found + fixed 2026-08-22).**
+  `check-set-gate.py` overlays `output/scratch/reverify/` on top of the census dir so a
+  post-rebuild re-verification supersedes a stale census row — correct in intent, but the overlay
+  was **unconditional**, and that directory is scoped to neither a run nor an oracle pin. Three
+  reports left there on 2026-08-17 at the retired `de8f807` pin (740 checks) therefore outranked
+  the fresh 2026-08-21 `c1b0708` census (755 checks) indefinitely, and the gate condemned
+  `node-red` / `rust-wasm` / `rust-wasm-wasmtime` as non-comparable — **7 bad peers reported where
+  the truth was 4** — on four-day-old evidence measured against a different check set. It reads
+  exactly like a real finding: the diff it prints (*"NEVER RAN capability(5), type_system(10)"*) is
+  precisely the 5 new CAP checks, i.e. the most plausible-looking result it could have produced.
+  **Fixed:** the overlay now applies only when it is *newer* than the census report it would
+  replace, and says so on stderr when it skips one. **Rule, and it is the same one the stale-build-
+  artifact entry at the end of this file states from the other side: an input that PREDATES what it
+  supersedes is not an override, it is drift.** Enforcement: `stat -c %Y` both sides — any
+  "supersedes" mechanism (overlay dirs, `-fixed.json` scratch files, vendored binaries) needs a
+  recency check, or it silently pins the past over the present. Sanity-check for this specific
+  trap: if the gate's report disagrees with `CONFORMANCE-MATRIX.md` §1a on *which* peers are
+  INVALID, suspect the input before the peers.
+- **RATIFIED (third occurrence of the stale-input class, and the first where the stale artifact was
+  the COMMITTED one): a gate that only reads gitignored scratch says nothing about what a CLONE
+  shows.** Found 2026-08-22 in the release sweep. Every tracked
+  `protocol-generator/<lang>/status/CONFORMANCE-REPORT.{md,json}` had drifted a full oracle pin
+  behind `CONFORMANCE-MATRIX.md` §1 — **38 peers at the retired `de8f807` 740-check set, 4 at 682,
+  1 at 645, `io` unreadable, NONE at the current 755** — while §1 published fresh 755-check numbers.
+  Several `.md` files still led with `cc1970f`/`b30a589`-era banners quoting `552`/`576` totals from
+  oracle `cb54f5b`. **§1 was never wrong** (it is census-backed) — the defect is that the *only*
+  numbers an adopter can read without re-running anything contradicted the published row, in the
+  peer's own directory, and **every gate we had pointed at `output/scratch/`, which is gitignored.**
+  **The cause was structural, and the structure was correct in isolation:** `run-cohort-census.sh`
+  deliberately never writes tracked reports (a census must not silently rewrite 45 signed-off
+  records) and `output/` is gitignored — two individually sound decisions that between them left
+  *no* path to refresh a committed report, so it rotted for months with nothing watching.
+  **The generalizable rule: for every artifact you PUBLISH a number from, name the gate that reads
+  the COMMITTED copy.** Reproducible-from-the-pin (which is what [ADR-0012] requires and what we had)
+  is not the same property as *consistent-in-the-tree*, and only the second one is what a reader
+  actually experiences. **Enforcement: `tools/check-set-gate.py --tracked`, run by `make lint`** —
+  it fails when a peer published as 0-FAIL carries a committed report from an older check set, and
+  deliberately only *reports* peers with disclosed debt (a gate held permanently red by tracked
+  backlog gets ignored, which is worse than no gate; fixed peers rejoin the gated set automatically,
+  so it ratchets one way). Refresh with **`tools/run-cohort-census.sh --to-status <peer>`** — the
+  missing destination, added to the *same* dispatch table rather than a second copy of it.
+  **Refreshing a tracked report is a MEASUREMENT, never a file copy** — hand-copying
+  `output/scratch/census/<peer>.json` onto a tracked report fabricates exactly the provenance the
+  census/status separation exists to protect. (All 13 publishable peers were re-measured, not copied,
+  and each reproduced its published number exactly — which is also the strongest evidence the
+  release numbers are real.) **Two sub-lessons worth their own greps:** (a) the new gate had a bug in
+  the shape it exists to catch — `collect()` keyed reports by *path stem*, and every tracked report is
+  named `CONFORMANCE-REPORT.json`, so all 45 collapsed into one dict entry and the gate would have
+  "passed" having examined a single file; **any dict keyed by `Path.stem` over a conventional
+  filename is a collision waiting to happen** — key by the meaningful path component. (b) A one-off
+  formatting pass over 13 prose reports must not assert history that does not exist: `lean` had never
+  had a `.md` companion, so the generated *"everything below predates this measurement"* line was
+  false for exactly one peer — check the generated text against each target, not just the template.
+- **RATIFIED (fourth occurrence of the stale-input class, and the one that had ALREADY FIRED IN
+  PUBLIC): an identifier is only a pin if it resolves for the audience the claim is published to.
+  A commit hash never does. Publish the content digest.** Raised by the operator, measured by arch
+  (`ROUTING-2026-08-23` / `COHORT-OPEN-ITEMS` §1k **P-1**), landed here 2026-08-23, and now the
+  ecosystem rule: **[ADR-0012] Amendment 1** (`docs/adr/ecosystem/`, injected read-only per
+  [ADR-0030]) — *"the digest is the normative anchor; `N·0F @ <digest>` is the citable form."*
+  **The mechanism, and it is not a rewrite story.** [ADR-0027] authors every published commit
+  **fresh at the release boundary**, so public `master` is a *different history* from `dev` — `dev`
+  is never rewritten and `master` is fast-forward-only; the two lines simply are not the same line.
+  A `dev` SHA has therefore **never** resolved for a public reader and never will. It is not
+  degraded at release; **it was invalid on arrival for the audience we ship it to.**
+  **It had already fired here, twice, and one instance was live.** Published `CONFORMANCE-MATRIX.md`
+  reads `665·0F @ e8524ed`; `e8524ed`, `33f35fd`, `b30a589`, `75c532e` resolve in **no repo in the
+  checkout** — they died in go's 2026-07-10 mirror history rewrite. [ADR-0012] calls oracle-pinned
+  conformance *"our single strongest credibility artifact,"* and on the public surface it was
+  unverifiable by an outsider **and by us**.
+  **The galling part is that this repo diagnosed it correctly six weeks ago and built the fix.**
+  `core_gate_fingerprint` was created on 2026-07-10 *in response to that exact death*, and
+  `oracle-pin.env` has carried the proof in one line ever since — `retired_ref_4 = e8524ed
+  (unreproducible after mirror history rewrite; same fingerprint)`. **The commit died; the
+  fingerprint carried the verdict across its death.** What never happened is that the practice
+  reached the *documents*: the pin then quietly regressed from `cc1970f` (which **is** on go's
+  public `master`) to a dev-only commit, with nothing objecting, because nothing asked.
+  **A local fix that never reaches the rule is not landed — it is a habit in one seat, and it
+  decays.** That is this repo's own ratchet law failing in the direction it was written to prevent.
+  **And "just re-point `ref` at a public commit" is NOT available — check before promising it.**
+  Measured 2026-08-23: go's public `master` HEAD is `cc1970f` (the v0.8.0 release) and its `dev` is
+  **514 commits** past it, so **the oracle the whole cohort was measured on exists on no public
+  branch under any name**. Any publicly-resolvable commit we could cite is a *different oracle*.
+  The digest is not the convenient option, it is the only honest one.
+  **What landed:** the three anchors are the pin and the commit is labelled internal
+  (`tools/oracle-pin.env` gained a "WHICH FIELD IS THE PIN" block); §1's column is `Oracle pin`
+  carrying `core_executed_check_set_digest` (`95edd774…`) in all 46 rows; a new
+  **[The pin](CONFORMANCE-MATRIX.md)** section publishes all three anchors plus the reproduction
+  recipe **and the limit a digest does not fix** — until go publishes a `master` carrying this
+  oracle, an outsider can *verify* an oracle they have but cannot *obtain* ours.
+  **Enforcement: `tools/pin-gate.py`, run by `make lint`.** It watches the two ways a content
+  anchor stops being trustworthy, and note that **neither is "someone typed a commit hash"**:
+  (a) the §1 pin column reverting to a commit — 45 published numbers hang off that one column and
+  the reversion would look completely normal; (b) a hand-copied 64-hex digest drifting from
+  `oracle-pin.env`. **(b) is the one worth internalizing: a wrong digest is strictly worse than a
+  wrong commit hash**, because nobody proofreads 64 hex characters and a bad commit at least fails
+  loudly when someone tries to resolve it. Regression-tested against all three planted defects.
+  Cross-repo resolvability across the whole published surface is arch's `spec pins`
+  (`entity-system-arch-tools`), which resolves cross-repo and attributes by owning repo — do not
+  build a second copy of it here.
+  **Sub-lesson, and it is the same defect one level down: we retired four pins by COMMIT and never
+  recorded the content identity of any of them.** `retired_ref*` carried the commit and the
+  *source-declared* digest, but never `core_executed_check_set_digest` — the one anchor a published
+  per-peer number is actually measured against. So the retired 740-check set existed in this tree
+  only as the 8-hex prefix `8537d875…` quoted in prose, with **no full value anywhere**, and every
+  historical figure was therefore unanchored in exactly the way we were fixing going forward.
+  Recovered by recomputing from the committed reports still at that set — 26 peers agree
+  byte-for-byte, which is better provenance than the original record would have been — and now
+  recorded as `retired_core_executed_check_set_digest{,_1,_2}` (740 / 682 / 645).
+  **Rule: retiring a pin means recording its content identity, not just its successor.** When you
+  build a durable anchor, apply it to the history you already have, not only to the next entry —
+  the same "harden one anchor, check its siblings the same day" reflex the `check_set_digest`
+  test-fixture fix earned.
+  **Deliberately NOT swept, and say so rather than let it read as an oversight:** the dated `>`
+  build-log note blocks and the closed-items ledger keep their dev SHAs, under an explicit
+  disclaimer in §1's reading note. A build log that gets back-edited stops being evidence of
+  anything. 152 unreachable citations → **85**, all of them historical.
+  **Two gate defects found while doing it, and both generalize past this repo.** (i) **A backtick
+  span that WRAPS A LINE is invisible to a per-line scan.** `README.md` — the front door — published
+  ``…309P/337W/3F/106S\n@ c1b0708` `` and arch's `spec pins` never reported it, at 152 or at 85,
+  because the span opens on the previous line. That is the headline number on the credibility
+  artifact anchored to a dead identifier, with the gate saying clean. **Scan the joined text, not
+  lines** — recover the line number from the match offset. **A false negative in a gate is worse
+  than a false positive, and this class correlates with prose quality**: the more carefully a
+  document is wrapped, the better its citations hide. (ii) **A file that records both commits and
+  digests hands out commit-shaped exemptions for free.** Our own first cut accepted any recorded hex
+  as an anchor prefix, and `oracle-pin.env` holds `commit = c1b0708c1679…`, so `c1b0708` matched it
+  and the bare-SHA check **passed a planted defect**. Harvest only 64-hex sha256 and explicitly
+  truncated `…` forms; a bare 40-hex commit is never an anchor. **Both were caught by planting the
+  defect, not by reading the code** — the regression suite is the enforcement point, and a gate
+  without one is just a script that has never been wrong yet.
+- **A FRESH CLONE BUILT THE WRONG ORACLE, EXITED 0, AND WOULD HAVE REPORTED THE COHORT GREEN.
+  The build was never broken — that is what made it dangerous.** Measured 2026-08-23 against a
+  genuine fresh clone (a detached keystone worktree with no `output/`, plus `git clone --no-local
+  --single-branch --branch master` of go — 2 commits, pinned ref absent), because "does an adopter's
+  build still work" is not answerable by reading the script.
+  **What happened, in order:** `ref = c1b0708` did not resolve → R1 fell back to HEAD `cc1970f` →
+  **`core_gate_fingerprint` MATCHED BYTE-FOR-BYTE** (`8261a033…`; it has been identical across all
+  five pins, so it raises nothing, ever) → `check_set_digest` differed → printed a **NOTE** → built,
+  installed, **exit 0**. The resulting binary is missing `request_mint_temporal_ceiling`,
+  `ingest_rejects_unrepresentable_expiry` and `configure_empty_grants_withdrawal` (`strings`-
+  verified) — **the three checks that are this release's entire finding.** An adopter following the
+  documented path gets a clean build, a green run, and 32 peers passing that `CONFORMANCE-MATRIX.md`
+  says fail, and concludes our matrix is wrong. **A falsely-GREEN result out of a SUCCESSFUL build is
+  the worst thing this repo can emit**, and a warning on stderr inside a wall of `go: downloading`
+  lines is not a control. **Rule: an anchor mismatch is a HARD STOP with a non-zero exit, never a
+  NOTE.** `oracle-bootstrap.sh` now exits 3 with the cause and the remedy (`REPIN=1` is the explicit
+  escape hatch for a deliberate re-pin).
+  **Second bug, same session, worse shape: the "nothing to do" short-circuit compared the install
+  against ITSELF.** `HAVE`/`HAVE_CS` came from `PROVENANCE.txt` (what is installed) and
+  `CORE_FP`/`CHECK_SET` from the ref being built; on a second run both described the same wrong
+  oracle, so they agreed trivially and the script printed *"NOTE check-set digest differs from
+  committed pin"* and *"matches BOTH … nothing to do"* **three lines apart**. **A self-consistency
+  check reads exactly like a correctness check and is not one** — always name the authority side of
+  a comparison (here: the committed pin), and be suspicious of any equality test whose two operands
+  are derived from the same source.
+  **Third hole, closed at the same time:** `run-cohort-census.sh` read the pin's `ref` only as a
+  *label* to stamp the roster and never checked the installed binary, so a whole census could run on
+  a wrong oracle and stamp 45 rows `@ c1b0708`. `check-set-gate.py` does catch it afterwards, but as
+  *"42 peers are not comparable"* — which reads as a peer problem and sends you looking in the wrong
+  place **after** the multi-hour run. It now preflights the installed digest against the pin and
+  refuses in seconds. **Ask the cheap question before spending the hours.**
+  **The good half, and it is the whole justification for content pinning — PROVEN, not argued.**
+  Simulated the post-release world: a go clone whose `master` carries a **freshly authored commit
+  `592ff26`** (never seen by us, `c1b0708` unreachable by name) with the same tree. `oracle-bootstrap`
+  falls back, matches both anchors, builds — and the resulting `validate-peer` is **byte-identical**
+  to our pinned one (`c3827af8…`). **The commit hash is genuinely not needed; the digests are
+  sufficient and the build is reproducible.** So the current gap is purely that go has not published
+  this oracle yet — a sequencing dependency, not a design flaw. **Enforcement: re-run this three-
+  scenario test (public-master clone → must exit 3 · our tree → must exit 0 · re-authored publish →
+  must build byte-identically) before any release that claims an adopter can reproduce a number.** — undeclared means DELETED FROM THE
+  PUBLIC TREE, and for months this repo's own header said the opposite.** Found 2026-08-23
+  (fleet-wide by the arch-tools first full pass, routed to us as a release blocker).
+  `canon-filter` (`entity-core-devops` release-builder, `internal/canon`) removes every file it
+  does **not** find declared, within its scope. Our header described a *scrub-list of name
+  patterns* (`**/HANDOFF*`, `PROPOSAL-*`, `CLAUDE.md`, …), which is the wrong model **in the
+  dangerous direction**: it reads as "undeclared files are dropped only if they match a
+  pattern," and under it **eight files that were already on public `master` sat undeclared and
+  one release away from silent deletion** — `AGENTS.md` `AGENTS-STANDARD.md` `CHANGELOG.md`
+  `CLAUDE.md` `CODE_OF_CONDUCT.md` `CONTRIBUTING.md` `RESOURCE-CAPS.md` `SECURITY.md`. **No
+  other gate sees this**: leak-audit asks whether it is safe to publish, conform-audit whether
+  it conforms, the build whether it works — none asks *does this still contain what we already
+  gave people*. Only `[6/6] public-regress` does, and it is new.
+  **Know the scope exactly, because it decides what a mistake can destroy** (verified by reading
+  `internal/canon/canon.go`, not by inference): loose **top-level prose** (`.md .markdown .rst
+  .txt .adoc`, no `/` in the path) is droppable, top-level non-prose (`LICENSE` `NOTICE`
+  `VERSION` `Makefile`) is safe; anything under a doc-root **prefix** (`docs/ research/ status/
+  reviews/ validation/ stewardship/ …`) is droppable *regardless of extension*; everything else
+  is always kept. **Prefix means at the START of the path** — `strings.HasPrefix`, so
+  `protocol-generator/<lang>/status/*.md` is out of scope and the 268-file public tree is not at
+  risk, only the 8. Getting that wrong in either direction produces a wildly wrong blast radius.
+  **Enforcement:** simulate before every release — walk `git ls-tree -r origin/master`, subtract
+  the declared set, apply those two scope rules, and require the remainder to be empty or
+  declared in `.release-removals`. Currently: **0 undeclared deletions, 1 declared**
+  (`docs/status` — [ADR-0031], the keep-list's own removal of `STATUS.md`).
+- **VERIFY A ROUTED CLAIM BEFORE ACTING ON IT, ESPECIALLY THE EXCULPATORY HALF — a packet's
+  parenthetical "we checked, this one doesn't apply to you" is the sentence most likely to be
+  wrong and least likely to be re-checked.** Same session, first occurrence, candidate. The
+  routing packet listed **seven** at-risk files and added *"(`RESOURCE-CAPS.md` was named in the
+  original fleet-wide finding. Checked: it is **not** on your public `master`, so it does not
+  apply to you.)"* It **is** on our public `master` — confirmed identical across `origin`,
+  `github` and `codeberg` at `d8c2b0a` — and the release pipeline's own source comment says so
+  outright (*"and keystone `RESOURCE-CAPS.md`"*, `dev-pipeline/promote/promote.sh`). Acting on
+  the packet as written would have shipped a release that **deleted a published file**, and the
+  exemption is precisely the part a reader skims. The general form pairs with A1 (trace a value
+  before you theorize): **an inbound claim that reduces your work is still an inbound claim.**
+  Enforcement is the simulation above — one command, answers the question directly, and needs no
+  trust in anyone's list.
+- **RATIFIED (second occurrence, different shape): a budget-starved run reads as a clean run,
+  and the starved categories are where the real FAILs are.** First shape — **Unison #43**: two
+  *slow* categories consumed the global budget and seven core categories reported
+  `budget_exhausted`, which gates as FAIL but reads like a carve-out *skip*; diagnosing that as
+  **latency** rather than as seven independent failures was the high-leverage move. Second
+  shape — **asm-x86_64 / asm-arm64 / riscv64, 2026-08-17**: not slowness at all but a single
+  **hung** check (`t2_2_connection_churn` burning 599 s of 600 s while every other category
+  finished in ~0 ms), starving seven categories including the core `resource_bounds` — which,
+  when driven directly, turned out to hold **two further real core FAILs** (`r1_payload_over_limit`,
+  `r3_connection_flood`). Same masking mechanism, opposite cause. **Enforcement:** grep any
+  census JSON for `budget_exhausted` before trusting its `summary` (the human output flags it
+  with `!!`, the JSON does not — it files starved categories under `skipped`), and drive the
+  starved categories with `-category <name>` rather than re-running the whole suite behind the
+  hang. **Fix the peer; never raise `-timeout` to turn the report green** — raising it as a
+  one-off *diagnostic* to surface hidden coverage is the opposite move and is fine.
+- **The extensibility boundary is research, not a one-off.** "Does a core peer already
+  support installing a handler + outbound dispatch?" surfaced three buildable gaps
+  (handler-register stubbed / handler outbound dispatch / a retroactive hand-maintained
+  `--profile core` map) — design the core ↔ extension ↔ SDK boundary, don't bolt on a spike.
+  Compute is an entity-native handler dispatching through the *same* §6.6 path (dispatch
+  uniformity).
+- **Peer-selection: discovery yield is substrate-bound, not idiom-bound.** Spec gaps come
+  from wire-touching axes (integer width / float model / crypto availability / string model);
+  a peer novel only off-wire (concurrency / error-idiom / packaging) adds generator
+  robustness, not new findings. The spec-discovery well has been dry on the current wire
+  surface since ~15 peers and stays dry at 40 (every distinct integer/float/string/byte,
+  crypto, concurrency, object-model, and execution-mode axis now probed) — steady-state
+  value is **re-running the existing cohort against each amendment**,
+  not adding language #N.
+- **CURRENT STATE 2026-08-21 — the `c1b0708` re-pin IS landed; M1 is 5/5 at 0-FAIL.** Both anchors
+  moved (oracle `de8f807 → c1b0708`, spec snapshot `v0.8.0 → v0.8.2`), `--tier M1` initially came
+  back **0 of 5**, and all five were then fixed to **`755 · 0F — 312P/337W/0F/106S`**, identical
+  across the five. `tools/tier-status.py --gate` exits 0. The failures were never regressions:
+  §5.6's MIN_DEFINED mint ceiling (CAP-5/CAP-6) had **never been implemented in any peer** —
+  `mintToken` set no `expires_at` at all — and no vector exercised it until this pin. Three defect
+  classes came out of it, all now ratcheted above: the §6.3 rejection-status rule, the
+  absent-vs-unrepresentable accessor collapse (CAP-6a, a fail-OPEN in three peers), and swift's
+  §5.5a frame over-scoping. **The same fix is owed to the other 40 peers** — author it once from the
+  spec and propagate; the five M1 diffs are the reference. One known intermittent, recorded not
+  hidden: `go`'s `concurrency/t1_2_concurrent_reentry` (§6.11 reentry cross-talk) failed **once** in
+  a census run and passed 3/3 isolated plus on the census re-run — unexplained, load-dependent, not
+  yet root-caused. Full detail:
+  `research/stewardship/SESSION-2026-08-21-release-repin-c1b0708-v0.8.2-and-M1-capability-gap.md`.
+  **M1 AND M2 ARE NOW BOTH COMPLETE — 13 of 45 peers publishable (2026-08-22).** `typescript`
+  (84F→0F), `csharp` (INVALID→0F), then `rust` `python` `java` `kotlin` `elixir` `common-lisp`
+  (3F→0F each). **The fix shape did not change once across thirteen languages** — ~200 lines over
+  5–6 files, the same five places (capability mint, codec salvage, wire 400, read loop, policy
+  lookup) — and that invariance is itself the evidence the spec reading is right, not just that the
+  tests pass. Two peers needed a lesson the first eleven did not: rust and common-lisp reached 0F
+  while still scoring CAP-6a **WARN**, because the `>2^64` half arrives only as a major-type-6 tag
+  and is therefore rejected at DECODE — it needs the §6.3 answer to be *scored* as a refusal at all.
+  **So on any peer, §6.3 is not optional even when the FAIL count is already zero.**
+  Remaining owed: 32 peers (M3, the probes, `node-red`/wasm).
+  **Re-verified 2026-08-22 (release-readiness pass), and the cohort's remaining work is smaller than
+  the 40 suggests.** Gate re-run from the committed artifacts: `make lint` OK (both spec snapshots),
+  `tier-status.py --gate` exits 0, and the census is **41/45 comparable with exactly the 4 INVALIDs
+  §1a names** — the extra three the gate had been reporting were the stale-overlay bug, now fixed.
+  Failure composition measured across all 45 reports: **CAP-5 + CAP-6 (§5.6 ceiling) is the whole
+  gap for all 40** unfixed peers; CAP-6a adds to 30 of them; CAP-2/3 to 8; **CAP-7 fails on nobody.**
+  Only **two** peers carry a defect outside the CAP family — `cobol` (27, standing) and the asm/ISA
+  trio's shared connection-pressure family (1 visible + 2 starved). Everything else in the cohort is
+  one feature. `typescript` and `csharp` are the same §6.3 fix (§1c), not two.
+- **MAINTENANCE TIERS ARE ACTIVE — do not run a 45-peer census for a re-pin.** (Turned on
+  2026-08-17; the policy existed as prose since ~15 peers and was never honoured, because §4
+  named 17 peers of a 46-peer cohort so "re-run Tier-1" was undefined for the other 29.) The
+  rule now: **an oracle re-pin is landed when `M1` is re-run and 0-FAIL** — `go` `haskell`
+  `lean` `ocaml` `swift`, 5 peers. `M2` (8) catches up behind it, `M3` (13) on spare
+  capacity / pre-release / adopter ask, `probe` (18) when its own axis is touched, and
+  `exploratory` (2) never gates. **Run everything only before a release** — tiering governs
+  the cadence *between* releases, never what a release claims, and it never affects whether a
+  peer may be published ("no green report → no publish" is unchanged for every tier).
+  - **Roster: `tools/peer-tiers.tsv`** — the single canonical home, all 46 peers, one tier
+    each, plus the oracle pin each peer's current verdict was measured at. `CONFORMANCE-MATRIX.md`
+    §1's `Maint.` column mirrors it; §4 explains it. Nothing else defines a tier.
+  - **Commands:** `tools/tier-status.py` (where every peer stands; `--gate` exits non-zero
+    unless M1 is current and 0-FAIL) · `tools/run-cohort-census.sh --tier M1` ·
+    `--tier M1,M2` · `--stale` (only peers behind the current pin). A tier run gates **only
+    the peers it ran**, or the exit code stops meaning anything.
+  - **`M` is a deliberate prefix.** These are NOT `research/LANDSCAPE.md`'s tiers 1–5, which
+    classify the *language landscape* ("what is worth building"). Both used to be bare
+    `1`/`2`/`3` and were routinely conflated. They do not correlate — verified: `ocaml` is
+    landscape Tier 5 and maintenance **M1** (lowest pull, highest discovery yield);
+    `rust`/`python` are landscape Tier 1 and maintenance **M2**; `lean` is **M1** and does not
+    appear in `LANDSCAPE.md` at all.
+  - **A stale lower tier is a tracked state, not a failure.** Record it, don't panic-fix it:
+    `tier-status.py` prints `STALE@<pin>` for any peer behind the current `ref`.
+- **Lean proof vector** (the highest-signal channel): build the conformant peer first, then
+  prove selected invariants in Lean — a proof needing an unstated hypothesis is an
+  under-specified precondition (→ `A-LEAN-*` finding), a counterexample is a spec defect.
+  Prove what's feasible; an unprovable-here-but-spec-sound invariant is a documented scope
+  boundary, not a failure. Distinguish **soundness from completeness** in every theorem
+  (conformance vectors never flag that gap); the proof covers the authority *logic interior*
+  — crypto, the IO/concurrency shell, and the adversarial-input parser stay owned by KATs,
+  race tests, and fuzzing. Ship the peer mathlib-free; proofs live in a `proofs/` target.
+- **Visual/dataflow paradigms: author the protocol IN the language, don't wrap it.** A peer whose
+  §6.5 collapses to one delegated `dispatch(frame)` call with a few façade blocks is a *wrapper*,
+  not a paradigm probe — the logic must be visible on the canvas/graph (FLOW-DESIGN's wrapper-guard).
+  **Foreground the *actual algorithm*, not a cosmetic proxy for it:** a §6.6 handler resolution belongs
+  on the canvas as the visible *tree walk* (repeat-until, longest-prefix-first), not hidden in a seam
+  `resolve()` call behind a literal `if pattern == "system/tree"` ladder — the switch reads as naive
+  name-matching and buries the real mechanism (the remaining pattern→body switch is a genuine Scratch
+  limit — no call-proc-by-dynamic-name — so label it as body-selection, not resolution).
+  Draw the FFI seam at what the substrate *genuinely* can't do (bytes/maps/sockets/crypto/store), and
+  author the rest (the §6.5/§5.2 *sequence*, status codes, op-switch, guard ladders). Values the
+  substrate can't hold ride as **opaque handles**; readable fields are plain reporters. **Decomposing
+  the folded logic surfaces bugs** (both Node-RED #31 and TurboWarp #32: a single collapsed dispatch
+  hid real conformance defects — e.g. a folded §5.2 verdict masked the single-401 grantee carve-out,
+  chain-depth-before-authz, and unchecked revocation). **Verify without the real runtime** via an
+  **oracle-driven interpreter of the actual authored artifact** (TurboWarp: `run-blocks.mjs` runs the
+  real `project.json` block graph vs `validate-peer`) — faithful, low-risk, a real number each
+  iteration; the real-VM run is the final confirmation caveat. Frame-cap (§1.6) is load-bearing on a
+  single-threaded substrate: an oversize frame stalls the peer and cascades into downstream timeouts.
+  **Legibility needs decomposition into *named units*, not just "on the canvas"** — one 400-block
+  tower is as unreadable as the code it replaced; split into a short dispatch *spine* + one
+  procedure/subgraph per handler (Scratch `define …`; `stop this script` in a proc is the
+  early-return, the spine's `stop` after the call ends dispatch). **Cooperative yielding between
+  requests is load-bearing for connection-churn (§6.11 t2_2) on a single-threaded interpreter** — a
+  serial queue-drain flushes no responses until it finishes, so under rapid open→handshake→close the
+  oracle tears connections down before their response lands → *dropped requests* → a cascade of
+  downstream failures. Yield to the event loop between hats (`await setImmediate`; the model real
+  Scratch already uses — one script-step per tick) and it's solid. Diagnostic discipline: heavier
+  per-request work (authoring a hot handler) only *exposes* this latent scheduling bug, it isn't the
+  cause — prove it by reverting the suspected handler and re-measuring (delegated-connect *also*
+  failed t2_2; the serial drain was the real root). The full **field survey + when-to-stop verdict**
+  lives in `research/evaluations/visual-paradigms.md` (all THREE paradigms now probed — **Pure Data
+  (#33) closed the reactive-patch track at full-gate `Result: PASS` on the real runtime**, the only
+  visual probe to do so). Pd's adds: **the transport belongs in the seam when the runtime's own
+  primitive is disqualified at source level** (`[netreceive]` broadcasts every reply, no per-conn
+  id — structural, not inconvenient; the dispatch/verdict logic stays on canvas); **§6.11 reentry on
+  a single-threaded canvas is a bounded synchronous send+wait on the SAME fd** (non-response frames
+  hand back to the connection's assembler — behavioral presence, not architecture, is the contract);
+  and per-request transient state as single-owner seam globals is safe ONLY under one-frame-fully-
+  dispatched-before-the-next serialization (the reactive twin of Scratch's no-thread-locals).
+- **Content-addressed mint timestamps: ms precision is CORRECTNESS, not formatting** (A-PD-016). A
+  token is `{grants, grantee, granter, created_at}` — second-truncated `created_at` makes same-scope
+  same-second mints hash-identical, so the oracle's revoke probe aliases the session floor cap and
+  the marathon 403-cascades (isolated category runs stay green; only the full profile exposes it).
+  Sibling trap: the **open/debug seed needs `resources: ["*", "/*/*"]`** — §5.5a bare-star is
+  granter-local, never universal, so without the absolute all-peers form the seed can't cover
+  foreign namespaces and universal_address_space silently skips (A-PD-017).
+- **Authority IS a query; the protocol around it is a state machine (the declarative-query/logic
+  frontier, now closed).** SQL (SQLite) + Datalog (embedded Ascent, bottom-up/terminating) both land
+  `682·0F Result: PASS @ cc1970f` authoring the §5/§6.6 interior *in the query language*: §5.2 ladder,
+  §5.5 delegation closure (recursive CTE / recursive rule to least fixpoint — the SecPAL/Binder shape),
+  K-of-N (`HAVING count(DISTINCT)` / counting aggregate), §6.6 (`ORDER BY length DESC` / stratified
+  negation). Everything *pure-function-of-the-projected-facts* fits — often more legibly than the prose;
+  everything *stateful-sequential* (§6.5 dispatch, §4 handshake, framing/crypto/store) leaks to the
+  host. The wrapper-guard is what makes it a probe not a wrapper, and it held **through S4** on both:
+  completing the S4 handler surface added **zero** imperative allow/deny — the verdict never migrated out
+  of the authored interior (that absence is itself the datum). Two spec-shaped findings (F40 typed
+  §3.6 scope matching, surfaced by SQL as a real ALLOW bug; F41 the §5/§6.6 decision surface is a
+  monotone deductive system → an authority-as-derivation appendix makes fail-closed + the §5.5a
+  within-grant conjunction *structural invariants* not silently-violable MUSTs). Logic-substrate impl
+  trap: **a bottom-up engine dedups DERIVED tuples but not pre-seeded EDB**, so K-of-N distinctness needs
+  an explicit IDB copy-rule before the count — silent if missed, and only the accept path exposes it
+  (pairs with the rejection-only-oracle vacuous-green lesson) (A-DL-012). Full synthesis:
+  `research/evaluations/authority-as-query.md`.
+- **Oz: a non-ASCII byte baked into a compiled string constant can crash the peer at
+  runtime, not at compile time.** `ozc` accepts a literal containing U+00A7 (`§`) inside a
+  `"..."` string with zero warning, but concatenating it into a live error message via `#`
+  (e.g. `"§6.2: ..."#Pattern`) made the register-reserved-pattern fix (2026-08-17,
+  register-guard session) crash the request handler with an internal `Tell: 403 = 500`
+  unification failure inside the shared `OutErr` helper — which kills the connection and
+  cascades into ~100 unrelated FAILs across every later category in the same run (broken
+  pipe / i/o timeout), reading as a huge regression rather than the one bad string it was.
+  Isolated by A/B: the identical `OutErr`/`#`-concat call shape with an ASCII-only literal
+  is clean every time; only the `§`-bearing literal reproduces the crash. No prior OutErr
+  call site in this peer had ever put a non-ASCII literal into a runtime string (grep-
+  verified), so this was never hit before. Root cause not fully traced past "a U+00A7 byte
+  inside a compiled Oz string constant" — worth a real trace if a second peer or a second
+  non-ASCII literal hits the same class; until then, treat any non-ASCII byte in an Oz
+  runtime string constant as suspect and keep the citation ASCII (`"section 6.2: ..."`) in
+  wire-visible text, reserving `§`-style citations for source comments (never compiled to
+  a runtime value, confirmed safe) (A-OZ-008).
+- **RATIFIED (second occurrence, different shape — promoted off the candidate ladder):
+  a non-ASCII byte in a WIRE-VISIBLE string can crash a peer's own encode path,
+  independent of language/substrate.** Io hit this independently on the same
+  register-guard work (2026-08-17): a `"§6.2: ..." .. pattern` error message crashed
+  `EntityCodec encode` with `ec: encode_error: text Sequence is not valid UTF-8 (bytes
+  must ride EcBytes)` inside the hand-rolled `utf8_valid()` C validator
+  (`protocol-generator/io/src/entitycodec/IoEntityCodec.c`) — even though the emitted
+  bytes (`0xC2 0xA7`, confirmed via `od -c` on the source file) ARE valid UTF-8 by
+  manual trace of that exact validator's own logic, and the oracle's reserved-pattern
+  vector (`system/validate/core-register-forbidden`, `entity-core-go`
+  `cmd/internal/validate/core_register_gate.go`) is plain ASCII, ruling out the dynamic
+  `pattern` operand as the source. Root cause not traced further than that (same
+  standard as A-OZ-008 — flag, don't over-invest); the peer is single-threaded, so the
+  uncaught exception killed the whole process and cascaded `connection refused` across
+  every later category (104 FAILs from ONE bad string, `Result: FAIL` on the first
+  run). Isolated by the same A/B this class always uses: swap `§6.2` for ASCII
+  `section 6.2` in the wire string only (keep `§` in source comments, which are never
+  encoded) → `Result: PASS`, `0 failed`, both target checks PASS, no other line
+  touched. **Discipline, cohort-wide, effective now:** treat any wire-VISIBLE string
+  literal (an error `message`, any field the codec will CBOR-text-encode and send) as
+  ASCII-only until a peer has a *proven* non-ASCII wire round-trip test; `§`-style
+  spec citations stay confined to comments in every peer regardless of language,
+  authoring convenience or the sink language's own claimed encoding correctness — Oz's
+  string constant was independently corrupted at compile-time, Io's own UTF-8
+  validator rejected byte-correct UTF-8, two peers, two unrelated compilers/encoders,
+  same failure shape. No enforcement grep yet (both instances were caught by the
+  peer's own `run-s4.sh`, not by static analysis) — a candidate lint would be
+  `grep -RP '"[^"]*[\x80-\xff]' protocol-generator/*/src` scoped to fail()/err()/
+  Out_Err()-style wire-message call sites specifically, not comments.
+- **`tools/run-cohort-census.sh` reuses on-disk build artifacts by design (`NOBUILD=1` /
+  build-only-if-missing) — invalid the moment source changes were verified inside an
+  ISOLATED WORKTREE rather than the primary tree.** Found 2026-08-17, W-REGISTER-GUARD
+  closeout: the primary tree's post-remediation census reported fresh `FAIL` on
+  `core_register_reserved_*` for `rust-wasm`/`rust-wasm-wasmtime`/`node-red` — all three
+  already individually verified PASS during their own fix session. A1 (trace before
+  theorize): `rust-wasm`'s `out/peer.wasm` mtime was **three weeks older** than the
+  source fix that supposedly produced it — `run-cohort-census.sh` hardcodes
+  `NOBUILD=1` for both wasm peers (their `run-s4.sh` skips `make peer`/`make aot`
+  entirely under that flag), and `node-red`'s `run-s4.sh` only rebuilds the shared TS
+  `dist/` if `dist/src/index.js` is *missing*, never if it's merely stale — so both
+  reused a binary/bundle built **before** the fix existed, because every batch agent
+  that fixed these peers worked in a separate `git worktree` with its **own**
+  gitignored build cache (`target/`, `dist/`, `out/`) that a `git merge` of tracked
+  source files never touches. Root-caused, not assumed: confirmed via `stat` mtime
+  comparison before forcing a rebuild, not by re-running and hoping. **Fix applied**:
+  force-rebuilt all three in the primary tree (`make peer`/`make aot` outside
+  `NOBUILD`, one `npm`/`tsc` pass for the shared TS `dist/`), re-ran, confirmed 0
+  FAIL. **Discipline: after any isolated-worktree fix lands via `git merge`, a
+  peer whose build output is a gitignored cache (not source-derived at every
+  `run-s4.sh` invocation) needs an explicit rebuild in the primary tree before its
+  next census run is trustworthy — a clean `--profile core` verdict from
+  `run-cohort-census.sh` right after a worktree-based fix is NOT evidence the fix
+  reached the tested binary; check the artifact mtime against the source fix's
+  commit time first.** First occurrence — candidate, not yet a second-shape
+  confirmation for promotion, but the enforcement point is concrete: `stat -c %Y`
+  the peer's build output vs `git log -1 --format=%cI` the peer's fixed source file,
+  before trusting a census FAIL as real for any peer just merged from a worktree.

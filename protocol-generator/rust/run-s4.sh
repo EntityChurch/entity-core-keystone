@@ -10,7 +10,8 @@
 # tears the host down.
 #
 # CLEAN-ROOM NOTE: the Rust peer is built from the spec; the oracle binaries under
-# output/s4-oracles/ are the conformance TOOL (built from entity-core-go 33f35fd in
+# output/s4-oracles/ are the conformance TOOL (built from entity-core-go at the pinned
+# oracle content digest — tools/oracle-pin.env; the commit is internal —
 # an isolated temp dir OUTSIDE entity-core-go, NOT read as source while building
 # the peer). The peer is byte-VALIDATED against the oracle here, not derived from it.
 # output/vendor is a plain `cargo vendor` mirror of the S2/S3 crate closure
@@ -25,7 +26,7 @@
 #     entity-core-keystone/rust-toolchain:latest \
 #     sh /work/protocol-generator/rust/run-s4.sh [validate-peer-args...]
 #
-# Default args: -profile core (the 16 core-profile categories at oracle 33f35fd;
+# Default args: -profile core (the 16 core-profile categories at the pinned oracle;
 # the oracle auto-allowlists the §9.0 extension-carve-out skips). The PASS/FAIL
 # gate is hardened with -allow-skip "" semantics implied by --profile core (every
 # residual skip under core is an oracle-owned auto-allowlist). ORACLE/PORT/NOBUILD/
@@ -35,6 +36,17 @@ set -eu
 PORT="${PORT:-7777}"
 PROJ=/work/protocol-generator/rust
 ORACLE="${ORACLE:-/work/output/s4-oracles/validate-peer}"
+
+# Preflight: the oracle must actually be there. The run below ends in `|| true` so a
+# conformance FAIL does not abort the harness — but that also swallowed a MISSING
+# binary, and the script exited 0 having validated nothing. Measured 2026-08-23: a
+# fresh clone with no sibling entity-core-go printed one "No such file or directory"
+# line and exited 0, i.e. the documented Quick-start command appeared to succeed.
+[ -x "$ORACLE" ] || { echo "run-s4: ERROR conformance oracle not found at $ORACLE" >&2
+  echo "  The oracle is a gitignored local tool built from the sibling entity-core-go" >&2
+  echo "  repo. Clone it NEXT TO this one, then run tools/oracle-bootstrap.sh." >&2
+  echo "  See the Quick start in README.md." >&2
+  exit 3; }
 cd "$PROJ"
 
 # Offline cargo: replace crates-io with the vendored mirror so the --network=none

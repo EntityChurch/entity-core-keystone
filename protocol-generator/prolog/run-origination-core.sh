@@ -12,7 +12,7 @@
 # --validate so system/validate/dispatch-outbound is live; absent it the probe
 # honest-SKIPs (which is why the single-peer run-s4.sh SKIPs origination).
 #
-# Oracle pin: entity-core-go @75c532e (output/s4-oracles/{validate-peer,entity-peer}).
+# Oracle pin: entity-core-go at the pinned oracle digest (output/s4-oracles/{validate-peer,entity-peer}).
 #
 # Invoke from the repo root:
 #   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm --network=none -v "$PWD":/work:Z -w /work \

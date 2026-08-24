@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run-s4.sh — S4 conformance gate for the Prolog peer. Points the Go
-# `validate-peer` oracle (a fedora ELF, entity-core-go @75c532e, vendored into
+# `validate-peer` oracle (a fedora ELF, entity-core-go at the pinned oracle digest, vendored into
 # output/s4-oracles/) at a LIVE Prolog peer host and runs `--profile core` (the
 # keystone gate). Oracle + peer share ONE loopback inside the prolog-toolchain
 # container, sealed-offline (--network=none) — the established S4 isolation rule.
@@ -14,7 +14,7 @@
 #      `LISTENING …` line.
 #   4. validate-peer -addr 127.0.0.1:PORT -profile core -json-out … ; tear down.
 #
-# Oracle pin: entity-core-go @75c532e (BuildID 482ee754…). The §10.2 origination-
+# Oracle pin: entity-core-go at the pinned oracle digest (BuildID 482ee754…). The §10.2 origination-
 # core probe (reference-peer-gated) runs separately via ./run-origination-core.sh.
 #
 # Invoke from the repo root (the mount point /work) on the host:
@@ -36,7 +36,7 @@ JSON_OUT="${JSON_OUT:-$PEER/status/CONFORMANCE-REPORT.json}"
 
 echo "=============================================================="
 echo " S4 conformance gate — entity-core-protocol-prolog"
-echo " oracle: entity-core-go @75c532e ($ORACLE)"
+echo " oracle: entity-core-go at the pinned oracle digest ($ORACLE)"
 echo "=============================================================="
 swipl --version
 echo

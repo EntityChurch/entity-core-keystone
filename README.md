@@ -47,17 +47,48 @@ Then, depending on what you came for:
 **The host needs only `make` and `podman`.** No language toolchains — every build, test, and conformance
 run happens inside a pinned per-toolchain container. Nothing is written outside the working tree.
 
+### You need `entity-core-go` cloned beside this repo
+
+**This is the one thing that is not self-contained, and it is worth understanding before you start.**
+The conformance oracles — `validate-peer` (the live-peer gate) and `entity-peer` (the reference peer) —
+are Go binaries built from the sibling `entity-core-go` repo. They are **deliberately not committed
+here**: keystone validates *against* them and must not derive peer code *from* them, which is the
+clean-room boundary the whole project rests on. So a fresh clone of this repo alone has no oracle, and
+without one there is no conformance gate.
+
+Clone them as siblings:
+
 ```sh
-git clone <this-repo> && cd entity-core-keystone
-make help          # the target list
-make build         # the shared base image (the release gate)
-make caps          # show resolved resource ceilings + the toolchain list
+mkdir entity-core && cd entity-core
+git clone <entity-core-keystone>
+git clone <entity-core-go>          # the oracle source — required
+cd entity-core-keystone
 ```
 
-Build one language's toolchain and run its conformance harness:
+```
+entity-core/
+├── entity-core-keystone/     ← you are here
+└── entity-core-go/           ← the oracle is built from this
+```
+
+The layout is the default; override with `GO_REPO=/path/to/entity-core-go` on any tool that needs it.
+
+Then:
 
 ```sh
-make go                                     # build the go toolchain image
+make build                    # the shared base image (the release gate)
+make go                       # the go toolchain image — needed to build the oracle
+tools/oracle-bootstrap.sh     # build validate-peer + entity-peer into output/s4-oracles/
+```
+
+`oracle-bootstrap.sh` needs network **once** (Go module download). Every conformance run after that is
+sealed offline. It verifies what it built against the content digests in
+[`tools/oracle-pin.env`](tools/oracle-pin.env) and **refuses with exit 3 if they do not match** — see the
+honest caveat below, because today that refusal is the expected outcome.
+
+Run a peer's conformance harness:
+
+```sh
 podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm \
   --network=none --security-opt label=disable -v "$PWD":/work:Z \
   entity-core-keystone/go:latest \
@@ -69,8 +100,44 @@ its own exact invocation in its header comment. Runs are sealed offline (`--netw
 container carries hard memory/pid/cpu ceilings so a runaway build cannot take the host down. Per-machine
 overrides go in a gitignored `caps.local.mk`; see [`RESOURCE-CAPS.md`](RESOURCE-CAPS.md).
 
-**Other useful verbs:** `make images` (every toolchain), `make lint` (verifies the SHA-256-pinned spec
-snapshot), `make check` (lint + test), `make clean`.
+**Other useful verbs:** `make images` (every toolchain), `make lint` (spec-snapshot integrity + the
+published-anchor and committed-report gates), `make check` (lint + test), `make clean`.
+
+> ### ⚠ Known limitation right now — you cannot yet obtain the pinned oracle
+>
+> **Read this before you conclude something is broken.** `tools/oracle-bootstrap.sh` will most likely
+> **exit 3** for you today, saying the built oracle is not the pinned oracle. That is the gate working
+> correctly, and the cause is upstream sequencing, not your setup.
+>
+> The oracle these numbers were measured on has **not been published yet.** As of 2026-08-23
+> `entity-core-go`'s public `master` is the v0.8.0 release and its development line is **514 commits**
+> past it, so the pinned check set is genuinely not in a public clone. Published commits are also
+> authored fresh at the release boundary ([ADR-0012] Amendment 1), which is why every number in this
+> project is anchored on a **content digest** rather than a commit hash — a hash from an internal
+> history resolves for nobody, and a digest survives the re-authoring.
+>
+> **What we measured, so you know exactly where you stand** (fresh clone + public `master` of go):
+>
+> | | |
+> |---|---|
+> | Does the build succeed? | **Yes** — Go, containers, everything works |
+> | Do you get the *right* oracle? | **No.** You get the v0.8.0-era check set |
+> | Is the difference detectable? | **Yes, and it now stops you.** Exit 3, naming both digests |
+> | Would the wrong oracle mislead you? | **Badly** — it lacks the three `capability` checks that are this release's entire finding, so peers this project reports as failing would come back green |
+>
+> Until then the honest position: **the conformance claims here are reproducible in principle and not
+> yet reproducible by you.** Everything else in the repo — generating a peer, reading the research,
+> building any toolchain image, `make lint` — works from a clean clone with no oracle at all.
+>
+> **When go publishes, this resolves with no action from us and no new pin.** We verified it: against a
+> republished `master` carrying a freshly-authored commit we have never seen, `oracle-bootstrap.sh`
+> falls back, matches both content anchors, and builds a `validate-peer` that is **byte-identical** to
+> the one these numbers came from. That is the property content-anchoring buys, and it is tested rather
+> than asserted.
+>
+> **Other sibling repos** (`entity-core-protocol` for spec sources, `entity-system-architecture` for
+> guides) are *not* required to build or run anything here — the spec snapshot is vendored and
+> SHA-256-pinned under `protocol-generator/shared/spec-data/`. Only `entity-core-go` is load-bearing.
 
 ## Generating a peer
 
@@ -98,14 +165,19 @@ agent doesn't.** Library choice, error model, async style, naming, and packaging
 
 Two oracles built from `entity-core-go` are ground truth. **They are never doctored.** If an oracle
 disagrees with a generated peer, the peer is wrong — and a genuine oracle bug is escalated to
-architecture, never patched here.
+architecture, never patched here. They are gitignored local tools, not committed source — see
+[Quick start](#you-need-entity-core-go-cloned-beside-this-repo) for how to get them and for the
+current limitation on obtaining the exact pinned build.
 
 - **`wire-conformance`** — the pure codec oracle. Byte-identical output or nothing.
 - **`validate-peer`** — the live-peer oracle, driven per language by `run-s4.sh`.
   **`--profile core` is the gating profile.**
 
-Every published number is **oracle-pinned with its full breakdown** — `755 · 3F — 309P/337W/3F/106S
-@ c1b0708` — never a bare percentage. A skip counts as a failure. A peer measured on a different set of
+Every published number is **anchored on a content digest with its full breakdown** — `755 · 3F —
+309P/337W/3F/106S @ 95edd774…` — never a bare percentage, and never a commit hash ([ADR-0012]
+Amendment 1: published commits are authored fresh at the release boundary, so a hash from our
+internal history resolves for no outside reader, while a digest of the oracle's own check set
+survives it — `CONFORMANCE-MATRIX.md` §"The pin" carries the full anchor set). A skip counts as a failure. A peer measured on a different set of
 checks than its neighbours is not a low-scoring peer, it is an **invalid measurement**, and it gets
 quarantined rather than listed in the same column; `tools/check-set-gate.py` enforces that mechanically.
 
@@ -162,7 +234,7 @@ Both are verbatim, byte-for-byte, SHA-256-pinned snapshots with provenance in th
 
 ## Conformance state, honestly
 
-As of 2026-08-21 the whole cohort is measured at **one** pin — oracle `entity-core-go @ c1b0708`,
+As of 2026-08-21 the whole cohort is measured at **one** pin — the 755-check set `95edd774…`,
 spec snapshot `v0.8.2` — from a single full census over all 45 measurable peers:
 
 - **13 peers pass `--profile core` 0-FAIL** — **tiers M1 and M2 are both complete**: `go` `haskell`

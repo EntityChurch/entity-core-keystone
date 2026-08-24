@@ -20,7 +20,7 @@
 # params verbatim and returns the downstream result entity verbatim. This gate is
 # the cross-impl wire proof of that seam.
 #
-# Oracle pin: entity-core-go @33f35fd (output/s4-oracles/{validate-peer,entity-peer},
+# Oracle pin: entity-core-go at the pinned oracle digest (output/s4-oracles/{validate-peer,entity-peer},
 # gitignored). The core image carries only `cryptography`; the host is driven with
 # PYTHONPATH=src python -m entity_core.host.
 #
