@@ -4,6 +4,10 @@
 
 > Source: architecture's entity-core peer-generator exploration (§3, in `entity-core-architecture`).
 
+> **Forward-looking build queue** (what's left to build + priority — the completeness phase):
+> `research/COMPLETENESS-ROADMAP.md`. This file is the current-state roster; that one is the tracker.
+> The whole-territory paradigm cartography (every family + viability filter): `research/PARADIGM-MAP.md`.
+
 ## Tier 1 — Major platforms, native codec viable (first release wave)
 
 | Language | Tier | CBOR library | Ed25519 library | Codec strategy | Profile status | Codec | Peer | Conformance |
@@ -40,10 +44,10 @@
 |---|---|---|---|---|---|
 | **Zig** | **peer #5** (parallel harness, spec-first) | **hand-rolled ECF, comptime dispatch** (A-005; `std`-only, no zig-cbor/libsodium) | **`std.crypto`** (Ed25519+SHA-2 in-tree); **Ed448 gap** (A-ZIG-002 — no native, no BouncyCastle-equiv → hybrid-FFI deferred) | **native floor, std-only ZERO-dep** (ffi default overturned) | **✅ S1→S5 green** 568/0F spec-first; no-GC/error-union/comptime; lightest supply-chain in cohort; native u64+overflow-trap; only memory-ownership+leak-correctness dimension. See `protocol-generator/zig/status/`. |
 | **Odin** | T3 | **hand-rolled ECF** (`core:encoding/cbor` is canonical-*aware* but bytewise map-sort + no decode tag-reject → insufficient) | **native pure-Odin `core:crypto`** (Ed25519+SHA-2, FFI-free; Ed448 deferred) | **native floor, core-only ZERO-dep** (ffi prediction overturned) | **✅ S1→S5 green** — 71/71 codec · **292·0F @ cc1970f**; no-GC `context` allocators / no-exceptions `or_return` / no-package-manager; native RFC-8032 §7.1 KAT. See `protocol-generator/odin/status/`. |
-| **Nim** | T3 | `cbor` package (smaller) | libsodium via C interop | ffi | not-started (Julia/Nim branch) |
+| **Nim** | T3 | **hand-rolled ECF** (compile-time `macro`/`template` major-type dispatch; `cbor` pkg declined — A-NIM-001, A-005 pattern) | **libsodium via native `{.importc.}` C interop** (Ed25519 + SHA-256; **Ed448 gap** → opt-in FFI deferred) | **native floor** (ffi first-pass overturned — Nim compiles to C, so `{.importc.}` is in-process, not a foreign bridge) | **✅ S1→S5 green** — 682·0F @ `cc1970f` (293P/293W/0F/96S); corroboration / generator-robustness peer on the **compile-time-metaprogramming codec** + fixed-width-uint64 axes; native codec **71/71 first-run** (0 fixes), genuine 2-of-3 accept-path + `tests/tmultisig.nim` 4/4, origination-core 3/3; publish-ready `0.1.0-pre`. **Surfaced F32** (A-NIM-009 §4.2/§4.4-vs-§5.2a author-absent status → arch). |
 | **Crystal** | T3 | **hand-rolled ECF** (no shard does length-first + f16 + recursive tag-reject) | **libsodium direct `lib`/`fun` binding** (stdlib `openssl` has no PKey; Ed448 deferred) | **native floor** (ffi prediction overturned) | **✅ S1→S5 green** — 71/71 codec · **292·0F @ cc1970f**; the **Ruby-overfit check** (compiled/typed/fixed-width/CSP-fiber); graceful-shutdown hardening on the 1.20 preview scheduler (A-CRY-011). See `protocol-generator/crystal/status/`. |
 | **D** | T3 | `dcbor` (smaller) | libsodium via Deimos bindings | ffi | not-started |
-| **Julia** | T3 | `CBOR.jl` | `Sodium.jl` | ffi (lean) or native | not-started |
+| **Julia** | T3 | **hand-rolled ECF** (**multiple-dispatch** canonical CBOR; `CBOR.jl` declined — A-JULIA-002, no ECF guarantees) | **system libsodium via `ccall`** + `SHA` stdlib (native-audited-lib tier, NOT the C-ABI; **Ed448 gap** → opt-in FFI deferred A-JULIA-004) | **native floor** (ffi first-pass overturned; zero registered packages → `--network=none`) | **✅ S1→S5 green** — 682·0F @ `cc1970f` (292P/294W/0F/96S); corroboration / generator-robustness peer on the **multiple-dispatch codec** + **UInt64/BigInt hybrid-numeric** axes; native codec **71/71 first-run** (0 fixes), genuine 2-of-3 accept-path + `test/multisig_accept.jl` 8/8, origination-core 3/3; publish-ready `0.1.0-pre`. **Corroborated F32.** Tooling note A-JULIA-009 (`Pkg.test()` needs net even stdlib-only → offline path is direct `julia --project`). |
 | **COBOL** (GnuCOBOL) | T3 | **FFI** (no COBOL CBOR lib) | **FFI** (C-ABI, no COBOL crypto) | **ffi everything** | **queued — pre-release slate #6 (discovery bet, spike-first)**; alien substrate: PIC fixed-width records vs CBOR var-length, COMP-3 decimal vs binary int head-form, recursion support is the go/no-go |
 
 ## Tier 4 — Lisp family
