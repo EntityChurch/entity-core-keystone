@@ -3,6 +3,18 @@
 **Peer #13** (SWI-Prolog — the cohort's first logic-programming peer) ·
 **Status: GREEN** · Human-readable rendering of [`CONFORMANCE-REPORT.json`](CONFORMANCE-REPORT.json).
 
+> **UPDATE 2026-07-12 — real `--name` (was informational) + native re-measure @ `cc1970f`.**
+> Prolog's §3.6 K-of-N multisig was already **genuine** (the accept-path
+> `valid_2of3_peer_signed_accepted` PASSed via `verify_multisig_root/4` — unlike the
+> Ruby/Go/C/Ada peers, which were frame-only and fixed this cycle). But `--name` was
+> **informational** — parsed then ignored, seed hardcoded `0x11`. Standardized on the
+> cohort convention: `--name NAME` now genuinely loads the seed from
+> `~/.entity/peers/NAME/keypair` (self-contained SWI base64 decoder; missing file →
+> fixed-seed fallback). Re-measured natively at oracle `cc1970f`: **682 total · 291 pass ·
+> 295 warn · 0 FAIL · 96 skip — accept-path PASS**, peer_id `2KHoAk7A5…` loaded from the
+> provisioned keypair (was carried `665` @ the retired build; the total is non-gating and
+> varies by build — see the matrix reading note).
+
 ## Headline result
 
 | Gate | Result |

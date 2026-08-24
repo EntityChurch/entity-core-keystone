@@ -7,15 +7,19 @@
 %
 % Flags (mirroring the Ruby/OCaml hosts):
 %   --port N            TCP port to bind (default 7777)
-%   --name NAME         peer identity name (informational; default "conformance")
+%   --name NAME         load a persistent Ed25519 identity from the standard
+%                       on-disk location ~/.entity/peers/NAME/keypair (base64 PEM
+%                       seed — the Go entity-peer --name / peer-manager convention);
+%                       a missing/unreadable file falls back to the fixed seed
 %   --debug-open-grants degenerate open-grants wildcard policy (grant-gated
 %                       categories need it) — sets the peer's open_grants=true
 %   --validate          enable the §7a conformance handlers (system/validate/*)
 %                       — sets the peer's conformance=true
 %
-% Identity seed: fixed 0x11 × 32 (the cohort host default; matches the
-% ~/.entity/peers/NAME/keypair the harness provisions so the oracle's multisig
-% accept-path probe can co-sign AS this peer). peer_id is seed-derived, stable.
+% Identity seed: --name loads ~/.entity/peers/NAME/keypair; without it (or on a
+% missing file) a fixed 0x11 × 32 seed is used (the cohort host default, which
+% matches the keypair the harness provisions so the oracle's multisig accept-path
+% probe can co-sign AS this peer). peer_id is seed-derived, stable.
 
 :- module(ec_host, [host_main/0]).
 
@@ -30,14 +34,17 @@
 :- use_module(ec_peer).
 :- use_module(ec_types).
 :- use_module(library(lists)).
+:- use_module(library(readutil)).
 
 host_main :-
     catch(host_run, E, (print_message(error, E), halt(1))).
 
 host_run :-
     current_prolog_flag(argv, Argv),
-    parse_args(Argv, opts(Port, _Name, OpenGrants, Conformance)),
-    fixed_seed(0x11, Seed),
+    parse_args(Argv, opts(Port, Name, OpenGrants, Conformance)),
+    % --name loads the persistent identity from ~/.entity/peers/NAME/keypair (the
+    % Go entity-peer / peer-manager convention); absent/unreadable → fixed 0x11×32.
+    ( load_seed_from_name(Name, Seed) -> true ; fixed_seed(0x11, Seed) ),
     make_peer([seed=Seed, open_grants=OpenGrants, conformance=Conformance], Peer),
     peer_local_peer(Peer, PeerId),
     peer_store(Peer, StoreId),
@@ -57,6 +64,55 @@ host_on_tree_event(_Event).
 
 fixed_seed(Byte, Seed) :-
     length(Codes, 32), maplist(=(Byte), Codes), string_codes(Seed, Codes).
+
+% ── §--name persistent identity: ~/.entity/peers/NAME/keypair ─────────────────
+% The entity-core PEM keypair is base64(seed) between BEGIN/END ENTITY PRIVATE
+% KEY lines (the Go entity-peer --name / peer-manager convention). Load it into a
+% 32-code Seed string matching fixed_seed's shape. Fails (→ fixed-seed fallback)
+% on a missing file or a non-32-byte body.
+load_seed_from_name(Name, Seed) :-
+    ( getenv('HOME', Home) -> true ; Home = "/root" ),
+    format(string(Path), "~w/.entity/peers/~w/keypair", [Home, Name]),
+    exists_file(Path),
+    read_file_to_string(Path, Content, []),
+    split_string(Content, "\n", "", Lines),
+    exclude(is_pem_armor, Lines, BodyLines),
+    atomic_list_concat(BodyLines, Joined),
+    atom_codes(Joined, B64Codes),
+    b64_decode(B64Codes, Bytes),
+    length(Bytes, 32),
+    string_codes(Seed, Bytes).
+
+is_pem_armor(Line) :- sub_string(Line, 0, 5, _, "-----").
+
+% Standard-alphabet base64 sextet value, or -1 for a non-alphabet char (which the
+% decoder skips — so whitespace, newlines and '=' padding are ignored).
+b64_char_val(C, V) :-
+    ( C >= 0'A, C =< 0'Z -> V is C - 0'A
+    ; C >= 0'a, C =< 0'z -> V is C - 0'a + 26
+    ; C >= 0'0, C =< 0'9 -> V is C - 0'0 + 52
+    ; C =:= 0'+          -> V = 62
+    ; C =:= 0'/          -> V = 63
+    ;                       V = -1
+    ).
+
+b64_decode(Chars, Bytes) :- b64_bits(Chars, 0, 0, Bytes).
+
+b64_bits([], _, _, []).
+b64_bits([C|Cs], Acc, Nbits, Bytes) :-
+    b64_char_val(C, V),
+    ( V < 0
+    -> b64_bits(Cs, Acc, Nbits, Bytes)
+    ;  Acc1 is Acc * 64 + V, Nbits1 is Nbits + 6,
+       ( Nbits1 >= 8
+       -> Nbits2 is Nbits1 - 8,
+          Byte is (Acc1 >> Nbits2) /\ 0xFF,
+          Acc2 is Acc1 /\ ((1 << Nbits2) - 1),
+          Bytes = [Byte | Rest],
+          b64_bits(Cs, Acc2, Nbits2, Rest)
+       ;  b64_bits(Cs, Acc1, Nbits1, Bytes)
+       )
+    ).
 
 % ── argv parsing ────────────────────────────────────────────────────────────
 parse_args(Argv, Opts) :-

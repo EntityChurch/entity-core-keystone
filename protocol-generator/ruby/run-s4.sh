@@ -29,7 +29,17 @@ podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WOR
   bash -c '
     set -eu
     PORT="'"$PORT"'"; ORACLE="'"$ORACLE"'"; JSON_OUT="'"$JSON_OUT"'"
-    ruby -Ilib exe/entity-core-peer --port "$PORT" --debug-open-grants --validate >/tmp/host.out 2>/tmp/host.err &
+    # Provision the peer keypair at ~/.entity/peers/conformance/keypair (seed
+    # 0x11×32, base64 "ERER…") so the validator can co-sign AS the peer for the
+    # §3.6 multisig accept-path probe (valid_2of3_peer_signed_accepted). The peer
+    # boots --name conformance and loads this same seed → matching peer_id.
+    KPDIR="${HOME:-/root}/.entity/peers/conformance"
+    mkdir -p "$KPDIR"
+    printf "%s\n%s\n%s\n" \
+      "-----BEGIN ENTITY PRIVATE KEY-----" \
+      "ERERERERERERERERERERERERERERERERERERERERERE=" \
+      "-----END ENTITY PRIVATE KEY-----" > "$KPDIR/keypair"
+    ruby -Ilib exe/entity-core-peer --port "$PORT" --name conformance --debug-open-grants --validate >/tmp/host.out 2>/tmp/host.err &
     HOST_PID=$!
     trap "kill -9 $HOST_PID 2>/dev/null || true" EXIT INT TERM
     i=0; while [ "$i" -lt 300 ]; do

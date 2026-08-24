@@ -16,32 +16,56 @@
 #   --validate            bootstrap the §7a system/validate/* conformance
 #                         handlers (echo + dispatch-outbound). OFF by default
 #                         (dispatch-outbound is a standing outbound seam).
-#   --seed HEX            32-byte identity seed as hex (default: 0x11 * 32, the
-#                         cohort responder seed — peer_id byte-stable).
+#   --name NAME           load a persistent Ed25519 identity from the standard
+#                         on-disk location ~/.entity/peers/NAME/keypair (the
+#                         entity-core PEM keypair: base64 of a 32-byte seed
+#                         between BEGIN/END ENTITY PRIVATE KEY lines — the
+#                         convention the Go entity-peer --name and peer-manager
+#                         use). Without --name a fixed test seed is used.
+#   --seed HEX            32-byte identity seed as hex (additive override; default
+#                         without --name/--seed is 0x11 * 32, the cohort responder
+#                         seed — peer_id byte-stable).
 
 require "optparse"
 
 require_relative "../lib/entity_core"
 
+# Load the 32-byte Ed25519 seed from the standard on-disk keypair (Go entity-peer
+# --name / peer-manager convention): ~/.entity/peers/NAME/keypair, a PEM whose body
+# is base64(seed) between BEGIN/END ENTITY PRIVATE KEY lines. Core-Ruby base64 via
+# String#unpack1("m") keeps the peer gem-free.
+def load_seed_from_name(name)
+  home = ENV["HOME"] || "/root"
+  path = File.join(home, ".entity", "peers", name, "keypair")
+  pem =
+    begin
+      File.read(path)
+    rescue SystemCallError => e
+      warn "error: --name #{name}: #{e.message}"
+      exit 2
+    end
+  body = pem.lines.reject { |l| l.start_with?("-----") }.join.gsub(/\s+/, "")
+  seed = body.unpack1("m").b
+  unless seed.bytesize == 32
+    warn "error: --name #{name}: expected a 32-byte seed, got #{seed.bytesize} bytes"
+    exit 2
+  end
+  seed
+end
+
 port = 7777
 open_grants = false
 conformance = false
-seed_hex = nil
+seed = (0x11.chr * 32).b # fixed test seed → stable peer_id (no --name/--seed)
 
 OptionParser.new do |o|
-  o.banner = "usage: entity-core-peer --port N [--debug-open-grants] [--validate]"
+  o.banner = "usage: entity-core-peer --port N [--name NAME] [--debug-open-grants] [--validate]"
   o.on("--port N", Integer, "listen port (127.0.0.1); 0 = auto") { |n| port = n }
   o.on("--debug-open-grants", "default-grant the wide-open admin scope") { open_grants = true }
   o.on("--validate", "bootstrap §7a system/validate/* conformance handlers") { conformance = true }
-  o.on("--seed HEX", "32-byte identity seed (hex)") { |h| seed_hex = h }
+  o.on("--name NAME", "load persistent identity from ~/.entity/peers/NAME/keypair") { |n| seed = load_seed_from_name(n) }
+  o.on("--seed HEX", "32-byte identity seed (hex)") { |h| seed = [h].pack("H*").b }
 end.parse!(ARGV)
-
-seed =
-  if seed_hex
-    [seed_hex].pack("H*").b
-  else
-    (0x11.chr * 32).b
-  end
 
 # Make stdout line-buffered so the readiness line reaches the harness immediately.
 $stdout.sync = true

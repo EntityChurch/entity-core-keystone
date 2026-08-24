@@ -4,6 +4,18 @@
 scripting peer · **Status: GREEN — `validate-peer --profile core` = `Result:
 PASS`, machine-verified `summary.failed == 0`.**
 
+> **UPDATE 2026-07-12 — genuine §3.6 K-of-N multisig (frame-only → fixed).**
+> The multi-sig **accept-path** probe (`valid_2of3_peer_signed_accepted`) had been
+> SKIPping (no peer keypair on disk), which masked a **frame-only** implementation:
+> the peer rejected *every* multi-grant cap — including a **valid co-signed 2-of-3** —
+> so the 9 reject probes passed vacuously (a fail-closed peer rejects everything).
+> Provisioning the keypair + booting `--name conformance` made the accept-path RUN,
+> exposing a real `403` FAIL. Fixed by implementing genuine §3.6 M3/M4/M6 in
+> `capability.rb` (`multisig_root_ok?`). **Re-run @ oracle `cc1970f`: 682 total ·
+> 292 pass · 294 warn · 0 FAIL · 96 skip — accept-path PASS.** In-repo guard:
+> `test/multisig_test.rb` (5/5). The snapshot below is the historical `@75c532e`
+> run and is retained for provenance.
+
 ## The gate — `validate-peer --profile core` (V7 v7.72 §9.0)
 
 ```
@@ -47,7 +59,7 @@ correct `75c532e` figure; 576 was the earlier-commit figure.
 | capability | 12 | 0 | 0 | 0 | §6.2 mint, attenuation, revocation, policy |
 | authz | 6 | 0 | 0 | 2 | core verdicts; 2 skips route through EXTENSION-ROLE |
 | security | 28 | 0 | 0 | 1 | §5.2 verify; 401/403 trichotomy; no hang on multisig granter caps |
-| multisig | 10 | 0 | 0 | 1 | genuine §3.6 K-of-N reject; accept-path needs on-disk key → local-env skip |
+| multisig | 11 | 0 | 0 | 0 | genuine §3.6 K-of-N: 10 reject + accept-path PASS (see 2026-07-12 update; was frame-only reject-only, now M3/M4/M6 verified) |
 | negotiation | 4 | 0 | 0 | 0 | §4.5 hash_formats/key_types advertise + disjoint reject |
 | crypto_agility | 4 | 0 | 0 | 0 | Ed25519+Ed448, SHA-256/384 — native stdlib openssl, no FFI |
 | format_agility | 10 | 0 | 0 | 0 | key_type/hash-format reject at the earliest boundary |

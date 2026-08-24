@@ -348,6 +348,7 @@ log is closed for v0.1 — every entry has a named owner; nothing blocks release
 
 | Item | Owner / escalation | Status | One-line |
 |---|---|---|---|
+| **A-ADA-014** | implementation bug (no escalation) | **RESOLVED (in-peer, 2026-07-12)** | §PR-8 multi-sig-root granter-frame fallback was a latent crash: `Granter := Local_Peer (Peer)` reassigned a 44-char peer_id onto the length-0 `""` returned by `Resolve_Granter_Peer_Id` for a multi-sig root → `CONSTRAINT_ERROR` (Ada Strings are fixed-length) → `500`. **Dead code that would always have crashed if reached** — never exercised because multisig was frame-only (denied before this path). Exposed by implementing genuine §3.6 K-of-N multisig; fixed by computing `Granter` as one conditional-expression `constant`. A language-specific (fixed-length-String) find, not a spec defect. |
 | **A-ADA-013** | ⚑ mainline/arch | RESOLVED (in-peer) | cohort oracle is `b30a589`, not `62044c5` (off-by-one); `b30a589` folds `resource_bounds` into core → 576·0F·89S (clean `62044c5` → 574·0F·90S); verified read-only + live re-run, no doctoring, peer not rebuilt — scorecard label should take the one-commit fix. |
 | **A-ADA-001** | ⚑ arch | RESOLVED (in-peer) | §7.4-vs-§1.5 peer-id; N-th spec-first corroboration; resolved via §1.5 identity-multihash (raw pubkey, `hash_type=0x00`); baked at S1. |
 | **A-ADA-003** | ⚑ arch | RESOLVED (in-peer) | hex-case unspecified; Ada hex builtins default UPPERCASE (the A-CL-009 trap, CL log named Ada); pinned proactively (lowercase nibble→char table). |

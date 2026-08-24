@@ -5,6 +5,23 @@ strong-typing; tasks + protected objects + rendezvous, design-by-contract) ·
 **Phase:** S4 (conformance) · **Status: 🟢 GREEN — `validate-peer --profile core`
 PASS, 0 FAIL (machine-verified `summary.failed == 0`).**
 
+> **UPDATE 2026-07-12 — genuine §3.6 K-of-N multisig (frame-only → fixed) + `--name`;
+> uncovered a latent §PR-8 crash (A-ADA-014).**
+> The multi-sig **accept-path** probe (`valid_2of3_peer_signed_accepted`) had been
+> SKIPping (no peer keypair on disk), masking a **frame-only** implementation:
+> `Verify_Capability_Chain` only handled a single-`granter` chain, so a multi-sig root
+> (`granter = {signers, threshold}` map) was denied. Adding a real `--name` (self-contained
+> Ada base64 keypair loader) + provisioning the keypair made the accept-path RUN. Fixed the
+> multisig with §3.6 M3/M4/M6 in `capability.adb` (`Multisig_Root_Ok`) — **and that exposed
+> A-ADA-014**: the §PR-8 granter-frame fallback `Granter := Local_Peer (Peer)` reassigned a
+> 44-char peer_id onto the length-0 `""` result of `Resolve_Granter_Peer_Id` for a multi-sig
+> root — a `CONSTRAINT_ERROR` (Ada Strings are fixed-length) that surfaced as a `500`. That
+> multi-sig-root fallback was **dead code that would always have crashed if reached**; fixed
+> by computing `Granter` as one conditional-expression constant. **Re-run @ oracle `cc1970f`:
+> 682 total · 293 pass · 293 warn · 0 FAIL · 96 skip — accept-path PASS.** Guard: the S4 oracle
+> now exercises the accept-path genuinely (the peer's verify is not a cheap in-process hook).
+> The v7.75 snapshot below is retained for provenance.
+
 ---
 
 ## S4 — `validate-peer --profile core` → **PASS** (576 · 0 FAIL · 89 skip) — cohort baseline `b30a589`
@@ -60,7 +77,7 @@ that standalone GREEN into the headline run → 576. The binary gate (`Result: P
 | connectivity / encoding | 22 / 6 | 0 | 0 | 0 | §4.1 handshake (incl. F12 cross-connection replay reject) + ECF wire |
 | type_system | 108 | 194 | **0** | 0 | **53/53 §9.5 floor byte-identical**; 194 WARN = non-floor (matched-if-present) |
 | handlers | 35 | 0 | **0** | 32 | core get/put/connect/cap + §10.1 register gate **10/10**; ext handlers auto-skip |
-| capability / multisig | 12 / 10 | 0 | 0 | 0 | §6.2 request/configure/revoke + scope-widening reject + §PR-8 V2(a) |
+| capability / multisig | 12 / 11 | 0 | 0 | 0 | §6.2 request/configure/revoke + §PR-8 V2(a); genuine §3.6 K-of-N: 10 reject + accept-path PASS (was frame-only reject-only; see 2026-07-12 update + A-ADA-014) |
 | tree_operations | 25 | 0 | **0** | 31 | core get/put + CAS (409) + path-flex + deletion-marker listing-filter; EXTENSION-TREE §9 auto-skip |
 | security | 28 | 0 | **0** | 1 | §5 capability/signature chain |
 | authz | 6 | 0 | 0 | 2 | §A4-AUTHZ codes; ROLE-ext skips carved out |

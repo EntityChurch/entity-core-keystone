@@ -337,22 +337,91 @@ module EntityCore
       end
     end
 
+    # ── §3.6 / §5.5 multi-signature root (K-of-N quorum, root-only) ────────────
+    #
+    # A multi-sig cap carries `granter` as a MAP {signers: [hash,…], threshold: k}
+    # instead of a single granter hash — the root is authorized by a quorum, not a
+    # delegating peer. §3.6 M3 (structure): root-only, 2 ≤ threshold ≤ N, N ≥ 2,
+    # distinct signers. §5.5 M6: the local peer is one of the signers. §5.5 M4: at
+    # least `threshold` DISTINCT signers each carry a valid signature over the
+    # root's content hash.
+    def multisig?(cap)
+      !cap.map_field("granter").nil?
+    end
+    private_class_method :multisig?
+
+    def multisig_root_ok?(local_peer, resolve, root, included)
+      gm = root.map_field("granter")
+      return false if gm.nil?
+
+      signers = gm["signers"]
+      threshold = gm["threshold"]
+      return false unless signers.is_a?(::Array) && threshold.is_a?(::Integer)
+      return false unless signers.all? { |s| s.is_a?(::String) && s.encoding == Encoding::BINARY }
+
+      n = signers.length
+      # M3: root-only, quorum shape, distinct signers.
+      return false unless root.bytes("parent").nil? # multi-sig is root-only
+      return false unless n >= 2 && threshold >= 2 && threshold <= n
+      return false unless signers.uniq.length == n  # no duplicate signers
+
+      # M6: the local peer MUST be a quorum member.
+      local_in_signers = signers.any? do |sh|
+        s = resolve.call(sh)
+        pk = s&.bytes("public_key")
+        pk && Identity.peer_id_of_public_key(pk) == local_peer
+      end
+      return false unless local_in_signers
+
+      # M4: count DISTINCT signers with a valid signature over the root content hash.
+      root_hash = root.content_hash
+      valid = signers.select do |sh|
+        s = resolve.call(sh)
+        next false if s.nil?
+
+        sig = find_signature_by(root_hash, sh, included)
+        sig && Identity.verify_signature(sig, s)
+      end
+      valid.uniq.length >= threshold
+    end
+    private_class_method :multisig_root_ok?
+
+    # The signature over +target+ authored by +signer_hash+. Multi-sig needs the
+    # per-signer signature, not just the first signature for the target
+    # (find_signature returns whichever appears first).
+    def find_signature_by(target, signer_hash, included)
+      included.each do |i|
+        e = i.entity
+        next unless e.type == "system/signature"
+        next unless e.bytes("target") == target
+
+        return e if e.bytes("signer") == signer_hash
+      end
+      nil
+    end
+    private_class_method :find_signature_by
+
     def verify_capability_chain(local_peer, store, capability, included)
       resolve = ->(h) { cap_resolve(included, store, h) }
       chain, ok = collect_chain(capability, resolve)
       return :deny unless ok
 
       root = chain.last
-      root_ok = false
-      rgh = root.bytes("granter")
-      if rgh
-        g = resolve.call(rgh)
-        if g
-          pk = g.bytes("public_key")
-          root_ok = !pk.nil? && Identity.peer_id_of_public_key(pk) == local_peer
+      if multisig?(root)
+        # §3.6 / §5.5 K-of-N quorum root (M3/M4/M6). No single granter.
+        return :deny unless multisig_root_ok?(local_peer, resolve, root, included)
+      else
+        root_ok = false
+        rgh = root.bytes("granter")
+        if rgh
+          g = resolve.call(rgh)
+          if g
+            pk = g.bytes("public_key")
+            root_ok = !pk.nil? && Identity.peer_id_of_public_key(pk) == local_peer
+          end
         end
+        return :deny unless root_ok
       end
-      return :deny unless root_ok
 
       good = true
       n = chain.length
@@ -370,6 +439,10 @@ module EntityCore
           else
             good = false
           end
+        elsif multisig?(current)
+          # §3.6 multi-sig root: authorized by the K-of-N quorum verified above,
+          # not by a single granter signature. Root-only, so it is chain.last.
+          nil
         else
           good = false
         end

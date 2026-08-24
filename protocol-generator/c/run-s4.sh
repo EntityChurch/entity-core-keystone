@@ -42,9 +42,19 @@ podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WOR
     if [ "$NOBUILD" != "1" ]; then
       make entity-peer-c >/tmp/build.out 2>&1 || { echo "build failed:"; cat /tmp/build.out; exit 1; }
     fi
-    # 2. Boot the host (peer). It prints "LISTENING <port>" then parks on the accept loop.
+    # 2. Provision the peer keypair at ~/.entity/peers/conformance/keypair (seed
+    #    0x11×32, base64 "ERER…") so the validator can co-sign AS the peer for the
+    #    §3.6 multisig accept-path probe (valid_2of3_peer_signed_accepted). The peer
+    #    boots --name conformance and loads this same seed → matching peer_id.
+    KPDIR="${HOME:-/root}/.entity/peers/conformance"
+    mkdir -p "$KPDIR"
+    printf "%s\n%s\n%s\n" \
+      "-----BEGIN ENTITY PRIVATE KEY-----" \
+      "ERERERERERERERERERERERERERERERERERERERERERE=" \
+      "-----END ENTITY PRIVATE KEY-----" > "$KPDIR/keypair"
+    # 3. Boot the host (peer). It prints "LISTENING <port>" then parks on the accept loop.
     # shellcheck disable=SC2086
-    ./entity-peer-c --port "$PORT" --debug-open-grants $VFLAG \
+    ./entity-peer-c --port "$PORT" --name conformance --debug-open-grants $VFLAG \
       >/tmp/host.out 2>/tmp/host.err &
     HOST_PID=$!
     trap "kill $HOST_PID 2>/dev/null || true" EXIT INT TERM

@@ -6,6 +6,22 @@ return-code idiom) · **Phases S2 (codec) + S4 (conformance)** · **Status: 🟢
 (576 · 0F · 89S, `resource_bounds` 2P+1W active); also 0 FAIL @ `62044c5` subset (574 · 0F ·
 90S) and `7e5ab04` superset (631 · 0F · 92S).**
 
+> **UPDATE 2026-07-12 — genuine §3.6 K-of-N multisig (frame-only → fixed) + `--name`.**
+> The multi-sig **accept-path** probe (`valid_2of3_peer_signed_accepted`) had been
+> SKIPping (no peer keypair on disk), masking a **frame-only** implementation:
+> `verify_chain` only handled a single-`granter` delegation chain, so a multi-sig root
+> (`granter = {signers, threshold}` map) fell through to `EC_V_DENY` — the peer rejected
+> *every* multi-grant cap, including a **valid co-signed 2-of-3**, while the reject probes
+> passed vacuously. Adding a real `--name` (libsodium base64 keypair load) + provisioning
+> the keypair made the accept-path RUN, exposing a real deny. Fixed by implementing §3.6
+> M3/M4/M6 in `capability.c` (`multisig_root_ok`), modeled on the genuine Prolog peer.
+> **Re-run @ oracle `cc1970f`: 682 total · 292 pass · 294 warn · 0 FAIL · 96 skip —
+> accept-path PASS.** Guard: the S4 oracle now exercises the accept-path genuinely
+> (non-vacuous); `verify_chain` is `static` so there is no cheap in-process unit hook as
+> in Ruby/Go. **Observed flake:** 1 of 3 runs aborted at concurrency `t2_2_connection_churn`
+> cycle ~48 (SIGABRT) — a pre-existing raw-pthread race (A-C-011, unrelated to this change;
+> the other 2 runs were clean 682·0F). The v7.75 snapshot below is retained for provenance.
+
 ---
 
 ## S4 — `validate-peer --profile core` → **PASS** (576 · 0 FAIL) @ TRUE cohort baseline `b30a589`
@@ -74,7 +90,7 @@ conformance category is dodged by the smaller inventory).
 | capability | 12 | 0 | **0** | 0 | §6.2 mint/delegate(501 remote)/revoke |
 | tree_operations | 24 | 1 | **0** | 31 | core get/put + §1.4 R1 path validation; EXTENSION-TREE §9 ops auto-skip |
 | security | 28 | 0 | **0** | 1 | §5 capability/signature chain |
-| multisig | 10 | 0 | **0** | 0 | §PR-8 multi-granter |
+| multisig | 11 | 0 | **0** | 0 | genuine §3.6 K-of-N: 10 reject + accept-path PASS (see 2026-07-12 update; was frame-only reject-only) |
 | authz | 6 | 0 | **0** | 2 | §A4-AUTHZ codes; ROLE-ext skips carved out |
 | **concurrency** | **5** | 0 | **0** | 0 | **§7b — all 5 PASS** (atomic refcount, A-C-009); gates core at this oracle |
 | **resource_bounds** | **2** | **1** | **0** | 0 | **ACTIVE at `b30a589`** (`catResourceBounds: true`): r1 `413 payload_too_large` PASS · r2 `400 chain_depth_exceeded` PASS · r3 connection-flood WARN (§4.10(c) SHOULD); was a single SKIP at `62044c5` |

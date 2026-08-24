@@ -519,7 +519,100 @@ func chainExceedsDepth(store *Store, capability Entity, included Included) bool 
 	}
 }
 
-// verifyCapabilityChain is the §5.5 single-sig path. Returns VerdictAllow /
+// isMultisig reports whether cap carries a §3.6 K-of-N quorum granter (a
+// {signers, threshold} map) rather than a single granter hash.
+func isMultisig(cap Entity) bool {
+	v, ok := cap.Field("granter")
+	return ok && v.Kind == cbor.KindMap
+}
+
+// multisigRootOK verifies a §3.6 / §5.5 multi-signature quorum root: M3
+// structure (root-only, N>=2, 2<=threshold<=N, distinct signers), §5.5 M6 (the
+// local peer is one of the signers), §5.5 M4 (at least threshold DISTINCT
+// signers each carry a valid signature over the root content hash).
+func multisigRootOK(localPeer string, resolve resolveFn, root Entity, included Included) bool {
+	gv, ok := root.Field("granter")
+	if !ok || gv.Kind != cbor.KindMap {
+		return false
+	}
+	sv, ok := MapField(gv, "signers")
+	if !ok || sv.Kind != cbor.KindArray {
+		return false
+	}
+	tv, ok := MapField(gv, "threshold")
+	if !ok || tv.Kind != cbor.KindUint {
+		return false
+	}
+	threshold := tv.Uint
+	signers := make([][]byte, 0, len(sv.Array))
+	for _, e := range sv.Array {
+		if e.Kind != cbor.KindBytes {
+			return false
+		}
+		signers = append(signers, e.Bytes)
+	}
+	n := uint64(len(signers))
+	// M3: root-only, quorum shape, distinct signers.
+	if _, ok := root.Bytes("parent"); ok {
+		return false // multi-sig is root-only
+	}
+	if n < 2 || threshold < 2 || threshold > n {
+		return false
+	}
+	for i := 0; i < len(signers); i++ {
+		for j := i + 1; j < len(signers); j++ {
+			if bytesEqual(signers[i], signers[j]) {
+				return false // duplicate signer
+			}
+		}
+	}
+	// M6: the local peer MUST be a quorum member.
+	localIn := false
+	for _, sh := range signers {
+		if s, ok := resolve(sh); ok {
+			if pk, ok := s.Bytes("public_key"); ok && peerIDOfPublicKey(pk) == localPeer {
+				localIn = true
+				break
+			}
+		}
+	}
+	if !localIn {
+		return false
+	}
+	// M4: count DISTINCT signers with a valid signature over the root content hash.
+	// (signers are already distinct by M3, so each contributes at most once.)
+	valid := uint64(0)
+	for _, sh := range signers {
+		s, ok := resolve(sh)
+		if !ok {
+			continue
+		}
+		if sgn, ok := findSignatureBy(root.Hash, sh, included); ok && VerifySignature(sgn, s) {
+			valid++
+		}
+	}
+	return valid >= threshold
+}
+
+// findSignatureBy returns the signature over target authored by signerHash.
+// Multi-sig needs the per-signer signature, not just the first for the target.
+func findSignatureBy(target, signerHash []byte, included Included) (Entity, bool) {
+	for _, e := range included {
+		if e.Type != "system/signature" {
+			continue
+		}
+		if tg, ok := e.Bytes("target"); !ok || !bytesEqual(tg, target) {
+			continue
+		}
+		if sg, ok := e.Bytes("signer"); ok && bytesEqual(sg, signerHash) {
+			return e, true
+		}
+	}
+	return Entity{}, false
+}
+
+// verifyCapabilityChain is the §5.5 authorization path (single-sig delegation
+// chains + §3.6 multi-signature quorum roots). Returns VerdictAllow /
 // VerdictAuthzDeny / VerdictUnresolvableGrantee.
 func verifyCapabilityChain(localPeer string, store *Store, capability Entity, included Included) Verdict {
 	resolve := capResolve(included, store)
@@ -528,35 +621,45 @@ func verifyCapabilityChain(localPeer string, store *Store, capability Entity, in
 		return VerdictAuthzDeny
 	}
 	root := chain[len(chain)-1]
-	// root granter must be the local peer
-	rootOK := false
-	if gh, ok := root.Bytes("granter"); ok {
-		if g, ok := resolve(gh); ok {
-			if pk, ok := g.Bytes("public_key"); ok && peerIDOfPublicKey(pk) == localPeer {
-				rootOK = true
+	if isMultisig(root) {
+		// §3.6 / §5.5 K-of-N quorum root (M3/M4/M6). No single granter.
+		if !multisigRootOK(localPeer, resolve, root, included) {
+			return VerdictAuthzDeny
+		}
+	} else {
+		// root granter must be the local peer
+		rootOK := false
+		if gh, ok := root.Bytes("granter"); ok {
+			if g, ok := resolve(gh); ok {
+				if pk, ok := g.Bytes("public_key"); ok && peerIDOfPublicKey(pk) == localPeer {
+					rootOK = true
+				}
 			}
 		}
-	}
-	if !rootOK {
-		return VerdictAuthzDeny
+		if !rootOK {
+			return VerdictAuthzDeny
+		}
 	}
 
 	now := nowMillis()
 	n := len(chain)
 	for i := 0; i < n; i++ {
 		current := chain[i]
-		// signature: signer == granter, verify against granter identity
-		gh, ok := current.Bytes("granter")
-		if !ok {
-			return VerdictAuthzDeny
-		}
-		sgn, sok := findSignature(current.Hash, included)
-		granter, gok := resolve(gh)
-		if !sok || !gok {
-			return VerdictAuthzDeny
-		}
-		signer, sigok := sgn.Bytes("signer")
-		if !sigok || !bytesEqual(signer, gh) || !VerifySignature(sgn, granter) {
+		// signature: signer == granter, verify against granter identity. A §3.6
+		// multi-sig root has no single granter — it is authorized by the quorum
+		// verified above (root-only, so it is chain[n-1]); grantee + temporal
+		// checks below still apply.
+		if gh, ok := current.Bytes("granter"); ok {
+			sgn, sok := findSignature(current.Hash, included)
+			granter, gok := resolve(gh)
+			if !sok || !gok {
+				return VerdictAuthzDeny
+			}
+			signer, sigok := sgn.Bytes("signer")
+			if !sigok || !bytesEqual(signer, gh) || !VerifySignature(sgn, granter) {
+				return VerdictAuthzDeny
+			}
+		} else if !isMultisig(current) {
 			return VerdictAuthzDeny
 		}
 		// grantee resolution -> 401 carve-out

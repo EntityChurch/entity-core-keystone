@@ -1229,11 +1229,16 @@ package body Entity_Core.Protocol.Handlers is
                   return Err (403, "capability_denied");
                end if;
                declare
-                  Granter : String := Cap.Resolve_Granter_Peer_Id (Peer.St, Env, Caller_Cap);
+                  --  §PR-8 canonicalization frame = the cap's granter peer_id, or
+                  --  the local peer for a §3.6 multi-sig root (no single granter).
+                  --  Computed as ONE constant so the fallback yields a correctly
+                  --  sized String — a plain reassignment onto the length-0 ""
+                  --  result raises CONSTRAINT_ERROR (Ada Strings are fixed-length).
+                  Raw_Granter : constant String :=
+                    Cap.Resolve_Granter_Peer_Id (Peer.St, Env, Caller_Cap);
+                  Granter : constant String :=
+                    (if Raw_Granter = "" then Local_Peer (Peer) else Raw_Granter);
                begin
-                  if Granter = "" then
-                     Granter := Local_Peer (Peer);
-                  end if;
                   if Cap.Check_Permission
                        (Local_Peer (Peer), Granter, Exec, Caller_Cap, Pattern) = Cap.Deny
                   then

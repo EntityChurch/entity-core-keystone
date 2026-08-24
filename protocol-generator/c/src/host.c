@@ -5,7 +5,11 @@
  *
  * Flags (mirror the cohort host + the Go entity-peer surface this peer is gated against):
  *   --port N            TCP listen port (0 = auto/ephemeral; default 0)
- *   --seed HEX          32-byte hex seed (default: 0x11 * 32)
+ *   --name NAME         load a persistent Ed25519 identity from the standard on-disk
+ *                       location ~/.entity/peers/NAME/keypair (the entity-core PEM
+ *                       keypair: base64 of a 32-byte seed — the convention the Go
+ *                       entity-peer --name and peer-manager use)
+ *   --seed HEX          32-byte hex seed (additive override; default 0x11 * 32)
  *   --validate          enable the §7a system/validate conformance handlers (OFF default)
  *   --debug-open-grants degenerate [default → *] seed policy (OFF by default)
  *
@@ -14,7 +18,9 @@
 #include "peer_internal.h"
 #include "transport.h"
 
+#include <ctype.h>
 #include <signal.h>
+#include <sodium.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,6 +51,61 @@ static bool parse_seed_hex(const char *hex, uint8_t out[32])
     return true;
 }
 
+/* Load the 32-byte Ed25519 seed from the standard on-disk keypair (Go
+ * entity-peer --name / peer-manager convention): ~/.entity/peers/NAME/keypair, a
+ * PEM whose body is base64(seed) between BEGIN/END ENTITY PRIVATE KEY lines. */
+static bool load_seed_from_name(const char *name, uint8_t out[32])
+{
+    const char *home = getenv("HOME");
+    if (!home || !*home) {
+        home = "/root";
+    }
+    char path[4096];
+    int pn = snprintf(path, sizeof(path), "%s/.entity/peers/%s/keypair", home, name);
+    if (pn <= 0 || (size_t)pn >= sizeof(path)) {
+        fprintf(stderr, "host: --name %s: path too long\n", name);
+        return false;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "host: --name %s: cannot open %s\n", name, path);
+        return false;
+    }
+    char buf[4096];
+    size_t len = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[len] = 0;
+
+    /* Concatenate the base64 body, skipping PEM armor lines and whitespace. */
+    char b64[4096];
+    size_t bl = 0;
+    for (char *line = strtok(buf, "\r\n"); line; line = strtok(NULL, "\r\n")) {
+        if (strncmp(line, "-----", 5) == 0) {
+            continue;
+        }
+        for (char *p = line; *p && bl < sizeof(b64) - 1; p++) {
+            if (!isspace((unsigned char)*p)) {
+                b64[bl++] = *p;
+            }
+        }
+    }
+    b64[bl] = 0;
+
+    unsigned char decoded[64];
+    size_t dlen = 0;
+    if (sodium_base642bin(decoded, sizeof(decoded), b64, bl, NULL, &dlen, NULL,
+                          sodium_base64_VARIANT_ORIGINAL) != 0) {
+        fprintf(stderr, "host: --name %s: base64 decode failed\n", name);
+        return false;
+    }
+    if (dlen != 32) {
+        fprintf(stderr, "host: --name %s: expected a 32-byte seed, got %zu bytes\n", name, dlen);
+        return false;
+    }
+    memcpy(out, decoded, 32);
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     int port = 0;
@@ -56,6 +117,10 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
             port = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--name") == 0 && i + 1 < argc) {
+            if (!load_seed_from_name(argv[++i], seed)) {
+                return 2;
+            }
         } else if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             if (!parse_seed_hex(argv[++i], seed)) {
                 fprintf(stderr, "host: --seed must be 64 hex chars\n");

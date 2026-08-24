@@ -10,6 +10,20 @@ the gitignored `protocol-generator/go/output/s4-oracles/`)
 **Run isolation:** `podman run --network=none` (netns-sealed, offline); oracle +
 peer share one loopback inside the `entity-core-keystone/go:latest` container.
 
+> **UPDATE 2026-07-12 — genuine §3.6 K-of-N multisig (frame-only → fixed) + `--name`.**
+> The multi-sig **accept-path** probe (`valid_2of3_peer_signed_accepted`) had been
+> SKIPping (no peer keypair on disk), masking a **frame-only** implementation:
+> `verifyCapabilityChain` only handled a single-`granter` delegation chain, so a
+> multi-sig root (`granter = {signers, threshold}`) fell through to deny — the peer
+> rejected *every* multi-grant cap, including a **valid co-signed 2-of-3**, while the
+> reject probes passed vacuously. Adding a real `--name` (default seed normalized
+> `0x01`→`0x11`) + provisioning the keypair made the accept-path RUN, exposing a real
+> `403` FAIL. Fixed by implementing §3.6 M3/M4/M6 in `capability.go`
+> (`multisigRootOK`), modeled on the genuine Prolog peer. **Re-run @ oracle `cc1970f`:
+> 682 total · 292 pass · 294 warn · 0 FAIL · 96 skip — accept-path PASS.** In-repo
+> guard: `peer/multisig_test.go` (5/5). The snapshot below is the historical
+> `@75c532e` run, retained for provenance.
+
 ## Gate result — `validate-peer --profile core`
 
 ```
@@ -76,7 +90,7 @@ not gate.
 
 connectivity 22/0F · encoding 6/0F · **type_system 108P/266W/0F** · handlers
 35/0F (32 ext-skip) · capability 12/0F · tree_operations 24P/1W/0F (31 ext-skip)
-· **security 28/0F** · multisig 10/0F · concurrency 5/0F · resource_bounds
+· **security 28/0F** · multisig 11/0F (genuine K-of-N: 10 reject + accept-path PASS; see 2026-07-12 update) · concurrency 5/0F · resource_bounds
 2P/1W/0F · universal_address_space 8/0F · peer_canonicalization 7/0F ·
 format_agility 10/0F · crypto_agility 4/0F · negotiation 4/0F · authz 6/0F (2
 ext-skip). All extension-only categories (subscriptions, continuations, role,

@@ -541,6 +541,156 @@ package body Entity_Core.Protocol.Capability is
    end Link_Granter_Peer;
 
    ----------------------------
+   -- §3.6 / §5.5 multi-signature root (K-of-N quorum, root-only) --
+   ------------------------------------------------------------------
+   --  A multi-sig cap carries `granter` as a MAP {signers, threshold} instead of
+   --  a single granter hash — the root is authorized by a quorum. §3.6 M3
+   --  (structure): root-only, 2 <= threshold <= N, N >= 2, distinct signers.
+   --  §5.5 M6: the local peer is one of the signers. §5.5 M4: at least `threshold`
+   --  DISTINCT signers each carry a valid signature over the root content hash.
+
+   function Is_Multisig (Cap : Materialized_Entity) return Boolean is
+   begin
+      return Kind (Field (Data (Cap), "granter")) = K_Map;
+   end Is_Multisig;
+
+   function Find_Signature_By
+     (Env : Env_Pkg.Protocol_Envelope; Target, Signer : Byte_Array;
+      Found : out Boolean) return Materialized_Entity is
+   begin
+      for It of Env.Included loop
+         if Type_Name (It.Ent) = "system/signature" then
+            declare
+               Tf, Sf : Boolean;
+               Tg : constant Byte_Array := Byte_Field (It.Ent, "target", Tf);
+               Sg : constant Byte_Array := Byte_Field (It.Ent, "signer", Sf);
+            begin
+               if Tf and then Sf and then Octets_Equal (Tg, Target)
+                 and then Octets_Equal (Sg, Signer)
+               then
+                  Found := True;
+                  return It.Ent;
+               end if;
+            end;
+         end if;
+      end loop;
+      Found := False;
+      return Make ("primitive/any", Empty_Map);
+   end Find_Signature_By;
+
+   function Multisig_Root_Ok
+     (Local_Peer : String;
+      Store      : access Entity_Core.Protocol.Store.Safe_Store;
+      Env        : Env_Pkg.Protocol_Envelope;
+      Root       : Materialized_Entity) return Boolean
+   is
+      use type Interfaces.Unsigned_64;
+      Granter : constant Ecf_Value := Field (Data (Root), "granter");
+   begin
+      if Kind (Granter) /= K_Map then
+         return False;
+      end if;
+      declare
+         Signers   : constant Ecf_Value := Field (Granter, "signers");
+         Thr_V     : constant Ecf_Value := Field (Granter, "threshold");
+         Parent_Found : Boolean;
+         Par : constant Byte_Array := Byte_Field (Root, "parent", Parent_Found);
+         pragma Unreferenced (Par);
+      begin
+         if Kind (Signers) /= K_Array or else Kind (Thr_V) /= K_Uint then
+            return False;
+         end if;
+         declare
+            Threshold : constant Interfaces.Unsigned_64 := As_Uint (Thr_V);
+            N         : constant Natural := Array_Length (Signers);
+         begin
+            --  M3: root-only, quorum shape, distinct 33-byte signers.
+            if Parent_Found then
+               return False;  --  multi-sig is root-only
+            end if;
+            if N < 2 or else Threshold < 2
+              or else Interfaces.Unsigned_64 (N) < Threshold
+            then
+               return False;
+            end if;
+            for I in 1 .. N loop
+               if Kind (Array_Element (Signers, I)) /= K_Bytes then
+                  return False;
+               end if;
+               declare
+                  Si : constant Byte_Array := As_Bytes (Array_Element (Signers, I));
+               begin
+                  if Si'Length /= 33 then
+                     return False;
+                  end if;
+                  for J in I + 1 .. N loop
+                     if Kind (Array_Element (Signers, J)) = K_Bytes
+                       and then Octets_Equal (Si, As_Bytes (Array_Element (Signers, J)))
+                     then
+                        return False;  --  duplicate signer
+                     end if;
+                  end loop;
+               end;
+            end loop;
+
+            --  M6: the local peer MUST be a quorum member.
+            declare
+               Local_In : Boolean := False;
+            begin
+               for I in 1 .. N loop
+                  declare
+                     Sf : Boolean;
+                     S  : constant Materialized_Entity :=
+                       Resolve (Store, Env, As_Bytes (Array_Element (Signers, I)), Sf);
+                  begin
+                     if Sf then
+                        declare
+                           Pkf : Boolean;
+                           Pk  : constant Byte_Array := Byte_Field (S, "public_key", Pkf);
+                        begin
+                           if Pkf and then Pk'Length = 32
+                             and then Entity_Core.Protocol.Identity.Peer_Id_Of_Public
+                                        (Entity_Core.Crypto.Public_Bytes (Pk)) = Local_Peer
+                           then
+                              Local_In := True;
+                           end if;
+                        end;
+                     end if;
+                  end;
+                  exit when Local_In;
+               end loop;
+               if not Local_In then
+                  return False;
+               end if;
+            end;
+
+            --  M4: count DISTINCT signers with a valid signature over the root hash.
+            declare
+               Valid     : Natural := 0;
+               Root_Hash : constant Byte_Array := Hash (Root);
+            begin
+               for I in 1 .. N loop
+                  declare
+                     Sf, Sgn_Found : Boolean;
+                     Sh  : constant Byte_Array := As_Bytes (Array_Element (Signers, I));
+                     S   : constant Materialized_Entity := Resolve (Store, Env, Sh, Sf);
+                     Sgn : constant Materialized_Entity :=
+                       Find_Signature_By (Env, Root_Hash, Sh, Sgn_Found);
+                  begin
+                     if Sf and then Sgn_Found
+                       and then Entity_Core.Protocol.Identity.Verify_Signature (Sgn, S)
+                     then
+                        Valid := Valid + 1;
+                     end if;
+                  end;
+               end loop;
+               return Interfaces.Unsigned_64 (Valid) >= Threshold;
+            end;
+         end;
+      end;
+   end Multisig_Root_Ok;
+
+   ----------------------------
    -- Verify_Capability_Chain --
    ----------------------------
    function Verify_Capability_Chain
@@ -576,30 +726,40 @@ package body Entity_Core.Protocol.Capability is
          end;
       end loop;
 
-      --  Root must be self-issued by Local_Peer.
+      --  Root must be self-issued by Local_Peer (single-sig), or pass the §3.6
+      --  K-of-N quorum (multi-sig root: granter is a {signers, threshold} map).
       declare
          Root : constant Materialized_Entity := Chain (N);
-         Rg_Found, G_Found, Pk_Found : Boolean;
-         Rgh : constant Byte_Array := Byte_Field (Root, "granter", Rg_Found);
-         Root_Ok : Boolean := False;
       begin
-         if Rg_Found then
+         if Is_Multisig (Root) then
+            if not Multisig_Root_Ok (Local_Peer, Store, Env, Root) then
+               return Deny;
+            end if;
+         else
             declare
-               G : constant Materialized_Entity := Resolve (Store, Env, Rgh, G_Found);
+               Rg_Found, G_Found, Pk_Found : Boolean;
+               Rgh : constant Byte_Array := Byte_Field (Root, "granter", Rg_Found);
+               Root_Ok : Boolean := False;
             begin
-               if G_Found then
+               if Rg_Found then
                   declare
-                     Pk : constant Byte_Array := Byte_Field (G, "public_key", Pk_Found);
+                     G : constant Materialized_Entity := Resolve (Store, Env, Rgh, G_Found);
                   begin
-                     Root_Ok := Pk_Found and then Pk'Length = 32
-                       and then Entity_Core.Protocol.Identity.Peer_Id_Of_Public
-                                  (Entity_Core.Crypto.Public_Bytes (Pk)) = Local_Peer;
+                     if G_Found then
+                        declare
+                           Pk : constant Byte_Array := Byte_Field (G, "public_key", Pk_Found);
+                        begin
+                           Root_Ok := Pk_Found and then Pk'Length = 32
+                             and then Entity_Core.Protocol.Identity.Peer_Id_Of_Public
+                                        (Entity_Core.Crypto.Public_Bytes (Pk)) = Local_Peer;
+                        end;
+                     end if;
                   end;
                end if;
+               if not Root_Ok then
+                  return Deny;
+               end if;
             end;
-         end if;
-         if not Root_Ok then
-            return Deny;
          end if;
       end;
 
@@ -635,7 +795,10 @@ package body Entity_Core.Protocol.Capability is
                      Good := False;
                   end if;
                end;
-            else
+            elsif not Is_Multisig (Cur) then
+               --  A §3.6 multi-sig root has no single granter — it is authorized
+               --  by the quorum verified above (root-only); grantee + temporal
+               --  checks below still apply.
                Good := False;
             end if;
 

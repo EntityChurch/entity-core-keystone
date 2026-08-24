@@ -615,6 +615,122 @@ static bool check_delegation_caveats(const ec_entity *parent, const ec_entity *c
     return true;
 }
 
+/* ── §3.6 / §5.5 multi-signature root (K-of-N quorum, root-only) ─────────────
+ *
+ * A multi-sig cap carries `granter` as a MAP {signers:[hash,…], threshold:k}
+ * instead of a single granter hash — the root is authorized by a quorum. §3.6 M3
+ * (structure): root-only, 2 ≤ threshold ≤ N, N ≥ 2, distinct signers. §5.5 M6:
+ * the local peer is one of the signers. §5.5 M4: at least `threshold` DISTINCT
+ * signers each carry a valid signature over the root content hash. */
+static bool is_multisig(const ec_entity *cap)
+{
+    return ec_ent_map_field(cap, "granter") != NULL;
+}
+
+/* The signature over `target` authored by `signer` (borrow; NULL if none). */
+static ec_entity *find_signature_by(const uint8_t *target, const uint8_t *signer,
+                                    const ec_envelope *env)
+{
+    for (size_t i = 0; i < env->included_len; i++) {
+        ec_entity *e = env->included[i].entity;
+        if (strcmp(e->type, "system/signature") != 0) {
+            continue;
+        }
+        size_t tlen = 0, slen = 0;
+        const uint8_t *tg = ec_ent_bytes(e, "target", &tlen);
+        if (!tg || tlen != 33 || memcmp(tg, target, 33) != 0) {
+            continue;
+        }
+        const uint8_t *sg = ec_ent_bytes(e, "signer", &slen);
+        if (sg && slen == 33 && memcmp(sg, signer, 33) == 0) {
+            return e;
+        }
+    }
+    return NULL;
+}
+
+static bool multisig_root_ok(const char *local_peer, const ec_envelope *env,
+                             ec_store *store, const ec_entity *root)
+{
+    const ec_value *gm = ec_ent_map_field(root, "granter");
+    if (!gm) {
+        return false;
+    }
+    const ec_value *signers = ec_map_get(gm, "signers");
+    const ec_value *thr = ec_map_get(gm, "threshold");
+    if (!signers || signers->kind != EC_ARRAY) {
+        return false;
+    }
+    if (!thr || thr->kind != EC_INT || thr->as.i.negative) {
+        return false;
+    }
+    uint64_t threshold = thr->as.i.u;
+    size_t n = signers->as.arr.len;
+
+    /* M3: root-only, quorum shape, distinct signers. */
+    size_t plen = 0;
+    if (ec_ent_bytes(root, "parent", &plen)) {
+        return false; /* multi-sig is root-only */
+    }
+    if (n < 2 || threshold < 2 || threshold > n) {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        const ec_value *si = signers->as.arr.items[i];
+        if (!si || si->kind != EC_BYTES || si->as.bytes.len != 33) {
+            return false;
+        }
+        for (size_t j = i + 1; j < n; j++) {
+            const ec_value *sj = signers->as.arr.items[j];
+            if (sj && sj->kind == EC_BYTES && sj->as.bytes.len == 33
+                && memcmp(si->as.bytes.p, sj->as.bytes.p, 33) == 0) {
+                return false; /* duplicate signer */
+            }
+        }
+    }
+
+    /* M6: the local peer MUST be a quorum member. */
+    bool local_in = false;
+    for (size_t i = 0; i < n && !local_in; i++) {
+        const ec_value *si = signers->as.arr.items[i];
+        ec_entity *s = cap_resolve(env, store, si->as.bytes.p);
+        if (s) {
+            size_t pl = 0;
+            const uint8_t *pk = ec_ent_bytes(s, "public_key", &pl);
+            if (pk && pl == 32) {
+                char *pid = NULL;
+                if (ec_peer_id_of_pubkey32(pk, &pid) == EC_OK && pid) {
+                    if (strcmp(pid, local_peer) == 0) {
+                        local_in = true;
+                    }
+                    free(pid);
+                }
+            }
+            ec_entity_unref(s);
+        }
+    }
+    if (!local_in) {
+        return false;
+    }
+
+    /* M4: count DISTINCT signers with a valid signature over the root hash.
+     * (signers are already distinct by M3, so each contributes at most once.) */
+    uint64_t valid = 0;
+    for (size_t i = 0; i < n; i++) {
+        const ec_value *si = signers->as.arr.items[i];
+        ec_entity *s = cap_resolve(env, store, si->as.bytes.p);
+        if (!s) {
+            continue;
+        }
+        ec_entity *sgn = find_signature_by(root->hash, si->as.bytes.p, env);
+        if (sgn && ec_verify_signature(sgn, s)) {
+            valid++;
+        }
+        ec_entity_unref(s);
+    }
+    return valid >= threshold;
+}
+
 static ec_verdict verify_chain(const char *local_peer, ec_store *store,
                                const ec_entity *cap, const ec_envelope *env,
                                bool *unresolvable)
@@ -627,33 +743,43 @@ static ec_verdict verify_chain(const char *local_peer, ec_store *store,
     ec_verdict result = EC_V_DENY;
     ec_entity *root = c.items[c.len - 1];
 
-    /* root granter must resolve to local */
-    bool root_ok = false;
-    size_t rgl = 0;
-    const uint8_t *rgh = ec_ent_bytes(root, "granter", &rgl);
-    if (rgh && rgl == 33) {
-        ec_entity *g = cap_resolve(env, store, rgh);
-        if (g) {
-            size_t pl = 0;
-            const uint8_t *pk = ec_ent_bytes(g, "public_key", &pl);
-            if (pk && pl == 32) {
-                char *pid = NULL;
-                if (ec_peer_id_of_pubkey32(pk, &pid) == EC_OK && pid) {
-                    root_ok = (strcmp(pid, local_peer) == 0);
-                    free(pid);
-                }
-            }
-            ec_entity_unref(g);
+    /* root granter must resolve to local (single-sig), or pass the §3.6 K-of-N
+     * quorum (multi-sig root: granter is a {signers, threshold} map). */
+    if (is_multisig(root)) {
+        if (!multisig_root_ok(local_peer, env, store, root)) {
+            goto done; /* result stays EC_V_DENY */
         }
-    }
-    if (!root_ok) {
-        goto done;
+    } else {
+        bool root_ok = false;
+        size_t rgl = 0;
+        const uint8_t *rgh = ec_ent_bytes(root, "granter", &rgl);
+        if (rgh && rgl == 33) {
+            ec_entity *g = cap_resolve(env, store, rgh);
+            if (g) {
+                size_t pl = 0;
+                const uint8_t *pk = ec_ent_bytes(g, "public_key", &pl);
+                if (pk && pl == 32) {
+                    char *pid = NULL;
+                    if (ec_peer_id_of_pubkey32(pk, &pid) == EC_OK && pid) {
+                        root_ok = (strcmp(pid, local_peer) == 0);
+                        free(pid);
+                    }
+                }
+                ec_entity_unref(g);
+            }
+        }
+        if (!root_ok) {
+            goto done;
+        }
     }
 
     bool good = true;
     for (size_t i = 0; i < c.len && good; i++) {
         ec_entity *current = c.items[i];
-        /* signature: signer == granter, verify against granter identity */
+        /* signature: signer == granter, verify against granter identity. A §3.6
+         * multi-sig root has no single granter — it is authorized by the quorum
+         * verified above (root-only, so it is the last chain item); grantee +
+         * temporal checks below still apply. */
         size_t gl = 0;
         const uint8_t *gh = ec_ent_bytes(current, "granter", &gl);
         if (gh && gl == 33) {
@@ -670,7 +796,7 @@ static ec_verdict verify_chain(const char *local_peer, ec_store *store,
                 good = false;
             }
             ec_entity_unref(granter);
-        } else {
+        } else if (!is_multisig(current)) {
             good = false;
         }
         /* grantee resolution → 401 carve-out */

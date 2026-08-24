@@ -39,7 +39,19 @@ HOST_BIN=/tmp/go-host
 # probes run live instead of honest-SKIP. Off in production; on here. (VALIDATE=0
 # exercises the SKIP path.)
 VALIDATE_FLAG=""; [ "${VALIDATE:-1}" = "1" ] && VALIDATE_FLAG="--validate"
-"$HOST_BIN" --port "$PORT" --debug-open-grants $VALIDATE_FLAG \
+
+# Provision the peer keypair at ~/.entity/peers/conformance/keypair (seed
+# 0x11×32, base64 "ERER…") so the validator can co-sign AS the peer for the §3.6
+# multisig accept-path probe (valid_2of3_peer_signed_accepted). The peer boots
+# --name conformance and loads this same seed → matching peer_id.
+KPDIR="${HOME:-/root}/.entity/peers/conformance"
+mkdir -p "$KPDIR"
+printf '%s\n%s\n%s\n' \
+  '-----BEGIN ENTITY PRIVATE KEY-----' \
+  'ERERERERERERERERERERERERERERERERERERERERERE=' \
+  '-----END ENTITY PRIVATE KEY-----' > "$KPDIR/keypair"
+
+"$HOST_BIN" --port "$PORT" --name conformance --debug-open-grants $VALIDATE_FLAG \
   >/tmp/host.out 2>/tmp/host.err &
 HOST_PID=$!
 trap 'kill "$HOST_PID" 2>/dev/null || true' EXIT INT TERM
