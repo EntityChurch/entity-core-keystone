@@ -1,6 +1,6 @@
 # entity-core-keystone — status
 
-_Updated: 2026-06-30 · public: v0.8.0 (master)_
+_Updated: 2026-07-11 · public: v0.8.0 (master)_
 
 ## Where it is
 
@@ -14,10 +14,11 @@ interaction, capability, bootstrap) for any target language, and it owns the
 for languages without mature canonical-CBOR + Ed25519 stacks. Generating peers
 is the *means*; the *end* is **spec refinement** — running the generator across
 many languages surfaces every spec ambiguity and feeds it back to architecture.
-Maturity: **initial public research-preview, v0.8.0 (V8)**. A **22-language**
+Maturity: **initial public research-preview, v0.8.0 (V8)**. A **23-language**
 peer cohort is in place and uniformly conformant; the pipeline is past
-first-build and into steady-state maintenance. The 22nd peer (COBOL) is now
-complete — its §6.11 handler-outbound-dispatch reentry seam landed and passes.
+first-build and into steady-state maintenance. The 23rd peer (**Tcl** — the
+alien-substrate Everything-Is-A-String probe) is now complete S1→S5, measured
+natively at `cc1970f` (**682·0F**, genuine 2-of-3 multisig accept-path passed).
 
 The single pinned input is `protocol-generator/shared/spec-data/v0.8.0/` (a
 verbatim, SHA-256-pinned snapshot of the normative specs) plus the co-versioned
@@ -27,17 +28,23 @@ wire byte-unchanged**; the `v7.*` snapshots were retired.
 
 ## Where we left off
 
-The closed cohort is **22 generated core peers** (OCaml, Swift, Haskell, Go,
+The closed cohort is **23 generated core peers** (OCaml, Swift, Haskell, Go,
 Lean, C#, TypeScript, Java, Kotlin, Elixir, Common Lisp, Rust, Python, Zig, C,
-C++, Ada, Ruby, Prolog, PHP, Dart, COBOL), every one full S1→S5 and
-**`validate-peer --profile core` 0-FAIL**. Twenty-one are normalized on a single
-current oracle (`entity-core-go` HEAD, `e8524ed`; **665 total · 0F**, with the
-`passed` 291–293 / `skip` 95–96 spread being extension *matched-if-present*
-WARN/PASS only — the core verdict is uniform: **0 FAIL, 0 core-floor gap**), with
-uniform oracle-path defaults so the verdict is apples-to-apples. COBOL, the last
-to land, is **291·0F @ `cc1970f`** (public HEAD, core gate diff-verified
-functionally identical to `e8524ed`); a full re-normalization of the cohort onto
-the public-HEAD oracle is tracked in the matrix §3. Per-peer truth (spec version, oracle
+C++, Ada, Ruby, Prolog, PHP, Dart, COBOL, Tcl), every one full S1→S5 and
+**`validate-peer --profile core` 0-FAIL**. **Tcl** (the alien-substrate EIAS
+probe) is the newest — measured **natively** at `cc1970f` (**682·0F**; genuine
+2-of-3 multisig, structural event-loop concurrency), no spec-precision finding
+(clean corroboration end to end — the answer the probe was built to get). The whole cohort is now normalized on
+the reproducible public-HEAD oracle `cc1970f` (2026-07-10 re-normalization). The
+`--profile core` **0-FAIL** gate at `cc1970f` is *proven* the same gate the cohort
+converged against — its normalized core-gate fingerprint (the 16-category set +
+53-type floor, comment-invariant) is `8261a03…`, and the now-retired pin `e8524ed`
+differed only by a V8 comment reword that leaves that fingerprint untouched — so
+every peer's verdict carries. COBOL was measured **natively** at `cc1970f`
+(**291·0F Result: PASS**); the 21 others' extension-inflated **665** full-suite
+totals (non-gating; `passed` 291–293 / `skip` 95–96 from extension *matched-if-
+present* WARN/PASS) were measured @ the retired `e8524ed` and are carried, not
+re-measured — the core 0-FAIL gate is what carries and what `cc1970f` certifies. Per-peer truth (spec version, oracle
 commit, codec strategy, crypto floor, known gaps, packaging, tier) lives in
 `CONFORMANCE-MATRIX.md` — check it, not this narrative.
 
@@ -64,9 +71,9 @@ seam**. State: **289 PASS · 0 FAIL** VALIDATE=0; **291 PASS · 0 FAIL — Resul
 PASS** VALIDATE=1 (one honest `t1_3_no_head_of_line` skip allow-listed — its
 256 KiB staging payload exceeds the single-threaded host's 64 KiB frame cap, so
 the probe can't stage; §4.10(a)-conformant oversize drain). Certified on
-`entity-core-go` public HEAD `cc1970f`, whose core gate is diff-verified
-functionally identical to the pinned `e8524ed` (comment-only `profile.go`
-reword). The seam: a C `ec_reentry` pump on the active poll slot (serialized
+`entity-core-go` public HEAD `cc1970f`, whose core gate is proven functionally
+identical to the now-retired `e8524ed` (comment-only `profile.go` reword; same
+normalized fingerprint). The seam: a C `ec_reentry` pump on the active poll slot (serialized
 single-outbound with frame pushback — no request_id map, no deadlock), an
 `env-kind` frame classifier, and a full `dispatch-outbound-handler`.
 (`protocol-generator/cobol/status/`.)
@@ -138,10 +145,18 @@ From `CONFORMANCE-MATRIX.md` §3 (catch-up) and `research/stewardship/SPEC-FINDI
   on the single-threaded poll host (a C `ec_reentry` pump on the active slot with
   frame pushback + `env-kind` classifier + a full `dispatch-outbound-handler`).
   `--profile core` **291·0F, Result: PASS** (VALIDATE=1), 289·0F VALIDATE=0 (no
-  regression). Certified on public-HEAD oracle `cc1970f` (core gate diff-verified
-  ≡ pinned `e8524ed`). Surfaced a process finding: the core-gate sha256 anchor is
-  comment-fragile (a V8 release-prep comment reword false-alarmed "core gate
-  moved") — matrix §3 tracks hashing the normalized category set instead.
+  regression). Certified on public-HEAD oracle `cc1970f` (core gate proven ≡
+  retired `e8524ed` via the normalized fingerprint). Surfaced a process finding —
+  the core-gate sha256 anchor was comment-fragile (a V8 comment reword false-
+  alarmed "core gate moved") — **now fixed** (see next bullet).
+- **Oracle re-normalization + anchor hardening (2026-07-10)** — re-pinned the
+  cohort's oracle to the reproducible public HEAD `cc1970f` (the mirror rewrote
+  history, so the old `e8524ed` no longer resolves), and hardened
+  `oracle-bootstrap.sh` to fingerprint the *normalized* core gate (16-category set
+  + 53-type floor, `8261a03…`) instead of the raw `profile.go` sha256 — comment
+  rewords no longer false-alarm, real category drift still trips it (regression-
+  tested both ways). Matrix §3 items closed; the two profile.go blobs differing
+  only by a comment proves the whole cohort's 0-FAIL gate carries to `cc1970f`.
 - **Oracle normalization** — the whole 21-peer cohort re-run on one oracle
   (`e8524ed`) to a uniform **665·0F**; the when/why-to-re-vendor rule is captured
   in `research/diagnostics/oracle-vendoring-policy.md` (incl. the build-once-into-
@@ -170,8 +185,7 @@ From `CONFORMANCE-MATRIX.md` §3 (catch-up) and `research/stewardship/SPEC-FINDI
 1. **Extensibility surface across the cohort**: with COBOL's §6.11
    outbound-dispatch seam landed (peer 22 closed), bring `register`/`unregister`
    (V1.0/L0) and the handler-facing outbound-dispatch seam across the remaining
-   peers. Re-normalize the cohort onto the public-HEAD oracle (`cc1970f`; matrix
-   §3) for uniform provenance.
+   peers. *(Oracle re-normalization onto `cc1970f` + anchor hardening — done.)*
 2. **Work the catch-up backlog**: `--name` on C + Ada, then verify genuine
    multisig + add accept-path tests on the five later-folded peers (C, Ada, Ruby,
    Prolog, Go); fix the scorecard label off-by-one.

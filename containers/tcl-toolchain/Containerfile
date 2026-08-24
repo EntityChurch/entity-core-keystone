@@ -1,0 +1,142 @@
+# Tcl toolchain image — builds the ALIEN-SUBSTRATE peer
+# (entity-core-protocol-tcl) per protocol-generator/tcl/profile.toml.
+# Mirrors the structure of containers/prolog-toolchain + containers/base.
+#
+# ALIEN-SUBSTRATE PROBE: Everything-Is-A-String (EIAS). The codec is hand-rolled
+# pure Tcl (the paradigm probe); crypto crosses the C-ABI (libentitycore_codec) via
+# the `cffi` FFI package — the COBOL FFI-hybrid shape. This Containerfile is the
+# pinned recipe, AUTHORED at S1 (S1 boundary: no podman, no build, no toolchain run).
+# The build/run is S2's job; the verification RUN blocks below are what S2 asserts.
+#
+# S11: pin the toolchain + every dependency to an exact version. Tcl is a reviewed
+#      source channel (core.tcl-lang.org / SWIG-free git tags), so the ≥30-day age
+#      floor relaxes for the toolchain itself but the exact version pin stands for
+#      reproducibility. cffi links the image's libffi; libentitycore_codec statically
+#      links the image's libsodium — distro-provided system libs, recorded at build.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Ages at authoring 2026-07-10:
+#   Tcl           9.0.1  (2024-10, ~21mo) — the modern major: full-Unicode/UTF-8
+#                                           internal, 64-bit sizes, cleaner byte-vs-
+#                                           string boundary (sharpens A-TCL-001/002).
+#                                           Preference: the fedora:43 `tcl` package IF
+#                                           it is 9.0.x; else 8.6.15 fallback OR a
+#                                           source build of the pinned 9.0.1 tag.
+#                                           A-TCL-004: confirm fedora:43's tcl major
+#                                           at first build; the build asserts the
+#                                           resolved version and records it.
+#   cffi          1.2.0  (>30d)           — libffi-based Tcl FFI (A. Nadkarni). Binds
+#                                           libentitycore_codec's verbatim header.
+#                                           fedora may not package it (tcl-cffi); the
+#                                           source-build block below is the fallback.
+#                                           A-TCL-005: confirm the binding at build.
+#   tcltest       bundled                 — ships INSIDE the Tcl distribution; no
+#                                           separate pin (version = whatever the
+#                                           pinned Tcl bundles, recorded at build).
+#   Tcllib sha256 image-provided (opt.)   — pure-Tcl SHA floor FALLBACK only; the
+#                                           default peer takes SHA over the C-ABI.
+#   libsodium     image-provided          — statically + privately linked into
+#                                           libentitycore_codec.{so,a} by its CMake.
+#   libffi        image-provided          — cffi links the system libffi.
+# CBOR + base58 + varint are hand-rolled pure Tcl in-repo (no Tcl pkg gives canonical
+# ECF; A-005, 7th peer to hit it). The test harness uses bundled tcltest (no dep).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (S2, not S1):
+#   podman build -t entity-core-keystone/tcl-toolchain:latest \
+#     -f containers/tcl-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps. Preference order for Tcl itself:
+#   (1) the fedora:43 `tcl` package IF it is 9.0.x — simplest, distro-reviewed; OR
+#   (2) the 8.6.15 fallback (A-TCL-004) if fedora ships 8.6 and cffi targets it; OR
+#   (3) a source build of the pinned 9.0.1 tag (the commented block below).
+# tcl + tcl-devel: the interpreter (tclsh) + headers (tcl.h) that cffi/critcl and a
+#   source cffi build need.
+# tcllib: the community standard library — provides the pure-Tcl `sha256` FALLBACK
+#   (the default peer takes SHA over the C-ABI; this is only for an FFI-free floor).
+# libffi + libffi-devel: cffi binds shared libs through libffi.
+# gcc/gcc-c++/cmake/make/pkgconfig: build the C-ABI codec (libentitycore_codec) via
+#   its CMake, and (fallback) build cffi from source against tcl-devel + libffi-devel.
+# libsodium-static + libsodium-devel: the C-ABI CMake STATICALLY + PRIVATELY links
+#   libsodium into libentitycore_codec.{so,a}. Without these the C-ABI build FATALs.
+RUN dnf install -y \
+        tcl tcl-devel tcllib \
+        libffi libffi-devel \
+        gcc gcc-c++ cmake make pkgconfig \
+        libsodium-static libsodium-devel \
+        git curl ca-certificates findutils which glibc-langpack-en \
+    && dnf clean all
+
+# Tcl 9.0 (and wire data generally) needs a UTF-8 locale: the C/POSIX locale mangles
+# non-ASCII argv + [encoding system] defaults. Pin UTF-8 so text vectors + goal
+# strings load cleanly (the same locale lesson the prolog image hit with swipl).
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# ── Verify the Tcl pin (A-TCL-004) ──────────────────────────────────────────
+# Assert the resolved tclsh is 9.0.x (preferred) or 8.6.x (accepted fallback), and
+# record it. If fedora:43's tcl is neither, use the source-build block at the bottom.
+RUN echo 'puts "Tcl [info patchlevel]"; \
+          set v [split [info patchlevel] .]; \
+          set major [lindex $v 0]; set minor [lindex $v 1]; \
+          if {!(($major==9 && $minor==0) || ($major==8 && $minor==6))} { \
+             puts stderr "FATAL: tcl not on the 9.0.x/8.6.x line ([info patchlevel])"; exit 1 }; \
+          puts "tcl version OK ([info patchlevel])"' | tclsh
+
+# ── Verify tcltest ships in the distribution (bundled test framework) ────────
+RUN echo 'package require tcltest; puts "tcltest [package present tcltest] OK"' | tclsh
+
+# ── Verify the UTF-8 byte-vs-char probe primitives work (A-TCL-001/002) ──────
+# The two seams this peer exists to exercise must have working primitives:
+#   - `encoding convertto utf-8` (text -> wire bytes) and its byte length
+#   - `binary format`/`binary scan` for network-order ints + IEEE floats
+RUN echo 'set s "héllo"; \
+          set b [encoding convertto utf-8 $s]; \
+          set charlen [string length $s]; \
+          set bytelen [string length $b]; \
+          puts "char-len $charlen  utf8-byte-len $bytelen (A-TCL-002: differ for non-ASCII)"; \
+          if {$bytelen <= $charlen} { puts stderr "FATAL: utf-8 byte length probe wrong"; exit 1 }; \
+          binary scan [binary format Wu 18446744073709551615] Wu back; \
+          puts "binary Wu roundtrip OK ($back)"; \
+          binary scan [binary format R 1.5] R f32; binary scan [binary format Q 1.5] Q f64; \
+          puts "binary IEEE f32/f64 OK ($f32 / $f64)"' | tclsh
+
+# ── (A-TCL-005) cffi: prefer a distro package, else source-build ─────────────
+# Try the fedora `tcl-cffi` package first; if absent, build cffi 1.2.0 from source
+# against tcl-devel + libffi-devel. Fail closed if neither yields a loadable cffi.
+#   ARG CFFI_VERSION=1.2.0
+#   ARG CFFI_SHA256=<fill-and-verify-at-build>   # fail closed on mismatch (A-CL-006 discipline)
+RUN dnf install -y tcl-cffi 2>/dev/null || true \
+    && ( echo 'package require cffi; puts "cffi [package present cffi] OK (distro)"' | tclsh ) \
+    || ( echo "cffi not packaged — source build required (see commented block; A-TCL-005)" )
+# Source-build fallback (uncomment + pin CFFI_SHA256 at first build if distro cffi absent):
+#   RUN curl -fsSL -o /tmp/cffi.tar.gz \
+#         "https://github.com/apnadkarni/tcl-cffi/archive/refs/tags/v${CFFI_VERSION}.tar.gz" \
+#     && echo "${CFFI_SHA256}  /tmp/cffi.tar.gz" | sha256sum -c - \
+#     && mkdir -p /tmp/cffi && tar -xzf /tmp/cffi.tar.gz -C /tmp/cffi --strip-components=1 \
+#     && cd /tmp/cffi && ./configure --with-tcl=/usr/lib64 --with-tclinclude=/usr/include \
+#     && make -j"$(nproc)" && make install \
+#     && cd / && rm -rf /tmp/cffi /tmp/cffi.tar.gz \
+#     && ( echo 'package require cffi; puts "cffi [package present cffi] OK (source)"' | tclsh )
+
+# ── (FALLBACK PATH, commented) Source-build Tcl 9.0.1 ───────────────────────
+# Use ONLY if fedora:43's tcl package is off both the 9.0.x and 8.6.x lines (A-TCL-004).
+#   ARG TCL_VERSION=9.0.1
+#   ARG TCL_SHA256=<fill-and-verify-at-build>     # fail closed on mismatch
+#   RUN curl -fsSL -o /tmp/tcl.tar.gz \
+#         "https://sourceforge.net/projects/tcl/files/Tcl/${TCL_VERSION}/tcl${TCL_VERSION}-src.tar.gz/download" \
+#     && echo "${TCL_SHA256}  /tmp/tcl.tar.gz" | sha256sum -c - \
+#     && mkdir -p /tmp/tcl && tar -xzf /tmp/tcl.tar.gz -C /tmp/tcl --strip-components=1 \
+#     && cd /tmp/tcl/unix && ./configure --prefix=/opt/tcl --enable-64bit \
+#     && make -j"$(nproc)" && make install \
+#     && cd / && rm -rf /tmp/tcl /tmp/tcl.tar.gz
+#   ENV PATH=/opt/tcl/bin:$PATH
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="tcl-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.tcl="9.0.1"
+LABEL org.entity-core-keystone.experimental="eias-alien-substrate-probe"
+
+CMD ["/bin/bash"]

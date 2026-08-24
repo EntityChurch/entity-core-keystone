@@ -82,12 +82,32 @@
 
 ## Pre-release slate (shipped)
 
-The pre-release slate added six peers before the release tag, in build order
-**Kotlin → PHP → C++ → Dart → Odin → COBOL** — reach-first (Kotlin/C++/PHP/Dart) then the
-two curiosity picks (Odin reach-modest; **COBOL the one genuine discovery bet**,
-spike-first). All reach peers are corroboration-only (the discovery well is dry on language
-axes). Per-peer codec/crypto strategy and conformance results are recorded in each peer's
+The pre-release slate added five peers before the release tag, in build order
+**Kotlin → PHP → C++ → Dart → COBOL** — reach-first (Kotlin/C++/PHP/Dart) then the
+one curiosity pick (**COBOL the one genuine discovery bet**, spike-first). All reach peers
+are corroboration-only (the discovery well is dry on language axes). An Odin peer was
+scoped as a reach-modest curiosity pick but **not built** (it remains *not-started* in the
+Tier-3 table above); the 22-peer cohort in `CONFORMANCE-MATRIX.md` is Odin-free. Per-peer
+codec/crypto strategy and conformance results are recorded in each peer's
 `protocol-generator/<lang>/status/` and summarized in `CONFORMANCE-MATRIX.md`.
+
+## Post-release: alien-substrate track (in progress)
+
+With the 22-peer cohort shipped and the maintenance loop solid, the ongoing work is
+a deliberate sweep of **alien substrates** — languages whose *paradigm* is distant
+enough to stress the generator and, where possible, probe the least-saturated
+wire-touching axis (string/encoding model). These are corroboration/robustness first;
+a fresh spec finding is the upside, not the expectation.
+
+| Peer | Substrate axis probed | Codec | Status |
+|---|---|---|---|
+| **Tcl** (#23) | **Everything-Is-A-String (EIAS)** — no intrinsic value type; the string/encoding axis from its extreme end (byte-vs-text, length-in-bytes, int-vs-float intent) | ffi-hybrid (hand-rolled pure-Tcl CBOR + C-ABI crypto via `cffi`) | **S1 done** — profile + rationale + ambiguity log + container authored (`protocol-generator/tcl/`). S2 (codec) next. |
+
+Candidate follow-ons (not yet started, roughly by insight-yield): Rexx (EIAS +
+native decimal), Forth (stack machine / no types — generator stress), Fortran
+(array/column — reach + robustness), APL/J (array model). Order is not fixed; the
+selection heuristic is the peer-selection compass (novelty on a wire-touching axis
+over idiom/packaging novelty).
 
 ## Sequencing (historical — first wave, all shipped)
 

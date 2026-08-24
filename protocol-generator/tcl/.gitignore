@@ -1,0 +1,10 @@
+# Build artifacts — the crypto C-extension shim (built from src/ffi/entitycore_tcl.c
+# against libentitycore_codec via `make shim`). Provenance via ec_impl_info().
+src/ffi/*.so
+src/ffi/*.o
+
+# bin/ here is the SOURCE host entrypoint (bin/peer.tcl for S4), NOT a build-output
+# dir. The repo-root .gitignore has a blanket `**/bin/` (for compiled-output bin
+# dirs); un-ignore this source directory + its launcher explicitly (the PHP pattern).
+!/bin/
+!/bin/peer.tcl

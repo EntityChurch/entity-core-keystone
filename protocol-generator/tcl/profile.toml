@@ -1,0 +1,252 @@
+# entity-core-protocol-tcl — Language Profile
+#
+# ALIEN-SUBSTRATE PROBE (Everything-Is-A-String / EIAS paradigm). Authored FRESH
+# in S1 from the V8 spec-data + Tcl ecosystem research — NOT ported from any prior
+# peer's profile. Tcl is the FIRST EIAS peer: there is no static type on a value;
+# a Tcl_Obj *shimmers* between a string rep and a typed internal rep (int, double,
+# bytearray, list, dict) on demand. Numbers, lists, code, and raw bytes are ALL,
+# canonically, strings — the internal typed reps are a pure-performance cache the
+# language guarantees is indistinguishable from the string.
+#
+# *** THE EXPERIMENTAL QUESTION THIS PROFILE EXISTS TO ANSWER ***
+# A canonical binary wire format (ECF) demands, for every value, ONE unambiguous
+# CBOR major type: a byte string (mt 2) is NOT a text string (mt 3), an int (mt 0/1)
+# is NOT a float (mt 7). EIAS erases exactly those distinctions at the value level —
+# "1", "1.0", and the 1-byte binary 0x31 are all just the string `1`/`1.0`/`1` until
+# something forces a rep. So: can a peer whose value model has NO intrinsic type
+# carry a strictly-typed canonical wire format without the type information leaking
+# out of the data and into ad-hoc convention? This is a genuine string/encoding-axis
+# probe — the axis the peer-selection compass (LANDSCAPE §"Runtime-shared families")
+# marks as the least-saturated. The bet: the byte-vs-text seam (A-TCL-001) and
+# character-length-vs-byte-length seam (A-TCL-002) surface a real spec-precision
+# finding, or confirm the spec is already unambiguous enough to force the peer to
+# carry type explicitly (which is itself the answer). See arch/PROFILE-RATIONALE.md.
+#
+# Profile authority (PROMPT-CONSTANTS): the agent MUST use the values declared here.
+# A "TBD" value is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "tcl"
+name              = "Tcl"
+tier              = "alien-substrate-probe"   # not a Tier-1..5 cohort slot; an EIAS paradigm probe
+package_name      = "entity-core-protocol-tcl"   # keystone peer id
+runtime           = "tcl-toolchain"           # references containers/tcl-toolchain/Containerfile
+
+[codec]
+# strategy: FFI-HYBRID — hand-rolled canonical CBOR in PURE TCL (the EIAS probe
+# lives here), crypto over the C-ABI (libentitycore_codec). Same shape as COBOL
+# (peer 22): a native value-codec for the parts the language CAN do well, the
+# C-ABI for the crypto it cannot. Rationale for each half (verify at S2 — swipl-
+# style, Tcl is not run under the S1 no-build boundary; availability asserted from
+# Tcl 8.6/9.0 + Tcllib + cffi documentation, flagged for S2 confirm):
+#
+#   (1) CBOR: hand-rolled canonical encoder/decoder in pure Tcl (src/cbor.tcl).
+#       No Tcl CBOR package gives ECF canonicality — the A-005 pattern every native
+#       peer hit (now 7/7 incl. Tcl). Tcl's `binary format`/`binary scan` command IS
+#       a competent byte-level assembler (network-order ints via `Iu`/`Wu`, IEEE f32
+#       via `R`, f64 via `Q`) — the raw material for a canonical encoder is native
+#       and good. The f16 (half-float) leg has no `binary` format code and is
+#       hand-rolled bit arithmetic like every peer (A-TCL-006). The HARD part is not
+#       the bytes; it is deciding, for an untyped Tcl value, WHICH major type it is
+#       (A-TCL-001/003) — the EIAS probe. Full uint64/nint range is FREE: Tcl 8.5+
+#       has native arbitrary-precision integers (libtommath bignums), so like
+#       CL/Elixir/Prolog/Python/Ruby the head-form carrier is just an integer with
+#       NO fixed-width trap (contrast OCaml int63 / C# ulong / TS bigint / Zig u64).
+#
+#   (2) Crypto: NO native Ed25519 in Tcl or Tcllib. Tcllib ships `sha256` (pure-Tcl,
+#       correct but slow) and `sha1`/`md5`; there is NO Ed25519 anywhere in the Tcl
+#       ecosystem (tcltls/tls wraps OpenSSL for TLS transport only, not a general
+#       EVP/Ed25519 surface). So the §9.1 signature floor is an FFI obligation from
+#       the start (cleaner than Prolog, where it was discovered at S2): bind
+#       libentitycore_codec via `cffi` (the modern libffi-based Tcl FFI package by
+#       A. Nadkarni). SHA-256/384 ALSO go over the C-ABI for one consistent crypto
+#       surface + speed, though Tcllib `sha256` is the documented pure-Tcl fallback
+#       for the SHA floor if an FFI-free build is ever wanted (A-TCL-005).
+#
+# Net: FFI-hybrid. The shipped default peer needs libentitycore_codec present (like
+# COBOL/Prolog); base58 + varint are hand-rolled pure Tcl; CBOR is hand-rolled pure
+# Tcl (the paradigm probe). This is NOT "ffi everything" — the whole codec value
+# layer is native Tcl; only the crypto primitives cross the C-ABI.
+strategy          = "ffi-hybrid"
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native", impl = "pure-Tcl over `binary format`/`binary scan`; f16 leg hand-rolled" }
+# Ed25519 (+ SHA) via the C-ABI. REVISED AT S2 (2026-07-10, A-TCL-005): fedora:43 does
+# NOT package `cffi`, so the binding is a self-contained C-extension shim via the Tcl
+# stubs API (Tcl_CreateObjCommand over ec_ed25519_seed_to_pubkey / ec_ed25519_sign /
+# ec_ed25519_verify, ec_sha256/384), compiled with the image gcc + tcl-devel against
+# the verbatim entitycore_codec.h. Cleaner than cffi (no external pkg, no network); the
+# ffi-hybrid strategy is unchanged. De-risked in-container (trivial ext loads + runs).
+ed25519_library   = { name = "libentitycore_codec (C-extension shim, Tcl stubs API)", version = "C-ABI 1.1", api = "ec_ed25519_{seed_to_pubkey,sign,verify} + ec_sha256/384" }
+# Ed448 (agility HIGHER BAR): also over the same C-ABI (ec_ed448_*), scoped to an
+# OPT-IN agility package so the shipped Ed25519+SHA-256 floor peer's crypto surface
+# stays one library. Same FFI-hybrid agility shape as OCaml/Zig/Swift/COBOL — no
+# native Tcl Ed448 exists. Deferred until an adopter needs it (floor ships first).
+ed448_library     = { name = "libentitycore_codec (FFI via cffi)", version = "C-ABI 1.1", strategy = "ffi", api = "ec_ed448_{seed_to_pubkey,sign,verify}" }
+sha256_source     = "libentitycore_codec ec_sha256 (FFI); Tcllib `sha256` pure-Tcl documented fallback for an FFI-free floor build"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (src/base58.tcl); no Tcllib base58
+varint_handling   = "native"                  # LEB128 multikey varint (N1, §7.3), src/varint.tcl — pure Tcl over binary scan
+
+[error_model]
+# Tcl 8.6+ has structured exceptions: `throw {CODE LIST} message` sets a machine-
+# readable -errorcode list, and `try { ... } trap {ENTITY_CORE ...} {msg opts} { }`
+# pattern-matches on it — the idiomatic modern Tcl error story (superseding bare
+# `error`/`catch`). This is the natural analogue of C#/TS/Java exceptions, distinct
+# from the Result/Either peers. The -errorcode LIST (not the human message) is the
+# structured channel: {ENTITY_CORE NON_CANONICAL_ECF ...}, matched by `trap`.
+# Codec public surface THROWS on N2/N3 canonicality violations (non-canonical input,
+# truncated input, major-type-6 tag reject, bad seed) — a hard reject, never a
+# silently-returned sentinel. In-band "not found"/"absent" outcomes return a normal
+# value (empty string / a tagged dict), NOT an exception (EIAS makes the empty string
+# the natural absent sentinel — but see A-TCL-007: empty-string-is-also-a-value is a
+# classic Tcl trap; absent must be represented so it cannot collide with a real empty
+# bytestring/text value on the wire).
+style             = "exceptions"              # Tcl 8.6 try/throw/trap with structured -errorcode
+exception_family  = "throw {ENTITY_CORE <KIND> <detail>} msg"   # -errorcode list convention
+leaf_kinds        = "NON_CANONICAL_ECF | TRUNCATED_INPUT | TAG_REJECTED | BAD_SEED | UNSUPPORTED_CONTENT_HASH_FORMAT | UNSUPPORTED_KEY_TYPE"
+absent_sentinel   = "tagged dict {present 0} — NOT the empty string (A-TCL-007: EIAS empty-string/value collision)"
+
+[async]
+# DELIBERATE idiom — Tcl's headline concurrency model is the SINGLE-THREADED EVENT
+# LOOP: `chan event $sock readable`, `vwait`, `after`, non-blocking channels
+# (`chan configure -blocking 0`). This is COOPERATIVE, event-driven I/O on ONE
+# thread — the SAME structural shape as the PHP `stream_select` peer and the Dart
+# per-isolate event loop. §7b store-safety is therefore STRUCTURAL: a single event
+# thread serializes every store mutation, so there is NO data race to guard (no
+# mutex, no atomics) — the store is plain Tcl dicts/arrays in the one interp. This
+# is the actor/CSP-class "free store-safety" the concurrency taxonomy notes, reached
+# here via the event loop rather than isolation.
+#
+# §6.11 handler-initiated outbound-dispatch reentry is ~FREE on this substrate (as
+# on the actor/CSP peers, NOT the correlation-map tax the thread/async peers pay):
+# an outbound dispatch is another event-loop turn; the inbound EXECUTE_RESPONSE
+# arrives as a readable event and is matched by request_id from the one interp's
+# pending table — no cross-thread demux, no deadlock risk (contrast COBOL's manual
+# poll-slot pump). This is the PHP/Dart §6.11 result, corroborated on a third
+# event-loop substrate.
+#
+# Tcl ALSO has the `Thread` package (real OS threads, share-NOTHING, per-thread
+# interp + thread::send message passing + `tsv` shared vars) — a genuine actor model.
+# It is NOT used for the core peer: the event loop is more idiomatic for a network
+# peer and gives structural safety without the tsv discipline. Noted as the
+# alternative substrate (A-TCL-008) but out of scope for --profile core.
+style             = "event-loop"             # single-threaded cooperative; chan event + vwait + non-blocking channels
+event_primitive   = "chan event $sock readable | vwait | after"   # the Tcl reactor
+request_demux     = "request_id -> [dict] pending table in the single interp (readable-event completion)"   # reentrant §6.11; no cross-thread demux
+store_model       = "plain dict/array in the one interp — structurally race-free (single event thread)"   # §4.8/§7b; no lock needed
+tcp_nodelay       = true                       # chan configure $sock -nodelay 1 on accepted sockets (§7b)
+blocking_discipline = "all sockets -blocking 0; no blocking [read]/[gets] on the event path (would stall the single reactor)"
+
+[naming]
+# Tcl-native conventions. Commands/procs are lowercase words; namespaces use `::`
+# separators (the package/module analogue). Tcllib + core Tcl favor lowercase and
+# often lower_snake for multiword procs; variables lowercase. NO camelCase mandate
+# (some ensembles use it, but the core/Tcllib idiom is lowercase words).
+proc_names        = "snake_case"              # procs: encode_cbor, sign_and_verify, peer_id (lowercase words)
+namespace_names   = "::entity::core::*"       # namespaces are the module unit: ::entity::core::cbor, ::entity::core::peer
+ensemble_commands = "lowercase subcommand"    # `entity cbor encode ...` ensemble style for the public surface
+variable_names    = "lower_snake"             # locals + namespace vars: pub_key, seed_bytes, req_id
+constant_names    = "UPPER_SNAKE (namespace var)"  # Tcl has no const keyword; a namespace variable holds it: $::entity::core::MAX_DEPTH
+package_names     = "entity::core::<x>"       # `package provide entity::core::cbor 0.1`
+file_names        = "snake_case.tcl"          # cbor.tcl, peer_id.tcl, base58.tcl (one namespace per file)
+
+[build]
+# Tcl is INTERPRETED — no compile gate (like Prolog/Python/Ruby). "Build" = source
+# the packages via pkgIndex.tcl + a smoke `package require`. No cargo/dotnet-class
+# build tool; the ecosystem norm is `pkgIndex.tcl` (auto-loading index) for pure Tcl,
+# and TEA (Tcl Extension Architecture: configure/make) ONLY for C extensions — we
+# have none (crypto is a cffi binding to a prebuilt .so, not a compiled Tcl ext). The
+# cffi package is `package require`d at runtime; libentitycore_codec is a runtime .so.
+build_tool        = "tclsh (source pkgIndex.tcl)"   # no separate build system; packages are sourced
+build_command     = "tclsh -encoding utf-8 <<'END'\npackage require entity::core\nputs ok\nEND"   # load smoke = the build for an interpreter
+test_command      = "tclsh test/all.tcl"      # tcltest harness entry (see [testing])
+package_command   = "tclsh tools/mkindex.tcl" # regenerate pkgIndex.tcl (pkg_mkIndex) for distribution
+
+[layout]
+# pkgIndex.tcl-based package layout (the Tcl convention).
+src_dir           = "src/"                    # the ::entity::core namespace files (cbor.tcl, peer_id.tcl, base58.tcl, varint.tcl, peer.tcl, ...)
+test_dir          = "test/"                   # tcltest suites + conformance harness
+pkg_index         = "src/pkgIndex.tcl"        # the auto-load index (pkg_mkIndex output); the .asd/Cargo.toml analogue
+entry_package     = "entity::core"            # umbrella package that `package require`s the sub-namespaces
+entry_point       = "src/entity_core.tcl"     # umbrella loader (package provide entity::core)
+ffi_binding       = "src/ffi_codec.tcl"       # cffi declarations for libentitycore_codec
+
+[publishing]
+# Tcl has no single dominant package registry (no npm/PyPI/crates.io equivalent with
+# universal buy-in). The historical channel was ActiveState's teapot/teacup; the
+# living community norms are: (a) inclusion in Tcllib (the community standard library,
+# for pure-Tcl modules), (b) a plain git repo with pkgIndex.tcl that users `package
+# require` after adding to auto_path, and (c) the newer `tin`/`tossl`-era git-based
+# installers. Publish = tag a git release with a working pkgIndex.tcl; registry
+# inclusion (Tcllib) is a later, review-gated community step. Analogous to the SWI
+# pack / Quicklisp git-indexed model, not a binary registry.
+registry          = "git + pkgIndex.tcl (Tcllib inclusion later)"
+registry_url      = "https://core.tcl-lang.org/tcllib/"
+package_id        = "entity::core"
+license_expression = "Apache-2.0"
+repository_url    = ""                          # TBD on first publish (same as OCaml/Elixir/CL/Prolog)
+maintainers       = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default. Tcl itself is BSD-style (the "Tcl/Tk License"); the ecosystem is license-mixed with no mandate — keep the Apache-2.0 default (explicit patent grant).
+
+[testing]
+# tcltest is THE Tcl unit-test framework and ships INSIDE the base Tcl distribution
+# (like Prolog's plunit) — so it is "free", no supply-chain cost, and IS the idiomatic
+# choice (no dependency-minimization reason to hand-roll here, unlike the OCaml/CL/Zig
+# peers that declined heavier frameworks). The conformance harness is a tcltest suite
+# that loads the normative v0.8.0 fixture and asserts byte-identity against the
+# hand-rolled codec; test/all.tcl is the standard tcltest runner entry.
+framework         = "tcltest"                 # bundled with Tcl; the ecosystem standard
+runner            = "test/all.tcl (tcltest::runAllTests)"
+conformance_probe = "load spec-data v0.8.0 fixtures; assert byte-identity vs hand-rolled codec + wire-conformance oracle"
+
+[container]
+base_image        = "entity-core-keystone/tcl-toolchain:latest"
+build_in_container = true
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/tcl entity-core-keystone/tcl-toolchain:latest sh -c 'tclsh test/all.tcl'"
+
+[idiom]
+# EIAS-paradigm hints — the seams where this substrate is unlike every prior peer.
+everything_is_a_string  = true                # THE headline. Every value is canonically a string; typed internal reps (int/double/bytearray/list/dict) are a transparent cache. The peer's data model must carry the INTENDED CBOR major type EXPLICITLY (a tagged representation), because the value itself does not know whether it is text, bytes, an int, or a float. See A-TCL-003.
+byte_vs_text_seam       = true                # A-TCL-001 (core probe): CBOR mt2 (byte string) vs mt3 (text string). In Tcl both are "strings"; the bytearray internal rep (via `binary format`/`string is` / the Tcl_Obj type) vs a UTF-8 text value. Encode MUST distinguish: a bytearray -> mt2 raw bytes; a text value -> mt3 of its UTF-8 bytes. Getting this wrong double-encodes or mis-types. The model tags bytes-vs-text at construction, never infers from the shimmer.
+string_length_is_chars  = true                # A-TCL-002: `string length $s` counts CODE POINTS, not bytes. CBOR text-string length is the BYTE length of the UTF-8 encoding. MUST use `string length [encoding convertto utf-8 $s]` (or work in a bytearray). Classic EIAS trap; a wire-length bug if missed.
+utf8_explicit           = true                # text -> wire is ALWAYS `encoding convertto utf-8 $s`; wire -> text is `encoding convertfrom utf-8 $bytes`. NEVER rely on the interp's system encoding for wire data. Tcl 9.0 is full-Unicode/UTF-8 internal; 8.6 is UCS-2-ish with surrogate handling — confirm behavior on the pinned version (A-TCL-004).
+native_bignum           = true                # Tcl 8.5+ integers are arbitrary-precision (libtommath). Full uint64/int64 head-form range carried with NO special-casing — matches CL/Elixir/Prolog/Python/Ruby; vs OCaml int63 / C# ulong / TS bigint / Zig u64-trap. The head-form carrier is just an integer.
+numeric_shimmer_risk    = true                # A-TCL-003: "1" vs "1.0" vs 1 — EIAS gives no intrinsic int-vs-float type. `string is integer`/`string is double` classify the STRING FORM, which is ambiguous ("1" is a valid double too). The data model must mark int-vs-float intent explicitly at value construction; NEVER infer major type 0/1 vs 7 from `string is`.
+binary_command_codec    = true                # `binary format`/`binary scan` is the byte assembler: network-order uint via `Iu`(32)/`Wu`(64), big-endian short via `Su`, IEEE f32 via `R`, f64 via `Q`. f16 half-float has NO format code -> hand-rolled bit arithmetic (A-TCL-006). This is the pure-Tcl codec's engine.
+empty_string_trap       = true                # A-TCL-007: the empty string is a legitimate VALUE (an empty text or empty byte string on the wire), so it cannot double as the "absent" sentinel. Absent/None is a tagged dict {present 0}, never "".
+event_loop_reentry_free = true                # §6.11 outbound-dispatch reentry is a plain event-loop turn (no thread demux); structural store-safety from the single event thread. The PHP/Dart result on a third event-loop substrate.
+no_compile_gate         = true                # interpreted; NO static type/coverage check. Correctness rests entirely on the conformance corpus (the Prolog/CL/Python/Ruby dynamic caveat; sharpest here because EIAS erases even the value-level types the other dynamic peers keep).
+ffi_via_cffi            = true                # crypto crosses the C-ABI via `cffi` (libffi-based declarative binding). Confirm the pinned cffi builds against libentitycore_codec's verbatim header at S2 (A-TCL-005).
+tcl_version             = "9.0.x preferred; 8.6.x acceptable"   # see [deps] + A-TCL-004
+
+[deps]
+# Exact pins (S11). Toolchain pins mirrored in containers/tcl-toolchain/Containerfile.
+# The third-party RUNTIME surface is small: Tcl core, the `cffi` FFI package, and
+# (optional floor fallback) Tcllib `sha256`. CBOR/base58/varint are hand-rolled;
+# tcltest ships in base Tcl. libentitycore_codec is pinned at the FFI layer, not here.
+tcl               = "9.0.1"                    # Tcl 9.0.1 — the modern major (full Unicode/UTF-8 internal, 64-bit sizes, cleaner byte-vs-string). 9.0.0 shipped 2024-09; 9.0.1 late-2024 — well over the S11 30-day floor at authoring 2026-07-10. Full-Unicode internals make the byte-vs-text + string-length-in-bytes probes (A-TCL-001/002) crisper than 8.6's UCS-2-ish model. FALLBACK: 8.6.15 (the long-stable line) if fedora:43 packages 8.6 not 9.0, OR if cffi's pinned build targets 8.6 only — confirm both at S2 (A-TCL-004). The codec logic is version-agnostic; only the internal string model differs.
+tcl_fallback      = "8.6.15"                   # long-stable Tcl 8.6; used only if 9.0 unavailable on the pinned image or unsupported by cffi
+cffi              = "1.2.0"                    # cffi (Ashok Nadkarni) libffi-based FFI. 1.2 series is well over 30 days old at authoring; confirm the exact patch that builds on the chosen Tcl major (A-TCL-005). The ONLY non-stdlib runtime dependency of the default peer (mirrors COBOL's single libentitycore_codec dependence).
+tcllib_sha256     = "image-provided (optional)"  # Tcllib `sha256` pure-Tcl — the documented FFI-FREE SHA floor fallback ONLY; the default peer takes SHA over the C-ABI. Pinned only if the fallback build is exercised.
+libffi            = "image-provided (fedora:43)"  # cffi links the system libffi; recorded at build
+# tcltest ships INSIDE the Tcl distribution — no separate pin (version = whatever the
+# pinned Tcl bundles, recorded at build). libentitycore_codec (the crypto C-ABI) is
+# pinned at the ffi-generator layer (C-ABI 1.1), not here.
+
+[spec]
+spec_version_pinned = "0.8.0"                 # spec-data snapshot protocol-generator/shared/spec-data/v0.8.0/ (V8). Confirm the three SHA-256 pins in MANIFEST.md unchanged at S2.
+codec_corpus      = "v0.8.0"                  # ECF corpus protocol-generator/shared/test-vectors/v0.8.0/ (conformance-vectors-v1.cbor); core wire byte-unchanged across V7->V8.
+oracle_commit     = "cc1970f"                 # go oracle for S4 (public HEAD, re-normalized 2026-07-10). core-gate fingerprint 8261a033… ; target --profile core = 0 FAIL. Build via tools/oracle-bootstrap.sh.
+# PEER_ID CONSTRUCTION (corroborates A-ZIG-001 / A-OC-007 / A-CL-002 / A-PL-010):
+# derive the Ed25519 peer_id from the §1.5 CANONICAL-FORM TABLE — hash_type = 0x00
+# identity-multihash, digest = the RAW 32-byte public key (no hash, for the ≤32B
+# Ed25519 pubkey) — NOT any stale SHA256(pubkey) skeleton. On the v0.8.0 snapshot
+# §7.4 already defers to the §1.5 table (reconciled since v7.73 E1), so this is a
+# settled fact, baked in proactively to avoid the S4 handshake debug cycle Zig/OCaml
+# burned. peer_id wire form = Base58(key_type || hash_type || digest).
+# COHORT-SETTLED TRAPS pre-resolved here (do NOT re-burn): lowercase %02x hex for
+# §3.4/§3.5 tree-paths (A-CL-009); §5.2 401/403/401-unresolvable authz trichotomy;
+# entity `data` is an arbitrary ECF value, NOT necessarily a map (A-JAVA-010);
+# §4.10 chain-depth pre-check -> 400 chain_depth_exceeded (depth 64), 16 MiB payload
+# -> 413 payload_too_large; §7b store-race-safety (structural here) + TCP_NODELAY +
+# no blocking syscalls on the event path.
