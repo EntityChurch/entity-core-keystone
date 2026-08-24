@@ -1,0 +1,44 @@
+# Crystal toolchain image — builds the native Crystal peer
+# (entity-core-protocol-crystal) per protocol-generator/crystal/profile.toml.
+#
+# Like the ruby-toolchain image, this pins the OFFICIAL vendor image
+# (`crystallang/crystal`, the Crystal core team's own Docker org image) directly
+# rather than layering onto fedora:43 — a reviewed-vendor channel, so per the S11
+# scope clarification the strict 30-day *registry* cool-down relaxes to "pin
+# exactly for reproducibility" (a patch-pinned tag does this); we still pin a tag
+# comfortably >= 30 days old.
+#
+# S11 PIN STATUS:
+#   crystallang/crystal:1.20.2 — Crystal 1.20.2 released 2026-05-15 (~58 days old
+#   at 2026-07-12, clears the 30-day floor). 1.20.3 (2026-07-02) is too fresh;
+#   `latest`/`nightly` are non-reproducible. The image is Ubuntu-based and ships
+#   the Crystal compiler + `shards` + the stdlib `spec` test framework.
+#
+# The core peer's crypto FLOOR is a DIRECT in-process libsodium C binding
+# (`lib LibSodium` / `fun crypto_sign_*`, @[Link("sodium")]) — Ed25519 + the
+# codec's SHA are native (SHA-256/512 via stdlib Digest; libsodium for Ed25519).
+# So the one system dependency to add is libsodium + its headers + pkg-config.
+# CBOR/base58/varint/peer_id/canonical-layer are hand-rolled pure Crystal; the
+# core peer pulls ZERO shard runtime deps. Ed448 agility (deferred) would consume
+# libentitycore_codec via the same lib/fun FFI — not needed for the floor image.
+#
+# NOTE (S2 lock-step): pin the image *digest*
+# (crystallang/crystal:1.20.2@sha256:..) when first pulled in-container, for full
+# reproducibility. The tag is pinned now; the digest is pinned at first build.
+#
+# Build:
+#   podman build -t entity-core-keystone/crystal-toolchain:latest \
+#     -f containers/crystal-toolchain/Containerfile .
+FROM docker.io/crystallang/crystal:1.20.2
+
+# libsodium (Ed25519 crypto floor, bound in-process via lib/fun) + pkg-config to
+# resolve it, ca-certificates + git for the one network-on `shards install` step
+# (the core peer has zero shard runtime deps, so this is minimal). build-essential
+# is already present in the crystal image (LLVM + cc for codegen).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libsodium-dev \
+        pkg-config \
+        ca-certificates \
+        git \
+    && rm -rf /var/lib/apt/lists/*

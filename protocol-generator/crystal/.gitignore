@@ -1,0 +1,6 @@
+# Crystal build + local artifacts (not committed).
+/lib/            # `shards install` output (core peer has zero deps, but keep it clean)
+/bin/*           # compiled target binaries
+!/bin/*.cr       # …but DO track the source entry points
+/.crystal/       # incremental compile cache
+*.dwarf

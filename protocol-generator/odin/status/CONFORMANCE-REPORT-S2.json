@@ -1,0 +1,44 @@
+{
+ "peer": "entity-core-protocol-odin",
+ "phase": "S2",
+ "date": "2026-07-12",
+ "tier": "corroboration-T3",
+ "toolchain": "odin dev-2026-06:285f6d8",
+ "container": "entity-core-keystone/odin-toolchain:latest",
+ "gate": "odin test test",
+ "network": "none",
+ "leak_checked": true,
+ "corpus": {
+  "path": "shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor",
+  "sha256": "9695b1f1d939cfdfdd4297f8ad32122d424b1ec180cfae74c92d509d88f7c6dc",
+  "arch_commit": "be54baf",
+  "cross_bless": "Go x Rust x Python (Appendix E.4)"
+ },
+ "summary": {
+  "notation": "71.0F",
+  "total": 71,
+  "passed": 71,
+  "failed": 0,
+  "skipped": 0
+ },
+ "categories": {
+  "float": {"pass": 14, "total": 14},
+  "int": {"pass": 14, "total": 14},
+  "map_keys": {"pass": 6, "total": 6},
+  "length": {"pass": 8, "total": 8},
+  "primitive": {"pass": 6, "total": 6},
+  "nested": {"pass": 6, "total": 6},
+  "tag_reject": {"pass": 5, "total": 5},
+  "content_hash": {"pass": 4, "total": 4},
+  "peer_id": {"pass": 3, "total": 3},
+  "signature": {"pass": 3, "total": 3},
+  "envelope": {"pass": 2, "total": 2}
+ },
+ "adjacent_units": {
+  "head_form_u64_high_band": "pass",
+  "head_form_nint_full_range": "pass",
+  "ed25519_kat_corpus_pinned_accept_path": "pass",
+  "ed25519_rfc8032_vector1": "pass"
+ },
+ "honest_framing": "cohort-consistent, not independent convergence (ADR-0012)"
+}

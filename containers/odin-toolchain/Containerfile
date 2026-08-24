@@ -1,0 +1,48 @@
+# Odin toolchain image — builds the native Odin peer
+# (entity-core-protocol-odin) per protocol-generator/odin/profile.toml.
+#
+# UNLIKE ruby/crystal (official vendor images), Odin has NO official Docker image
+# and bundles no LLVM — the compiler links against a SYSTEM LLVM (supported 17-22).
+# So this image layers onto the keystone fedora:43 base, installs stock Fedora
+# LLVM + clang via dnf (reviewed distro channel — no third-party COPR), and BUILDS
+# the Odin compiler FROM SOURCE at the pinned dated tag.
+#
+# S11 PIN STATUS:
+#   Odin dev-2026-06 — released 2026-06-10 (~32 days old at 2026-07-12, clears the
+#   30-day floor). The two July releases (dev-2026-07 / dev-2026-07a) are too
+#   fresh. Odin uses monthly dated tags; this one is pinned by git tag + is
+#   reproducible (the ODIN_TAG ARG below). LLVM is pinned to whatever Fedora 43
+#   ships (in the supported 17-22 window); the exact llvm-config is discovered by
+#   build_odin.sh. Pin the base image digest at first build for full repro.
+#
+# The core peer's crypto is NATIVE pure-Odin `core:crypto` (Ed25519 + SHA-2) and
+# the codec is hand-rolled pure Odin — so NO libsodium, NO third-party packages
+# are needed for the floor image. Ed448 agility (deferred) would consume
+# libentitycore_codec via `foreign import` — not needed for the floor.
+#
+# Build:
+#   podman build -t entity-core-keystone/odin-toolchain:latest \
+#     -f containers/odin-toolchain/Containerfile .
+FROM entity-core-keystone/base:latest
+
+# Stock Fedora LLVM + clang (the Odin backend) + build tooling. `llvm-devel`
+# provides llvm-config, which build_odin.sh uses to locate the backend.
+RUN dnf install -y \
+        clang \
+        llvm \
+        llvm-devel \
+        libstdc++-devel \
+    && dnf clean all
+
+# Build the Odin compiler from source at the pinned tag. ODIN_ROOT points the
+# installed `odin` binary at its core/ + vendor/ library trees.
+ARG ODIN_TAG=dev-2026-06
+RUN git clone --depth 1 --branch ${ODIN_TAG} https://github.com/odin-lang/Odin.git /opt/Odin \
+    && cd /opt/Odin \
+    && ./build_odin.sh release \
+    && ln -s /opt/Odin/odin /usr/local/bin/odin
+
+ENV ODIN_ROOT=/opt/Odin
+
+# Sanity: the toolchain resolves core: and reports its version.
+RUN odin version

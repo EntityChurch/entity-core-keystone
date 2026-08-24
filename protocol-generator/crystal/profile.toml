@@ -1,0 +1,210 @@
+# entity-core-protocol-crystal — Language Profile
+#
+# Corroboration / generator-robustness peer (T3). The deliberate axis is the
+# RUBY-OVERFIT CHECK: Crystal reads like Ruby (blocks, PascalCase types,
+# snake_case methods, exceptions) but is a COMPILED, STATICALLY-TYPED,
+# FIXED-WIDTH-INTEGER, LLVM-backed systems language with CSP fibers instead of
+# MRI threads+GVL. If the generator were overfit to the Ruby peer's templates it
+# would get the integer model (bignum vs fixed-width UInt64), the crypto route
+# (stdlib openssl vs no-PKey + libsodium binding), and the concurrency model
+# (GVL threads vs CSP fibers) WRONG. This peer exists to prove it doesn't. The
+# spec-discovery well is dry on the current wire surface (28-peer cohort) — a new
+# peer passing the author's vectors is COHORT-CONSISTENT, not independent
+# convergence (ADR-0012). Authored FRESH in S1 from the pinned v0.8.0 (V8) spec
+# + Crystal-ecosystem research; where a field matches the Ruby peer it is by
+# independent arrival, and the idiom seams (compiled/typed, fixed-width ints,
+# libsodium C binding, fibers) deliberately differ.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value
+# is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "crystal"
+name              = "Crystal"
+tier              = "corroboration-T3"        # Ruby-overfit check (compiled Ruby-like); final matrix index reconciles at merge with the Julia/Nim branch
+package_name      = "entity-core-protocol-crystal"  # peer id (keystone naming); shards id is idiomatic snake_case — see [publishing]
+runtime           = "crystal-toolchain"       # references containers/crystal-toolchain/Containerfile
+
+[codec]
+# strategy: NATIVE (hand-rolled canonical CBOR) — this is where the Ruby-overfit
+# check pays off: the SAME ECF codec Ruby hand-rolls, re-derived on a COMPILED +
+# STATICALLY-TYPED + FIXED-WIDTH-INT substrate. The A-005 pattern holds again — no
+# Crystal CBOR shard gives ECF's canonical guarantees:
+#   - `arestifo/crystal-cbor` (the de-facto shard, pure-Crystal, v1.0.0, dormant
+#     ~3yr): targets RFC 7049; correct integer HEAD-form (the one free win) but
+#     NO shortest-float ladder / NO float16 (0xf9), iterates Hash in INSERTION
+#     order (not length-then-lex), and SILENTLY SKIPS major-type-6 tags on decode
+#     (`ignore_tag = true`) — the opposite of the required recursive tag-REJECT.
+#   - `woodruffw/cbor.cr` (libcbor C binding): abandoned 2020.
+# So the canonical layer (shortest-float incl. f16, recursive tag-6 reject,
+# length-then-lex map-key sort on ENCODED key bytes, full uint64/nint range, raw-
+# byte `data` fidelity) is hand-rolled regardless — faithful AND simpler than
+# bending a library that fights length-first. Spike the map_keys + float vectors
+# at S2 before the full build.
+strategy          = "native"
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native", notes = "no Crystal shard does ECF length-first + shortest-float(f16) + tag-6-reject; crystal-cbor is closest (correct int head-form) but RFC-7049 insertion-order + skips tags" }
+# Ed25519: NATIVE via a DIRECT in-process libsodium C binding (`lib LibSodium` +
+# `fun crypto_sign_*` under `@[Link("sodium")]`). Crystal's stdlib `OpenSSL`
+# exposes NO PKey/EVP surface (no Ed25519 — verified absent, crystal-lang#3941;
+# beware web snippets claiming `OpenSSL::PKey::Ed25519` — they are hallucinations),
+# so the audited route is libsodium (`crypto_sign_seed_keypair` /
+# `crypto_sign_detached` / `crypto_sign_verify_detached` = Ed25519, RFC-8032
+# deterministic). This is the Ada/C/C++/PHP "native — libsodium (C binding)" row,
+# reached via Crystal's `lib`/`fun` FFI (in-process, no daemon). Preferred over
+# the shards (`didactic-drunk/sodium.cr` stale 2021; `konovod/monocypher.cr`
+# defaults to a BLAKE2b variant — must use crypto_ed25519_sign; pure-Crystal
+# `spider-gazelle/ed25519` unaudited) because a direct libsodium binding is
+# audited, dependency-free (system lib, like the C peer), and pins cleanly.
+ed25519_library   = { name = "libsodium (direct lib/fun C binding)", version = "system libsodium 1.0.18 (Ubuntu, in crystallang/crystal:1.20.2)", api = "crypto_sign_seed_keypair / crypto_sign_detached / crypto_sign_verify_detached" }
+# Ed448 (crypto-agility HIGHER BAR, §1.5 key_type 0x02): DEFERRED. libsodium has
+# NO Ed448 (same gap as C/C++/Ada/PHP/Zig). When agility is scoped, the documented
+# path is HYBRID-FFI via `libentitycore_codec` (C-ABI `ec_ed448_*`) as an OPT-IN
+# sub-library so the shipped default peer stays self-contained (libsodium-only).
+# Does NOT affect the Ed25519/ECF conformance floor. See SPEC-AMBIGUITY-LOG A-CRY-002.
+ed448_library     = { name = "DEFERRED", version = "none", future = "hybrid-FFI via libentitycore_codec ec_ed448_* (opt-in sub-library)" }
+# SHA-256 (content_hash floor) + SHA-512: NATIVE pure-Crystal stdlib `Digest`
+# (Digest::SHA256 / Digest::SHA512 — src/digest/sha256.cr, sha512.cr; zero dep).
+# SHA-384 (agility hashing family, NOT the signature curve): stdlib has NO native
+# Digest::SHA384 → `OpenSSL::Digest.new("SHA384")` (OpenSSL-backed, by-name).
+sha256_source     = "stdlib Digest::SHA256/SHA512 (native pure-Crystal, zero dep); SHA-384 via OpenSSL::Digest.new(\"SHA384\") for the agility hash family"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (src/base58.cr); no shard (dodges a dep + pin)
+varint_handling   = "native"                  # LEB128 inline impl (N1), src/varint.cr; multikey format-code/key-type/hash-type framing
+
+[error_model]
+# Crystal-idiomatic: EXCEPTIONS (raise / rescue / ensure). A `Exception`-rooted
+# hierarchy under EntityCore::Error, mirroring the Ruby peer's SHAPE (it is the
+# same idiom family) while compiled + statically type-checked. Crystal stdlib has
+# NO Result/Either type; the non-exception convention is nilable-union `?` method
+# variants (`[]?` → nil), used where a miss is ordinary rather than a fault.
+# Decode-path violations (non-canonical, truncated, tag-6) raise CodecError
+# subclasses; the peer rescue-maps protocol faults to the §5.2a/§6.12 status codes
+# at the dispatch boundary.
+style             = "exceptions"              # "exceptions" | "result" | "either" | "errno" | "error_union"
+base_exception    = "EntityCore::Error"       # < Exception
+nilable_union_for_absence = true              # idiomatic `?`-variant / T? unions for ordinary "not found", not fabricated errors
+exception_hierarchy = [
+    "EntityCore::Error",                      # < Exception
+    "  EntityCore::CodecError",               # CBOR / canonicalization / decode faults
+    "  EntityCore::ProtocolError",
+    "    EntityCore::HelloFailedError",
+    "    EntityCore::AuthenticationError",
+    "  EntityCore::TransportError",
+    "    EntityCore::RecvTimeoutError",
+    "    EntityCore::ConnectionBrokenError",
+    "    EntityCore::WireProtocolError",       # avoids the ProtocolErrorError stutter (A-003 precedent)
+]
+
+[async]
+# DELIBERATE idiom divergence from the Ruby peer (the concurrency seam of the
+# Ruby-overfit check). Crystal's concurrency model is CSP: FIBERS (cooperatively
+# scheduled green threads) communicating over CHANNELS — NOT MRI's OS-thread +
+# GVL model. By DEFAULT the scheduler runs fibers on a SINGLE OS thread
+# (concurrency, not parallelism; no Ruby-style GIL construct — it simply doesn't
+# preempt). Blocking IO (socket read/write/accept) yields the fiber to the
+# scheduler via the event loop, so a FIBER-PER-CONNECTION peer is genuinely
+# concurrent for the IO-bound §4.8/§4.9 workload — adequate for the §7b gate
+# (the peer is IO-bound). Multithreading is still OPT-IN/PREVIEW as of 1.20
+# (`-Dpreview_mt`; the M:N Execution Contexts model — Fiber::ExecutionContext::
+# {Concurrent,Parallel} — is "final preview" in 1.20, default-on TARGETED for
+# 1.21, NOT yet landed) → NOT used at core; noted as the parallelism escape hatch.
+# A shared store is fiber-safe under the single-thread default (no preemption
+# between yield points); under -Dpreview_mt it needs explicit Mutex (raw-thread
+# class — manual §7b, like Zig/CL). The §6.11 reentrant demux is a pending
+# {request_id => Channel} map (the CSP shape).
+style             = "fibers"                  # "sync" | "task" | "async-await" | "callbacks" | "threaded" | "fibers"
+concurrency_model = "fiber-per-connection"    # `spawn` one fiber per accepted socket; blocking IO yields via the event loop
+default_surface   = "sync"                     # public codec/crypto APIs are synchronous (pure-CPU); the peer loop is fiber-driven
+store_safety      = "single-thread-default"    # fiber-safe between yield points on the default single OS thread; explicit Mutex required under -Dpreview_mt (§3.9 CAS / §4.8 store)
+request_demux     = "request_id-map + Channel" # §6.11 reentrant demux: pending {request_id => Channel}, fiber wakeup on response (the CSP shape)
+tcp_nodelay       = true                       # §7b: set TCP_NODELAY on every socket — Nagle/delayed-ACK is the small-frame req/resp killer (Zig lesson)
+parallelism_note  = "-Dpreview_mt / Execution Contexts (Parallel) = the true-parallel escape hatch; still preview in 1.20 (default-on targeted 1.21) → NOT used at core"
+
+[naming]
+# Crystal-native conventions (compiler-enforced: types MUST start uppercase).
+class_names       = "PascalCase"              # classes + modules + structs: EntityCore::Cbor, EntityCore::PeerId, EntityCore::Peer
+method_names      = "snake_case"              # methods: content_hash, sign_and_verify, encode_canonical
+variable_names    = "snake_case"              # locals + ivars (@peer_id) + params: peer_id, data_bytes
+constant_names    = "SCREAMING_SNAKE_CASE"    # constants: DEFAULT_TIMEOUT, MAX_CHAIN_DEPTH, MAX_PAYLOAD_BYTES
+predicate_suffix  = "?"                        # boolean methods: valid?, canonical?
+bang_suffix       = "!"                        # raising / in-place variant where idiomatic: encode!
+file_names        = "snake_case"              # cbor.cr, peer_id.cr (src/entity_core/<file>.cr)
+module_namespace  = "EntityCore"              # top namespace; nested EntityCore::Cbor, EntityCore::Peer, ...
+
+[build]
+build_tool        = "shards"                  # Shards (Crystal's package/build tool); shard.yml-driven
+build_command     = "shards build"           # compiles targets declared in shard.yml
+test_command      = "crystal spec"           # stdlib `spec` framework (see [testing])
+deps_command      = "shards install"         # writes shard.lock; core peer has ZERO shard runtime deps (system libsodium is not a shard)
+pack_command      = "shards build --release" # release build; publish = git tag (see [publishing])
+lint_tool         = "none-at-core"           # `ameba` is the ecosystem linter but a dev-only shard; deferred to S5 (don't pull silently)
+
+[layout]
+# Standard Shards/Crystal layout.
+shard_yml         = "shard.yml"              # package manifest (name/version/crystal/targets/dependencies)
+shard_lock        = "shard.lock"            # committed lockfile (deps pinned; core peer deps are empty)
+src_dir           = "src/"                    # src/entity_core/ — the EntityCore::* types; src/entity_core.cr entrypoint
+test_dir          = "spec/"                   # `spec` suites + conformance harness (*_spec.cr)
+bin_dir           = "bin/"                    # compiled CLI host / oracle driver (S4) — bin/entity-core-peer
+shard_name        = "entity_core_protocol"   # shards id (snake_case)
+lib_module        = "EntityCore"
+require_path      = "entity_core"            # `require "entity_core"`
+
+[publishing]
+registry          = "git"                    # Crystal has NO central package host; shards resolve from git repos by v-prefixed semver tags
+registry_url      = ""                        # n/a — consumers add a git source in their shard.yml
+# shards ids are idiomatic snake_case; a shard is implicitly Crystal, so the
+# redundant `_crystal` suffix is dropped (mirrors the Ruby/Elixir reasoning). Peer
+# id (keystone naming) stays `entity-core-protocol-crystal`. Confirm the git tag
+# convention (v0.1.0) at S5.
+package_id        = "entity_core_protocol"
+license_expression = "Apache-2.0"
+repository_url    = ""                          # TBD on first publish
+authors           = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default. Crystal itself is Apache-2.0; the shard ecosystem is MIT-heavy with no mandate — keep the safe Apache-2.0 default (explicit patent grant).
+
+[testing]
+# Crystal ships `spec` in its stdlib (require "spec", run via `crystal spec`) —
+# using it adds NO shard dependency, so it is simultaneously the ecosystem
+# standard AND honors dep minimization (the Ruby/Minitest, Zig/zig-test, TS/
+# node:test situation: zero added dep). The conformance harness is a spec suite
+# that loads the normative fixtures and asserts byte-identity; a thin `bin/`
+# target is the standalone oracle driver for validate-peer / wire-conformance at S4.
+framework         = "spec"                    # stdlib; zero added dependency
+standalone_runner = "bin-target"             # compiled thin oracle-driver entry point (S4)
+
+[container]
+base_image        = "entity-core-keystone/crystal-toolchain:latest"
+build_in_container = true
+network_policy    = "pull-once-then-offline"  # deps vendored in one network-on step; conformance RUN sealed --network=none. Core peer has ZERO shard runtime deps (system libsodium pre-installed), so offline is clean.
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/crystal entity-core-keystone/crystal-toolchain:latest sh -c 'crystal spec'"
+
+[idiom]
+# Hints that don't fit elsewhere — the compiled-Ruby-like specifics.
+prefer_exceptions        = true               # fallible surfaces raise EntityCore::Error subclasses; rescue at the dispatch boundary
+byte_slices_for_wire     = true               # wire bytes are `Bytes` / `Slice(UInt8)` (NOT String — String is UTF-8-validated); the codec core is a Bytes cursor
+native_fixed_width_int   = true               # Crystal Int is FIXED-WIDTH (Int8..128 / UInt8..128, LLVM machine ints). UInt64 covers [2^63, 2^64-1] natively BUT overflow RAISES OverflowError by default (wrapping = &+). => carry the CBOR head-form + the [2^63, 2^64-1] self-test (the Ruby peer's native_bignum=true does NOT hold here — the overfit trap).
+bigint_available         = true               # `require "big"` → GMP-backed BigInt for any >=2^64 arithmetic arm (not needed for the uint64 head-form, which UInt64 covers natively)
+struct_for_values        = true               # prefer `struct` (stack-allocated value types) for small immutable value-shaped types (envelope, cap-token); `class` where reference semantics/mutation needed
+data_is_arbitrary_ecf    = true               # §1.1 entity `data` = arbitrary ECF value (NOT necessarily a map) — model a tagged EcValue union, do NOT assume Hash (A-JAVA-010)
+in_process_ffi           = true               # libsodium (and, when scoped, libentitycore_codec) bind IN-PROCESS via `lib`/`fun` + @[Link] — no co-process/daemon
+overflow_checked         = true               # Crystal arithmetic is overflow-checked by default (OverflowError); use &+/&-/&* only where wraparound is intended (e.g. hash mixing) — never silently in the codec
+
+[resource_bounds]
+# §4.10 floor MUSTs — recorded at S1 so the peer layer (S3+) gets the codes right.
+# NOT enforced in S1 (profile-only phase).
+max_chain_depth   = 64                         # §4.10(b): chain deeper than this → 400 chain_depth_exceeded (MUST be 400, NOT 403). Structural pre-check (walk parents, no sig work) BEFORE the per-link authz walk; an UNREACHABLE parent stays 403 (not a depth fault).
+max_payload_bytes = 16777216                   # §4.10(a): 16 MiB default → over-limit → 413 payload_too_large (MUST).
+admission_codes   = ["413 payload_too_large", "400 chain_depth_exceeded", "503/429 connection-admission (SHOULD, external-layer carve-out)"]  # §6.12 / §4.10(c)
+
+[auth]
+# §5.2 / §5.2a verdict-to-status. Recorded at S1 for the peer layer (S3+).
+verdict_trichotomy = "401 (unauthenticated) / 403 (authenticated-but-unauthorized) / 401 (unresolvable-identity)"  # ALLOW / AUTH_DENY / AUTHZ_DENY → 401/403/401
+
+[spec]
+version_pinned    = "v0.8.0"                   # spec-data/v0.8.0/ (V8) — the current pinned snapshot; core wire byte-unchanged across V7→V8.
+codec_corpus      = "v0.8.0"                   # ECF corpus = the 71-vector wire-conformance set (conformance-vectors-v1); peer-id §1.5 canonical-form (hash_type=0x00 identity-multihash, digest = raw pubkey for <=32B keys).
+# Crystal derives S1/S2/S3 against the COMPLETE v0.8.0 snapshot — the
+# register/outbound/emit/owner-cap/§7a peer surface AND the §4.8/§4.9/§4.10
+# substrate floor are all present as ratified spec text. No snapshot-lag caveat.

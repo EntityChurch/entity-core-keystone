@@ -1,0 +1,23 @@
+name: entity_core_protocol
+version: 0.1.0
+
+description: |
+  entity-core-protocol-crystal — a conformance peer for the entity-core
+  protocol. Hand-rolled canonical-CBOR (ECF) codec, Base58/varint/content-hash/
+  peer-id, and a libsodium-backed Ed25519 signature module. Core codec only.
+
+authors:
+  - Entity Core Protocol contributors
+
+crystal: ">= 1.20.0, < 2.0.0"
+
+license: Apache-2.0
+
+# ZERO shard runtime dependencies. The Ed25519 backend is system libsodium
+# (linked via a direct `lib`/`fun` C binding, NOT a shard); SHA-256/512 and
+# `spec` are Crystal stdlib. Keeping this empty is a profile requirement.
+targets:
+  entity-core-peer:
+    main: bin/entity-core-peer.cr
+  smoke:
+    main: bin/smoke.cr

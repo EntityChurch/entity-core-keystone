@@ -1,0 +1,206 @@
+# entity-core-protocol-odin — Language Profile
+#
+# Corroboration / generator-robustness peer (T3). Odin is a modern DATA-ORIENTED
+# SYSTEMS language (Ginger Bill): manual memory via an implicit `context`
+# allocator, NO exceptions (multi-return error values + or_return/or_else), Ada_Case
+# types, and — unusual for the cohort — a NATIVE pure-Odin `core:crypto` (Ed25519 +
+# SHA-2) AND a canonical-AWARE stdlib CBOR (`core:encoding/cbor`). The discovery
+# axes (crypto-availability, integer-model, memory-model, string/encoding-model)
+# are saturated across the 28-peer cohort, so this is CORROBORATION, not spec-
+# discovery: a new peer passing the author's vectors is COHORT-CONSISTENT, not
+# independent convergence (ADR-0012). The value is generator-robustness on a fresh
+# syntax/packaging/error-idiom shape (no package manager; vendored deps; no-GC
+# context allocators; value-return errors) + a native-crypto corroboration.
+# Authored FRESH in S1 from the pinned v0.8.0 (V8) spec + Odin-ecosystem research —
+# NOT ported from the Zig profile; where a field matches Zig it is by independent
+# arrival on a shared systems-language class (fixed-width ints, native crypto,
+# manual memory), and the idiom seams (Ada_Case, or_return, context allocator,
+# core:encoding/cbor as a survey baseline) deliberately differ.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value is
+# logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "odin"
+name              = "Odin"
+tier              = "corroboration-T3"        # native-systems / no-exceptions / no-package-manager probe; final matrix index reconciles at merge with the Julia/Nim branch
+package_name      = "entity-core-protocol-odin"
+runtime           = "odin-toolchain"          # references containers/odin-toolchain/Containerfile
+
+[codec]
+# strategy: NATIVE (hand-rolled canonical CBOR). Odin's stdlib `core:encoding/cbor`
+# (author @laytan) is unusually canonical-AWARE — it has an `Encoder_Flag`
+# deterministic mode with Deterministic_Int_Size, Deterministic_Float_Size (a real
+# f16->f32->f64 round-trip-equality ladder), Deterministic_Map_Sorting, and
+# ENCODE_FULLY_DETERMINISTIC — BUT it is NOT ECF-canonical:
+#   - map key sort is PURE BYTEWISE (RFC 8949 §4.2.1 CDE), NOT ECF's LENGTH-then-
+#     lexicographic (RFC 7049 §3.9) ordering → WRONG order for ECF.
+#   - major-type-6 tag rejection on DECODE is ABSENT (the generic Value decoder
+#     accepts any tag; only silently drops 55799) → the opposite of the required
+#     recursive tag-REJECT.
+# So the A-005 pattern holds a 29th time: the canonical layer (length-then-lex map
+# order, recursive tag-6 reject, shortest-float incl. f16, full uint64/nint range,
+# raw-byte `data` fidelity) is hand-rolled regardless. `core:encoding/cbor` is a
+# useful float-ladder cross-check but is NOT the codec. Spike the map_keys + float
+# vectors at S2 before the full build.
+strategy          = "native"
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native", notes = "core:encoding/cbor is canonical-AWARE (f16 ladder + deterministic int/float) but map-sort is bytewise (not length-first) and no decode tag-reject → hand-roll; stdlib used only as a float-ladder cross-check" }
+# Ed25519 + SHA: NATIVE pure-Odin `core:crypto` — `core:crypto/ed25519`
+# (sign/verify/keygen per RFC 8032 / FIPS 186-5; in-tree since 2024-04, actively
+# maintained) and `core:crypto/sha2` (SHA-256/384/512). Source-verified pure-Odin
+# (no `foreign import` in ed25519.odin / sha2.odin) → the whole crypto FLOOR is
+# native + FFI-free, like Zig std.crypto. This is the native-pure-lang crypto tier
+# (Dart cryptography_plus / Common Lisp ironclad precedent). CAVEAT (→ ambiguity
+# log A-ODIN-004): core:crypto's README self-declares "not received independent
+# third-party review" and assumes 64-bit — an operator note, not a floor blocker;
+# the KAT accept-path unit + the wire-conformance oracle gate the actual bytes.
+ed25519_library   = { name = "core:crypto/ed25519", version = "bundled with odin dev-2026-06 (pinned in container)", api = "ed25519.sign / ed25519.verify / ed25519.generate_keypair (RFC 8032)" }
+# Ed448 (crypto-agility HIGHER BAR, §1.5 key_type 0x02): DEFERRED. `core:crypto`
+# has NO Ed448 (only x448 ECDH, not the signature scheme — verified absent). When
+# agility is scoped, the documented path is HYBRID-FFI via `libentitycore_codec`
+# (C-ABI `ec_ed448_*`) bound with Odin's in-process `foreign import` as an OPT-IN
+# sub-library so the shipped default peer stays self-contained (core:crypto-only).
+# Does NOT affect the Ed25519/ECF conformance floor. See SPEC-AMBIGUITY-LOG A-ODIN-002.
+ed448_library     = { name = "DEFERRED", version = "none", future = "hybrid-FFI via libentitycore_codec ec_ed448_* (foreign import, opt-in sub-package)" }
+sha256_source     = "core:crypto/sha2 (SHA-256 floor; SHA-384/512 present for the agility hash family) — native pure-Odin"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (src/base58.odin); not in core
+varint_handling   = "native"                  # multicodec-style LEB128 (§7.3) inline impl, src/varint.odin; multikey format-code/key-type/hash-type framing
+
+[error_model]
+# Odin-native: NO EXCEPTIONS. The idiomatic fallible surface is MULTI-RETURN with a
+# trailing error value — an error `enum` (or a tagged `union` for richer payloads);
+# `nil`/`.None`/`false` = success. Control flow uses `or_return` (propagate/early-
+# return on a non-nil trailing error) and `or_else` (default fallback). This is a
+# DELIBERATE idiom divergence from the exception peers (Ruby/Crystal/C#) and the
+# result-ADT peers (OCaml) — closest to Zig's error-union, but a value enum/union
+# rather than a language-level `!T`. Codec/decode faults are members of a
+# `Codec_Error` enum; protocol-status faults map an error value → §5.2a/§6.12
+# status code at the module boundary.
+style             = "error_value"             # "exceptions" | "result" | "either" | "errno" | "error_union" | "error_value"
+error_enum        = "Codec_Error"             # enum { None, Non_Canonical_Ecf, Truncated, Tag_Rejected, Duplicate_Key, Bad_Seed, Unsupported_Key_Type, Unsupported_Hash_Format, ... }
+propagation       = "or_return"               # `x := f() or_return` propagates the trailing error; `or_else` supplies a default. NO panic on protocol-input faults — panic reserved for true unreachable/programmer error.
+
+[memory]
+# Odin-SPECIFIC section (shared class with Zig). NO garbage collector. Memory is
+# managed via the implicit `context.allocator` (+ `context.temp_allocator` for
+# scratch); `new`/`make`/dynamic arrays/maps allocate through the current context
+# allocator, overridable per-scope. This is the biggest idiom seam vs the GC'd
+# peers (Ruby/Crystal/Elixir/...).
+gc                = false
+allocator_model   = "implicit-context"        # allocation flows through `context.allocator`; codec owns no global state — scope an arena/temp_allocator per request
+encode_buffer     = "caller-or-temp-allocator" # encoder writes into a caller buffer or `context.temp_allocator` scratch; free deterministically (defer / arena reset)
+decode_ownership  = "caller-frees"            # decoded structures own per a documented ownership contract; `defer` free on every path; no hidden GC
+leak_discipline   = "tracking-allocator-in-tests" # wrap tests in `mem.Tracking_Allocator` to fail on any un-freed alloc (free-correctness is a first-class conformance concern here, unlike GC'd peers)
+
+[async]
+# Odin has NO async runtime, NO green threads/fibers — RAW OS THREADS only
+# (`core:thread`: Thread + a thread Pool) with `core:sync` primitives (Mutex,
+# RW_Mutex, Sema, Cond, Wait_Group, Barrier, Once, atomics). The §4.8/§6.11
+# inbound-concurrent-with-outbound requirement is met by one reader thread per
+# connection demuxing EXECUTE_RESPONSE by request_id — the Zig/CL raw-thread shape.
+# §7b store-safety is enforced MANUALLY (explicit Mutex; no actor/STM structural
+# guarantee), and the §6.11 handler-outbound demux is a CORRELATION-MAP TAX, not
+# free (no actor/CSP substrate). See A-ODIN-003.
+style             = "threaded"                # "sync" | "threaded" | "evented" | "io-async" | "fibers"
+default_surface   = "blocking"                # codec + core peer are blocking/synchronous; core:thread provides concurrency
+primitive         = "core:thread + core:sync" # OS threads; sync.Mutex for write serialization on a shared conn + the shared store
+store_safety      = "manual-mutex"            # raw-thread class → explicit sync.Mutex around the §4.8 store + §3.9 CAS critical section
+request_demux     = "request_id-map + cond"   # §6.11 reentrant demux: pending {request_id => waiter}, sync.Cond wakeup (the thread-peer shape; correlation-map tax)
+tcp_nodelay       = true                       # §7b: set TCP_NODELAY on every socket — Nagle/delayed-ACK is the small-frame req/resp killer (Zig lesson)
+
+[naming]
+# Odin-native conventions: Ada_Case for TYPES + enum values, snake_case for procs +
+# vars, SCREAMING_SNAKE_CASE for constants. (Distinct from Zig's PascalCase-type /
+# camelCase-fn split.)
+type_names        = "Ada_Case"                # types, structs, enums: Entity, Content_Hash, Peer_Id, Codec_Error
+enum_value_names  = "Ada_Case"                # enum members: Non_Canonical_Ecf, Tag_Rejected
+proc_names        = "snake_case"              # procedures: content_hash, sign_and_verify, encode_ecf
+variable_names    = "snake_case"              # locals/fields/params: content_hash, peer_id, format_code
+constant_names    = "SCREAMING_SNAKE_CASE"    # compile-time constants: MAX_MESSAGE_SIZE, MAX_CHAIN_DEPTH
+file_names        = "snake_case"              # cbor.odin, peer_id.odin, content_hash.odin
+package_names     = "snake_case"              # a package = a directory; package entity_core
+foreign_binding   = "keep-c-names"            # foreign import blocks keep the C library's original symbol names (ec_ed448_sign, ...)
+
+[build]
+build_tool        = "odin"                    # the Odin compiler is the build system — no external build tool
+build_command     = "odin build src -out:bin/entity-core-peer"  # a package = a directory of .odin files
+test_command      = "odin test src"           # `core:testing` in-language runner; @(test) proc(t: ^testing.T)
+pack_command      = "odin build src -out:bin/entity-core-peer -o:speed"  # release build; publish = git tag (see [publishing])
+lint_note         = "odin check"              # `odin check` type-checks without codegen; no separate ecosystem linter at core
+
+[layout]
+project_dir       = "src/"                    # the `entity_core` package: src/*.odin sharing `package entity_core`
+src_dir           = "src/"                    # library + peer sources (flat package; Odin packages are directories, not nested modules)
+ffi_dir           = "src/ffi/"                # opt-in Ed448 hybrid-FFI sub-package (deferred) — foreign import libentitycore_codec
+test_dir          = "test/"                   # `core:testing` suites + conformance harness (odin test)
+bin_dir           = "bin/"                    # compiled CLI host / oracle driver (S4) — bin/entity-core-peer
+package_name      = "entity_core"             # the Odin package identifier (snake_case)
+
+[publishing]
+# Odin has NO central package manager (no cargo/npm/crates equivalent). Consumers
+# vendor the package — Ginger Bill prefers git SUBTREE over submodules — or drop it
+# into a `vendor:`-style collection. "Publishing" = a git tag consumers pin.
+registry          = "git-vendored"            # no central registry; vendored by git subtree / tag pin (decentralized by design)
+registry_url      = ""                        # n/a — consumers vendor from the repo URL directly
+package_id        = "entity_core_protocol_odin"  # repo/package name (snake_case; no hyphens in Odin package idents)
+license_expression = "Apache-2.0"
+repository_url    = ""                         # TBD on first publish
+authors           = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default; Odin itself is BSD-3, ecosystem is permissive-leaning but does not mandate — keep the safe Apache-2.0 default (explicit patent grant)
+
+[testing]
+# Odin's built-in `core:testing` runner (`odin test`, @(test) procs) — no external
+# framework dependency, matching the dependency-minimization stance natively (the
+# Zig/zig-test, Crystal/spec, Ruby/Minitest situation: zero added dep). The
+# conformance harness is a core:testing file that loads the normative fixture and
+# asserts byte-identity; the runner is multithreaded with memory tracking, so leak
+# detection via a Tracking_Allocator is a natural add (an Odin conformance bonus).
+framework         = "core:testing"            # in-language; no external test framework
+leak_checking     = true                      # mem.Tracking_Allocator fails a test on any un-freed alloc
+standalone_runner = "bin-target"             # compiled thin oracle-driver entry point (S4)
+
+[container]
+base_image        = "entity-core-keystone/odin-toolchain:latest"
+build_in_container = true
+# There is NO official Odin Docker image, and Odin bundles no LLVM — the compiler
+# links against a SYSTEM LLVM (17-22). The container (fedora:43 base) installs
+# stock LLVM + clang via dnf and BUILDS the Odin compiler from source at the pinned
+# tag `dev-2026-06`. The core peer pulls NO third-party packages (core:crypto +
+# core: covers crypto/hash/threads/testing), so the conformance RUN is fully
+# offline once the image exists.
+network_policy    = "build-network-then-offline"  # git clone + dnf at image build; --network=none for the conformance run
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/odin entity-core-keystone/odin-toolchain:latest sh -c 'odin test test'"
+
+[idiom]
+# Hints that don't fit elsewhere — the data-oriented systems specifics.
+prefer_error_value_over_panic = true          # public surfaces return a trailing error value; panic only for true unreachable/programmer error
+no_gc                         = true          # manual memory; `defer` for deterministic free on every path
+implicit_context_allocator    = true          # allocation flows through `context.allocator`; scope arena/temp per request; never a hidden global
+explicit_ownership            = true          # decode returns owned data with a documented free contract; tests run under a tracking allocator
+byte_slices_for_wire          = true          # wire bytes are `[]u8` / `[]byte` slices; the codec core is a []u8 cursor (never a string — Odin `string` is UTF-8 bytes but keep the codec on []u8)
+native_fixed_width_int        = true          # Odin ints are FIXED-WIDTH (u8..u128 / i8..i128; int/uint = 64-bit). u64 covers [2^63, 2^64-1] natively => carry the CBOR head-form + the [2^63, 2^64-1] self-test (fixed-width class, like Zig/Forth/Fortran).
+bignum_available              = true          # `core:math/big` (Int/Rat) is opt-in for any >=2^64 arithmetic arm (not needed for the uint64 head-form, which u64 covers natively)
+data_is_arbitrary_ecf         = true          # §1.1 entity `data` = arbitrary ECF value (NOT necessarily a map) — model a tagged Ec_Value union, do NOT assume a map (A-JAVA-010)
+in_process_ffi                = true          # foreign import links libentitycore_codec (Ed448, when scoped) IN-PROCESS — no co-process/daemon
+odin_version                  = "dev-2026-06" # pinned dated release (2026-06-10; ~32 days old at 2026-07-12, clears the S11 30-day floor)
+core_only                     = true          # the core peer pulls ZERO third-party packages — core:crypto + core: covers crypto, hashing, threads, testing, cbor(survey)
+
+[resource_bounds]
+# §4.10 floor MUSTs — recorded at S1 so the peer layer (S3+) gets the codes right.
+# NOT enforced in S1 (profile-only phase).
+max_chain_depth   = 64                         # §4.10(b): chain deeper than this → 400 chain_depth_exceeded (MUST be 400, NOT 403). Structural pre-check (walk parents, no sig work) BEFORE the per-link authz walk; an UNREACHABLE parent stays 403 (not a depth fault).
+max_payload_bytes = 16777216                   # §4.10(a): 16 MiB default → over-limit → 413 payload_too_large (MUST).
+admission_codes   = ["413 payload_too_large", "400 chain_depth_exceeded", "503/429 connection-admission (SHOULD, external-layer carve-out)"]  # §6.12 / §4.10(c)
+
+[auth]
+# §5.2 / §5.2a verdict-to-status. Recorded at S1 for the peer layer (S3+).
+verdict_trichotomy = "401 (unauthenticated) / 403 (authenticated-but-unauthorized) / 401 (unresolvable-identity)"  # ALLOW / AUTH_DENY / AUTHZ_DENY → 401/403/401
+
+[spec]
+version_pinned    = "v0.8.0"                   # spec-data/v0.8.0/ (V8) — the current pinned snapshot; core wire byte-unchanged across V7→V8.
+codec_corpus      = "v0.8.0"                   # ECF corpus = the 71-vector wire-conformance set (conformance-vectors-v1); peer-id §1.5 canonical-form (hash_type=0x00 identity-multihash, digest = raw pubkey for <=32B keys).
+# Odin derives S1/S2/S3 against the COMPLETE v0.8.0 snapshot — the register/
+# outbound/emit/owner-cap/§7a peer surface AND the §4.8/§4.9/§4.10 substrate floor
+# are all present as ratified spec text. No snapshot-lag caveat.

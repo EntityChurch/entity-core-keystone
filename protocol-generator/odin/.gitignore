@@ -1,0 +1,10 @@
+# entity-core-protocol-odin — build artifacts (NOT committed).
+# The peer host + smoke are compiled ELF outputs of `odin build`; only sources + run
+# scripts are tracked. (The repo-root .gitignore already ignores **/bin/; this is the
+# peer-local belt-and-suspenders so the compiled binaries are never staged.)
+bin/entity-core-peer
+bin/smoke
+*.o
+
+# S5 source-tarball output
+dist/
