@@ -1,8 +1,32 @@
 # Language Landscape — `entity-core-keystone`
 
-**Status:** Seeded from architecture's top-40 cross-language matrix. Live document — research stewards update as evaluations complete and ecosystems mature.
+**Status:** Seeded from architecture's top-40 cross-language matrix. Research stewards update as
+evaluations complete and ecosystems mature.
 
 > Source: architecture's entity-core peer-generator exploration (§3, in `entity-core-architecture`).
+
+> ## ⚠ Read this before trusting a "Profile status" cell
+>
+> **This file's per-language status columns are a partial historical build log, not the current
+> roster.** They were written as peers were selected and have not been mechanically refreshed since
+> the cohort passed roughly 22 peers. Several rows below still read `not-started` for languages that
+> are built and gate-green (`Python`, `Java`, `C`, `C++`, `Kotlin`, `PHP`, `Dart`, `Ruby`, `Prolog`,
+> and others), and the "candidate follow-ons" list names peers that have since shipped.
+>
+> **For current state, use these instead:**
+>
+> | Question | Authoritative source |
+> |---|---|
+> | Is peer X built, and what did it score? | **`CONFORMANCE-MATRIX.md`** §1 |
+> | What is peer X *for*? What axis does it probe? | **`research/PEER-ATLAS.md`** |
+> | How often does peer X get re-measured? | `tools/peer-tiers.tsv` · `tools/tier-status.py` |
+> | What's left to build? | `research/COMPLETENESS-ROADMAP.md` |
+>
+> **What this file is still good for, and it is genuinely useful:** the per-language *library and
+> codec-strategy research* — which CBOR library was evaluated and why it was rejected, which crypto
+> provider was chosen, which predictions the S1 spike overturned. That reasoning is durable and is
+> not recorded anywhere else at this depth. The runtime-shared-family analysis (§Runtime-shared
+> families) and the BEAM-family corroboration note are likewise still current and load-bearing.
 
 > **Forward-looking build queue** (what's left to build + priority — the completeness phase):
 > `research/COMPLETENESS-ROADMAP.md`. This file is the current-state roster; that one is the tracker.
@@ -109,11 +133,15 @@
 The pre-release slate added five peers before the release tag, in build order
 **Kotlin → PHP → C++ → Dart → COBOL** — reach-first (Kotlin/C++/PHP/Dart) then the
 one curiosity pick (**COBOL the one genuine discovery bet**, spike-first). All reach peers
-are corroboration-only (the discovery well is dry on language axes). An Odin peer was
-scoped as a reach-modest curiosity pick but **not built** (it remains *not-started* in the
-Tier-3 table above); the 22-peer cohort in `CONFORMANCE-MATRIX.md` is Odin-free. Per-peer
-codec/crypto strategy and conformance results are recorded in each peer's
+are corroboration-only (the discovery well is dry on language axes). Per-peer codec/crypto
+strategy and conformance results are recorded in each peer's
 `protocol-generator/<lang>/status/` and summarized in `CONFORMANCE-MATRIX.md`.
+
+> **Correction (2026-08-20).** This section previously stated that Odin was scoped but *not* built and
+> that the cohort was "Odin-free." That was accurate when written against the 22-peer cohort; it is
+> now wrong. **Odin was built** — it is maintenance tier M3, `--profile core` 0-FAIL, and notable as
+> one of the few peers with **pure-language crypto** (`core:crypto`, Ed25519 + SHA-2, FFI-free). Its
+> Tier-3 row above carries the correct build detail; only this paragraph was stale.
 
 ## Post-release: alien-substrate track (in progress)
 
@@ -130,11 +158,17 @@ a fresh spec finding is the upside, not the expectation.
 | **Oz / Mozart** | **Dataflow-variable concurrency** — the 4th structural §7b store-safety shape (declarative concurrency: read-blocks-until-bound), distinct from actor/STM/CSP/thread+lock. The concurrency axis, not a wire-touching one. | FFI-hybrid (pure-Oz canonical CBOR value codec; crypto/peer-id via the `entity-codec-daemon` `Open.pipe` co-process over `libentitycore_codec` — the RPM ships zero headers, so native-functor FFI is out). Native `Open.socket` transport. | **✅ S4 — `--profile core` = Result: PASS.** `682 · 285P/301W/0F/96S @ cc1970f`; origination-core 3/3 + genuine 2-of-3 multisig accept. **Payoff (A-OZ-006):** the §6.11 demux collapses to one single-assignment dataflow variable per pending request — the variable *is* the correlation map, no side table, no yield discipline; the cleanest §6.11 substrate in the cohort. **Durable finding A-OZ-005:** on a substrate where `"" == nil`, never use `== nil` as a string sentinel, and a dispatcher MUST catch the ROOT error class → 500 (two crash-class S3 bugs). Mozart2 v2.0.1 RPM on fedora:43 (no source build). `0.1.0-pre`. Detail: `protocol-generator/oz/status/`. |
 | **Io** | **Pure prototype-based OO** — the one object model unprobed (no classes; differential inheritance via `clone`; everything a message send). §6.6 resolution renders as a proto-chain delegation walk. Off-wire (object-model) axis — generator robustness, not a wire finding. | FFI-hybrid (pure-Io canonical CBOR with an `EcBig` sign+magnitude carrier for the uint64 tower — IoNumber is a C double; crypto/peer-id via the in-process `EntityCodec` C addon over `libentitycore_codec`). Native Socket transport. | **✅ S4 — `--profile core` = Result: PASS.** `682 · 291P/295W/0F/96S @ cc1970f`; origination-core 3/3 + genuine 2-of-3 multisig accept; concurrency incl. (t2_1 0/10000 dropped, t2_2 PASS). Built on the permanently-frozen `2026.04.20-native-final` tag (upstream master pivoted to WASM). **Durable findings:** A-IO-025/026 (single-event-loop non-blocking discipline — a "throughput ceiling" claim retracted after the Oz sibling passed the same checks with slower crypto → two fixable loop-blocking bugs), A-IO-004/007 (prototype-OO: fence dynamic dispatch with the declared-op set). `0.1.0-pre`. Detail: `protocol-generator/io/status/`. |
 
-Candidate follow-ons (not yet started, roughly by insight-yield): Rexx (EIAS +
-native decimal), Forth (stack machine / no types — generator stress), Fortran
-(array/column — reach + robustness), APL/J (array model). Order is not fixed; the
-selection heuristic is the peer-selection compass (novelty on a wire-touching axis
-over idiom/packaging novelty).
+**Candidate follow-ons — all four have since shipped** (this list was written when they were queued;
+kept because the *rationale* for each pick is the useful part): **Rexx** (EIAS + native decimal),
+**Forth** (stack machine / no types — generator stress), **Fortran** (fixed-width signed-only integer
+model), **APL** (array value-model). All four are built and carry `probe` maintenance tier; APL is
+upstream-blocked and currently unmeasured. The selection heuristic that picked them — the
+peer-selection compass, novelty on a wire-touching axis over idiom/packaging novelty — is stated in
+full in `PEER-ATLAS.md` §1 and remains the rule.
+
+The alien-substrate track above is likewise a partial log: **Smalltalk, Io, Oz, Pure Data, SQL,
+Datalog, Unison, the three ISAs, and the three WebAssembly variants** all landed after these rows were
+written. `PEER-ATLAS.md` §2 is the complete, current map.
 
 ## Sequencing (historical — first wave, all shipped)
 

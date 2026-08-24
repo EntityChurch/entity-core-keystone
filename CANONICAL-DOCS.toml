@@ -16,15 +16,20 @@ github = "https://github.com/EntityChurch/entity-core-keystone"
 intro  = """
 The keystone of the Entity Core arch: a generator that emits a full core
 protocol peer (entity-core-protocol-<lang>) for any target language from the
-v0.8.0 (V8) spec, plus a language-agnostic codec C-ABI. The cohort is 21 generated core
-peers, each passing the validate-peer --profile core conformance gate with 0
-FAIL on one current oracle — see the conformance matrix for the per-peer
-transparency contract (spec version, oracle commit, codec/crypto strategy,
-known gaps). Honest scope: these peers are generated, so they share a generation
-lineage — the strong claim is spec-forced convergence across 21 different
-languages/runtimes, not 21 independently-authored code bases (ADR-0012). This is
-a 0.8 pre-release surface: solid and oracle-pinned on the tested core profile,
-still evolving as new languages and spec amendments run through the generator.
+pinned spec snapshot (currently v0.8.2), plus a language-agnostic codec C-ABI.
+The cohort is 46 generated core peers, 45 of them measured. Conformance state as
+of 2026-08-21 spans two oracle pins and is NOT uniformly green: the 5 lockstep
+peers re-run at oracle c1b0708 all FAIL the newly-landed core capability checks,
+and the other 40 still carry their superseded de8f807 measurement, which does not
+carry forward. The failures are an unimplemented spec feature (the section 5.6
+minted-capability temporal ceiling) rather than regressions. The conformance
+matrix is authoritative and carries the per-peer transparency contract — spec
+version, oracle commit, codec/crypto strategy, known gaps — and it states plainly
+which rows are current and which are historical. Honest scope: these peers are
+generated, so they share a generation lineage — the strong claim is spec-forced
+convergence across many different languages/runtimes, not 46 independently-authored
+code bases (ADR-0012). This is a 0.8 pre-release surface: oracle-pinned and
+reproducible, still evolving as spec amendments run through the generator.
 """
 
 # ── Overview ────────────────────────────────────────────────────────────────
@@ -61,9 +66,45 @@ group = "Conformance"
 
 # ── Research ────────────────────────────────────────────────────────────────
 [[doc]]
+path  = "research/PEER-ATLAS.md"
+title = "The Peer Atlas — 46 substrates and what each one was for"
+blurb = "The map of the cohort: every peer grouped by the substrate form it represents, the axis it was selected to stress, and what it taught. Carries the selection principle (we collect forms, not languages) and the standing invitation for new peers."
+group = "Research"
+
+[[doc]]
+path  = "research/SUBSTRATE-TAKEAWAYS.md"
+title = "What translates across substrates — and what doesn't"
+blurb = "The cross-cutting synthesis of the substrate sweep: what the protocol carries neutrally, what needs a seam, the four concurrency shapes, and the honest limits."
+group = "Research"
+
+[[doc]]
+path  = "research/CRYPTO-LANDSCAPE.md"
+title = "The cryptography landscape across 46 substrates"
+blurb = "How language ecosystems actually provision Ed25519 + SHA-256: the five provisioning tiers, the ~10 distinct implementations underneath 46 peers, and why Ed448 availability is decided by C-library scope rather than language capability."
+group = "Research"
+
+[[doc]]
+path  = "research/PARADIGM-MAP.md"
+title = "Paradigm map — the whole computing-substrate territory"
+blurb = "Cartography of the major language/substrate families, each classified by our coverage and by viability for carrying the protocol (NATIVE / HYBRID-FFI / QUERY-NATIVE / WRAPPER-ONLY / STUNT / SAME-FAMILY)."
+group = "Research"
+
+[[doc]]
+path  = "research/COMPLETENESS-ROADMAP.md"
+title = "Roadmap — remaining peer/paradigm targets"
+blurb = "The forward queue: what is left to build and at what priority, plus the coverage-not-completion framing and what kind of new peer is most worth proposing."
+group = "Research"
+
+[[doc]]
+path  = "research/PROJECT-RETROSPECTIVE.md"
+title = "Project retrospective — the capstone synthesis"
+blurb = "The narrative account: what the project is, how it got here, and what generating entity-core onto the cohort taught about the protocol, the substrates, and the method."
+group = "Research"
+
+[[doc]]
 path  = "research/LANDSCAPE.md"
 title = "Language landscape & per-language survey"
-blurb = "Tiers, library choices, codec strategy, and discovery-axis analysis across the candidate language set."
+blurb = "Per-language library research and codec-strategy rationale across the candidate set. Note: its per-language status columns are a historical build log — CONFORMANCE-MATRIX.md and PEER-ATLAS.md are current."
 group = "Research"
 
 [[doc]]

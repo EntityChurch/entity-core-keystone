@@ -1,81 +1,243 @@
 # entity-core-keystone
 
-**The keystone of the Entity Core arch.**
+**One protocol, forty-six substrates, one conformance bar.**
 
-Via the `/entity-rosetta` generator skill (the *rosetta* that translates one spec into every language), `entity-core-keystone` generates **`entity-core-protocol-<lang>`** — a full core protocol peer (Layers 0–4: substrate, identity, interaction, capability, bootstrap) — for arbitrary target languages. No extensions (community owns those); just the core protocol the rest of the network speaks. Plus the **codec C-ABI** — a language-agnostic contract (`ffi-generator/c-abi/spec/`) with interchangeable implementations (`entity-core-codec-ffi-{rust,c}`, both building `libentitycore_codec`) that languages without mature canonical-CBOR + Ed25519 stacks consume directly, and native codecs cross-check against.
+entity-core-keystone generates a complete **entity-core protocol peer** — Layers 0–4: substrate,
+identity, interaction, capability, bootstrap — for an arbitrary target language, from a pinned snapshot
+of the normative spec. It has done so 46 times, in languages ranging from Rust to COBOL to APL to
+hand-written x86-64 assembly to Pure Data patches, and measured every one of them against the same
+conformance oracle.
 
-Generating peers is the means; the end is **spec refinement** — run the generator across enough languages and spec revisions and every spec ambiguity surfaces, feeds back to architecture, and sharpens both the spec and every peer. It's the keystone: if this holds, the whole multi-language arch holds. Correctness is defined by the conformance oracles (`wire-conformance` + `validate-peer`), not by determinism (convergence-not-determinism; see `AGENTS.md`).
+This is the **keystone** in the literal sense: the place where every language and every ecosystem in the
+project meets and has to agree. A peer here is not a port or a binding — it is an independent
+implementation of the same wire contract, and it either clears the bar or it doesn't.
 
-## Conformance & honest independence
+**Generating peers is the means; spec refinement is the end.** Every run of the generator forces a
+careful reading of the spec through a new substrate's constraints, and every ambiguity that surfaces
+goes back to architecture. The peers are valuable, but the sharpened spec is the point.
 
-The cohort is **46 generated core peers** in the tree. As of the 2026-08-17 census against oracle `entity-core-go @ de8f807`: **45 measured, 40 of them `validate-peer --profile core` → 0 FAIL.** The remaining five are documented, not hidden — `asm-x86_64`/`asm-arm64`/`riscv64` (a shared connection-pressure defect), `cobol` (a standing liveness cascade), and `turbowarp` (an exploratory, non-deployable visual-paradigm probe that was never in scope for the core gate); `apl` is upstream-blocked and unmeasured.
+---
 
-The per-peer transparency contract — spec version, oracle commit, measured P/W/F/S, codec strategy, crypto floor, known gaps, packaging — is **`CONFORMANCE-MATRIX.md`**. Check a peer's row there before pulling it; the matrix, not this README, is the authoritative number.
+## Start here
 
-**On the word "independent" (read this before citing a peer count).** These peers are **keystone-*generated*** — they share a generation lineage, and most of the FFI-hybrid ones share a single codec `.so`. They are *not* 46 independently-authored code bases, and we do not claim that. A cohort of generated peers all passing one author's vectors is **cohort-consistent, not independent convergence**. What is real and load-bearing is **spec-forced convergence**: dozens of different languages/runtimes (different integer widths, float models, crypto stacks, string models, concurrency runtimes) each converge on the *same* conformance fixed point. That is strong evidence the spec is unambiguous on the tested surface — but it is convergence on a shared spec via a shared generator, not independent authorship.
+New to the project? These three, in order:
 
-The genuinely independent code bases are the **bespoke ground-up reference impls** — the sibling repos `entity-core-{go,rust,py}` — built without the generator. (Confusingly, the keystone *also* ships clean-room Go/Rust/Python peers: "clean-room" there means the generator never opened the hand-written sibling while generating, i.e. an independence-of-*generation* cross-check — still generated, still shared lineage.) The artifact that lets any impl claim conformance to the *spec* rather than to the Go oracle's quirks is the **language-neutral golden-vector corpus**, co-versioned with the spec.
+1. **This file** — what it is, how to run it (below).
+2. **[`research/PEER-ATLAS.md`](research/PEER-ATLAS.md)** — every peer, what it was built to stress, and
+   what it taught. The best single answer to *"why is there a peer written in SQL?"*
+3. **[`CONFORMANCE-MATRIX.md`](CONFORMANCE-MATRIX.md)** — the per-peer transparency contract. Check a
+   peer's row here before you pull it. This file is never the authoritative number; that one is.
 
-## Three arms
+Then, depending on what you came for:
 
-- **`protocol-generator/`** — per-language full-peer generation. One sub-directory per target language (`csharp/`, `typescript/`, `java/`, …); each holds the language profile, templates, generated source, and conformance status. Shared spec-data + test-vectors + lifecycle prompt templates live in `shared/`.
-- **`ffi-generator/`** — FFI binding generation, organized by binding *shape*. `c-abi/` is the first: a canonical C-ABI codec spec (`c-abi/spec/`) with interchangeable impls `entity-core-codec-ffi-{rust,c}` and a differential conformance harness; future `wasm-abi/` etc. as needed.
-- **`research/`** — landscape + evaluations + diagnostics + stewardship. The cross-arm knowledge base. The conformance harness contract lives in `research/diagnostics/` (`validate-peer-usage.md`, `conformance-invariants.md`, `oracle-vendoring-policy.md`).
+| You want to… | Go to |
+|---|---|
+| Run the thing, generate a peer | [Quick start](#quick-start) ↓ |
+| Understand what 46 substrates taught us | [`research/SUBSTRATE-TAKEAWAYS.md`](research/SUBSTRATE-TAKEAWAYS.md) |
+| Read the cross-language cryptography survey | [`research/CRYPTO-LANDSCAPE.md`](research/CRYPTO-LANDSCAPE.md) |
+| See the whole language territory + what's viable | [`research/PARADIGM-MAP.md`](research/PARADIGM-MAP.md) |
+| Read the narrative capstone | [`research/PROJECT-RETROSPECTIVE.md`](research/PROJECT-RETROSPECTIVE.md) |
+| Add a peer in your language | [Adding a peer](#adding-a-peer) ↓ |
+| Work in this repo as an agent or contributor | [`AGENTS.md`](AGENTS.md) + [`AGENTS-STANDARD.md`](AGENTS-STANDARD.md) |
 
-Plus `containers/` (Podman base images per toolchain), `ops/` (CI + release scripts), and `skills/entity-rosetta/` (the user-facing `/entity-rosetta` skill — a
-tool-neutral Agent-Skill, not tied to any one agent vendor).
+---
 
-## Where the spec and the test vectors live
+## Quick start
 
-The two inputs everything is generated against — the **normative spec** and the **golden vectors** — are co-versioned and live under `protocol-generator/shared/` (see its `README.md` for the full signpost):
+**The host needs only `make` and `podman`.** No language toolchains — every build, test, and conformance
+run happens inside a pinned per-toolchain container. Nothing is written outside the working tree.
 
-| Input | Path | Provenance |
-|---|---|---|
-| **The spec** (3 normative files: `ENTITY-CORE-PROTOCOL.md`, `ENTITY-CBOR-ENCODING.md`, `ENTITY-NATIVE-TYPE-SYSTEM.md`) | `protocol-generator/shared/spec-data/v0.8.0/` | Verbatim byte-for-byte SHA-256-pinned snapshot of `entity-core-architecture`'s published specs; integrity + arch source-commit in that dir's `MANIFEST.md`. |
-| **The conformance / diagnostic vectors** (ECF codec, crypto-agility, type-registry corpora — `.cbor` fixtures + `.diag` human source) | `protocol-generator/shared/test-vectors/v0.8.0/` | Byte-identical vendor of arch's canonical fixtures; SHA-256 + inventory in that dir's `MANIFEST.md`. |
-
-**Current version is `v0.8.0` (V8)** — also recorded in the repo-root `VERSION` file. Both directories are immutable per `<version>/`; a spec amendment lands as a new sub-directory, never an in-place edit. Architecture authors both — operators never hand-edit spec-data or canonical vectors. (Note: at the V8 cutover the core spec was de-versioned `ENTITY-CORE-PROTOCOL-V7.md` → `ENTITY-CORE-PROTOCOL.md`.)
-
-## Build — make + podman, bare host
-
-The host needs **only `make` + `podman`** — no native language toolchains. Every build/test/conformance run happens inside a pinned per-toolchain container image.
-
+```sh
+git clone <this-repo> && cd entity-core-keystone
+make help          # the target list
+make build         # the shared base image (the release gate)
+make caps          # show resolved resource ceilings + the toolchain list
 ```
-make build          # the shared base image (the release gate)
-make images         # every per-language toolchain image
-make <toolchain>    # one image, e.g. make go / make dotnet9 / make zig-toolchain
-make caps           # show the resolved resource caps + toolchain list
+
+Build one language's toolchain and run its conformance harness:
+
+```sh
+make go                                     # build the go toolchain image
+podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm \
+  --network=none --security-opt label=disable -v "$PWD":/work:Z \
+  entity-core-keystone/go:latest \
+  sh /work/protocol-generator/go/run-s4.sh   # -profile core by default
 ```
 
-Every `podman build`/`run` carries hard per-container resource ceilings (memory + zero-swap, plus pids/cpus on run) so a runaway build can't take the host down; committed defaults are in the `Makefile`, per-machine overrides go in a gitignored `caps.local.mk`.
+Every peer has the same entry point — `protocol-generator/<lang>/run-s4.sh` — and each script documents
+its own exact invocation in its header comment. Runs are sealed offline (`--network=none`) and every
+container carries hard memory/pid/cpu ceilings so a runaway build cannot take the host down. Per-machine
+overrides go in a gitignored `caps.local.mk`; see [`RESOURCE-CAPS.md`](RESOURCE-CAPS.md).
+
+**Other useful verbs:** `make images` (every toolchain), `make lint` (verifies the SHA-256-pinned spec
+snapshot), `make check` (lint + test), `make clean`.
 
 ## Generating a peer
 
+The user-facing surface is the `/entity-rosetta` skill — a tool-neutral Agent-Skill in
+`skills/entity-rosetta/`, readable by any `SKILL.md`-aware agent, not tied to a vendor.
+
 ```
-/entity-rosetta <lang>                # full S1 → S5 pipeline
-/entity-rosetta <lang> --phase codec  # codec layer only
-/entity-rosetta --list                # status across all language targets
+/entity-rosetta <lang>                 # full S1 → S5 pipeline
+/entity-rosetta <lang> --phase codec   # codec layer only
+/entity-rosetta <lang> --phase peer    # peer machinery only
+/entity-rosetta <lang> --phase verify  # conformance only
+/entity-rosetta --profile-only <lang>  # S1 only: research + author the profile
+/entity-rosetta --list                 # status across all targets
 ```
 
-The skill spins up the language's Podman toolchain, runs the generated peer against `wire-conformance` + `validate-peer` from `entity-core-go`, and writes to `protocol-generator/<lang>/src/`. See `AGENTS.md` for the working standards (containers everywhere, verbatim spec-data, no-doctoring oracles, profile-decides, conformance gates) and the three-arm hand-off boundary.
+The five phases run S1 (research the ecosystem, author `profile.toml`) through S5 (packaging). They are
+**loose guidance for an agent, not a deterministic pipeline** — deliberately so.
+
+The rule that keeps generated peers idiomatic rather than transliterated: **the profile decides, the
+agent doesn't.** Library choice, error model, async style, naming, and packaging all come from
+`profile.toml` + `templates/`. An unauthorized decision goes in the ambiguity log instead — nobody picks
+"the popular logger" on the fly.
+
+## How conformance works
+
+Two oracles built from `entity-core-go` are ground truth. **They are never doctored.** If an oracle
+disagrees with a generated peer, the peer is wrong — and a genuine oracle bug is escalated to
+architecture, never patched here.
+
+- **`wire-conformance`** — the pure codec oracle. Byte-identical output or nothing.
+- **`validate-peer`** — the live-peer oracle, driven per language by `run-s4.sh`.
+  **`--profile core` is the gating profile.**
+
+Every published number is **oracle-pinned with its full breakdown** — `755 · 3F — 309P/337W/3F/106S
+@ c1b0708` — never a bare percentage. A skip counts as a failure. A peer measured on a different set of
+checks than its neighbours is not a low-scoring peer, it is an **invalid measurement**, and it gets
+quarantined rather than listed in the same column; `tools/check-set-gate.py` enforces that mechanically.
+
+Two commands you'll want:
+
+```sh
+tools/tier-status.py                      # where every peer stands vs the current oracle pin
+tools/run-cohort-census.sh --tier M1      # re-measure the gating tier (5 peers)
+```
+
+**Maintenance tiers** (`tools/peer-tiers.tsv`) govern re-measurement *cadence*, not quality and not
+whether a peer may be published. An oracle re-pin is landed when **M1** — `go` `haskell` `lean` `ocaml`
+`swift` — is re-run at 0 FAIL. Everything runs before a release.
+
+## Where things live
+
+Three arms, each owning its own status; cross-arm coordination flows through `research/`.
+
+| Arm | Owns | Path |
+|---|---|---|
+| **protocol-generator** | per-language full-peer generation, profiles, per-peer status | `protocol-generator/<lang>/` |
+| **ffi-generator** | FFI binding generation — the codec C-ABI first | `ffi-generator/<shape>/` |
+| **research** | landscape, evaluations, diagnostics, stewardship, escalation | `research/` |
+
+Each peer holds `src/` (generated source), `profile.toml`, `templates/`, `status/` (phase reports,
+`CONFORMANCE-REPORT.{md,json}`, `SPEC-AMBIGUITY-LOG.md`), `reference/` (golden drift files), and
+`run-s4.sh`. Shared, language-agnostic inputs are in `protocol-generator/shared/`.
+
+The **codec C-ABI** (`ffi-generator/c-abi/spec/`) is a language-agnostic contract with interchangeable
+implementations — `entity-core-codec-ffi-{rust,c}`, both building the same `libentitycore_codec` +
+`entitycore_codec.h`. Seventeen substrates that cannot reach canonical CBOR + Ed25519 in-language consume
+it; native-codec languages cross-check against it. It is what makes the long tail of the language
+landscape reachable at all.
+
+Plus `containers/` (per-toolchain Podman images), `ops/` (CI + release), `tools/` (the census and pin
+tooling), and `skills/entity-rosetta/`.
+
+**Out of scope:** standard-extension implementations (TREE, CONTENT, IDENTITY, ATTESTATION, QUORUM,
+REGISTRY, RELAY). The community installs those atop a generated peer.
+
+## The spec and the vectors
+
+The two inputs everything is generated against are co-versioned and **arch-authored** — operators never
+hand-edit them. Each `<version>/` directory is immutable once stamped; an amendment lands as a new
+subdirectory, never an in-place edit.
+
+| Input | Path |
+|---|---|
+| **The spec** — 3 normative files | `protocol-generator/shared/spec-data/v0.8.0/` |
+| **Conformance / diagnostic vectors** — ECF codec, crypto-agility, type-registry corpora | `protocol-generator/shared/test-vectors/v0.8.0/` |
+
+Both are verbatim, byte-for-byte, SHA-256-pinned snapshots with provenance in their own `MANIFEST.md`.
+`make lint` verifies the pins.
+
+## Conformance state, honestly
+
+**The re-pin that was pending here has now happened, and it went red.** As of 2026-08-21 the oracle is
+`entity-core-go @ c1b0708` and the spec snapshot is `v0.8.2`. The cohort is measured at **two pins**:
+
+- **The 5 tier-M1 peers** (`go` `haskell` `lean` `ocaml` `swift`) were re-run at `c1b0708`. **All 5
+  FAIL** — `go`/`haskell`/`ocaml` 3F, `swift` 2F, `lean` 83F (2 real + 81 cascade from one defect).
+  Every FAIL is one of the five new core `capability` checks.
+- **The other 40 measured peers** are still on `de8f807` (2026-08-17), where 35 of them were
+  `--profile core` → 0 FAIL. **That verdict does not carry forward** and those rows are labelled
+  historical: they have never been run against the new checks, and the check sets differ (755 vs 740)
+  so the numbers aren't even comparable.
+
+**These are not regressions — they are a feature nobody had implemented.** §5.6's MIN_DEFINED
+temporal-ceiling construction (a minted capability's lifetime must be clamped by the caller's expiry
+and the policy's `ttl_ms`) was never built in any peer; `mintToken` sets no `expires_at` at all, and
+no conformance vector exercised it until now. One of the three is a **fail-open security defect**:
+`go`/`haskell`/`ocaml` *honor* a presented capability whose `expires_at` is negative.
+
+Also documented, not hidden, at the older pin: `asm-x86_64` / `asm-arm64` / `riscv64` (an invalid
+measurement, see matrix §1a), `cobol` (a standing liveness cascade), `turbowarp` (exploratory, never
+in scope for the core gate); `apl` is upstream-blocked and unmeasured.
+
+> **Do not cite a "40 peers pass" figure from this repo right now.** The honest current statement is
+> the two-pin split above. `CONFORMANCE-MATRIX.md` is authoritative; its 2026-08-21 banner carries the
+> full accounting, and `tools/tier-status.py --gate` exits non-zero until M1 is fixed.
+
+### On the word "independent"
+
+Read this before citing a peer count anywhere.
+
+These peers are **keystone-*generated***. They share a generation lineage, and most FFI-hybrid ones share
+a single codec `.so`. They are **not** 46 independently-authored code bases and we do not claim they are.
+A cohort of generated peers all passing one author's vectors is **cohort-consistent, not independent
+convergence**.
+
+What *is* real and load-bearing is **spec-forced convergence**: dozens of substrates with different
+integer widths, float models, crypto stacks, string models, and concurrency runtimes each converge on the
+*same* conformance fixed point. That is strong evidence the spec is unambiguous on the tested surface —
+but it is convergence on a shared spec via a shared generator, not independent authorship.
+
+The genuinely independent code bases are the ground-up sibling repos `entity-core-{go,rust,py}`, built
+without the generator. (Confusingly, keystone *also* ships clean-room Go/Rust/Python peers — "clean-room"
+there means the generator never opened the hand-written sibling, i.e. independence *of generation*. Still
+generated, still shared lineage.)
+
+## Adding a peer
+
+**New peers are welcome, and the set is not finished.** We are collecting *forms*, not languages — a peer
+earns its place by forcing the protocol through a shape no existing peer forced it through.
+[`research/PEER-ATLAS.md`](research/PEER-ATLAS.md) §6 spells out what we would most like to see: new
+computational models, unusual runtimes and platforms, and especially **substrates that lack a primitive
+everything else assumes**.
+
+That said — if you want a peer in your language simply because it's your language, that is a good enough
+reason and the generator exists for exactly that. Just know it will likely corroborate rather than
+discover, and that's fine.
+
+To propose one, open an issue naming the substrate and, most usefully, **which axis you think it varies**.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the DCO sign-off requirement — contributions are Apache-2.0,
+AI use is welcome and unrestricted, and the gate is an accountable human plus the quality bar.
 
 ## Background
 
-This repo is the operational descendant of architecture's peer-generator and
-repo-setup explorations — the *why* (scope, the FFI-vs-native-vs-hybrid choice,
-the cross-language matrix) and the *how* (this repo's structure, its standards,
-and the hand-off boundary).
+This repo is the operational descendant of architecture's peer-generator and repo-setup explorations —
+the *why* (scope, the FFI-vs-native-vs-hybrid choice, the cross-language matrix) and the *how* (this
+repo's structure, its standards, and the hand-off boundary).
 
 ## License
 
-Apache-2.0 (`LICENSE`) for the generator and its outputs by default; a per-language profile may set a different license per its ecosystem norm.
+Apache-2.0 ([`LICENSE`](LICENSE)) for the generator and its outputs by default; a per-language profile may
+set a different license per its ecosystem norm. Spec text is licensed separately.
 
 ---
 
 ## Supporting the project
 
-This project is developed in the open. If it's useful to you, the best support is
-to use it, report issues, and contribute back — see
-[CONTRIBUTING.md](CONTRIBUTING.md).
+This project is developed in the open. If it's useful to you, the best support is to use it, report
+issues, and contribute back — see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 To support the work directly, see the project's funding page.

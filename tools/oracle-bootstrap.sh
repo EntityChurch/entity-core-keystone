@@ -41,8 +41,8 @@ CORE_GATE=cmd/internal/validate/profile.go   # the mirror-stable core anchor
 die(){ echo "oracle-bootstrap: ERROR $*" >&2; exit 1; }
 
 # check_set_digest — the SECOND anchor, and the one core_gate_fingerprint is blind
-# to. Reads the whole cmd/internal/validate tree on stdin (a `git archive | tar -xO`
-# stream) and hashes the sorted set of DECLARED CHECK NAMES.
+# to. Reads the NON-TEST sources of cmd/internal/validate on stdin (see
+# validate_sources below) and hashes the sorted set of DECLARED CHECK NAMES.
 #
 # Why it exists (2026-07-27, measured): cc1970f -> af8a582 added four hard-FAIL
 # vectors INSIDE existing core categories (handshake_nonce_single_use,
@@ -64,6 +64,35 @@ die(){ echo "oracle-bootstrap: ERROR $*" >&2; exit 1; }
 # research/stewardship/SESSION-HANDOFF-2026-08-13-peers-fix-oracle-drift-watch.md.
 check_set_digest() {
   grep -oE '\.Declare(Self)?\("[a-z0-9_]+"' | sed 's/.*("//; s/"//' | sort -u | sha256sum | cut -d' ' -f1
+}
+
+# validate_sources — the digest's INPUT, and the whole reason it is a function.
+#
+# 2026-08-21, found by arch (ROUTING-2026-08-21-m §3), measured before fixing: this
+# used to be `git archive "$ref" cmd/internal/validate | tar -xO`, and `git archive`
+# of a DIRECTORY includes `_test.go`. So check_set_digest hashed go's test fixtures
+# alongside its real checks — and oracle-pin.env makes that digest THE authoritative
+# anchor for carry-forward ("Both must match, or the cohort re-runs"). A digest move
+# is a 45-peer census. A test fixture could order one.
+#
+# Measured at d697b9a -> c1b0708: directory-including-tests moved
+# ca0c988f… -> 3e749f37…, while the non-test declared set was IDENTICAL at 1137
+# names both sides. The entire move was three fixture strings in runner_test.go
+# (before_gate, behavioral_body_ran, behavioral_root), added with the
+# CheckRunner.Gate primitive. None exists in the built binary; no peer is ever
+# scored on them.
+#
+# This is the same class core_gate_fingerprint (one function down) already normalizes
+# against — hash the SEMANTIC content, not the raw bytes of whatever happens to sit in
+# the directory. That normalization simply never reached this anchor. Enumerating
+# non-test `.go` paths explicitly is that normalization for this input: a file the
+# built oracle cannot contain must not be able to move the pin.
+#
+# Works for a resolved commit and for the literal "HEAD" of the R1 fallback path.
+validate_sources() {
+  git -C "$GO_REPO" ls-tree -r --name-only "$1" cmd/internal/validate \
+    | grep '\.go$' | grep -v '_test\.go$' | sort \
+    | while IFS= read -r f; do git -C "$GO_REPO" show "$1:$f"; done
 }
 
 # core_gate_fingerprint — the AUTHORITATIVE, mirror-stable identity of the core
@@ -109,7 +138,7 @@ SHORT=$(printf '%s' "$COMMIT" | cut -c1-7)
 #      edit (incl. a comment reword); kept only for traceability.
 CORE_FP=$(git -C "$GO_REPO" show "$ARCHIVE_REF:$CORE_GATE" | core_gate_fingerprint)
 CORE_SHA=$(git -C "$GO_REPO" show "$ARCHIVE_REF:$CORE_GATE" | sha256sum | cut -d' ' -f1)
-CHECK_SET=$(git -C "$GO_REPO" archive "$ARCHIVE_REF" cmd/internal/validate | tar -xO | check_set_digest)
+CHECK_SET=$(validate_sources "$ARCHIVE_REF" | check_set_digest)
 EXPECT_CS=""
 [ -f "$PIN_FILE" ] && EXPECT_CS=$(awk -F'= *' '/^check_set_digest/{print $2; exit}' "$PIN_FILE" | awk '{print $1}')
 if [ -n "$EXPECT_CS" ] && [ "$EXPECT_CS" != "$CHECK_SET" ]; then

@@ -28,11 +28,11 @@
 # Columns: peer <TAB> tier <TAB> last_measured_pin <TAB> note
 #
 peer	tier	last_measured_pin	note
-go	M1	de8f807	clean-room; independence check on the generator
-haskell	M1	de8f807	STM substrate; cleanest conformance record
-lean	M1	de8f807	the proof vector — the only formal-methods discovery channel
-ocaml	M1	de8f807	the proven headline finder (A-OC-007)
-swift	M1	de8f807	sharpest string/grapheme instrument; adoption anchor
+go	M1	c1b0708	clean-room; independence check on the generator
+haskell	M1	c1b0708	STM substrate; cleanest conformance record
+lean	M1	c1b0708	the proof vector — the only formal-methods discovery channel
+ocaml	M1	c1b0708	the proven headline finder (A-OC-007)
+swift	M1	c1b0708	sharpest string/grapheme instrument; adoption anchor
 common-lisp	M2	de8f807	proven finder (A-CL-009); pure-language full crypto
 csharp	M2	de8f807	major ecosystem
 elixir	M2	de8f807	production BEAM; native agility

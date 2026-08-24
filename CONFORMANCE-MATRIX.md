@@ -2,26 +2,62 @@
 
 **The transparency contract for adopters.** Before you pull a generated peer, check its row here. A peer being a spec-version behind, or lacking Ed448 agility, or carrying a known gap, is a **documented, tracked state** — not a surprise. "This peer doesn't do X yet" lives here, in the open, with a tier that tells you when it'll be caught up.
 
-**Cohort:** **46 peers in the tree · 45 measured · 40 of 45 pass `--profile core` 0-FAIL**, all measured against oracle `entity-core-go @ de8f807` (2026-08-17). Every number in §1 is a fresh measurement at that pin — not carried forward from an earlier one.
+**Cohort:** **46 peers in the tree · 45 measured.** As of 2026-08-21 the cohort is measured at **two different oracle pins**, and the split is deliberate:
+
+| Peers | Oracle pin | Measured | State |
+|---|---|---|---|
+| **M1 (5)** — `go` `haskell` `lean` `ocaml` `swift` | **`c1b0708`** (current) | 2026-08-21 | **0 of 5 pass** — all 5 carry new `capability` FAILs (see the banner below) |
+| **All other 40 measured peers** | `de8f807` (superseded) | 2026-08-17 | 35 passed 0-FAIL **at that pin**; that verdict does **not** carry forward. The other 5: `cobol` 27F · `turbowarp` 2F · `asm-x86_64` `asm-arm64` `riscv64` INVALID MEASUREMENT |
+
+**Read the second row as stale, because it is.** `de8f807 → c1b0708` added 5 hard checks inside the core `capability` category. Those 40 peers have **not** been run against them. Their `de8f807` figures are a labelled historical measurement, not a current claim — and since all 5 M1 peers failed the new checks, the realistic expectation is that most of the other 40 fail them too. **A stale-but-labelled row is a fact; a stale row presented as current is the thing that bites.**
 
 | | Peers |
 |---|---|
-| **0-FAIL @ `de8f807`** (40) | `ada` `c` `common-lisp` `cpp` `crystal` `csharp` `dart` `datalog` `elixir` `forth` `fortran` `go` `haskell` `io` `java` `julia` `kotlin` `lean` `nim` `node-red` `ocaml` `odin` `oz` `pd` `php` `prolog` `python` `rexx` `ruby` `rust` `rust-wasm` `rust-wasm-wasmtime` `smalltalk` `sql` `swift` `tcl` `typescript` `unison` `wasm-wat` `zig` |
+| **FAIL @ `c1b0708`** (5, tier M1) | `go` — 3F · `haskell` — 3F · `ocaml` — 3F · `swift` — 2F · `lean` — 83F (2 real + 81 cascade, see the banner) |
+| **0-FAIL @ `de8f807`** — *superseded pin, NOT re-run* (35) | `ada` `c` `common-lisp` `cpp` `crystal` `csharp` `dart` `datalog` `elixir` `forth` `fortran` `io` `java` `julia` `kotlin` `nim` `node-red` `odin` `oz` `pd` `php` `prolog` `python` `rexx` `ruby` `rust` `rust-wasm` `rust-wasm-wasmtime` `smalltalk` `sql` `tcl` `typescript` `unison` `wasm-wat` `zig` |
 | **FAIL** (2) | `cobol` — 27F, standing · `turbowarp` — 2F, an exploratory non-deployable probe, out of scope by design |
 | **INVALID MEASUREMENT** (3) | `asm-x86_64` `asm-arm64` `riscv64` — executed **699 of the pinned 740 checks**, so their scores are **not comparable to any other row**. Known true state: **≥3 core FAILs each** (§1a) |
 | **Not measured** (1) | `apl` — upstream-blocked, unchanged (§3) |
 
-**Every row was scored on the identical check set — enforced, not assumed.** All 45 reports are validated by `tools/check-set-gate.py` against `core_executed_check_set_digest` (`8537d875…`, 740 checks) pinned in `tools/oracle-pin.env`; `tools/run-cohort-census.sh` runs that gate automatically and exits non-zero if any peer deviates. 42 of 45 matched byte-for-byte. The 3 that did not are quarantined above rather than being listed with a score, because **a P/W/F/S measured on a different set of checks is not a worse score — it is not a score.**
+**Every row was scored on the identical check set — enforced, not assumed.** `tools/check-set-gate.py` validates every report against the `core_executed_check_set_digest` pinned in `tools/oracle-pin.env`, and `tools/run-cohort-census.sh` runs that gate automatically and exits non-zero if any peer deviates. **The pin is now `95edd774…` (755 checks) at `c1b0708`; the 5 M1 reports are 5/5 conforming.** The 40 peers still on `de8f807` were validated against that pin's `8537d875…` (740 checks) when they were measured — 42 of the 45 then matched byte-for-byte, and the 3 that did not are quarantined below rather than listed with a score, because **a P/W/F/S measured on a different set of checks is not a worse score — it is not a score.** Note the corollary that now applies across this whole file: **755 ≠ 740, so an M1 row and a `de8f807` row are not comparable to each other either** — only within their own pin.
 
 **Reading a row.** Each `--profile core` cell is `total · NF — P/W/F/S`, measured at the oracle's **default 10-minute global `-timeout`**. The **`NF` figure is the gate**; the `total` is extension-inflated and non-gating (it moves between oracle builds without any verdict changing). A skip counts as a failure unless it is an explicit `--profile core` extension carve-out. Per [ADR-0012] these peers are **cohort-consistent, not independent convergence** — they share a generation lineage and, for the FFI-hybrid peers, one codec `.so`; a cohort of generated peers all passing one author's vectors is not 40 independent confirmations.
 
-**Spec surface:** Entity Core **v0.8.0 (V8)** core protocol; standard extensions are out of scope — every peer below is a *core* peer. Spec-data stamp `protocol-generator/shared/spec-data/v0.8.0/`. The core wire contract is byte-unchanged across the V7→V8 cutover (see that dir's `MANIFEST.md`). The oracle's core category set + type floor (`cmd/internal/validate/profile.go`) is what gates `--profile core`; its committed anchors — `core_gate_fingerprint` **and** `check_set_digest` — are in `tools/oracle-pin.env`. **Both must match for a verdict to carry forward**: the fingerprint alone tracks *which categories run*, never *what they assert* (established at the `af8a582` cutover, where four hard-FAIL vectors landed inside existing core categories under a byte-identical fingerprint).
+**Spec surface:** Entity Core **v0.8.2** is the pinned snapshot (`protocol-generator/shared/spec-data/v0.8.2/`, from `entity-core-protocol` `106834c`) — but **no peer has been regenerated against it yet.** Every peer below was generated against **v0.8.0** and measured against the `c1b0708` / `de8f807` oracle. That gap is deliberate and tracked: the oracle is what gates the wire, and a snapshot reaching a peer is a regeneration question with its own cadence. One known named consequence — **`pd` still carries F37's pre-rename `system/identity/peer-id` in 3 files** (grep-verified in this tree: `pd` is the *only* peer that does); `pd` is tier M3 and out of this release's scope. Standard extensions are out of scope — every peer below is a *core* peer. The core wire contract is byte-unchanged across the V7→V8 cutover (see that dir's `MANIFEST.md`). The oracle's core category set + type floor (`cmd/internal/validate/profile.go`) is what gates `--profile core`; its committed anchors — `core_gate_fingerprint` **and** `check_set_digest` — are in `tools/oracle-pin.env`. **Both must match for a verdict to carry forward**: the fingerprint alone tracks *which categories run*, never *what they assert* (established at the `af8a582` cutover, where four hard-FAIL vectors landed inside existing core categories under a byte-identical fingerprint).
 
 **Conformance gate:** `validate-peer --profile core` — the extension-free categories (`connectivity`, `encoding`, `type_system`, `origination`, `resource_bounds`, `concurrency`, + the §10.1 register / §7a conformance-handler gates).
 
 *The previous header block — the accreted `cc1970f`-era cohort paragraph — is archived verbatim at `docs/archive/CONFORMANCE-MATRIX-header-pre-de8f807.md`. Do not cite figures from it.*
 
-> ## ✅ CURRENT (2026-08-17) — oracle re-pinned to `de8f807`; §6.2 register-reserved-pattern gate CLOSED cohort-wide
+> ## ⚠ CURRENT (2026-08-21) — release re-pin to `c1b0708` + spec `v0.8.2`; **M1 is 0 / 5 and the re-pin is NOT landed**
+>
+> **Read this before pulling any peer. It supersedes the 2026-08-17 banner below.** Both anchors were re-pinned together this session: the spec snapshot to **`v0.8.2`** (`entity-core-protocol` `106834c`) and the oracle to **`c1b0708`** (`entity-core-go` HEAD). `tools/run-cohort-census.sh --tier M1` was then run, per arch's `ROUTING-2026-08-21-l` §3 and the operator's direction to re-run tier 1, document, and leave the remaining peers if time is short.
+>
+> **What moved in the gate, attributed by category (never by commit message):** 18 declared check names were added `de8f807 → c1b0708`. Each was resolved to its declaring file, that file's category *constant* read, and the constant tested against `coreProfileCategories`. **5 gate `--profile core` — all `catCapability`, all in `capability.go`:** `request_mint_temporal_ceiling` (CAP-5) · `request_ttl_zero_and_overflow` (CAP-6) · `ingest_rejects_unrepresentable_expiry` (CAP-6a) · `configure_empty_grants_withdrawal` (CAP-2/3) · `configure_rejects_base58_partial_prefix` (CAP-7). The other 13 are extension-only (`catRegistryIssuer` ×4, `catRegistry` ×4, `catEntityNative`, `catSubscriptions`, `catAutoVersion`, `catRevision`) and skip wholesale under `--profile core`. `core_gate_fingerprint` stayed **byte-identical** (`8261a033…`) for the **fourth** consecutive time in this shape — new hard checks keep landing inside *existing* core categories.
+>
+> **Result — all 5 M1 peers FAIL, and every FAIL is one of the new `capability` checks:**
+>
+> | Peer | `--profile core` | FAILs |
+> |---|---|---|
+> | `go` | `755 · 3F — 309P/337W/3F/106S` | `request_mint_temporal_ceiling` · `request_ttl_zero_and_overflow` · `ingest_rejects_unrepresentable_expiry` |
+> | `haskell` | `755 · 3F — 309P/337W/3F/106S` | same three |
+> | `ocaml` | `755 · 3F — 309P/337W/3F/106S` | same three |
+> | `swift` | `755 · 2F — 306P/340W/2F/107S` | `request_mint_temporal_ceiling` · `request_ttl_zero_and_overflow` (passes CAP-6a — it fails closed) |
+> | `lean` | `755 · 83F — 225P/336W/83F/111S` | 2 real (CAP-5, CAP-6) + **81 cascade** — see below |
+>
+> **All five ran the identical 755-check set** (`core_executed_check_set_digest` `95edd774…`), verified by `tools/check-set-gate.py`: **5 / 5 conforming**, so these scores *are* comparable to each other. **No peer had a `budget_exhausted` category** — checked explicitly, per the starvation-asymmetry rule; these are complete measurements, not floors. Budget used: the oracle's default **10-minute** global `-timeout`, unchanged.
+>
+> **These are not regressions — they are an unimplemented spec feature.** `mintToken` **never sets `expires_at` at all** in any of the five peers (traced in source, e.g. `protocol-generator/go/src/peer/peer.go`), so §5.6's MIN_DEFINED temporal-ceiling construction is *absent* rather than wrong. This is the exact "vacuous-green" item §3 has carried as **deferred** since 2026-08-17 — the audit then found no keystone peer clamps, and no vector exercised it. **The vectors have now landed, and the bill is due.** Two of the three defects are worth naming separately:
+> - **CAP-6a is a fail-OPEN security defect on `go`/`haskell`/`ocaml`** — they *honor* a presented capability whose `expires_at` is negative and return `200`. `swift` refuses correctly.
+> - **`lean`'s 83 is one defect, not 83.** Its CAP-6a refusal is a **transport drop** (it closes the connection) instead of the §5.2 `capability_denied` disposition the rule mandates. The oracle reuses that connection, so every check after `capability` gets `broken pipe` — **81 cascade FAILs from one bad refusal path.** Root-caused, not inferred: the peer's own stderr is clean and it exits 0 (it never crashes); `capability` run alone yields 2F and no cascade; `tree_operations` run alone against a fresh peer is **0F**; and in a fresh full-core run the last check before the first transport error is exactly `ingest_rejects_unrepresentable_expiry`, whose own message reports *"0 capability_denied, 6 transport-drop"*. Reproduced identically across the census plus two isolated re-runs.
+>
+> **Per arch's §4 rule and our own, the re-pin is therefore NOT landed** — `tools/tier-status.py --gate` exits non-zero. **No peer's publication status changes**: "no green report → no publish" is unchanged, and it now bites the five M1 peers too.
+>
+> **Deliberately not done this session, by operator decision** (`-l` §3.4 — "leave the remaining peers if time is short"): the other 40 measured peers were **not** re-run at `c1b0708`. Their `de8f807` rows below are labelled historical, not current. Given that all 5 M1 peers failed the new checks and none of the 46 clamps (§3, audited 2026-08-17), **expect most of the 40 to fail CAP-5/CAP-6 as well.** That is an expectation, not a measurement, and it is not recorded as one anywhere in this file.
+>
+> Full session record + the fix shape for each defect class: `research/stewardship/SESSION-2026-08-21-release-repin-c1b0708-v0.8.2-and-M1-capability-gap.md`.
+
+> ## ⛔ SUPERSEDED (2026-08-17) — oracle re-pinned to `de8f807`; §6.2 register-reserved-pattern gate CLOSED cohort-wide
 >
 > **Read this before pulling any peer — it supersedes the 2026-07-28 banner below.** `tools/oracle-pin.env` re-pinned `fceb61f` → `de8f807` (2026-08-16; arch's `SIGNOFF-2026-08-16-vector-set-final.md` — **the vector set is final, no further arch-side vector work is queued**). `core_gate_fingerprint` stayed byte-identical (same 16 core categories) but `check_set_digest` moved, which per standing policy re-triggered a full census regardless of the unchanged fingerprint — see `tools/oracle-pin.env`'s de8f807 entry for the full accounting.
 >
@@ -108,8 +144,12 @@
 
 ## 1. Primary status table
 
-> **How to read this section.** The **table** is the live state: every `--profile core` cell is a
-> fresh `de8f807` measurement (2026-08-17). The **dated `>` note blocks** that follow are a
+> **How to read this section.** The **table** is the live state, but as of 2026-08-21 it spans
+> **two pins**: the 5 M1 rows (`go` `haskell` `lean` `ocaml` `swift`) are fresh `c1b0708`
+> measurements on a **755**-check set; every other row is a `de8f807` measurement (2026-08-17) on a
+> **740**-check set and is **not current** — those peers have not been run against the 5 new
+> `capability` checks. Rows from different pins are not comparable to each other. The
+> **dated `>` note blocks** that follow are a
 > *build log* — each records what a peer's arrival established at the pin current on that date,
 > and the figures in them (`682·0F @ cc1970f`, `665 @ e8524ed`, …) are **historical, not claims
 > about this tree**. Where a note and the table disagree, the table wins. §1a covers the one case
@@ -299,11 +339,11 @@
 
 | Peer | Maint.⁴ | Spec | Oracle commit | `--profile core`² | Codec | Crypto floor (Ed25519 + SHA-256) | Ed448 / SHA-384 agility | Publish |
 |------|:----:|:----:|---------------|:----------------:|-------|----------------------------------|-------------------------|---------|
-| **OCaml** | **M1** | v0.8.0 | `de8f807` | 740 · **0F** — 307P/327W/0F/106S | native hand-rolled | native — mirage-crypto-ec + digestif | **FFI-hybrid** (opt-in `entitycore_agility`) | opam, `0.1.0-pre` |
-| **Swift** | **M1** | v0.8.0 | `de8f807` | 740 · **0F** — 304P/330W/0F/106S | native hand-rolled | native — swift-crypto | deferred (→ FFI when scoped) | SPM, `0.1.0-pre` |
-| **Haskell** | **M1** | v0.8.0 | `de8f807` | 740 · **0F** — 307P/327W/0F/106S | native hand-rolled | native — crypton | **native** — crypton (Ed448) | Cabal, `0.1.0-pre` |
-| **Go** (clean-room) | **M1** | v0.8.0 | `de8f807` | 740 · **0F** — 307P/327W/0F/106S | native hand-rolled | native — stdlib `crypto/ed25519` | deferred (→ FFI when scoped) | Go module, `0.1.0-pre` |
-| **Lean** | **M1** | v0.8.0 | `de8f807` | 740 · **0F** — 307P/327W/0F/106S | **pure-Lean proven core** + FFI crypto | **FFI** — C-ABI `ec_ed25519_*` | FFI (deferred) | Lake, `0.1.0-pre` |
+| **OCaml** | **M1** | v0.8.0 | `c1b0708` | 755 · **3F** — 309P/337W/3F/106S ⁵ | native hand-rolled | native — mirage-crypto-ec + digestif | **FFI-hybrid** (opt-in `entitycore_agility`) | opam, `0.1.0-pre` |
+| **Swift** | **M1** | v0.8.0 | `c1b0708` | 755 · **2F** — 306P/340W/2F/107S ⁵ | native hand-rolled | native — swift-crypto | deferred (→ FFI when scoped) | SPM, `0.1.0-pre` |
+| **Haskell** | **M1** | v0.8.0 | `c1b0708` | 755 · **3F** — 309P/337W/3F/106S ⁵ | native hand-rolled | native — crypton | **native** — crypton (Ed448) | Cabal, `0.1.0-pre` |
+| **Go** (clean-room) | **M1** | v0.8.0 | `c1b0708` | 755 · **3F** — 309P/337W/3F/106S ⁵ | native hand-rolled | native — stdlib `crypto/ed25519` | deferred (→ FFI when scoped) | Go module, `0.1.0-pre` |
+| **Lean** | **M1** | v0.8.0 | `c1b0708` | 755 · **83F** — 225P/336W/83F/111S ⁵ | **pure-Lean proven core** + FFI crypto | **FFI** — C-ABI `ec_ed25519_*` | FFI (deferred) | Lake, `0.1.0-pre` |
 | **C#** | M2 | v0.8.0 | `de8f807` | 740 · **0F** — 308P/326W/0F/106S | native (Cbor Ctap2 + handroll) | native — NSec | managed — BouncyCastle | NuGet, `0.1.0-pre` |
 | **TypeScript** | M2 | v0.8.0 | `de8f807` | 740 · **0F** — 307P/327W/0F/106S | native (cborg + handroll) | native — @noble | managed — @noble | npm, `0.1.0-pre` |
 | **Java** | M2 | v0.8.0 | `de8f807` | 740 · **0F** — 307P/327W/0F/106S | native hand-rolled | native — JDK SunEC | JDK / BouncyCastle | Maven, `0.1.0-pre` |
@@ -363,6 +403,8 @@ The historical description below (both 249·2F, both delegating the §6.5 engine
 
 **Crypto-availability tiers** (the per-ecosystem story an adopter most needs): `native` = ships with runtime/stdlib or an in-language audited lib, no FFI; `managed` = a managed-code crypto package on the language's package manager; `FFI-hybrid` = native floor, Ed448 via `libentitycore_codec`; `FFI` = whole crypto surface via C-ABI; `deferred` = Ed25519+SHA-256 floor only, Ed448 not yet wired.
 
+
+⁵ **Measured at `c1b0708` on a 755-check set — NOT comparable to the `de8f807` / 740-check rows above or below it.** All five M1 peers FAIL the `capability` checks added at this pin (CAP-5 `request_mint_temporal_ceiling`, CAP-6 `request_ttl_zero_and_overflow`, CAP-6a `ingest_rejects_unrepresentable_expiry`). These are **not regressions** — §5.6's MIN_DEFINED temporal-ceiling construction was never implemented in any peer (`mintToken` sets no `expires_at` at all), and no vector exercised it until now. `lean`'s 83F is **2 real FAILs + 81 cascade** from a single defect: its CAP-6a refusal drops the transport instead of returning the §5.2 `capability_denied` disposition, so every later category on that reused connection gets `broken pipe`. `go`/`haskell`/`ocaml` fail CAP-6a **open** (they honor a negative `expires_at` with `200`), which is a security defect; `swift` refuses correctly and fails only CAP-5/CAP-6. All five ran the identical check set (`95edd774…`, verified 5/5 by `tools/check-set-gate.py`) with no `budget_exhausted` category, so these are complete, mutually comparable measurements. See the 2026-08-21 banner and §3.
 
 ---
 
@@ -487,7 +529,7 @@ Feature parity is **not** uniform — the 5 T2 peers (C, Ada, Ruby, Prolog, Go) 
 
 ## 3. Maintenance state & catch-up backlog
 
-**Standing maintenance loop (the steady state):** when a spec amendment lands and Go ships the corresponding `validate-peer` update, re-vendor the oracle, re-run **Tier-1** immediately and converge to 0-FAIL, then catch up Tier-2/Tier-3 as capacity allows. This is the engine of spec refinement now — not new languages (see the fifteen-peer architecture milestone review, §5).
+**Standing maintenance loop (the steady state):** when a spec amendment lands and Go ships the corresponding `validate-peer` update, re-vendor the oracle, re-run **M1** immediately and converge to 0-FAIL, then catch up M2/M3 as capacity allows. *(This paragraph said "Tier-1/Tier-2/Tier-3" until 2026-08-21 — the exact bare-numeral spelling §4 warns is routinely confused with `research/LANDSCAPE.md`'s selection tiers. Corrected to the `M` prefix.)* **As of 2026-08-21 this loop is mid-cycle and stalled at step two: the oracle is re-vendored, M1 is re-run, and M1 has not converged** — see §4. This is the engine of spec refinement now — not new languages (see the fifteen-peer architecture milestone review, §5).
 
 | Item | Scope | Priority | Notes |
 |------|-------|----------|-------|
@@ -497,7 +539,9 @@ Feature parity is **not** uniform — the 5 T2 peers (C, Ada, Ruby, Prolog, Go) 
 | ~~**Scorecard label fix** `62044c5 → b30a589`~~ ✅ DONE | provenance | — | **CLOSED (2026-07-12).** A-C-008 / A-ADA-013: `62044c5` was off-by-one; `b30a589` is the true v7.75 baseline where `resource_bounds` activates under `--profile core` (clean `62044c5` auto-skips it → 574·0F·90S, not the recorded 576·0F·89S). Corrected in-repo across the 9 v7.75-re-run peer reports that paired `576·0F·89S` with `62044c5` (common-lisp, csharp, elixir, haskell, java, ocaml, swift, typescript, zig); C/Ada already carried `b30a589`. Remaining `62044c5` mentions tree-wide are accurate history (the clean-subset evidence runs) and left intact. |
 | ~~**CLI normalization** (`--name`)~~ ✅ DONE | C, Ada, Ruby, Go, Prolog | — | **CLOSED (2026-07-12).** The audit found the deviation was wider than "C/Ada lack `--name`": **neither Go nor Ruby actually had `--name`** (only `--seed`; the matrix had overclaimed it), and **Prolog's `--name` was a fake** (parsed then ignored, seed hardcoded). Standardized all five on the canonical convention (OCaml/Swift/Haskell/COBOL): default seed `0x11×32`; `--name NAME` loads the seed from `~/.entity/peers/NAME/keypair`. Go/Ada default seed normalized `0x01`→`0x11`. Each `run-s4.sh` provisions the conformance keypair + boots `--name conformance`. |
 | ~~**Verify genuine multisig** on later-folded peers~~ ✅ DONE | C, Ada, Ruby, Prolog, Go, COBOL | — | **CLOSED (2026-07-12) — with a real finding.** Making the accept-path RUN exposed **4 of 5 as FRAME-ONLY** (Ruby/Go/C/Ada rejected a valid co-signed 2-of-3 — a masked conformance defect the reject-dominated `multisig` category hid). All four fixed with genuine §3.6 M3/M4/M6 (`multisig_root_ok`, modeled on the genuine Prolog peer) → accept-path PASS @ `cc1970f`; Ruby/Go carry in-repo unit tests, C/Ada guard via the now-genuine S4 accept-path. Prolog + COBOL were already genuine. The Ada fix additionally uncovered **A-ADA-014** (a latent §PR-8 fixed-length-String crash). Finding note in `research/stewardship/`. |
-| **Capability mint temporal ceiling** (§6.2) — *incoming, BLOCKED on the spec revision* | ~31 peers (those implementing the `request` op) | Deferred — **do not start** | Arch `cb5df2c` ruled that a minted token's lifetime must be bounded by the policy's `ttl_ms` and the caller's own expiry. **Audited here 2026-08-17: no keystone peer clamps.** Every `expires_at` site cohort-wide is either verification-side (`< now → deny`) or §5.6 delegation attenuation (child ≤ parent) — neither reaches a `request`-minted **root** token, which has no parent. A vacuous-green: no vector exercises it, so all 46 pass while none implements the bound. **`entity-core-go` has explicitly asked that the vectors land *with* the core-protocol revision, not before** — go has pre-conformed while the spec text is stale, so any run in this window measures a moving target. Detail: `research/stewardship/SESSION-HANDOFF-2026-08-17-arch-cb5df2c-review-and-position.md`. |
+| **Capability mint temporal ceiling** (§5.6 / §6.2) — **NOW GATING, was deferred** | ~31 peers (those implementing the `request` op); **confirmed on all 5 M1 peers** | **Highest — it is the only thing between M1 and a landed re-pin** | **The block is lifted and the bill is due.** This row read *"Deferred — do not start"* until 2026-08-21, correctly: arch `cb5df2c` had ruled, go had pre-conformed, but the vectors hadn't landed, so any run measured a moving target. **They landed at `c1b0708`** (CAP-5 `request_mint_temporal_ceiling`, CAP-6 `request_ttl_zero_and_overflow`, CAP-6a `ingest_rejects_unrepresentable_expiry`) and **all 5 M1 peers FAIL them.** The 2026-08-17 audit's finding is now measured rather than predicted: **no keystone peer clamps** — `mintToken` never sets `expires_at` at all (traced in source), so §5.6's MIN_DEFINED construction is *absent*, not wrong. **Fix shape (all three rules are in `spec-data/v0.8.2/ENTITY-CORE-PROTOCOL.md` §5.6):** `expires_at = MIN over the DEFINED terms of {parent.expires_at, caller_cap.expires_at, created_at + policy_entry.ttl_ms, created_at + request.ttl_ms}`; `ttl_ms == 0` is **defined** and yields `created_at` (immediate expiry), *not* "no bound"; an overflowing term is **dropped** like a null term, never wrapped and never saturated; and an over-long request from a bounded caller **mints `200` with the clamped value — rejecting it with `403` is non-conformant** (`swift`'s current defect). Two sub-items tracked separately below. |
+| **CAP-6a ingest fails OPEN** (§6.2 / §5.2) | `go` `haskell` `ocaml` confirmed; unmeasured elsewhere | **Highest — security** | A *received* capability whose `expires_at` / `not_before` / `created_at` does not fit `uint64` is malformed and MUST be refused via the §5.2 `capability_denied` disposition. These three **honor it and return `200`** — the undecodable temporal field is silently collapsed rather than refused, i.e. a token with a negative expiry is treated as valid. `swift` refuses correctly and passes. **`lean` refuses but by the wrong mechanism** — next row. |
+| **`lean` CAP-6a refusal is a transport drop → 81 cascade FAILs** | `lean` | **High — one defect, largest single score impact in the cohort** | `lean` refuses all 6 malformed-temporal variants by **closing the connection** instead of returning a §5.2 `capability_denied` response (the check's own message: *"0 capability_denied, 6 transport-drop"*). The oracle reuses that connection for every later category, so `capability` is followed by `broken pipe` on everything — **83F, of which 81 are cascade.** The peer never crashes (clean stderr, exit 0); `tree_operations` alone against a fresh peer is 0F. Fixing the refusal path should return `lean` to ~2F, the same CAP-5/CAP-6 pair as its M1 siblings. This is the cohort's documented cascade class (`AGENTS.md`: one bad refusal/response path cascading into ~100 unrelated FAILs) in a new shape — a *deliberate* refusal implemented at the wrong layer. |
 | ~~**Empty grants / policy withdrawal / policy key forms**~~ ✅ **already conformant** | whole cohort | — | Arch `cb5df2c`'s other three rulings (D1 empty handler grant dispatches · D2 empty policy entry valid + suppresses `default` · F6 three-form policy path keys). **Audited against source here 2026-08-17: the cohort already satisfies all three, so they cost zero peer changes.** D1 is corroborated *structurally* — our peers **mint** empty-grant tokens for their own bootstrap handlers citing §6.8, so the rejected §6.1 reading was never merely a minority opinion, it is incompatible with a working bootstrap. (Cohort-consistent, not independent convergence — one data point, not 46.) |
 | **Connection-pressure defect** (3 core FAILs each) | asm-x86_64, asm-arm64, riscv64 | **High** — it is the only thing between these three and a 0-FAIL gate, and it suppresses coverage | `t2_2_connection_churn` + `r1_payload_over_limit` + `r3_connection_flood`, one failure family: forked children block forever in `read(2)` with no idle deadline, and there is no §4.10(c) connection-admission cap. Characterised + measured 2026-08-17 (**§1a**); root cause not isolated to an instruction. Fix shape known from the cohort (A-RX-014 pairing). Three ISAs of hand-written asm — its own session. |
 | **Extension type-vocabulary over-publication** | asm-x86_64, asm-arm64, riscv64 | Medium — cosmetic to the gate, material to the matrix's comparability | `src/typestore.s` publishes ~200 types incl. COMPUTE/CONTENT/CLOCK/CONTINUATION extension vocabularies, against `AGENTS.md`'s "a core peer never pre-publishes extension vocabularies". Converts 283 `type_system` WARNs to PASSes, so these three read `545P/42W` vs the cohort's `307P/327W` — **a higher pass count from a scope violation, not better conformance** (**§1a**). Enforcement grep: `grep -rl 'system/type/compute/apply' protocol-generator/*/src/` should be empty. |
@@ -572,18 +616,27 @@ tools/run-cohort-census.sh                # everything (pre-release)
 A tier run gates **only the peers it ran** — otherwise `--tier M1` would exit non-zero because of a
 probe nobody re-ran, and the exit code would stop meaning anything.
 
-### Current state — 2026-08-17 @ `de8f807`
+### Current state — 2026-08-21 @ `c1b0708`
 
-| Tier | Current & 0-FAIL | Catch-up / backlog |
+| Tier | Current & 0-FAIL | State |
 |---|:---:|---|
-| **M1** | **5 / 5** | — **the re-pin is landed** |
-| **M2** | **8 / 8** | — |
-| **M3** | 12 / 13 | `cobol` — standing 27-FAIL liveness cascade (pre-existing, tracked in §3) |
-| **probe** | 14 / 18 | `asm-x86_64` `asm-arm64` `riscv64` — **INVALID MEASUREMENT**, ≥3 core FAILs each (§1a) · `apl` — unmeasurable, upstream-blocked |
-| **exploratory** | 1 / 2 | `turbowarp` — 2F, out of scope by design |
+| **M1** | **0 / 5** | **Re-run at `c1b0708`. All 5 FAIL the new `capability` checks — the re-pin is NOT landed.** `go` 3F · `haskell` 3F · `ocaml` 3F · `swift` 2F · `lean` 83F (2 real + 81 cascade) |
+| **M2** | 0 / 8 | **STALE @ `de8f807`** — not re-run, by operator decision |
+| **M3** | 0 / 13 | **STALE @ `de8f807`** — not re-run. `cobol` also carries its standing 27-FAIL liveness cascade |
+| **probe** | 0 / 18 | **STALE @ `de8f807`** — not re-run. `asm-x86_64` `asm-arm64` `riscv64` were **INVALID MEASUREMENT** at that pin (§1a); `apl` unmeasurable, upstream-blocked |
+| **exploratory** | 0 / 2 | **STALE @ `de8f807`** — never gates (§1 ‡) |
 
-**No tier is behind on the oracle pin.** Every backlog item above is a *peer* defect or a known
-exclusion, not a stale measurement — which is the state the policy is meant to keep us in.
+**This is the first time since the tier split went active that a re-pin has not landed, and the
+policy is working exactly as intended:** 5 peers were run instead of 45, and they found the whole
+gating delta. Running the other 40 would have cost 9× the tokens and told us the same thing about
+the gate — though it *would* have measured how far the CAP-5/CAP-6 gap spreads, which is now an
+open question rather than a number.
+
+**Every lower tier is now genuinely behind on the pin — a state this table has not shown before.**
+It is recorded, not panic-fixed: `tools/tier-status.py` prints `STALE@de8f807` for each. The
+catch-up order when the work resumes is **M1 to 0-FAIL first** (it gates), then `--tier M2`, then
+the rest — and per §3 the M1 fix shape is expected to apply cohort-wide, so the fix should be
+authored once and propagated, not rediscovered 45 times.
 
 ### Why this is on now
 
