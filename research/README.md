@@ -56,8 +56,11 @@ narrative capstone). The repo-root `README.md` links into all three.
   full rule and why the register deliberately did **not** move with them.
 - **`architecture-reviews/`** — reviews of arch-authored material.
 
-Dated one-off analyses (convergence maps, red-team reviews, substrate-theory alignment) also live at
-this level; they are snapshots of their date and are superseded by the synthesis layer above.
+The dated cross-cutting analyses that used to live at this level — the convergence set, the red-team
+critical review, substrate-theory alignment, the machine-boundary assessment — moved to
+`../protocol-generator/shared/syntheses/` on 2026-08-24, undated, for the same reason the findings did:
+a dated name under a doc-root prefix strips at release, and three of them were already cited from the
+published surface. They are a point-in-time analysis, not a living document.
 
 ## Who owns this
 

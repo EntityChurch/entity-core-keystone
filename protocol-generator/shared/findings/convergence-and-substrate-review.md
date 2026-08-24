@@ -13,10 +13,10 @@ spec-verified where checkable):
 
 | Doc | What it carries |
 |---|---|
-| `COMPUTE-PARADIGM-AND-META-REVIEW-2026-07-19.md` | paradigm placement + meta-review of RT-15 (CRC-1…6) |
-| `CONVERGENCE-MAP-2026-07-19.md` | per-tradition host/subsume/conflict/borrowable map (Unison, Croquet, Adapton/DD, blockchain, CRDT, ocap) |
-| `CONVERGENCE-SYNTHESIS-2026-07-19.md` | takeaways + the substrate/extension classification |
-| `SUBSTRATE-THEORY-ALIGNMENT-2026-07-19.md` | alignment with arch's six-primitive analysis; async/agnosticism resolution; corrections |
+| `protocol-generator/shared/syntheses/compute-paradigm-and-meta-review.md` | paradigm placement + meta-review of RT-15 (CRC-1…6) |
+| `protocol-generator/shared/syntheses/convergence-map.md` | per-tradition host/subsume/conflict/borrowable map (Unison, Croquet, Adapton/DD, blockchain, CRDT, ocap) |
+| `protocol-generator/shared/syntheses/convergence-synthesis.md` | takeaways + the substrate/extension classification |
+| `protocol-generator/shared/syntheses/substrate-theory-alignment.md` | alignment with arch's six-primitive analysis; async/agnosticism resolution; corrections |
 
 **Epistemic frame (please read before using §2).** The keystone survey was run from **external systems in
 standard CS terminology, independent of arch's substrate theory**, and *independently reached a consistent

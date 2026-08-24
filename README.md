@@ -38,6 +38,7 @@ Then, depending on what you came for:
 | See the whole language territory + what's viable | [`research/PARADIGM-MAP.md`](research/PARADIGM-MAP.md) |
 | Read the narrative capstone | [`research/PROJECT-RETROSPECTIVE.md`](research/PROJECT-RETROSPECTIVE.md) |
 | See what 46 implementations found wrong with the spec | [`protocol-generator/shared/findings/`](protocol-generator/shared/findings/README.md) |
+| Read the adversarial review of our own claims | [`protocol-generator/shared/syntheses/`](protocol-generator/shared/syntheses/README.md) |
 | Add a peer in your language | [Adding a peer](#adding-a-peer) ↓ |
 | Work in this repo as an agent or contributor | [`AGENTS.md`](AGENTS.md) + [`AGENTS-STANDARD.md`](AGENTS-STANDARD.md) |
 
@@ -188,7 +189,8 @@ Each peer holds `src/` (generated source), `profile.toml`, `templates/`, `status
 `CONFORMANCE-REPORT.{md,json}`, `SPEC-AMBIGUITY-LOG.md`), `reference/` (golden drift files), and
 `run-s4.sh`. Shared, language-agnostic material is in `protocol-generator/shared/` — the pinned spec
 snapshot and test vectors, the lifecycle prompts, and the cross-cutting output: `findings/` (the spec
-findings routed to architecture), `evaluations/` (the paradigm-frontier verdicts) and `diagnostics/`.
+findings routed to architecture), `syntheses/` (the convergence analysis and the red-team review of our
+own claims), `evaluations/` (the paradigm-frontier verdicts) and `diagnostics/`.
 
 The **codec C-ABI** (`ffi-generator/c-abi/spec/`) is a language-agnostic contract with interchangeable
 implementations — `entity-core-codec-ffi-{rust,c}`, both building the same `libentitycore_codec` +

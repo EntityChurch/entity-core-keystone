@@ -4,10 +4,10 @@
 writes were made). **Severity:** none blocks; all are notes, one design proposal, one extension-layer gap.
 
 > This is the arch front-door for the **net-new** items from a four-dimension adversarial review of core.
-> The converged picture is in `research/SYNTHESIS-RECONCILIATION-2026-07-18.md`; already-filed findings
+> The converged picture is in `protocol-generator/shared/syntheses/synthesis-reconciliation.md`; already-filed findings
 > (F32–F41, F37, F44–F46) remain in `AGGREGATE-F32-F41.md` — the review
 > *corroborated* those, no change. Detail behind each item below:
-> `research/RED-TEAM-CRITICAL-REVIEW-2026-07-18.md` and `research/IMPLEMENTATION-HISTORY-REVIEW-2026-07-18.md`.
+> `protocol-generator/shared/syntheses/red-team-critical-review.md` and `protocol-generator/shared/syntheses/implementation-history-review.md`.
 
 ## The one-line summary
 
