@@ -278,9 +278,34 @@ contract — check it (not the dated STATUS narrative) first.
 - **`protocol-generator/<lang>/reference/` golden files** — a drift signal (diff across runs),
   not a determinism guarantee; never edited to mask a regression.
 - **Never write to the architecture repo** (or any sibling). Reviews, proposals, and feedback
-  go in THIS repo's `research/stewardship/` as `HANDOFF-TO-ARCH-*.md`; architecture pulls them
-  in on its own schedule. A direct cross-repo commit, even with good content, lands as an
-  unprovenanced surprise that can't be cleanly undone — the damage is the broken process.
+  are **drafted** in THIS repo's `research/stewardship/` as `HANDOFF-TO-ARCH-*.md`; architecture
+  pulls them in on its own schedule. A direct cross-repo commit, even with good content, lands as
+  an unprovenanced surprise that can't be cleanly undone — the damage is the broken process.
+- **The findings PUBLISH; the escalation stays a draft.** A handoff has two lives and they want
+  opposite things. As a **process artifact** it is dated, addressed, in flight, and internal —
+  `research/stewardship/HANDOFF-TO-ARCH-<date>-<slug>.md`, the vocabulary unchanged. As **research
+  output** it is the durable answer to *"we implemented this protocol 46 times, here is what we
+  found wrong with the spec"* — and that belongs to an adopter, not to a filing cabinet. So once a
+  handoff is written up it **moves to `protocol-generator/shared/findings/`** under an undated
+  name, keeping its date in its own `**Date:**` header as provenance rather than as an identifier.
+  **The register does NOT move with it** — `research/stewardship/SPEC-FINDINGS-LOG.md` is declared
+  canonical, and the release keep-list is fail-closed on a declared path that is absent
+  ([ADR-0021]), so moving it aborts every unit whose historical manifest names the old path.
+  **Two mechanical reasons the destination is what it is, both of which read as arbitrary until
+  you hit them:** (a) `canon-filter`'s doc-root prefixes match at the START of a path, so anything
+  under `research/` needs a keep-list entry per file forever, while `protocol-generator/**` is
+  protected and publishes with **no declaration at all**; (b) `conform-audit` **R10** files any
+  *dated-named* doc as an ephemeral snapshot — measured 2026-08-23, it flagged **41** of ours as
+  ERROR and had never fired only because the gate audits the canon-filtered tree, where they were
+  absent. Declaring them in place would have started the fire; renaming is what puts it out.
+  **The failure this fixes is the shape to remember: the index shipped and the evidence did not.**
+  `SPEC-FINDINGS-LOG.md` was public, calls one finding a *front door*, and every document it names
+  was deleted from the public tree by a keep-list nobody had read as a keep-list. **Enforcement:**
+  `git ls-files research/stewardship/HANDOFF-TO-ARCH-*` should only ever return handoffs that are
+  still in flight — anything there that `SPEC-FINDINGS-LOG.md` cites as evidence is unpublished
+  evidence. References in `docs/status/` and `docs/archive/` were deliberately left pointing at
+  the old names — a dated snapshot that gets back-edited stops being evidence of anything — and
+  the old→new map sits beside the register as an internal breadcrumb, undeclared on purpose.
 - **After any repo-wide mechanical commit** (global find/replace, date-stamp, rename), don't
   trust the "just docs" framing — re-verify the SHA-256 spec-data pins and machine-consumed
   values (lockfile build-metadata, Containerfile `ARG …=DATE`, Go pseudo-versions) before
@@ -702,7 +727,8 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   sufficient and the build is reproducible.** So the current gap is purely that go has not published
   this oracle yet — a sequencing dependency, not a design flaw. **Enforcement: re-run this three-
   scenario test (public-master clone → must exit 3 · our tree → must exit 0 · re-authored publish →
-  must build byte-identically) before any release that claims an adopter can reproduce a number.** — undeclared means DELETED FROM THE
+  must build byte-identically) before any release that claims an adopter can reproduce a number.**
+- **`CANONICAL-DOCS.toml` IS A KEEP-LIST, NOT A SCRUB-LIST — undeclared means DELETED FROM THE
   PUBLIC TREE, and for months this repo's own header said the opposite.** Found 2026-08-23
   (fleet-wide by the arch-tools first full pass, routed to us as a release blocker).
   `canon-filter` (`entity-core-devops` release-builder, `internal/canon`) removes every file it
@@ -726,7 +752,34 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   **Enforcement:** simulate before every release — walk `git ls-tree -r origin/master`, subtract
   the declared set, apply those two scope rules, and require the remainder to be empty or
   declared in `.release-removals`. Currently: **0 undeclared deletions, 1 declared**
-  (`docs/status` — [ADR-0031], the keep-list's own removal of `STATUS.md`).
+  (`docs/status` — [ADR-0031], and it is a MOVE of `STATUS.md` to `docs/`, not a withdrawal).
+  **RATIFIED 2026-08-23, second occurrence and a different shape: "regardless of extension" is
+  the half that bites, because it deletes the things you tell people to RUN.** The first
+  occurrence was eight prose files. This one was four **executables and data** under
+  `research/diagnostics/` plus five cross-cutting paradigm surveys under `research/evaluations/`,
+  every one of them named from the published surface — and the sharpest is not a doc link at
+  all: **`tools/check-set-gate.py` PRINTS the starved-categories probe's path at RUNTIME as the
+  reader's next step.** So a reader running our own gate, on our own instruction, was sent after
+  a file we had deleted from what we gave them. `tools/oracle-pin.env` names the second, a
+  published finding the third, the go and rust peers' concurrency **test source** the fourth,
+  and the five surveys are cited from `AGENTS.md`, `CONFORMANCE-MATRIX.md`, four peers'
+  `PROFILE-RATIONALE.md`, `sql/profile.toml` and two `Containerfile`s.
+  **THE FIX IS TO MOVE THE FILE, NOT TO DECLARE IT — operator ruling, 2026-08-23, and it
+  reverses what this entry said when it was first written a few hours earlier.** The reflex on
+  finding an undeclared file that ought to publish is to add a `[[doc]]` block, and it is wrong:
+  **`CANONICAL-DOCS.toml` declares CANONICAL DOCS. It is not a catch-all for whatever needs to
+  survive the filter.** A probe script, a paradigm survey and a forwarding map are none of them
+  canonical documentation, and declaring them turns the keep-list into a junk drawer nobody can
+  audit — it stops answering *what is this repo's documentation* and starts answering *what did
+  somebody once need to keep*. All nine moved to `protocol-generator/shared/{diagnostics,
+  evaluations}/` instead, beside the findings, which is the same move for the same reason.
+  **The standing answer to the whole class: `protocol-generator/**` is outside every doc-root
+  prefix and publishes with NO declaration at all. Anything that must ship and is not
+  documentation goes there; declaration is reserved for documents.** The keep-list grew by
+  exactly one entry this cycle — `docs/STATUS.md`, which is a canonical doc.
+  **Enforcement, one grep, and run it against `tools/` too:** every `research/` and `docs/` path
+  NAMED by a published artifact must either be declared or not be under a doc root. Reading the
+  `.md` files alone finds three of these nine and misses the worst one.
 - **VERIFY A ROUTED CLAIM BEFORE ACTING ON IT, ESPECIALLY THE EXCULPATORY HALF — a packet's
   parenthetical "we checked, this one doesn't apply to you" is the sentence most likely to be
   wrong and least likely to be re-checked.** Same session, first occurrence, candidate. The
@@ -740,6 +793,41 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   before you theorize): **an inbound claim that reduces your work is still an inbound claim.**
   Enforcement is the simulation above — one command, answers the question directly, and needs no
   trust in anyone's list.
+  **Re-run 2026-08-23 on the next packet, and this time the routed claim held — record that too,
+  or the rule degenerates into "distrust the sender."** The follow-up packet named two internal-
+  token leaks on the publishable surface (`protocol-generator/shared/lifecycle/ORCHESTRATION.md`
+  naming the coordination repo as *"the canonical source"*, and one line in the P-1 finding).
+  Running the check ourselves — a case-insensitive `git grep -E` for every literal in
+  `leak-audit`'s `internal-tokens.local` denylist (the coordination-repo name, the build-host
+  name, the ops host and the ops address; read them from that file, and **do not transcribe them
+  into a committed document** — the leak-detector's own denylist must not become a leak, which
+  this paragraph got wrong on its first draft and its own scan caught) over the whole tree minus
+  `docs/status`, `docs/archive` and the injected ADRs — returned **those two and nothing else.**
+  Both were fixed with the packet's own corrected copies. **What the
+  verification is for is calibration in both directions:** the point is that the check is cheap
+  and answers directly, not that packets are unreliable. One line, two minutes, and it either
+  corroborates the sender or catches the thing they skimmed.
+- **NO GATE ASKS WHETHER THE PUBLISHED TREE IS INTERNALLY COHERENT — and every defect this
+  release cycle was found by walking it by hand.** Ratified 2026-08-23 (arrived as the one habit
+  the release earned, and it is now ours because we are the repo it kept finding things in).
+  The six release gates ask six different questions — is it safe (`leak-audit`), does it conform
+  (`conform-audit`), does it build, is the identity right, did anything vanish
+  (`public-regress`), is the promotion text clean — and **none of them asks whether a published
+  document points at something a reader can open.** Neither do ours: `check-set-gate.py` checks
+  that numbers are comparable, `pin-gate.py` that anchors resolve, `tier-status.py` that M1 is
+  current. All three would pass a tree in which every internal link is broken.
+  **The measured yield of one hand-walk, this session:** a README contradicting itself two lines
+  apart (13 publishable, "binds 40"); four runtime-referenced diagnostics deleted at release; 23
+  findings whose index published and whose evidence did not; two internal-token leaks; **and one
+  nobody had routed** — `protocol-generator/fortran/status/` cited two findings at
+  `research/stewardship/HANDOFF-TO-ARCH-*.md` paths that had not existed since those findings were
+  archived weeks earlier, dangling from a *published* file the whole time.
+  **Budget the pass; it is not optional and it is not automated.** Cheap partial enforcement that
+  is worth having anyway: resolve every relative markdown link in the tree against disk
+  (`\[[^\]]*\]\(([^)#\s]+)\)` → `(referrer.parent / target).exists()`) — it is ~20 lines, it runs
+  in a second, and it would have caught the fortran dangler and every link the findings move
+  broke. It does **not** catch inline-code paths in backticks, prose fragments, or a path printed
+  by a tool at runtime, which is why the hand-walk stays.
 - **RATIFIED (second occurrence, different shape): a budget-starved run reads as a clean run,
   and the starved categories are where the real FAILs are.** First shape — **Unison #43**: two
   *slow* categories consumed the global budget and seven core categories reported
@@ -864,7 +952,7 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   per-request work (authoring a hot handler) only *exposes* this latent scheduling bug, it isn't the
   cause — prove it by reverting the suspected handler and re-measuring (delegated-connect *also*
   failed t2_2; the serial drain was the real root). The full **field survey + when-to-stop verdict**
-  lives in `research/evaluations/visual-paradigms.md` (all THREE paradigms now probed — **Pure Data
+  lives in `protocol-generator/shared/evaluations/visual-paradigms.md` (all THREE paradigms now probed — **Pure Data
   (#33) closed the reactive-patch track at full-gate `Result: PASS` on the real runtime**, the only
   visual probe to do so). Pd's adds: **the transport belongs in the seam when the runtime's own
   primitive is disqualified at source level** (`[netreceive]` broadcasts every reply, no per-conn
@@ -896,7 +984,7 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   trap: **a bottom-up engine dedups DERIVED tuples but not pre-seeded EDB**, so K-of-N distinctness needs
   an explicit IDB copy-rule before the count — silent if missed, and only the accept path exposes it
   (pairs with the rejection-only-oracle vacuous-green lesson) (A-DL-012). Full synthesis:
-  `research/evaluations/authority-as-query.md`.
+  `protocol-generator/shared/evaluations/authority-as-query.md`.
 - **Oz: a non-ASCII byte baked into a compiled string constant can crash the peer at
   runtime, not at compile time.** `ozc` accepts a literal containing U+00A7 (`§`) inside a
   `"..."` string with zero warning, but concatenating it into a live error message via `#`

@@ -157,6 +157,16 @@ lint:
 	@# being trustworthy: the §1 pin column reverting to a commit, and a hand-copied
 	@# 64-hex digest drifting from tools/oracle-pin.env (which no human proofreads).
 	@python3 tools/pin-gate.py --quiet
+	@echo "lint: gating relative link integrity (read-only)…"
+	@# Fourth root-level invariant, and the first one about the tree rather than about a
+	@# number. Nine gates run across this repo and the release pipeline; not one of them
+	@# asked whether a published document points at something a reader can open. Measured
+	@# 2026-08-23: protocol-generator/fortran/status/ had cited two findings at paths that
+	@# had not existed since those findings were archived weeks earlier, dangling out of a
+	@# published file past every gate. This is the cheap floor only — it sees markdown
+	@# links, not backticked paths, wrapped fragments, or a path a tool prints at runtime.
+	@# The hand-walk of the published tree stays mandatory (AGENTS.md).
+	@python3 tools/link-gate.py --quiet
 
 # fmt = autoformat (writes). Intentionally a no-op: generated source is formatted
 # by its own toolchain, and spec-data/<version>/ is a SHA-256-pinned immutable
