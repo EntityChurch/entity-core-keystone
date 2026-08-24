@@ -1,0 +1,27 @@
+name = "EntityCore"
+uuid = "b7e5f2a4-1c3d-4e6f-8a90-1d2e3f4a5b6c"
+authors = ["Entity Core Protocol contributors"]
+version = "0.1.0-pre"
+
+# entity-core-protocol-julia — full core-protocol peer (core Layers 0–4).
+# Tracks ENTITY-CORE-PROTOCOL v0.8.0 (V8). Conformance: validate-peer --profile core
+# 682·0F @ oracle cc1970f (292 P / 294 W / 0 F / 96 S) — see status/CONFORMANCE-REPORT.md.
+# Package version is 0.1.0-pre (pre-release; General-registry registration deferred cohort-wide,
+# add-by-URL works pre-registration). The `version` field is the PACKAGE version, NOT the spec
+# version — the spec version tracked is v0.8.0 (see CHANGELOG.md).
+#
+# Core peer runtime surface is stdlib-only (SHA for content_hash + SHA-256/384; Sockets for the
+# S3/S4 peer; Test for the suite) + system libsodium via ccall for Ed25519 (no registered
+# package). --network=none loads + precompiles fully offline.
+[deps]
+SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
+
+[compat]
+julia = "1.11"

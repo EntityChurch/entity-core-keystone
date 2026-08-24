@@ -1,0 +1,259 @@
+# entity-core-protocol-julia — Language Profile
+#
+# Tier-3 CORROBORATION / GENERATOR-ROBUSTNESS peer. Authored FRESH in S1 from the
+# V8 spec-data + Julia ecosystem research — NOT ported from any prior peer's profile.
+# Where a field matches a prior peer it is by independent arrival, not inheritance.
+#
+# HONEST FRAMING (ADR-0012): the alien-substrate spec-discovery well is DRY on the
+# current wire surface. Julia is NOT a spec-discovery probe — a Julia peer passing the
+# author's vectors is COHORT-CONSISTENT, not independent convergence. Its value is
+# (a) corroborating the settled cohort results on a fresh substrate and (b) exercising
+# generator robustness on Julia's genuinely novel idiom axes. A fresh spec finding is
+# upside, not the expectation. The idiom axes worth exercising (none wire-novel enough
+# to expect a finding):
+#   - MULTIPLE DISPATCH as the codec-dispatch shape (CLOS/Smalltalk double-dispatch
+#     family) — encode/decode dispatch on Julia value TYPE, a fresh dispatch mechanism
+#     but the OPPOSITE of the Tcl EIAS problem: Julia's rich type system makes CBOR
+#     major-type selection NATURAL (String->mt3, Vector{UInt8}->mt2, Integer->mt0/1,
+#     AbstractFloat->mt7), so byte-vs-text and int-vs-float are TYPE-distinguished, not
+#     inferred. This corroborates that the spec's type distinctions are carriable by a
+#     dispatch-typed value model with no side-channel.
+#   - NUMERIC MODEL: native UInt64 (exact for the CBOR uint64 argument tower) PLUS
+#     BigInt (GMP) for reconstructed values — see [numeric]. Wire head-form is
+#     fixed-width (UInt64) -> the [2^63, 2^64-1] self-test is MANDATORY (the C# `ulong`
+#     class), even though BigInt makes application-level full-range free.
+#   - JIT: LLVM JIT / latency-to-first-call ("time to first X") — a startup-latency
+#     artifact, conformance-irrelevant; noted, not a wire axis.
+#
+# Profile authority (PROMPT-CONSTANTS): the agent MUST use the values declared here.
+# A "TBD" value is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+# There are NO blocking TBDs in this profile.
+
+[language]
+id                = "julia"
+name              = "Julia"
+tier              = "peer-tier-3"             # LANDSCAPE Tier 3 (functional/technical-computing); corroboration/robustness, not spec-discovery
+package_name      = "entity-core-protocol-julia"   # keystone peer id
+runtime           = "julia-toolchain"         # references containers/julia-toolchain/Containerfile
+julia_version     = "1.11.5"                   # pinned; confirm exact patch + sha256 at S2 (A-JULIA-001)
+
+[codec]
+# strategy: NATIVE. Same A-005 pattern every native peer hit (OCaml/C#/TS/Zig, now 8+):
+# a faithful ECF codec must OWN the canonical layer (length-then-lex map ordering,
+# shortest-float incl. f16, recursive major-type-6 tag rejection, full uint64/nint
+# range, raw-byte fidelity) regardless of any CBOR library underneath — so a library
+# buys almost nothing. Julia's SHA stdlib gives native SHA-256/384, native UInt64/BigInt
+# make the numeric + base58 layers native, and Ed25519 is available from the SYSTEM
+# libsodium (the native-audited-lib crypto tier, like Elixir OTP :crypto / Haskell
+# crypton — NOT the keystone C-ABI). So "native" is the strictly lighter path and the
+# shipped default peer needs NO libentitycore_codec. `ffi` remains the documented
+# fallback if the S2 canonical-CBOR spike ever fails (not expected).
+#
+#   (1) CBOR: hand-rolled canonical encoder/decoder in pure Julia (src/cbor.jl),
+#       dispatched by MULTIPLE DISPATCH on the value type. No Julia CBOR package gives
+#       canonical ECF — CBOR.jl exists (round-trip serializer) but offers none of the
+#       ECF canonical guarantees (shortest-float, length-then-lex key order, mt6 tag
+#       reject, byte-string fidelity), so it is DECLINED (A-JULIA-002); hand-rolling is
+#       both the faithful and the simpler path. The f16 (half-float) leg is hand-rolled
+#       bit arithmetic like every peer (Julia has Float16 native, but the shortest-float
+#       ladder decision — does the value round-trip through f16/f32 exactly? — is
+#       hand-decided regardless, Rule 4).
+#   (2) SHA-256/384: Julia `SHA` stdlib (ships WITH Julia) — native, pure-Julia,
+#       `SHA.sha256` / `SHA.sha2_384`. No supply-chain cost.
+#   (3) Ed25519: SYSTEM libsodium via `ccall` (Julia's first-class C interop). libsodium
+#       is an audited reference crypto library present in the toolchain image; binding it
+#       directly by ccall (crypto_sign_*, crypto_sign_seed_keypair, crypto_sign_detached,
+#       crypto_sign_verify_detached) keeps the peer self-contained + Pkg-fetch-free (the
+#       container builds --network=none). Sodium.jl (the higher-level wrapper) is DECLINED
+#       for the network-fetch + thin-need reasons (A-JULIA-003). This is the native-audited
+#       -lib tier, NOT the keystone C-ABI FFI-hybrid (Tcl/COBOL/Fortran) — the Ed25519+SHA
+#       FLOOR is native.
+#   (4) base58 + multikey varint: hand-rolled pure Julia (BigInt makes base-256<->base-58
+#       long division trivial; the LEB128 varint is inline bit ops).
+strategy          = "native"                  # native primitives + native/audited crypto; NOT the keystone C-ABI
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native", impl = "pure-Julia, multiple-dispatch encode/decode; Float16 native, f16-shortest ladder hand-decided" }
+ed25519_library   = { name = "system libsodium via ccall", version = "libsodium 1.0.x (image-provided)", api = "crypto_sign_seed_keypair / crypto_sign_detached / crypto_sign_verify_detached" }
+# Ed448 (crypto-agility HIGHER BAR, §9.x): libsodium has NO Ed448 (Ed25519 only), so the
+# agility family is an OPT-IN hybrid-FFI sub-package over the C-ABI (libentitycore_codec
+# ec_ed448_*), scoped so the shipped Ed25519+SHA floor peer stays native + self-contained.
+# Same Ed448-only-FFI shape as OCaml/Zig/Swift (native floor + FFI-Ed448). DEFERRED until
+# an adopter needs agility (floor ships first). See A-JULIA-004.
+ed448_library     = { name = "libentitycore_codec (opt-in FFI via ccall)", version = "C-ABI 1.1", strategy = "ffi", api = "ec_ed448_{seed_to_pubkey,sign,verify} + ec_sha384" }
+sha256_source     = "Julia `SHA` stdlib SHA.sha256 (native, ships with Julia); SHA.sha2_384 for agility"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (src/base58.jl); BigInt long division — no lib
+varint_handling   = "native"                  # LEB128 multikey/hash-format varint (N1, §3.1/§7.3) — inline bit ops, src/varint.jl
+numeric_model     = "native-uint64 + bignum"  # UInt64 exact for the CBOR uint64 argument tower (fixed-width, self-test mandatory) + BigInt for reconstructed values
+
+[numeric]
+# Julia has a FULL native integer tower AND arbitrary precision, so it is a hybrid on
+# the head-form axis — the first peer that has a native EXACT-WIDTH UInt64 (so the CBOR
+# uint64 argument is natural, no signed-carrier trap like Fortran, no unsigned gap) AND
+# BigInt (so reconstructed application values are free like the bignum peers).
+#   - WIRE head-form carrier = UInt64: exactly covers the CBOR mt0 argument range
+#     [0, 2^64-1]. Because it is FIXED-WIDTH, the [2^63, 2^64-1] head-form self-test is
+#     MANDATORY (the C# `ulong` / Zig `u64` class — NOT the free-range bignum class).
+#   - The CBOR mt1 (negative) argument is ALSO a UInt64 (n, value = -1-n); the reconstructed
+#     signed value at the boundary (-2^64 .. -1) exceeds Int64, so application-level
+#     reconstruction widens to Int128/BigInt as needed. On the WIRE the codec works with
+#     the UInt64 argument directly (no widening, no precision risk).
+#   - BigInt (GMP-backed) carries any reconstructed integer value free of overflow.
+int_wire_carrier  = "UInt64"                  # the CBOR argument (mt0 & mt1 n); exact for [0, 2^64-1]
+int_value_carrier = "Int64 default; widen to Int128/BigInt for reconstructed values outside Int64"
+head_form_selftest = "MANDATORY: round-trip {0, 2^63-1, 2^63, 2^64-2, 2^64-1} byte-exact (fixed-width UInt64 boundary — AGENTS.md durable lesson; the C# ulong class)"
+head_form_class   = "fixed-width (UInt64) on the wire; bignum-capable (BigInt) for values — corroborates C#/Zig, does NOT break the numeric axis"
+float_carrier     = "Float64 (binary64) / Float32 (binary32) — native IEEE-754; Float16 (binary16) native too"
+float_bits_path   = "reinterpret(UInt64, x::Float64) / reinterpret(UInt32, x::Float32) / reinterpret(UInt16, x::Float16) — native bit reinterpret; byte-swap to network order explicitly"
+float16_handling  = "Float16 is a native Julia type (reinterpret(UInt16, ::Float16)); the shortest-float ladder (f16<-f32<-f64 exact round-trip) is hand-decided regardless (Rule 4)"
+
+[error_model]
+# Julia idiom is EXCEPTIONS: `throw(MyError(...))` with custom `<: Exception` structs,
+# caught by `try/catch` + `isa` dispatch. This is the dominant Julia error story (the
+# C#/TS/Java/Tcl exception family, distinct from the Result/Either and status-code peers).
+# The codec public surface THROWS on N2/N3 canonicality violations (non-canonical input,
+# truncated input, major-type-6 tag reject, bad seed) — a hard reject, never a silently
+# returned sentinel. In-band "absent"/"not found" returns `nothing` (Julia's Nothing
+# singleton) — a CLEAN absent sentinel that cannot collide with any real value (no Tcl
+# empty-string trap; `nothing` is distinct from an empty String or empty Vector{UInt8}).
+style             = "exceptions"              # custom <: Exception structs; try/catch + isa
+exception_family  = "abstract type EntityCoreError <: Exception; concrete leaf structs"
+leaf_kinds        = "NonCanonicalECF | TruncatedInput | TagRejected | BadSeed | UnsupportedContentHashFormat | UnsupportedKeyType"
+protocol_status_map = "leaf exception type -> numeric status (400 non_canonical_ecf / 401 / 403 / 404 / 413 / …) at the dispatcher boundary"
+absent_sentinel   = "nothing (::Nothing singleton) — distinct from empty String / empty Vector{UInt8}; no empty-value collision"
+
+[async]
+# DELIBERATE idiom. Julia's concurrency is TASKS (coroutines / green threads) multiplexed
+# over a libuv event loop — the same libuv reactor Node/Dart use, exposed as `@async` /
+# `Threads.@spawn`, `Channel{T}` (CSP-style typed channels), and `wait`/`fetch`. I/O
+# (Sockets stdlib: listen/accept/connect) is non-blocking under the Task scheduler.
+#
+# The CORE peer runs the SINGLE-THREADED Task scheduler (default: 1 OS thread unless
+# JULIA_NUM_THREADS>1): Tasks are COOPERATIVELY scheduled, yielding only at I/O/await
+# points. §7b store-safety is therefore STRUCTURAL — the store is plain Julia Dicts
+# mutated only between yield points on the one scheduler thread, so there is NO data race
+# to guard (no lock, no atomics) — the actor/CSP-class "free store-safety" reached via the
+# cooperative Task scheduler (the PHP/Dart/Tcl event-loop result, corroborated).
+#
+# §6.11 handler-initiated outbound-dispatch reentry is ~FREE (as on the actor/CSP/event-
+# loop peers, NOT the correlation-map tax the raw-thread/async peers pay): the handler
+# spawns an outbound dispatch and `take!`s from a Channel (or waits a Condition) keyed by
+# request_id; the inbound EXECUTE_RESPONSE reader `put!`s the correlated reply — a plain
+# Task handoff on the one scheduler, no cross-thread demux, no deadlock.
+#
+# Julia ALSO has real MULTITHREADING (`Threads.@spawn`, JULIA_NUM_THREADS>1) — a genuine
+# shared-memory thread model needing locks/atomics for store-safety. It is NOT used for
+# the core peer (the single-threaded Task scheduler is more idiomatic for a network peer
+# and gives structural safety for free). Noted as the alternative substrate (A-JULIA-005),
+# out of scope for --profile core.
+style             = "tasks"                   # coroutines/green-threads over libuv; single-threaded scheduler for core
+event_primitive   = "@async + Channel{T} + wait/fetch over the libuv reactor (Sockets stdlib)"
+request_demux     = "request_id -> Channel/Condition in the one scheduler; inbound reader put!s the reply (reentrant §6.11, no cross-thread demux)"
+store_model       = "plain Dict in the one scheduler thread — structurally race-free (cooperative Tasks yield only at I/O)"   # §4.8/§7b; no lock
+tcp_nodelay       = true                       # Sockets.nagle(sock, false) / setsockopt TCP_NODELAY on accepted+dialed sockets (§7b)
+blocking_discipline = "no blocking FFI/compute on the scheduler between yields would stall the reactor; keep ccall crypto short, all socket I/O via the async Sockets API"
+
+[naming]
+# Julia-native conventions (Base + community style guide).
+module_names      = "UpperCamelCase"          # modules ARE the namespace: EntityCore, EntityCore.Cbor, EntityCore.Peer
+type_names        = "UpperCamelCase"          # structs/abstract types: Entity, ContentHash, PeerId, EcfValue
+function_names    = "lowercase"               # functions: contenthash, signandverify, encodeecf — lowercase, run-together (Base idiom); underscores only where readability demands
+mutating_suffix   = "! on in-place functions" # encode!(buf, x), reset!(store) — the Julia `!` mutation convention
+variable_names    = "lowercase / lower_snake" # locals/fields: pubkey, seed_bytes, req_id
+constant_names    = "UPPER_SNAKE"             # `const MAX_DEPTH = 64` — true constants SCREAMING_SNAKE
+file_names        = "lowercase or module-named" # cbor.jl, peer_id.jl, base58.jl; the package entry is src/EntityCore.jl (matches the module)
+
+[build]
+# Julia's built-in package manager `Pkg` + Project.toml/Manifest.toml. "Build" is
+# effectively precompilation (`Pkg.precompile`); Julia is JIT-compiled (LLVM), so there
+# is no separate compile artifact — the module is loaded + precompiled. The core peer
+# pulls ZERO registered packages (SHA/Sockets/Test/Pkg are stdlibs bundled with Julia;
+# Ed25519 is system libsodium via ccall) → the container builds --network=none.
+build_tool        = "julia Pkg (Project.toml)"
+build_command     = "julia --project=. -e 'using Pkg; Pkg.precompile(); using EntityCore; println(\"ok\")'"   # load+precompile smoke = the build for a JIT language
+test_command      = "julia --project=. -e 'using Pkg; Pkg.test()'"   # runs test/runtests.jl under the Test stdlib
+package_command   = "julia --project=. -e 'using Pkg; Pkg.build()'"  # no binary artifact; publish = tag + General-registry registration
+
+[layout]
+project_file      = "Project.toml"            # + Manifest.toml (resolved deps; empty of registered pkgs for the core peer)
+src_dir           = "src/"                    # module tree
+entry_point       = "src/EntityCore.jl"       # the umbrella module (module EntityCore … include(...) … end)
+test_dir          = "test/"                   # Test-stdlib suites + conformance corpus driver
+test_entry        = "test/runtests.jl"        # standard Pkg.test entry
+ffi_binding       = "src/ffi_ed448.jl"        # OPT-IN sub-module: ccall bindings for libentitycore_codec ec_ed448_* (agility only; not loaded by the floor peer)
+program_entry     = "bin/peer.jl"             # the peer executable validate-peer drives (julia bin/peer.jl --name …)
+
+[publishing]
+# Julia's package registry is the General registry (the PyPI/crates analogue), keyed by a
+# per-package UUID; registration is via a PR to the registry (Registrator/JuliaHub). A
+# package is a git repo with Project.toml (name + UUID + version). Publish = tag a git
+# release with a working Project.toml; General-registry registration is a later community
+# step (a package need not be registered to be `Pkg.add`ed by URL). Apache-2.0 default.
+registry          = "General registry (Pkg) + git; add-by-URL works pre-registration"
+registry_url      = "https://github.com/JuliaRegistries/General"
+package_id        = "EntityCore"              # module/package name; a UUID is minted at first Project.toml authoring (S5)
+package_uuid      = "minted-at-S5"            # Julia packages carry a UUID in Project.toml; generated at publish, not a blocking S1 value
+license_expression = "Apache-2.0"
+repository_url    = ""                          # TBD on first publish (same as the other unpublished peers)
+maintainers       = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default. Julia itself is MIT; the ecosystem is MIT-leaning but does not mandate — keep the Apache-2.0 default (explicit patent grant).
+
+[testing]
+# The `Test` stdlib (`@test` / `@testset`) ships INSIDE Julia (like Prolog plunit / Tcl
+# tcltest / Zig zig-test) — "free", no supply-chain cost, and IS the idiomatic choice; no
+# dependency-minimization reason to reach for a heavier framework. The conformance harness
+# is a Test suite (test/conformance.jl) that loads the normative v0.8.0 fixture and asserts
+# byte-identity against the hand-rolled codec + the wire-conformance oracle; test/runtests.jl
+# is the standard Pkg.test runner entry.
+framework         = "Test (stdlib)"           # bundled with Julia; the ecosystem standard
+runner            = "test/runtests.jl (@testset tree)"
+conformance_probe = "load spec-data v0.8.0 fixtures (test-vectors/v0.8.0/conformance-vectors-v1.cbor); assert byte-identity vs hand-rolled codec + wire-conformance oracle"
+
+[container]
+base_image        = "entity-core-keystone/julia-toolchain:latest"
+build_in_container = true
+# --network=none is honored: the core peer pulls ZERO registered packages (stdlib-only +
+# system libsodium via ccall), so it loads/precompiles fully offline once the image exists.
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/julia entity-core-keystone/julia-toolchain:latest sh -c 'julia --project=. -e \"using Pkg; Pkg.test()\"'"
+
+[idiom]
+# Julia-specific hints — the seams where this substrate is unlike (or a fresh mechanism
+# for) prior peers. None is wire-novel enough to expect a spec finding (corroboration).
+multiple_dispatch_codec = true                # THE headline mechanism. encode/decode are generic functions dispatched by MULTIPLE DISPATCH on the Julia value type — the CLOS/Smalltalk double-dispatch family, a fresh dispatch shape. Byte-vs-text (Vector{UInt8}->mt2 vs String->mt3) and int-vs-float (Integer->mt0/1 vs AbstractFloat->mt7) are TYPE-distinguished — the OPPOSITE of Tcl EIAS: the type system makes major-type selection natural, no explicit tag needed. Confirm at S2 that no value satisfies two dispatch branches (String is NOT an AbstractVector; UInt8-vector is NOT a String) — A-JULIA-006.
+utf8_native_string      = true                # Julia `String` is UTF-8 internally + immutable. CBOR text length is BYTE length: use `ncodeunits(s)` / `codeunits(s)` (a read-only Vector{UInt8}) / `sizeof(s)` — NEVER `length(s)`, which counts CODE POINTS (the Tcl A-TCL-002 char-vs-byte trap, naturally avoided because UTF-8 is the native storage). Byte strings are Vector{UInt8}. A-JULIA-007.
+native_uint64           = true                # UInt64 exactly covers the CBOR uint64 argument tower [0, 2^64-1] — no signed-carrier trap (Fortran), no unsigned gap; the head-form is a native fixed-width unsigned. The [2^63,2^64-1] self-test is still MANDATORY (fixed-width class). A-JULIA-008.
+native_bignum           = true                # BigInt (GMP) carries any reconstructed integer value overflow-free (application level); the WIRE codec stays on UInt64.
+native_float16          = true                # Float16 is a native Julia type (reinterpret to UInt16 directly) — the f16 leg needs no hand-rolled half-float encode, only the shortest-float ladder decision (Rule 4) is hand-rolled.
+task_scheduler_free_store = true              # §7b store-safety is STRUCTURAL on the single-threaded Task scheduler (cooperative yield only at I/O); §6.11 reentry is a plain Channel handoff (no cross-thread demux) — the PHP/Dart/Tcl event-loop result on a fourth substrate.
+jit_latency             = true                # LLVM JIT: latency-to-first-call ("time to first X"). A startup artifact, conformance-IRRELEVANT (warms after first call); noted, not a wire axis. sysimage/PackageCompiler is an optional S5 startup optimization, not needed for conformance.
+ccall_crypto            = true                # Ed25519 crosses to system libsodium via `ccall` (first-class C interop). NOT the keystone C-ABI FFI-hybrid — this is the native-audited-lib tier (Elixir :crypto / Haskell crypton class). The floor peer is self-contained (stdlib + system libsodium). A-JULIA-003.
+no_static_type_gate     = true                # Julia is dynamically typed + JIT — no ahead-of-time whole-program type check (the Python/Ruby/Prolog dynamic caveat). Correctness rests on the conformance corpus + the Test suite; @code_warntype/type-stability is a perf tool, not a correctness gate.
+
+[deps]
+# Exact pins (S11; all >= 30 days old at authoring 2026-07-12). Toolchain pins mirrored in
+# containers/julia-toolchain/Containerfile. The core peer's third-party RUNTIME surface is
+# essentially EMPTY: Julia (the toolchain, bundles SHA/Sockets/Test/Pkg stdlibs) + system
+# libsodium (image-provided, for Ed25519 via ccall). CBOR/base58/varint are hand-rolled;
+# Test/SHA/Sockets ship in Julia. libentitycore_codec is pinned at the ffi-generator layer
+# (C-ABI 1.1) and is ONLY needed by the OPT-IN Ed448 agility sub-package, not the floor.
+julia             = "1.11.5"                   # Julia 1.11.x line (1.11.0 shipped 2024-10; the current stable series, well over the S11 30-day floor at 2026-07-12). Confirm the exact patch + tarball sha256 at S2 against julialang.org checksums (A-JULIA-001). SHA/Sockets/Test/Pkg are bundled stdlibs — no separate pin.
+libsodium         = "1.0.x (image-provided, fedora:43) — Ed25519 via ccall (crypto_sign_*); the audited-crypto floor dependency"
+libentitycore_codec = "C-ABI 1.1"             # OPT-IN Ed448 agility ONLY (ec_ed448_*); NOT a floor-peer dependency. Pinned at the ffi-generator layer.
+# SHA (SHA-256/384), Sockets, Test, Pkg are Julia STDLIBS bundled with the toolchain — no
+# separate pin (version = whatever the pinned Julia bundles, recorded at build).
+
+[spec]
+spec_version_pinned = "0.8.0"                 # spec-data snapshot protocol-generator/shared/spec-data/v0.8.0/ (V8). Confirm the SHA-256 pins in MANIFEST.md unchanged at S2.
+codec_corpus      = "v0.8.0"                  # ECF corpus protocol-generator/shared/test-vectors/v0.8.0/ (conformance-vectors-v1.cbor); core wire byte-unchanged across V7->V8.
+oracle_commit     = "cc1970f"                 # go oracle for S4 (public HEAD, re-normalized 2026-07-10); target --profile core = 0 FAIL. Build via tools/oracle-bootstrap.sh; confirm at S2/S4.
+# PEER_ID CONSTRUCTION (corroborates the cohort A-ZIG-001 / A-OC-007 / A-CL-002 / A-TCL /
+# A-FTN): derive the Ed25519 peer_id from the §1.5 CANONICAL-FORM TABLE — hash_type = 0x00
+# identity-multihash, digest = the RAW 32-byte public key (NO SHA256(pubkey) skeleton, no
+# hash for the <=32B Ed25519 pubkey). peer_id wire form = Base58(key_type || hash_type ||
+# digest). §7.4 defers to the §1.5 table on the v0.8.0 snapshot — settled, baked in to
+# avoid the S4 handshake debug cycle Zig/OCaml burned.
+# COHORT-SETTLED TRAPS pre-resolved here (do NOT re-burn): lowercase %02x hex for §3.4/§3.5
+# tree-paths (A-CL-009); §5.2 401/403/401-unresolvable authz trichotomy; entity `data` is
+# an arbitrary ECF value, NOT necessarily a map (A-JAVA-010); §4.10 chain-depth pre-check ->
+# 400 chain_depth_exceeded (depth 64), 16 MiB payload -> 413 payload_too_large; §7b
+# store-race-safety (structural here) + TCP_NODELAY + no blocking on the scheduler.

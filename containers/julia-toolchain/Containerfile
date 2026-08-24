@@ -1,0 +1,81 @@
+# Julia toolchain image — builds the native Julia peer
+# (entity-core-protocol-julia) per protocol-generator/julia/profile.toml.
+# Mirrors containers/zig-toolchain (pin the official tarball, verify cryptographically).
+#
+# S1: AUTHORED ONLY — not built this phase (S1 is research/authoring; the toolchain is
+#     provisioned at S2). Builds run in this container, not on the host.
+# S11: pin the toolchain to an exact version; verify the download cryptographically.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: version pinned; JULIA_SHA256 is an S1 SENTINEL — fill + verify at S2.
+#   julia 1.11.5 — the 1.11.x stable line (1.11.0 shipped 2024-10; clears the >=30-day
+#                  cool-down well over at 2026-07-12). SHA/Sockets/Test/Pkg are bundled
+#                  stdlibs; the core peer pulls NO registered packages.
+# The core peer is stdlib + system-libsodium ONLY: `SHA` stdlib gives SHA-256/384,
+# Ed25519 is bound from system libsodium via `ccall`, and CBOR (canonical ECF), base58,
+# and the multikey LEB128 varint are hand-rolled in-repo (no Julia lib gives canonical
+# ECF; the A-005 pattern). There are NO registered Julia packages to pin, so the peer
+# loads/precompiles fully offline (--network=none).
+#
+# WHY THE OFFICIAL TARBALL, NOT `dnf install julia`:
+#   Pin the exact 1.11.5 official release and VERIFY its sha256 against the julialang.org
+#   published checksum, rather than take whatever the distro channel currently carries.
+#   This is the zig-toolchain pattern adapted to Julia's single-tree binary distribution.
+#
+# REQUIRED before building (fill at S2 from julialang.org/downloads + its checksums):
+#   - JULIA_SHA256: sha256 of julia-1.11.5-linux-x86_64.tar.gz (from the published
+#     checksums on julialang.org / julialang-s3). Leaving the sentinel keeps an
+#     unverified image from building silently (fails CLOSED).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (S2, once JULIA_SHA256 is filled):
+#   podman build -t entity-core-keystone/julia-toolchain:latest \
+#     -f containers/julia-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps: download/verify tooling + libsodium (Ed25519 via ccall) + gcc (the C-ABI
+# codec build for the OPT-IN Ed448 agility sub-package only; the floor peer needs none).
+RUN dnf install -y \
+        curl ca-certificates tar gzip \
+        libsodium libsodium-devel \
+        gcc make pkgconfig \
+        git findutils which \
+    && dnf clean all
+
+# ── Pinned Julia release ─────────────────────────────────────────────────────
+# 1.11.5, x86_64-linux. Pin the exact version + expected sha256. The build FAILS
+# CLOSED if the sha256 does not match (or while the S1 sentinel stands).
+ARG JULIA_VERSION=1.11.5
+ARG JULIA_MAJOR_MINOR=1.11
+ARG JULIA_ARCH=x86_64
+# Pinned sha256 of julia-${JULIA_VERSION}-linux-x86_64.tar.gz.
+# S2: filled + verified against the official julialang-s3 checksums file
+#   https://julialang-s3.julialang.org/bin/checksums/julia-1.11.5.sha256
+#   → julia-1.11.5-linux-x86_64.tar.gz  723e878c…fe8f9c  (A-JULIA-001 closed).
+ARG JULIA_SHA256="723e878c642220cc0251a0e13758c059a389cadc7f01376feaf1ea7388fe8f9c"
+
+RUN set -eux; \
+    tarball="julia-${JULIA_VERSION}-linux-${JULIA_ARCH}.tar.gz"; \
+    base="https://julialang-s3.julialang.org/bin/linux/x64/${JULIA_MAJOR_MINOR}"; \
+    cd /tmp; \
+    curl -fsSLO "${base}/${tarball}"; \
+    # exact sha256 pin (skipped only while the S1 sentinel stands — then fail closed).
+    if [ "${JULIA_SHA256}" != "REPLACE_WITH_PINNED_SHA256_AT_S2" ]; then \
+        echo "${JULIA_SHA256}  ${tarball}" | sha256sum -c -; \
+    else \
+        echo "WARNING: JULIA_SHA256 sentinel — fill the real digest at S2 before trusting this image"; \
+        exit 1; \
+    fi; \
+    mkdir -p /opt/julia; \
+    tar -C /opt/julia --strip-components=1 -xf "${tarball}"; \
+    rm -f "${tarball}"; \
+    /opt/julia/bin/julia --version
+
+ENV PATH=/opt/julia/bin:$PATH
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="julia-toolchain"
+LABEL org.entity-core-keystone.version="1"
+
+CMD ["/bin/bash"]
