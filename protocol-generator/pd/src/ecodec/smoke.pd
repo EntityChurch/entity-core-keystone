@@ -1,0 +1,11 @@
+#N canvas 0 0 500 400 12;
+#X obj 40 40 loadbang;
+#X msg 40 90 info;
+#X msg 160 90 sha256test;
+#X obj 40 160 ecodec;
+#X obj 40 230 print ECODEC;
+#X connect 0 0 1 0;
+#X connect 0 0 2 0;
+#X connect 1 0 3 0;
+#X connect 2 0 3 0;
+#X connect 3 0 4 0;

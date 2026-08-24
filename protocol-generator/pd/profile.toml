@@ -1,0 +1,85 @@
+# entity-core-protocol-pd — Language Profile
+#
+# Peer #33 — the THIRD and final clean visual-paradigm probe (Node-RED #31 flow-based →
+# TurboWarp #32 imperative-block → **Pure Data #33 reactive-patch**). The protocol is
+# authored IN the Pd patch: the §6.5/§5.2 dispatch sequence, status codes, op-switch,
+# guard ladder, and the §6.6 handler resolution as a visible tree-walk on the canvas —
+# NOT collapsed behind one delegated dispatch() object (the FLOW-DESIGN wrapper-guard;
+# #31 and #32 both proved decomposition surfaces bugs).
+#
+# NOT wire-axis discovery (Pd externals are C — the wire axis is saturated by the C peer
+# + the C-ABI codec). The axis is PARADIGM: the reactive-continuous-dataflow ↔ discrete-
+# request/response mismatch, plus a THIRD §6.11/§7b data-race/ordering shape (after #31
+# flow-clone and #32 single-threaded-block). See PHASE-S1 for the mismatch hypothesis.
+#
+# THE CRUX (RESOLVED at S1 — better than #32): stock Pd `[netreceive -b]` is a COMPLETE
+# BIDIRECTIONAL binary TCP server (x_net.c netreceive_send). So transport is NATIVE and
+# the Go validate-peer oracle (which speaks TCP + dials the peer) is reachable DIRECTLY —
+# NO bridge (unlike TurboWarp's sandbox). GO-gate proven + baked into the toolchain image.
+
+[language]
+id                = "pd"
+name              = "Pure Data (reactive patch / signal-graph dataflow)"
+tier              = "T5"                     # experimental paradigm probe; exploratory ‡ row, not a deployable peer
+package_name      = "entity-core-protocol-pd"
+runtime           = "puredata-toolchain"     # pd 0.55-2, headless `pd -nogui -noaudio`, source-built (not in fedora repos)
+paradigm          = "reactive-patch"         # the axis under test — pull/push message+signal graph, right-to-left / depth-first ordering, no native await
+authoring_surface = "pd-patch"               # source of truth: `.pd` patches (line-oriented text: #N canvas / #X obj / #X connect)
+visualize_first   = false                    # dev is headless; the patch is openable in the Pd GUI afterward to SEE the graph (operator intent)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTHORED-vs-DELEGATED (the whole design). The Pd analog of tcl's cffi seam / #32's
+# browser bundle: everything the substrate genuinely can't hold (bytes/maps/crypto/store)
+# rides a C EXTERNAL over the C-ABI; the §6.5/§6.6 LOGIC is authored on the canvas.
+# ─────────────────────────────────────────────────────────────────────────────
+[codec]
+strategy          = "ffi-c-external"         # delegate canonical CBOR + Ed25519 + SHA-2 + peer-id to a Pd C EXTERNAL wrapping libentitycore_codec
+interop_source    = "ffi-generator/c-abi (libentitycore_codec)"  # the language-agnostic C-ABI; the external is the thinnest possible Pd wrapper (m_pd.h ↔ ec_* calls)
+external_name     = "ecodec"                 # the Pd external class(es): [ecodec] — bytes in/out as opaque handles, readable fields as atoms
+cbor_library      = { name = "c-abi:libentitycore_codec", version = "c-abi-v1", canonical_mode = "delegated" }
+crypto_provider   = "c-abi:libentitycore_codec"   # Ed25519 + SHA-2 + peer-id via ec_* (Pd has no crypto of its own)
+ed25519_library   = { name = "c-abi:libentitycore_codec", version = "c-abi-v1" }
+ed448_library     = { name = "c-abi:libentitycore_codec", version = "c-abi-v1" }  # Ed448 also crosses the C-ABI (same as the hybrid-FFI cohort)
+sha256_library    = { name = "c-abi:libentitycore_codec", version = "c-abi-v1" }
+integer_model     = "delegated-opaque"       # Pd atoms are 32-bit floats — CANNOT hold u64 wire ints; large ints live INSIDE opaque C-external handles, never as Pd atoms (see A-PD-int below)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTHORED SURFACE — the protocol logic as Pd objects + wires on the canvas.
+# ─────────────────────────────────────────────────────────────────────────────
+[authored]
+transport         = "native-netreceive"      # stock [netreceive -b <port>] — bidirectional binary TCP, NO bridge, NO external. §1.6 framing authored in-patch.
+framing           = "patch"                   # §1.6 4-byte-BE length prefix: accumulate bytes (netreceive emits one float/byte), reassemble frames on the canvas
+dispatch          = "patch-spine"             # §6.5 routing as a short dispatch SPINE patch; op-switch + status codes visible
+handshake         = "patch-statemachine"      # §4.1 hello → authenticate as an explicit connection-lifecycle state machine (the reactive-mismatch stress — see PHASE-S1)
+handlers          = "per-handler-abstraction" # each §6.6 handler = one .pd ABSTRACTION (subpatch file) — adding a handler = adding an abstraction (the #32 `define dispatch-<handler>` analog)
+handler_resolution= "patch-treewalk"          # §6.6 resolution authored as the VISIBLE longest-prefix-first tree walk on the canvas, NOT a hidden resolve() seam (FLOW-DESIGN guard)
+opaque_handles    = "receive-symbol / ptr"    # values Pd can't hold (byte buffers, maps, keys, big ints) ride as C-external-owned handles; readable fields are plain float/symbol atoms
+
+[error_model]
+style             = "status-envelope"         # Pd objects don't throw — errors are EXECUTE_RESPONSE / status-code envelopes routed like any response (fail-closed guard ladders on the canvas)
+
+[async]
+style             = "message-graph"           # Pd's native model: depth-first right-to-left message scheduling on one thread + the clock/poll scheduler; per-connection state keyed by socket
+concurrency_shape = "single-thread-reactive"  # the THIRD §7b shape after #31 (flow-clone) and #32 (single-threaded-block): a reactive message graph. §6.11 multi-connection demux is the sharp edge.
+
+[build]
+system            = "pd-patches + c-external"  # gcc-compile the [ecodec] C external (.pd_linux) against m_pd.h + libentitycore_codec; author the .pd patches
+headless_runner   = "pd -nogui -noaudio"       # proven headless (GO gate); the Pd GUI opens the same patches for visualization
+interpreter_harness= "harness/run-patch.mjs (planned)"  # S4: an oracle-driven interpreter over the REAL .pd text — the #32 run-blocks.mjs analog (see PHASE-S1 / PATCH-DESIGN)
+
+[packaging]
+target            = ".pd patches + [ecodec] C external (.pd_linux) + run-s4.sh"
+license           = "Apache-2.0"
+publish           = "deferred"
+
+[container]
+toolchain         = "puredata-toolchain"       # containers/puredata-toolchain/ — pd 0.55-2 source-built (SHA-pinned), + codec C-ABI build deps, + the baked GO-gate self-test
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFORMANCE — reachable DIRECTLY (native TCP), the clean contrast to #32's bridge.
+# ─────────────────────────────────────────────────────────────────────────────
+[conformance]
+oracle_reachable  = "direct"                  # stock [netreceive -b] is a real TCP server the Go oracle dials directly — no bridge, no sandbox
+gate              = "validate-peer --profile core"   # the extension-free categories; oracle pinned per docs/status handoff (cc1970f), rebuild from entity-core-go HEAD if stale
+harness           = "harness/run-patch.mjs"   # oracle-driven interpreter over the real .pd graph → a real conformance number each iteration; a genuine `pd` run is the final confirmation caveat
+default_scope     = "oracle-gated"            # unlike #32, the default IS the oracle gate (native transport makes it free); visualization is the bonus, not the fallback

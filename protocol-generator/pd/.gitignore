@@ -1,0 +1,3 @@
+build/
+*.pd_linux
+*.o

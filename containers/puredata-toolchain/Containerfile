@@ -1,0 +1,115 @@
+# Pure Data (Pd) toolchain image — builds the REACTIVE-PATCH visual-paradigm peer
+# (protocol-generator/pd/) per its profile.toml. Peer #33, the third and final clean
+# visual-paradigm probe (after Node-RED #31 flow-based, TurboWarp #32 imperative-block).
+#
+# REACTIVE-PATCH PROBE: the protocol is authored IN the Pd patch (the §6.5/§5.2 dispatch
+# sequence, status codes, op-switch, guard ladder, §6.6 handler tree-walk visible on the
+# canvas) — NOT wrapped behind one delegated dispatch() object (the FLOW-DESIGN wrapper-
+# guard). Transport is NATIVE stock Pd (see the GO-gate self-test below). The only seam is
+# canonical CBOR + Ed25519/SHA + peer-id, delegated to a C EXTERNAL over the C-ABI
+# (libentitycore_codec) — everything the substrate genuinely can't do (bytes/maps/crypto/
+# store), nothing more. This Containerfile is the pinned recipe.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# S1 FINDING (2026-07-14): Pure Data is NOT packaged in fedora:43 (fedora / updates /
+# openh264 — `dnf search puredata` → no matches; not under `pd`, `pure-data` either).
+# The handoff assumed `dnf install puredata`; it does not exist. → SOURCE BUILD, pinned
+# tag + SHA256 (the tcl-toolchain source-build discipline). Only the CORE (`src/`) is
+# built: the bundled DSP externals in `extra/` (fiddle~, …) fail to compile on modern
+# gcc (`#define fsqrt sqrt` conflicts with the C `sqrt` prototype) and are NOT needed —
+# the peer uses no DSP objects. `make -C src` builds the self-sufficient `pd` binary.
+#
+# GO-GATE (proven at authoring, re-asserted as a build-time self-test below):
+#   * `pd -nogui -noaudio` boots headless (no X server) and runs a `.pd` patch, servicing
+#     the network scheduler on the system clock.
+#   * `[netreceive -b <port>]` accepts a raw TCP connection and emits each received byte
+#     as a float (byte-clean incl. 0x00 / 0xFF) — native binary framing, NO bridge.
+#   * A list sent back to `[netreceive]`'s inlet is written to the SAME TCP connection
+#     (stock Pd is bidirectional: x_net.c `netreceive_send`, registered via
+#     class_addmethod "send" + class_addlist; "send only works for TCP"). So stock Pd is
+#     a complete binary TCP server with NO external (no iemnet/mrpeach needed). ← the GO.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Ages at authoring 2026-07-14:
+#   Pure Data   0.55-2  (2024-09, ~10mo)  — the current stable release line. Source
+#                                           tarball from the pure-data/pure-data GitHub
+#                                           tag, SHA256-verified (fail closed on
+#                                           mismatch). Core-only build (`make -C src`).
+#     tarball SHA256: 2b9cda300637c2c74627a6b0003ede52dba2f5e028d17ed5e983da764e641091
+#   autoconf/automake/libtool/gettext  image-provided — needed by Pd's ./autogen.sh.
+#   libsodium   image-provided (static)  — the C-ABI codec external (S2) statically +
+#                                          privately links libsodium; deps staged here.
+#   cmake/gcc   image-provided           — build the C-ABI codec (libentitycore_codec)
+#                                          and compile the Pd C external against m_pd.h
+#                                          (kept in the source tree at $PD_SRC).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (S2, not S1):
+#   podman build --memory=4g --memory-swap=4g \
+#     -t entity-core-keystone/puredata-toolchain:latest \
+#     -f containers/puredata-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps.
+#   autoconf/automake/libtool/gettext-devel: Pd's ./autogen.sh regenerates configure.
+#   gcc/make/pkgconfig: build the core pd binary, the C-ABI codec, and the Pd C external.
+#   cmake + libsodium-static + libsodium-devel: the C-ABI codec (libentitycore_codec)
+#     CMake statically + privately links libsodium (S2's codec/crypto seam).
+#   python3: the GO-gate self-test client + the S4 oracle-driven `.pd` interpreter harness.
+RUN dnf install -y \
+        autoconf automake libtool gettext-devel \
+        gcc gcc-c++ make cmake pkgconfig \
+        libsodium-static libsodium-devel \
+        python3 \
+        git curl ca-certificates findutils which glibc-langpack-en \
+    && dnf clean all
+
+# UTF-8 locale — Pd argv + symbol handling and text vectors want it (same locale lesson
+# the prolog/tcl images hit).
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# ── Fetch + verify the pinned Pd source (fail closed on SHA mismatch) ────────
+ARG PD_VERSION=0.55-2
+ARG PD_SHA256=2b9cda300637c2c74627a6b0003ede52dba2f5e028d17ed5e983da764e641091
+ENV PD_PREFIX=/opt/pure-data
+ENV PD_SRC=/opt/pure-data/src
+RUN curl -fsSL -o /tmp/pd.tar.gz \
+        "https://github.com/pure-data/pure-data/archive/refs/tags/${PD_VERSION}.tar.gz" \
+    && echo "${PD_SHA256}  /tmp/pd.tar.gz" | sha256sum -c - \
+    && mkdir -p "${PD_PREFIX}" \
+    && tar -xzf /tmp/pd.tar.gz -C "${PD_PREFIX}" --strip-components=1 \
+    && rm -f /tmp/pd.tar.gz
+
+# ── Build the CORE pd binary only (skip the broken extra/ DSP externals) ─────
+# No audio backends: the peer only touches the network + message scheduler. `make -C src`
+# builds src/pd (self-sufficient for -nogui) plus src/pdsend + src/pdreceive (reference
+# TCP clients, handy for harness tests). Symlink pd onto PATH.
+RUN cd "${PD_PREFIX}" \
+    && ./autogen.sh \
+    && ./configure --disable-alsa --disable-jack --disable-portaudio \
+                   --disable-fftw --disable-oss \
+    && make -j"$(nproc)" -C src \
+    && ln -sf "${PD_SRC}/pd"        /usr/local/bin/pd \
+    && ln -sf "${PD_SRC}/pdsend"    /usr/local/bin/pdsend \
+    && ln -sf "${PD_SRC}/pdreceive" /usr/local/bin/pdreceive
+
+# ── Verify the Pd pin + headless boot ────────────────────────────────────────
+RUN pd -version 2>&1 | grep -q "Pd-0.55.2" \
+    && echo "pd version OK ($(pd -version 2>&1 | head -1))"
+
+# ── GO-GATE self-test: headless boot + binary TCP round-trip (stock Pd only) ─
+# Bakes the S1 GO gate into every image build: an echo patch ([netreceive -b] -> [list]
+# -> back into netreceive) must return the exact bytes sent (incl. 0x00 / 0xFF). FATAL on
+# mismatch — the image is only valid if the native binary TCP server round-trips clean.
+COPY containers/puredata-toolchain/gogate-selftest.sh /usr/local/bin/gogate-selftest.sh
+RUN chmod +x /usr/local/bin/gogate-selftest.sh && /usr/local/bin/gogate-selftest.sh
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="puredata-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.puredata="0.55-2"
+LABEL org.entity-core-keystone.experimental="reactive-patch-visual-paradigm-probe"
+
+CMD ["/bin/bash"]
