@@ -1,0 +1,126 @@
+# SQLite toolchain image — builds the SQL (authority-as-query) peer
+# (protocol-generator/sql/) per its profile.toml. This is a SPEC-DISCOVERY PROBE,
+# not a substrate probe: the axis under test is how much of the §5/§6.6 authority
+# INTERIOR stays expressible as SQL queries vs. leaks to the host seam.
+#
+# AUTHORITY-AS-QUERY PROBE: the §5.2 verify ladder, the §5.5 delegation chain-walk
+# (WITH RECURSIVE), K-of-N multisig (GROUP BY ... HAVING count >= k), and §6.6
+# longest-prefix handler resolution (ORDER BY length(pattern) DESC LIMIT 1) are
+# authored as ACTUAL, LEGIBLE SQL queries over grant/token/handler tables — NOT
+# collapsed behind one host call with SQLite as decoration (the FLOW-DESIGN wrapper-
+# guard, carried from the visual-paradigm probes). The FFI seam is drawn ONLY at what
+# SQL genuinely cannot do: sockets, canonical CBOR bytes, Ed25519/SHA, the store's
+# byte I/O. Crypto is registered as SQLite APPLICATION-DEFINED FUNCTIONS
+# (ec_sha256/ec_ed25519_verify callable FROM SQL) so even the verify SEQUENCING stays
+# in SQL and the seam tightens to the primitive.
+#
+# HOST: a thin C driver (SQLite IS C; the codec is a C-ABI; sockets are C) — one
+# seam language for transport + framing + FFI, so the authority interior is the only
+# thing authored in SQL. The number-model tax (SQLite INTEGER is 64-bit SIGNED → the
+# uint64 head-form) lives in the host codec seam, which owns the wire bytes anyway.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# S1 FINDING (2026-07-16): SQLite is source-built from the pinned AMALGAMATION
+# (single-file sqlite3.c + sqlite3.h) — the clean supply-chain pin (a documented
+# SHA-256 per release), and it lets the C host compile SQLite IN (full control of the
+# engine version, no dependence on the distro libsqlite3). The fedora:43-packaged
+# sqlite would pin only by NVR; the amalgamation SHA is the tighter S11 pin (the
+# puredata/tcl source-build discipline). Recursive CTEs + application-defined
+# functions are core SQLite features (no compile flags needed).
+#
+# GO-GATE (proven at authoring, re-asserted as a build-time self-test below):
+#   1. `pd`-style headless boot: SQLite runs a RECURSIVE CTE (the §5.5 chain-walk
+#      primitive) — sum(1..10)=55 fixpoint.
+#   2. The host seam reaches libentitycore_codec AND crypto is callable FROM SQL:
+#      `SELECT hex(sha256(x'616263'))` == SHA-256("abc") KAT, where sha256() is an
+#      application-defined function backed by ec_sha256.
+#   3. A loopback TCP echo of a payload incl. 0x00/0xFF round-trips byte-identical
+#      (framed binary CBOR carries embedded NULs/high bytes; the transport must be
+#      8-bit clean). ← the GO.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Ages at authoring 2026-07-16:
+#   SQLite 3.50.4  (2025-07-30, ~11.5 mo)  — current 3.50 stable line. Amalgamation
+#                                            zip from sqlite.org, SHA256-verified
+#                                            (fail closed on mismatch).
+#     amalgamation SHA256: 1d3049dd0f830a025a53105fc79fd2ab9431aea99e137809d064d8ee8356b032
+#     SQLITE_SOURCE_ID:    2025-07-30 19:33:53 4d8adfb30e03f9cf27f800a2c1ba3c48fb4ca1b0...
+#   libsodium   image-provided (static)  — libentitycore_codec statically + privately
+#                                          links libsodium (the codec/crypto seam).
+#   cmake/gcc   image-provided           — build libentitycore_codec (the C-ABI codec)
+#                                          and compile the C host / GO-gate self-test.
+#   python3     image-provided           — S4 harness scratch client / oracle glue.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build:
+#   podman build --memory=4g --memory-swap=4g \
+#     -t entity-core-keystone/sqlite-toolchain:latest \
+#     -f containers/sqlite-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps.
+#   gcc/gcc-c++/make/cmake/pkgconfig: build the C-ABI codec + compile the C host.
+#   libsodium-static + libsodium-devel: the C-ABI codec statically links libsodium.
+#   unzip/curl/ca-certificates: fetch + unpack the pinned SQLite amalgamation.
+#   python3: S4 harness scratch client; ad-hoc oracle glue.
+RUN dnf install -y \
+        gcc gcc-c++ make cmake pkgconfig \
+        libsodium-static libsodium-devel \
+        unzip curl ca-certificates python3 \
+        git which findutils glibc-langpack-en \
+    && dnf clean all
+
+# UTF-8 locale — string/text vectors want it (the prolog/tcl/pd locale lesson).
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# ── Fetch + verify the pinned SQLite amalgamation (fail closed on SHA mismatch) ─
+ARG SQLITE_VERSION=3.50.4
+ARG SQLITE_AMALG=3500400
+ARG SQLITE_YEAR=2025
+ARG SQLITE_SHA256=1d3049dd0f830a025a53105fc79fd2ab9431aea99e137809d064d8ee8356b032
+ENV SQLITE_PREFIX=/opt/sqlite
+RUN curl -fsSL -o /tmp/sqlite.zip \
+        "https://www.sqlite.org/${SQLITE_YEAR}/sqlite-amalgamation-${SQLITE_AMALG}.zip" \
+    && echo "${SQLITE_SHA256}  /tmp/sqlite.zip" | sha256sum -c - \
+    && unzip -q /tmp/sqlite.zip -d /tmp \
+    && mkdir -p "${SQLITE_PREFIX}" \
+    && cp "/tmp/sqlite-amalgamation-${SQLITE_AMALG}/sqlite3.c" \
+          "/tmp/sqlite-amalgamation-${SQLITE_AMALG}/sqlite3.h" "${SQLITE_PREFIX}/" \
+    && rm -rf /tmp/sqlite.zip "/tmp/sqlite-amalgamation-${SQLITE_AMALG}"
+
+# ── Verify the SQLite pin ──────────────────────────────────────────────────────
+RUN grep -q '"3.50.4"' "${SQLITE_PREFIX}/sqlite3.h" \
+    && echo "sqlite pin OK ($(grep -m1 'define SQLITE_VERSION ' ${SQLITE_PREFIX}/sqlite3.h))"
+
+# ── Build the C-ABI codec (libentitycore_codec.so) from source ─────────────────
+# Self-contained image so the baked GO-gate KAT is genuine (not a runtime mount).
+# Same source + target the pd/tcl seams use: cmake over entity-core-codec-ffi-c.
+ENV CODEC_PREFIX=/opt/codec
+COPY ffi-generator/c-abi/entity-core-codec-ffi-c /tmp/codec-src
+# Build out-of-source in a FRESH dir (the COPY may carry a stale host-side build/
+# cache whose CMakeCache.txt points at the host path — cmake refuses to reuse it).
+RUN rm -rf /tmp/codec-src/build /tmp/codec-build \
+    && cmake -S /tmp/codec-src -B /tmp/codec-build -DCMAKE_BUILD_TYPE=Release >/dev/null \
+    && cmake --build /tmp/codec-build --target entitycore_codec -j"$(nproc)" >/dev/null \
+    && mkdir -p "${CODEC_PREFIX}/lib" "${CODEC_PREFIX}/include" \
+    && cp /tmp/codec-build/libentitycore_codec.so "${CODEC_PREFIX}/lib/" \
+    && cp /tmp/codec-src/include/entitycore_codec.h "${CODEC_PREFIX}/include/" \
+    && rm -rf /tmp/codec-src /tmp/codec-build \
+    && echo "codec built: $(ls -la ${CODEC_PREFIX}/lib/libentitycore_codec.so)"
+
+# ── GO-GATE self-test: recursive CTE + ec_sha256-from-SQL + 8-bit-clean TCP ────
+# Bakes the S1 GO gate into every image build. FATAL on any failure — the image is
+# only valid if all three checks pass. Also runnable standalone in the image.
+COPY containers/sqlite-toolchain/gogate-selftest.c  /usr/local/lib/gogate-selftest.c
+COPY containers/sqlite-toolchain/gogate-selftest.sh /usr/local/bin/gogate-selftest.sh
+RUN chmod +x /usr/local/bin/gogate-selftest.sh && /usr/local/bin/gogate-selftest.sh
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="sqlite-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.sqlite="3.50.4"
+LABEL org.entity-core-keystone.experimental="authority-as-query-declarative-probe"
+
+CMD ["/bin/bash"]

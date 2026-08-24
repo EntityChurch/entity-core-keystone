@@ -1,0 +1,184 @@
+# entity-core-protocol-sql — Language Profile
+#
+# THE AUTHORITY-AS-QUERY PROBE (declarative / relational-query axis). NOT a wire-axis
+# discovery and NOT a substrate probe — the wire is saturated by the C peer + the
+# C-ABI codec, and the concurrency axis is host-owned. The axis under test is
+# SPEC-shaped: **how much of the §5/§6.6 authority INTERIOR stays expressible as SQL
+# queries vs. leaks to the host seam** — and whether entity-core's capability/
+# delegation model has an implicit relational structure that imperative peers obscure.
+# Authorization is historically a database problem (trust-management logics like
+# SecPAL/Binder ARE query languages); grant-scope matching, the §5.5 delegation
+# chain-walk, K-of-N threshold, and §6.6 longest-prefix resolution are relational/set
+# operations. The FINDING (co-equal with a green gate) is the SEAM SPLIT itself.
+# See arch/PROFILE-RATIONALE.md + research/evaluations/declarative-query-viability.md.
+#
+# *** THE WRAPPER-GUARD (load-bearing — this is what makes it a probe, not a wrapper) ***
+# If §5 collapses to one host call with SQLite as decoration, the probe yields NOTHING.
+# So this profile COMMITS: the authority interior (§5.2 verify ladder, §5.5 chain-walk
+# as WITH RECURSIVE, K-of-N as GROUP BY ... HAVING count(*) >= k, §6.6 resolution as
+# ORDER BY length(pattern) DESC LIMIT 1) is authored as ACTUAL, LEGIBLE SQL queries
+# over grant/token/handler tables. The FFI seam is drawn ONLY at what SQL genuinely
+# cannot do (sockets, canonical CBOR bytes, Ed25519/SHA, the store's byte I/O). Values
+# SQL can't hold (signatures, hashes, keys) ride as OPAQUE host handles / blobs;
+# readable fields (paths, scopes, timestamps, depths, thresholds) are REAL COLUMNS.
+# This is the FLOW-DESIGN decomposition lesson (Node-RED #31 / TurboWarp #32 / Pd #33)
+# applied to a query substrate — decomposing the folded logic is what SURFACES the
+# finding.
+#
+# Profile authority (PROMPT-CONSTANTS): S2+ MUST use the values declared here. A "TBD"
+# value is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase. No blocking
+# TBDs remain at S1 exit.
+
+[language]
+id                = "sql"
+name              = "SQL (SQLite / relational-query authority engine)"
+tier              = "declarative-query-probe"   # exploratory ‡ row, seam-hybrid; NOT a Tier-1..5 cohort slot and NOT a deployable independent peer
+package_name      = "entity-core-protocol-sql"  # keystone peer id
+runtime           = "sqlite-toolchain"          # references containers/sqlite-toolchain/Containerfile
+query_engine      = "SQLite 3.50.4"             # embedded, in-process, source-built from the pinned amalgamation (SHA-pinned; see [deps])
+paradigm          = "relational-query"          # the axis under test: the authority verdict authored as SQL SELECTs over grant/token/handler tables
+authoring_surface = "sql"                        # source of truth: .sql files (the ladder / chain-walk / resolution queries) + the thin C host
+visualize_first   = false                        # headless; the value is the LEGIBILITY of the SQL, not a GUI
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTHORED-vs-DELEGATED (the whole design). The SQL analog of pd's [ecodec] C
+# external / tcl's cffi seam: everything the substrate genuinely can't hold
+# (bytes/CBOR/crypto/sockets/store I/O) rides the host; the §5/§6.6 LOGIC is SQL.
+# ─────────────────────────────────────────────────────────────────────────────
+[codec]
+strategy          = "ffi-c-host"                # a thin C host links libentitycore_codec; SQLite links IN as the amalgamation. One seam language (C).
+interop_source    = "ffi-generator/c-abi (libentitycore_codec)"  # the language-agnostic C-ABI; the host is the thinnest possible sqlite3 <-> ec_* bridge
+cbor_library      = { name = "c-abi:libentitycore_codec", version = "c-abi-v1.1", canonical_mode = "delegated" }  # canonical ECF CBOR — SQL cannot assemble bytes
+crypto_provider   = "c-abi:libentitycore_codec"  # Ed25519 + SHA-2 + peer-id via ec_* (SQL/SQLite has no crypto)
+ed25519_library   = { name = "c-abi:libentitycore_codec", version = "c-abi-v1.1" }
+ed448_library     = { name = "c-abi:libentitycore_codec", version = "c-abi-v1.1" }  # Ed448 crosses the C-ABI (the hybrid-FFI cohort default)
+sha256_library    = { name = "c-abi:libentitycore_codec", version = "c-abi-v1.1" }
+# THE TIGHT-SEAM MOVE: crypto primitives are registered as SQLite APPLICATION-DEFINED
+# FUNCTIONS (sqlite3_create_function) — sha256(blob), ed25519_verify(pub,msg,sig),
+# content_hash(...) — so they are callable FROM SQL. This keeps even the verify
+# SEQUENCING inside the SQL ladder (the §5.2 verdict query calls ed25519_verify()
+# itself); the host only registers the C primitive. Proven at S1 (GO-gate CHECK 2:
+# SELECT hex(sha256(x'616263')) == the SHA-256("abc") KAT, via ec_sha256).
+crypto_callable_from_sql = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NUMBER MODEL — the tax location.
+# ─────────────────────────────────────────────────────────────────────────────
+[number_model]
+sqlite_integer    = "int64-signed"              # SQLite INTEGER is 64-bit SIGNED. It CANNOT natively represent uint64 [2^63, 2^64-1].
+head_form_tax     = "host-codec-seam"           # the CBOR integer head-form + the uint64 boundary are handled in the HOST codec seam (which owns the wire bytes anyway) — NOT in SQL. SQL sees already-decoded, in-range integers as columns; out-of-int64-range wire ints ride as opaque host-owned blobs/handles, never as SQLite INTEGER.
+float_model       = "host-codec-seam"           # CBOR mt7 f16/f32/f64 shortest-float ladder is host-side (libentitycore_codec). SQLite REAL is IEEE-754 f64 but the wire shortest-form decision stays in the codec seam.
+in_sql_numbers    = "authority-domain only"     # numbers SQL DOES compute over: chain depth (§5.5 / §4.10 depth cap 64), K-of-N threshold + signer counts, timestamps (§5.10 evaluation-time as a Layer-1 input; ms-precision — A-PD-016), scope/path lengths (§6.6 longest-prefix). All comfortably within int64.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTHORED SURFACE — the protocol logic. THE HOST (C) owns the imperative shell;
+# SQL owns the authority interior. This split IS the finding to characterize at S3.
+# ─────────────────────────────────────────────────────────────────────────────
+[authored]
+# --- HOST (C), the imperative shell — what SQL genuinely can't do ---
+transport         = "host-c-sockets"            # BSD sockets in C (proven 8-bit clean at S1 GO-gate CHECK 3, incl. 0x00/0xFF)
+framing           = "host-c"                     # §1.6 4-byte-BE length prefix framing + frame-cap (16 MiB); host assembles frames before SQL sees anything
+dispatch_shell    = "host-c"                     # §6.5 receive -> decode -> bind facts into tables -> run the verdict query -> build response. The SEQUENCING scaffold is host; the DECISION is SQL.
+handshake         = "host-c + sql"               # §4.1 hello/authenticate connection-lifecycle state machine is host-C (stateful-sequential, fights SQL); the authenticate-time capability-grant VERDICT is a SQL query
+store_io          = "host-c"                     # the store's byte I/O (persisting/looking up entities by hash) is host; the GRANT/TOKEN/HANDLER relational projection over it is SQL tables/views
+# --- SQL, the authority interior — the wrapper-guard commitments ---
+verify_ladder     = "sql-query"                 # §5.2 verdict as a SQL CASE ladder (401/403/200 trichotomy) that CALLS ed25519_verify()/content_hash() app-defined functions inline — the ladder ORDER and the sequencing live in SQL
+chain_walk        = "sql-recursive-cte"         # §5.5 delegation chain-walk as WITH RECURSIVE over the capability chain (the canonical transitive-closure pattern); depth-bounded at 64 (§4.10). GO-gate CHECK 1 proved recursive CTEs work.
+scope_match       = "sql-glob-join"             # grant-scope matching as a JOIN + GLOB/LIKE over path_prefix columns (§5.5a: bare-star is granter-local; the universal form needs the absolute all-peers pattern — A-PD-017)
+k_of_n            = "sql-having-count"           # §3.6 / multisig K-of-N as GROUP BY ... HAVING count(DISTINCT signer) >= :threshold — the aggregate the substrate was built for
+handler_resolution= "sql-longest-prefix"        # §6.6 resolution as SELECT ... WHERE :path GLOB pattern||'*' ORDER BY length(pattern) DESC LIMIT 1 — the longest-prefix-first walk authored AS a query, NOT a hidden host resolve()
+opaque_handles    = "blob / rowid"              # values SQL can't hold (signatures, hashes, public keys, raw CBOR, out-of-int64 wire ints) ride as opaque BLOB columns or host-owned handles keyed by rowid; readable fields are plain TEXT/INTEGER columns
+
+[error_model]
+style             = "status-envelope"           # SQL has no exceptions to throw across the seam — the verdict query RETURNS a (status, code) row; the host renders it into an EXECUTE_RESPONSE. Fail-closed: any host-root error class (a SQL error, a NULL where a verdict was due, an FFI failure) maps to 500, never a hang (§4.9(c) deliver-or-signal — the Oz/Smalltalk cohort lesson).
+verdict_shape     = "(status TEXT, code TEXT)"  # the query's output contract: one row, e.g. ('403','capability_expired') / ('200','ok')
+sql_error_maps_to = "500 internal"              # a prepare/step failure or unexpected NULL is caught in the host and rendered 500 — the resilience frame catches the ROOT error class
+
+[async]
+style             = "host-single-thread-select" # concurrency is HOST-OWNED, not a new §7b shape (documented, not a finding). The host is a single-threaded select/poll loop (the COBOL/Rexx shape); each frame dispatched to completion before the next.
+concurrency_shape = "host-owned (not a new axis)" # SQL/SQLite adds no new §7b structural shape here. NOTE the deep-dive's bonus hypothesis to test at S3/S4: SQLite's TRANSACTION model (serialized writes) is a genuine structural store-safety story IF the store is SQLite-backed — characterize whether the store is in-SQLite (transaction = structural §7b) or host-memory (host-serialized).
+store_safety      = "structural (single host thread) + optional sqlite-transaction"  # §7b: one host thread => no concurrent store access => race-free; if the entity store is a SQLite table, writes are additionally transaction-serialized
+demux             = "request_id correlation map (host)"  # §6.11 handler-initiated outbound reentry is a host-side correlation-map pump (the non-actor/non-CSP tax); a bounded synchronous send+await by request_id
+frame_cap         = 16777216                    # §1.6 16 MiB frame cap enforced in the host BEFORE assembly — load-bearing on a single-thread host (the #32 t2_2 lesson: an oversize frame stalls the loop and cascades into downstream timeouts)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTHORITY-INTERIOR EXPRESSIBILITY (the probe's central deliverable — S3 FILLS IN).
+# This is the STUB the S3 agent completes as it authors: for each authority element,
+# the HYPOTHESIS at S1 (expressed cleanly in SQL / awkward / leaks to host) and, at
+# S3, the OUTCOME + the spec-shaped finding (logged to SPEC-AMBIGUITY-LOG.md). The
+# finding is the deliverable, not a byproduct. Fields left as "s3-open" are the work.
+# ─────────────────────────────────────────────────────────────────────────────
+#   OUTCOME legend: expressed-cleanly / clean-with-edge / awkward / leaked-to-host / seam.
+#   Filled at S3 (2026-07-16) from the RUNNING artifact — src/sql/*.sql exercised over real
+#   Ed25519 facts by the authority harness (13/13) + run live in the peer (connectivity 22·0F PASS).
+[authority_interior_expressibility]
+s52_verify_ladder      = { hypothesis = "clean — a CASE ladder over app-defined-function calls; the 401/403/200 trichotomy and its ORDER express directly", outcome = "expressed-cleanly", finding = "The ENTIRE §5.2 verify_request + §6.5 decision is ONE legible CASE ladder (verify_ladder.sql) over CTEs, arms in the spec's algorithm order, crypto (ed25519_verify) called INLINE. The relational encoding makes the spec's IMPLICIT arm precedence EXPLICIT + auditable — a legibility GAIN over the prose. Nuance: compound-failure precedence between the grantee-resolve (401) and reachability (403) arms is a documented ordering choice (A-SQL-010), both fail-closed." }
+s55_chain_walk         = { hypothesis = "clean — recursive CTE is the CANONICAL transitive-closure/delegation pattern; this is SQL's home turf (GO-gate proved recursive CTEs run)", outcome = "expressed-cleanly", finding = "chain_walk.sql WITH RECURSIVE IS collect_authority_chain (§5.5) verbatim — leaf→root over parent pointers, depth counter in the recursion, reachability = the parent-null reached_root flag. The §4.10(b) depth-64 STRUCTURAL pre-check (→400, before the O(depth) authz walk) is `max(depth)>64` over the same CTE. SQL's strongest home-turf fit, confirmed running." }
+scope_matching         = { hypothesis = "clean — JOIN + GLOB over path_prefix; watch §5.5a bare-star granter-locality (A-PD-017) and case/hex normalization (A-CL-009)", outcome = "clean-with-edge", finding = "matches_scope = JOIN + GLOB over the normalized grant_scope; §5.5a granter-frame baked in via the granter_peer_id column (a foreign-granted bare '*' canonicalizes to /{granter}/*, never universal). TWO findings: A-SQL-007 (GLOB '*' is not segment-anchored, so a '/*/specific' peer-wildcard would over-match — byte-exact for the core pattern set: '*','/*/*',exact,trailing-subtree) and A-SQL-008 (the id-scope-vs-path-scope split the spec's §3.6 gives maps onto TWO SQL strategies — id dims match RAW, path dims canonicalize — SHARPER than the prose's single uniform matches_scope)." }
+k_of_n_multisig        = { hypothesis = "clean — GROUP BY ... HAVING count(DISTINCT signer) >= k; the aggregate SQL exists for. WATCH the accept-path: multisig oracle category was rejection-only (vacuous-green trap) — add an accept-path unit test SQL can't be let skip", outcome = "expressed-cleanly", finding = "k_of_n.sql = GROUP BY s.target HAVING count(DISTINCT signer) >= threshold, ed25519_verify inline — the single sharpest substrate fit (the aggregate SQL was built for). The MANDATORY 2-of-3 ACCEPT (A-SQL-004) the rejection-only oracle can't cover is proven GREEN in the harness (multisig_2of3_ACCEPT + k_of_n_having_accept + 1of3 REJECT)." }
+s66_handler_resolution = { hypothesis = "clean — ORDER BY length(pattern) DESC LIMIT 1 longest-prefix; author it AS the visible query, not a host if-ladder (FLOW-DESIGN guard)", outcome = "expressed-cleanly", finding = "resolve.sql = WHERE :uri=path OR :uri GLOB path||'/*' ORDER BY length(path) DESC LIMIT 1 — the §6.6 longest-prefix walk AS one visible query (not a host if-ladder). Runs in the LIVE host (the 404 path in the peer calls resolve.sql), not only the harness — wrapper-guard held end-to-end." }
+s510_verdict_time      = { hypothesis = "clean-ish — §5.10 evaluation timestamp is sampled ONCE per verdict (Layer-1 input) and passed AS a bound parameter :now; the verdict is a pure function of (chain, :now). ms-precision required (A-PD-016)", outcome = "expressed-cleanly", finding = "now_ms is a bound COLUMN on the single request row, sampled once at request entry; the verdict is a pure function of (facts, now_ms) — §5.10/N8 determinism is structural (same facts+now → same row). ms-precision carried (A-PD-016). Temporal rungs read the column, never re-sample." }
+dispatch_sequencing    = { hypothesis = "LEAKS to host — §6.5 op-switch / connection lifecycle is stateful-sequential; SQL fights it (a CASE is awkward, no sequencing). Expected host-side. This leak IS half the seam-split finding", outcome = "leaked-to-host", finding = "CONFIRMED as predicted. The §6.5 op-switch + frame sequencing + connection lifecycle is the host state machine (peer.c dispatch_frame); SQL owns only the DECISION, invoked once per request. The clean line: everything STATEFUL-SEQUENTIAL leaks; everything that is a PURE FUNCTION of the projected facts stays SQL. This split IS the A-SQL-003 seam-split answer." }
+handshake_state        = { hypothesis = "LEAKS to host — §4 handshake connection state is imperative; host-only", outcome = "leaked-to-host", finding = "CONFIRMED. §4.1/§4.6 handshake state + PoP sequencing (nonce-echo, sig-verify, identity-binding) is host-C (per-connection conn_state). Only the §4.4 authenticate-time GRANT verdict is SQL-shaped — here delivered as the SHOULD-floor (host-built); a populated §6.9a policy table would move that lookup INTO SQL (a natural authority-as-query extension, deferred with the policy handler)." }
+codec_crypto_io        = { hypothesis = "SEAM — canonical CBOR + Ed25519/SHA + sockets + store byte I/O are host/libentitycore_codec by definition; crypto re-enters SQL as app-defined functions", outcome = "seam (confirmed S1/S2, exercised S3)", finding = "The seam boundary is drawn at bytes/CBOR/crypto/sockets/store-IO; crypto RE-ENTERS SQL as app-defined functions (ed25519_verify called from the verify ladder + k_of_n + root-trust). At S3 those functions are exercised inside the running queries over real signatures — the tight-seam move pays off: the verify SEQUENCING stays in SQL, only the primitive crosses the C-ABI." }
+
+[build]
+system            = "sql files + c host + amalgamated sqlite"  # gcc-compile the C host (links libentitycore_codec + the SQLite amalgamation + the .sql query files as embedded strings/resources); author the .sql
+headless_runner   = "the compiled C host binary (peer), --name NAME identity, --validate for the conformance handlers"
+build_tool        = "gcc + cmake (codec) — no package-manager build; the C host is a single-artifact compile"
+build_command     = "make peer   # compile the C host against sqlite3.c + libentitycore_codec, embedding the .sql"
+test_command      = "make check  # GO-gate self-test + the S2 wire-conformance differential"
+sql_dialect       = "sqlite-3.50"               # recursive CTEs, application-defined functions, GLOB, GROUP BY/HAVING — all core SQLite (no extensions/flags)
+
+[layout]
+src_dir           = "src/"                       # the .sql query files (verify_ladder.sql, chain_walk.sql, resolve.sql, k_of_n.sql, schema.sql) + the C host (peer.c, seam.c)
+sql_dir           = "src/sql/"                   # the authority interior — the legible SQL queries (the probe's product)
+host_dir          = "src/host/"                  # the thin C seam: sockets, §1.6 framing, sqlite3_create_function crypto registration, ec_* FFI
+status_dir        = "status/"                    # PHASE-S*.md, CONFORMANCE-REPORT.{md,json}, SPEC-AMBIGUITY-LOG.md
+entry_point       = "src/host/peer.c"            # the C host main: socket loop -> frame -> bind facts -> run verdict query -> respond
+
+[naming]
+sql_identifiers   = "snake_case"                # SQL convention: snake_case tables/columns (grant, token, handler; path_prefix, granted_by, expires_at). Mirrors the spec's snake_case data-key convention (0.7.77 naming normalization).
+table_names       = "singular snake_case"       # grant, token, handler, signature, chain
+c_functions       = "snake_case"                # host C: fn_sha256, bind_request, run_verdict (the C peer/cohort convention)
+sql_file_names    = "snake_case.sql"            # verify_ladder.sql, chain_walk.sql, resolve.sql
+app_defined_fns   = "snake_case (SQL-callable)" # sha256, ed25519_verify, content_hash — the crypto primitives exposed to SQL
+
+[packaging]
+target            = ".sql query files + the C host binary + run-s4.sh"
+license           = "Apache-2.0"                 # S9 default (explicit patent grant). SQLite is public-domain; libentitycore_codec is Apache-2.0.
+publish           = "0.1.0-pre"                  # probe-tier, seam-hybrid — publish as a pre-release per the handoff; deferred until the S4 gate is green
+
+[container]
+toolchain         = "sqlite-toolchain"           # containers/sqlite-toolchain/ — SQLite 3.50.4 amalgamation (SHA-pinned), libentitycore_codec built from source, + the baked GO-gate self-test
+build_in_container = true
+dev_loop          = "podman run --rm --network=none --memory=2g --memory-swap=2g --pids-limit=1024 --cpus=2 -v $PWD:/work:Z -w /work/protocol-generator/sql entity-core-keystone/sqlite-toolchain:latest sh -c 'make check'"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFORMANCE — reachable DIRECTLY (native C sockets), like pd's native transport.
+# ─────────────────────────────────────────────────────────────────────────────
+[conformance]
+oracle_reachable  = "direct"                     # the C host is a real TCP server the Go validate-peer oracle dials directly — no bridge
+gate              = "validate-peer --profile core"  # the extension-free categories; oracle pinned per docs/status handoff
+oracle_commit     = "cc1970f"                    # go oracle for S4 (public HEAD). Target --profile core: 682·0F Result: PASS. REBUILD from entity-core-go HEAD (CGO_ENABLED=0 GOWORK=off) — never trust a vendored stale validate-peer (verify new validator vectors compiled).
+origination_core  = "3/3 via run-origination-core.sh"  # reference-peer-gated; a single-peer run honest-SKIPs
+multisig_accept   = "add a genuine 2-of-3 accept-path unit test"  # multisig oracle category is rejection-only (vacuous-green trap) — a fail-closed peer passes without implementing K-of-N; the accept-path test is mandatory (AGENTS.md durable lesson)
+wire_corpus       = "71-vector wire corpus (S2 differential vs libentitycore_codec)"
+
+[spec]
+spec_version_pinned = "0.8.0"                    # spec-data snapshot protocol-generator/shared/spec-data/v0.8.0/ (V8). Confirm the three SHA-256 pins in MANIFEST.md unchanged at S2 (PROTOCOL ff8e7666.. / CBOR fc57a85c.. / TYPE de86fa7e..).
+codec_corpus      = "v0.8.0"                     # core wire byte-unchanged across V7->V8 (no CBOR change; --profile core unaffected by the 0.7.77 naming pass)
+# COHORT-SETTLED TRAPS pre-noted (do NOT re-burn at S3/S4):
+#   - §5.10 verdict determinism: evaluation timestamp sampled ONCE per verdict, a Layer-1 input; the verdict is a pure function of (chain, t). ms-precision (A-PD-016) — second-truncation aliases same-scope same-second mints and 403-cascades the marathon.
+#   - open/debug seed needs the DUAL form resources = ["*", "/*/*"] — §5.5a bare-star is granter-local, never universal (A-PD-017).
+#   - §5.2 401/403/401-unresolvable authz trichotomy; entity `data` is an arbitrary ECF value, NOT necessarily a map (A-JAVA-010).
+#   - §4.10 chain-depth pre-check -> 400 chain_depth_exceeded (depth 64); 16 MiB payload -> 413 payload_too_large.
+#   - peer_id: derive from the §1.5 canonical-form table — hash_type 0x00 identity-multihash, digest = the RAW 32-byte pubkey (NO SHA256(pubkey)); wire = Base58(key_type || hash_type || digest). Use ec_peerid_format.
+
+[deps]
+# Exact pins (S11). Toolchain pins mirrored in containers/sqlite-toolchain/Containerfile.
+sqlite            = "3.50.4"                     # SQLite 3.50.4, released 2025-07-30 (SQLITE_SOURCE_ID 2025-07-30 19:33:53 4d8adfb3..). ~11.5 months old at authoring 2026-07-16 — well past the S11 30-day floor. Source-built from the amalgamation (single-file sqlite3.c/.h), the clean supply-chain pin. Recursive CTEs + app-defined functions are core (no flags).
+sqlite_sha256     = "1d3049dd0f830a025a53105fc79fd2ab9431aea99e137809d064d8ee8356b032"  # sqlite-amalgamation-3500400.zip from sqlite.org/2025/ — SHA256-verified in the Containerfile (fail closed on mismatch)
+libentitycore_codec = "C-ABI 1.1"               # the codec/crypto floor .so (pinned at the ffi-generator layer); built from entity-core-codec-ffi-c in the image. Provenance ec_impl_info(): "c 0.1.0 / ecf-c-abi 1.1 / spec-data v7.71 ..." (see A-SQL-001 re the v7.71 provenance-label lag; core wire byte-unchanged V7->V8).
+libsodium         = "1.0.22 (image-provided, fedora:43)"  # statically + privately linked into libentitycore_codec by its CMake
+gcc               = "15.2.1-7 (fedora:43)"       # the host + codec + amalgamation compiler; fedora:43-pinned toolchain

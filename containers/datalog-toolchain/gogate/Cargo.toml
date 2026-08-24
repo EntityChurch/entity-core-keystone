@@ -1,0 +1,26 @@
+# GO-gate self-test crate for the Datalog peer (protocol-generator/datalog/).
+#
+# This is the FAITHFUL host of the peer under test: Rust (owns sockets + framing +
+# the libentitycore_codec FFI seam) + Ascent (genuine bottom-up, set-oriented,
+# terminating Datalog embedded IN-PROCESS as a macro — NO per-request process spawn).
+# The self-test exercises all three GO-gate legs in the exact substrate the peer will
+# use, so a green here is real evidence, not desk reasoning.
+#
+# PIN (S11): ascent = "=0.8.0" — newest release, published 2025-03-02 (crates.io),
+# ~16 months old at authoring 2026-07-16 → far over the >=30-day supply-chain floor.
+# default-features = false drops the `par` feature (rayon/dashmap/once_cell): the peer
+# host serializes requests (concurrency is host-owned, not a Datalog finding), so the
+# serial `ascent!` engine is both smaller and deterministic. Cargo.lock (full
+# transitive pin) is generated at build and recorded at S2, mirroring the rust peer.
+[package]
+name    = "datalog-gogate"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "datalog-gogate"
+path = "src/main.rs"
+
+[dependencies]
+ascent = { version = "=0.8.0", default-features = false }

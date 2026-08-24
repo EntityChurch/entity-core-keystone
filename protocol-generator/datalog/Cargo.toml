@@ -1,0 +1,50 @@
+# entity-core-protocol-datalog — the QUERY-NATIVE (bottom-up Datalog) peer.
+#
+# The seam host: Rust owns sockets + §1.6 framing + the libentitycore_codec FFI +
+# fact assertion; the embedded `ascent!` engine (authored at S3, src/authority.rs)
+# owns the §5/§6.6 authority interior as genuine bottom-up Datalog rules. This
+# manifest is authored at S2 (the codec/crypto seam) — the full transitive `ascent`
+# closure is pinned NOW in Cargo.lock so S3 inherits a frozen dependency graph
+# (profile.toml [layout] lockfile "committed at S2").
+#
+# PINS (S11): ascent = "=0.8.0" (crates.io newest, 2025-03-02 → far over the
+# >=30-day floor); default-features=false drops `par` (rayon/dashmap) — the host
+# serializes requests, so the serial engine is smaller + deterministic. Mirrors the
+# datalog-toolchain GO-gate crate (containers/datalog-toolchain/gogate/).
+[package]
+name        = "entity-core-protocol-datalog"
+version     = "0.1.0-pre"             # S5 probe-tier pin; crates.io release deferred like the cohort
+edition     = "2021"
+publish     = false                   # probe tier (‡, seam-hybrid); registry publish is an operator decision
+license     = "Apache-2.0"            # Ascent is MIT/Apache-2.0 dual
+description = "entity-core protocol core peer whose §5/§6.6 authority interior is authored as bottom-up Datalog (Ascent) rules over a Rust + libentitycore_codec seam host — the authority-as-query paradigm probe (V8 / v0.8.0)."
+repository  = ""                      # TBD on first publish (probe tier)
+keywords    = ["entity-core", "datalog", "ascent", "trust-management", "authorization"]
+categories  = ["network-programming"]
+rust-version = "1.96.1"
+
+[lib]
+name = "entity_core_protocol_datalog"
+path = "src/lib.rs"
+
+# The runnable peer host (S3) — the byte-pump shell around the ascent! authority
+# interior. --name/--validate/--port; drives the S3 smoke gate + S4 conformance.
+[[bin]]
+name = "entity-peer-datalog"
+path = "src/main.rs"
+
+# The S3 cross-impl smoke driver — dials a reference peer as INITIATOR (kept out of
+# src/bin/ because the root .gitignore ignores **/bin/).
+[[bin]]
+name = "interop"
+path = "src/interop.rs"
+
+[dependencies]
+# The authority interior (S3, src/authority.rs). Declared + pinned at S2 so the
+# Cargo.lock closure is frozen before rule authoring begins; the S2 codec seam
+# itself has NO dependency on ascent (crypto/CBOR all cross the C-ABI).
+ascent = { version = "=0.8.0", default-features = false }
+
+[profile.release]
+# Deterministic-enough release build for the conformance loop.
+opt-level = 2

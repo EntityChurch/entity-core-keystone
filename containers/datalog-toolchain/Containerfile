@@ -1,0 +1,111 @@
+# Datalog toolchain image — builds the DEDUCTIVE-LOGIC (bottom-up Datalog) peer
+# (protocol-generator/datalog/) per its profile.toml. The frontier declarative-query
+# probe alongside SQL; the trust-management-logic (SecPAL/Binder/DKAL) home turf.
+#
+# QUERY-NATIVE PROBE: the §5/§6.6 AUTHORITY INTERIOR is authored as genuine Datalog
+# RULES — §5.2 verdict as a derivable fact, §5.5 delegation as the recursive closure
+#   authorized(A,B) <-- granted(A,B).
+#   authorized(A,C) <-- delegated(A,B), authorized(B,C).
+# and K-of-N as a counting aggregate — NOT collapsed behind one host call with the
+# engine as decoration (the FLOW-DESIGN wrapper-guard). The seam is drawn ONLY at what
+# Datalog genuinely cannot do: sockets, canonical CBOR bytes, Ed25519/SHA. The host
+# verifies signatures FIRST, then asserts verified_signer(_); Datalog never touches
+# crypto (the clean host-establishes-facts / logic-derives-allow separation).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# RUNTIME DECISION (S1, 2026-07-16): embedded **Ascent** in a **Rust** host, NOT a
+# batch engine (Soufflé) and NOT CozoDB. Rationale (full text in
+# protocol-generator/datalog/arch/PROFILE-RATIONALE.md):
+#   * Ascent is genuine bottom-up, semi-naive, set-oriented, TERMINATING Datalog —
+#     the SecPAL/Binder shape — and provably DISTINCT from the already-built Prolog
+#     peer (top-down SLD resolution + backtracking + cut). This distinctness is what
+#     yields a finding rather than a re-run of Prolog.
+#   * EMBEDDED (an in-process Rust macro), so NO per-request process-spawn/harness tax
+#     that batch Soufflé would impose; each request asserts facts + runs a fixpoint
+#     in-process.
+#   * Rust already carries our codec/crypto/socket story (containers/rust-toolchain,
+#     the FFI codec), so the libentitycore_codec seam is the cleanest of any host.
+# Soufflé (per-request C++ process spawn) and CozoDB (a whole DB engine + CozoScript
+# dialect, heavier seam) were weighed and rejected — see PROFILE-RATIONALE.
+#
+# GO-GATE (baked as a build-time self-test below — see gogate/ + gogate-selftest.sh):
+#   1. Ascent evaluates the recursive §5.5 delegation closure to fixpoint.
+#   2. The Rust host reaches libentitycore_codec (ec_sha256("abc") KAT).
+#   3. An 8-bit-clean TCP echo incl. 0x00 / 0xFF (host-owned binary transport).
+# FATAL on any failure — the image is valid only if the real substrate passes.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Ages at authoring 2026-07-16:
+#   ascent  0.8.0  (2025-03-02, ~16 mo)  — newest crates.io release; genuine embedded
+#                                          bottom-up Datalog. Fetched by cargo at build;
+#                                          full transitive closure pinned in the
+#                                          generated Cargo.lock (recorded at S2). Well
+#                                          over the S11 >=30-day floor.
+#   rust/cargo 1.96.1-1.fc43 — fedora:43 `updates` distro build (reviewed channel →
+#                              pin-for-repro; the >=30-day floor relaxes for the distro
+#                              channel per the supply-chain memo). NOTE: the sibling
+#                              rust-toolchain's 1.96.0-1.fc43 has aged OUT of fedora:43;
+#                              `updates` now serves 1.96.1-1.fc43 — re-pinned here.
+#   libsodium 1.0.22-1.fc43 (static)  — image-provided; the C-ABI codec statically +
+#                              privately links it (same as the c/puredata images).
+#   cmake/gcc  image-provided — build libentitycore_codec from the in-repo C source.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (from repo root, capped):
+#   podman build --memory=4g --memory-swap=4g \
+#     -t entity-core-keystone/datalog-toolchain:latest \
+#     -f containers/datalog-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# rust + cargo (the peer host) from the distro (reviewed channel, pinned NVR for repro).
+# clippy + rustfmt: the lint floor for the Rust host sources.
+# gcc/gcc-c++/make/cmake/pkgconfig + libsodium-static/-devel: build the C-ABI codec
+#   (libentitycore_codec) from the in-repo C source — the crypto/CBOR seam.
+# git/python3/etc: source ops + harness helpers.
+RUN dnf install -y \
+        rust-1.96.1-1.fc43 \
+        cargo-1.96.1-1.fc43 \
+        clippy-1.96.1-1.fc43 \
+        rustfmt-1.96.1-1.fc43 \
+        gcc gcc-c++ make cmake pkgconfig \
+        libsodium-static libsodium-devel \
+        git python3 \
+        ca-certificates findutils which glibc-langpack-en \
+    && dnf clean all
+
+# UTF-8 locale (same lesson the prolog/tcl/puredata images hit).
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# Keep cargo's registry/cache on a mountable path so the conformance loop doesn't
+# refetch crates. CARGO_NET_OFFLINE left unset so the first fetch (ascent) works.
+ENV CARGO_HOME=/cargo \
+    CARGO_TERM_COLOR=never \
+    ENTITY_CODEC_DIR=/opt/entity-codec
+
+# ── Build the C-ABI codec (libentitycore_codec) from the in-repo C source ─────
+# The peer's canonical CBOR + Ed25519/Ed448 + SHA all cross this .so via FFI. Build
+# it self-contained (static libsodium) and stage the .so + header at $ENTITY_CODEC_DIR.
+COPY ffi-generator/c-abi/entity-core-codec-ffi-c /opt/codec-src
+RUN cmake -S /opt/codec-src -B /opt/codec-src/build-img -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build /opt/codec-src/build-img --target entitycore_codec -j"$(nproc)" \
+    && mkdir -p "${ENTITY_CODEC_DIR}/include" \
+    && cp /opt/codec-src/build-img/libentitycore_codec.so "${ENTITY_CODEC_DIR}/" \
+    && cp /opt/codec-src/include/entitycore_codec.h "${ENTITY_CODEC_DIR}/include/" \
+    && echo "codec exports:" && nm -D "${ENTITY_CODEC_DIR}/libentitycore_codec.so" | grep -c ' T ec_'
+
+# ── GO-GATE self-test: embedded Datalog fixpoint + FFI codec KAT + 8-bit TCP echo ─
+# Bakes the S1 GO gate into every image build, run in the REAL peer substrate (Rust +
+# Ascent + libentitycore_codec). FATAL on any failure.
+COPY containers/datalog-toolchain/gogate /opt/gogate
+COPY containers/datalog-toolchain/gogate-selftest.sh /usr/local/bin/gogate-selftest.sh
+RUN chmod +x /usr/local/bin/gogate-selftest.sh && /usr/local/bin/gogate-selftest.sh
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="datalog-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.ascent="0.8.0"
+LABEL org.entity-core-keystone.experimental="deductive-logic-datalog-query-native-probe"
+
+CMD ["/bin/bash"]

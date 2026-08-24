@@ -64,6 +64,9 @@ caps.local.sh
 !protocol-generator/rust/Cargo.lock
 # The wasmtime-AOT wasm peer — same S11 rule; pins wasi 0.11.1 + the shared crypto closure.
 !protocol-generator/rust-wasm-wasmtime/Cargo.lock
+# The Datalog peer (Rust host + Ascent) — S11 requires the full ascent transitive
+# closure (30 packages) committed at S2, frozen before S3 authors the rule interior.
+!protocol-generator/datalog/Cargo.lock
 
 # Cargo registry/build cache (the mountable CARGO_HOME used by the conformance loop) —
 # a local artifact, never committed. The cache lives at containers/cargo/ (mounted at

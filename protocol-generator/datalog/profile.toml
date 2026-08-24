@@ -1,0 +1,206 @@
+# entity-core-protocol-datalog — Language Profile
+#
+# EXPERIMENTAL PROBE (deductive-logic / QUERY-NATIVE paradigm). One of the last two
+# major spec-discovery bets (with SQL); the trust-management-logic home turf. Authored
+# FRESH in S1 from the V8 spec + the Ascent/Rust ecosystem survey + the declarative-
+# query deep-dive — NOT ported from any prior peer's profile.
+#
+# *** THE EXPERIMENTAL QUESTION THIS PROFILE EXISTS TO ANSWER ***
+# How much of the §5/§6.6 AUTHORITY INTERIOR stays expressible as genuine bottom-up
+# Datalog RULES vs. leaks to the host seam? Authorization/delegation IS a trust-
+# management logic (SecPAL, Binder, DKAL are literally Datalog dialects), so the
+# §5.5 delegation-chain-as-recursive-rule should be a NATURAL FIT. The finding (co-
+# equal with a green gate): the seam split — which half of the protocol is deductive
+# (fits) vs. stateful-sequential (fights → host). This is a SPEC-discovery probe, not
+# a substrate probe.
+#
+# *** THE WRAPPER-GUARD (load-bearing; FLOW-DESIGN, from the visual probes) ***
+# If §5 collapses to one host call with the engine as decoration, it's a WRAPPER with
+# zero finding. The authority interior (§5.2 verdict as a derivable fact, §5.5
+# delegation as recursive rules, K-of-N as a counting aggregate) MUST be authored as
+# ACTUAL, LEGIBLE Datalog rules. The seam is drawn ONLY at what Datalog genuinely
+# can't do (sockets, CBOR bytes, Ed25519/SHA). The host verifies signatures FIRST then
+# asserts verified_signer(_); Datalog NEVER touches crypto. Opaque values (sigs,
+# hashes, keys) ride as host handles; readable fields (paths, scopes, timestamps) are
+# real facts.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value is
+# logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "datalog"
+name              = "Datalog (embedded, bottom-up) — Ascent engine on a Rust host"
+tier              = "probe"                  # exploratory paradigm probe (deductive-logic / query-native); ‡ row, seam-hybrid, NOT a deployable independent peer
+package_name      = "entity-core-protocol-datalog"   # keystone peer id
+runtime           = "datalog-toolchain"      # references containers/datalog-toolchain/Containerfile (Rust 1.96.1 + Ascent 0.8.0 + libentitycore_codec)
+paradigm          = "deductive-logic-bottom-up"   # the axis under test: set-oriented, semi-naive, terminating fixpoint (distinct from Prolog's top-down SLD — see [distinctness])
+authoring_surface = "ascent-rules"           # source of truth: the `ascent! { ... }` rule blocks (the §5.2/§5.5/§6.6 authority interior); the Rust host is the seam, not the paradigm
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RUNTIME SELECTION — the S1 discrepancy RESOLVED (handoff §Feasibility suggested
+# Soufflé/CozoDB/Nemo batch; the deep-dive recommended Rust+Ascent embedded). We chose
+# EMBEDDED Ascent-in-Rust. Full rationale: arch/PROFILE-RATIONALE.md §engine.
+# ─────────────────────────────────────────────────────────────────────────────
+[engine]
+name              = "ascent"                 # embedded bottom-up Datalog as a Rust proc-macro (`ascent!`)
+version           = "0.8.0"                  # crates.io newest; 2025-03-02 (~16 mo at authoring 2026-07-16) → S11-clean (>=30d)
+model             = "embedded-in-process"    # in-process macro/library — NO per-request process spawn (the batch-Soufflé tax avoided)
+evaluation        = "bottom-up-semi-naive"   # genuine bottom-up fixpoint, set-oriented, TERMINATING (Datalog guarantee on finite EDB) — the SecPAL/Binder shape
+features          = "default-features=false" # drop `par` (rayon/dashmap): host serializes requests, so the serial engine is smaller + deterministic
+alternatives_rejected = "souffle (per-request C++ process-spawn/harness tax; batch not embedded) · cozodb (whole DB engine + CozoScript dialect, heavier seam) · datafrog (a low-level iteration library, rules NOT legible as rules → fails the wrapper-guard legibility bar) · nemo (existential-rule engine, heavier than needed)"
+
+[host]
+language          = "rust"                   # the seam host: owns sockets + §1.6 framing + the libentitycore_codec FFI + fact assertion
+version           = "1.96.1-1.fc43"          # fedora:43 `updates` distro build (reviewed channel → pin-for-repro); sibling's 1.96.0 aged out
+role              = "byte-pump + FFI seam + fact-asserter"   # verifies crypto, asserts facts INTO the Datalog program, emits the response frame from the derived verdict
+owns              = "TCP socket · §1.6 frame assembler · canonical-CBOR/Ed25519/SHA via FFI · §7b store-safety · §6.11 demux · connection lifecycle state machine"
+
+[codec]
+# strategy: FFI — Datalog holds no bytes and does no crypto; canonical CBOR + Ed25519/
+# Ed448 + SHA cross the C-ABI (libentitycore_codec) exactly like the pd/oz/io seam-
+# hybrid peers. The Rust host makes the extern "C" calls. This is the SEAM half; the
+# authority interior (below) is the AUTHORED half.
+strategy          = "ffi"                    # "native" | "ffi" | "interop" — FFI over libentitycore_codec
+interop_source    = "ffi-generator/c-abi/entity-core-codec-ffi-c (libentitycore_codec)"   # language-agnostic C-ABI; built from source in the toolchain image
+cbor_library      = { name = "c-abi:libentitycore_codec", version = "c-abi-1.1", canonical_mode = "delegated" }   # canonical ECF is delegated; the host never hand-rolls the shortest-float ladder
+crypto_provider   = "c-abi:libentitycore_codec"   # Ed25519 + SHA-256/384 + peer-id via ec_* (verified in the GO-gate ec_sha256 KAT)
+ed25519_library   = { name = "c-abi:libentitycore_codec", version = "c-abi-1.1", api = "ec_ed25519_{sign,verify,seed_to_pubkey}" }
+ed448_library     = { name = "c-abi:libentitycore_codec", version = "c-abi-1.1", api = "ec_ed448_{sign,verify,seed_to_pubkey}" }   # Ed448 also crosses the C-ABI (same as the hybrid-FFI cohort)
+sha256_source     = "c-abi:libentitycore_codec ec_sha256 (+ ec_sha384 for agility)"
+base58_source     = "c-abi:libentitycore_codec ec_peerid_{format,parse}"   # peer-id base58 is a codec concern, delegated
+varint_handling   = "delegated"              # LEB128 format codes via ec_hash_format_code_{encode,decode}
+number_model_tax_location = "host"           # uint64 wire head-form lives entirely in the Rust host/codec seam (host owns the bytes); Datalog facts carry only SMALL readable ints (chain depth, K-of-N counts, status codes) that fit u32/u64 trivially — no head-form trap in the rule layer
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTHORED SURFACE — the §5/§6.6 authority interior as ACTUAL Datalog rules. This is
+# the whole point of the probe. The S3 agent authors these; the shapes are committed
+# here so S3 cannot quietly fold them into a host call (the wrapper-guard).
+# ─────────────────────────────────────────────────────────────────────────────
+[authored]
+delegation        = "recursive-rules"        # §5.5: authorized(P,R) <-- granted(P,R). / authorized(P,R) <-- delegated(P,Q,R), authorized(Q,R). — the transitive delegation closure, bottom-up to fixpoint (GO-gate proved the mechanism)
+verdict           = "derivable-fact"         # §5.2: the 200/401/403 verdict is a DERIVED relation over facts (verified_signer, authorized, temporal_valid, scope_match), NOT a host if-ladder
+scope_match       = "rule + host-glob-fact"  # §5.5a scope/resource prefix match: the host asserts a scope_covers(GrantScope, ReqPath) fact (string glob incl. the "*"/"/*/*" dual form — A-DL-004) OR authored as a Datalog prefix rule if the atom model allows; the MATCH DECISION is a fact, the DECISION LOGIC is a rule
+k_of_n            = "counting-aggregate"     # §3.6/§3.9 K-of-N multisig: allow(H) <-- threshold(H,K), count over distinct verified_signer facts >= K — a Datalog aggregate, NOT a host loop (add an accept-path unit test; multisig oracle category is rejection-heavy — A-DL-006)
+handler_resolution= "longest-prefix-rule"    # §6.6: resolve the handler as the VISIBLE longest-prefix-first selection over handler(Pattern,...) facts — the tree-walk as a rule/aggregate (max prefix length), NOT a hidden host resolve()
+leaks_to_host     = "§6.5 dispatch SEQUENCING + op-switch (no ordering in Datalog) · §4 handshake connection-lifecycle STATE MACHINE · all byte/crypto I/O · §7b store mutation"   # the stateful-sequential half — expected, and its own finding (the seam split)
+fact_flow         = "host-establishes / logic-derives"   # host does crypto → asserts verified_signer(Author); Datalog derives allow(Author,Path). Datalog never touches a key or a byte.
+opaque_handles    = "sig/hash/key = host-owned bytes; facts carry IDs + readable fields"   # values Datalog can't hold ride as host handles keyed by an id interned into the fact space
+
+[error_model]
+# The peer surfaces errors as §3.3 EXECUTE_RESPONSE status-code envelopes (the host
+# builds them from the Datalog verdict). Two internal layers:
+#   (1) Datalog verdict: absence of a derived allow(_) fact == denial — the deductive
+#       analogue of fail-closed (no proof of authorization ⇒ 403). A DERIVED deny
+#       relation carries the specific 401/403 code.
+#   (2) Rust host: Result<T,E> for the I/O + FFI + framing seam; the resilience frame
+#       MUST catch the host ROOT error class (panic/Err) → 500, per §4.9(c)
+#       deliver-or-signal (the cohort rule — Oz A-OZ-005, Smalltalk A-ST-016).
+style             = "verdict-fact + host-result"   # denial = no derived allow (fail-closed); host errors = Rust Result → status envelope
+verdict_codes     = "allow(_) → 200 · derived deny(_, Code) → 401/403 · uncaught host error → 500"
+fail_closed       = "absence of a derived allow(_) IS denial (deductive fail-closed)"   # the cleanest paradigm expression of §5.2 fail-closed
+resilience_frame  = "host catches Rust panic/Err ROOT class → 500"   # §4.9(c); cohort rule
+
+[async]
+# Concurrency is HOST-side and does NOT introduce a new §7b shape (documented, not a
+# finding — per the handoff). The Datalog layer is STATELESS between requests: each
+# request asserts its facts, runs a fixpoint, reads the verdict, and the program is
+# reset — trivially race-free (no shared mutable rule state to guard). The §7b store-
+# safety + §6.11 demux live in the Rust host.
+style             = "host-owned"             # the Datalog engine is invoked synchronously per request; the host manages concurrency
+concurrency_shape = "host-serialized (Datalog stateless-fixpoint)"   # NOT a new taxonomy shape — the stateless-fixpoint is trivially safe; the host owns §7b (Rust std threads / one-conn-per-thread, the CL/OCaml/Zig shape)
+store_model       = "host-owned §4.8 store (Rust); per-request Datalog EDB is transient + reset"   # request facts are transient; persistent grants/identities live in the host store, asserted INTO the EDB per request
+request_demux     = "host request_id -> correlation (Rust)"   # §6.11 reentrant demux is host-side
+tcp_nodelay       = true                     # set on accepted streams (§7b)
+frame_cap         = "§1.6 host-enforced"     # oversize frame rejected at the host framer (the single-thread cascade lesson applies to the host loop)
+
+[naming]
+# Two namespaces. The Ascent RULES use Datalog convention; the Rust HOST uses Rust
+# convention. Keep them separate — no Rust idiom leaks into the rule text, no Datalog
+# idiom leaks into the host.
+datalog_relations = "snake_case"             # relations/predicates: granted, authorized, verified_signer, scope_covers, handler
+datalog_variables = "PascalCase or lower"    # Ascent rule variables are Rust identifiers in the macro; use short lowercase (a, b, p, r) per the deep-dive sketch — Ascent does NOT impose Prolog's uppercase-var rule
+rust_types        = "PascalCase"             # host types: EntityEnvelope, DispatchResult
+rust_functions    = "snake_case"             # host fns: verify_request, assert_facts, build_response
+rust_files        = "snake_case.rs"          # main.rs, host.rs, authority.rs (the ascent! block), codec_ffi.rs
+file_names        = "snake_case"             # profile/status/reference files
+
+[build]
+build_tool        = "cargo"                  # the Rust host + the embedded ascent! macro compile as one cargo crate
+build_command     = "cargo build --release"
+test_command      = "cargo test --release"   # host + rule unit tests (incl. the K-of-N accept-path test the oracle can't cover — A-DL-006)
+lint_command      = "cargo clippy -- -D warnings && cargo fmt --check"   # the Rust lint floor
+run_command       = "cargo run --release -- --name <NAME> --validate"    # peer startup convention (--name loads ~/.entity/peers/NAME/keypair; --validate enables system/validate/*)
+
+[layout]
+crate_name        = "entity-core-protocol-datalog"   # the cargo crate
+src_dir           = "src/"                   # main.rs (host loop) + authority.rs (the ascent! rules) + codec_ffi.rs (the extern "C" seam) + dispatch.rs
+authority_module  = "src/authority.rs"       # THE PROBE ARTIFACT: the `ascent! { ... }` §5.2/§5.5/§6.6/K-of-N rules — the legible authored interior
+seam_module       = "src/codec_ffi.rs"       # the extern "C" libentitycore_codec bindings (the ONLY crypto/CBOR surface)
+host_module       = "src/host.rs"            # TCP + §1.6 framing + connection lifecycle + fact assertion + response build
+test_dir          = "tests/"                 # conformance driver helpers + rule accept-path unit tests
+build_manifest    = "Cargo.toml"
+lockfile          = "Cargo.lock"             # full transitive pin (ascent closure) committed at S2
+
+[publishing]
+registry          = "deferred"               # probe-tier: publish 0.1.0-pre at S5, NOT a crates.io release (‡ row, seam-hybrid)
+package_id        = "entity-core-protocol-datalog"
+license_expression = "Apache-2.0"
+repository_url     = ""                       # TBD on first publish
+maintainers        = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"             # S9 default. Ascent is MIT/Apache-2.0 dual; Rust/cargo distro. Keep the Apache-2.0 default.
+
+[testing]
+framework         = "cargo-test"             # built-in; NO extra test-framework dep (dependency-minimization)
+accept_path_tests = "required"               # MANDATORY: unit-test the K-of-N + scope-match ACCEPT paths the rejection-heavy oracle categories can't cover (multisig was 100% malformed→403 for prior peers — A-DL-006)
+
+[container]
+toolchain         = "datalog-toolchain"      # containers/datalog-toolchain/ — Rust 1.96.1 + Ascent 0.8.0 (fetched) + libentitycore_codec (built from source) + the baked GO-gate self-test
+base_image        = "entity-core-keystone/datalog-toolchain:latest"
+build_in_container = true
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/datalog entity-core-keystone/datalog-toolchain:latest cargo test --release"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DISTINCTNESS FROM THE PROLOG PEER (protocol-generator/prolog/) — load-bearing: if
+# this collapsed into Prolog's model, the finding would be a re-run, not new. Ascent
+# is PROVABLY distinct:
+# ─────────────────────────────────────────────────────────────────────────────
+[distinctness]
+vs_prolog_evaluation = "BOTTOM-UP semi-naive fixpoint (facts → derive all consequences) vs. Prolog's TOP-DOWN SLD resolution (goal → resolve backward)"
+vs_prolog_semantics  = "SET-ORIENTED (relations are sets: no duplicates, no tuple ordering, no answer-order dependence) vs. Prolog's ORDERED clause DB + first-solution/backtracking search"
+vs_prolog_control    = "NO cut, NO backtracking, NO negation-as-failure hazard, NO clause-order sensitivity — TERMINATING by construction on a finite EDB (the Datalog guarantee) vs. Prolog's cut/backtracking control + possible non-termination"
+vs_prolog_finding    = "the delegation closure is expressed the SecPAL/Binder way (a monotone recursive rule evaluated to least fixpoint), which is the trust-management-literature shape — a DISTINCT data point from Prolog's SLD walk (A-DL-002)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTHORITY-INTERIOR EXPRESSIBILITY (the new-for-this-probe section — the S3 agent
+# FILLS THIS IN as it authors, logging each finding to SPEC-AMBIGUITY-LOG.md). Stub:
+# the S1 EXPECTATION of what expresses cleanly as rules vs. leaks to the host.
+# ─────────────────────────────────────────────────────────────────────────────
+[expressibility]
+# For each surface: EXPECTED / OBSERVED = clean-rule | rule-with-host-fact | leaks-to-host.
+# S3 authored src/authority.rs (two `ascent!` blocks: Authorizer + Resolver) and
+# recorded the OBSERVED outcome + finding below. Full findings: SPEC-AMBIGUITY-LOG
+# A-DL-010..014; the synthesized retrospective is research/evaluations/authority-as-
+# query.md (authored at S5).
+s52_verdict_observed        = "clean-rule"            # CONFIRMED. `allow(c)` is a DERIVED relation; fail-closed = absence of an `allow` tuple. The CLEANEST paradigm expression of §5.2: "no proof of authorization ⇒ deny" IS the closed-world assumption — imperative peers encode it as an explicit final `return Deny` fallthrough that can be forgotten; here it is structural (A-DL-010).
+s55_delegation_observed     = "clean-rule"            # CONFIRMED, natural fit. The transitive delegation closure is TWO rules to least fixpoint (`confers(c) <-- verified_root(c)` / `confers(c) <-- verified_link(c,p), confers(p)`) — the SecPAL/Binder shape. What imperative peers walk with an explicit loop + depth counter + per-link state is the spec's implicit recursion made explicit (A-DL-010).
+s55a_scope_match_observed   = "rule-with-host-fact"   # CONFIRMED as predicted (A-DL-004/011). The string-glob DECISION (prefix + "*"/"/*/*" dual form) leaked to the host (asserted as g_op/g_handler/g_peer/g_resource per-grant facts); the WITHIN-GRANT CONJUNCTION is a clean 5-way join. NEW: the "all four dims covered by ONE grant, not four different grants" property falls out of the join on the grant index for free — imperative peers enforce it with a per-grant flag; the rule can't get it wrong (A-DL-011).
+k_of_n_observed             = "clean-rule-with-caveat" # CONFIRMED the counting aggregate — BUT set-distinctness is a property of the FIXPOINT, not of externally-loaded EDB. Pre-seeded EDB vectors are NOT auto-deduplicated; the "duplicate signature must not inflate the count" guarantee needed a one-line copy-rule (`distinct_signer(c,s) <-- multisig_signer(c,s)`) to move facts into the IDB where set semantics apply. Silent if missed (the count is just wrong) — A-DL-012.
+s66_resolution_observed     = "clean-rule"            # CONFIRMED. Longest-prefix as stratified negation: `resolved(p) <-- candidate(p,_), !longer_exists(p)`. The backward tree-walk expressed declaratively as "the maximal prefix". The visual-paradigm probes flagged §6.6 as easily buried behind a host resolve(); here the host provides only prefix MEMBERSHIP, the SELECTION is the rule (A-DL-014).
+s65_dispatch_observed       = "leaks-to-host"         # CONFIRMED. §6.5 op-switch + dispatch sequencing is Rust (dispatch.rs) — Datalog has no ordering. Expected; part of the seam split (A-DL-013).
+handshake_observed          = "leaks-to-host"         # CONFIRMED. The §4 connection-lifecycle state machine (nonce issue → established) is mutable per-connection state — inexpressible in stateless Datalog (A-DL-013).
+temporal_observed           = "rule-with-host-fact"   # ADJUSTED. Rather than assert now(T)+expires_at(E) + a comparison rule, the host FOLDS temporal validity into the verified_root/verified_link facts (the clock stays entirely host-side — cleaner seam, at the cost of the comparison not being visible as a rule). A judgment call, documented (A-DL-013).
+finding_hypothesis          = "the AUTHORIZATION-DECISION half of entity-core is deductive (fits: verdict/delegation/K-of-N/resolution as rules) while the PROTOCOL-SEQUENCING + I/O half is stateful-imperative (leaks to host). The seam split IS the finding — see research/evaluations (authority-as-query.md, authored at S5)."
+finding_observed            = "HYPOTHESIS CONFIRMED. §5.2 verdict / §5.5 delegation closure / §3.6 K-of-N / §5.5a within-grant conjunction / §6.6 resolution ALL expressed as legible bottom-up Datalog rules (src/authority.rs — the wrapper-guard held: real `ascent!` rules drive the verdict end-to-end, proven by the S3 loopback + Go-interop gate). §6.5 dispatch / §4 handshake / framing / crypto / store correctly leaked to the Rust host. The seam falls almost exactly where S1 predicted; the one surprise is the EDB-vs-IDB distinctness subtlety (A-DL-012). Candidate HANDOFF-TO-ARCH: the spec prescribes §5.2/§5.5 imperatively (verify_request walks a chain; check_permission loops grants), but the underlying logic is a monotone deductive system — an authority-as-query appendix could specify the verdict as a DERIVATION, making fail-closed + the within-grant conjunction structural invariants rather than prose MUSTs an imperative impl can violate silently."
+
+[spec]
+version_pinned    = "v0.8.0"                  # the single V8 spec-data snapshot (core wire byte-unchanged from V7); profile + rules derive from spec-data/v0.8.0
+oracle_target     = "validate-peer --profile core = 682·0F Result: PASS @ cc1970f"   # the gate (per the handoff); + origination-core 3/3 + a genuine 2-of-3 multisig accept-path + the 71-vector wire corpus
+oracle_note       = "REBUILD the oracle binaries from entity-core-go HEAD (CGO_ENABLED=0 GOWORK=off) — never trust a vendored stale validate-peer; verify new validator vectors compiled (strings | grep <vector>)"
+# COHORT-SETTLED TRAPS to pre-resolve at S3 (do NOT re-burn): A-PD-016 ms-precision
+# content-addressed mint timestamps (second-truncation aliases same-scope same-second
+# mints → revoke-probe cascade); A-PD-017 open/debug seed dual-form resources
+# ["*","/*/*"] (bare-star is granter-local, not universal); §1.6 frame-cap; the
+# resilience frame catching the host ROOT error class → 500; accept-path unit tests
+# for rejection-only oracle categories (multisig).

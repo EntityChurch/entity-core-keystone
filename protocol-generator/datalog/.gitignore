@@ -1,0 +1,8 @@
+# S2 build outputs. run-s2.sh builds to a container-local CARGO_TARGET_DIR
+# (/tmp/dl-target) to dodge the SELinux ld denial on the :Z bind mount, but a
+# direct `cargo build` on the host would drop a local target/ here — ignore it.
+# (The repo root also carries **/target/.)
+/target/
+
+# Cargo.lock is COMMITTED for this peer (S11 full-closure pin) via the root
+# .gitignore negation — do NOT ignore it here.
