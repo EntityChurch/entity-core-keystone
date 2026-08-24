@@ -1,6 +1,6 @@
 # entity-core-keystone — status
 
-_Updated: 2026-07-11 · public: v0.8.0 (master)_
+_Updated: 2026-07-12 · public: v0.8.0 (master)_
 
 ## Where it is
 
@@ -14,14 +14,19 @@ interaction, capability, bootstrap) for any target language, and it owns the
 for languages without mature canonical-CBOR + Ed25519 stacks. Generating peers
 is the *means*; the *end* is **spec refinement** — running the generator across
 many languages surfaces every spec ambiguity and feeds it back to architecture.
-Maturity: **initial public research-preview, v0.8.0 (V8)**. A **24-language**
+Maturity: **initial public research-preview, v0.8.0 (V8)**. A **26-language**
 peer cohort is in place and uniformly conformant; the pipeline is past
-first-build and into steady-state maintenance. The two newest are alien-substrate
-probes: **Tcl** (#23 — Everything-Is-A-String) and **Rexx** (#24 — native-decimal
-number model), both complete S1→S5 and measured natively at `cc1970f`
-(**682·0F** each). Peer **#25 (Forth** — the stack-machine/no-types substrate) is
-now in build via the overseer + per-stage-sub-agent orchestration
-(`protocol-generator/shared/lifecycle/ORCHESTRATION.md`).
+first-build and into steady-state maintenance. The four newest are alien-substrate
+probes: **Tcl** (#23 — Everything-Is-A-String), **Rexx** (#24 — native-decimal
+number model), **Forth** (#25 — stack-machine/typeless substrate), and
+**Smalltalk** (#26 — pure-object/live-image/message-passing substrate), all
+complete S1→S5 and measured natively at `cc1970f` (**682·0F** each). Smalltalk
+completed via the overseer + per-stage-sub-agent orchestration
+(`protocol-generator/shared/lifecycle/ORCHESTRATION.md`) — reaching exact
+Rexx/Forth parity with the codec as a polymorphic `encodeOn:` double-dispatch over
+tagged value objects and an in-process UFFI crypto binding (no co-process). **Fortran**
+and **APL** are building on a parallel machine (an unmerged branch); the peer count
+reconciles at merge.
 
 The single pinned input is `protocol-generator/shared/spec-data/v0.8.0/` (a
 verbatim, SHA-256-pinned snapshot of the normative specs) plus the co-versioned
@@ -31,16 +36,35 @@ wire byte-unchanged**; the `v7.*` snapshots were retired.
 
 ## Where we left off
 
-The closed cohort is **24 generated core peers** (OCaml, Swift, Haskell, Go,
+The closed cohort is **26 generated core peers** (OCaml, Swift, Haskell, Go,
 Lean, C#, TypeScript, Java, Kotlin, Elixir, Common Lisp, Rust, Python, Zig, C,
-C++, Ada, Ruby, Prolog, PHP, Dart, COBOL, Tcl, Rexx), every one full S1→S5 and
-**`validate-peer --profile core` 0-FAIL**. **Rexx** (the native-decimal
-number-model probe) is the newest — measured **natively** at `cc1970f`
-(**682·0F**, 291P/295W/0F/96S; genuine 2-of-3 multisig accept-path;
-origination-core `dispatch_outbound_reentry` 3/3). Its S4 surfaced two
-§4.9/§4.10 resilience findings, both fixed (unbounded per-request signature
-ingest A-RX-014; the §4.10(c) connection-admission cap). **Tcl** (the EIAS
-probe) preceded it at the same **682·0F**. The whole cohort is now normalized on
+C++, Ada, Ruby, Prolog, PHP, Dart, COBOL, Tcl, Rexx, Forth, Smalltalk), every one
+full S1→S5 and **`validate-peer --profile core` 0-FAIL**. **Smalltalk** (the
+pure-object/live-image/message-passing generator-stress probe, #26) is the newest —
+measured **natively** at `cc1970f` (**682·0F**, 291P/295W/0F/96S; genuine 2-of-3
+multisig accept-path + a 4/4 in-image unit; origination-core
+`dispatch_outbound_reentry` 3/3), **exact Rexx/Forth parity**. It reached that with
+the codec expressed idiomatically as a **polymorphic `encodeOn:` double-dispatch**
+over tagged `EcValue` objects (not a translated type-switch — the A-ST-000 answer),
+an in-process **UFFI `ffiCall:module:`** crypto binding (no co-process) + native
+Sockets, and the bignum uint64 range carried FREE (arbitrary-precision integers).
+Its S4 surfaced no fresh spec finding but flushed out **four code bugs in the
+generated peer**, all fixed — chief the **A-ST-016** catch-the-ROOT-`Error`
+resilience lesson (one live `doesNotUnderstand:` on an unexercised path cascaded 229
+FAILs from one bug on a no-static-check substrate) — plus the durable **A-ST-012**
+pure-object polymorphic-absent-sentinel finding. **Forth** (the stack-machine/
+typeless generator-stress probe, #25) preceded it — measured **natively** at
+`cc1970f` (**682·0F**, 291P/295W/0F/96S; genuine 2-of-3 multisig accept-path;
+origination-core `dispatch_outbound_reentry` 3/3), **exact Rexx parity**. It
+reached that with a **native-float-bits** codec (gforth `SF!`/`DF!` yield real
+IEEE bits — only the f16 leg + shortest ladder hand-rolled) and the **cleanest
+FFI binding in the family** (in-process `libcc` `c-function`, native BSD sockets —
+no co-process). Its S4 surfaced no fresh spec finding but flushed out **seven code
+bugs in the generated peer**, all fixed (chief the concurrency payoff A-FT-025).
+**Rexx** (the native-decimal number-model probe, #24) preceded it at the same
+**682·0F**; its S4 surfaced two §4.9/§4.10 resilience findings, both fixed
+(unbounded per-request signature ingest A-RX-014; the §4.10(c) connection-admission
+cap). **Tcl** (the EIAS probe, #23) preceded both at the same **682·0F**. The whole cohort is now normalized on
 the reproducible public-HEAD oracle `cc1970f` (2026-07-10 re-normalization). The
 `--profile core` **0-FAIL** gate at `cc1970f` is *proven* the same gate the cohort
 converged against — its normalized core-gate fingerprint (the 16-category set +
@@ -146,6 +170,35 @@ From `CONFORMANCE-MATRIX.md` §3 (catch-up) and `research/stewardship/SPEC-FINDI
 
 ## Done recently
 
+- **Smalltalk (#26) completed — cohort → 26.** The pure-object/live-image/
+  message-passing generator-stress probe (Pharo 13.0), full S1→S5, FFI-hybrid
+  (**pure-Smalltalk** canonical CBOR as a polymorphic `encodeOn:` double-dispatch
+  over tagged `EcValue` objects + crypto over `libentitycore_codec` via in-process
+  UFFI `ffiCall:module:`), measured natively at `cc1970f` — **682·0F**, exact
+  Rexx/Forth parity (genuine 2-of-3 accept + a 4/4 in-image unit; origination-core
+  `dispatch_outbound_reentry` 3/3). No fresh spec finding (clean corroboration down
+  to a pure-object model, the answer the profile was built to get — the codec IS
+  idiomatic double-dispatch, not a translated type-switch) but **four code bugs in
+  the generated peer** surfaced + fixed, chief the **A-ST-016** catch-the-ROOT-`Error`
+  resilience lesson (one live `doesNotUnderstand:` on an unexercised path cascaded
+  229 FAILs from one bug on a no-static-check substrate), plus the durable **A-ST-012**
+  pure-object polymorphic-absent-sentinel finding (`isAbsent` must be answered on the
+  common `EcValue` supertype). Bignum uint64 carried FREE (arbitrary-precision
+  integers). Packaged via `make dist` (source tarball; packaged peer plain-boots to
+  `LISTENING`) + a Metacello/Tonel baseline; registry-publish deferred `0.1.0-pre`
+  (Pharo has no binary registry). Per-peer truth in `CONFORMANCE-MATRIX.md`.
+- **Forth (#25) completed — cohort → 25.** The stack-machine/typeless
+  generator-stress probe, full S1→S5, FFI-hybrid (**pure-Forth native-float-bits**
+  canonical CBOR + crypto over `libentitycore_codec`), measured natively at
+  `cc1970f` — **682·0F**, exact Rexx parity. The **cleanest FFI binding in the
+  family**: an in-process `libcc` `c-function` (a genuine libffi call) with native
+  BSD sockets — no co-process daemon. No fresh spec finding (clean corroboration
+  down to a typeless stack machine, the answer the profile was built to get) but
+  **seven code bugs in the generated peer** surfaced + fixed (chief the concurrency
+  payoff A-FT-025, a latent `pend-new` missing-return only concurrent §6.11 reentry
+  exposed). Packaged via `make dist` (source tarball; packaged peer boots to
+  `LISTENING`); registry-publish deferred `0.1.0-pre`. Per-peer truth in
+  `CONFORMANCE-MATRIX.md`.
 - **Alien-substrate probes Tcl (#23) + Rexx (#24) completed — cohort → 24.** Two
   probes on the least-saturated wire axes: Tcl (Everything-Is-A-String) and Rexx
   (native-decimal number model, no binary int/float type). Both full S1→S5,
@@ -201,14 +254,15 @@ From `CONFORMANCE-MATRIX.md` §3 (catch-up) and `research/stewardship/SPEC-FINDI
 
 ## Next
 
-0. **Forth (#25) — in build now** via the overseer + per-stage-sub-agent pattern
-   (`ORCHESTRATION.md`). The stack-machine / concatenative / no-types substrate —
-   a generator-stress probe, expected FFI-hybrid (COBOL/Tcl/Rexx family: gforth,
-   hand-rolled CBOR, crypto + sockets over a C external extension, fixed-width
-   cells → int head-form self-test). A second machine is building **Fortran** in
-   parallel off this same status. Corroboration/robustness first; a fresh spec
-   finding is the upside, not the expectation (the well is dry on the current
-   surface).
+0. **Fortran + APL — in build now** on a parallel machine (an unmerged branch) via
+   the overseer + per-stage-sub-agent pattern (`ORCHESTRATION.md`), off this same
+   status. Both generator-stress probes (Fortran: fixed-shape arrays / column-major /
+   no native records; APL: array-language) — expected FFI-hybrid in the
+   COBOL/Tcl/Rexx/Forth/Smalltalk family. The peer count **reconciles at merge**
+   (this branch closed Smalltalk as #26; the parallel branch numbers its own).
+   Corroboration/robustness first; a fresh spec finding is the upside, not the
+   expectation (the well is dry on the current surface — Forth (#25) and Smalltalk
+   (#26) just confirmed this again with clean corroboration + only code-bug findings).
 1. **Extensibility surface across the cohort**: with COBOL's §6.11
    outbound-dispatch seam landed (peer 22 closed), bring `register`/`unregister`
    (V1.0/L0) and the handler-facing outbound-dispatch seam across the remaining

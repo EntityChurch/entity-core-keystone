@@ -1,0 +1,229 @@
+# Pharo (Smalltalk) toolchain image — builds the ALIEN-SUBSTRATE peer
+# (entity-core-protocol-smalltalk) per protocol-generator/smalltalk/profile.toml.
+# Mirrors the structure of containers/forth-toolchain + containers/rexx-toolchain +
+# containers/tcl-toolchain + containers/cobol-toolchain (the FFI-hybrid,
+# single-thread-equivalent family).
+#
+# ALIEN-SUBSTRATE PROBE: PURE-OBJECT / LIVE-IMAGE / MESSAGE-PASSING. Pharo is a
+# live-image Smalltalk: EVERYTHING is an object, ALL control flow is
+# message-sends (no keywords: `ifTrue:`, `whileTrue:`, `do:` are messages to
+# Boolean/Block/Collection), and the program state is a persisted memory IMAGE,
+# not a source tree compiled ahead of time. There are no primitive value types —
+# an Integer, a Character, a Boolean are all first-class objects. The headline
+# GENERATOR-STRESS question: can a recursive canonical-CBOR encoder + the §5
+# capability chain-walk be expressed IDIOMATICALLY as message-sends over an
+# object graph (a value is `EntityValue`-tagged objects, the codec is a
+# double-dispatch / visitor over them), or does the generator fall into
+# procedural "Smalltalk-flavored C" that reads as translated? Corroboration-first
+# (the spec-discovery well is dry on the current wire surface, 25+ peers).
+#
+# Codec split (FFI-hybrid, the Rexx/Tcl/COBOL/Forth shape):
+#   - CBOR/varint/base58/peer_id: hand-rolled pure Smalltalk (the A-005 no-lib
+#     pattern, now 10th peer). Pharo integers are ARBITRARY-PRECISION BIGNUMS
+#     (SmallInteger promotes to LargePositiveInteger transparently) → this is the
+#     BIGNUM class (like Rexx/Python/CL/Elixir/Haskell): the full uint64 range
+#     [0, 2^64-1] is carried FREE, NO fixed-width head-form self-test tax (contrast
+#     Forth/Zig/C#/OCaml, the fixed-width class). Byte assembly is native
+#     (ByteArray + bitShift:/bitAnd:/bitOr:). The IEEE FLOAT tower is REACHABLE
+#     NATIVELY: Pharo's Float has `asIEEE64BitWord` (f64 → 64-bit Integer of the
+#     raw IEEE-754 bits) and `asIEEE32BitWord` (f32), plus the inverse
+#     `Float fromIEEE64Bit:` / `Float fromIEEE32Bit:`. So f32/f64 encode/decode
+#     read the true IEEE bits natively (like Forth, far easier than Rexx's
+#     all-decimal hand-roll). The f16 half-float leg + the shortest-float ladder
+#     stay hand-rolled bit arithmetic (as everywhere) but operate on real bits.
+#     SHA-256 COULD be native (the pure-Smalltalk `Cryptography` package), but for
+#     a single audited crypto source + Ed448 agility we route ALL crypto through
+#     the C-ABI (see next).
+#   - Crypto (Ed25519 + SHA-256/384 + Ed448): NO native AUDITED Ed25519 in the
+#     Pharo base image (the community routes Ed25519 through libsodium via FFI;
+#     the pure-Smalltalk `Cryptography` package has SHA-256/DSA but no audited
+#     Ed25519) → FFI over the C-ABI (libentitycore_codec) via Pharo's UNIFIED FFI
+#     (UFFI): `self ffiCall: #( int32 ec_ed25519_sign(...) ) module: LibName`.
+#     UFFI is a GENUINE IN-PROCESS FFI (the VM dlopen's the .so and marshals via
+#     libffi) — the same clean in-process shape as Forth's libcc c-function; NO
+#     subprocess/FIFO/co-process daemon (Rexx's A-RX-011 transport pain does NOT
+#     arise). SHA-256 is taken from the SAME C-ABI (ec_sha256) so the whole crypto
+#     surface has one audited source (libsodium, statically linked into the .so).
+#   - Sockets: Pharo ships a `Socket` class (non-blocking BSD sockets over the VM's
+#     SocketPlugin) with `waitForDataUntil:` / readable-testing — a select-equivalent
+#     usable from a single green process. The peer is a SINGLE-EVENT-LOOP over one
+#     green process (the COBOL/Rexx/Forth pattern): §7b store-safety is STRUCTURAL
+#     (the Pharo VM runs all green processes on ONE native OS thread, cooperative
+#     scheduler → no true parallel store access, no lock needed if the store is
+#     touched from one process); the §6.11 handler-outbound reentry is a manual
+#     correlation pump (the correlation-map tax the non-actor/non-CSP peers pay).
+#
+# S11: pin the toolchain + every dependency to an exact version + SHA-256.
+#      fedora:43 does NOT package Pharo → the VM + image are downloaded from
+#      files.pharo.org at PINNED URLs and VERIFIED by SHA-256 (the reproducibility
+#      mechanism; a floating `stable`/`latest` alias is NEVER used for the pin).
+#        - Pharo 13.0 image build.732 (sha e84a2d15c7), dated 2026-04-21 — well
+#          over the 30-day supply-chain cool-down at authoring (2026-07-12).
+#          Pharo 13.0.0 released 2025-05-24; 13 is the current stable major line.
+#        - Pharo VM: the Pharo-13 stable Linux x86_64 VM artifact
+#          (get-files/130/pharo-vm-Linux-x86_64-stable.zip), a FIXED build
+#          last-modified 2025-11-17 (8 months old; a stable-line artifact, not a
+#          rolling nightly). Pinned by URL + SHA-256.
+#      libentitycore_codec statically+privately links the image's libsodium.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Versions confirmed available (2026-07-12):
+#   Pharo image   13.0 build.732 / sha e84a2d15c7  (2026-04-21)
+#                 SHA-256 5977dac81cddae745bb4b1747b3047900fbe4d64af10bfef36d01679e1ad5a5f
+#   Pharo VM      Linux-x86_64 stable (last-mod 2025-11-17)
+#                 SHA-256 b4b344a8236f43f08eedad205ca6a292f85bbcbe107f5d68aed04595c43e83ed
+#   libtool/gcc/cmake (image) — build the C-ABI codec (libentitycore_codec).
+#   libffi        (image)     — the Pharo VM marshals UFFI call-outs via libffi.
+#   libsodium     1.0.22      — statically+privately linked into
+#                               libentitycore_codec.{so,a} by its CMake.
+#   Pharo VM shared-lib deps (SDL2 etc. ship inside the VM zip; the VM runs
+#   headless without a display via the `--headless` launch / no-window image).
+# CBOR + base58 + varint are hand-rolled pure Smalltalk in-repo (no Pharo pkg
+# gives canonical ECF; A-005, 10th peer to hit it). Ed25519 has no native audited
+# Pharo lib → the C-ABI FFI binding is mandatory (like COBOL/Rexx/Tcl/Forth).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (S1 this session — verifies the substrate probes at image-build time):
+#   podman build -t entity-core-keystone/pharo-toolchain:latest \
+#     -f containers/pharo-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps.
+# UFFI needs libffi at runtime (the VM marshals call-outs via libffi).
+# gcc/gcc-c++/cmake/make/pkgconfig: build the C-ABI codec (libentitycore_codec).
+# libsodium-static + libsodium-devel: the C-ABI CMake STATICALLY + PRIVATELY links
+#   libsodium into libentitycore_codec.{so,a}. Without these the C-ABI build FATALs.
+# unzip: expand the pinned VM + image zips.
+# The Pharo VM headless links a handful of system libs (freetype/fontconfig/
+# libuuid/openssl); install the common set so the VM loads cleanly headless.
+RUN dnf install -y \
+        libffi libffi-devel \
+        gcc gcc-c++ cmake make pkgconfig \
+        libsodium-static libsodium-devel \
+        unzip git curl ca-certificates findutils which tar \
+        glibc-langpack-en \
+        freetype fontconfig libuuid openssl \
+    && dnf clean all
+
+# Wire data is byte-oriented; pin a UTF-8 locale so non-ASCII text vectors + argv
+# load cleanly. Pharo Strings are UTF-8-aware; the codec works over ByteArray.
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# ── Fetch + SHA-256-VERIFY the pinned Pharo VM + image (S11). A floating
+#    stable/latest alias is NEVER trusted; the exact bytes are pinned. ──
+ARG PHARO_VM_URL=https://files.pharo.org/get-files/130/pharo-vm-Linux-x86_64-stable.zip
+ARG PHARO_VM_SHA256=b4b344a8236f43f08eedad205ca6a292f85bbcbe107f5d68aed04595c43e83ed
+ARG PHARO_IMAGE_URL=https://files.pharo.org/image/130/Pharo13.0-SNAPSHOT.build.732.sha.e84a2d15c7.arch.64bit.zip
+ARG PHARO_IMAGE_SHA256=5977dac81cddae745bb4b1747b3047900fbe4d64af10bfef36d01679e1ad5a5f
+
+WORKDIR /opt/pharo
+RUN curl -fsSL -o vm.zip "$PHARO_VM_URL" \
+    && echo "$PHARO_VM_SHA256  vm.zip" | sha256sum -c - \
+    && unzip -q vm.zip -d vm \
+    && rm -f vm.zip \
+    && curl -fsSL -o image.zip "$PHARO_IMAGE_URL" \
+    && echo "$PHARO_IMAGE_SHA256  image.zip" | sha256sum -c - \
+    && unzip -q image.zip -d image \
+    && rm -f image.zip \
+    && ln -s "$(ls /opt/pharo/image/*.image | head -1)" /opt/pharo/Pharo.image
+
+# The `pharo` launcher wraps the VM + its lib/ .so plugins. Put it on PATH.
+# Headless: the SDL VM runs without a display when no window is opened (a
+# `pharo <image> eval "..."` call never opens the world). We force headless via
+# the launcher flag as belt-and-suspenders.
+ENV PHARO_HOME=/opt/pharo
+ENV PATH=/opt/pharo/vm/bin:$PATH
+# The launcher finds its libs relative to bin/; make the plugin dir explicit too.
+ENV LD_LIBRARY_PATH=/opt/pharo/vm/lib:$LD_LIBRARY_PATH
+
+# ── Verify the Pharo pin BOOTS HEADLESS + the substrate primitives the codec
+#    depends on ──
+#   - the VM boots the image headless and evaluates Smalltalk from argv
+#   - integers are ARBITRARY-PRECISION bignums: 2^64-1 is exact, class promotes
+#     to LargePositiveInteger (the bignum class → uint64 head-form carried FREE)
+#   - IEEE float bits reachable natively: `1.0 asIEEE64BitWord` = 16r3FF0000000000000
+#     and `1.0 asIEEE32BitWord` = 16r3F800000 (the native-float-bits win)
+#   - ByteArray + bit ops assemble a big-endian uint64 (the byte engine)
+#   - blocks + recursion work (the CBOR encoder is a recursive message-send)
+#   IMPORTANT (CONFIRMED at S1): the VM must be launched HEADLESS via the
+#   `--headless` FLAG BEFORE the image path — `pharo --headless <image> eval "…"`.
+#   Without `--headless` the Pharo 13 launcher tries to open the Morphic World and
+#   FATALs with "Invalid window handle" under a no-display container. A doit signals
+#   a nonzero exit by raising an Error (verified: `Error signal:` → exit 1); the
+#   evaluated expression's value is printed to stdout, so each probe returns a
+#   marker string and raises on any mismatch.
+RUN cat > /tmp/probe.st <<'ST'
+"All temporaries declared at the top (a single doit; a temp decl cannot follow a
+ statement). Each check raises an Error on failure (→ nonzero exit); the doit
+ returns a success marker string that the eval handler prints."
+| u64max ba fact |
+"--- arbitrary-precision bignum: uint64 max is exact + promotes to LargeInteger ---"
+u64max := (2 raisedTo: 64) - 1.
+u64max = 18446744073709551615 ifFalse: [ Error signal: 'FATAL: uint64 max not exact' ].
+u64max class name = #LargePositiveInteger ifFalse: [ Error signal: 'FATAL: 2^64-1 not LargePositiveInteger (bignum class expected)' ].
+"--- native IEEE float bits (f64 + f32) + inverse ---"
+1.0 asIEEE64BitWord = 16r3FF0000000000000 ifFalse: [ Error signal: 'FATAL: asIEEE64BitWord not IEEE f64' ].
+1.0 asIEEE32BitWord = 16r3F800000 ifFalse: [ Error signal: 'FATAL: asIEEE32BitWord not IEEE f32' ].
+(Float fromIEEE64Bit: 16r3FF0000000000000) = 1.0 ifFalse: [ Error signal: 'FATAL: fromIEEE64Bit inverse' ].
+"--- big-endian uint64 byte assembly into a ByteArray ---"
+ba := ByteArray new: 8.
+1 to: 8 do: [ :i | ba at: i put: ((u64max bitShift: (0 - (8 * (8 - i)))) bitAnd: 16rFF) ].
+((ba at: 1) = 16rFF and: [ (ba at: 8) = 16rFF ]) ifFalse: [ Error signal: 'FATAL: BE uint64 assembly wrong' ].
+"--- minimal-int head arithmetic sanity ---"
+((256 bitShift: -8) bitAnd: 16rFF) = 1 ifFalse: [ Error signal: 'FATAL: head shift/mask' ].
+"--- blocks + recursion (the CBOR encoder is a recursive message-send) ---"
+fact := nil.
+fact := [ :n | n > 1 ifTrue: [ n * (fact value: n - 1) ] ifFalse: [ 1 ] ].
+(fact value: 5) = 120 ifFalse: [ Error signal: 'FATAL: block recursion' ].
+'=== all pharo substrate probes passed (bignum uint64 + native IEEE f64/f32 + BE ByteArray + recursion) ==='
+ST
+RUN pharo --headless /opt/pharo/Pharo.image eval "$(cat /tmp/probe.st)" \
+    && pharo --headless /opt/pharo/Pharo.image eval "Smalltalk version" \
+    && rm -f /tmp/probe.st
+
+# ── Verify the UFFI mechanism (the crypto binding path) can call a C function in
+#    an external .so IN-PROCESS with the exact ec_* shape: a symbol taking borrowed
+#    (ptr,len) inputs + an out-ptr, returning an int32 status. THE critical
+#    FFI-hybrid probe: Pharo's UFFI dlopen's the .so and marshals via libffi
+#    (contrast Rexx, whose rxfuncadd was non-functional — A-RX-005). We build a
+#    tiny external libecfake.so exporting an ec_*-shaped symbol and bind it via the
+#    idiomatic `self ffiCall: #( int32 ec_fakefold(void*,uint64,void*) ) module:` —
+#    the EXACT mechanism used to bind libentitycore_codec's ec_* symbols at S2.
+#    CONFIRMED at S1: this is a genuine in-process libffi call (status 0, correct
+#    xor-fold result 0x0F), the same clean shape as Forth's libcc c-function.
+RUN mkdir -p /opt/ecfakelib && cat > /tmp/ecfake.c <<'C' && \
+    gcc -shared -fPIC -o /opt/ecfakelib/libecfake.so /tmp/ecfake.c
+#include <stdint.h>
+#include <stddef.h>
+int32_t ec_fakefold(const uint8_t *d, size_t n, uint8_t *out) {
+  uint8_t x = 0; for (size_t i=0;i<n;i++) x ^= d[i]; *out = x; return 0;
+}
+C
+# Define a transient FFI class binding the ec_*-shaped symbol, then call it. The
+# class-builder `Object << #Name` returns a ShiftClassBuilder → `install` yields the
+# class; `compile:` adds the ffiCall: method. The .so is on LD_LIBRARY_PATH so the
+# bare soname resolves (the same placement S2 uses for libentitycore_codec).
+RUN cat > /tmp/ffi.st <<'ST'
+| cls in out r |
+cls := (Object << #EcFakeProbe package: 'EcProbe') install.
+cls compile: 'foldOn: aByteArray len: n out: outByteArray
+  ^ self ffiCall: #( int32 ec_fakefold( void* aByteArray, uint64 n, void* outByteArray ) ) module: ''libecfake.so'' '.
+in := #[1 2 4 8].
+out := ByteArray new: 1.
+r := cls new foldOn: in len: 4 out: out.
+(r = 0 and: [ (out at: 1) = 16r0F ]) ifFalse: [ Error signal: 'FATAL: UFFI ec_*-shape r=', r printString, ' out=', (out at: 1) printString ].
+'UFFI in-process ec_*-shape (void*,uint64,void*)->int32 bound + called OK (status 0, xor-fold 0x0F)'
+ST
+RUN LD_LIBRARY_PATH=/opt/ecfakelib:$LD_LIBRARY_PATH \
+      pharo --headless /opt/pharo/Pharo.image eval "$(cat /tmp/ffi.st)" \
+    && rm -f /tmp/ffi.st /tmp/ecfake.c
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="pharo-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.pharo-image="13.0/130-build.732-e84a2d15c7 (image reports Pharo13.1.0SNAPSHOT)"
+LABEL org.entity-core-keystone.pharo-vm="Linux-x86_64-stable-20251117"
+LABEL org.entity-core-keystone.experimental="pure-object-live-image-message-passing-alien-substrate-probe"
+
+CMD ["/bin/bash"]

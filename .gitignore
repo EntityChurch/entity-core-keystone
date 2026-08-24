@@ -20,6 +20,11 @@ caps.local.sh
 # committed binary). Un-ignore the source so the entrypoint is tracked.
 !protocol-generator/cobol/bin/
 !protocol-generator/cobol/bin/**
+# …and the Smalltalk peer keeps its peer entry SOURCE in bin/ (bin/peer.st — a live-image
+# doit, NOT a compiled binary; the peer image itself is *.image, separately gitignored).
+# Un-ignore the source so the peer entrypoint is tracked.
+!protocol-generator/smalltalk/bin/
+!protocol-generator/smalltalk/bin/**
 **/obj/
 **/build/
 **/dist/

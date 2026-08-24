@@ -1,0 +1,278 @@
+# entity-core-protocol-smalltalk — Language Profile
+#
+# ALIEN-SUBSTRATE PROBE (PURE-OBJECT / LIVE-IMAGE / MESSAGE-PASSING). Peer #26.
+# Authored FRESH in S1 from the V8 spec-data + Pharo research — NOT ported from any
+# prior peer's profile. Smalltalk (Pharo) is the FIRST pure-object, live-image peer:
+# EVERYTHING is an object (an Integer, a Character, a Boolean, a Class), and ALL
+# control flow is MESSAGE-SENDS — `ifTrue:`, `whileTrue:`, `do:`, `ifNil:` are
+# messages to Boolean/Block/Collection, not language keywords. The program is a
+# persisted memory IMAGE (a live object graph), not a source tree compiled ahead of
+# time; code is added to the running image class-by-class, method-by-method.
+#
+# *** THE EXPERIMENTAL QUESTION THIS PROFILE EXISTS TO ANSWER ***
+# Prior peers ranged over procedural (COBOL/Rexx), stack (Forth), string (Tcl),
+# and typed/functional models. Smalltalk removes the procedure/keyword frame
+# entirely: there are no free functions (every operation is a method on an object),
+# no control-flow keywords (they are messages), no primitive values (all objects).
+# The GENERATOR-STRESS question: can the recursive canonical-CBOR encoder + the §5
+# capability chain-walk be expressed IDIOMATICALLY as message-sends over an object
+# graph — a value as a tagged `EntityValue` object, the codec as double-dispatch /
+# a visitor (`encodeOn:` polymorphic per value class) — or does the generator fall
+# into procedural "Smalltalk-flavored C" (a giant `case`-on-type method, primitive
+# obsession) that reads as translated, not native? This is the axis LANDSCAPE marks
+# for the alien-substrate track (paradigm distant enough to stress the generator).
+# Corroboration-first: the spec-discovery well is dry on the current wire surface
+# (25+ peers), so a fresh spec finding is the UPSIDE, not the expectation — the
+# primary payoff is generator robustness on a pure-OO / message-passing model.
+# See arch/PROFILE-RATIONALE.md.
+#
+# Profile authority (PROMPT-CONSTANTS): the agent MUST use the values declared here.
+# A "TBD" value is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "smalltalk"
+name              = "Smalltalk (Pharo)"
+tier              = "alien-substrate-probe"   # not a Tier-1..5 cohort slot; a pure-object/live-image/message-passing generator-stress probe
+package_name      = "entity-core-protocol-smalltalk"   # keystone peer id
+runtime           = "pharo-toolchain"         # references containers/pharo-toolchain/Containerfile
+interpreter       = "Pharo 13.0 (build.732, sha e84a2d15c7) on the Pharo Linux-x86_64 stable VM"
+                                              # Pharo 13 is the current stable major (13.0.0 released 2025-05-24). The
+                                              # image build.732 is dated 2026-04-21 (>30-day cool-down); the stable VM
+                                              # artifact is last-modified 2025-11-17. Both SHA-256-pinned in the
+                                              # Containerfile. CONFIRMED at S1 container build: boots headless via
+                                              # `pharo <image> eval "..."`.
+
+[codec]
+# strategy: FFI-HYBRID — hand-rolled canonical CBOR in PURE SMALLTALK (the pure-OO
+# message-passing probe lives here), crypto over the C-ABI (libentitycore_codec).
+# Same shape as COBOL (#22), Tcl (#23), Rexx (#24), Forth (#25): a native
+# value-codec for the parts the language CAN do, the C-ABI for the crypto it cannot.
+# Rationale for each half:
+#
+#   (1) CBOR: hand-rolled canonical encoder/decoder in pure Smalltalk (Cbor class
+#       hierarchy). No Pharo CBOR library gives canonical ECF (the A-005 pattern,
+#       now 10th peer). Smalltalk's ByteArray + integer bit-ops ARE a competent byte
+#       assembler:
+#         ByteArray new: n / at:put: / at:      → store/fetch bytes
+#         bitShift: / bitAnd: / bitOr: / bitXor: → the bit engine (message-sends)
+#         integers are ARBITRARY-PRECISION BIGNUMS (SmallInteger promotes to
+#         LargePositiveInteger transparently, CONFIRMED at S1) → the full uint64
+#         range [0, 2^64-1] is carried FREE. This is the BIGNUM class
+#         (Rexx/Python/CL/Elixir/Haskell) — NO fixed-width head-form self-test tax
+#         (contrast Forth/Zig/C#/OCaml, the fixed-width class). The CBOR head form is
+#         still emitted explicitly (minimal-argument encoding per the spec), but
+#         there is no [2^63, 2^64-1] signed/unsigned boundary hazard (A-ST-001).
+#       Big-endian byte assembly is a bitShift:/bitAnd: loop into a ByteArray
+#       (native; §5.1 frame is BE u32; ints BE per head width).
+#       The FLOAT tower (mt7) is REACHABLE NATIVELY (like Forth, a real win over
+#       Rexx): Pharo's Float has `asIEEE64BitWord` (→ the 64-bit Integer of the raw
+#       IEEE-754 bits), `asIEEE32BitWord` (f32), and the inverses
+#       `Float fromIEEE64Bit:` / `fromIEEE32Bit:` (CONFIRMED at S1:
+#       `1.0 asIEEE64BitWord = 16r3FF0000000000000`). So f32/f64 encode/decode read
+#       the true IEEE bits natively; only the f16 half-float leg + the shortest-float
+#       ladder (does the value round-trip through f16/f32 exactly?) are hand-rolled
+#       bit arithmetic — but from REAL float bits, not decimal computation
+#       (A-ST-002; far less hand-roll than Rexx's decimal float).
+#
+#   (2) Crypto: NO native AUDITED Ed25519 in the Pharo base image. The pure-Smalltalk
+#       `Cryptography` package ships SHA-256/DSA/MD5 but NO audited Ed25519; the
+#       community routes Ed25519 through libsodium via FFI (Crypto-Nacl). So the §9.1
+#       signature floor is an FFI obligation from the start (like COBOL/Tcl/Rexx/
+#       Forth): bind libentitycore_codec via Pharo's UNIFIED FFI (UFFI). UFFI is a
+#       GENUINE IN-PROCESS FFI — the VM dlopen's the .so and marshals call-outs via
+#       libffi; the idiomatic surface is a method `^ self ffiCall: #( int32
+#       ec_ed25519_sign(void* priv, void* msg, uint64 msg_len, void* out) ) module:
+#       LibEntityCoreCodec`. This is the same clean in-process shape as Forth's libcc
+#       c-function — NO subprocess/FIFO/co-process daemon (Rexx's A-RX-011 transport
+#       pain does NOT arise). SHA-256/384 are taken from the SAME C-ABI (ec_sha256 /
+#       ec_sha384) so the entire crypto surface has ONE audited source (libsodium,
+#       statically linked into the .so) — even though SHA-256 could be native.
+strategy          = "ffi-hybrid"
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native", impl = "pure-Smalltalk over ByteArray + bitShift:/bitAnd:/bitOr: message-sends; f32/f64 via native Float asIEEE64BitWord/asIEEE32BitWord; f16 + shortest-float ladder hand-rolled bit arithmetic" }
+ed25519_library   = { name = "libentitycore_codec (Pharo UFFI ffiCall:module:, in-process libffi)", version = "C-ABI 1.1", api = "ec_ed25519_{seed_to_pubkey,sign,verify,keygen} + ec_sha256/384" }
+ed448_library     = { name = "libentitycore_codec (Pharo UFFI ffiCall:module:)", version = "C-ABI 1.1", strategy = "ffi", api = "ec_ed448_{seed_to_pubkey,sign,verify}" }
+sha256_source     = "libentitycore_codec ec_sha256 (FFI via UFFI); the pure-Smalltalk Cryptography package HAS SHA-256 but crypto is unified on the one audited C-ABI source"
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (Base58 class); base-256->base-58 over bignum arithmetic (free, arbitrary precision)
+varint_handling   = "native"                  # LEB128 multikey varint (N1, §7.3), Varint class — pure Smalltalk over bitShift:/bitAnd: + ByteArray
+numeric_model     = "bignum"                  # arbitrary-precision (SmallInteger->LargePositiveInteger, CONFIRMED S1); uint64 [0,2^64-1] carried FREE; NO fixed-width self-test tax (bignum class: Rexx/Python/CL/Elixir/Haskell)
+
+[error_model]
+# Smalltalk's idiomatic error mechanism is EXCEPTIONS: an `Error` subclass is raised
+# with `signal:` and caught with `[ ... ] on: SomeError do: [ :ex | ... ]`. This is a
+# clean structured-unwind (the block-based `on:do:` restores the stack). Reject-KINDs
+# map to a namespaced Error subclass hierarchy under a base `EntityCoreError` (the
+# idiomatic Smalltalk exception tree, class-per-kind — unlike Forth's integer THROW
+# code, Smalltalk exceptions are first-class objects carrying a class + message +
+# arbitrary payload). Absent/"not found" is an in-band sentinel object (a distinct
+# `EntityAbsent` singleton), NOT `nil` and NOT the empty ByteArray — the empty
+# byte/text string is a legitimate wire value (A-ST-007), so absent is a distinguished
+# object, never `nil`-conflated (Smalltalk's `nil` is itself an object and would
+# collide with a legitimately-nil field).
+style             = "exceptions"             # Smalltalk Error subclasses; `signal:` / `[...] on: E do: [:ex| ...]` — the idiomatic structured unwind
+base_exception    = "EntityCoreError"
+exception_hierarchy = [
+    "EntityCoreError",
+    "  EntityCodecError",
+    "    NonCanonicalEcfError",
+    "    TruncatedInputError",
+    "    TagRejectedError",
+    "  EntityCryptoError",
+    "    BadSeedError",
+    "    UnsupportedKeyTypeError",
+    "    UnsupportedContentHashFormatError",
+    "  EntityProtocolError",
+    "    HelloFailedError",
+    "    AuthenticationError",
+    "  EntityTransportError",
+    "    RecvTimeoutError",
+    "    ConnectionBrokenError",
+]
+absent_sentinel   = "an EntityAbsent singleton object (NOT nil, NOT the empty ByteArray — the empty byte/text string is a legitimate wire value, A-ST-007)"
+
+[async]
+# The Pharo VM runs ALL green processes on ONE native OS thread (a cooperative
+# scheduler with priority preemption — CONFIRMED by research). There is no true
+# shared-memory parallelism: only one green process runs at a time. The peer is a
+# SINGLE-EVENT-LOOP over one green process (the COBOL/Rexx/Forth pattern). Sockets
+# come from Pharo's `Socket` class (non-blocking BSD sockets over the VM's
+# SocketPlugin) with readiness-testing (`waitForDataUntil:` / `isConnected` /
+# data-available polling) — a genuine native socket path, NO co-process daemon
+# needed (contrast Rexx's A-RX-008 FIFO pivot; the Pharo VM links the socket syscalls
+# via the SocketPlugin). §7b store-safety is STRUCTURAL: the store is touched from a
+# single green process on a single OS thread → no true concurrent access, no lock
+# (the same structural argument as Forth/COBOL single-thread; here it is the VM's
+# single-native-thread green-process model rather than a raw OS single thread — same
+# store-safety outcome). The §6.11 handler-initiated outbound-dispatch reentry is a
+# MANUAL correlation pump (as in COBOL/Rexx/Forth): the handler sends then re-enters a
+# bounded receive loop to await the correlated reply by request_id — no separate OS
+# thread; a pending-record table keyed by req_id in the one image (the correlation-map
+# tax the non-actor/non-CSP peers pay).
+style             = "single-event-loop"       # one green process, native non-blocking Socket + readiness-test; no OS threads
+socket_source     = "Pharo Socket class (non-blocking BSD sockets over the VM SocketPlugin; readiness via waitForDataUntil:/data-available) — native, in-process; NO co-process daemon"
+event_primitive   = "an accept/read loop over the listen Socket + per-connection Sockets, each frame dispatched to completion before the next; readiness by waitForDataUntil:"
+request_demux     = "request_id -> a pending record in a Dictionary keyed by req_id, in the one image; matched in the reentry pump"
+store_model       = "content store + tree as Dictionary / OrderedCollection object graphs in the one image — structurally race-free (single native OS thread, cooperative green processes)"   # §4.8/§7b; no lock
+tcp_nodelay       = true                       # setsockopt TCP_NODELAY on accepted/dialed Sockets (§7b) — via Socket option or an FFI setsockopt
+blocking_discipline = "readiness-test (waitForDataUntil: with a timeout) gates every read so no call blocks the single green process indefinitely; a per-op timeout bounds the reentry pump"
+
+[naming]
+# Smalltalk naming is STRONGLY conventional and enforced by community norm:
+#   - Classes: PascalCase (EntityEnvelope, CborEncoder, CapabilityChain).
+#   - Methods / message selectors: camelCase, keyword messages end each part with ':'
+#     (encodeValue:on:, verifyRequest:against:). Selectors read as prose.
+#   - Instance variables + temporaries + arguments: camelCase (publicKey, seedBytes,
+#     requestId).
+#   - Class-side "constants" are methods (there are no top-level constants):
+#     `EntityLimits maxChainDepth` returns 64. A pool variable or a class-side accessor
+#     is the idiom, NOT a screaming-snake global.
+#   - There is NO namespace/package keyword in the language; code organization is by
+#     CLASS + by PACKAGE (a Tonel package = a directory of class definitions). Class
+#     names are globally unique in the image, so a project prefix keeps the global
+#     namespace clean: classes are prefixed `Ec` (EcCborEncoder, EcEntity,
+#     EcCapability) OR grouped under a `EntityCore-*` package with unprefixed names —
+#     the profile uses the `Ec`-prefix to guarantee global-name uniqueness in a shared
+#     image (the Smalltalk analogue of the Forth word-prefix, A-ST-008).
+proc_names        = "camelCase keyword/unary message selectors (encodeValue:on:, peerDispatch:, capVerifyRequest:) — methods on objects, never free functions"
+namespace_scheme  = "Ec-prefixed globally-unique class names (EcCborEncoder, EcEntity) grouped in EntityCore-* Tonel packages; no namespace keyword in the language"
+aggregate_unit    = "a class with instance variables (the record analogue): EcEntity has type/data/contentHash ivars with camelCase accessors; the double-dispatch codec dispatches on the value object's class"
+variable_names    = "camelCase (publicKey, seedBytes, requestId); instance vars + temporaries + args"
+constant_names    = "class-side accessor methods returning the value (EntityLimits maxChainDepth -> 64); no top-level constants exist in Smalltalk"
+file_names        = "Tonel: one .class.st per class OR a package .st; the package directory is EntityCore-Codec/, EntityCore-Peer/, EntityCore-Crypto/"
+main_program      = "a headless entry script loaded via `pharo <image> eval` / a saved image with a startup handler; the peer class EcPeer has a `startOn:` entry"
+
+[build]
+# Pharo is a LIVE-IMAGE system — there is no ahead-of-time compile step producing a
+# binary. Code is loaded into a running .image (via Metacello/Tonel). "Build" = load
+# the Tonel package tree into a base image (producing a peer .image) + build the
+# libentitycore_codec .so (its CMake) so UFFI can bind it. There is no cargo/dotnet
+# build tool; the load recipe is a Metacello baseline / a load script.
+build_tool        = "Pharo VM + Metacello/Tonel (image load) + gcc/cmake for the C-ABI codec .so"
+build_command     = "make ffi   # build libentitycore_codec (its CMake) ; make image  # load the Tonel packages into a fresh Pharo image via a load script"
+test_command      = "pharo entity-core.image test EntityCore   # run the SUnit test classes headless via the DTU/test CLI"
+package_command   = "make dist  # save the loaded peer .image + the Tonel source tree + the libentitycore_codec build recipe + a load stub"
+
+[layout]
+src_dir           = "src/"                     # Tonel packages: EntityCore-Codec/, EntityCore-Peer/, EntityCore-Crypto/, EntityCore-Capability/
+test_dir          = "tests/"                   # SUnit test classes (EntityCore-Tests/): TestCase subclasses
+ffi_dir           = "src/EntityCore-Crypto/"   # the UFFI crypto binding (EcLibEntityCoreCodec: FFI class over libentitycore_codec)
+entry_point       = "load.st"                  # Metacello/Tonel load script: loads every package + warms the UFFI binding
+ffi_binding       = "src/EntityCore-Crypto/EcLibEntityCoreCodec.class.st"   # UFFI ffiCall:module: bindings for libentitycore_codec's ec_* symbols
+
+[publishing]
+# Smalltalk/Pharo distribution is Metacello + a git repo (loaded via
+# `Metacello new baseline: 'EntityCore'; repository: 'github://...'; load`). There is
+# a Pharo catalog (catalog.pharo.org) but inclusion is a listing, not a binary
+# registry (no PyPI/crates analogue). Publish = tag a git release with the Tonel
+# source tree + a Metacello baseline + the libentitycore_codec build recipe;
+# optionally list on the Pharo catalog. Analogous to Forth/COBOL/Rexx (source
+# distribution, not a binary registry) — registry-publish deferred like the cohort.
+registry          = "Metacello baseline + git (github://) ; optional Pharo catalog listing (no binary registry exists)"
+registry_url      = ""                          # TBD on first publish
+package_id        = "entity-core-protocol-smalltalk"
+license_expression = "Apache-2.0"
+repository_url     = ""                          # TBD on first publish
+
+[license]
+generated_outputs = "Apache-2.0"               # S9 default. The Pharo image + VM are MIT-licensed; the ecosystem is license-mixed with no mandate — keep the Apache-2.0 default (explicit patent grant). No GPL-runtime interaction (unlike Forth on gforth); the Pharo VM/image are MIT, so no copyleft note needed at S5.
+
+[testing]
+# Pharo ships SUnit (the ORIGINAL xUnit — Smalltalk is where the pattern was born) IN
+# THE BASE IMAGE. So, unlike the FFI-hybrid cohort (COBOL/Rexx/Tcl/Forth all
+# hand-rolled a harness for lack of a framework), Smalltalk has a FIRST-CLASS bundled
+# test framework at zero dependency cost: TestCase subclasses with `assert:equals:`.
+# The conformance harness is SUnit TestCase classes that load the pinned v0.8.0
+# fixtures and assert byte-identity against the hand-rolled codec + the UFFI crypto
+# binding. Run headless via the Pharo test CLI (`pharo image test <Package>`).
+framework         = "SUnit (bundled in the base Pharo image — the original xUnit; zero dependency cost)"
+runner            = "pharo entity-core.image test EntityCore  (headless SUnit CLI) ; TestCase subclasses in tests/"
+conformance_probe = "load spec-data v0.8.0 fixtures; assert byte-identity vs the hand-rolled codec + the UFFI crypto binding, in SUnit TestCase classes"
+
+[container]
+base_image        = "entity-core-keystone/pharo-toolchain:latest"
+build_in_container = true
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/smalltalk entity-core-keystone/pharo-toolchain:latest sh -c 'pharo /opt/pharo/Pharo.image eval \"...\"'"
+
+[idiom]
+# PURE-OBJECT / LIVE-IMAGE / MESSAGE-PASSING hints — the seams where this substrate is
+# unlike every prior peer.
+pure_object            = true                 # THE headline. EVERYTHING is an object: Integers, Characters, Booleans, Classes, Blocks. There are no primitive value types and no free functions — every operation is a method (message-send) on an object. The recursive codec is a polymorphic `encodeOn:`/double-dispatch over value-object classes, NOT a procedural type-switch. The generator-stress axis (A-ST-000).
+message_passing        = true                 # ALL control flow is message-sends: `ifTrue:ifFalse:` is a message to a Boolean, `whileTrue:` to a Block, `do:`/`inject:into:` to a Collection, `ifNil:` to any object. There are NO control-flow keywords. The codec's branching reads as message-sends; a `case`-style dispatch is class-polymorphism (double dispatch), not a switch.
+live_image             = true                 # the program is a persisted memory IMAGE (a live object graph), not an AOT-compiled source tree. Code is added class-by-class/method-by-method into a running image; "build" = load Tonel packages into a base image (there is no binary artifact). The dynamic caveat: correctness rests on the conformance corpus (no static type check; selectors resolve at send time).
+bignum_integers        = true                 # A-ST-001: SmallInteger promotes to LargePositiveInteger transparently (CONFIRMED S1: `(2 raisedTo: 64) - 1` is exact + class = LargePositiveInteger). The full uint64 range [0, 2^64-1] is carried FREE — the BIGNUM class (Rexx/Python/CL/Elixir/Haskell), NO fixed-width [2^63,2^64-1] boundary self-test tax (contrast Forth/Zig/C#/OCaml). The CBOR head form is still emitted explicitly (minimal-argument), but there is no signed/unsigned width hazard.
+native_float_bits      = true                 # A-ST-002: Pharo's Float has `asIEEE64BitWord` / `asIEEE32BitWord` (→ the raw IEEE-754 bits as an Integer) + inverses `Float fromIEEE64Bit:`/`fromIEEE32Bit:` (CONFIRMED S1: `1.0 asIEEE64BitWord = 16r3FF0000000000000`). f32/f64 encode/decode read the true IEEE bits natively (like Forth, far easier than Rexx's decimal float). Only the f16 leg + the shortest-float ladder stay hand-rolled bit arithmetic, from real float bits.
+byte_string_native     = true                 # A-ST-004: a ByteArray is a first-class byte-vector; text is a String (UTF-8-aware). The codec works over ByteArray throughout; byte-vs-text (mt2 vs mt3) intent is carried EXPLICITLY in the tagged value object (a class distinction: EcByteString vs EcTextString), never inferred. String>>utf8Encoded / asByteArray give the wire byte count; take the BYTE length, never the character count (the char-vs-byte discipline, A-ST-004).
+explicit_value_tagging = true                 # A-ST-003: because dispatch is by object class, int-vs-float and bytes-vs-text intent live in the value object's CLASS (EcInt vs EcFloat, EcByteString vs EcTextString) — the codec double-dispatches on it. The peer NEVER infers a CBOR major type from a raw Smalltalk value (a `1` could be int-or-float intent). Same explicit-intent discipline as Tcl/Rexx/Forth, expressed here as class polymorphism.
+in_process_ffi         = true                 # A-ST-005 (KEY differentiator, like Forth): Pharo's UFFI (`ffiCall:module:`) is a GENUINE IN-PROCESS libffi binding (the VM dlopen's the .so, marshals via libffi). Crypto is a direct in-process call to libentitycore_codec — NO subprocess/FIFO/co-process daemon (Rexx's A-RX-011 transport pain does NOT arise). The crypto binding is a class `EcLibEntityCoreCodec` with one method per ec_* symbol.
+native_sockets         = true                 # Pharo's Socket class is a native in-process BSD-socket path (non-blocking + readiness-test) — NO co-process daemon (contrast Rexx A-RX-008). Single green-process event loop.
+single_event_loop      = true                 # §7b store-safety structural (the VM runs all green processes on ONE native OS thread, cooperative scheduler → no true concurrent store access); §6.11 reentry a manual pump (COBOL/Rexx/Forth-shape, correlation-map tax).
+sunit_bundled          = true                 # SUnit (the original xUnit) is in the base image — a first-class bundled test framework at zero dependency cost (unlike the rest of the FFI-hybrid cohort, which hand-rolled a harness).
+no_compile_gate        = true                 # live-image; NO static type check (selectors resolve at send time; a value is any object). Correctness rests on the conformance corpus (the dynamic caveat, as Tcl/Rexx/Forth).
+pharo_version          = "13.0 (build.732, sha e84a2d15c7) on the Linux-x86_64 stable VM"
+
+[deps]
+# Exact pins (S11). Toolchain pins mirrored in containers/pharo-toolchain/Containerfile
+# (with SHA-256). The third-party RUNTIME surface is small: the Pharo VM + base image
+# (SUnit, UFFI, Socket, Float IEEE words, bignums — all bundled) + libentitycore_codec
+# (bound via UFFI). No native audited Ed25519 exists in the base image.
+pharo_image       = "13.0 build.732 sha e84a2d15c7 (2026-04-21) — SHA-256 5977dac81cddae745bb4b1747b3047900fbe4d64af10bfef36d01679e1ad5a5f"   # Pharo 13.0.0 released 2025-05-24; build.732 dated 2026-04-21 (>30-day cool-down). Bundles UFFI, SUnit, Socket, Float asIEEE64BitWord/asIEEE32BitWord, arbitrary-precision integers. CONFIRMED at the S1 container build: boots headless; bignum uint64 exact; native IEEE float bits; BE ByteArray assembly; block recursion.
+pharo_vm          = "Linux-x86_64 stable (last-mod 2025-11-17) — SHA-256 b4b344a8236f43f08eedad205ca6a292f85bbcbe107f5d68aed04595c43e83ed"   # the Pharo-13 stable Linux x86_64 VM artifact (get-files/130/pharo-vm-Linux-x86_64-stable.zip), a fixed build (not a rolling nightly), 8 months old at authoring.
+libentitycore_codec = "C-ABI 1.1"              # the crypto floor .so (pinned at the ffi-generator layer). Bound via UFFI `ffiCall: #(...) module: '<path>/libentitycore_codec.so'`; placed on LD_LIBRARY_PATH (dlopen) at build/run.
+libsodium         = "1.0.22 (image-provided, fedora:43)"  # statically+privately linked into libentitycore_codec by its CMake
+libffi            = "image-provided (fedora:43)"  # Pharo's UFFI marshals call-outs via libffi; recorded at build
+
+[spec]
+spec_version_pinned = "0.8.0"                  # spec-data snapshot protocol-generator/shared/spec-data/v0.8.0/ (V8). Confirm the three SHA-256 pins in MANIFEST.md unchanged at S2.
+codec_corpus      = "v0.8.0"                    # ECF corpus protocol-generator/shared/test-vectors/v0.8.0/ (conformance-vectors-v1.cbor); core wire byte-unchanged across V7->V8.
+oracle_commit     = "cc1970f"                   # go oracle for S4 (public HEAD, re-normalized 2026-07-10). core-gate fingerprint 8261a033… ; target --profile core = 0 FAIL. Build via tools/oracle-bootstrap.sh.
+# PEER_ID CONSTRUCTION (corroborates the cohort — Zig/OCaml/CL/Prolog/Tcl/Rexx/Forth):
+# derive the Ed25519 peer_id from the §1.5 CANONICAL-FORM TABLE — hash_type = 0x00
+# identity-multihash, digest = the RAW 32-byte public key (NO SHA256(pubkey)
+# skeleton). peer_id wire form = Base58(key_type || hash_type || digest). §7.4 already
+# defers to the §1.5 table on the v0.8.0 snapshot — settled, baked in to avoid the S4
+# handshake debug cycle.
+# COHORT-SETTLED TRAPS pre-resolved here (do NOT re-burn): lowercase %02x hex for
+# §3.4/§3.5 tree-paths (A-CL-009); §5.2 401/403/401-unresolvable authz trichotomy;
+# entity `data` is an arbitrary ECF value, NOT necessarily a map (A-JAVA-010);
+# §4.10 chain-depth pre-check -> 400 chain_depth_exceeded (depth 64), 16 MiB payload
+# -> 413 payload_too_large; §7b store-race-safety (structural here) + TCP_NODELAY +
+# no blocking calls on the single-event-loop path.
