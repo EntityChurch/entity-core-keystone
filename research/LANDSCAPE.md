@@ -40,10 +40,10 @@
 |---|---|---|---|---|---|
 | **Zig** | **peer #5** (parallel harness, spec-first) | **hand-rolled ECF, comptime dispatch** (A-005; `std`-only, no zig-cbor/libsodium) | **`std.crypto`** (Ed25519+SHA-2 in-tree); **Ed448 gap** (A-ZIG-002 — no native, no BouncyCastle-equiv → hybrid-FFI deferred) | **native floor, std-only ZERO-dep** (ffi default overturned) | **✅ S1→S5 green** 568/0F spec-first; no-GC/error-union/comptime; lightest supply-chain in cohort; native u64+overflow-trap; only memory-ownership+leak-correctness dimension. See `protocol-generator/zig/status/`. |
 | **Odin** | T3 | minimal direct CBOR support | libsodium via C interop | ffi | not-started |
-| **Nim** | T3 | `cbor` package (smaller) | libsodium via C interop | ffi | not-started |
+| **Nim** | T3 | **hand-rolled ECF** (compile-time `macro`/`template` major-type dispatch; `cbor` pkg declined — A-NIM-001, A-005 pattern) | **libsodium via native `{.importc.}` C interop** (Ed25519 + SHA-256; **Ed448 gap** → opt-in FFI deferred) | **native floor** (ffi first-pass overturned — Nim compiles to C, so `{.importc.}` is in-process, not a foreign bridge) | **✅ S1→S5 green** — 682·0F @ `cc1970f` (293P/293W/0F/96S); corroboration / generator-robustness peer on the **compile-time-metaprogramming codec** + fixed-width-uint64 axes; native codec **71/71 first-run** (0 fixes), genuine 2-of-3 accept-path + `tests/tmultisig.nim` 4/4, origination-core 3/3; publish-ready `0.1.0-pre`. **Surfaced F32** (A-NIM-009 §4.2/§4.4-vs-§5.2a author-absent status → arch). |
 | **Crystal** | T3 | `cbor.cr` (smaller) | libsodium via shard | ffi | not-started |
 | **D** | T3 | `dcbor` (smaller) | libsodium via Deimos bindings | ffi | not-started |
-| **Julia** | T3 | `CBOR.jl` | `Sodium.jl` | ffi (lean) or native | not-started |
+| **Julia** | T3 | **hand-rolled ECF** (**multiple-dispatch** canonical CBOR; `CBOR.jl` declined — A-JULIA-002, no ECF guarantees) | **system libsodium via `ccall`** + `SHA` stdlib (native-audited-lib tier, NOT the C-ABI; **Ed448 gap** → opt-in FFI deferred A-JULIA-004) | **native floor** (ffi first-pass overturned; zero registered packages → `--network=none`) | **✅ S1→S5 green** — 682·0F @ `cc1970f` (292P/294W/0F/96S); corroboration / generator-robustness peer on the **multiple-dispatch codec** + **UInt64/BigInt hybrid-numeric** axes; native codec **71/71 first-run** (0 fixes), genuine 2-of-3 accept-path + `test/multisig_accept.jl` 8/8, origination-core 3/3; publish-ready `0.1.0-pre`. **Corroborated F32.** Tooling note A-JULIA-009 (`Pkg.test()` needs net even stdlib-only → offline path is direct `julia --project`). |
 | **COBOL** (GnuCOBOL) | T3 | **FFI** (no COBOL CBOR lib) | **FFI** (C-ABI, no COBOL crypto) | **ffi everything** | **queued — pre-release slate #6 (discovery bet, spike-first)**; alien substrate: PIC fixed-width records vs CBOR var-length, COMP-3 decimal vs binary int head-form, recursion support is the go/no-go |
 
 ## Tier 4 — Lisp family
@@ -90,6 +90,24 @@ scoped as a reach-modest curiosity pick but **not built** (it remains *not-start
 Tier-3 table above); the 22-peer cohort in `CONFORMANCE-MATRIX.md` is Odin-free. Per-peer
 codec/crypto strategy and conformance results are recorded in each peer's
 `protocol-generator/<lang>/status/` and summarized in `CONFORMANCE-MATRIX.md`.
+
+## Post-release: alien-substrate track (in progress)
+
+With the 22-peer cohort shipped and the maintenance loop solid, the ongoing work is
+a deliberate sweep of **alien substrates** — languages whose *paradigm* is distant
+enough to stress the generator and, where possible, probe the least-saturated
+wire-touching axis (string/encoding model). These are corroboration/robustness first;
+a fresh spec finding is the upside, not the expectation.
+
+| Peer | Substrate axis probed | Codec | Status |
+|---|---|---|---|
+| **Tcl** (#23) | **Everything-Is-A-String (EIAS)** — no intrinsic value type; the string/encoding axis from its extreme end (byte-vs-text, length-in-bytes, int-vs-float intent) | ffi-hybrid (hand-rolled pure-Tcl CBOR + C-ABI crypto via `cffi`) | **S1 done** — profile + rationale + ambiguity log + container authored (`protocol-generator/tcl/`). S2 (codec) next. |
+
+Candidate follow-ons (not yet started, roughly by insight-yield): Rexx (EIAS +
+native decimal), Forth (stack machine / no types — generator stress), Fortran
+(array/column — reach + robustness), APL/J (array model). Order is not fixed; the
+selection heuristic is the peer-selection compass (novelty on a wire-touching axis
+over idiom/packaging novelty).
 
 ## Sequencing (historical — first wave, all shipped)
 

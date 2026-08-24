@@ -1,0 +1,288 @@
+# entity-core-protocol-nim — Language Profile
+#
+# CORROBORATION / GENERATOR-ROBUSTNESS peer (Tier 3, LANDSCAPE.md). Authored FRESH
+# in S1 from the V8 spec-data (protocol-generator/shared/spec-data/v0.8.0/) + Nim
+# ecosystem research — NOT ported from any prior peer's profile. Nim is a
+# COMPILES-TO-C, statically-typed, GC'd (ARC/ORC) systems language whose headline
+# generator-stress axis is COMPILE-TIME METAPROGRAMMING (`macro` / `template` /
+# `{.compileTime.}` / `static:`): the canonical ECF encoder/decoder is expressed as
+# macro-driven, compile-time-dispatched code with zero runtime reflection — the same
+# "render from the model" pattern Zig reached via `comptime`, carried onto a substrate
+# with a garbage collector and a native C FFI. The discovery well is DRY on the current
+# wire surface (see status/PHASE-S1.md, honest framing): a Nim peer passing the author's
+# vectors is COHORT-CONSISTENT, not independent convergence. The value is generator
+# robustness (a macro-metaprogrammed codec + a clean native-C-interop crypto binding)
+# and re-running the cohort against each amendment — a fresh spec finding is UPSIDE.
+#
+# Where a field matches a prior peer it is by independent arrival from V8 + Nim
+# capabilities, not inheritance. The nearest precedent is the C peer (Nim compiles to
+# C; libsodium via native `{.importc.}` interop is the C peer's exact crypto choice)
+# and the Zig peer (native hand-rolled canonical codec via compile-time dispatch,
+# std-crypto-adjacent, fixed-width uint64 head-form self-test).
+#
+# Profile authority (PROMPT-CONSTANTS): the agent MUST use the values declared here.
+# A "TBD" value is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+# (No TBDs below.)
+
+[language]
+id                = "nim"
+name              = "Nim (2.x, ARC/ORC)"
+tier              = "tier-3"                   # LANDSCAPE.md T3 — corroboration / generator-robustness; compile-time-metaprogramming stress axis (macro/template codec). Low-yield-discovery.
+package_name      = "entity-core-protocol-nim"
+runtime           = "nim-toolchain"           # references containers/nim-toolchain/Containerfile (authored this phase)
+
+[codec]
+# strategy: NATIVE. DEVIATES from LANDSCAPE.md's first-pass "ffi" guess (A-NIM-001) —
+# per PHASE-S1-PROFILE "the profile decides", and the S1 reality-check that hand-rolling
+# the canonical layer is the faithful path on EVERY substrate. The A-005 pattern (now
+# hit by every native peer): a faithful ECF codec must OWN the canonical layer
+# regardless of any CBOR library underneath —
+#   (a) shortest-float / float16 minimization with exact specials,
+#   (b) length-THEN-lexicographic (CTAP2, RFC-7049) map-key ordering — NOT RFC-8949
+#       §4.2 pure-bytewise ordering,
+#   (c) recursive major-type-6 (tag) rejection anywhere in the tree (N2),
+#   (d) byte-exact raw-slice round-trip,
+#   (e) full uint64/nint head-form range.
+# The Nim `cbor` package (LANDSCAPE's candidate) gives NONE of these — it is a
+# convenience DOM codec, not determinism-focused. So a library buys almost nothing and
+# adds a nimble pin; hand-rolling is the faithful AND the simpler path. It ALSO exercises
+# Nim's headline axis: the encoder dispatches on the CBOR major type / Nim value type at
+# COMPILE TIME via `macro`/`template`/`static:` (zero runtime reflection) — the genuine
+# generator-stress reason to build Nim (the Zig comptime result on a GC'd, C-backend
+# substrate). `ffi` (consume libentitycore_codec, the C-ABI codec) remains the documented
+# fallback if the S2 spike fails — but it would forfeit the independent codec + the
+# metaprogramming probe, so it is a last resort, not the default.
+# Spike at S2 start (PHASE-S1 mandate): push the `map_keys` + `float` v0.8.0 test-vectors
+# (protocol-generator/shared/test-vectors/v0.8.0/) through the hand-rolled encoder BEFORE
+# the full build — shortest-float f16 + length-then-lex ordering are the highest-bug-
+# density legs.
+strategy          = "native"
+# CBOR: hand-rolled canonical encoder/decoder (src/ecf.nim). Nim has NO stdlib CBOR;
+# the `cbor` nimble package does not give ECF's guarantees (see note above). The encoder
+# writes into a growable `seq[byte]`; the decoder index-walks the input `openArray[byte]`
+# and returns EXACT byte slices where raw fidelity matters. Float specials hardcoded
+# (F9 7E00 NaN / F9 7C00 +Inf / F9 FC00 -Inf / F9 8000 -0.0); minimize by
+# float64->float32->float16 re-decode-and-compare. Compile-time dispatch via macro/template.
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native", impl = "seq[byte] encoder + openArray[byte] index-walk decoder; f16 leg hand-rolled bit arithmetic; macro/template compile-time major-type dispatch" }
+# Ed25519 + SHA-256 FLOOR: libsodium via NATIVE Nim C interop (`{.importc.}` + `{.dynlib.}`/
+# static link). This is "native" in the C peer's sense (primitives+crypto native, canonical
+# layer hand-rolled): Nim COMPILES TO C, so `{.importc.}` binding of libsodium is idiomatic,
+# in-process, zero-marshalling — NOT a foreign-language bridge (contrast the entity C-ABI).
+# libsodium is the C peer's exact choice, re-confirmed for Nim: audited, statically linkable,
+# single source of Ed25519 + SHA-256. A well-audited pure-Nim Ed25519 does not exist
+# (nimcrypto ships SHA-2/HMAC but no audited EdDSA), so libsodium is the crypto floor.
+# API: crypto_sign_seed_keypair / crypto_sign_detached / crypto_sign_verify_detached
+# (RFC-8032 deterministic detached signing), crypto_hash_sha256. See A-NIM-003.
+ed25519_library   = { name = "libsodium (native Nim {.importc.} C interop)", version = "1.0.22-1.fc43", api = "crypto_sign_seed_keypair / crypto_sign_detached / crypto_sign_verify_detached / crypto_hash_sha256" }
+# Ed448 + SHA-384 AGILITY (crypto-agility HIGHER bar, NOT the §9.1 floor): libsodium has
+# NO Ed448 (ships Ed25519 + the SHA-2 family + ML-KEM/SHA-3, no Ed448-Goldilocks) — the
+# SAME native gap C (A-C-001), Zig (A-ZIG-002), OCaml (A-OC-002) hit. DEFERRED from the
+# v0.1 core. Two honest routes when agility lands: (a) the sibling entity C-ABI
+# (libentitycore_codec ec_ed448_* / ec_sha384) via Nim `{.importc.}` — the hybrid-FFI shape
+# (OCaml/Zig/Swift/Tcl/COBOL); or (b) OpenSSL EVP_PKEY_ED448 + SHA-384. Scoped to an OPT-IN
+# agility sub-library so the shipped default peer's crypto surface stays ONE library
+# (libsodium) + FFI-free of the entity C-ABI. Does NOT touch the Ed25519 + SHA-256 floor.
+# See SPEC-AMBIGUITY-LOG A-NIM-004.
+ed448_library     = { name = "DEFERRED", version = "none", note = "opt-in agility sub-library: libentitycore_codec ec_ed448_*/ec_sha384 (hybrid-FFI) OR OpenSSL EVP_PKEY_ED448 when agility lands; core is Ed25519 + SHA-256 only" }
+sha256_source     = "libsodium crypto_hash_sha256 (native C interop; crypto_hash_sha512 also present). SHA-384 for agility needs OpenSSL/libcrypto or the C-ABI ec_sha384 — NOT in libsodium, deferred with Ed448. nimcrypto SHA-256 is the documented pure-Nim FFI-free fallback if a libsodium-free floor build is ever wanted."
+base58_library    = "hand-rolled"             # Bitcoin alphabet, encode+decode (~40 lines long-division, src/base58.nim); a dep for something this small is pure liability. wire-conformance confirms it.
+varint_handling   = "native"                  # multicodec-style LEB128 (N1, §7.3) inline impl (src/varint.nim); the multikey key_type / hash_type / format-code varints. Codes 0-127 are a single byte (all currently-allocated codes) -> 1-byte fast path + a general loop.
+
+[integer]
+# THE fixed-width axis (AGENTS.md head-form lesson). Nim integers are FIXED-WIDTH:
+# `uint64` maps DIRECTLY to the §1.5/§7.3 CBOR head form (like C uint64_t / Zig u64 /
+# C# ulong), NOT a bignum (contrast CL/Elixir/Python/Ruby/Tcl/Prolog which carry the
+# full range free). So the head-form carrier MUST carry a self-test across the full
+# range and the fixed-width trap boundary.
+width_class       = "fixed-width"             # int8/16/32/64 + uint8/16/32/64; NO native bignum
+uint64_carrier    = "uint64"                  # native; maps directly to CBOR mt0 head form, full [0, 2^64-1]
+nint_carrier      = "uint64 (magnitude) + mt1 tag"  # CBOR negative int is -(1+n); carry n as uint64 magnitude, never a signed int64 that would overflow at 2^63
+headform_selftest = "MANDATORY: encode/decode round-trip across [2^63, 2^64-1] (the >int64-max band) — a signed-int64 carrier would silently overflow; the self-test is a S2 codec gate, not optional (AGENTS.md fixed-width lesson)"
+overflow_note     = "Nim traps on signed-int overflow in Debug (-d:debug / --overflowChecks:on); build the codec with overflow checks ON for conformance, and use unsigned uint64 for the head-form arithmetic (unsigned wraps, so bound-check lengths explicitly before every decoder read)"
+
+[string]
+# Nim's string model is CLEAN for CBOR (unlike Tcl EIAS): the byte-vs-text distinction is
+# a STATIC TYPE distinction, and string length is ALREADY a byte count.
+text_type         = "string"                  # Nim `string` is a length-prefixed BYTE buffer (not enforced-UTF-8); CBOR text-string (mt3) = its UTF-8 bytes
+bytes_type        = "seq[byte]"               # CBOR byte-string (mt2) = raw bytes; a DISTINCT static type from `string`
+length_is_bytes   = true                      # `len(s)` on a Nim string is the BYTE count (NOT code points — contrast Tcl A-TCL-002); CBOR head length maps directly, no `encoding convertto` dance
+utf8_policy       = "text values validated as UTF-8 on decode of mt3 where the spec requires text; mt2 bytes are opaque. The byte-vs-text major type is sourced from the spec's field type definitions, carried in the typed model — never inferred from the value (the type-registry 'render from the model' lesson; here it is a free static-type distinction). See A-NIM-007."
+
+[error_model]
+# Nim idiom is EXCEPTIONS (`raise` / `try`/`except`/`finally`), with a distinguishing
+# seam: the `{.raises: [...].}` EFFECT SYSTEM — the compiler statically tracks and can
+# ENFORCE the exact exception set a proc may raise (a lightweight checked-exceptions the
+# Java peer had heavyweight, the Zig peer had as error-unions). Codec public surfaces are
+# annotated `{.raises: [EcCodecError, ...].}`; the codec THROWS on N2/N3 canonicality
+# violations (non-canonical input, truncated input, major-type-6 tag reject, bad seed) —
+# a hard reject, never a silent sentinel. Protocol-status failures (400 non_canonical_ecf
+# / 401 / 403 / 413 / 400 chain_depth_exceeded) map an exception type -> wire status code
+# at the dispatcher boundary. In-band "absent"/"not found" is `Option[T]` (std/options),
+# NOT an exception. See A-NIM-008.
+style             = "exceptions"              # "exceptions" | "result" | "either" | "errno" | "error_union" — Nim exceptions with {.raises.} effect tracking
+exception_base    = "EcError"                 # root; leaves: EcCodecError (NonCanonicalEcf/Truncated/TagRejected/DuplicateKey), EcCryptoError (BadSeed/UnsupportedKeyType/UnsupportedHashFormat), EcProtocolError (maps to 4xx)
+raises_effects    = true                      # {.raises: [...].} annotations on public procs — compiler-enforced exception sets (the Nim distinguishing seam)
+absent_sentinel   = "Option[T] (std/options) — none(T) for absent; NOT a nil/empty collision"
+# NOTE: the `results` nimble package (Result[T,E], nim-libp2p/Status idiom) was CONSIDERED
+# and REJECTED for the core surface — it is a dependency, and stdlib exceptions + {.raises.}
+# are the dependency-minimal idiomatic choice. Recorded so it is not silently reconsidered.
+
+[memory]
+# Nim is GARBAGE-COLLECTED, but via ARC/ORC (deterministic, ref-counted, move-optimized —
+# NOT a tracing/stop-the-world GC). This differs from BOTH the tracing-GC peers (C#/Java/
+# Go/Elixir) AND the no-GC peers (C/Zig): destructors run deterministically at scope exit
+# (like C++ RAII / Rust drop), so there is no GC-pause and ownership is move-based, but the
+# programmer does not hand-write free() (contrast C goto-cleanup / Zig defer). This is a
+# genuine idiom seam. `seq[byte]`/`string` are value types with move semantics; the decoder
+# can return openArray views (borrow) or copied slices per a documented contract.
+gc                = "arc-orc"                 # --mm:orc (default in Nim 2.x): ref-counting + cycle collector; deterministic destructors, no stop-the-world pause
+memory_model      = "move-semantics + deterministic destructors (=destroy/=copy/=sink hooks)"
+decode_view       = "openArray[byte] borrow (zero-copy) where the input outlives the view; copied seq[byte] slice otherwise (documented per-proc)"
+mm_flag           = "--mm:orc"               # explicit; Nim 2.x default, pinned for reproducibility
+
+[async]
+# DELIBERATE idiom decision; NOT exercised by the codec (S2 is pure/synchronous). Nim's
+# stdlib network-concurrency model is `asyncdispatch` — async/await on a SINGLE-THREADED
+# cooperative EVENT LOOP (the same structural shape as the PHP stream_select, Tcl chan-event,
+# and Dart per-isolate event-loop peers). §7b store-safety is therefore STRUCTURAL: a single
+# event thread serializes every store mutation, so there is NO data race to guard (no mutex,
+# no atomics) — the store is a plain Nim `Table`. §6.11 handler-initiated outbound-dispatch
+# reentry is ~FREE (as on the actor/CSP/event-loop peers, NOT the correlation-map tax the raw-
+# thread peers pay): an outbound dispatch is another event-loop turn; the inbound EXECUTE_RESPONSE
+# arrives as a readable future and is matched by request_id from the one loop's pending table.
+# Nim ALSO has real OS threads (--threads:on, std/threads + channels) — a genuine alternative,
+# NOT used for the core peer (asyncdispatch is more idiomatic for a network peer and gives
+# structural safety without a lock). Noted as the alternative substrate (A-NIM-006), out of
+# scope for --profile core. `chronos` (Status's async, nim-libp2p) was rejected: a dependency;
+# stdlib asyncdispatch is dependency-minimal.
+style             = "event-loop"             # "sync" | "threaded" | "evented" | "event-loop" — asyncdispatch single-threaded cooperative
+primitive         = "std/asyncdispatch + std/asyncnet (Future[T], async/await, runForever)"
+store_model       = "plain std/tables Table guarded by the single event thread — structurally race-free (§4.8/§7b); no lock"
+request_demux     = "request_id -> Future/pending-table in the single event loop (readable-future completion); reentrant §6.11, no cross-thread demux"
+tcp_nodelay       = true                      # setSockOpt TCP_NODELAY on accepted sockets (§7b throughput; the Zig Nagle finding — 343ms/cycle churn is the Nagle signature)
+blocking_discipline = "no blocking recv/send on the event path (would stall the single reactor); all socket I/O via asyncnet futures"
+
+[naming]
+# Nim-native conventions. NOTE: Nim identifiers are STYLE-INSENSITIVE (case-insensitive
+# after the first char, underscores ignored) — but the CANONICAL written style is enforced
+# by convention + `nimpretty`. Types PascalCase; procs/vars/fields camelCase; enum values
+# PascalCase (often a shared stem); modules lowercase/snake. First char case IS significant
+# (types must lead uppercase; procs/vars lowercase).
+type_names        = "PascalCase"             # types/objects/enums: EcEntity, ContentHash, PeerId, EcValue
+proc_names        = "camelCase"              # procs: contentHash, signAndVerify, encodeEcf
+variable_names    = "camelCase"              # locals/fields: contentHash, peerId, formatCode
+constant_names    = "PascalCase"             # const values: MaxMessageSize, MaxChainDepth (Nim const idiom is PascalCase, NOT screaming-snake)
+enum_values       = "PascalCase"             # enum members: KeyTypeEd25519, HashFormatSha256 (often a stem prefix)
+module_names      = "snake_case"             # files/modules: ecf.nim, peer_id.nim, content_hash.nim, base58.nim, varint.nim (one logical unit per module)
+hex_case          = "lowercase"              # toHex/BiggestInt formatting forced lowercase for ALL §3.4/§3.5 address-space tree-path hex (A-CL-009 uppercase trap); Nim `toHex` is UPPERCASE by default -> MUST lowercase explicitly
+
+[build]
+# Nimble is Nim's package manager + build tool (ships WITH the Nim toolchain). A `.nimble`
+# file is the manifest (the Cargo.toml/.asd analogue). `nim c` is the compiler (Nim ->
+# C -> gcc). Tests via `nimble test` over the stdlib `unittest` module.
+build_tool        = "nimble"                 # ships with Nim; .nimble manifest
+build_command     = "nimble build"           # -> the peer binary; or `nim c -d:release --mm:orc src/entity_core_protocol.nim`
+compile_flags     = "--mm:orc --overflowChecks:on -d:release (conformance: overflow + bound checks ON)"
+test_command      = "nimble test"            # runs tests/ under stdlib unittest
+pack_command      = "nimble build"           # publish = nimble package (git-tag + nimble registry PR); see [publishing]
+compiler          = "nim c"                  # Nim -> C -> gcc (the C backend); gcc is the runtime C compiler
+c_backend         = "gcc"                    # nim c invokes gcc by default (fedora:43 gcc-15.2.1); libsodium linked here
+
+[layout]
+project_file      = "entity_core_protocol.nimble"  # nimble manifest (name, version, deps, bin, tasks)
+src_dir           = "src/"                    # ecf.nim, base58.nim, varint.nim, content_hash.nim, peer_id.nim, crypto.nim (libsodium bindings), store.nim, dispatch.nim, transport.nim, entity_core_protocol.nim (umbrella)
+test_dir          = "tests/"                  # stdlib unittest suites + the conformance harness (tests/tconformance.nim) — Nim `nimble test` convention: tests/t*.nim
+lib_name          = "entity_core_protocol"
+umbrella_module   = "src/entity_core_protocol.nim"  # the public module surface (re-exports)
+ffi_bindings      = "src/crypto.nim"          # libsodium {.importc.}/{.dynlib.} declarations (opt-in agility Ed448 bindings live in a sub-module, deferred)
+
+[publishing]
+# Nim's package registry is `nimble` — a git-indexed directory (the `packages.json`
+# in nim-lang/packages), NOT a binary registry. "Publishing" = tag a git release with a
+# working `.nimble` and open a PR to the packages index (the SWI-pack / Quicklisp-git model).
+registry          = "nimble (git-indexed packages.json)"
+registry_url      = "https://github.com/nim-lang/packages"
+package_id        = "entity_core_protocol"    # nimble package name (Nim identifier: snake/lower, no hyphens in the module, hyphen ok in repo)
+license_expression = "Apache-2.0"
+repository_url    = ""                         # TBD on first publish (same as the cohort)
+authors           = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default. Nim itself is MIT; the ecosystem is MIT-leaning but does NOT mandate — keep the safe Apache-2.0 default (explicit patent grant). libsodium is ISC (permissive, Apache-compatible, statically linkable into an Apache-2.0 artifact).
+
+[testing]
+# Nim ships stdlib `unittest` (suite/test/check) — the ecosystem-standard framework, FREE
+# (no supply-chain cost), and the idiomatic `nimble test` picks up tests/t*.nim automatically.
+# No dependency-minimization reason to hand-roll (contrast Zig/C/OCaml which declined heavier
+# frameworks — Nim's is stdlib). The conformance harness (tests/tconformance.nim) loads the
+# normative v0.8.0 corpus and asserts byte-identity against the hand-rolled codec + the
+# wire-conformance oracle. `testament` (Nim's own compiler test runner) is available but
+# unittest is the lighter, idiomatic fit for a library.
+framework         = "unittest"                # stdlib; the ecosystem standard; nimble test auto-discovers tests/t*.nim
+conformance_probe = "tests/tconformance.nim: load spec-data v0.8.0 corpus; assert byte-identity vs hand-rolled codec + wire-conformance oracle; MUST include the [2^63, 2^64-1] head-form self-test (fixed-width axis)"
+
+[container]
+base_image        = "entity-core-keystone/nim-toolchain:latest"
+build_in_container = true
+# --network=none is honored: the core peer is libsodium (pre-installed in the image) +
+# hand-rolled Nim only. Nim's C backend (gcc) + libsodium are in the image, so `nim c`
+# builds fully offline once the toolchain image exists. (nimble deps: NONE for the core
+# floor — no third-party nimble packages; the codec/base58/varint are hand-rolled and
+# crypto is a system libsodium binding.)
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/nim entity-core-keystone/nim-toolchain:latest nimble test"
+
+[idiom]
+# Hints that don't fit elsewhere — the seams where this substrate is distinctive.
+compiles_to_c                 = true          # Nim -> C -> gcc; libsodium via {.importc.} is IN-PROCESS native interop, not a foreign bridge (the C peer's crypto story, idiomatic here)
+compile_time_metaprogramming  = true          # THE generator-stress axis: macro/template/{.compileTime.}/static: drive the codec's major-type dispatch at compile time (zero runtime reflection; the Zig comptime result on a GC'd C-backend substrate)
+arc_orc_deterministic_gc      = true          # --mm:orc: deterministic destructors + move semantics; not tracing-GC, not manual malloc/free (a third memory idiom)
+raises_effect_tracking        = true          # {.raises: [...].} compiler-enforced exception sets — lightweight checked exceptions
+fixed_width_uint64            = true          # native uint64 head form; the [2^63, 2^64-1] self-test is MANDATORY (fixed-width trap; AGENTS.md)
+string_is_byte_buffer         = true          # Nim `string` len is BYTE count; byte-vs-text is a static type distinction (string vs seq[byte]) — clean, no EIAS trap
+hex_lowercase                 = true          # `toHex` is UPPERCASE by default -> force lowercase for §3.4/§3.5 tree-path hex (A-CL-009)
+overflow_checks_on            = true          # build conformance with --overflowChecks:on; bound-check every decoder read (Nim will trap signed overflow in debug, but unsigned wraps silently)
+event_loop_reentry_free       = true          # §6.11 reentry is a plain event-loop turn (no thread demux); structural §7b store-safety (PHP/Tcl/Dart class)
+nim_version                   = "2.2.x"       # see [deps] + A-NIM-005
+
+[deps]
+# Exact pins (S11). The ONLY third-party runtime dependency is libsodium (crypto floor);
+# everything else (CBOR / base58 / varint / the test harness) is hand-rolled in-repo or
+# stdlib. nimble ships with Nim; unittest + asyncdispatch + asyncnet + tables + options are
+# stdlib. Mirrored in containers/nim-toolchain/Containerfile.
+#
+# SUPPLY-CHAIN SCOPE: libsodium comes via the REVIEWED FEDORA DNF channel (exact-version
+# pin for reproducibility; the >=30-day age floor relaxes for distro-reviewed packages but
+# is met anyway). The Nim TOOLCHAIN is pinned to an exact release + verified by sha256
+# (fail-closed sentinel until filled at S2 — the Zig install pattern). There are NO
+# registry-pulled (nimble ecosystem) deps in the core peer at all.
+nim               = "2.2.2"                    # Nim 2.x stable (ARC/ORC default). TARGET pin; exact patch + tarball sha256 CONFIRMED at S2 against nim-lang.org/install (A-NIM-005, fail-closed sentinel in the Containerfile). 2.2.x released 2024-Q4 -> well over the S11 30-day floor at authoring 2026-07-12. FALLBACK: 2.0.x (the prior stable line) if 2.2 install is problematic on fedora:43. The codec logic is version-agnostic across 2.0/2.2 (ARC/ORC + macros stable since 2.0).
+nim_fallback      = "2.0.14"                   # prior stable 2.0.x line; used only if the 2.2 pin is unavailable/unverifiable
+libsodium         = "1.0.22-1.fc43"            # the ONE crypto dep (Ed25519 + SHA-256 + SHA-512). fedora:43 ships 1.0.22-1.fc43. High-level crypto_sign_* / crypto_hash_sha256 (what we bind) are stable + byte-identical across 1.0.x. CVE-2025-69277 is in the low-level crypto_core_ed25519_is_valid_point validator we do NOT call. Statically + privately linked so the artifact is self-contained. Reviewed distro channel.
+gcc               = "15.2.1-7.fc43"            # Nim's C backend compiler (nim c -> C -> gcc). Reviewed distro channel (exact pin for repro).
+# (no registry-pulled nimble ecosystem packages — the codec, base58, varint, crypto bindings,
+# and test harness are all hand-rolled in-repo or stdlib; unittest/asyncdispatch/tables/options
+# are stdlib, versioned with the compiler.)
+
+[spec]
+spec_version_pinned = "0.8.0"                 # spec-data snapshot protocol-generator/shared/spec-data/v0.8.0/ (V8). Confirm the three SHA-256 pins in MANIFEST.md unchanged at S2.
+codec_corpus      = "v0.8.0"                  # ECF corpus protocol-generator/shared/test-vectors/v0.8.0/ — the 71-vector wire-conformance corpus (F29/F30 re-vendor, 2026-07-12); core wire byte-unchanged across V7->V8.
+oracle_commit     = "cc1970f"                 # entity-core-go public HEAD, re-normalized 2026-07-10. Core-gate fingerprint 8261a03… (16-category set + 53-type floor); target --profile core = 0 FAIL. Build the oracle binaries from go HEAD (rebuild, verify new vectors compiled) — do NOT trust a stale vendored binary.
+conformance_scaffolding = "guide-conformance-7a-7b"  # §7a validate handlers + §7b concurrency gate + §4.10 resource_bounds probe come from GUIDE-CONFORMANCE.md + the keystone generator menu at S3/S4 — NOT from the spec-data snapshot (MANIFEST flags this split). A spec-first peer reading only spec-data would miss them and fail S4.
+# COHORT-SETTLED TRAPS pre-resolved here (do NOT re-burn at S3/S4 — baked in proactively):
+#  - peer_id: §1.5 CANONICAL-FORM table, hash_type = 0x00 identity-multihash, digest = the
+#    RAW 32-byte Ed25519 pubkey (NOT any stale §7.4 SHA256(pubkey) skeleton; §7.4 defers to
+#    §1.5 since v7.73). peer_id wire form = Base58(key_type || hash_type || digest).
+#    (Corroborates A-ZIG-001 / A-OC-007 / A-CL-002 / A-PL-010 / A-TCL peer_id note.)
+#  - tree-path hex: LOWERCASE %02x-equivalent (§3.4/§3.5); Nim toHex is uppercase -> force lower (A-CL-009).
+#  - §5.2 authz trichotomy: 401 authn / 403 authz / 401 unresolvable (§5.2a verdict table).
+#  - §1.1 entity `data` is an ARBITRARY ECF value (NOT necessarily a map) — model it as a
+#    general EcValue from the start (the A-JAVA-010 silent-500 trap).
+#  - resource_bounds (§4.10, CORE-gating): r1 16 MiB payload -> 413 payload_too_large / clean
+#    close; r2 over-deep delegation -> 400 chain_depth_exceeded (MUST be 400, NOT 403; default
+#    64; the §4.10(b) structural pre-check walks parents with NO sig work BEFORE the authz walk);
+#    r3 connection flood -> 503/close or honest WARN.
+#  - concurrency (§7b, CORE-gating): data-race-safe store (§4.8 — structural here via the single
+#    event thread), resilience under load (§4.9), no blocking syscalls on the event path,
+#    TCP_NODELAY. §6.11 outbound-dispatch reentry via request_id pending table (event-loop turn).
+#  - §5.10/§5.2 verdict-timestamp determinism (0.7.76): the evaluation timestamp is sampled ONCE
+#    per verdict and is a Layer-1 input; the verdict is a pure function of the chain and t.

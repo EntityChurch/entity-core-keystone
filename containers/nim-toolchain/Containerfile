@@ -1,0 +1,128 @@
+# Nim toolchain image — builds the corroboration / generator-robustness peer
+# (entity-core-protocol-nim) per protocol-generator/nim/profile.toml.
+# Mirrors the structure of containers/zig-toolchain (verified pinned download) +
+# containers/c-toolchain (libsodium via the fedora dnf channel).
+#
+# Nim COMPILES TO C: `nim c` emits C and invokes gcc as the backend, and the crypto
+# floor binds libsodium via native {.importc.} interop — so this image needs BOTH the
+# pinned Nim toolchain AND gcc + libsodium (runtime/static/devel), exactly like the C
+# peer's image. The codec, base58, varint, and test harness are hand-rolled in-repo or
+# stdlib (unittest/asyncdispatch/tables/options ship with the compiler); there are NO
+# third-party nimble packages for the core floor.
+#
+# S1: AUTHORED ONLY — not built this phase (S1 is research/authoring; the toolchain is
+#     provisioned at S2). Builds run in this container, not on the host.
+# S11: pin the toolchain to an exact version; VERIFY the download cryptographically
+#      (fail-closed sentinel until the real sha256 is filled at S2).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS (ages at authoring 2026-07-12):
+#   Nim        2.2.2   — target 2.x stable (ARC/ORC default; macros stable since 2.0).
+#                        2.2.x released 2024-Q4 (>18 months) — clears the >=30-day
+#                        cool-down. A-NIM-005: confirm the EXACT patch + sha256 at S2
+#                        against nim-lang.org/install; FALLBACK 2.0.14 if 2.2 install
+#                        is problematic on fedora:43. Codec logic is 2.0/2.2-agnostic.
+#   libsodium  1.0.22-1.fc43  — the ONE crypto dep (Ed25519 + SHA-256/512). Via the
+#                        reviewed fedora dnf channel (exact pin for repro; age floor
+#                        relaxed for distro-reviewed, met anyway). High-level
+#                        crypto_sign_* / crypto_hash_sha256 are what we bind — stable +
+#                        byte-identical across 1.0.x. Statically + privately linked.
+#   gcc        15.2.1-7.fc43  — Nim's C backend (nim c -> C -> gcc). Reviewed dnf channel.
+# CBOR (canonical ECF), base58, and the multicodec-style LEB128 varint are hand-rolled
+# in-repo (no Nim lib gives canonical ECF; the A-005 pattern). Ed448/SHA-384 agility is
+# DEFERRED (libsodium has no Ed448) — an opt-in sub-library (openssl-devel OR the sibling
+# C-ABI) added at agility time, NOT in this core image.
+#
+# WHY THE OFFICIAL TARBALL, NOT `dnf install nim`:
+#   Pin the EXACT Nim release the codec is designed against and verify it by sha256,
+#   rather than take whatever fedora:43's channel currently carries (which may drift
+#   across the 2.0/2.2 line). This is the zig-toolchain pattern adapted to Nim. The
+#   `dnf install nim` route is the documented FALLBACK (commented block below) if the
+#   pinned tarball is ever unavailable — fedora's nim is distro-reviewed.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (S2, once NIM_SHA256 is filled):
+#   podman build -t entity-core-keystone/nim-toolchain:latest \
+#     -f containers/nim-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps:
+#   gcc              — Nim's C backend compiler (nim c -> C -> gcc). MANDATORY at build.
+#   libsodium{,-static,-devel} — the crypto floor (Ed25519 + SHA-256); static+devel so
+#                      the peer statically + privately links it (self-contained artifact).
+#   curl/ca-certificates/tar/xz/git/findutils/which — download+verify Nim + nimble ops.
+#   glibc-langpack-en — a UTF-8 locale for clean text-vector handling.
+# Pinned NVRs (S11): what fedora:43 shipped at authoring; re-verify >=30-day age + re-pin
+# on rebuild; prefer pinning the base image by digest for full repro.
+RUN dnf install -y \
+        gcc-15.2.1-7.fc43 \
+        libsodium-1.0.22-1.fc43 \
+        libsodium-static-1.0.22-1.fc43 \
+        libsodium-devel-1.0.22-1.fc43 \
+        curl ca-certificates tar xz \
+        git findutils which glibc-langpack-en \
+    && dnf clean all
+
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# ── Pinned Nim release ───────────────────────────────────────────────────────
+# Nim publishes source tarballs (build.sh/koch bootstrap) + prebuilt x64 binaries at
+# nim-lang.org/download. We pin the exact version + expected sha256 and FAIL CLOSED if
+# the digest does not match. The source tarball (bootstrap via build.sh) is the most
+# portable across the fedora base; the prebuilt binary tarball is an alternative.
+ARG NIM_VERSION=2.2.2
+# Pinned sha256 of nim-${NIM_VERSION}.tar.xz from nim-lang.org/download (VERIFY + fill
+# at S2, 2026-07-12; A-NIM-005). Leaving the sentinel keeps an unverified image from
+# building silently.
+# Filled + verified at S2 (2026-07-12) against nim-lang.org/download/nim-2.2.2.tar.xz
+# AND its published .sha256 sidecar (both matched). A-NIM-005 resolved.
+ARG NIM_SHA256="7fcc9b87ac9c0ba5a489fdc26e2d8480ce96a3ca622100d6267ef92135fd8a1f"
+
+RUN set -eux; \
+    base="https://nim-lang.org/download"; \
+    tarball="nim-${NIM_VERSION}.tar.xz"; \
+    cd /tmp; \
+    curl -fsSLO "${base}/${tarball}"; \
+    # exact sha256 pin (fail closed; the S1 sentinel blocks an untrusted build)
+    if [ "${NIM_SHA256}" != "REPLACE_WITH_PINNED_SHA256_AT_S2" ]; then \
+        echo "${NIM_SHA256}  ${tarball}" | sha256sum -c -; \
+    else \
+        echo "WARNING: NIM_SHA256 sentinel — fill the real digest at S2 before trusting this image"; \
+        exit 1; \
+    fi; \
+    mkdir -p /opt/nim; \
+    tar -C /opt/nim --strip-components=1 -xf "${tarball}"; \
+    rm -f "${tarball}"; \
+    cd /opt/nim; \
+    # bootstrap the compiler from the source tarball, then build koch + nimble tools
+    sh build.sh; \
+    ./bin/nim c --skipUserCfg --skipParentCfg koch; \
+    ./koch tools; \
+    /opt/nim/bin/nim --version
+
+ENV PATH=/opt/nim/bin:/root/.nimble/bin:$PATH
+
+# ── (FALLBACK PATH, commented) distro Nim ───────────────────────────────────
+# Use ONLY if the pinned tarball is unavailable/unverifiable at S2 (A-NIM-005).
+# fedora's nim is distro-reviewed; pin its NVR and record the resolved version.
+#   RUN dnf install -y nim nim-srcdir && nim --version
+
+# ── Verify the toolchain + the crypto floor deps are present ────────────────
+# nim compiles a trivial program (exercises the gcc C backend) and confirms libsodium
+# headers link. A real crypto KAT is an S2 test, not a build assertion.
+RUN set -eux; \
+    printf 'echo "nim c backend OK"\n' > /tmp/hello.nim; \
+    nim c --hints:off --mm:orc -o:/tmp/hello /tmp/hello.nim; \
+    /tmp/hello; \
+    nimble --version; \
+    test -f /usr/include/sodium.h && echo "libsodium headers OK"; \
+    rm -f /tmp/hello /tmp/hello.nim
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="nim-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.nim="2.2.2"
+LABEL org.entity-core-keystone.libsodium="1.0.22-1.fc43"
+
+CMD ["/bin/bash"]
