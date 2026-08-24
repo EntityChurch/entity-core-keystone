@@ -9,10 +9,13 @@
 #   * Normally it builds the pinned ref recorded in output/s4-oracles/PROVENANCE.txt.
 #   * If that ref does NOT resolve (public-mirror cutover rewrote history, tag/commit
 #     gone), it FALLS BACK to building the sibling repo's working-tree HEAD and warns.
-#     The commit hash may be meaningless post-cutover; the core-gate fingerprint
-#     (sha256 of profile.go — the category set that defines `--profile core`) is the
-#     anchor that tells you whether this oracle's core surface matches what the peers
-#     converged against, regardless of the commit hash.
+#     The commit hash may be meaningless post-cutover; the core-gate FINGERPRINT
+#     (the normalized category set + type floor from profile.go — the semantic content
+#     that defines `--profile core`, NOT the raw file bytes) is the anchor that tells
+#     you whether this oracle's core surface matches what the peers converged against,
+#     regardless of the commit hash. A comment reword / reformat of profile.go leaves
+#     the fingerprint unchanged (this is exactly what false-alarmed the e8524ed->cc1970f
+#     cutover); only a genuine add/remove/rename of a core category or floor type moves it.
 #
 # Prereqs: podman + the entity-core-keystone/go:latest image (containers/go), and the
 # sibling entity-core-go checked out next to this repo. Network is needed ONCE (go mod
@@ -37,6 +40,25 @@ CORE_GATE=cmd/internal/validate/profile.go   # the mirror-stable core anchor
 
 die(){ echo "oracle-bootstrap: ERROR $*" >&2; exit 1; }
 
+# core_gate_fingerprint — the AUTHORITATIVE, mirror-stable identity of the core
+# gate. Reads profile.go on stdin and hashes the *normalized semantic content* of
+# its two gate maps (coreProfileCategories = the category set + coreTypeFloor = the
+# 53-type floor that together define `--profile core`), stripping comments and
+# whitespace and sorting. Only a genuine add/remove/rename of a core category or a
+# floor type moves it — a comment reword / reformat does not (contrast the raw
+# sha256 of the file bytes, which flips on any edit and false-alarmed the mirror
+# cutover). Emits a 64-hex digest.
+core_gate_fingerprint() {
+  awk '
+    /coreProfileCategories = map\[string\]bool\{/ {m="cat";  next}
+    /coreTypeFloor = map\[string\]bool\{/          {m="type"; next}
+    m != "" && /^\}/ {m=""; next}
+    m != "" {
+      s=$0; sub(/\/\/.*/, "", s); gsub(/[ \t\r]/, "", s)   # strip comment + whitespace
+      if (s ~ /:true,?$/) { sub(/:true,?$/, "", s); print m "|" s }
+    }' | sort -u | sha256sum | cut -d' ' -f1
+}
+
 [ -d "$GO_REPO/.git" ] || die "sibling go repo not found at $GO_REPO (set GO_REPO=...)"
 
 # 1. Resolve which ref to build.
@@ -54,26 +76,33 @@ else
 fi
 SHORT=$(printf '%s' "$COMMIT" | cut -c1-7)
 
-# 2. Mirror-stable core anchor: sha256 of profile.go at the resolved ref.
+# 2. Mirror-stable core anchor. Two fingerprints of profile.go at the resolved ref:
+#    * CORE_FP  (core_gate_fingerprint) — AUTHORITATIVE: normalized category set +
+#      type floor, comment/format-invariant. This is what the pin compares against.
+#    * CORE_SHA (core_gate_sha256)      — INFORMATIONAL: raw file bytes, moves on any
+#      edit (incl. a comment reword); kept only for traceability.
+CORE_FP=$(git -C "$GO_REPO" show "$ARCHIVE_REF:$CORE_GATE" | core_gate_fingerprint)
 CORE_SHA=$(git -C "$GO_REPO" show "$ARCHIVE_REF:$CORE_GATE" | sha256sum | cut -d' ' -f1)
 EXPECT=""
-[ -f "$PIN_FILE" ] && EXPECT=$(awk -F'= *' '/^core_gate_sha256/{print $2; exit}' "$PIN_FILE" | awk '{print $1}')
-if [ -n "$EXPECT" ] && [ "$EXPECT" != "$CORE_SHA" ]; then
-  echo "oracle-bootstrap: NOTE core anchor differs from committed pin" >&2
+[ -f "$PIN_FILE" ] && EXPECT=$(awk -F'= *' '/^core_gate_fingerprint/{print $2; exit}' "$PIN_FILE" | awk '{print $1}')
+if [ -n "$EXPECT" ] && [ "$EXPECT" != "$CORE_FP" ]; then
+  echo "oracle-bootstrap: NOTE core-gate fingerprint differs from committed pin" >&2
   echo "  committed (tools/oracle-pin.env): $EXPECT" >&2
-  echo "  building now:                     $CORE_SHA" >&2
-  echo "  => the core gate moved; expect a peer re-converge (policy §4). Update oracle-pin.env if intended." >&2
+  echo "  building now:                     $CORE_FP" >&2
+  echo "  => the core category set / type floor genuinely moved; expect a peer re-converge" >&2
+  echo "     (policy §4). Update oracle-pin.env if intended. (A comment reword alone can no" >&2
+  echo "     longer trigger this — the raw sha256 is informational: $CORE_SHA)" >&2
 fi
 if [ "${FORCE:-0}" != "1" ] && [ -x "$OUT/validate-peer" ] && [ -f "$PROV_FILE" ]; then
-  HAVE=$(awk -F'= *' '/^core_gate_sha256/{print $2; exit}' "$PROV_FILE" | awk '{print $1}')
-  if [ "$HAVE" = "$CORE_SHA" ]; then
-    echo "oracle-bootstrap: installed oracle already matches core anchor $CORE_SHA — nothing to do (FORCE=1 to rebuild)."
+  HAVE=$(awk -F'= *' '/^core_gate_fingerprint/{print $2; exit}' "$PROV_FILE" | awk '{print $1}')
+  if [ "$HAVE" = "$CORE_FP" ]; then
+    echo "oracle-bootstrap: installed oracle already matches core-gate fingerprint $CORE_FP — nothing to do (FORCE=1 to rebuild)."
     exit 0
   fi
 fi
 
 echo "oracle-bootstrap: building from $SRC"
-echo "oracle-bootstrap: core-gate anchor (profile.go) = $CORE_SHA"
+echo "oracle-bootstrap: core-gate fingerprint = $CORE_FP  (raw sha256 $CORE_SHA)"
 
 # 3. Archive the ref OUTSIDE the live go tree (clean-room) and build in the container.
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
@@ -98,12 +127,13 @@ done
 {
   echo "# Local oracle provenance — what is installed in this output/ tree right now."
   echo "# Authoritative committed anchor lives in tools/oracle-pin.env. Regenerate via"
-  echo "# tools/oracle-bootstrap.sh. core_gate_sha256 matching the pin => core surface intact."
-  echo "ref              = ${ORACLE_REF:-HEAD}"
-  echo "commit           = $COMMIT"
-  echo "built_from       = $SRC"
-  echo "core_gate_sha256 = $CORE_SHA   # sha256(cmd/internal/validate/profile.go)"
-  echo "built_at         = $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "# tools/oracle-bootstrap.sh. core_gate_fingerprint matching the pin => core surface intact."
+  echo "ref                   = ${ORACLE_REF:-HEAD}"
+  echo "commit                = $COMMIT"
+  echo "built_from            = $SRC"
+  echo "core_gate_fingerprint = $CORE_FP   # normalized category set + type floor (AUTHORITATIVE)"
+  echo "core_gate_sha256      = $CORE_SHA   # raw sha256(cmd/internal/validate/profile.go) (informational)"
+  echo "built_at              = $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$PROV_FILE"
 
 echo "oracle-bootstrap: installed validate-peer + entity-peer @ $SHORT into $OUT"

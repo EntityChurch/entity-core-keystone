@@ -1,6 +1,6 @@
 # entity-core-keystone — status
 
-_Updated: 2026-07-12 · public: v0.8.0 (master)_
+_Updated: 2026-07-10 · public: v0.8.0 (master)_
 
 ## Where it is
 
@@ -14,27 +14,10 @@ interaction, capability, bootstrap) for any target language, and it owns the
 for languages without mature canonical-CBOR + Ed25519 stacks. Generating peers
 is the *means*; the *end* is **spec refinement** — running the generator across
 many languages surfaces every spec ambiguity and feeds it back to architecture.
-Maturity: **initial public research-preview, v0.8.0 (V8)**. A **26-language**
+Maturity: **initial public research-preview, v0.8.0 (V8)**. A **22-language**
 peer cohort is in place and uniformly conformant; the pipeline is past
-first-build and into steady-state maintenance. The newest are alien-substrate
-probes: **Tcl** (#23 — Everything-Is-A-String), **Rexx** (#24 — native-decimal
-number model), **Fortran** (the fixed-width **signed-only** integer model —
-no portable unsigned type; native IEEE floats), and **APL** (the **array /
-value model** — the array as the primitive value), all complete S1→S5 and
-measured natively at `cc1970f` (**682·0F** each). **Forth** (the
-stack-machine/no-types substrate) is being built **in parallel on a second
-machine** via the same overseer + per-stage-sub-agent orchestration
-(`protocol-generator/shared/lifecycle/ORCHESTRATION.md`); when it lands the
-cohort reaches **27**.
-
-> **Merge reconciliation (pending — do at the joint merge window).** Fortran
-> **and APL** were built on this machine and Forth concurrently on the other —
-> three concurrent alien-substrate probes. This branch counts Fortran and APL as
-> landed (→ 26) and leaves the final count (→ 27, +Forth) and the
-> Fortran/APL/Forth ordinals for the merge, since neither branch can see the
-> other's state yet. `CONFORMANCE-MATRIX.md` got **append-only** Fortran + APL
-> rows (no shared-prose edits); the matrix cohort-count prose and this narrative
-> both settle when the two branches merge.
+first-build and into steady-state maintenance. The 22nd peer (COBOL) is now
+complete — its §6.11 handler-outbound-dispatch reentry seam landed and passes.
 
 The single pinned input is `protocol-generator/shared/spec-data/v0.8.0/` (a
 verbatim, SHA-256-pinned snapshot of the normative specs) plus the co-versioned
@@ -44,43 +27,10 @@ wire byte-unchanged**; the `v7.*` snapshots were retired.
 
 ## Where we left off
 
-The closed cohort is **26 generated core peers** (OCaml, Swift, Haskell, Go,
+The closed cohort is **22 generated core peers** (OCaml, Swift, Haskell, Go,
 Lean, C#, TypeScript, Java, Kotlin, Elixir, Common Lisp, Rust, Python, Zig, C,
-C++, Ada, Ruby, Prolog, PHP, Dart, COBOL, Tcl, Rexx, Fortran, APL), every one
-full S1→S5 and **`validate-peer --profile core` 0-FAIL**. **Fortran** (the
-fixed-width signed-only integer-model probe) is the newest — full S1→S5,
-FFI-hybrid (hand-rolled pure-Fortran canonical CBOR value codec + crypto/base58/
-framing over `libentitycore_codec`, bound **directly via `iso_c_binding`** with
-no C wrapper — cleaner than the Rexx/Tcl shims), measured **natively** at
-`cc1970f` (**682·0F**, 292P/294W/0F/96S; genuine 2-of-3 multisig accept-path;
-the §6.13(b) handler-outbound reentry seam wired **live** during S4). Its build
-proved the signed-carrier uint64 tower carries the full `[2^63, 2^64-1]` range
-byte-exact (probe closes as corroboration — spec numeric determinism is tight
-enough to force even a signed-only substrate to carry the unsigned tower) and
-banked one arch-bound finding (**A-FTN-012 / F29** — the corpus `tag_reject`
-vectors are vacuous: they reject on trailing-data, not the §6.3 tag scanner;
-`HANDOFF-TO-ARCH-2026-07-11-ftn-tag-reject-corpus.md`). **Rexx** (the native-decimal
-number-model probe) is the newest — measured **natively** at `cc1970f`
-(**682·0F**, 291P/295W/0F/96S; genuine 2-of-3 multisig accept-path;
-origination-core `dispatch_outbound_reentry` 3/3). Its S4 surfaced two
-§4.9/§4.10 resilience findings, both fixed (unbounded per-request signature
-ingest A-RX-014; the §4.10(c) connection-admission cap). **Tcl** (the EIAS
-probe) preceded it at the same **682·0F**. **APL** (the **array / value-model**
-probe — the array as the primitive value; the whole canonical-CBOR codec
-expressed as array transforms, ⊤/⊥ base-256 + ⍋-graded map-key ordering) is the
-newest of all, built on this machine right after Fortran: full S1→S5,
-FFI-hybrid (pure-APL value codec + crypto/base58/framing over
-`libentitycore_codec` via a GNU APL `⎕FX` native-fn shim; **native `⎕FIO`
-sockets, no C net-shim**), measured natively at `cc1970f` (**682·0F**,
-291P/295W/0F/96S; genuine 2-of-3 multisig accept-path). Its one wire-touching
-edge — GNU APL's exact integer ceilings at 2^63-1 and **silently promotes to
-lossy IEEE double** above it, so the uint64 tower cannot be a native scalar at
-all — closes as **corroboration** (an 8-octet big-endian array carrier
-reproduces the full unsigned tower byte-exact; *sharper* than Fortran's
-controllable signed-carrier, same result). **No arch-bound finding**; it banked
-a durable GNU-APL-1.9 cookbook (A-APL-012…017: the `--script` reader rejecting
-`:If`/dfn-guards, monadic `⊃`=disclose-not-first, `≡`=rank-sensitive, and two
-real `⎕FIO` `select` bugs read from the interpreter source). The whole cohort is now normalized on
+C++, Ada, Ruby, Prolog, PHP, Dart, COBOL), every one full S1→S5 and
+**`validate-peer --profile core` 0-FAIL**. The whole cohort is now normalized on
 the reproducible public-HEAD oracle `cc1970f` (2026-07-10 re-normalization). The
 `--profile core` **0-FAIL** gate at `cc1970f` is *proven* the same gate the cohort
 converged against — its normalized core-gate fingerprint (the 16-category set +
@@ -106,13 +56,7 @@ Engineering attention has shifted from *adding languages* to two tracks:
    peer-authority bootstrap and the grant-signature placement questions (the old
    "F27/F28") are **resolved** and ratified upstream; the keystone's cross-peer
    **seed-policy convention** is authored (`protocol-generator/shared/seed-policy/`).
-   The handler-`register`/`unregister` write surface and the §6.11
-   handler-outbound reentry seam — long carried here as open cohort-wide work —
-   are in fact **implemented and passing across the cohort** (audit 2026-07-12,
-   below): the §10.1 register gate is 10/10+ and origination-core
-   `dispatch_outbound_reentry` is 3/3 on ~every peer. What genuinely remains is
-   **oracle-side**: `--profile core` gates neither, so those closures are
-   invisible in the gating number (the reason this drift went unnoticed).
+   What remains open is the handler-register / outbound-dispatch surface (below).
 
 **COBOL — the 22nd peer (complete).** An FFI-hybrid peer (COBOL value-codec +
 `libentitycore_codec` for crypto/SHA-2/framing/base58/Ed25519). It is the peer
@@ -131,12 +75,9 @@ single-outbound with frame pushback — no request_id map, no deadlock), an
 (`protocol-generator/cobol/status/`.)
 
 Stable at the v0.8.0 research-preview line. COBOL's close proved out the §6.11
-handler-facing outbound-dispatch seam on a single-threaded poll host — but it was
-**not** the only peer to carry it, and "bring the seam + `register`/`unregister`
-across the rest of the cohort" is **no longer standing work**: the 2026-07-12
-audit (Backlog) found both already implemented and green cohort-wide via the
-`run-origination-core.sh` and §10.1 register-gate runners. No protocol changes
-are in flight.
+handler-facing outbound-dispatch seam on a single-threaded poll host; bringing
+that seam (and `register`/`unregister`) across the rest of the cohort is the
+standing extensibility-frontier work. No protocol changes are in flight.
 
 ## Backlog
 
@@ -163,43 +104,23 @@ From `CONFORMANCE-MATRIX.md` §3 (catch-up) and `research/stewardship/SPEC-FINDI
 
 **Extensibility frontier (the core↔extension↔SDK boundary).**
 
-> **Audit 2026-07-12 (register + outbound seam).** Prompted by a review challenge
-> to the "COBOL + Fortran only" framing, the cohort was swept for both surfaces.
-> Result: the first two items below, long carried as open cohort-wide work, are
-> **already done and green across the cohort** — corrected inline. Only the
-> oracle-side item survives. Evidence is each peer's own `status/` reports; the
-> closures live in the `run-origination-core.sh` and §10.1 register-gate runners,
-> which are **separate from `--profile core`** — so they never surfaced in the
-> gating number, which is why the drift persisted here uncorrected.
-
-- ~~**Handler `register`/`unregister` as a core MUST**~~ **✅ DONE cohort-wide**
-  (was the generic "F11 spike"). §6.2/§6.9/§6.13(a) dynamic `register` is
-  implemented and passing the **§10.1 register gate 10/10+** (rust 13/13) on
-  ada · c · cpp · dart · elixir · haskell · kotlin · ocaml · python · rust ·
-  swift · typescript · zig (+ COBOL/Fortran). Swift's report: "register/unregister
-  (§6.13a five writes — **NOT a 501-stub**)"; TS: "now implemented behaviorally
-  (v7.74 §6.13(a) MUST)"; OCaml even filed a *finding* against the Go register
-  gate. The historical "C#/TS/OCaml 501-stubbed it" is a pre-v7.74 state. The
-  `handlers` category (static manifest introspection) still doesn't exercise it —
-  that gap is the oracle-side item below, not a peer gap.
-- ~~**Handler-facing outbound dispatch / §6.11 reentry seam**~~ **✅ DONE
-  cohort-wide.** origination-core **`dispatch_outbound_reentry` 3/3** (over real
-  two-peer TCP, `reference_connect`·`reference_ready`·`dispatch_outbound_reentry`)
-  on ~every peer with `run-origination-core.sh` (21 peers) plus COBOL's
-  `t1_2_concurrent_reentry` (8-concurrent) and Fortran's live-at-S4 seam. A
-  handler-reachable `execute` closure demonstrably exists everywhere (the §7a
-  `system/validate/dispatch-outbound` conformance handler originates the outbound
-  request). Under a **single-peer** `--profile core` run the `origination`
-  category shows an **auto-allowlisted SKIP** (reference-peer-gated) — that is
-  by-design, not a missing seam; the seam runs green via `run-origination-core.sh`
-  with a Go `entity-peer` reference.
+- **Handler `register`/`unregister` as a core MUST** (was the generic "F11
+  spike") — §6.2/§6.9 make dynamic `register` core protocol, yet the original
+  reference trio (C#, TS, OCaml) 501-stubbed it; `--profile core` never exercised
+  it because the `handlers` category is static manifest introspection. Wire the
+  protocol op to the existing native-binding registry (V1.0/L0 peer-owner write
+  now; V2.0/L1 cap-checked follow-on). COBOL has built this; bring the cohort
+  along. (Open.)
+- **Handler-facing outbound dispatch / §6.11 reentry seam** — no peer yet exposes
+  a handler-reachable `execute` closure; §4.8/§6.11 make concurrent outbound
+  dispatch (reader-task + request_id correlation) part of the core §9.1 floor.
+  This is the one piece blocking COBOL's VALIDATE=1 close and the substrate
+  guarantee that an installed handler can originate a request. (Open.)
 - **Core-tier oracle extensibility checks** — `--profile core` is a
-  hand-maintained Go category map with no machine link to the spec, and it gates
-  neither dynamic register nor outbound origination; a peer can pass the gate
-  while being responder-only, **and — as this audit showed — a peer that has fully
-  built both can have that fact go untracked because the gate never exercises it.**
-  Ask upstream for a core-tier register + minimal-origination check. (**Open;
-  oracle-side** — the one genuinely-remaining extensibility-frontier item.)
+  hand-maintained Go category map with no machine link to the spec, and it tests
+  neither dynamic register nor outbound origination; a peer can pass while being
+  responder-only. Ask upstream for a core-tier register + minimal-origination
+  check. (Open; oracle-side.)
 
 ## Waiting on
 
@@ -215,45 +136,6 @@ From `CONFORMANCE-MATRIX.md` §3 (catch-up) and `research/stewardship/SPEC-FINDI
 
 ## Done recently
 
-- **APL probe completed — cohort → 26 (this branch).** The **array / value-model**
-  probe (the array as the primitive value; ints/floats conventional), full S1→S5
-  via the overseer + per-stage-sub-agent orchestration, each stage's oracle
-  verdict independently re-run before commit. FFI-hybrid: pure-APL canonical CBOR
-  as array transforms (⊤/⊥ base-256 + ⍋ grade) + crypto/base58/framing over
-  `libentitycore_codec` via a GNU APL `⎕FX` native-fn shim; **native `⎕FIO`
-  sockets (no C net-shim)**. **682·0F @ cc1970f** (291P/295W/0F/96S; genuine
-  2-of-3 multisig accept-path). Numeric edge — GNU APL's exact int ceilings at
-  2^63-1 and silently promotes to lossy double above, so the uint64 tower rides
-  an 8-octet big-endian array carrier, never a scalar — closes as
-  **corroboration** (sharper than Fortran, same result). Interpreter is **GNU APL
-  1.9 built from a SHA-256-pinned source tarball** (no APL is in fedora dnf).
-  Banked a durable GNU-APL-1.9 cookbook (A-APL-012…017); **no arch-bound
-  finding** — the array-model probe corroborated exactly as predicted. Built
-  concurrently with **Forth** on a second machine; count/ordinal reconcile at
-  merge (→ 27).
-- **Fortran probe completed — cohort → 25 (this branch).** The fixed-width
-  **signed-only** integer-model probe (no portable unsigned type; native IEEE
-  floats), full S1→S5 via the overseer + per-stage-sub-agent orchestration, each
-  stage's oracle verdict independently re-run before commit. FFI-hybrid with the
-  C-ABI bound **directly via `iso_c_binding`** (no C wrapper — the net-shim is the
-  only C). **682·0F @ cc1970f** (292P/294W/0F/96S); signed-carrier uint64 tower
-  proven byte-exact across `[2^63, 2^64-1]`; §6.13(b) reentry seam wired live at
-  S4 (same class COBOL built). Banked finding **A-FTN-012 / F29** (vacuous corpus
-  `tag_reject` vectors) as a `HANDOFF-TO-ARCH`. Built concurrently with **Forth**
-  on a second machine (the #25–#26 pair; count/ordinal reconcile at merge).
-- **Alien-substrate probes Tcl (#23) + Rexx (#24) completed — cohort → 24.** Two
-  probes on the least-saturated wire axes: Tcl (Everything-Is-A-String) and Rexx
-  (native-decimal number model, no binary int/float type). Both full S1→S5,
-  FFI-hybrid (hand-rolled canonical CBOR + crypto over `libentitycore_codec`),
-  measured natively at `cc1970f` — **682·0F** each. Rexx's S4 surfaced and fixed
-  two §4.9/§4.10 resilience findings (A-RX-014 unbounded signature ingest; the
-  §4.10(c) connection cap); Tcl was clean corroboration. Per-peer truth in
-  `CONFORMANCE-MATRIX.md`.
-- **Orchestration pattern documented.** The overseer + per-stage-sub-agent model
-  used to drive the pipeline (a fresh sub-agent per S-phase, the overseer tracking
-  transitions and gating each stage on its oracle verdict) is now written down at
-  `protocol-generator/shared/lifecycle/ORCHESTRATION.md`, cross-referencing the
-  meta-repo parallel-languages runbook rather than duplicating it.
 - **COBOL peer completed — cohort → 22.** The §6.11 handler-initiated
   outbound-dispatch reentry seam, the last open extensibility gap, is implemented
   on the single-threaded poll host (a C `ec_reentry` pump on the active slot with
@@ -296,25 +178,10 @@ From `CONFORMANCE-MATRIX.md` §3 (catch-up) and `research/stewardship/SPEC-FINDI
 
 ## Next
 
-0. **Fortran + APL — DONE this session** (both full S1→S5, **682·0F @ cc1970f**
-   each; see "Where we left off"). **Forth** (the stack-machine / concatenative /
-   no-types substrate) is still in build **on the second machine** via the same
-   overseer + per-stage-sub-agent pattern (`ORCHESTRATION.md`) — expected
-   FFI-hybrid (COBOL/Tcl/Rexx/Fortran family: gforth, hand-rolled CBOR, crypto +
-   sockets over a C external extension, fixed-width cells → int head-form
-   self-test). Reconcile the cohort count (→ 27) + the Fortran/APL/Forth ordinals
-   at the joint merge. **APL was the last named alien-substrate candidate** in
-   `research/LANDSCAPE.md` (the array-model axis), so once Forth lands the
-   deliberate alien-substrate sweep is complete and steady-state is fully
-   **spec-refinement maintenance** — re-running the cohort against each amendment
-   (the discovery well is dry on the current wire surface). Corroboration was the
-   expected result and APL delivered it — no fresh wire finding, as predicted.
-1. **Extensibility surface** — the peer-side `register`/`unregister` +
-   handler-outbound seam is **DONE cohort-wide** (2026-07-12 audit; see Backlog),
-   *not* standing work. The remaining piece is the **oracle-side** core-tier
-   register + minimal-origination check (upstream ask), so the peer-side closures
-   are actually gated by `--profile core` rather than only by the separate
-   `run-origination-core.sh` / register-gate runners.
+1. **Extensibility surface across the cohort**: with COBOL's §6.11
+   outbound-dispatch seam landed (peer 22 closed), bring `register`/`unregister`
+   (V1.0/L0) and the handler-facing outbound-dispatch seam across the remaining
+   peers. *(Oracle re-normalization onto `cc1970f` + anchor hardening — done.)*
 2. **Work the catch-up backlog**: `--name` on C + Ada, then verify genuine
    multisig + add accept-path tests on the five later-folded peers (C, Ada, Ruby,
    Prolog, Go); fix the scorecard label off-by-one.

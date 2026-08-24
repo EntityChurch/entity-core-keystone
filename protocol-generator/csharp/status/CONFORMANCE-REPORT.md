@@ -1,4 +1,4 @@
-> **v7.75 re-run (oracle `entity-core-go @ 62044c5`).**
+> **v7.75 re-run (oracle `entity-core-go @ b30a589`).**
 > `validate-peer --profile core` → **PASS, 0 FAIL** · **576 total · 292 pass · 195 warn · 0 FAIL · 89 skip.**
 > New v7.75 categories scored GREEN: **`resource_bounds`** r1 `413 payload_too_large` PASS · r2 `400 chain_depth_exceeded` PASS · r3 connection-flood WARN (SHOULD, external-admission carve-out); **`concurrency`** 5/5 PASS.
 > The only net-new peer change this cycle: an explicit §4.10(b) max-chain-depth (64) pre-check that surfaces **400 `chain_depth_exceeded`** for an over-deep chain BEFORE the per-link authz walk — distinct from the prior 403 `capability_denied` (arch v7.75 ruling: structural excess ≠ authz denial). The numbers below this line predate the v7.75 re-vendor and are retained for history.
