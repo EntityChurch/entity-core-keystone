@@ -1,0 +1,52 @@
+# WebAssembly-text (WAT) toolchain image — assembles + runs the hand-authored
+# WebAssembly peer (entity-core-protocol-wasm-wat) per
+# protocol-generator/wasm-wat/profile.toml.
+#
+# Deliberately THIN, and the DIRECT ANALOG of containers/asm-x86_64-toolchain: the peer
+# is hand-authored WebAssembly TEXT (.wat), so the only tools needed are the WAT
+# assembler + a runtime that can execute it with real sockets:
+#   - wabt      → `wat2wasm` (assemble hand-authored .wat → .wasm) + `wasm2wat`/`wasm-validate`.
+#   - wasmedge  → the RUNTIME. Chosen over Wasmer because it ships in the fedora:43 repos
+#                 (dnf-pinnable, S11-clean — no external `curl | sh` binary fetch), AND its
+#                 core runtime exposes the FLAT `wasi_snapshot_preview1` Berkeley-socket
+#                 extension (sock_open/bind/listen/accept/recv/send) as plain function
+#                 imports that hand-authored WAT can `(import ...)` directly — the WASM
+#                 analog of the asm peer calling Linux socket syscalls. NO native host
+#                 code, NO Component-Model/WIT (which raw WAT cannot practically produce).
+#                 The runtime plays the role of the kernel; the WAT drives the sockets.
+# No LLVM, no wasi-sdk at this layer — increment-1 (the socket foundation) needs neither.
+# The codec/crypto SEAM (canonical-ECF CBOR + Ed25519/SHA via libentitycore_codec compiled
+# to wasm) is a later increment and, when it lands, adds its own pinned toolchain here.
+#
+# S11: pinned NVRs = what fedora:43 shipped at authoring (2026-07-14; matches the
+#      wabt/wasmedge the other toolchain images would pull). Re-verify the >=30-day age +
+#      re-pin deliberately on rebuild; prefer a base-image digest pin for full repro.
+#
+# Build:
+#   podman build -t entity-core-keystone/wasm-wat-toolchain:latest \
+#     -f containers/wasm-wat-toolchain/Containerfile .
+#
+# Dev loop (assemble + validate, sealed offline):
+#   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm --network=none \
+#     -v "$PWD":/work:Z -w /work/protocol-generator/wasm-wat \
+#     entity-core-keystone/wasm-wat-toolchain:latest make build
+FROM registry.fedoraproject.org/fedora:43
+
+# WAT assembler (wabt) + the WasmEdge runtime + binaryen (wasm-merge, the codec-seam
+# "linker" — fuses the compiled codec.wasm's exports into the hand-authored interior's
+# imports over one shared memory) + make. Pinned NVRs (S11).
+RUN dnf install -y --setopt=install_weak_deps=False \
+        wabt-1.0.37-2.fc43 \
+        wasmedge-0.17.0-1.fc43 \
+        binaryen-126-1.fc43 \
+        make-1:4.4.1-11.fc43 \
+        findutils \
+        which \
+    && dnf clean all
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="wasm-wat-toolchain"
+LABEL org.entity-core-keystone.version="1"
+
+CMD ["/bin/bash"]

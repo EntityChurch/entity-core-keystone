@@ -1,0 +1,197 @@
+# entity-core-protocol-wasm-wat — Language Profile
+#
+# The hand-authored WebAssembly-TEXT peer. This is NOT a cross-compiled
+# (Rust/C→wasm) artifact and NOT a "language" in the ecosystem sense — it is a
+# distinct point on the substrate axis: a portable virtual ISA with ONE bounded
+# linear memory, NO fork, NO threads (at Level 1), NO syscalls of its own (only
+# host-provided imports), authored directly from spec in `.wat` the way every peer
+# is authored. It is the WASM analog of the hand-written asm peer, and the
+# assembly track's high-value forward pointer (SESSION-2026-07-13 lessons 1–2):
+# the single hardest design question for a no-fork/no-thread peer — §7a concurrent
+# reentry — was already answered in asm (A-ASM-014, the single-thread request/
+# response frame router + pending_tab demux) and ports directly here.
+#
+# It exists for GENERATOR-ROBUSTNESS + SUBSTRATE-DYNAMICS research (how the protocol
+# maps onto a bounded-linear-memory VM with imported-only I/O), NOT for spec-discovery:
+# the wire-touching axes (integer width / float model / crypto availability / string
+# model) are saturated by the existing cohort, so --profile core is expected to land
+# 0-FAIL as corroboration, cohort-consistent (NOT independent convergence — ADR-0012).
+# Additional honesty caveat: this peer's codec seam reuses the Rust codec
+# (entity-core-codec-ffi-rust) compiled to wasm, so its codec bytes share that
+# lineage — the independent datapoint is the hand-authored authority INTERIOR + the
+# WAT transport, not the codec.
+#
+# CODEC STRATEGY = SEAM (compiled codec.wasm merged). WAT has no CBOR/Ed25519/SHA
+# stack. The Rust C-ABI codec is compiled to wasm32-wasip1 (exports ec_* + memory);
+# the hand-authored interior IMPORTS the codec's memory + ec_* funcs, and binaryen
+# wasm-merge fuses the two into ONE module over ONE shared memory that runs on a
+# STOCK WasmEdge runtime — no native host, no Component Model. The interior still
+# hand-rolls the small envelope + EXECUTE/RESPONSE data-map canonical CBOR in WAT
+# (ec_encode_ecf only covers entity-shaped data — the same Level-1 split the asm
+# peer made, A-ASM-004). A fully hand-rolled-WAT codec is a documented later stretch,
+# not this build's scope. See arch/PROFILE-RATIONALE.md.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value is
+# logged in status/SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "wasm-wat"
+name              = "WebAssembly text (WAT, hand-authored)"
+tier              = "substrate-probe"         # bounded-linear-memory virtual ISA; corroboration tier (see research/LANDSCAPE.md)
+package_name      = "entity-core-protocol-wasm-wat"
+runtime           = "wasm-wat-toolchain"      # references containers/<runtime>/Containerfile
+isa               = "wasm32 (WebAssembly 1.0 + bulk-memory/sign-ext/mutable-globals/nontrapping-fptoint), executed by WasmEdge 0.17.0"
+# The natively-authored WAT flavor of the two WASM peers (COMPLETENESS-ROADMAP §2). The
+# sibling Rust→WASM cross-compiler peer takes the other host model (compiled peer + WASI/
+# custom host) — coordinate ownership before starting it (roadmap note). This peer is the
+# raw-WAT-on-stock-runtime flavor.
+
+[codec]
+# strategy: SEAM. WAT has NO CBOR, NO Ed25519, NO SHA-2, NO base58. The Rust C-ABI codec
+# (entity-core-codec-ffi-rust) is compiled to wasm32-wasip1 and its ec_* exports + memory
+# are merged into the interior with binaryen wasm-merge — the WASM analog of the asm peer's
+# libentitycore_codec.so FFI. Chosen over the C codec because the C impl statically links
+# libsodium (painful to target wasm), whereas the Rust impl's pure-Rust ed25519-dalek/sha2/
+# ed448-goldilocks compile to wasm32-wasip1 cleanly. See A-WAT-002.
+strategy          = "seam"                    # compiled codec.wasm merged over one shared memory (NOT a native FFI; NOT hand-rolled)
+seam_target       = { module = "codec", artifact = "entitycore_codec.wasm", abi = "c-abi-1.1", source = "entity-core-codec-ffi-rust @ wasm32-wasip1" }
+seam_link         = "binaryen wasm-merge -all --rename-export-conflicts; interior imports codec.memory + ec_*; one shared linear memory"
+cbor_library      = { name = "SEAM:codec.wasm", version = "c-abi-1.1", canonical_mode = "seam-ecf" }  # ec_encode_ecf / ec_decode_entity / ec_content_hash* for entity-shaped data
+envelope_cbor     = "hand-rolled in WAT (small fixed-shape maps: {root,included} + EXECUTE/RESPONSE data map), keys emitted pre-sorted — same split as asm A-ASM-004"
+ed25519_library   = { name = "SEAM:codec.wasm", version = "c-abi-1.1" }  # ec_ed25519_{sign,verify,seed_to_pubkey}
+ed448_library     = { name = "SEAM:codec.wasm (deferred)", version = "c-abi-1.1" }  # ec_ed448_* compiled in but agility not in the core floor — deferred, see A-WAT-003
+sha256_source     = "SEAM:codec.wasm ec_sha256 (§9.1 floor hash); ec_sha384 present for agility"
+base58_library    = "SEAM:codec.wasm ec_peerid_{parse,format}"  # peer-id base58 behind the seam; no hand-rolled base58
+varint_handling   = "SEAM:codec.wasm ec_hash_format_code_{encode,decode}"  # + LEB128 head-form hand-rolled in WAT for the envelope integers (A-WAT-004)
+
+[error_model]
+# There is NO language error model. WASM offers i32/i64 return values, structured
+# control flow, and TRAPS (unreachable / OOB / integer-div-0) — nothing else. The seam's
+# ec_* funcs return int32_t status (EC_OK=0 … EC_INTERNAL_ERROR=-99); protocol verdicts are
+# integers. At the dispatch boundary the WAT maps { seam int32 status, protocol outcome } →
+# the §5.2a/§6.12 status codes in the response envelope. Like asm's errno taxonomy, but a
+# trap is UNRECOVERABLE here (it kills the whole single-process module — see [memory] on why
+# the 16-MiB-cap + bounds discipline matters MORE than on asm). No unwinding, no result ADT.
+style             = "errno"                    # i32 status + structured branch; mapped to §5.2a/§6.12 at dispatch
+error_set         = "int32_t C-ABI status (EC_*) via the seam + protocol verdict integers"
+trap_policy       = "traps are fatal to the single module — every buffer op is bounds-checked in WAT BEFORE the access; over-cap frames are drained + 413'd, never allowed to OOB (A-ASM-010 ported, sharper here)"
+allocator_failure = "bump-arena exhaustion → internal-error verdict; never a trap"
+
+[memory]
+# ONE bounded linear memory, and it is the codec's (the interior imports it — see [codec]).
+# NO malloc/GC. The codec owns the low region (its wasm32-wasip1 data + stack + heap, ~1.1
+# MiB initial); the interior places ALL its working buffers HIGH (>= 0x200000, above the
+# codec's region) after memory.grow, so the two never collide (proven in the ffi-smoke
+# spike). The A-ASM-010 discipline — size response buffers to the 16-MiB entity cap, drain+
+# 413 an over-cap frame, never OOB — is LOAD-BEARING here because a bounds violation TRAPS
+# the whole module (no per-fork blast radius like asm; a WASM peer is one process). Frame-cap
+# (§1.6) is likewise load-bearing on a single memory + single thread (the TurboWarp lesson).
+gc                = false
+allocator_threading = "none"                   # static offsets in one linear memory + a hand-rolled bump region; decoded bodies via the seam's ec_arena
+memory_ownership  = "imported from codec.wasm (single shared memory); interior scratch parked >= 0x200000 above the codec region"
+encode_buffer     = "interior-owned high region; ec_encode_ecf writes into it with the OUT_OF_SPACE grow protocol; memory.grow extends the single linear memory"
+decode_ownership  = "ec_arena_t (seam-owned in the shared memory); reset per request"
+default_test_allocator = "n/a — no leak checker; buffer discipline verified by conformance + the trap-on-OOB backstop"
+
+[async]
+# DELIBERATE and SUBSTRATE-FORCED. WASM has no fork and (at Level 1) no threads, so the
+# fork-per-connection model the asm peer ultimately used is UNAVAILABLE. The peer MUST be a
+# single-threaded event loop — which is exactly the concurrency template A-ASM-014 already
+# validated: a request/response frame router + pending_tab demux handles §7a.2a one-socket
+# reentry with NEITHER fork NOR threads. Multiple simultaneous connections are multiplexed
+# cooperatively via WASI poll_oneoff over non-blocking socket fds (no head-of-line blocking
+# for the core category — the cooperative-yield lesson from TurboWarp #32). True parallelism
+# (t1_3_no_head_of_line as genuine concurrency) is beyond the core floor, as on asm.
+style             = "evented"                  # single-threaded poll loop; no fork, no threads at Level 1
+default_surface   = "nonblocking-sockets-over-poll_oneoff"
+primitive         = "poll_oneoff (WASI) over non-blocking socket fds; sock_accept/sock_recv/sock_send (WasmEdge wasi_snapshot_preview1); fd non-blocking via fd_fdstat_set_flags FDFLAGS_NONBLOCK — CONFIRM in increment 3 (potential A-WAT ambiguity)"
+reentry_demux     = "request/response frame router + pending_tab {echo_rid → dispatch_rid} — direct port of asm A-ASM-014 (§7a.2a)"
+
+[naming]
+# WAT naming is convention, not language-enforced. Identifiers are $-prefixed symbolic names
+# (resolved to indices by wat2wasm); they are the only namespace. Chosen for readability +
+# to avoid clashing with the seam's ec_* import names.
+type_names        = "n/a"                      # no types beyond i32/i64/f32/f64; memory layouts documented in comments + named offset constants
+function_names    = "$snake_case, module-prefixed"  # $wire_read_frame, $dispatch, $store_put — distinct from the imported ec_* seam symbols
+variable_names    = "$snake_case locals; memory offsets as commented constants (no global const syntax in core wat — use i32.const with a name comment)"
+constant_names    = "commented SCREAMING_SNAKE for memory offsets + opcodes (OFF_FRAME_LEN, MAX_FRAME, OP_EXECUTE)"
+file_names        = "kebab or snake .wat"      # host.wat / dispatch.wat / wire.wat / store.wat (assembled + merged)
+error_names       = "n/a — integer status codes only"
+module_layout     = "one module per .wat; wat2wasm per file then wasm-merge into the peer, then merge the codec (the seam)"
+
+[build]
+# wat2wasm (wabt) assembles each hand-authored .wat → .wasm; wasm-merge (binaryen) fuses the
+# interior modules + the compiled codec.wasm into ONE module over one shared memory; WasmEdge
+# runs it. NO native host, NO Component Model. Transport = WasmEdge's flat wasi_snapshot_
+# preview1 socket imports (the "syscalls"). See A-WAT-001.
+build_tool        = "make + wat2wasm + wasm-merge"
+build_command     = "wat2wasm src/<f>.wat -o out/<f>.wasm ; wasm-merge -all out/*.wasm <names> <codec.wasm> codec --rename-export-conflicts -o out/peer.wasm"
+test_command      = "make ffi-smoke   # ec_sha256 KAT through the merged codec (the seam self-check); make echo # the socket foundation"
+pack_command      = "make build       # the merged peer.wasm is the artifact; 'publish' = commit + matrix row (see [publishing])"
+entry_point       = "_start (WASI command; the interior's, kept by --rename-export-conflicts)"
+
+[layout]
+project_file      = "Makefile"                 # thin make over wat2wasm + wasm-merge, container-invoked
+src_dir           = "src/"                     # *.wat sources (echo.wat + ffi-smoke.wat are the S1 spikes; host/dispatch/wire/store land in increment 3)
+test_dir          = "src/"                     # spikes double as seam/socket self-checks; live conformance is validate-peer --profile core
+lib_name          = "n/a — the artifact is the merged peer.wasm module, not a library"
+module_root       = "src/host.wat"             # (increment 3) main _start; imports the codec seam, pulls in wire/dispatch/store/identity
+
+[publishing]
+# WASM has an emerging registry story (wasm OCI artifacts, wa.dev, warg) but no settled
+# ecosystem-canonical one, and a hand-authored .wat peer is source-first anyway. "Publishing"
+# = the .wat sources committed in-repo + a CONFORMANCE-MATRIX row + the reproducible merged
+# peer.wasm build. Consumers assemble + merge from source in the container.
+registry          = "none (source-in-repo; merged wasm module)"
+registry_url      = ""
+package_id        = "entity-core-protocol-wasm-wat"
+license_expression = "Apache-2.0"
+repository_url    = ""                          # in-repo under protocol-generator/wasm-wat/ until stabilization
+authors           = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"               # S9 default. wabt/binaryen/wasmedge are Apache-2.0/similar and govern the tools, not the authored .wat — the peer source is ours, Apache-2.0.
+
+[testing]
+# No test framework exists for raw .wat. The seam self-check is the ec_sha256 KAT
+# (ffi-smoke.wat, exit-code PASS/FAIL); the socket foundation is echo.wat. The codec
+# corpus (71 vectors) is exercised through the merged codec in increment 3 (a WAT
+# selfcheck analog of asm's src/selfcheck.s). Live-peer conformance is validate-peer
+# --profile core over the socket (run-s4.sh), identical to every peer.
+framework         = "hand-authored WAT self-checks (ffi-smoke.wat KAT + a corpus selfcheck, increment 3) + validate-peer oracle"
+leak_checking      = false                     # no leak checker; trap-on-OOB is the buffer-discipline backstop
+
+[container]
+base_image        = "entity-core-keystone/wasm-wat-toolchain:latest"
+build_in_container = true
+# --network=none honored: wabt + wasmedge + binaryen are baked into the image; the codec.wasm
+# is a repo build artifact (reached via the mounted /work tree, like asm's .so). Loopback
+# still works in the container netns, so run-s4 (oracle + peer over 127.0.0.1) stays sealed.
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/wasm-wat entity-core-keystone/wasm-wat-toolchain:latest make ffi-smoke"
+
+[idiom]
+# Hints specific to hand-authoring .wat.
+assembler                     = "wat2wasm (wabt); wasm-validate for the check"   # lowest-dependency: both in the fedora wabt package. wasm-merge (binaryen) is the seam linker.
+runtime                       = "WasmEdge 0.17.0 — fedora-packaged, exposes FLAT wasi_snapshot_preview1 Berkeley sockets to raw WAT (no Component Model)"  # A-WAT-001
+link_mode                     = "wasm-merge fusion of interior modules + the compiled codec.wasm over one shared memory; interior imports codec.memory + ec_*"
+transport_via_imports         = true           # sock_open/bind/listen/accept/recv/send imported from wasi_snapshot_preview1 — the WASM 'syscalls', driven by the WAT itself
+codec_and_crypto_via_seam     = true           # Level 1: entity codec + crypto compiled to codec.wasm and merged; hand-roll only the machine logic + envelope CBOR
+integer_model                 = "fixed-width i32/i64 → CARRIES the head-form self-test [2^63, 2^64-1] (same branch as OCaml int63 / C# ulong / Zig u64; SUBSTRATE-TAKEAWAYS integer note)"
+float_model                   = "IEEE via f32/f64 + the shortest-float ladder behind the seam (ec_encode_ecf); the hand-rolled envelope maps carry no floats"
+string_model                  = "no strings — bytes in linear memory; all §1.4 path/text work is byte-level in WAT"
+address_family                = "WasmEdge V1: AddressFamily Inet4=1, SocketType Stream=2; WasiAddress{buf:i32@0,size:i32@4}→raw IPv4 octets; iovec{buf:i32@0,len:i32@4} (proven in echo.wat)"
+
+[deps]
+# Exact pins (S11). All fedora:43 stock, mirrored in containers/wasm-wat-toolchain/Containerfile.
+# The seam artifact codec.wasm is a repo build output (entity-core-codec-ffi-rust @ wasm32-
+# wasip1), version-pinned by ec_impl_info(), not a distro package.
+wabt              = "1.0.37-2.fc43"            # wat2wasm + wasm-validate + wasm-objdump; fedora:43 stock. The WAT assembler — no LLVM path.
+wasmedge          = "0.17.0-1.fc43"            # the runtime; flat wasi_snapshot_preview1 sockets built in. fedora:43 stock (S11-clean: dnf, no curl|sh).
+binaryen          = "126-1.fc43"              # wasm-merge — the seam "linker". fedora:43 stock.
+rust_std_wasm     = "rust-std-static-wasm32-wasip1 (fedora:43)"  # only for BUILDING codec.wasm (in a rust-capable container), not for the peer build itself.
+codec_wasm        = "entity-core-codec-ffi-rust @ wasm32-wasip1 (provenance via ec_impl_info); committed-artifact home TBD — see task/A-WAT-005"
+
+[spec]
+v7_version_pinned = "v0.8.0 / V8"             # the single pinned spec snapshot (shared/spec-data/v0.8.0). Core wire byte-unchanged.
+codec_corpus      = "v0.8.0 / conformance-vectors-v1 (71 vectors)"  # exercised through the merged codec in increment 3
+oracle_pin        = "cc1970f (fingerprint 8261a033…) — matches the cohort; validate-peer --profile core = 0-FAIL target"
