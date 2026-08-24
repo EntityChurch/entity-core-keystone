@@ -1,0 +1,35 @@
+<!-- ec-listener — editor registration (palette + edit dialog). -->
+<script type="text/javascript">
+  RED.nodes.registerType("ec-listener", {
+    category: "entity-core",
+    color: "#7fd4c1",
+    defaults: {
+      name: { value: "" },
+      port: { value: "", validate: function (v) { return v === "" || !isNaN(Number(v)); } },
+    },
+    inputs: 1,
+    outputs: 1,
+    icon: "bridge.svg",
+    label: function () { return this.name || ("ec-listener" + (this.port ? " :" + this.port : "")); },
+    paletteLabel: "ec-listener",
+    inputLabels: "response bytes",
+    outputLabels: "inbound frame",
+  });
+</script>
+
+<script type="text/html" data-template-name="ec-listener">
+  <div class="form-row">
+    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <input type="text" id="node-input-name" placeholder="ec-listener">
+  </div>
+  <div class="form-row">
+    <label for="node-input-port"><i class="fa fa-plug"></i> Port</label>
+    <input type="text" id="node-input-port" placeholder="settings.entityCore.port (7801)">
+  </div>
+</script>
+
+<script type="text/html" data-help-name="ec-listener">
+  <p>Authored transport ingress/egress for the entity-core peer: TCP server + §1.6
+     length-prefixed framing. Emits one msg per inbound frame; write a framed
+     response by feeding <code>{payload, conn}</code> back to its input.</p>
+</script>

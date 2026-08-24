@@ -1,0 +1,288 @@
+[
+  {
+    "id": "tab-ec-peer",
+    "type": "tab",
+    "label": "entity-core peer",
+    "disabled": false,
+    "info": "The entity-core core-protocol peer, AUTHORED as a flow-graph.\n\nEvery wire carries CBOR frame BYTES — exactly what the TCP wire carries (Node-RED clones msg, so class instances can't cross wires; this is the faithful consequence). The per-dispatch state (decoded Execute, capability token, resolution) lives in the session scratch, keyed by msg.did — never on the wire.\n\nThe §6.5 dispatch chain is DECOMPOSED into visible nodes (row 2): begin (decode+target §1.4) → connect-preauth (§4.2) → author present (401) → capability present (403) → verify (§5.2) → resolve (§6.6, 404) → permission (§5.2/§6.8, 403) → handler. Each node's error wire (down) runs to build-error; the tail encodes and returns to transport. The wires ARE the §6.5 sequence.\n\nDELEGATED (kernel.prim, called from inside the nodes): canonical CBOR, Ed25519 verify, SHA-256, the capability-chain verdict, the permission verdict — the mechanical/crypto 'libraries'. The SEQUENCE around them is authored graph.\n\nADR-0012: a green result here is cohort-consistent (shared JS substrate + shared leaf crypto), not independent convergence."
+  },
+  {
+    "id": "n-listener",
+    "type": "ec-listener",
+    "z": "tab-ec-peer",
+    "name": "peer transport (§1.6 framing)",
+    "port": "",
+    "x": 190,
+    "y": 100,
+    "wires": [
+      [
+        "n-decode"
+      ]
+    ]
+  },
+  {
+    "id": "n-decode",
+    "type": "function",
+    "z": "tab-ec-peer",
+    "name": "classify frame (§6.11 demux)",
+    "func": "// The session (looked up by connection id) decodes the frame and classifies its\n// root type. Bytes stay on msg.payload; the envelope never crosses a wire.\nconst S = global.get('ec').sessions.get(msg.conn);\nmsg.kind = S ? S.classifyBytes(msg.payload) : 'invalid';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 450,
+    "y": 100,
+    "wires": [
+      [
+        "n-classify"
+      ]
+    ]
+  },
+  {
+    "id": "n-classify",
+    "type": "switch",
+    "z": "tab-ec-peer",
+    "name": "root type?",
+    "property": "kind",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "eq",
+        "v": "execute",
+        "vt": "str"
+      },
+      {
+        "t": "eq",
+        "v": "response",
+        "vt": "str"
+      },
+      {
+        "t": "eq",
+        "v": "invalid",
+        "vt": "str"
+      }
+    ],
+    "checkall": "false",
+    "repair": false,
+    "outputs": 3,
+    "x": 690,
+    "y": 100,
+    "wires": [
+      [
+        "n-dp-begin"
+      ],
+      [
+        "n-reentry"
+      ],
+      [
+        "n-invalid"
+      ]
+    ]
+  },
+  {
+    "id": "n-reentry",
+    "type": "function",
+    "z": "tab-ec-peer",
+    "name": "§6.11 route response (reentry demux)",
+    "func": "// Inbound EXECUTE_RESPONSE → route to the parked origination (leg-3 reverse\n// authenticate / dispatch-outbound) by request_id (N7). Terminates here.\nconst S = global.get('ec').sessions.get(msg.conn);\nif (S) S.routeResponseBytes(msg.payload);\nreturn null;",
+    "outputs": 0,
+    "noerr": 0,
+    "x": 720,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "n-invalid",
+    "type": "function",
+    "z": "tab-ec-peer",
+    "name": "invalid root → drop (§3.3)",
+    "func": "// Neither EXECUTE nor EXECUTE_RESPONSE — the TS peer closes the connection here.\n// Node-RED: drop (a socket-close hook is a follow-up robustness node).\nreturn null;",
+    "outputs": 0,
+    "noerr": 0,
+    "x": 950,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "n-dp-begin",
+    "type": "function",
+    "z": "tab-ec-peer",
+    "name": "decode + target (§1.4)",
+    "func": "const S = global.get('ec').sessions.get(msg.conn);\nif (!S) { node.done(); return null; }\n// decode → Execute → request_id → dispatch path → target-is-local (§1.4).\nconst r = S.dpBegin(msg.payload);\nmsg.did = r.did;\nreturn r.route === 'ok' ? [msg, null] : [null, msg];",
+    "outputs": 2,
+    "noerr": 0,
+    "x": 150,
+    "y": 200,
+    "wires": [
+      [
+        "n-dp-connect"
+      ],
+      [
+        "n-dp-error"
+      ]
+    ]
+  },
+  {
+    "id": "n-dp-connect",
+    "type": "function",
+    "z": "tab-ec-peer",
+    "name": "connect-preauth (§4.2)",
+    "func": "const S = global.get('ec').sessions.get(msg.conn);\nif (!S) { node.done(); return null; }\n// §4.2 the sole no-auth special case: connect + !established → connect handler.\nconst r = S.dpConnectPreauth(msg.did);\nif (r === 'auth') return [msg, null, null];\nif (r === 'connect') return [null, null, msg];\nreturn [null, msg, null];",
+    "outputs": 3,
+    "noerr": 0,
+    "x": 350,
+    "y": 200,
+    "wires": [
+      [
+        "n-dp-author"
+      ],
+      [
+        "n-dp-error"
+      ],
+      [
+        "n-dp-connect-handler"
+      ]
+    ]
+  },
+  {
+    "id": "n-dp-author",
+    "type": "function",
+    "z": "tab-ec-peer",
+    "name": "author present? (401)",
+    "func": "const S = global.get('ec').sessions.get(msg.conn);\nif (!S) { node.done(); return null; }\n// §5.1 authentication-class: a missing author is 401 missing_author.\nreturn S.dpAuthorPresent(msg.did) === 'ok' ? [msg, null] : [null, msg];",
+    "outputs": 2,
+    "noerr": 0,
+    "x": 540,
+    "y": 200,
+    "wires": [
+      [
+        "n-dp-cap"
+      ],
+      [
+        "n-dp-error"
+      ]
+    ]
+  },
+  {
+    "id": "n-dp-cap",
+    "type": "function",
+    "z": "tab-ec-peer",
+    "name": "capability present? (403)",
+    "func": "const S = global.get('ec').sessions.get(msg.conn);\nif (!S) { node.done(); return null; }\n// §5.1 authorization-class: a missing capability is 403 missing_authorization.\nreturn S.dpCapPresent(msg.did) === 'ok' ? [msg, null] : [null, msg];",
+    "outputs": 2,
+    "noerr": 0,
+    "x": 740,
+    "y": 200,
+    "wires": [
+      [
+        "n-dp-verify"
+      ],
+      [
+        "n-dp-error"
+      ]
+    ]
+  },
+  {
+    "id": "n-dp-verify",
+    "type": "function",
+    "z": "tab-ec-peer",
+    "name": "verify request (§5.2)",
+    "func": "const S = global.get('ec').sessions.get(msg.conn);\nif (!S) { node.done(); return null; }\n// §6.5 ingest signatures + §5.2 verify (Ed25519 + capability-chain verdict,\n// delegated leaf math). Denies 401/403/400 per the §5.2 sequence.\nreturn S.dpVerify(msg.did) === 'ok' ? [msg, null] : [null, msg];",
+    "outputs": 2,
+    "noerr": 0,
+    "x": 150,
+    "y": 300,
+    "wires": [
+      [
+        "n-dp-resolve"
+      ],
+      [
+        "n-dp-error"
+      ]
+    ]
+  },
+  {
+    "id": "n-dp-resolve",
+    "type": "function",
+    "z": "tab-ec-peer",
+    "name": "resolve handler (§6.6 · 404)",
+    "func": "const S = global.get('ec').sessions.get(msg.conn);\nif (!S) { node.done(); return null; }\n// §6.6 route-by-path tree walk. No handler resolves → 404 not_found.\nreturn S.dpResolve(msg.did) === 'ok' ? [msg, null] : [null, msg];",
+    "outputs": 2,
+    "noerr": 0,
+    "x": 360,
+    "y": 300,
+    "wires": [
+      [
+        "n-dp-permission"
+      ],
+      [
+        "n-dp-error"
+      ]
+    ]
+  },
+  {
+    "id": "n-dp-permission",
+    "type": "function",
+    "z": "tab-ec-peer",
+    "name": "check permission (§5.2 · 403)",
+    "func": "const S = global.get('ec').sessions.get(msg.conn);\nif (!S) { node.done(); return null; }\n// §5.2 check_permission (permission verdict, delegated) + §6.8 handler-grant\n// validation. Denies 403 capability_denied / permission_denied.\nreturn S.dpPermission(msg.did) === 'ok' ? [msg, null] : [null, msg];",
+    "outputs": 2,
+    "noerr": 0,
+    "x": 590,
+    "y": 300,
+    "wires": [
+      [
+        "n-dp-handler"
+      ],
+      [
+        "n-dp-error"
+      ]
+    ]
+  },
+  {
+    "id": "n-dp-handler",
+    "type": "function",
+    "z": "tab-ec-peer",
+    "name": "run handler (§6.13)",
+    "func": "const S = global.get('ec').sessions.get(msg.conn);\nif (!S) { node.done(); return null; }\nS.dpRunHandler(msg.did).then((r) => { msg.payload = r.payload; msg.flipped = r.flipped; node.send(msg); node.done(); })\n  .catch((e) => { node.error(e, msg); node.done(); });\nreturn null;",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 810,
+    "y": 300,
+    "wires": [
+      [
+        "n-listener"
+      ]
+    ]
+  },
+  {
+    "id": "n-dp-connect-handler",
+    "type": "function",
+    "z": "tab-ec-peer",
+    "name": "connect handler (§4)",
+    "func": "const S = global.get('ec').sessions.get(msg.conn);\nif (!S) { node.done(); return null; }\nS.dpRunConnect(msg.did).then((r) => { msg.payload = r.payload; msg.flipped = r.flipped; node.send(msg); node.done(); })\n  .catch((e) => { node.error(e, msg); node.done(); });\nreturn null;",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 350,
+    "y": 400,
+    "wires": [
+      [
+        "n-listener"
+      ]
+    ]
+  },
+  {
+    "id": "n-dp-error",
+    "type": "function",
+    "z": "tab-ec-peer",
+    "name": "build error response (§6.5)",
+    "func": "const S = global.get('ec').sessions.get(msg.conn);\nif (!S) { node.done(); return null; }\n// The short-circuit sink: encode the EXECUTE_RESPONSE error accumulated on the\n// dispatch scratch (status/code/message) back to transport.\nconst r = S.dpBuildError(msg.did);\nmsg.payload = r.payload;\nmsg.flipped = r.flipped;\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 640,
+    "y": 400,
+    "wires": [
+      [
+        "n-listener"
+      ]
+    ]
+  }
+]

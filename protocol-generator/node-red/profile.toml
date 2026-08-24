@@ -1,0 +1,111 @@
+# entity-core-protocol-node-red — Language Profile
+#
+# Peer #31 — the FIRST of the visual/dataflow-paradigm probe cohort (Node-RED →
+# TurboWarp → Scratch). This is NOT a wire-axis discovery peer: Node-RED runs on
+# the Node.js runtime already saturated by the native TypeScript peer (peer #2).
+# The NEW axis is **paradigm + authoring model**: the peer is authored as a
+# Node-RED *flow-graph* (nodes + wires), NOT as textual source. The finding-bet is
+# **generator-robustness at the extreme** — does the /entity-rosetta model
+# (profile + templates + S1→S5, all assuming textual source) survive a non-textual
+# substrate at all? — plus the possible **transport-abstraction finding** (is the
+# peer/transport layer cleanly abstracted from TCP?).
+#
+# Honest framing (ADR-0012): a passing peer here is COHORT-CONSISTENT corroboration
+# on a SHARED JS substrate, not independent convergence. State this in status/.
+#
+# Profile authority: the agent MUST use the values declared here. "TBD" → log in
+# SPEC-AMBIGUITY-LOG.md and stop. See arch/PROFILE-RATIONALE.md for the WHY.
+
+[language]
+id                = "node-red"
+name              = "Node-RED (visual flow-graph / dataflow)"
+tier              = "T5"                     # functional/niche — experimental paradigm probe, not a mainstream adoption target
+package_name      = "entity-core-protocol-node-red"   # npm id for the custom-node package that carries the codec bridge
+runtime           = "node24"                 # Node-RED IS a Node.js app → reuse containers/node24 (the TS peer's toolchain). No new container.
+paradigm          = "visual-dataflow"        # the axis under test — message-passing between nodes over wires
+authoring_surface = "flow-json"              # source of truth is a Node-RED flows.json (a graph), not *.ts/*.js text modules
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE AUTHORED-vs-DELEGATED BOUNDARY — the whole design (handoff unknown #1).
+# Node-RED is a Node.js app, so this is the textbook `interop` codec strategy
+# (cf. "Clojure on JVM interops with the Java codec"): the byte-exact codec/crypto
+# is DELEGATED to the compiled TypeScript peer (same runtime, one require()), and
+# the PROTOCOL LOGIC is AUTHORED NATIVELY as the flow-graph. The visual layer must
+# carry REAL protocol logic (dispatch, §6.5 ordering, capability checks, §6.11
+# reentry) — a peer that delegates *everything* to the TS peer is a "tooling
+# wrapper", not a visual-language peer (see the scope flag in status/PHASE-S1).
+# ─────────────────────────────────────────────────────────────────────────────
+
+[codec]
+strategy          = "interop"                # "native" | "ffi" | "interop". Interop: require() the compiled TS peer's codec/crypto/model.
+interop_source    = "entity-core-protocol-typescript"  # protocol-generator/typescript/dist/src — same Node runtime, byte-exact by construction
+interop_modules   = [                        # the DELEGATED surface — the "libraries" (canonical CBOR, Ed25519, SHA-256, float, base58, ECF model)
+  "codec/entity-codec.js",                   #   canonical-CBOR encode/decode (shortest-float ladder, length-lex map sort, mt6 tag-reject)
+  "codec/canonical-cbor.js",
+  "crypto/noble-provider.js",                #   Ed25519 sign/verify + SHA-256 (@noble)
+  "model/index.js",                          #   Ecf value model + Entity/Envelope/Execute/ExecuteResponse types
+]
+# WHY interop, not native: hand-rolling canonical ECF (f16 shortest-float ladder,
+# recursive mt6 tag-reject, length-then-lex key sort) + Ed25519 in Node-RED
+# function nodes would just be re-typing the TS peer's code into a textarea — zero
+# independent signal, and the operator's explicit intent is to skip the
+# crypto/hash/float-CBOR libraries and capture the LOGIC. The codec is proven
+# byte-exact (peer #2, 71/71 wire-conformance @ 9695b1f1). See PROFILE-RATIONALE.
+cbor_library      = { name = "interop:entity-codec", version = "typescript-peer@0.1.0-pre", canonical_mode = "delegated", notes = "byte-exact via the TS peer; no re-implementation" }
+crypto_provider   = "interop:@noble"         # via the TS peer's noble-provider — Ed25519 floor + SHA-256
+ed25519_library   = { name = "interop:@noble/curves", version = "typescript-peer" }
+ed448_library     = { name = "deferred", version = "n/a" }   # agility deferred (as most peers); would ride the same TS @noble seam
+sha256_library    = { name = "interop:@noble/hashes", version = "typescript-peer" }
+base58_library    = "interop:codec/base58"
+varint_handling   = "interop"                # LEB128 rides the TS peer
+integer_model     = "always-bigint"          # inherited from the delegated TS codec (bigint end-to-end; JS number caps at 2^53)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE AUTHORED SURFACE — the protocol logic expressed as the flow-graph.
+# This is what makes it a PEER and not a wrapper. Each §6.5 dispatch stage is a
+# node; each branch point is a switch/router node; wires ARE the §6.6 routing.
+# ─────────────────────────────────────────────────────────────────────────────
+[authored]
+transport         = "flow"                   # tcp-in/tcp-out core nodes + a frame-codec function node (4-byte BE len prefix, §1.6) authored in the graph
+handshake         = "flow"                   # §4.1 hello → authenticate → reverse-authenticate as connected nodes + a per-connection state store
+dispatch          = "flow"                   # §6.5 chain as a linear node pipeline; §6.6 handler resolution as a SWITCH node routing by handler-path
+capability_flow   = "flow"                   # §4.4 grant issuance + §5.2 check_permission authored as nodes (verify delegates to TS ChainVerifier)
+reentry           = "flow"                   # §6.11 handler-outbound demux authored as a correlation-map function node (the async-peer tax, per AGENTS.md)
+handlers          = [                        # each a node (or subflow); the switch routes by path
+  "connect (hello/authenticate)",
+  "capability",
+  "handlers (system/handlers)",
+  "conformance (system/validate/echo, dispatch-outbound) — --validate build only",
+]
+
+[error_model]
+style             = "status-envelope"        # a flow can't "throw" across wires — errors are EXECUTE_RESPONSE error envelopes routed on a dedicated wire (the natural dataflow idiom)
+base_exception    = "n/a (dataflow)"
+notes             = "Node-RED's own node-level errors surface via node.error()/Catch nodes; PROTOCOL errors are status envelopes (401/403/404/…) routed to the tcp-out wire like any response."
+
+[async]
+style             = "message-passing"        # the paradigm itself — nodes emit msg objects; no promise/callback idiom at the flow level (function-node interior may await the delegated codec)
+
+[naming]
+# Flow/graph naming, not identifier casing: node names are human-readable labels.
+node_label_style  = "kebab-or-space"         # e.g. "frame-decode", "dispatch switch", "connect handler"
+wire_semantics    = "one-msg-per-envelope"   # a msg travels a wire carrying { envelope, connState, raw } — the unit of routing
+
+[build]
+system            = "node-red"               # `npm ci` the custom-node package, then Node-RED loads flows.json headless (node-red -u <userdir>)
+entry             = "flows.json"             # the graph IS the build artifact; the custom-node package is the codec-bridge dependency
+headless_runner   = "node-red --userDir <dir> --port <admin> flows.json"  # runtime settles at S2; may embed via @node-red/runtime for a cleaner headless host
+test_framework    = "node-red-node-test-helper"  # official flow-test harness (drives a flow with injected msgs, asserts outputs)
+
+[packaging]
+target            = "npm (custom-node package) + flows.json artifact"   # the bridge node ships to npm; the flow ships as an importable .json
+license           = "Apache-2.0"             # S9 default
+publish           = "deferred"               # registry-publish deferred like the rest of the cohort; S5 produces README/LICENSE/CHANGELOG/CI
+
+[container]
+toolchain         = "node24"                 # REUSE containers/node24 — Node-RED installs via npm into the same image. No new Containerfile (log if npm-offline forces one).
+
+[conformance]
+oracle_reachable  = true                     # Node-RED is server-side Node with full TCP → tcp-in LISTENs on loopback → validate-peer reaches it like any peer. S4 is POSSIBLE.
+gate              = "validate-peer --profile core"
+run_script        = "run-s4.sh"              # launches Node-RED headless on a loopback port, waits for LISTENING, points validate-peer at it (mirrors the TS run-s4.sh)

@@ -1,0 +1,11 @@
+# Node-RED runtime state written into the userDir (src/) — not source.
+src/node_modules/
+src/.config.*.json
+src/.config.*.json.backup
+src/.flows.json.backup
+src/.sessions.json
+src/.api-*
+src/flows_cred.json
+src/.node-red/
+# npm
+src/npm-debug.log

@@ -1,0 +1,20 @@
+{
+  "name": "entity-core-protocol-node-red",
+  "version": "0.1.0-pre",
+  "private": true,
+  "description": "entity-core core-protocol peer authored as a Node-RED flow-graph (peer #31, visual/dataflow paradigm probe). Codec/crypto delegated to the TypeScript peer (interop); protocol logic authored as nodes + wires.",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "//": "node-red is pinned exactly (S11 supply-chain cool-down; each dep >=30d old at authoring). Runs headless for the S4 gate; also opens in the Node-RED editor for visualization (operator intent).",
+  "dependencies": {
+    "node-red": "4.1.11"
+  },
+  "devDependencies": {
+    "node-red-node-test-helper": "0.3.6"
+  },
+  "scripts": {
+    "start": "node-red --userDir . --settings ./settings.js flows.json"
+  }
+}
