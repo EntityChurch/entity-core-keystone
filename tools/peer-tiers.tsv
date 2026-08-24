@@ -1,0 +1,76 @@
+# peer-tiers.tsv — THE roster. One maintenance tier per peer, all 46, machine-readable.
+#
+# WHY THIS FILE EXISTS
+#   The tier policy existed in CONFORMANCE-MATRIX.md §4 as prose and drifted: §4 named 17
+#   peers while the cohort had grown to 46, so "re-run Tier-1" had no unambiguous meaning and
+#   every re-pin turned into a full 45-peer census. This file is the single canonical home for
+#   the assignment; §4 explains it, this defines it, and the tooling reads it.
+#
+# MAINTENANCE TIER != LANDSCAPE TIER. research/LANDSCAPE.md has its own tiers 1-5 which
+#   classify the LANGUAGE LANDSCAPE (major platform ... functional/niche) and answer "what is
+#   worth building". These answer "how often does this peer get re-measured". They are
+#   deliberately spelled M1/M2/M3 so the two can never be confused again.
+#
+# WHAT A TIER MEANS (cadence only — a tier NEVER changes whether a peer may be published;
+#   see CONFORMANCE-MATRIX.md §4):
+#   M1           lockstep. Re-run on EVERY oracle re-pin; must reach 0-FAIL before the re-pin
+#                is considered landed. This is the gate.
+#   M2           priority catch-up. Re-run once M1 has converged.
+#   M3           on-demand. Re-run with spare capacity, before a release, or on an adopter ask.
+#   probe        paradigm/substrate probe. Re-measured when its own axis is touched, or before
+#                a release. Real peers, but not what the cadence is for.
+#   exploratory  NOT a deployable peer (CONFORMANCE-MATRIX.md §1 ‡). Never gates anything.
+#
+# last_measured_pin is the oracle commit a peer's CURRENT recorded verdict was measured at.
+#   A peer whose pin != tools/oracle-pin.env `ref` is STALE — a documented, tracked state, not
+#   a failure. `tools/tier-status.py` reports it; the census updates it.
+#
+# Columns: peer <TAB> tier <TAB> last_measured_pin <TAB> note
+#
+peer	tier	last_measured_pin	note
+go	M1	de8f807	clean-room; independence check on the generator
+haskell	M1	de8f807	STM substrate; cleanest conformance record
+lean	M1	de8f807	the proof vector — the only formal-methods discovery channel
+ocaml	M1	de8f807	the proven headline finder (A-OC-007)
+swift	M1	de8f807	sharpest string/grapheme instrument; adoption anchor
+common-lisp	M2	de8f807	proven finder (A-CL-009); pure-language full crypto
+csharp	M2	de8f807	major ecosystem
+elixir	M2	de8f807	production BEAM; native agility
+java	M2	de8f807	major ecosystem
+kotlin	M2	de8f807	JVM; sealed-Result + coroutines
+python	M2	de8f807	clean-room; large-ecosystem adoption
+rust	M2	de8f807	clean-room; compile-enforced store safety
+typescript	M2	de8f807	major ecosystem
+ada	M3	de8f807	structural store-safety via protected objects
+c	M3	de8f807	ubiquitous; found A-C-009
+cobol	M3	de8f807	FFI-hybrid; standing 27-FAIL liveness cascade
+cpp	M3	de8f807	reach peer
+crystal	M3	de8f807	CSP fibers; fixed-width int
+dart	M3	de8f807	sealed-Result + Future; BigInt-web
+julia	M3	de8f807	multiple-dispatch codec; JIT
+nim	M3	de8f807	compile-time macro codec; compiles-to-C
+odin	M3	de8f807	pure-Odin crypto; no-GC
+php	M3	de8f807	event-loop store-safety
+prolog	M3	de8f807	logic substrate; found A-PL-006
+ruby	M3	de8f807	dynamic; native agility
+zig	M3	de8f807	lightest supply chain
+apl	probe	none	UNMEASURABLE — upstream-blocked (1.9->2.0 cool-down); excluded from census by standing policy
+asm-arm64	probe	de8f807	ISA port; INVALID MEASUREMENT — 699/740 checks, >=3 core FAILs (§1a)
+asm-x86_64	probe	de8f807	lowest-level substrate; INVALID MEASUREMENT — 699/740 checks, >=3 core FAILs (§1a)
+datalog	probe	de8f807	authority-as-query (Ascent); closes the logic frontier
+forth	probe	de8f807	stack-machine/typeless generator stress
+fortran	probe	de8f807	fixed-width signed-only integer model
+io	probe	de8f807	pure-prototype OO; single-thread event loop
+oz	probe	de8f807	dataflow-variable concurrency
+pd	probe	de8f807	Pure Data — only visual probe to clear the full core gate
+rexx	probe	de8f807	native-decimal number model
+riscv64	probe	de8f807	ISA port; INVALID MEASUREMENT — 699/740 checks, >=3 core FAILs (§1a)
+rust-wasm	probe	de8f807	compiled wasm32-wasip1, WasmEdge JIT
+rust-wasm-wasmtime	probe	de8f807	same module under wasmtime AOT
+smalltalk	probe	de8f807	pure-object/live-image message passing
+sql	probe	de8f807	authority-as-query (SQLite)
+tcl	probe	de8f807	EIAS / everything-is-a-string
+unison	probe	de8f807	content-addressed; no C-FFI hatch
+wasm-wat	probe	de8f807	hand-authored WebAssembly text
+node-red	exploratory	de8f807	flow-graph visualization; delegates the TS engine — NOT a deployable peer
+turbowarp	exploratory	de8f807	Scratch blocks; measured by block-interpreter — NOT a deployable peer

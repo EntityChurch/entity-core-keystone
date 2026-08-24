@@ -39,7 +39,7 @@ Flags:
 | `-category name` | Run only this category; otherwise runs all |
 | `-exclude cats` | Comma-separated categories to exclude (useful: `-exclude tree_operations,local_files` for extension-free peers) |
 | `-reference-peer host:port` | Known-good reference for origination (A-role) tests; single-peer mode can't catch outbound-dispatch bugs without it |
-| `-timeout duration` | Overall timeout (default 60s) |
+| `-timeout duration` | **GLOBAL** budget for the whole run, not per-category. **Default is `10m` at the `de8f807` oracle** (it was `60s` at earlier pins — always confirm with `validate-peer -h`, don't trust a written-down default). When it expires mid-suite, the remaining categories are recorded as `budget_exhausted` and **never run** — see "Budget starvation" below. |
 | `-verbose` | Wire request/response traces on stderr |
 | `-failures-only` | Suppress passing checks; show only FAIL/SKIP/WARN |
 | `-json` | JSON to stdout |
@@ -133,6 +133,63 @@ Bytes don't match canonical. See PHASE-S2-CODEC.md "byte-identity rule" for comm
 ### "Origination" category failures
 
 The generated peer can't initiate outbound EXECUTE correctly. Common cause: signing the wrong target (e.g. signing `request.content_hash` instead of `params.content_hash`). Reference: V7 §5.2 cap-chain provenance + §3.5 signature discovery.
+
+### Budget starvation — the failure mode that looks like a clean run
+
+**Check for this before trusting any summary.** `-timeout` is a **global** budget. If one check
+hangs or one category is slow enough to consume it, every remaining category is recorded as
+`budget_exhausted` and **never runs** — and the two output channels disagree about how serious
+that is:
+
+- **Human output** says so unmistakably:
+  `!! WHOLE CATEGORIES NEVER RAN — the -timeout window expired mid-suite [resource_bounds] → this is coverage loss, not a slow peer`
+- **JSON output** files those categories under **`skipped`**. So `summary.failed` stays small and
+  a summary-only reader sees a nearly-clean run.
+
+A starved run is an **incomplete measurement**: its P/W/F/S is a floor, not a result, and the
+categories that didn't run are exactly where undiscovered FAILs live.
+
+**Detect** (works on any report JSON):
+
+```
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); \
+  print(sorted({c["category"] for c in d["checks"] if "budget_exhausted" in c.get("message","")}))' \
+  output/scratch/census/<peer>.json
+```
+
+**Then measure the hidden categories directly** — do *not* just raise `-timeout` and re-run the
+whole suite behind the hang:
+
+```
+research/diagnostics/starved-categories-probe.sh <peer> [category...]
+```
+
+`-category <name>` runs each starved category on its own in seconds, and keeps the published gate
+verdict at the default budget where it belongs. Raising `-timeout` to make a red run green is
+forbidden (`AGENTS.md`); raising it as a one-off diagnostic to surface hidden coverage is fine,
+just slower than `-category`.
+
+**Locating the hog:** sum `elapsed_ms` per category — starvation is usually one check, not general
+slowness.
+
+```
+python3 -c 'import json,sys,collections; d=json.load(open(sys.argv[1])); \
+  t=collections.Counter(); [t.update({c["category"]: c.get("elapsed_ms",0)}) for c in d["checks"]]; \
+  print(t.most_common(5))' output/scratch/census/<peer>.json
+```
+
+**Worked example** (asm-x86_64, 2026-08-17): `concurrency` consumed 599 947 ms of a 600 s budget
+— all of it `t2_2_connection_churn` — while every other category finished in ~0 ms. Seven
+categories starved, `resource_bounds` among them, hiding two real core FAILs. Full trace:
+`research/stewardship/SESSION-2026-08-17-asm-budget-starvation.md`; consequences for the published
+numbers: `CONFORMANCE-MATRIX.md` §1a.
+
+### A `run-s4.sh` exit code is not a verdict
+
+All 46 harnesses end the oracle invocation with `|| true`
+(`grep -l '|| true' protocol-generator/*/run-s4.sh | wc -l` → 46/46). A peer with
+`Result: FAIL` still exits `0`. The **JSON summary is the authoritative verdict source**; an
+`rc` anomaly is a signal about the harness or its container, never about conformance.
 
 ## Debugging workflow
 

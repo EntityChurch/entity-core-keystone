@@ -179,12 +179,119 @@ census_one() {
 export -f census_one run_direct run_direct_envjson run_podman run_podman_timeout
 export REPO_ROOT OUT LOGS PODMAN_RUN_CAPS
 
-PEERS=("$@")
+# ---------------------------------------------------------------------------
+# Peer selection. The maintenance-tier policy (CONFORMANCE-MATRIX.md §4) exists so
+# that a re-pin does NOT mean a 45-peer census every time. `--tier` makes that
+# policy one command instead of a hand-typed peer list:
+#
+#   tools/run-cohort-census.sh --tier M1        # the lockstep gate — 5 peers
+#   tools/run-cohort-census.sh --tier M1,M2     # after M1 converges
+#   tools/run-cohort-census.sh --stale          # only peers behind the current pin
+#   tools/run-cohort-census.sh go rust          # explicit, unchanged
+#   tools/run-cohort-census.sh                  # everything, unchanged
+#
+# The roster is tools/peer-tiers.tsv — the single canonical home for the
+# assignment. `apl` is excluded everywhere (upstream-blocked, standing policy).
+# ---------------------------------------------------------------------------
+roster_peers() {  # $1 = comma-separated tier list, or "" for all; "--stale" handled by caller
+  awk -F'\t' -v want="$1" -v ref="$2" '
+    /^#/ || /^peer\t/ || NF < 3 { next }
+    $1 == "apl" { next }
+    {
+      if (want != "") { ok=0; n=split(want, T, ","); for (i=1;i<=n;i++) if ($2==T[i]) ok=1; if (!ok) next }
+      if (ref != "" && $3 == ref) next        # --stale: skip peers already at the pin
+      print $1
+    }' "$REPO_ROOT/tools/peer-tiers.tsv"
+}
+
+TIER_SEL=""; STALE_ONLY=""
+ARGS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --tier) TIER_SEL="$2"; shift 2 ;;
+    --tier=*) TIER_SEL="${1#--tier=}"; shift ;;
+    --stale) STALE_ONLY=1; shift ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+
+CUR_REF="$(awk -F= '/^ref[ \t]*=/{gsub(/[ \t]/,"",$2); print $2; exit}' "$REPO_ROOT/tools/oracle-pin.env")"
+
+PEERS=("${ARGS[@]+"${ARGS[@]}"}")
 if [ "${#PEERS[@]}" -eq 0 ]; then
-  PEERS=(ada asm-arm64 asm-x86_64 c cobol common-lisp cpp crystal csharp dart datalog \
-    elixir forth fortran go haskell io java julia kotlin lean nim node-red ocaml odin \
-    oz pd php prolog python rexx riscv64 ruby rust rust-wasm rust-wasm-wasmtime \
-    smalltalk sql swift tcl turbowarp typescript unison wasm-wat zig)
+  if [ -n "$STALE_ONLY" ]; then
+    mapfile -t PEERS < <(roster_peers "$TIER_SEL" "$CUR_REF")
+    echo "census: --stale -> peers not already measured at $CUR_REF${TIER_SEL:+ in tier(s) $TIER_SEL}"
+  else
+    mapfile -t PEERS < <(roster_peers "$TIER_SEL" "")
+  fi
 fi
 
+if [ "${#PEERS[@]}" -eq 0 ]; then
+  echo "census: nothing to run${TIER_SEL:+ for tier(s) $TIER_SEL} — every selected peer is already at $CUR_REF"
+  exit 0
+fi
+echo "census: ${#PEERS[@]} peer(s)${TIER_SEL:+, tier(s) $TIER_SEL} @ oracle $CUR_REF"
+
 printf '%s\n' "${PEERS[@]}" | xargs -P "$CONCURRENCY" -I{} bash -c 'census_one "$@"' _ {}
+
+# ---------------------------------------------------------------------------
+# Check-set gate — a census is a COMPARISON, and a comparison is only valid if
+# every peer was scored on the same checks. The one way that silently stops
+# being true is the global -timeout expiring mid-suite: the oracle then stops
+# emitting the remaining categories and records them as severity SKIP, which is
+# indistinguishable in `summary` from a legitimate --profile core carve-out.
+# (asm-x86_64/asm-arm64/riscv64 ran 699 checks to the cohort's 740 for four
+# consecutive censuses before anyone noticed — hiding 2 core FAILs each.)
+#
+# This runs automatically so a non-comparable census cannot be reported as one.
+# It does not gate the peers' PASS/FAIL — it gates whether their numbers may be
+# placed side by side at all.
+# ---------------------------------------------------------------------------
+echo
+echo "=============================================================="
+# Gate ONLY the peers this run produced. A tier run must not inherit an unrelated
+# peer's stale deviation from a previous full census — otherwise `--tier M1` exits
+# non-zero because of a probe nobody re-ran, and the exit code stops meaning anything.
+GATE_FILES=()
+for peer in "${PEERS[@]}"; do
+  [ -f "$OUT/$peer.json" ] && GATE_FILES+=("$OUT/$peer.json")
+done
+if [ "${#GATE_FILES[@]}" -eq 0 ]; then
+  echo "check-set gate: no reports produced — nothing to gate"; gate_rc=2
+else
+  "$REPO_ROOT/tools/check-set-gate.py" "${GATE_FILES[@]}"
+  gate_rc=$?
+fi
+if [ "$gate_rc" -ne 0 ]; then
+  echo
+  echo "!! CENSUS NOT COMPARABLE — see above. Do not publish these numbers as a cohort"
+  echo "!! comparison until every peer reports the pinned check set."
+fi
+
+# ---------------------------------------------------------------------------
+# Stamp the roster. `tools/peer-tiers.tsv` records the oracle pin each peer's
+# CURRENT verdict was measured at — that is what makes "which tiers are caught
+# up" a question with an exact answer (tools/tier-status.py). Updating it by hand
+# is how a tier policy quietly rots, so the census does it: every peer that
+# produced a report this run is stamped with the current ref.
+#
+# Only the pin column moves. Tier and note are hand-maintained and never touched.
+# ---------------------------------------------------------------------------
+STAMPED=$(printf '%s\n' "${PEERS[@]}" | while read -r peer; do
+  [ -f "$OUT/$peer.json" ] && echo "$peer"
+done | tr '\n' ' ')
+if [ -n "$STAMPED" ]; then
+  TSV="$REPO_ROOT/tools/peer-tiers.tsv"
+  awk -F'\t' -v OFS='\t' -v ref="$CUR_REF" -v list=" $STAMPED " '
+    /^#/ || /^peer\t/ || NF < 3 { print; next }
+    { if (index(list, " " $1 " ")) $3 = ref; print }
+  ' "$TSV" > "$TSV.tmp" && mv "$TSV.tmp" "$TSV"
+  echo
+  echo "roster stamped @ $CUR_REF: $(echo "$STAMPED" | wc -w) peer(s)"
+  echo "  (tools/peer-tiers.tsv — review with 'git diff tools/peer-tiers.tsv')"
+fi
+
+echo
+"$REPO_ROOT/tools/tier-status.py" || true
+exit "$gate_rc"
