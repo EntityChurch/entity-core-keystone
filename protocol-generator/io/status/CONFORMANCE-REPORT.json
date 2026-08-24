@@ -1,0 +1,41 @@
+{
+  "peer": "entity-core-protocol-io",
+  "spec_version": "v0.8.0",
+  "oracle": {
+    "binary": "validate-peer",
+    "ref": "cc1970f",
+    "core_gate_fingerprint": "8261a033fe1af56b1973fefb07ba8fcbdfd0867c17707275dbbd453bdc9bf745"
+  },
+  "codec_impl_info": "c 0.1.0 / ecf-c-abi 1.1 / libsodium 1.0.22 (+ hand-rolled sha384; ed448 via vendored openssl-3.3.2)",
+  "s2_wire_conformance": { "total": 71, "pass": 71, "fail": 0 },
+  "type_floor_render_from_model": { "total": 53, "match": 53, "drift": 0 },
+  "origination_core": { "total": 3, "pass": 3, "fail": 0 },
+  "multisig_accept_unit_test": { "pass": true, "checks": ["valid_2of3_accept", "1of3_below_K_deny", "local_not_in_signers_M6_deny", "multisig_with_parent_M3_deny"] },
+  "profile_core": {
+    "gate": "0 FAIL required",
+    "result": "PASS (with warnings)",
+    "totals": { "total": 682, "pass": 291, "warn": 295, "fail": 0, "skip": 96 },
+    "skip_note": "96 skips are §9.0 profile-carve-out extension categories, auto-allowlisted and exempt from the FAIL gate",
+    "reason": "0 FAIL across every gated category, concurrency included. The earlier A-IO-023 'throughput ceiling' was a misdiagnosis (retracted): the real defects were A-IO-025 (Io `try` clones a Coroutine per call → per-request retain-stack leak) and A-IO-026 (blocking send stalled the single-threaded poll loop). Both fixed; t2_1 completes 10000 requests with 0 drops, t2_2 churn passes.",
+    "categories": {
+      "connectivity":            { "pass": 22,  "warn": 0,   "fail": 0, "skip": 0 },
+      "encoding":                { "pass": 6,   "warn": 0,   "fail": 0, "skip": 0 },
+      "type_system":             { "pass": 108, "warn": 292, "fail": 0, "skip": 0 },
+      "handlers":                { "pass": 35,  "warn": 0,   "fail": 0, "skip": 32 },
+      "capability":              { "pass": 12,  "warn": 0,   "fail": 0, "skip": 0 },
+      "tree_operations":         { "pass": 24,  "warn": 1,   "fail": 0, "skip": 31 },
+      "security":                { "pass": 28,  "warn": 0,   "fail": 0, "skip": 1 },
+      "multisig":                { "pass": 11,  "warn": 0,   "fail": 0, "skip": 0 },
+      "authz":                   { "pass": 6,   "warn": 0,   "fail": 0, "skip": 2 },
+      "resource_bounds":         { "pass": 2,   "warn": 1,   "fail": 0, "skip": 0 },
+      "universal_address_space": { "pass": 8,   "warn": 0,   "fail": 0, "skip": 0 },
+      "peer_canonicalization":   { "pass": 7,   "warn": 0,   "fail": 0, "skip": 0 },
+      "format_agility":          { "pass": 10,  "warn": 0,   "fail": 0, "skip": 0 },
+      "crypto_agility":          { "pass": 4,   "warn": 0,   "fail": 0, "skip": 0 },
+      "negotiation":             { "pass": 4,   "warn": 0,   "fail": 0, "skip": 0 },
+      "concurrency":             { "pass": 4,   "warn": 1,   "fail": 0, "skip": 0,
+        "detail": { "t1_1_concurrent_demux": "WARN", "t1_2_concurrent_reentry": "PASS", "t1_3_no_head_of_line": "PASS", "t2_1_sustained_load": "PASS (0/10000 dropped, 1m3s)", "t2_2_connection_churn": "PASS (6.8s)" } }
+    }
+  },
+  "measurement_note": "Full single-invocation --profile core -timeout 14m: 682 total, 291 P / 295 W / 0 F / 96 S, Result PASS (with warnings). concurrency measured in a dedicated run (t2_1 sustained-load ~1m, t2_2 churn ~7s) both PASS after the A-IO-025/A-IO-026 fixes."
+}

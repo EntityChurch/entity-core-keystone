@@ -1,0 +1,104 @@
+# Oz / Mozart toolchain image — builds the DATAFLOW-VARIABLE concurrency peer
+# (protocol-generator/oz/) per its profile.toml. Peer target `oz` — the 4th structural
+# §7b store-safety shape (single-assignment dataflow variables: a reader blocks until
+# a writer binds; synchronization is automatic — no locks, no channels, no retry loop).
+#
+# The peer is NATIVE Oz for everything the substrate can do (sockets via Open.socket,
+# canonical CBOR hand-rolled over Oz bignum integers, the full §6.5/§5.2/§6.6 protocol
+# brain in dataflow threads). The ONLY seam is crypto + ms-clock + entropy, delegated to
+# the `entity-codec-daemon` co-process (a small C program over libentitycore_codec,
+# spoken to via Open.pipe — see protocol-generator/oz/src/daemon/). This Containerfile
+# is the pinned recipe.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# S1 FINDING (2026-07-15, research/evaluations/oz-io-viability.md §S1): the release
+# RPM `mozart2-2.0.1-x86_64-linux.rpm` (2018-09, S11-clean by years) installs on
+# fedora:43 via plain `dnf install` — its only repo deps are glibc/libstdc++ basics +
+# tcl/tk 8.6 (still packaged in fedora:43). tk belongs to `ozwish` (the GUI ELF) alone;
+# `oz`/`ozc`/`ozengine` are shell scripts over `ozemulator`, which links NO tk and NO
+# boost (boost is static). **No source build** — the LLVM/Scala-bootstrap build risk the
+# viability doc flagged never materializes. The peer never uses ozwish/tk.
+#
+# GO-GATE (proven live at S1, re-asserted as a build-time self-test below):
+#   * `ozc -c` + `ozengine` run headless (no display, no OPI/emacs).
+#   * dataflow threads work under ozengine: `thread Y = X + 1 end` blocks on unbound X,
+#     resumes on bind (Y=42) — the paradigm axis is live headless.
+#   * Oz integers are ARBITRARY-PRECISION (bignum): the [2^63, 2^64-1] head-form
+#     boundary carries with no fixed-width trap (verified in the self-test).
+#   * `Open.socket` bind/listen/accept/read/write is a byte-identical TCP echo incl
+#     0x00/0xFF (`read(list:)` yields byte ints; writing the list back is byte-clean).
+#   * `Open.pipe` to a spawned co-process is byte-clean incl 0x00/0xFF — the
+#     entity-codec-daemon seam transport.
+#
+# Crypto/CBOR seam decision (S1): the RPM ships ZERO headers, so the native-functor
+# C++ FFI route would demand a full mozart2 source build (the risk we avoided). The
+# crypto seam is therefore a CO-PROCESS daemon over Open.pipe (the Rexx `ecnet`
+# co-process precedent, subsetted to crypto/clock/entropy — Oz owns its own sockets).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Ages at authoring 2026-07-15:
+#   mozart2   2.0.1  (2018-09-05, ~7.8y)  — the final Mozart 2 release; upstream is
+#                                            dormant, so the pin is effectively permanent.
+#             Release RPM from the mozart/mozart2 GitHub releases page, SHA256-verified
+#             (fail closed on mismatch). tcl/tk 8.6 resolve from fedora:43 repos.
+#     RPM SHA256: d7b0fee5a49b707af6735b49195d1816910e293dce0fb3cee59b66b9e872ae04
+#   cmake/gcc + libsodium-static  image-provided — build libentitycore_codec (the
+#             C-ABI codec, statically + privately linking libsodium) and the
+#             entity-codec-daemon co-process that wraps it (S2's crypto seam).
+#   python3   image-provided — GO-gate self-test client + S4 harness helpers.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (from the repo root; caps per RESOURCE-CAPS.md):
+#   . tools/podman-caps.sh
+#   podman build $PODMAN_BUILD_CAPS \
+#     -t entity-core-keystone/mozart-toolchain:latest \
+#     -f containers/mozart-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps.
+#   gcc/make/cmake/pkgconfig + libsodium-static/-devel: build the C-ABI codec
+#     (libentitycore_codec) and the entity-codec-daemon C co-process.
+#   python3: GO-gate self-test client + S4 harness helpers.
+RUN dnf install -y \
+        gcc gcc-c++ make cmake pkgconfig \
+        libsodium-static libsodium-devel \
+        python3 \
+        git curl ca-certificates findutils which glibc-langpack-en \
+    && dnf clean all
+
+# UTF-8 locale (the same locale lesson the prolog/tcl/pd images hit).
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# ── Fetch + verify the pinned Mozart 2 release RPM (fail closed on SHA mismatch) ──
+# dnf resolves the RPM's repo deps (tcl/tk 8.6, glibc/libstdc++) from fedora:43.
+ARG MOZART_VERSION=2.0.1
+ARG MOZART_RPM_SHA256=d7b0fee5a49b707af6735b49195d1816910e293dce0fb3cee59b66b9e872ae04
+RUN curl -fsSL -o /tmp/mozart2.rpm \
+        "https://github.com/mozart/mozart2/releases/download/v${MOZART_VERSION}/mozart2-${MOZART_VERSION}-x86_64-linux.rpm" \
+    && echo "${MOZART_RPM_SHA256}  /tmp/mozart2.rpm" | sha256sum -c - \
+    && dnf install -y /tmp/mozart2.rpm \
+    && dnf clean all \
+    && rm -f /tmp/mozart2.rpm
+
+# ── Verify the Mozart pin + headless boot ────────────────────────────────────
+RUN ozc --help 2>&1 | head -1 | grep -q "Compile" \
+    && echo "ozc OK" \
+    && ozengine x-oz://system/Compile.ozf -h >/dev/null 2>&1 || true
+
+# ── GO-GATE self-test: headless ozc/ozengine + dataflow threads + bignum ints +
+#    byte-clean Open.socket TCP echo + byte-clean Open.pipe co-process ──────────
+# Bakes the S1 GO gate into every image build. FATAL on any mismatch — the image is
+# only valid if the dataflow paradigm runs headless and both the socket and the pipe
+# seam round-trip 0x00/0xFF clean.
+COPY containers/mozart-toolchain/gogate-selftest.sh /usr/local/bin/gogate-selftest.sh
+RUN chmod +x /usr/local/bin/gogate-selftest.sh && /usr/local/bin/gogate-selftest.sh
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="mozart-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.mozart="2.0.1"
+LABEL org.entity-core-keystone.experimental="dataflow-variable-concurrency-peer"
+
+CMD ["/bin/bash"]

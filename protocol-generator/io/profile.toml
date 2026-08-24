@@ -1,0 +1,204 @@
+# entity-core-protocol-io — Language Profile
+#
+# PARADIGM PROBE (pure prototype-based object orientation). Io (Steve Dekorte) has
+# NO classes: every object is `clone`d from a prototype, inheritance is DIFFERENTIAL
+# (an object stores only its diffs; everything else delegates up the proto chain),
+# and every operation — including control flow — is a message send. This is the ONE
+# object model the cohort has not probed (class-based, pure-message-class Smalltalk,
+# and JS-via-TypeScript are covered; Io is the *pure* prototype language).
+#
+# *** THE EXPERIMENTAL QUESTION THIS PROFILE EXISTS TO ANSWER ***
+# The §6.6 handler resolution IS a delegation walk (longest-prefix up a tree); Io's
+# entire dispatch semantics IS a delegation walk (message → proto chain). Does
+# authoring the protocol in a language whose native dispatch mechanism mirrors the
+# protocol's own dispatch surface any mismatch — or corroborate that §6.6 is
+# substrate-shaped? Secondary axes: (a) IoNumber is a C double → the uint64 head-form
+# tower needs an explicit carrier (the fixed-width-class trap on a dynamic language —
+# a NEW combination; every prior double-limited peer was JS-family); (b) coroutine +
+# libevent single-thread concurrency — the Scratch/Pd serialization lessons on a
+# substrate with a REAL scheduler.
+#
+# NOT wire-axis discovery: the byte ladder lives in a C addon (the wire axis is
+# saturated by the C peer + the C-ABI codec). The axis is the OBJECT MODEL.
+#
+# Profile authority (PROMPT-CONSTANTS): the agent MUST use the values declared here.
+
+[language]
+id                = "io"
+name              = "Io (pure prototype-based OO)"
+tier              = "paradigm-probe"          # exploratory ‡ row, like smalltalk/pd — not a deployable-tier slot
+package_name      = "entity-core-protocol-io"
+runtime           = "io-toolchain"            # containers/io-toolchain/Containerfile — the PERMANENTLY frozen native line
+io_version        = "2026.04.20-native-final" # tag (commit e5024305…); upstream master is now a WASM/WASI port — this pin can never drift
+paradigm          = "prototype-oo"            # clone + differential inheritance + message-send delegation
+
+[codec]
+# strategy: FFI-ADDON-HYBRID. Byte-level canonical CBOR (ECF) + all crypto + peer-id
+# primitives live in the EntityCodec C ADDON (src/entitycodec/IoEntityCodec.c),
+# compiled EXACTLY like the hand-built Socket addon (the S1-proven pattern: same
+# `Io<Name>Init` convention, same gcc -shared shape) and linked against
+# libentitycore_codec (the C-ABI). The addon converts between Io values and
+# canonical ECF bytes directly via the iovm C API:
+#
+#   (1) CBOR value codec: hand-rolled canonical encoder/decoder IN THE ADDON C
+#       (sort-by-encoded-key, minimal heads, shortest-float ladder incl f16,
+#       definite lengths, dup-key reject, recursive major-type-6 tag reject (N2),
+#       full-consume, UTF-8 validation). No Io CBOR library exists at all; and Io's
+#       value model cannot carry the codec natively anyway (see integer_model).
+#       Encoding is driven by the EXPLICIT Io value model below — never inferred.
+#   (2) Crypto + content-hash + peer-id: delegated to libentitycore_codec
+#       (ec_sha256/384, ec_ed25519_{seed_to_pubkey,sign,verify}, ec_content_hash
+#       (+ _with_format), ec_peerid_{format,parse}) — the standard hybrid seam.
+#
+# The PROTOCOL (frames, envelopes, dispatch, §5 capability algebra, store, handlers)
+# is authored in Io — the paradigm surface. The addon is the byte/crypto seam only.
+strategy          = "ffi-addon-hybrid"
+cbor_library      = { name = "hand-rolled (EntityCodec addon C)", version = "in-repo", canonical_mode = "ecf-native" }
+ed25519_library   = { name = "libentitycore_codec (EntityCodec addon)", version = "C-ABI 1.1", api = "ec_ed25519_{seed_to_pubkey,sign,verify}" }
+ed448_library     = { name = "libentitycore_codec (deferred opt-in)", version = "C-ABI 1.1", api = "ec_ed448_*" }
+sha256_source     = "libentitycore_codec ec_sha256 (addon)"
+base58_library    = "libentitycore_codec ec_peerid_{format,parse} (addon); Io-side alphabet check for §5.4 is_peer_id"
+varint_handling   = "addon (multikey LEB128 inside peer-id/content-hash primitives); values ≤ 0x7F on every authored surface"
+
+# THE VALUE MODEL (the A-IO-001 decision — the double-trap answer, decided at S1):
+# CBOR values cross the seam as Io values with EXPLICIT wrappers wherever Io's
+# value model is ambiguous or lossy. Never inferred from the Io type alone:
+#   map        <-> EcMap   (insertion-ordered entry list; keys text OR bytes — Io Map
+#                           cannot key by raw bytes; the addon sorts canonically at encode)
+#   array      <-> List
+#   text (mt3) <-> Sequence (UTF-8)
+#   bytes(mt2) <-> EcBytes  (wrapper around a raw Sequence — the byte-vs-text seam)
+#   int |x| <= 2^53   <-> Number (integral value; encodes mt0/mt1)
+#   int beyond double <-> EcBig  (sign + 8-byte magnitude wrapper — the uint64 tower
+#                                 carrier; decode NEVER lossy-folds to double)
+#   float      <-> EcFloat (wrapper around Number — mt7; Number alone always means int)
+#   true/false <-> true/false;  null <-> nil (inside EcMap/List slots)
+integer_model     = "double-plus-carrier"     # IoNumber is a C double: exact ints only to 2^53; [2^53, 2^64-1] rides EcBig (head-form preserved from magnitude); self-test the 2^63..2^64-1 tower at S2
+
+[error_model]
+# Io has real exceptions: `Exception raise("...")` / `try(...)` with `e catch(...)`.
+# The codec/transport boundary RAISES on canonicality violations (non-canonical
+# input, truncation, tag-reject, dup keys, oversize) — hard reject, never a
+# sentinel. Protocol-level outcomes (status/result/included) are ordinary Io
+# objects (an Outcome prototype), the recoverable seam — a handler never throws
+# for a 4xx; it returns an error outcome.
+style             = "exceptions-at-boundary, outcome-objects-in-protocol"
+exception_family  = "Exception raise(\"ec: <kind>: detail\")"
+leaf_kinds        = "non_canonical_ecf | truncated_input | tag_rejected | duplicate_key | payload_too_large | bad_seed"
+absent_sentinel   = "nil (EcMap at() returns nil for absent; CBOR null decodes to EcNull singleton so absent /= null — the §1.3 distinction)"
+
+[async]
+# Io's native concurrency: COROUTINES (cooperative, single OS thread) scheduled by
+# the Socket addon's libevent loop. `obj @msg` / asyncSend spawns a coroutine;
+# socket reads/writes park the coroutine on an EV_READ/EV_WRITE event and yield.
+# This is a REAL scheduler (contrast Pd/Scratch): waiting never blocks the loop.
+#
+#   - one ACCEPT coroutine (Server start), one READER coroutine per connection;
+#   - each inbound EXECUTE dispatched in ITS OWN coroutine (@handleFrame) so a
+#     handler that originates outbound (§6.13(b)) parks WITHOUT stalling the reader
+#     — §4.8 inbound-concurrent-with-outbound falls out of the coroutine model;
+#   - §6.11 demux: pending map request_id -> waiting coroutine on each connection;
+#     the reader routes EXECUTE_RESPONSEs by request_id and resumes the waiter;
+#   - WRITE SERIALIZATION is load-bearing (A-IO-002): socket write of a frame can
+#     yield mid-frame (bytesPerWrite chunking), so concurrent responders would
+#     interleave bytes. Every frame write goes through a per-connection writer
+#     queue (one writing coroutine at a time, FIFO handoff).
+#   - §7b store-safety: STRUCTURAL — one OS thread; store mutations never preempted
+#     mid-operation (coroutine switches happen only at explicit yields/IO waits;
+#     store code contains none).
+#   - Half-close (S1 quirk): a client FIN tears the connection down before pending
+#     writes flush — never answer after peer-FIN; request/response flows unaffected.
+style             = "coroutines + libevent (Socket addon)"
+event_primitive   = "Server/Socket coroutine waits (EV_READ/EV_WRITE) via EventManager"
+request_demux     = "per-connection pending Map: request_id -> waiter coroutine; reader resumes by request_id (§6.11)"
+store_model       = "plain Io Maps in one OS thread — structurally race-free; no coroutine yield inside store ops"
+tcp_nodelay       = "not exposed by the frozen Socket addon API — loopback conformance unaffected; logged A-IO-003"
+blocking_discipline = "never call a blocking C primitive on the scheduler thread; all socket ops are the addon's yielding async* forms"
+
+[naming]
+# Io-native conventions (the iolanguage style guide + the stdlib itself).
+proto_names       = "UpperCamelCase"          # Peer, Conn, Store, Capability, EcMap, EntityCodec
+method_names      = "lowerCamelCase"          # contentHash, verifyRequest, resolveHandler
+slot_assignment   = ":= for definition, = for update; ::= for setter generation"
+file_names        = "UpperCamelCase.io — one prototype (family) per file, stdlib-style"
+constants         = "slots on the owning proto (Io has no const): Wire maxFrame"
+
+[build]
+# Io is interpreted; "build" = compile the two C artifacts (libentitycore_codec +
+# the EntityCodec addon) then `io <script>`. make is the orchestration (container-
+# bound); no eerie (unusable from the frozen tree — S1).
+build_tool        = "make (gcc for the addon; cmake for the C-ABI codec)"
+build_command     = "make addon"              # builds codec .so + EntityCodec addon, installs at ~/.eerie/base/addons/EntityCodec
+test_command      = "make s2"                 # codec conformance vs the pinned v0.8.0 corpus
+run_command       = "io src/main.io --port <p> --name <n> [--validate] [--debug-open-grants]"
+
+[layout]
+src_dir           = "src/"                    # Io prototypes (Ec.io value model, Codec.io seam surface, Entity.io, Envelope.io, Identity.io, Store.io, Capability.io, Handlers.io, Peer.io, Transport.io, CoreTypes.io, main.io)
+addon_dir         = "src/entitycodec/"        # IoEntityCodec.c + IoEntityCodecInit.c (the C seam)
+test_dir          = "test/"                   # S2 corpus runner + S3 smoke + offline KATs
+status_dir        = "status/"
+
+[publishing]
+# Io's package channel was eerie (now unusable; upstream archived). Publish = a git
+# repo with the addon layout + `io` entry points; the io-toolchain image is the
+# reproducible runtime. Registry publication deferred like the whole cohort.
+registry          = "git (eerie is dead on the frozen native line)"
+package_id        = "entity-core-protocol-io"
+license_expression = "Apache-2.0"
+repository_url    = ""                        # TBD on first publish
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default; Io itself is BSD-3
+
+[testing]
+# Io ships UnitTest.io in the stdlib, but the conformance corpus + oracle are the
+# real gates (the dynamic-language caveat: no compile gate). Harness scripts are
+# plain `io` programs printing PASS/FAIL counts; run-s2.sh / run-s4.sh wrap them
+# container-bound.
+framework         = "plain io harness scripts (+ stdlib UnitTest for unit KATs)"
+runner            = "./run-s2.sh | ./run-s4.sh | ./run-origination-core.sh"
+conformance_probe = "decode the v0.8.0 corpus with the addon itself (E.3: the decoder is under test loading the fixture), then encode_equal/decode_reject per vector"
+
+[container]
+base_image        = "entity-core-keystone/io-toolchain:latest"
+build_in_container = true
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/io entity-core-keystone/io-toolchain:latest bash -lc 'make s2'"
+
+[idiom]
+prototype_dispatch      = true   # §6.6 handler resolution rendered as the delegation walk on a HandlerNode proto tree — visible longest-prefix walk in Io, not a hidden resolve() seam (the FLOW-DESIGN wrapper-guard applies to text languages too)
+differential_inheritance = true  # handlers are clones of a Handler prototype overriding only their op methods; the base carries the 501 default — the paradigm rendering of "unknown operation"
+message_send_everything = true   # op dispatch = a message send with the operation name resolved AGAINST the handler clone (perform), guarded by an explicit declared-op set (no accidental slot exposure — A-IO-004)
+double_number_trap      = true   # IoNumber is a C double: NEVER carry wire ints > 2^53 as Number; the EcBig carrier is mandatory on decode and self-tested on the 2^63..2^64-1 tower (A-IO-001)
+byte_vs_text_seam       = true   # Io Sequence is byte-y but conventionally text; wire bytes are ALWAYS EcBytes wrappers — never inferred from Sequence content
+coroutine_write_lock    = true   # per-connection FIFO writer queue — a frame write can yield mid-frame (A-IO-002)
+half_close_quirk        = true   # S1: peer-FIN tears down before pending writes flush; never answer after FIN
+no_compile_gate         = true   # interpreted + dynamic; correctness rests on the corpus + oracle
+ms_timestamps           = true   # Date now asNumber*1000 floor — genuine ms precision (A-PD-016 lesson: second-truncated mints alias same-second same-scope tokens)
+seed_policy_star        = true   # A-PD-017 lesson: the open/debug seed needs resources ["*", "/*/*"] — bare star is granter-local, never universal
+
+[deps]
+# Exact pins (S11). Toolchain pins mirrored in containers/io-toolchain/Containerfile.
+io                = "2026.04.20-native-final (e5024305…) — the FINAL native tag; sha256 08184259…"
+socket_addon      = "IoLanguage/Socket @ e348c23f1916c80e1344fc6895a1df67b0263429 (archived); sha256 60884862…"
+parson            = "kgabis/parson @ 4f3eaa68… (the io tree's submodule pin; tarball ships it empty)"
+libevent          = "image-provided (fedora:43)"
+libsodium         = "image-provided (static; linked privately by libentitycore_codec)"
+libentitycore_codec = "in-repo ffi-generator/c-abi/entity-core-codec-ffi-c (C-ABI 1.1), built at make time"
+
+[spec]
+spec_version_pinned = "0.8.0"                 # protocol-generator/shared/spec-data/v0.8.0/ (V8)
+codec_corpus      = "v0.8.0"                  # shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+oracle_commit     = "cc1970f"                 # validate-peer @ public HEAD; core-gate fingerprint 8261a033…; target --profile core = 0 FAIL
+# COHORT-SETTLED TRAPS pre-resolved (do NOT re-burn):
+#   peer_id = Base58(varint(0x01)||varint(0x00)||raw 32-byte pubkey) — §1.5 identity-
+#     multihash canonical form, NOT SHA256(pubkey);
+#   lowercase hex for §3.4/§3.5 invariant-pointer tree paths (A-CL-009);
+#   §5.2 401/403/401-unresolvable authz trichotomy + §5.2a table;
+#   entity `data` is an arbitrary ECF value, NOT necessarily a map (A-JAVA-010);
+#   §4.10: 16 MiB frame pre-check -> 413 payload_too_large (checked from the length
+#     prefix BEFORE buffering); chain-depth pre-check (64) -> 400 chain_depth_exceeded
+#     BEFORE the authz walk (unreachable parent is NOT a depth problem);
+#   §5.5a granter-frame canonicalization of cap resources (per-link);
+#   mint created_at in TRUE ms (A-PD-016); open seed resources ["*","/*/*"] (A-PD-017);
+#   multisig M3 structure checked BEFORE signatures; M6 root-at-local; M4 K-of-N;
+#   empty params = primitive/any with data = the single byte 0xA0 (N3).

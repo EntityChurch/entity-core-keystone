@@ -1,0 +1,216 @@
+# entity-core-protocol-oz — Language Profile
+#
+# Peer target `oz` — Oz 3 on the Mozart 2 Programming System. THE FOURTH STRUCTURAL
+# §7b CONCURRENCY SHAPE: single-assignment DATAFLOW VARIABLES (declarative
+# concurrency). A thread reading an unbound variable blocks until another thread
+# binds it — synchronization is automatic, no locks, no channels, no retry loop.
+# Cohort taxonomy this slot completes: actor-isolation (Swift/Elixir), STM
+# (Haskell), CSP channels (Go), threads+locks (C/Zig/Java/...), single-thread
+# select/reactive (COBOL/Rexx/Pd) — and now dataflow variables (Oz).
+#
+# *** THE EXPERIMENTAL QUESTION THIS PROFILE EXISTS TO ANSWER ***
+# How do §4.8 store-safety, §4.9 resilience, and the §6.11 handler-outbound demux
+# fall out when the substrate's ONLY synchronization primitive is "read blocks
+# until bound"? Hypotheses baked into [async] below: (a) the §6.11 request_id
+# demux is a dataflow variable per pending request — the awaiting handler thread
+# just touches it and blocks; the connection's reader thread binds it on arrival;
+# NO correlation pump, NO callback — the demux "falls out" of the variable.
+# (b) §4.8 store-safety is NOT free (dataflow variables serialize producers and
+# consumers, not mutators): shared mutable state (store, grant table) is
+# serialized through PORT AGENTS (Oz's message-passing idiom — a port + a stream
+# consumed by one owning thread), which is actor-shape but built FROM dataflow
+# primitives (the stream IS a dataflow list). See arch/PROFILE-RATIONALE.md.
+#
+# S1 verdict (2026-07-15, live in-container probes — research/evaluations/
+# oz-io-viability.md §S1): GO. RPM installs on fedora:43 via plain dnf; headless
+# ozc/ozengine; dataflow threads live; Open.socket byte-clean; Open.pipe byte-clean.
+#
+# Profile authority (PROMPT-CONSTANTS): the agent MUST use the values declared
+# here. A "TBD" value is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent
+# phase.
+
+[language]
+id                = "oz"
+name              = "Oz (Mozart 2)"
+tier              = "paradigm-probe"          # dataflow-variable concurrency — the §7b fourth shape; not a Tier-1..5 cohort slot
+package_name      = "entity-core-protocol-oz" # keystone peer id
+runtime           = "mozart-toolchain"        # references containers/mozart-toolchain/Containerfile
+interpreter       = "Mozart 2.0.1 (ozc compiler + ozengine VM; release RPM, no source build)"
+
+[codec]
+# strategy: FFI-HYBRID (co-process flavor) — hand-rolled canonical CBOR in PURE OZ,
+# crypto/clock/entropy over the `entity-codec-daemon` CO-PROCESS wrapping
+# libentitycore_codec, spoken to via Open.pipe. Rationale for each half:
+#
+#   (1) CBOR: hand-rolled canonical encoder/decoder in pure Oz (src/cbor.oz).
+#       No Oz CBOR package exists (the A-005 pattern continues). Oz integers are
+#       ARBITRARY-PRECISION (bignum) — verified live at S1 and re-verified in the
+#       toolchain GO-gate: [2^63, 2^64-1] carries exactly, so the integer tower is
+#       FREE (no head-form fixed-width trap; the self-test still runs in the image
+#       build as insurance). Bytes travel as Oz lists of ints 0..255 (the
+#       Open.socket/Open.pipe native currency, proven byte-clean).
+#       The FLOAT tower (mt7 f16/f32/f64 + shortest-form ladder) is hand-rolled in
+#       PURE BIGNUM INTEGER ARITHMETIC on the IEEE bit patterns: decoded floats are
+#       carried as their exact 64-bit pattern (tagged rep), the f64→f32→f16 ladder
+#       is bit logic (dropped-mantissa-zero + exponent-range checks) — NO Oz float
+#       arithmetic touches the wire path, so NaN/inf/subnormal semantics of the VM
+#       are irrelevant (A-OZ-002). Mozart has no bitwise integer ops: bit logic is
+#       div/mod arithmetic on bignums (exact).
+#   (2) Crypto: Mozart has NO crypto anywhere in its library. §9.1 floor crosses
+#       the C-ABI: the entity-codec-daemon (src/daemon/eccodecd.c, a small C
+#       program linking libentitycore_codec) is SPAWNED BY THE PEER via Open.pipe
+#       and spoken to over stdin/stdout with the framing documented in
+#       src/daemon/DAEMON-PROTOCOL.md (the Rexx `ecnet` command vocabulary,
+#       re-carried over pipes with binary length-prefixed framing — Open.pipe is
+#       byte-exact so the hex-over-FIFO armor Regina needed is unnecessary).
+#       The daemon also serves NOW (ms wall clock — Oz's Time.time is
+#       second-granular; A-PD-016 makes ms precision a CORRECTNESS parameter for
+#       mint timestamps) and RND (entropy for keygen).
+#       The daemon channel is ONE shared serial resource: all peer threads reach
+#       it through a dedicated PORT AGENT (one owning thread does pipe I/O; each
+#       request carries a dataflow variable the agent binds with the result) — the
+#       dataflow answer to "many threads, one pipe".
+strategy          = "ffi-hybrid-coprocess"
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native", impl = "pure Oz over bignum ints; bytes as int lists; IEEE float tower as pure-integer bit arithmetic on carried bit patterns" }
+ed25519_library   = { name = "libentitycore_codec via entity-codec-daemon (Open.pipe co-process)", version = "C-ABI 1.1", api = "SIGN/VERIFY/PUB daemon ops -> ec_ed25519_{sign,verify,seed_to_pubkey}" }
+ed448_library     = { name = "libentitycore_codec via entity-codec-daemon", version = "C-ABI 1.1", strategy = "coprocess", api = "ED448PUB/ED448SIGN/ED448VERIFY -> ec_ed448_*" }
+sha256_source     = "libentitycore_codec ec_sha256/ec_sha384 via the daemon (Mozart has no hashing anywhere)"
+base58_library    = "hand-rolled"             # Bitcoin alphabet encode+decode (src/base58.oz); trivial over bignum div/mod
+varint_handling   = "native"                  # LEB128 multikey varint (N1, §7.3), src/varint.oz — pure Oz bignum div/mod
+numeric_model     = "bignum"                  # arbitrary-precision ints VERIFIED at S1 + GO-gate; full uint64 range free
+
+[error_model]
+# Oz's native error model is EXCEPTIONS: `try ... catch E then ... end` with
+# `{Raise entityCore(kind:K detail:D)}` on record values. The codec raises
+# `entityCore(kind:nonCanonicalEcf ...)`-family exceptions on hard rejects; the
+# dispatch loop catches at the request boundary and maps to §6.12/§5.2 status
+# envelopes (fail-closed). In-band "absent" is the atom `absent` in the tagged
+# value rep (a real wire value is always a wrapped record — no collision).
+style             = "exceptions"              # try/catch on record exceptions (native Oz)
+condition_family  = "{Raise entityCore(kind:... detail:...)}"
+leaf_kinds        = "nonCanonicalEcf | truncatedInput | tagRejected | badSeed | unsupportedContentHashFormat | unsupportedKeyType | frameTooLarge | daemonError"
+absent_sentinel   = "atom `absent` (wire values are always tagged records: int(N) float64(Bits) bytes(L) text(L) arr(L) map(Pairs) bool(B) null — the atom cannot collide)"
+
+[async]
+# THE PAYOFF AXIS. Oz threads are ultra-light VM threads with automatic dataflow
+# synchronization. The peer is DATAFLOW-THREAD-PER-CONNECTION:
+#   * one acceptor thread; each accepted socket gets a READER thread (de-frames
+#     §1.6) and each complete frame is dispatched in its own WORKER thread —
+#     inbound-concurrent-with-outbound (§4.8/N6) is structural.
+#   * §6.11 demux: a pending outbound request registers `ReqId -> DataflowVar` in
+#     the connection's pending-table; the awaiting worker does {Wait Var} — it
+#     blocks until the reader thread binds Var with the correlated
+#     EXECUTE_RESPONSE. Out-of-order replies need NO extra machinery: each reply
+#     binds its own variable; every waiter wakes exactly when its own answer
+#     exists. The demux IS the dataflow variable (the experimental claim).
+#   * §4.8 store-safety: the store, grant/revocation table, and connection
+#     registry are each owned by a PORT AGENT (NewPort + one consumer thread
+#     folding over the stream); mutation = send a message carrying a dataflow
+#     variable for the reply. Serialization is by construction (one consumer),
+#     built from dataflow primitives (the port's stream is a dataflow list).
+#   * writes to one socket are serialized through a per-connection WRITER port
+#     agent (frames from concurrent workers never interleave).
+#   * the entity-codec-daemon pipe is a port agent too (one owning thread does
+#     Open.pipe I/O; requests carry result variables). Blocking pipe reads live
+#     in that one thread only — Mozart threads are preemptive VM threads, so a
+#     blocked daemon call never starves the scheduler (verified under churn at
+#     S4; the S1 watch-item).
+style             = "dataflow-threads"        # thread ... end everywhere; {Wait V} is the only synchronization
+concurrency_shape = "dataflow-variables"      # the §7b FOURTH shape
+request_demux     = "pending-table ReqId -> dataflow variable; waiter {Wait V}, reader binds V (no pump, no callbacks)"
+store_model       = "port agents (NewPort + owning consumer thread) for store / grants / conn registry — message-passing serialization built from dataflow streams"
+tcp_nodelay       = "unavailable-in-runtime"  # Open.socket exposes no setsockopt surface (A-OZ-003); loopback-only conformance makes Nagle moot there; logged, not silent
+blocking_discipline = "Mozart VM threads are preemptive; blocking socket/pipe reads sit each in a dedicated thread (reader per connection, one daemon agent) — no shared cooperative pool to starve (§7b)"
+
+[naming]
+# Oz conventions (CTM/Mozart library style): variables/procedures Capitalized
+# (the language REQUIRES uppercase-initial variables), atoms lowercase, module
+# functors one per file, records as the aggregate unit.
+proc_names        = "CapitalizedCamel ({CborEncode V}, {PeerDispatch ...}) — Oz requires uppercase-initial identifiers"
+namespace_scheme  = "one functor per module file; import/export lists (compiled with ozc -c; linked by the root functor)"
+aggregate_unit    = "record (labelled tuple with atom features) — entities/values are tagged records"
+variable_names    = "CapitalizedCamel (language rule); atoms lowercase for tags/status"
+constant_names    = "CapitalizedCamel bindings in a Constants module (Oz has single-assignment — every binding is const)"
+file_names        = "lowercase.oz (cbor.oz, capability.oz); one functor per file"
+main_program      = "src/peer.oz root functor; compiled to peer.ozf, run as `ozengine peer.ozf ARGS`"
+
+[build]
+# Oz compiles functors (.oz -> .ozf pickles) with ozc; ozengine runs the root
+# functor, resolving imports from the same directory. "Build" = ozc -c each
+# module + gcc for the entity-codec-daemon (linking libentitycore_codec).
+build_tool        = "ozc (Mozart compiler) + gcc for the daemon"
+build_command     = "make build   # ozc -c src/*.oz -> build/*.ozf + gcc the daemon"
+test_command      = "make s2      # wire-corpus conformance (see run-s2.sh)"
+package_command   = "make dist    # tar the .ozf tree + daemon source + run scripts"
+
+[layout]
+src_dir           = "src/"                     # one functor per file (cbor.oz varint.oz base58.oz peerid.oz entity.oz envelope.oz capability.oz store.oz wire.oz transport.oz handlers.oz typestore.oz peer.oz ...)
+test_dir          = "test/"                    # conformance + smoke harnesses (Oz functors + sh drivers)
+daemon_dir        = "src/daemon/"              # eccodecd.c + DAEMON-PROTOCOL.md (the entity-codec-daemon convention)
+entry_point       = "src/peer.oz"              # root functor; `ozengine build/peer.ozf --port N --name NAME [--validate] [--debug-open-grants]`
+build_dir         = "build/"                   # gitignored .ozf output + compiled daemon
+
+[publishing]
+# Mozart has NO package registry (MOGUL, the historic Mozart archive, is defunct).
+# Publish = tag a git release of the .oz tree + daemon source + build recipe.
+registry          = "git + tarball (no living Oz registry; MOGUL is defunct)"
+registry_url      = ""
+package_id        = "entity-core-protocol-oz"
+license_expression = "Apache-2.0"
+repository_url    = ""
+
+[license]
+generated_outputs = "Apache-2.0"               # S9 default. Mozart 2 itself is BSD-2-Clause; no ecosystem license pressure.
+
+[testing]
+# No living Oz unit-test framework (Mozart's own test harness is in-tree for the
+# VM, not a user library). Hand-rolled harness (the Rexx/COBOL pattern): Oz test
+# functors driven by sh runners; byte-identity vs the pinned corpus; KAT checks
+# for crypto via the daemon.
+framework         = "hand-rolled (no living Oz test framework)"
+runner            = "run-s2.sh (wire corpus) / test/smoke.sh (S3) / run-s4.sh (oracle)"
+conformance_probe = "walk conformance-vectors-v1 (71 vectors); assert decode->reencode byte-identity + content-hash equality vs vector fields"
+
+[container]
+base_image        = "entity-core-keystone/mozart-toolchain:latest"
+build_in_container = true
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/oz entity-core-keystone/mozart-toolchain:latest sh -c 'make build && make s2'"
+
+[idiom]
+# Dataflow-substrate hints — the seams where Oz is unlike every prior peer.
+dataflow_demux          = true   # §6.11 pending-reply demux is a dataflow variable per request_id; {Wait V} IS the correlation (the paradigm claim under test)
+port_agent_state        = true   # ALL shared mutable state behind port agents (store/grants/conns/writer/daemon); no locks anywhere in the peer (Oz has Lock — unused by design, the probe is "dataflow+ports suffice")
+threads_are_free        = true   # thread ... end per accept/frame/timer; Mozart VM threads are lightweight + preemptive
+single_assignment       = true   # variables bind once; peer state that changes lives in cells/dictionaries INSIDE an owning agent only
+bytes_are_int_lists     = true   # wire currency = Oz lists of ints 0..255 (Open.socket/Open.pipe native form, proven byte-clean); ByteString used only where O(1) indexing pays
+float_as_bits           = true   # A-OZ-002: decoded floats carried as exact IEEE-754 bit patterns (bignum ints) in the tagged rep; ladder + canonicalization in pure integer arithmetic; VM float semantics never touch the wire
+no_bitwise_ops          = true   # Mozart ints have no bitand/bitor — all bit logic via div/mod/*2^k on bignums (exact, just verbose)
+text_vs_bytes_tagged    = true   # Oz strings are char-code lists — indistinguishable from byte lists; mt2-vs-mt3 intent is carried EXPLICITLY in the tagged rep (text(L) vs bytes(L))
+coprocess_seam          = true   # crypto/clock/entropy via entity-codec-daemon over Open.pipe (RPM ships no headers -> no native functor FFI); ONE daemon per peer process, reached via its port agent
+no_compile_time_types   = true   # Oz is dynamically typed; correctness rests on the conformance corpus + KATs (the dynamic caveat)
+ms_clock_via_daemon     = true   # A-PD-016: mint created_at MUST be ms-precision; Oz Time.time is seconds -> NOW crosses the daemon (clock_gettime REALTIME ms)
+
+[deps]
+# Exact pins (S11). Toolchain pins mirrored in containers/mozart-toolchain/Containerfile.
+mozart2           = "2.0.1"                     # 2018-09-05 release RPM (mozart/mozart2 GitHub releases), SHA256 d7b0fee5a49b707af6735b49195d1816910e293dce0fb3cee59b66b9e872ae04; only repo deps tcl/tk 8.6 (ozwish-only; peer never uses them). ~7.8y old — S11 cool-down satisfied by years; upstream dormant, pin effectively permanent.
+libentitycore_codec = "C-ABI 1.1"               # the crypto floor .so/.a (pinned at the ffi-generator layer). The daemon links it.
+libsodium         = "1.0.22 (image-provided, fedora:43)"  # statically+privately linked into libentitycore_codec by its CMake
+
+[spec]
+spec_version_pinned = "0.8.0"                  # spec-data snapshot protocol-generator/shared/spec-data/v0.8.0/ (V8). Confirm the SHA-256 pins in MANIFEST.md unchanged at S2.
+codec_corpus      = "v0.8.0"                    # ECF corpus protocol-generator/shared/test-vectors/v0.8.0/ (conformance-vectors-v1.cbor); core wire byte-unchanged across V7->V8.
+oracle_commit     = "cc1970f"                   # go oracle for S4 (output/s4-oracles/, PROVENANCE fingerprint 8261a033… matches tools/oracle-pin.env; pre-verified 2026-07-15 — do NOT rebuild). Target --profile core = Result: PASS, 0 FAIL.
+# PEER_ID CONSTRUCTION (cohort-settled): derive the Ed25519 peer_id from the §1.5
+# CANONICAL-FORM TABLE — hash_type = 0x00 identity-multihash, digest = the RAW
+# 32-byte public key (NO SHA256(pubkey) skeleton). peer_id wire form =
+# Base58(key_type || hash_type || digest).
+# COHORT-SETTLED TRAPS pre-resolved here (do NOT re-burn): lowercase %02x hex for
+# §3.4/§3.5 tree-paths (A-CL-009); §5.2 401/403/401-unresolvable authz trichotomy;
+# entity `data` is an arbitrary ECF value, NOT necessarily a map (A-JAVA-010);
+# §4.10 chain-depth PRE-check (structural, BEFORE the authz walk) -> 400
+# chain_depth_exceeded (depth 64); 16 MiB payload -> 413 payload_too_large checked
+# on the length prefix BEFORE buffering; A-PD-016 ms-precision mint created_at;
+# A-PD-017 open/debug seed carries resources ["*", "/*/*"] (bare star is
+# granter-local per §5.5a); multisig needs a genuine ACCEPT-path unit test (the
+# oracle category is rejection-only); §4.5/§4.7 hello advertises
+# hash_formats/key_types + disjoint-set rejects + unsupported_key_type.

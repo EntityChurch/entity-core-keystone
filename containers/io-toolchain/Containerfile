@@ -1,0 +1,164 @@
+# Io toolchain image — builds the PURE PROTOTYPE-BASED OO peer
+# (protocol-generator/io/) per its profile.toml. Peer target `io` — the last
+# unprobed object model in the cohort: no classes, differential inheritance via
+# clone, everything a message send; §6.6 handler resolution rendered as the
+# delegation walk the language itself lives on.
+#
+# PROTOTYPE-OO PROBE: the protocol is authored IN Io (the §6.5/§5.2 dispatch
+# sequence, capability algorithms, store, coroutine-per-request concurrency);
+# the only C is the seam — canonical CBOR + Ed25519/SHA + peer-id via the
+# EntityCodec addon over the C-ABI (libentitycore_codec), compiled exactly like
+# the Socket addon below (the manual addon build IS the FFI pattern).
+# This Containerfile is the pinned recipe.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# S1 FINDINGS (2026-07-15, research/evaluations/oz-io-viability.md §S1):
+#   * UPSTREAM PIVOT: IoLanguage/io master is now a WebAssembly/WASI port; the
+#     native line (DynLib / AddonLoader / addons) is PERMANENTLY frozen at tag
+#     2026.04.20-native-final (commit e5024305...), and the addon repos (incl.
+#     Socket) were archived the same day. These pins can never drift.
+#   * GCC 15 (C23 default) hard-errors 2018-era C → the build needs
+#     -std=gnu11 -Wno-incompatible-pointer-types -Wno-implicit-function-declaration
+#     -Wno-int-conversion (same modern-gcc friction class as Pd's extra/).
+#   * eerie (Io's package manager) does NOT bootstrap usably from the frozen
+#     tree → the Socket addon is HAND-BUILT: clone IoLanguage/Socket @ e348c23,
+#     add the ~30-line generated-style IoSocketInit.c (the
+#     `DynLib call("Io<Name>Init", context)` convention from AddonLoader.io),
+#     gcc -shared against the installed io headers + -levent, with
+#     -include assert.h (implicit-decl → undefined `assert` symbol otherwise),
+#     installed at ~/.eerie/base/addons/Socket/{_build/dll/libIoSocket.so, io/,
+#     protos, depends} (already on `Addon searchPaths`).
+#   * Half-close quirk (carried into the peer design, NOT a build issue): a
+#     client FIN with the socket kept readable tears the connection down before
+#     a pending write flushes — never design a flow that answers after peer-FIN.
+#
+# GO-GATE (proven at S1, re-asserted as a build-time self-test below):
+#   * `io -e` boots headless (no X server) and evaluates.
+#   * Server/Socket coroutine accept/read/write round-trips a raw TCP payload
+#     byte-identically incl. 0x00 / 0xFF.  ← the GO.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Ages at authoring 2026-07-15:
+#   Io (native line)  tag 2026.04.20-native-final (~3mo; the FINAL native tag —
+#                     upstream will never move this line again). Tarball from
+#                     the IoLanguage/io GitHub tag, SHA256-verified, fail closed.
+#     tarball SHA256: 08184259464e536f0a30d6588579b7e99ef260bf375d362be77c458810b41d4a
+#   parson            kgabis/parson @ 4f3eaa6849ba62404fc5756650168bb2056d0b46 — the
+#                     deps/parson git SUBMODULE the GitHub tag tarball ships EMPTY
+#                     (submodule pointer read from the tag via the GitHub contents
+#                     API at authoring). SHA256-verified tarball.
+#     tarball SHA256: 0b8b654bce68c982f57f0d5d50edd9c42a5e2a78964f48daa7ec164207930edd
+#   Socket addon      IoLanguage/Socket @ e348c23f1916c80e1344fc6895a1df67b0263429
+#                     (2018-06, archived 2026-04-20). SHA256-verified tarball.
+#     tarball SHA256: 6088486223e572809dc98a95374e15aac02031ddcc970bcd06b45d81245d48d4
+#   libevent-devel    image-provided — the Socket addon's event loop.
+#   libsodium-static/-devel  image-provided — the C-ABI codec (libentitycore_codec,
+#                     built at S2 from ffi-generator/c-abi/entity-core-codec-ffi-c)
+#                     statically + privately links libsodium; deps staged here.
+#   cmake/gcc         image-provided — build io, the C-ABI codec, and the
+#                     EntityCodec Io addon (compiled against /usr/local/include/io).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build:
+#   . tools/podman-caps.sh && podman build $PODMAN_BUILD_CAPS \
+#     -t entity-core-keystone/io-toolchain:latest \
+#     -f containers/io-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps.
+#   gcc/gcc-c++/make/cmake/pkgconfig: build io core, the C-ABI codec, the addons.
+#   libevent-devel: the Socket addon (event loop + evdns/evhttp).
+#   libsodium-static + libsodium-devel: the C-ABI codec's crypto (S2 seam).
+#   python3: GO-gate client + S2/S4 harness helpers.
+RUN dnf install -y \
+        gcc gcc-c++ make cmake pkgconfig \
+        libevent-devel \
+        libsodium-static libsodium-devel \
+        python3 \
+        git curl ca-certificates findutils which glibc-langpack-en \
+    && dnf clean all
+
+# UTF-8 locale — Io symbol/Sequence handling and the text vectors want it
+# (same locale lesson the prolog/tcl/pd images hit).
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# The GCC-15 dialect flags every 2018-era-C compile in this image needs
+# (io core, Socket addon; the EntityCodec addon is new C and does not).
+ENV IO_C_DIALECT="-std=gnu11 -Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-int-conversion"
+
+# ── Fetch + verify the pinned Io source (fail closed on SHA mismatch) ────────
+ARG IO_TAG=2026.04.20-native-final
+ARG IO_SHA256=08184259464e536f0a30d6588579b7e99ef260bf375d362be77c458810b41d4a
+ENV IO_SRC=/opt/io/src
+RUN curl -fsSL -o /tmp/io.tar.gz \
+        "https://github.com/IoLanguage/io/archive/refs/tags/${IO_TAG}.tar.gz" \
+    && echo "${IO_SHA256}  /tmp/io.tar.gz" | sha256sum -c - \
+    && mkdir -p "${IO_SRC}" \
+    && tar -xzf /tmp/io.tar.gz -C "${IO_SRC}" --strip-components=1 \
+    && rm -f /tmp/io.tar.gz
+
+# deps/parson is a git submodule — EMPTY in the tag tarball. Fetch the exact
+# submodule commit the tag pins and drop it in place (fail closed on mismatch).
+ARG PARSON_COMMIT=4f3eaa6849ba62404fc5756650168bb2056d0b46
+ARG PARSON_SHA256=0b8b654bce68c982f57f0d5d50edd9c42a5e2a78964f48daa7ec164207930edd
+RUN curl -fsSL -o /tmp/parson.tar.gz \
+        "https://github.com/kgabis/parson/archive/${PARSON_COMMIT}.tar.gz" \
+    && echo "${PARSON_SHA256}  /tmp/parson.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/parson.tar.gz -C "${IO_SRC}/deps/parson" --strip-components=1 \
+    && rm -f /tmp/parson.tar.gz
+
+# ── Build + install io (core VM only: libs/ + tools/; no addons, no eerie) ───
+# Installs: /usr/local/bin/io{,_static}, /usr/local/lib/lib{basekit,iovmall,
+# garbagecollector}.so, /usr/local/include/io/*.h (the addon-compile headers).
+RUN cd "${IO_SRC}" \
+    && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+             -DCMAKE_C_FLAGS="${IO_C_DIALECT}" \
+    && cmake --build build -j"$(nproc)" \
+    && cmake --install build \
+    && ldconfig
+
+# ── Verify headless eval ─────────────────────────────────────────────────────
+RUN io -e '"io headless OK: " print; System version print; "" println'
+
+# ── Fetch + verify the pinned Socket addon source ────────────────────────────
+ARG SOCKET_COMMIT=e348c23f1916c80e1344fc6895a1df67b0263429
+ARG SOCKET_SHA256=6088486223e572809dc98a95374e15aac02031ddcc970bcd06b45d81245d48d4
+ENV SOCKET_SRC=/opt/io/socket-src
+RUN curl -fsSL -o /tmp/socket.tar.gz \
+        "https://github.com/IoLanguage/Socket/archive/${SOCKET_COMMIT}.tar.gz" \
+    && echo "${SOCKET_SHA256}  /tmp/socket.tar.gz" | sha256sum -c - \
+    && mkdir -p "${SOCKET_SRC}" \
+    && tar -xzf /tmp/socket.tar.gz -C "${SOCKET_SRC}" --strip-components=1 \
+    && rm -f /tmp/socket.tar.gz
+
+# ── Hand-build the Socket addon (the S1 recipe; eerie is unusable) ───────────
+# IoSocketInit.c is the hand-written generated-style init (see the file's
+# header comment). -include assert.h: IoEventManager.c calls assert() without
+# including the header (implicit-decl under gnu11 leaves an undefined symbol).
+# Install layout per AddonLoader.io: {_build/dll/libIoSocket.so, io/, protos,
+# depends} at ~/.eerie/base/addons/Socket (on `Addon searchPaths`).
+COPY containers/io-toolchain/IoSocketInit.c /tmp/IoSocketInit.c
+RUN mkdir -p /root/.eerie/base/addons/Socket/_build/dll \
+    && gcc -shared -fPIC ${IO_C_DIALECT} -include assert.h \
+           -I/usr/local/include/io -I"${SOCKET_SRC}/source" \
+           "${SOCKET_SRC}"/source/*.c /tmp/IoSocketInit.c \
+           -levent -o /root/.eerie/base/addons/Socket/_build/dll/libIoSocket.so \
+    && cp -r "${SOCKET_SRC}/io" /root/.eerie/base/addons/Socket/io \
+    && cp "${SOCKET_SRC}/protos" /root/.eerie/base/addons/Socket/protos \
+    && touch /root/.eerie/base/addons/Socket/depends \
+    && rm -f /tmp/IoSocketInit.c
+
+# ── GO-GATE self-test: headless io + coroutine TCP echo (incl 0x00/0xFF) ─────
+COPY containers/io-toolchain/gogate-selftest.sh /usr/local/bin/gogate-selftest.sh
+RUN chmod +x /usr/local/bin/gogate-selftest.sh && /usr/local/bin/gogate-selftest.sh
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="io-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.io="2026.04.20-native-final"
+LABEL org.entity-core-keystone.socket-addon="e348c23"
+LABEL org.entity-core-keystone.experimental="prototype-oo-paradigm-probe"
+
+CMD ["/bin/bash"]

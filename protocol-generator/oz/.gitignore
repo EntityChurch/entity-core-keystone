@@ -1,0 +1,4 @@
+# compiled functor pickles + the entity-codec-daemon binary (rebuilt from source)
+build/
+# S5 packaging output
+dist/
