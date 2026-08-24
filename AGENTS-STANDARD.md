@@ -136,10 +136,13 @@ legitimate competing pressure. Those need the ratchet.
   > **Changed 2026-08-23 ([ADR-0012] Amendment 1). This used to say `@ <oracle-commit>`.**
   > [ADR-0027] authors every published commit fresh at the release boundary, so public
   > `master` is a different history from `dev` — **a `dev` SHA has never resolved for a
-  > public reader and never will.** It already fired on the flagship claim: keystone's
-  > published matrix reads `665·0F @ e8524ed`, and `e8524ed` exists in no repo in the
-  > ecosystem. A commit SHA is now a **non-normative convenience** and, where given, MUST
-  > be reachable from `master` or a release tag.
+  > public reader and never will.** It already fired on the flagship claim: the conformance
+  > matrix on keystone's published `master` anchors its counts on an oracle commit that
+  > exists in no repo in the ecosystem. A commit SHA is now a **non-normative convenience**
+  > and, where given, MUST be reachable from `master` or a release tag.
+  > *(This paragraph originally named that dead commit. Quoting it put a dangling pin into
+  > a canonical doc in eleven repos — in the sentence forbidding them — and `spec pins`
+  > caught it. Cite the failure by content too.)*
 - **Never overclaim.** The ground-up impls (go/rust/py) are independent code bases;
   keystone-generated peers share a generation lineage — and a cohort of implementers all
   passing one author's vectors is **cohort-consistent, not independent convergence**.
