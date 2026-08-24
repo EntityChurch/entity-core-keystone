@@ -1,0 +1,261 @@
+# entity-core-protocol-apl — Language Profile
+#
+# ALIEN-SUBSTRATE PROBE (the ARRAY / value model — the array is the primitive
+# value). Authored FRESH in S1 from the V8 spec-data + GNU-APL-1.9 research — NOT
+# ported from any prior peer's profile. APL is the FFI-hybrid COBOL/Tcl/Rexx/Fortran
+# family (hand-rolled canonical CBOR VALUE codec in-language + crypto/base58/
+# entity-framing over the C-ABI), but its headline is a DIFFERENT axis: the whole
+# codec is expressed as ARRAY transforms, not scalar byte-shuffling.
+#
+# *** THE EXPERIMENTAL QUESTION THIS PROFILE EXISTS TO ANSWER ***
+# APL's paradigm is the array-as-primitive-value: there is no scalar/collection
+# distinction, every value is an array, and the natural codec is base-conversion +
+# grade over vectors (⊤ ⊥ ⍋ ⍒ ⌽). The bet is CORROBORATION + generator-stress: does
+# a from-spec canonical-CBOR codec fall out of array primitives as cleanly as it
+# does from scalar bit-ops, and does the generator survive a language with NO
+# statement-level control flow in its pure-function (dfn) form? APL's ints/floats
+# are conventional (int64 + IEEE double), so a FRESH WIRE finding is the upside, not
+# the expectation — the spec-discovery well is dry on the current wire surface
+# (AGENTS.md durable lesson; state this honestly). The ONE genuinely wire-touching
+# axis is the numeric ceiling: GNU APL's exact integer is signed int64 and AT/ABOVE
+# 2^63 it SILENTLY PROMOTES TO IEEE double (precision lost above 2^53). So the ECF
+# uint64 tower [2^63, 2^64-1] cannot be a native APL scalar AT ALL — SHARPER than
+# Fortran (whose signed int64 at least holds the 64-bit pattern in a carrier you
+# fully control; APL's overflow ESCAPES to a lossy float). The carrier is therefore
+# the ARRAY itself: the high range lives as an 8-element big-endian OCTET VECTOR
+# (int64 cells 0..255), built/consumed by array ops, NEVER collapsed to a scalar via
+# ⊥ (A-APL-002/003). This is the "integer head-form is a fixed-width artifact, not a
+# protocol property" durable lesson expressed in the array model. See
+# arch/PROFILE-RATIONALE.md.
+#
+# Profile authority (PROMPT-CONSTANTS): the agent MUST use the values declared here.
+# A "TBD" value is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "apl"
+name              = "APL (GNU APL)"
+tier              = "alien-substrate-probe"   # not a Tier-1..5 cohort slot; the ARRAY/value-model probe
+package_name      = "entity-core-protocol-apl"   # keystone peer id
+runtime           = "apl-toolchain"           # references containers/apl-toolchain/Containerfile
+interpreter       = "GNU APL 1.9 (built from the SHA-256-pinned GNU source tarball; NOT in fedora:43 dnf — A-APL-001/004). ISO/IEC 13751 'Extended APL'. Native-function (⎕FX) C++ FFI + ⎕FIO Berkeley sockets."
+
+[codec]
+# strategy: FFI-HYBRID (codec_strategy = "ffi"). Hand-rolled canonical CBOR VALUE
+# codec in PURE APL (the array-model probe lives here) + crypto/entity-framing/
+# base58/Ed25519 over the C-ABI (libentitycore_codec) via a GNU APL NATIVE FUNCTION
+# (⎕FX) C++ shim. Same family as COBOL (#22), Tcl (#23), Rexx (#24), Fortran (#25).
+# Rationale for each half:
+#
+#   (1) CBOR VALUE codec: hand-rolled canonical encoder/decoder in pure APL
+#       (src/cbor.apl). No APL CBOR package gives canonical ECF (the A-005 pattern
+#       continues). APL's array primitives ARE a competent codec substrate — and
+#       naturally so:
+#         ⊤ (encode / base-256)   value -> big-endian octet vector   (⍵ < 2^63 only)
+#         ⊥ (decode / base-256)   octet vector -> value              (⍵ < 2^63 only)
+#         ⍋ (grade-up)            length-then-lex map-key ordering as a permutation
+#         ⌽ ↑ ↓ ⍴ , ⊂ ⊃          buffer assembly / slicing / nesting
+#       The uint64 boundary [2^63, 2^64-1] is the one place ⊤/⊥ CANNOT be used (the
+#       operand would overflow int64 -> lossy double, A-APL-003): those values are
+#       carried as an 8-octet big-endian int64-cell VECTOR end-to-end (from ⎕FIO
+#       recv on decode, from the app as bytes on encode), assembled with explicit
+#       array base-256 arithmetic that never forms the >2^63 scalar (A-APL-002).
+#       The FLOAT tower (mt7): APL's float is native IEEE binary64 (double), but APL
+#       has NO native bit-reinterpret primitive (no `transfer`) — f64/f32 bit access
+#       is hand-rolled arithmetic decomposition (sign/exp/mantissa via ⌊ and ×2*n,
+#       the Rexx-family float path) or an ec_* native-fn helper; f16 + the shortest-
+#       float ladder (Rule 4) hand-rolled regardless (A-APL-005).
+#
+#   (2) Crypto + entity framing + base58: FFI over the C-ABI via a GNU APL NATIVE
+#       FUNCTION. NO native audited APL crypto exists → the §9.1 signature floor is
+#       an FFI obligation from the start (like COBOL/Tcl/Rexx/Fortran). GNU APL's
+#       native-function facility (`soname ⎕FX funname`) loads a C++ .so that calls
+#       the ec_* symbols; apl is linked -export-dynamic so the .so resolves apl's
+#       own symbols at ⎕FX load. The shim (src/ext/ec_native.cc) wraps ec_ed25519_
+#       {seed_to_pubkey,sign,verify}, ec_sha256/384, ec_encode_ecf/ec_content_hash
+#       (entity framing), ec_decode_entity, and ec_peerid_{parse,format} (base58 —
+#       APL has NO exact bignum past 2^63, so base58 long-division rides the C-ABI,
+#       the COBOL/Fortran choice — A-APL-010). The shim must build against apl's
+#       RETAINED source-tree headers (make install ships only libapl.h — A-APL-009).
+strategy          = "ffi"                     # ffi-hybrid: native array value codec + C-ABI crypto/framing/base58
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native-value", impl = "pure APL over ⊤/⊥ base-256 + ⍋ grade + int64-cell octet vectors; uint64 [2^63,2^64-1] as an 8-octet array (never ⊥, A-APL-002); f64/f32 bits hand-rolled arithmetic (no APL `transfer`, A-APL-005); f16 + shortest ladder hand-rolled" }
+entity_framing    = { name = "libentitycore_codec (FFI via GNU APL native fn)", strategy = "ffi", c_abi_version = "1.1", api = "ec_encode_ecf / ec_content_hash{,_with_format} / ec_decode_entity — wrap APL-built canonical `data` into the canonical entity + hash it" }
+ed25519_library   = { name = "libentitycore_codec (FFI via GNU APL native fn ⎕FX shim)", version = "C-ABI 1.1", api = "ec_ed25519_{seed_to_pubkey,sign,verify} + ec_sha256/384" }
+ed448_library     = { name = "libentitycore_codec (FFI via GNU APL native fn)", version = "C-ABI 1.1", strategy = "ffi", api = "ec_ed448_{seed_to_pubkey,sign,verify} + ec_sha384 — agility higher bar, opt-in; no native APL Ed448" }
+sha256_source     = "libentitycore_codec ec_sha256 (FFI); no native audited APL SHA — one consistent crypto surface over the C-ABI"
+sha384_source     = "libentitycore_codec ec_sha384 (FFI)"
+base58_library    = "libentitycore_codec ec_peerid_{parse,format} (FFI) — APL has NO exact integer past 2^63; base58 base-256->base-58 long-division rides the C-ABI (COBOL/Fortran choice, A-APL-010)"
+varint_handling   = "native"                  # LEB128 multikey/hash-format varint (N1, §3.1) — 1-byte codes trivially inline in cbor.apl over ⊤/⊥ + iteration
+numeric_model     = "fixed-width-signed-int64 + silent-double-promotion"  # exact int ceiling 2^63-1; ≥2^63 escapes to lossy IEEE double (the probe edge). Native IEEE binary64 floats.
+
+[numeric]
+# THE wire-touching axis (A-APL-002/003), verified in-container (containers/apl-
+# toolchain probe): 2*62 prints exact (int64), (2*63)-1 prints in float form.
+int_exact_ceiling = "2^63 - 1"                # GNU APL APL_Integer is signed int64; this is the exact-integer max
+overflow_behavior = "SILENT promotion to IEEE double (float64) at/above 2^63 — precision lost above 2^53; NO error raised" # verified: (2*63)-1 -> 9.223372037E18
+uint64_representation = "8-element big-endian OCTET VECTOR (int64 cells 0..255) — the ARRAY is the carrier; the scalar value in [2^63,2^64-1] is NEVER materialized (A-APL-002)"
+uint64_byte_emit  = "array base-256 assembly that never forms the >2^63 scalar: high octets carried through as received bytes; ⊤ (256⊤) used ONLY for values provably < 2^63"
+uint64_decode     = "⎕FIO recv yields a byte vector directly; the head length prefix selects the octet count; the value stays a byte vector when its magnitude ≥ 2^63 (never 256⊥ into a scalar)"
+head_form_selftest = "MANDATORY: encode/decode round-trip every value in {0, 2^63-1, 2^63, 2^64-2, 2^64-1} byte-exact via the octet-array path (the fixed-width uint64-boundary self-test — AGENTS.md durable lesson)"
+float_carrier     = "IEEE binary64 (APL float, native double); binary32 represented as an APL double narrowed on encode"
+float_bits_path   = "HAND-ROLLED arithmetic decomposition — APL has NO bit-reinterpret primitive (no `transfer`/`⎕DR`-to-bits): extract sign/biased-exp/mantissa via ⌊, |, ×/÷ powers of two (the Rexx-family float path), OR an ec_* native-fn helper (A-APL-005)"
+float16_handling  = "HAND-ROLLED — binary16 unrepresentable natively; compute sign/5-bit-exp/10-bit mantissa; shortest ladder (f16<-f32<-f64 round-trip) hand-decided (Rule 4)"
+endianness        = "the codec assembles BIG-ENDIAN (network order) octet vectors explicitly via array index order; APL has no native-endianness leak (values are logical, bytes are built by hand)"
+byte_buffer       = "integer vector, cells 0..255 (⎕FIO recv/send are 1-byte-per-cell); OR a character vector for text. Byte-vs-text intent is carried in the tagged value, not the storage (A-APL-011)"
+
+[error_model]
+# APL has TWO native error mechanisms: (1) the event system — ⎕SIGNAL / ⎕ES raise an
+# APL event (the exception analogue), caught by ⎕EA/⎕EC controlled execution or dfn
+# error-guards (::); (2) explicit result values. The C-ABI returns int32_t EC_*
+# codes (also the protocol's numeric status codes 200/400/403/404/413/…). So: every
+# fallible operation returns a status scalar (EC_*-aligned) the caller tests, and an
+# UNRECOVERABLE fault (non-canonical / truncated / bad seed / tag rejected) is raised
+# via ⎕SIGNAL as an APL event — the status-code + signal family, mapping cleanly onto
+# both the C-ABI codes and the protocol status codes.
+style             = "status-code + signal"    # EC_*-aligned status scalar + ⎕SIGNAL for faults; the COBOL/Fortran-status family with APL's event system on top
+error_type        = "integer EC_* status scalar + named ⎕SIGNAL event numbers for fault kinds"
+leaf_kinds        = "NON_CANONICAL_ECF | TRUNCATED_INPUT | TAG_REJECTED | BAD_SEED | UNSUPPORTED_CONTENT_HASH_FORMAT | UNSUPPORTED_KEY_TYPE (named integer constants, EC_*-aligned)"
+convention        = "fallible fns return (rc result) or set rc; caller tests rc≠EC_OK; hard faults ⎕SIGNAL an event trapped by the dispatch loop's ⎕EC/error-guard"
+absent_sentinel   = "a tagged 'present=0' discriminant in the value model — NOT an empty byte/char vector (the empty string is a real wire value, A-APL-011)"
+
+[async]
+# APL/GNU APL is a SINGLE-IMAGE interpreter with no native reactor. The idiomatic
+# path is a SINGLE-THREADED SELECT/POLL LOOP — and GNU APL provides Berkeley sockets
+# NATIVELY via ⎕FIO (⎕FIO[32] socket, [34] listen, [35] accept, [36] connect, [37]
+# recv, [38/39] send, [40] select — verified in the apl source), so there is NO C
+# net-shim (a point of difference from COBOL/Fortran, which had to hand-write one —
+# A-APL-006). §7b store-safety is STRUCTURAL: one image, one thread, no concurrent
+# store access → no lock, no race. The §6.11 handler-initiated outbound-dispatch
+# reentry is a MANUAL pump (as in COBOL/Fortran): the handler ⎕FIO-sends then
+# re-enters a bounded ⎕FIO[40] select/recv loop to await the correlated reply by
+# request_id — no thread (the correlation-map tax the non-actor/non-CSP peers pay).
+style             = "single-thread-select"    # ⎕FIO[40] select loop; no threads
+socket_source     = "GNU APL ⎕FIO Berkeley-socket family (⎕FIO[32/34/35/36/37/38/39/40]) — NATIVE, no C net-shim (A-APL-006). Runs without --safe (⎕FIO socket ops are gated behind the safety flag)"
+event_primitive   = "⎕FIO[40] select over the listen socket + per-connection sockets; ⎕FIO[37] recv / ⎕FIO[38] send (1 byte per int cell — the array byte model)"
+request_demux     = "request_id -> a pending entry in a workspace-global variable in the one image; matched in the reentry pump"
+store_model       = "workspace-global APL variables/arrays in the one image — structurally race-free (single thread)"   # §4.8/§7b; no lock
+tcp_nodelay       = true                       # setsockopt TCP_NODELAY via ⎕FIO[45] (fcntl/setsockopt) on accepted/dialed sockets (§7b); confirm the exact ⎕FIO code at S3
+blocking_discipline = "⎕FIO[40] select gates every recv/send so no call blocks the single loop indefinitely; a per-op timeout bounds the reentry pump"
+
+[naming]
+# APL is CASE-SENSITIVE. Primitive functions are GLYPHS (⊤ ⊥ ⍋ …), not names; only
+# user functions/variables/namespaces are named. There is no single ecosystem
+# mandate; the modern (APL-Wiki / Dyalog-influenced) community convention is
+# PascalCase for functions/namespaces and camelCase for variables, with dfns
+# ({ ... }, the pure-function form) for pure transforms and tradfns (∇ … ∇, the
+# multi-line control-flow form) for the stateful peer loop / dispatch. There is no
+# module system — functions live in a WORKSPACE and are grouped by naming prefix +
+# ⎕FX'd at load. (A-APL-007, a local convention decision.)
+function_names    = "PascalCase"              # CborEncode, PeerDispatch, CapVerifyRequest
+variable_names    = "camelCase"               # pubKey, seedBytes, reqId
+constant_names    = "UPPERCASE"               # EC_OK, MAX_DEPTH, TAG_REJECTED
+dfn_vs_tradfn     = "dfns { } for pure codec transforms (no statement control flow → array/guard style); tradfns ∇ for the stateful ⎕FIO dispatch loop + reentry pump"
+namespace_unit    = "the WORKSPACE (.apl) — no module system; group by name prefix (Cbor*, Peer*, Cap*) and ⎕FX at load"
+file_names        = "snake_case.apl"          # cbor.apl, peer_id.apl, entity.apl (one logical module per file, ⎕FX'd into the workspace)
+value_model       = "nested array (⊂ enclose / ⊃ disclose) with an integer major-type discriminant cell — the tagged-value analogue (APL arrays do NOT carry the CBOR major type; int-vs-float AND byte-vs-text intent are EXPLICIT, A-APL-011)"
+
+[build]
+# APL is INTERPRETED — there is no compile step for the .apl source. The only compiled
+# artifact is the native-function C++ shim (src/ext/ec_native.cc -> ec_native.so),
+# built with the image g++ against the RETAINED apl source-tree headers (A-APL-009)
+# and linked to libentitycore_codec. A Makefile drives: (1) build libentitycore_codec
+# from the vendored C-ABI (CMake, links image libsodium); (2) compile the native-fn
+# shim; (3) run tests. The peer itself is launched by loading the workspace into apl.
+build_tool        = "make"                    # drives the native-fn shim g++ compile + codec build + tests; the .apl source is interpreted, not compiled
+build_command     = "make            # build libentitycore_codec (CMake) + compile src/ext/ec_native.cc -> ec_native.so"
+compile_flags     = "g++ -shared -fPIC -std=gnu++17 -I$(APL_SRC) (native-fn shim; APL_SRC=/opt/apl-1.9/src, the retained source tree)"
+link_flags        = "-L<codec-build-dir> -lentitycore_codec (native-fn shim; apl resolves its own symbols at ⎕FX load via -export-dynamic)"
+run_command       = "apl --script -f bin/peer.apl --   # load the workspace + enter the ⎕FIO select loop"
+test_command      = "make test       # hand-rolled conformance corpus driver (test/conformance.apl) + unit suites"
+package_command   = "make dist       # tar the .apl workspace tree + native-fn shim source + build recipe (source distribution)"
+
+[layout]
+src_dir           = "src/"                    # the *.apl logical modules (cbor, varint, peer_id, entity, identity, store, wire, capability, transport, peer)
+test_dir          = "test/"                   # hand-rolled conformance corpus driver + unit suites (.apl)
+ext_dir           = "src/ext/"                # the native-function C++ shim (ec_native.cc -> ec_native.so) — the ONLY compiled artifact; crypto/framing/base58/peer-id cross here
+ffi_shim          = "src/ext/ec_native.cc"    # GNU APL native fn: get_function_mux + eval_* wrapping the ec_* symbols from entitycore_codec.h
+entry_point       = "bin/peer.apl"            # the workspace loader: ⎕FX the native fn + all modules, then enter the ⎕FIO dispatch loop
+project_file      = "Makefile"
+
+[publishing]
+# APL has no mature package registry (Dyalog's Tatin is Dyalog-ecosystem-specific;
+# GNU APL workspaces are distributed as .apl source files). Publish = tag a git
+# release with a loadable workspace + the native-fn shim source + build recipe. The
+# source-distribution model (like COBOL/Rexx/Fortran), not a binary registry.
+registry          = "source (git)"
+registry_url      = ""
+package_id        = "entity-core-protocol-apl"
+license_expression = "Apache-2.0"
+repository_url     = ""                         # TBD on first publish
+maintainers       = "Entity Core Protocol contributors"
+
+[license]
+# S9 default Apache-2.0 for the peer source. NOTE (A-APL-008): the native-function
+# shim (src/ext/ec_native.cc) #includes GNU APL's GPLv3 source-tree headers and is
+# dlopen'd into the GPLv3 apl process, so the COMPILED shim + apl combination is a
+# GPLv3 work. Apache-2.0 is ONE-WAY compatible into GPLv3, so shipping the shim
+# SOURCE as Apache-2.0 is fine and it combines into a GPLv3 binary at build (a
+# stronger entanglement than gfortran's runtime-exception, worth the operator's
+# note). The .apl source is interpreted by apl (no linking) — no license entangle.
+generated_outputs = "Apache-2.0"              # peer source; native-fn shim source Apache-2.0 but combines into a GPLv3 binary with apl (A-APL-008)
+
+[testing]
+# No dominant APL unit-test framework for GNU APL (Dyalog has its own; GNU APL ships
+# an internal .tc testcase mechanism not meant as a general xUnit). So the harness is
+# HAND-ROLLED (the COBOL/Rexx choice): test/conformance.apl loads the pinned v0.8.0
+# fixture and asserts byte-identity against the hand-rolled array codec + the FFI
+# crypto; unit .apl suites structure the assertions.
+framework         = "hand-rolled"             # test/conformance.apl corpus driver + unit .apl suites; no APL xUnit standard
+runner            = "test/conformance.apl (corpus driver) via `make test`"
+conformance_probe = "load spec-data v0.8.0 fixtures (test-vectors/v0.8.0/conformance-vectors-v1.cbor); assert byte-identity vs hand-rolled array codec + wire-conformance oracle"
+
+[container]
+base_image        = "entity-core-keystone/apl-toolchain:latest"
+build_in_container = true
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/apl entity-core-keystone/apl-toolchain:latest sh -c 'make && make test'"
+
+[idiom]
+# The array/value-model + int64-ceiling hints — the seams where this substrate is
+# unlike every prior peer (INCLUDING Fortran, whose signed int64 holds the 64-bit
+# pattern in a controllable carrier; APL's overflow escapes to a lossy double).
+array_value_model       = true                # THE headline. Every value is an array; the codec is base-conversion (⊤/⊥) + grade (⍋) over vectors, not scalar bit-ops. Corroboration axis (ints/floats conventional) + generator stress (no statement control flow in dfns).
+int64_exact_ceiling     = true                # A-APL-003: GNU APL APL_Integer is signed int64; exact max 2^63-1.
+silent_double_promotion = true                # A-APL-003: at/above 2^63 APL SILENTLY promotes to IEEE double (lossy above 2^53) with NO error — SHARPER than Fortran (no controllable bit-carrier at all). Verified in-container.
+octet_array_carrier     = true                # A-APL-002: the uint64 tower [2^63,2^64-1] lives as an 8-octet big-endian int64-cell VECTOR end-to-end; NEVER 256⊥'d into a scalar. The array IS the fixed-width carrier.
+no_native_float_bits    = true                # A-APL-005: APL has NO bit-reinterpret primitive (no `transfer`); f64/f32 IEEE bit access is hand-rolled arithmetic (Rexx-family) or an ec_* native-fn helper.
+native_fn_ffi           = true                # crypto/framing/base58 bind libentitycore_codec via a GNU APL NATIVE FUNCTION (`soname ⎕FX funname`) C++ shim; apl -export-dynamic resolves its symbols at load. Verified in-container (strlen probe; ec_* spike separately).
+retained_apl_source     = true                # A-APL-009: native-fn shims MUST compile against apl's source-tree headers (Value.hh/Cell.hh/…); `make install` ships only libapl.h → the toolchain image RETAINS /opt/apl-1.9.
+qfio_native_sockets     = true                # A-APL-006: sockets ride GNU APL's ⎕FIO Berkeley-socket family NATIVELY — NO C net-shim (unlike COBOL/Fortran). Runs without --safe.
+case_sensitive_names    = true                # APL is case-sensitive; primitives are glyphs, only user names are named. PascalCase fns / camelCase vars / UPPERCASE consts (A-APL-007).
+tagged_array_value      = true                # A-APL-011: APL arrays do NOT carry the CBOR major type; the value model is a nested array with an explicit integer discriminant cell (int-vs-float AND byte-vs-text intent explicit — never inferred from APL storage).
+interpreted_no_static_gate = true             # INTERPRETED: no compile-time type gate on the .apl source (unlike Fortran's gfortran static gate); errors surface at runtime → the hand-rolled harness + conformance corpus are the gate.
+apl_version             = "GNU APL 1.9 (ISO/IEC 13751 Extended APL; built from pinned GNU source, not fedora dnf)"
+
+[deps]
+# Exact pins (S11; all ≥ 30 days old at 2026-07-12). Toolchain pins mirrored in
+# containers/apl-toolchain/Containerfile. Third-party RUNTIME surface: GNU APL
+# (interpreter, source-built) + libentitycore_codec (crypto floor .so) + the native-
+# fn shim (built here). CBOR/varint hand-rolled pure APL; base58/peer-id ride C-ABI.
+gnu_apl           = "1.9 (2024-06-29; sha256 291867f1b1937693abb57be7d9a37618b0376e3e2709574854a7bbe52bb28eb8) — built from ftp.gnu.org GNU source; NOT in fedora dnf (A-APL-001). apl-2.0 (2026-06-24) DECLINED: only ~18d old, violates the S11 30-day floor (A-APL-004)."
+gcc               = "15.2.1 (fedora:43) — builds GNU APL, the native-fn shim, and lowers the C-ABI codec"
+libentitycore_codec = "C-ABI 1.1"             # the crypto floor .so (pinned at the ffi-generator layer). The native-fn shim links it.
+libsodium         = "1.0.22 (image-provided, fedora:43) — statically + privately linked into libentitycore_codec by its CMake"
+readline          = "8.3 (fedora:43) — GNU APL interactive line editor (build dep readline-devel)"
+# cmake/make/pkgconfig are image-provided build tools; ⎕FIO + native-function facility
+# are GNU-APL-provided (no pin beyond the apl version).
+
+[spec]
+spec_version_pinned = "0.8.0"                 # spec-data snapshot protocol-generator/shared/spec-data/v0.8.0/ (V8). Confirm the three SHA-256 pins in MANIFEST.md unchanged at S2.
+codec_corpus      = "v0.8.0"                  # ECF corpus protocol-generator/shared/test-vectors/v0.8.0/ (conformance-vectors-v1.cbor); core wire byte-unchanged across V7->V8.
+oracle_commit     = "cc1970f"                 # go oracle for S4 (public HEAD, re-normalized 2026-07-10). core-gate fingerprint 8261a033… ; target --profile core = 0 FAIL. Build via tools/oracle-bootstrap.sh.
+# PEER_ID CONSTRUCTION (corroborates the cohort): derive the Ed25519 peer_id from the
+# §1.5 CANONICAL-FORM TABLE — hash_type = 0x00 identity-multihash, digest = the RAW
+# 32-byte public key (NO SHA256(pubkey) skeleton). peer_id wire form =
+# Base58(key_type || hash_type || digest). §7.4 already defers to the §1.5 table on
+# the v0.8.0 snapshot — settled, baked in to avoid the S4 handshake debug cycle.
+# base58 rides ec_peerid_{parse,format} (no APL exact bignum — A-APL-010).
+# COHORT-SETTLED TRAPS pre-resolved here (do NOT re-burn): lowercase %02x hex for
+# §3.4/§3.5 tree-paths (A-CL-009); §5.2 401/403/401-unresolvable authz trichotomy;
+# entity `data` is an arbitrary ECF value, NOT necessarily a map (A-JAVA-010);
+# §4.10 chain-depth pre-check -> 400 chain_depth_exceeded (depth 64), 16 MiB payload
+# -> 413 payload_too_large; §7b store-race-safety (structural here) + TCP_NODELAY +
+# no blocking calls on the select path.

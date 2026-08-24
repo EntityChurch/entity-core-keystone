@@ -1,0 +1,91 @@
+# CI — entity-core-protocol-apl (the array / value-model alien-substrate probe) conformance
+# gates.
+#
+# Authored at S5 (PHASE-S5 §"CI config"), matching the cohort per-peer offline-gate pattern
+# (protocol-generator/{prolog,zig,haskell,swift,c,fortran}/.github/workflows/). Runs the three
+# green gates entirely inside the pinned `apl-toolchain` Podman image, sealed-offline
+# (--network=none): the pure-APL array codec is in-repo; libentitycore_codec (the crypto floor
+# .so) + the GNU APL native-function shim are byte-built inside the image (nothing fetched at
+# build time); GNU APL 1.9 is itself source-built into the image from the SHA-256-pinned GNU
+# tarball (A-APL-001/004); and the Go `validate-peer` oracle is a CGO_ENABLED=0 fedora:43 ELF
+# that runs in the same image sharing one loopback.
+#
+# DELIBERATELY NOT WIRED TO ANY REMOTE/CD. No deploy, no registry push, no tag, no `make dist`
+# upload — `/entity-rosetta` never publishes (lifecycle §Publishing); the operator decides. APL
+# has no package registry anyway (source-git distribution). This file documents the reproducible
+# offline gate; whether/where it actually runs (this peer's standalone-repo CI, or a keystone-wide
+# CI home) is an operator/arch decision. It is committed for reviewability, not because a runner
+# is attached (a committed CI workflow is otherwise deferred cohort-wide — cobol/rexx/tcl carry
+# none; this mirrors the fortran/compiled-peer pattern).
+#
+# Assumptions when wired: the runner has Podman, the `apl-toolchain:latest` image is built
+# (containers/apl-toolchain/Containerfile — source-builds GNU APL 1.9) and the oracle ELFs are
+# vendored to output/s4-oracles/ (rebuild via tools/oracle-bootstrap.sh, pin tools/oracle-pin.env
+# @cc1970f). Paths below assume the keystone repo root is the checkout root. The run-s{2,3,4}.sh
+# scripts self-re-exec under capped Podman (tools/podman-caps.sh), so the steps just invoke them.
+
+name: apl-conformance
+
+on:
+  push:
+    paths:
+      - 'protocol-generator/apl/**'
+      - 'protocol-generator/shared/spec-data/**'
+      - 'protocol-generator/shared/test-vectors/**'
+      - 'ffi-generator/c-abi/**'
+  pull_request:
+    paths:
+      - 'protocol-generator/apl/**'
+  workflow_dispatch: {}
+
+# No deploy/publish permissions — read-only.
+permissions:
+  contents: read
+
+env:
+  IMAGE: entity-core-keystone/apl-toolchain:latest
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The toolchain image is built from containers/apl-toolchain/Containerfile (which
+      # source-builds GNU APL 1.9 from the pinned GNU tarball) and the oracle ELFs rebuilt from
+      # entity-core-go @cc1970f per tools/oracle-bootstrap.sh. In a standalone-repo lift-out these
+      # become a `podman build` + an oracle-vendor step (or a pre-built image pulled from a trusted
+      # internal registry); kept explicit, not assumed.
+      - name: Verify toolchain image + oracle present
+        run: |
+          podman image exists "$IMAGE" || { echo "::error::build $IMAGE from containers/apl-toolchain/Containerfile first"; exit 1; }
+          test -x output/s4-oracles/validate-peer || { echo "::error::vendor the validate-peer oracle ELF (tools/oracle-bootstrap.sh, pin tools/oracle-pin.env @cc1970f)"; exit 1; }
+
+      # Gate 1 — S2 codec wire-conformance (must stay 69/69) + the unit suite, sealed offline.
+      # run-s2.sh byte-builds libentitycore_codec.so, compiles the GNU APL native-fn shim, and
+      # runs the 69-vector v0.8.0 corpus + the unit assertions via the pure-APL array codec.
+      - name: S2 — codec 69/69 + unit suite
+        run: |
+          ./protocol-generator/apl/run-s2.sh
+
+      # Gate 2 — S3 peer machinery: offline foundation self-test 18/18 + two-peer loopback smoke
+      # 5/5 (intra-container 127.0.0.1 over native ⎕FIO sockets, works under --network=none).
+      - name: S3 — self-test 18/18 + smoke 5/5
+        run: |
+          ./protocol-generator/apl/run-s3.sh
+
+      # Gate 3 — S4 live-peer validate-peer --profile core (must stay 0 FAIL). The interpreted
+      # GNU APL peer (workspace loaded into apl, native ⎕FIO transport) + the Go oracle ELF run
+      # together in the image over loopback, --network=none. run-s4.sh writes
+      # status/CONFORMANCE-REPORT.json; assert summary.failed == 0 (the green gate).
+      - name: S4 — validate-peer --profile core (0 FAIL)
+        run: |
+          ./protocol-generator/apl/run-s4.sh
+          python3 - <<'PY'
+          import json, sys
+          s = json.load(open("protocol-generator/apl/status/CONFORMANCE-REPORT.json"))["summary"]
+          print("summary:", s)
+          if s.get("failed", 1) != 0:
+              print("::error::validate-peer core has FAILs — gate not green"); sys.exit(1)
+          PY

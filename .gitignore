@@ -25,16 +25,6 @@ caps.local.sh
 # drives; interpreted, not a compiled binary). Un-ignore the source so it is tracked.
 !protocol-generator/apl/bin/
 !protocol-generator/apl/bin/**
-# …and the Smalltalk peer keeps its peer entry SOURCE in bin/ (bin/peer.st — a live-image
-# doit, NOT a compiled binary; the peer image itself is *.image, separately gitignored).
-# Un-ignore the source so the peer entrypoint is tracked.
-!protocol-generator/smalltalk/bin/
-!protocol-generator/smalltalk/bin/**
-# …and the Fortran peer keeps its PROGRAM entry SOURCE in bin/ (bin/peer.f90 — the
-# PROGRAM peer that `make peer` compiles into build/peer and validate-peer drives; the
-# .f90 source, not a committed binary). Un-ignore the source so the entrypoint is tracked.
-!protocol-generator/fortran/bin/
-!protocol-generator/fortran/bin/**
 **/obj/
 **/build/
 **/dist/

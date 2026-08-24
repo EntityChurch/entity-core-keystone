@@ -1,0 +1,171 @@
+# APL toolchain image — builds the ALIEN-SUBSTRATE peer
+# (entity-core-protocol-apl) per protocol-generator/apl/profile.toml.
+# Mirrors the structure of containers/fortran-toolchain + containers/tcl-toolchain.
+#
+# ALIEN-SUBSTRATE PROBE: the ARRAY / value model (the array is the primitive value).
+# APL's scalars are conventional (int64 + IEEE double), so the wire axis is
+# CORROBORATION, not a fresh finding — the novelty is that the whole canonical-CBOR
+# codec is expressed as ARRAY transforms (base-256 ⊤/⊥ over integer/byte vectors,
+# ⍋-graded map-key ordering) rather than scalar byte-shuffling. The codec is
+# hand-rolled pure APL; crypto / base58 / entity-framing cross the C-ABI
+# (libentitycore_codec) via a GNU APL NATIVE FUNCTION (⎕FX) C++ shim — the
+# FFI-hybrid COBOL/Tcl/Rexx/Fortran family. Sockets ride GNU APL's built-in ⎕FIO
+# Berkeley-socket family (no C net-shim needed — a point of difference from
+# Fortran/COBOL, which had to hand-write one).
+#
+# *** NUMERIC PROBE (the one wire-touching axis, verified below) ***
+# GNU APL's exact integer is signed int64 (APL_Integer); its ceiling is 2^63-1.
+# AT/ABOVE 2^63 GNU APL SILENTLY PROMOTES TO IEEE double (float64) — precision is
+# lost above 2^53. So the ECF uint64 tower [2^63, 2^64-1] CANNOT be held as a
+# native APL numeric scalar at all (sharper than Fortran, whose signed int64 at
+# least holds the 64-bit pattern in a carrier you fully control). The carrier
+# strategy is therefore the ARRAY itself: values in the high range live as an
+# 8-element big-endian OCTET VECTOR (int64 cells 0..255), built/consumed by array
+# ops, NEVER collapsed to a scalar via ⊥ (which would overflow to lossy double).
+# This is the "integer head-form is a fixed-width artifact, not a protocol
+# property" durable lesson, expressed in the array model. (A-APL-002/003.)
+#
+# S11: pin the toolchain + every dependency to an exact version. GNU APL is NOT in
+#      the fedora:43 dnf repos (fedora + updates — verified 2026-07-12; neither is
+#      J), so the interpreter is BUILT FROM the SHA-256-pinned GNU source tarball
+#      (the GHC-bindist precedent: fail-closed on checksum). libentitycore_codec
+#      statically links the image's libsodium.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Ages at authoring 2026-07-12:
+#   GNU APL     1.9   (2024-06-29, ~24mo) — the S11-clean GNU release. apl-2.0
+#                                          EXISTS (2026-06-24) but is only ~18 days
+#                                          old → VIOLATES the 30-day supply-chain
+#                                          cool-down, so it is DECLINED for 1.9
+#                                          (A-APL-004). 1.9 builds clean on GCC 15.
+#   gcc/g++     15.2.1 (fedora:43)        — builds GNU APL (C++) + the native-fn
+#                                          shim + lowers the C-ABI codec.
+#   libsodium   1.0.22 (fedora:43)        — statically + privately linked into
+#                                          libentitycore_codec.{so,a} by its CMake.
+# CBOR + varint are hand-rolled pure APL in-repo (no APL pkg gives canonical ECF;
+# the A-005 pattern). base58/peer-id ride the C-ABI (no APL bignum — the int64
+# ceiling makes a native base-256->base-58 long-division lossy). No native audited
+# APL crypto exists → the crypto floor is FFI (like COBOL/Fortran).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (capped per RESOURCE-CAPS.md; S1 verification of the substrate probes):
+#   podman build $PODMAN_BUILD_CAPS -t entity-core-keystone/apl-toolchain:latest \
+#     -f containers/apl-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps.
+# gcc-c++/gcc: build GNU APL (C++), the native-function shim, and the C-ABI codec.
+# make/cmake/pkgconfig: GNU APL autotools build + the C-ABI codec CMake.
+# readline-devel/ncurses-devel: GNU APL's interactive line editor + terminal.
+# libsodium-static + libsodium-devel: the C-ABI CMake STATICALLY + PRIVATELY links
+#   libsodium into libentitycore_codec.{so,a}. Without these the C-ABI build FATALs.
+RUN dnf install -y \
+        gcc-c++ gcc make cmake pkgconfig \
+        readline-devel ncurses-devel \
+        libsodium-static libsodium-devel \
+        git curl ca-certificates findutils which glibc-langpack-en tar gzip \
+    && dnf clean all
+
+# Wire data is byte-oriented + carries UTF-8 text vectors; pin a UTF-8 locale so
+# non-ASCII text + argv load cleanly (the same locale lesson tcl/prolog hit).
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# ── Build GNU APL 1.9 from the SHA-256-pinned GNU source (NOT in fedora dnf) ──
+# fail-closed on checksum (the GHC-bindist / A-CL-006 discipline). The SOURCE TREE
+# is RETAINED at /opt/gnu-apl-1.9 because GNU APL native functions must compile
+# against apl's INTERNAL headers (Value.hh/Cell.hh/...), which `make install` does
+# NOT ship (it installs only libapl.h + Error.def). The native-fn shim (crypto FFI)
+# is built with -I/opt/gnu-apl-1.9/src at peer-build time. apl is linked
+# -export-dynamic, so a dlopen'd native-fn .so resolves apl's symbols at ⎕FX load.
+ARG APL_VERSION=1.9
+ARG APL_SHA256=291867f1b1937693abb57be7d9a37618b0376e3e2709574854a7bbe52bb28eb8
+RUN cd /opt \
+    && curl -fsSL -o apl.tar.gz "https://ftp.gnu.org/gnu/apl/apl-${APL_VERSION}.tar.gz" \
+    && echo "${APL_SHA256}  apl.tar.gz" | sha256sum -c - \
+    && tar xf apl.tar.gz \
+    && rm -f apl.tar.gz \
+    && cd "apl-${APL_VERSION}" \
+    && ./configure --prefix=/usr/local >/tmp/apl-cfg.log 2>&1 \
+    && make -j"$(nproc)" >/tmp/apl-make.log 2>&1 \
+    && make install >/tmp/apl-inst.log 2>&1 \
+    && ldconfig \
+    && apl --version 2>&1 | head -3
+ENV APL_SRC=/opt/apl-1.9/src
+
+# ── Verify the ARRAY / value-model + the int64->double numeric ceiling (A-APL-002/003) ──
+# The seams this peer exists to exercise must have working primitives:
+#   - base-256 ⊤ (encode) / ⊥ (decode) round-trip a value that FITS in int64
+#   - the exact-integer ceiling is 2^63-1; 2^63 SILENTLY becomes an inexact double
+#     (the reason the uint64 tower must be carried as an OCTET ARRAY, never a scalar)
+#   - ⍋ (grade-up) gives the length-then-lex map-key ordering as an array transform
+RUN cat > /tmp/probe.apl <<'APL' && apl --script -f /tmp/probe.apl > /tmp/probe.out 2>&1 ; cat /tmp/probe.out ; grep -q 'match=1' /tmp/probe.out && grep -q 'ceiling-shown-as-float' /tmp/probe.out && grep -q 'ARRAY-PROBE OK' /tmp/probe.out
+enc←{(8⍴256)⊤⍵}          ⍝ value -> 8 big-endian octets (only valid for ⍵ < 2*63)
+dec←{256⊥⍵}              ⍝ octets -> value
+⎕←'base-256 ⊤/⊥ round-trip 16777215 -> ',⍕dec enc 16777215
+⎕←'match=',⍕16777215=dec enc 16777215
+⍝ exact-integer ceiling: 2*62 is exact (int64); (2*63)-1 escapes to a float
+⍝ display, proving the silent int64->double promotion that forces the octet-
+⍝ array carrier for the [2*63, 2*64-1] tower (A-APL-003). APL is right-to-left,
+⍝ so ⍕ is parenthesized before catenation.
+⎕←'2*62 exact (int64) = ',⍕2*62
+⎕←'(2*63)-1 ceiling-shown-as-float = ',(⍕(2*63)-1)
+⎕←'ARRAY-PROBE OK'
+)OFF
+APL
+
+# ── Verify the GNU APL NATIVE-FUNCTION FFI mechanism (⎕FX C++ shim) ──────────
+# This is the crypto/base58 FFI substrate. A native-fn .so compiled against the
+# retained apl source headers, loaded with dyadic ⎕FX, resolves + calls a C symbol
+# (here libc strlen — a self-contained stand-in for the ec_* codec symbols the peer
+# binds at S2) and returns an APL value. Proves ⎕FX loading + C linkage end-to-end.
+# Compile notes (verified): native-fn shims need BOTH the build root (-I/opt/apl-1.9,
+# for the configure-generated config.h) and the src dir (-I$APL_SRC); NativeFunction
+# must be forward-declared; and `UCS_string ucs((UTF8_string(buf)))` needs the extra
+# parens to defeat the most-vexing-parse. apl is fed </dev/null so --script exits at
+# )OFF instead of blocking on stdin; the grep is the real gate.
+RUN cat > /tmp/ec_probe.cc <<'CC' && \
+    g++ -shared -fPIC -std=gnu++17 -I/opt/apl-1.9 -I"${APL_SRC}" -o /tmp/ec_probe.so /tmp/ec_probe.cc 2>/tmp/shim.log && \
+    cat > /tmp/ffi.apl <<'APL' && \
+    apl --script -f /tmp/ffi.apl </dev/null > /tmp/ffi.out 2>&1 ; cat /tmp/ffi.out ; grep -q 'strlen(entity-core)=11' /tmp/ffi.out
+#include <cstring>
+#include <cstdio>
+#include "Native_interface.hh"
+
+class NativeFunction;
+
+extern "C" void * get_function_mux(const char * function_name);
+static Fun_signature get_signature() { return SIG_Z_A_F2_B; }
+
+static Token
+eval_B(Value_P B, const NativeFunction * caller)
+{
+   size_t n = strlen("entity-core");            // stand-in for an ec_* C-ABI call
+   char buf[80];
+   snprintf(buf, sizeof buf, "native-fn OK strlen(entity-core)=%zu", n);
+   UCS_string ucs((UTF8_string(buf)));
+   Value_P Z(ucs, LOC);
+   Z->check_value(LOC);
+   return Token(TOK_APL_VALUE1, Z);
+}
+
+void *
+get_function_mux(const char * function_name)
+{
+   if (!strcmp(function_name, "get_signature")) return reinterpret_cast<void *>(&get_signature);
+   if (!strcmp(function_name, "eval_B"))        return reinterpret_cast<void *>(&eval_B);
+   return 0;
+}
+CC
+'/tmp/ec_probe.so' ⎕FX 'ECPROBE'
+⎕←ECPROBE 0
+)OFF
+APL
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="apl-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.apl="gnu-apl-1.9"
+LABEL org.entity-core-keystone.experimental="array-value-model-alien-substrate-probe"
+
+CMD ["/bin/bash"]

@@ -14,25 +14,27 @@ interaction, capability, bootstrap) for any target language, and it owns the
 for languages without mature canonical-CBOR + Ed25519 stacks. Generating peers
 is the *means*; the *end* is **spec refinement** — running the generator across
 many languages surfaces every spec ambiguity and feeds it back to architecture.
-Maturity: **initial public research-preview, v0.8.0 (V8)**. A **28-language**
+Maturity: **initial public research-preview, v0.8.0 (V8)**. A **26-language**
 peer cohort is in place and uniformly conformant; the pipeline is past
-first-build and into steady-state maintenance. The six newest are all
-alien-substrate probes, every one complete S1→S5 and measured natively at
-`cc1970f` (**682·0F** each): **Tcl** (#23 — Everything-Is-A-String), **Rexx**
-(#24 — native-decimal number model), **Forth** (#25 — stack-machine/typeless
-substrate), **Smalltalk** (#26 — pure-object/live-image/message-passing
-substrate), **Fortran** (#27 — fixed-width **signed-only** integer model, no
-portable unsigned type; native IEEE floats), and **APL** (#28 — the **array /
-value model**, the array as the primitive value). All six completed via the
-overseer + per-stage-sub-agent orchestration
-(`protocol-generator/shared/lifecycle/ORCHESTRATION.md`). The final four —
-Forth + Smalltalk (one machine) and Fortran + APL (a parallel machine) — were
-built **concurrently on two machines and merged here** (2026-07-12): this doc
-and `CONFORMANCE-MATRIX.md` reconcile the count → **28** and assign the four
-concurrent-probe ordinals. Ordinals among the concurrent four are cosmetic
-(all "probe" tier). **APL was the last named alien-substrate candidate** in
-`research/LANDSCAPE.md`, so the deliberate substrate sweep is now complete and
-steady-state is fully spec-refinement maintenance.
+first-build and into steady-state maintenance. The newest are alien-substrate
+probes: **Tcl** (#23 — Everything-Is-A-String), **Rexx** (#24 — native-decimal
+number model), **Fortran** (the fixed-width **signed-only** integer model —
+no portable unsigned type; native IEEE floats), and **APL** (the **array /
+value model** — the array as the primitive value), all complete S1→S5 and
+measured natively at `cc1970f` (**682·0F** each). **Forth** (the
+stack-machine/no-types substrate) is being built **in parallel on a second
+machine** via the same overseer + per-stage-sub-agent orchestration
+(`protocol-generator/shared/lifecycle/ORCHESTRATION.md`); when it lands the
+cohort reaches **27**.
+
+> **Merge reconciliation (pending — do at the joint merge window).** Fortran
+> **and APL** were built on this machine and Forth concurrently on the other —
+> three concurrent alien-substrate probes. This branch counts Fortran and APL as
+> landed (→ 26) and leaves the final count (→ 27, +Forth) and the
+> Fortran/APL/Forth ordinals for the merge, since neither branch can see the
+> other's state yet. `CONFORMANCE-MATRIX.md` got **append-only** Fortran + APL
+> rows (no shared-prose edits); the matrix cohort-count prose and this narrative
+> both settle when the two branches merge.
 
 The single pinned input is `protocol-generator/shared/spec-data/v0.8.0/` (a
 verbatim, SHA-256-pinned snapshot of the normative specs) plus the co-versioned
@@ -42,58 +44,43 @@ wire byte-unchanged**; the `v7.*` snapshots were retired.
 
 ## Where we left off
 
-The closed cohort is **28 generated core peers** (OCaml, Swift, Haskell, Go,
+The closed cohort is **26 generated core peers** (OCaml, Swift, Haskell, Go,
 Lean, C#, TypeScript, Java, Kotlin, Elixir, Common Lisp, Rust, Python, Zig, C,
-C++, Ada, Ruby, Prolog, PHP, Dart, COBOL, Tcl, Rexx, Forth, Smalltalk, Fortran,
-APL), every one full S1→S5 and **`validate-peer --profile core` 0-FAIL**. The
-last four are the **two-machine concurrent probe wave** (Forth + Smalltalk on one
-machine, Fortran + APL on the other), all at **682·0F @ cc1970f**:
-
-- **APL** (#28 — the **array / value-model** probe; the whole canonical-CBOR codec
-  expressed as array transforms, ⊤/⊥ base-256 + ⍋-graded map-key ordering) — full
-  S1→S5, FFI-hybrid (pure-APL value codec + crypto/base58/framing over
-  `libentitycore_codec` via a GNU APL `⎕FX` native-fn shim; **native `⎕FIO`
-  sockets, no C net-shim**); **682·0F** (291P/295W/0F/96S; genuine 2-of-3 multisig
-  accept-path). Its one wire-touching edge — GNU APL's exact integer ceilings at
-  2^63-1 and **silently promotes to lossy IEEE double** above it, so the uint64
-  tower cannot be a native scalar at all — closes as **corroboration** (an 8-octet
-  big-endian array carrier reproduces the full unsigned tower byte-exact;
-  *sharper* than Fortran's controllable signed-carrier, same result). No arch
-  finding; banked the durable GNU-APL-1.9 cookbook A-APL-012…017 (the `--script`
-  reader rejecting `:If`/dfn-guards; monadic `⊃`=disclose-not-first;
-  `≡`=rank-sensitive; two real `⎕FIO` `select` bugs read from the interpreter
-  source).
-- **Fortran** (#27 — fixed-width **signed-only** integer-model probe; no portable
-  unsigned type, native IEEE floats) — full S1→S5, FFI-hybrid (pure-Fortran value
-  codec bound **directly via `iso_c_binding`**, no C wrapper — cleaner than the
-  Rexx/Tcl shims); **682·0F** (292P/294W/0F/96S; genuine 2-of-3 multisig
-  accept-path; §6.13(b) handler-outbound reentry seam wired **live** at S4). Proved
-  the signed-carrier uint64 tower carries `[2^63, 2^64-1]` byte-exact
-  (corroboration). Banked an arch-bound corpus finding — **A-FTN-012 / F30** (the
-  corpus `tag_reject` vectors are vacuous: they reject on trailing-data, not the
-  §6.3 tag scanner; `research/stewardship/HANDOFF-TO-ARCH-2026-07-11-ftn-tag-reject-corpus.md`).
-  The wave produced **two distinct corpus-coverage findings**: this F30 (tag_reject,
-  Fortran) and a separate **F29** from the other machine (an array-of-maps
-  ≥24-byte-head gap, corroborated across Forth + Smalltalk;
-  `HANDOFF-TO-ARCH-F29-corpus-gap.md`). Both branches independently grabbed F29
-  from the shared base → renumbered ours to F30 at this merge.
-- **Smalltalk** (#26 — pure-object/live-image/message-passing probe) — **682·0F**
-  (291P/295W/0F/96S; genuine 2-of-3 multisig + a 4/4 in-image unit; origination
-  `dispatch_outbound_reentry` 3/3), exact Rexx/Forth parity. Codec as a polymorphic
-  **`encodeOn:` double-dispatch** over tagged `EcValue` objects (the A-ST-000
-  answer, not a translated type-switch), in-process **UFFI** crypto (no co-process),
-  bignum uint64 carried FREE. S4 flushed out four peer code bugs — chief **A-ST-016**
-  (catch the ROOT `Error`: one live `doesNotUnderstand:` on an unexercised path
-  cascaded 229 FAILs on a no-static-check substrate) — plus the durable **A-ST-012**
-  polymorphic-absent-sentinel finding.
-- **Forth** (#25 — stack-machine/typeless probe) — **682·0F** (291P/295W/0F/96S;
-  genuine 2-of-3 multisig; origination 3/3), exact Rexx parity. A
-  **native-float-bits** codec (gforth `SF!`/`DF!` give real IEEE bits; only f16 +
-  shortest ladder hand-rolled) and the **cleanest FFI binding in the family**
-  (in-process `libcc` `c-function`, native BSD sockets — no co-process). S4 flushed
-  out seven peer code bugs (chief the concurrency payoff A-FT-025).
-
-**Rexx** (#24) and **Tcl** (#23) preceded the wave at the same **682·0F**. The whole cohort is now normalized on
+C++, Ada, Ruby, Prolog, PHP, Dart, COBOL, Tcl, Rexx, Fortran, APL), every one
+full S1→S5 and **`validate-peer --profile core` 0-FAIL**. **Fortran** (the
+fixed-width signed-only integer-model probe) is the newest — full S1→S5,
+FFI-hybrid (hand-rolled pure-Fortran canonical CBOR value codec + crypto/base58/
+framing over `libentitycore_codec`, bound **directly via `iso_c_binding`** with
+no C wrapper — cleaner than the Rexx/Tcl shims), measured **natively** at
+`cc1970f` (**682·0F**, 292P/294W/0F/96S; genuine 2-of-3 multisig accept-path;
+the §6.13(b) handler-outbound reentry seam wired **live** during S4). Its build
+proved the signed-carrier uint64 tower carries the full `[2^63, 2^64-1]` range
+byte-exact (probe closes as corroboration — spec numeric determinism is tight
+enough to force even a signed-only substrate to carry the unsigned tower) and
+banked one arch-bound finding (**A-FTN-012 / F29** — the corpus `tag_reject`
+vectors are vacuous: they reject on trailing-data, not the §6.3 tag scanner;
+`HANDOFF-TO-ARCH-2026-07-11-ftn-tag-reject-corpus.md`). **Rexx** (the native-decimal
+number-model probe) is the newest — measured **natively** at `cc1970f`
+(**682·0F**, 291P/295W/0F/96S; genuine 2-of-3 multisig accept-path;
+origination-core `dispatch_outbound_reentry` 3/3). Its S4 surfaced two
+§4.9/§4.10 resilience findings, both fixed (unbounded per-request signature
+ingest A-RX-014; the §4.10(c) connection-admission cap). **Tcl** (the EIAS
+probe) preceded it at the same **682·0F**. **APL** (the **array / value-model**
+probe — the array as the primitive value; the whole canonical-CBOR codec
+expressed as array transforms, ⊤/⊥ base-256 + ⍋-graded map-key ordering) is the
+newest of all, built on this machine right after Fortran: full S1→S5,
+FFI-hybrid (pure-APL value codec + crypto/base58/framing over
+`libentitycore_codec` via a GNU APL `⎕FX` native-fn shim; **native `⎕FIO`
+sockets, no C net-shim**), measured natively at `cc1970f` (**682·0F**,
+291P/295W/0F/96S; genuine 2-of-3 multisig accept-path). Its one wire-touching
+edge — GNU APL's exact integer ceilings at 2^63-1 and **silently promotes to
+lossy IEEE double** above it, so the uint64 tower cannot be a native scalar at
+all — closes as **corroboration** (an 8-octet big-endian array carrier
+reproduces the full unsigned tower byte-exact; *sharper* than Fortran's
+controllable signed-carrier, same result). **No arch-bound finding**; it banked
+a durable GNU-APL-1.9 cookbook (A-APL-012…017: the `--script` reader rejecting
+`:If`/dfn-guards, monadic `⊃`=disclose-not-first, `≡`=rank-sensitive, and two
+real `⎕FIO` `select` bugs read from the interpreter source). The whole cohort is now normalized on
 the reproducible public-HEAD oracle `cc1970f` (2026-07-10 re-normalization). The
 `--profile core` **0-FAIL** gate at `cc1970f` is *proven* the same gate the cohort
 converged against — its normalized core-gate fingerprint (the 16-category set +
@@ -228,44 +215,32 @@ From `CONFORMANCE-MATRIX.md` §3 (catch-up) and `research/stewardship/SPEC-FINDI
 
 ## Done recently
 
-- **The two-machine concurrent probe wave completed + merged — cohort → 28.**
-  Four alien-substrate probes built concurrently on two machines (Forth +
-  Smalltalk on one, Fortran + APL on the other) and merged 2026-07-12, each full
-  S1→S5 via the overseer + per-stage-sub-agent orchestration with every stage's
-  oracle verdict independently re-run before commit, all **682·0F @ cc1970f**.
-  Per-peer truth in `CONFORMANCE-MATRIX.md`:
-  - **APL (#28)** — the **array / value-model** probe. FFI-hybrid: pure-APL
-    canonical CBOR as array transforms (⊤/⊥ base-256 + ⍋ grade) + crypto over
-    `libentitycore_codec` via a GNU APL `⎕FX` native-fn shim; **native `⎕FIO`
-    sockets (no C net-shim)**. 291P/295W/0F/96S; genuine 2-of-3 accept-path.
-    Numeric edge — GNU APL's exact int ceilings at 2^63-1 and silently promotes to
-    lossy double above, so the uint64 tower rides an 8-octet array carrier, never a
-    scalar — closes as **corroboration** (sharper than Fortran, same result).
-    Interpreter is **GNU APL 1.9 built from a SHA-256-pinned source tarball** (no
-    APL is in fedora dnf; the native-fn shim combines into a GPLv3 binary with
-    `apl` — isolated to the APL peer, the Apache-2.0 source stays one-way
-    compatible). Banked the GNU-APL-1.9 cookbook A-APL-012…017; no arch finding.
-  - **Fortran (#27)** — the fixed-width **signed-only** integer-model probe.
-    FFI-hybrid, C-ABI bound **directly via `iso_c_binding`** (no C wrapper).
-    292P/294W/0F/96S; signed-carrier uint64 tower proven byte-exact across
-    `[2^63, 2^64-1]`; §6.13(b) reentry seam wired live at S4. Banked **A-FTN-012 /
-    F30** (vacuous corpus `tag_reject` vectors) as a `HANDOFF-TO-ARCH`. (Distinct
-    from the other machine's **F29** — an array-of-maps ≥24-byte-head corpus gap;
-    both branches took F29 from the shared base, so ours renumbered to F30 here.)
-  - **Smalltalk (#26)** — the pure-object/live-image/message-passing probe (Pharo
-    13.0). FFI-hybrid: pure-Smalltalk canonical CBOR as a polymorphic `encodeOn:`
-    double-dispatch over tagged `EcValue` objects + crypto via in-process UFFI.
-    291P/295W/0F/96S + a 4/4 in-image unit; origination 3/3; bignum uint64 FREE. No
-    fresh spec finding but four peer code bugs surfaced + fixed — chief **A-ST-016**
-    (catch the ROOT `Error`: one live `doesNotUnderstand:` on an unexercised path
-    cascaded 229 FAILs on a no-static-check substrate) — plus the durable **A-ST-012**
-    polymorphic-absent-sentinel finding. `make dist` + Metacello/Tonel; `0.1.0-pre`.
-  - **Forth (#25)** — the stack-machine/typeless probe. FFI-hybrid: pure-Forth
-    **native-float-bits** canonical CBOR + the **cleanest FFI binding in the
-    family** (in-process `libcc` `c-function`, native BSD sockets, no co-process).
-    291P/295W/0F/96S, exact Rexx parity. No fresh spec finding but seven peer code
-    bugs surfaced + fixed (chief the concurrency payoff A-FT-025, a latent
-    `pend-new` missing-return only concurrent §6.11 reentry exposed). `0.1.0-pre`.
+- **APL probe completed — cohort → 26 (this branch).** The **array / value-model**
+  probe (the array as the primitive value; ints/floats conventional), full S1→S5
+  via the overseer + per-stage-sub-agent orchestration, each stage's oracle
+  verdict independently re-run before commit. FFI-hybrid: pure-APL canonical CBOR
+  as array transforms (⊤/⊥ base-256 + ⍋ grade) + crypto/base58/framing over
+  `libentitycore_codec` via a GNU APL `⎕FX` native-fn shim; **native `⎕FIO`
+  sockets (no C net-shim)**. **682·0F @ cc1970f** (291P/295W/0F/96S; genuine
+  2-of-3 multisig accept-path). Numeric edge — GNU APL's exact int ceilings at
+  2^63-1 and silently promotes to lossy double above, so the uint64 tower rides
+  an 8-octet big-endian array carrier, never a scalar — closes as
+  **corroboration** (sharper than Fortran, same result). Interpreter is **GNU APL
+  1.9 built from a SHA-256-pinned source tarball** (no APL is in fedora dnf).
+  Banked a durable GNU-APL-1.9 cookbook (A-APL-012…017); **no arch-bound
+  finding** — the array-model probe corroborated exactly as predicted. Built
+  concurrently with **Forth** on a second machine; count/ordinal reconcile at
+  merge (→ 27).
+- **Fortran probe completed — cohort → 25 (this branch).** The fixed-width
+  **signed-only** integer-model probe (no portable unsigned type; native IEEE
+  floats), full S1→S5 via the overseer + per-stage-sub-agent orchestration, each
+  stage's oracle verdict independently re-run before commit. FFI-hybrid with the
+  C-ABI bound **directly via `iso_c_binding`** (no C wrapper — the net-shim is the
+  only C). **682·0F @ cc1970f** (292P/294W/0F/96S); signed-carrier uint64 tower
+  proven byte-exact across `[2^63, 2^64-1]`; §6.13(b) reentry seam wired live at
+  S4 (same class COBOL built). Banked finding **A-FTN-012 / F29** (vacuous corpus
+  `tag_reject` vectors) as a `HANDOFF-TO-ARCH`. Built concurrently with **Forth**
+  on a second machine (the #25–#26 pair; count/ordinal reconcile at merge).
 - **Alien-substrate probes Tcl (#23) + Rexx (#24) completed — cohort → 24.** Two
   probes on the least-saturated wire axes: Tcl (Everything-Is-A-String) and Rexx
   (native-decimal number model, no binary int/float type). Both full S1→S5,
@@ -321,17 +296,19 @@ From `CONFORMANCE-MATRIX.md` §3 (catch-up) and `research/stewardship/SPEC-FINDI
 
 ## Next
 
-0. **The concurrent probe wave — DONE and merged (cohort → 28).** Forth (#25),
-   Smalltalk (#26), Fortran (#27), and APL (#28) — four alien-substrate probes
-   built concurrently on two machines and merged 2026-07-12, all **682·0F @
-   cc1970f** (see "Where we left off"). **APL was the last named alien-substrate
-   candidate** in `research/LANDSCAPE.md`, so the deliberate substrate sweep is
-   **complete** and steady-state is now fully **spec-refinement maintenance** —
-   re-running the cohort against each spec amendment. The wave confirmed the well
-   is dry on the current wire surface once more: clean corroboration, only
-   code-bug findings + **two distinct corpus-coverage findings** (F29 array-of-maps
-   ≥24-byte-head, Forth/Smalltalk; F30 tag_reject vacuity, Fortran), no fresh wire
-   finding.
+0. **Fortran + APL — DONE this session** (both full S1→S5, **682·0F @ cc1970f**
+   each; see "Where we left off"). **Forth** (the stack-machine / concatenative /
+   no-types substrate) is still in build **on the second machine** via the same
+   overseer + per-stage-sub-agent pattern (`ORCHESTRATION.md`) — expected
+   FFI-hybrid (COBOL/Tcl/Rexx/Fortran family: gforth, hand-rolled CBOR, crypto +
+   sockets over a C external extension, fixed-width cells → int head-form
+   self-test). Reconcile the cohort count (→ 27) + the Fortran/APL/Forth ordinals
+   at the joint merge. **APL was the last named alien-substrate candidate** in
+   `research/LANDSCAPE.md` (the array-model axis), so once Forth lands the
+   deliberate alien-substrate sweep is complete and steady-state is fully
+   **spec-refinement maintenance** — re-running the cohort against each amendment
+   (the discovery well is dry on the current wire surface). Corroboration was the
+   expected result and APL delivered it — no fresh wire finding, as predicted.
 1. **Extensibility surface** — the peer-side `register`/`unregister` +
    handler-outbound seam is **DONE cohort-wide** (2026-07-12 audit; see Backlog),
    *not* standing work. The remaining piece is the **oracle-side** core-tier
