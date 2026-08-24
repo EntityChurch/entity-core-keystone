@@ -37,15 +37,23 @@ narrative capstone). The repo-root `README.md` links into all three.
 
 - **`evaluations/<lang>.md`** — per-language and per-paradigm deep-dives. CBOR + Ed25519 + build-system
   audits, authored BEFORE the corresponding `<lang>/profile.toml` so profile choices have a documented
-  basis. Also holds the cross-cutting surveys: `authority-as-query.md`, `visual-paradigms.md`,
-  `declarative-query-viability.md`, `oz-io-viability.md`, `wasm-codegen-comparison.md`.
+  basis. **Per-language only** — the cross-cutting paradigm surveys (`authority-as-query.md`,
+  `visual-paradigms.md`, `declarative-query-viability.md`, `oz-io-viability.md`,
+  `wasm-codegen-comparison.md`) moved to `../protocol-generator/shared/evaluations/` on
+  2026-08-23 so they publish without a keep-list entry, same as the findings.
 - **`diagnostics/`** — debugging playbooks. `validate-peer-usage.md` is the canonical entry point;
   also `conformance-invariants.md` and `oracle-vendoring-policy.md`. New failure modes get pinned here
   so the next operator finds them faster.
-- **`stewardship/`** — the cross-language findings register (`SPEC-FINDINGS-LOG.md`), the dated session
-  record, and the `HANDOFF-TO-ARCH-*.md` escalations. **This is the only channel to architecture** —
-  we never write to a sibling repo; arch pulls handoffs in on its own schedule (`AGENTS.md`, three-arm
-  split).
+- **`stewardship/`** — the cross-language findings **register** (`SPEC-FINDINGS-LOG.md`), the dated
+  session record, and where a new `HANDOFF-TO-ARCH-*.md` escalation is **drafted**. **This is the only
+  channel to architecture** — we never write to a sibling repo; arch pulls handoffs in on its own
+  schedule (`AGENTS.md`, three-arm split).
+- **`../protocol-generator/shared/findings/`** — where a handoff **lands** once it is written up: the
+  25 durable spec findings, under undated names. A handoff is a *process* artifact (dated, addressed,
+  in flight); the finding it carries is *research output* (durable, citable, and the conclusion of
+  having implemented this protocol 46 times). Moving them out of `research/` on 2026-08-23 is what
+  makes them publish — see `AGENTS.md` "The findings publish; the escalation stays a draft" for the
+  full rule and why the register deliberately did **not** move with them.
 - **`architecture-reviews/`** — reviews of arch-authored material.
 
 Dated one-off analyses (convergence maps, red-team reviews, substrate-theory alignment) also live at

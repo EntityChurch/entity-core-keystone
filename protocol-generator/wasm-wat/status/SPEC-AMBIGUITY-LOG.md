@@ -59,7 +59,7 @@ Legend: **[decision]** a build/profile choice · **[finding]** something the sub
   Frame-cap (§1.6) is load-bearing on the single memory + single thread (the TurboWarp lesson).
 
 - **A-WAT-008 [finding + decision] — the `peers` grant dimension was never checked at dispatch;
-  fixed per `HANDOFF-TO-ARCH-2026-08-13-peers-grant-dimension-oracle-gap.md`.** `$grant_scope_ok`
+  fixed per `peers-grant-dimension-oracle-gap.md`.** `$grant_scope_ok`
   / `$op_scope_ok` walked `operations`→`handlers`→`resources` only; `"peers"` (`$t_035`) was
   parsed into the seed-grant type-registry entity but never read back — a §5.2 MUST-violation
   (handoff §0/§1). Fixed: `$derive_handler` now also derives `g_tpp`/`g_tplen`
@@ -74,7 +74,7 @@ Legend: **[decision]** a build/profile choice · **[finding]** something the sub
   `rust`/`python`'s `check_permission` exactly, since the task named them as the reference
   shape), but did **not** retrofit `exclude` onto the pre-existing `operations`/`handlers`/
   `resources` checks — that is the separate, already-tracked F40 id-scope-typing gap
-  (`HANDOFF-TO-ARCH-2026-07-27-F40-asymmetry-audit.md` lists wasm-wat among the 13 peers with
+  (`F40-asymmetry-audit.md` lists wasm-wat among the 13 peers with
   `id-scope` "type-declared but not acted on"). Confirmed via a direct A/B run against the
   pinned oracle (fceb61f) with this fix stashed vs. applied: **identical** result both ways —
   `718 total (294 P / 322 W / 1 F / 101 S)`, the sole FAIL being the pre-existing

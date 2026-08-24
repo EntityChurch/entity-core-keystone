@@ -76,5 +76,5 @@ survives a substrate whose only wide integer is signed, carried as an explicit b
 with no side channel (itself the answer). The one durable *corpus* finding is **A-FTN-012**
 (the `tag_reject.1/2/3/5` vectors reject via trailing-data, not the §6.3 tag scanner — a
 "conformance-green can be vacuous" corpus defect), written up as
-`research/stewardship/HANDOFF-TO-ARCH-2026-07-11-ftn-tag-reject-corpus.md` and logged as
+`protocol-generator/shared/findings/archive/F30-tag-reject-corpus.md` and logged as
 **F30** (F29 at authoring; renumbered at the 2026-07-12 two-branch merge). Steady-state value is now the Tier-tracked re-run on future amendments.

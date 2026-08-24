@@ -1,6 +1,6 @@
 /* peers grant-dimension unit test (F-peers remediation, 2026-08-13) — the conformance
  * oracle has ZERO vectors that exercise the `peers` grant dimension (see
- * research/stewardship/HANDOFF-TO-ARCH-2026-08-13-peers-grant-dimension-oracle-gap.md), so
+ * protocol-generator/shared/findings/peers-grant-dimension-oracle-gap.md), so
  * this is the only regression guard for it (AGENTS: "conformance-green can be vacuous").
  *
  * Drives derive_handler (extract_peer, §5.2 line 2196) and grant_scope_ok (the §5.2

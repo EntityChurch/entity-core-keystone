@@ -6,7 +6,7 @@ scaffold + the §4.10(b) depth pre-check; THIS class adds the full chain walk (r
 multisig M3/M4/M6), per-link signature + attenuation + grantee/expiry, §5.7 caveats, §5.1
 revocation, and the §5.2 permission-scope gate the dispatcher maps to a status — ALL FOUR grant
 dimensions (handlers, operations, peers, resources; 2026-08-13 fix, see
-research/stewardship/HANDOFF-TO-ARCH-2026-08-13-peers-grant-dimension-oracle-gap.md — `peers`
+protocol-generator/shared/findings/peers-grant-dimension-oracle-gap.md — `peers`
 was previously never read at dispatch).
 
 THE PURE-OBJECT REP (A-ST-000): a capability token is an EcEntity; grants/scopes are EcMap /

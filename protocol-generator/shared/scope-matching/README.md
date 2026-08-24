@@ -87,7 +87,7 @@ Every peer routes at least these; grep for the scope-match helper and check each
 **`scope_subset` (§5.5a delegation) is deliberately NOT converted here.** The F40 pin names
 `matches_scope`; the §5.5a `scope_subset` pseudocode still canonicalizes uniformly, and whether F40
 extends to it is an open question routed to arch
-(`research/stewardship/HANDOFF-TO-ARCH-2026-07-27-bucket-B-cohort-application.md`). Peers leave
+(`protocol-generator/shared/findings/bucket-B-cohort-application.md`). Peers leave
 `scope_subset` alone until arch rules — changing it on our own guess is how the cohort re-splits.
 
 ## Files

@@ -1,6 +1,6 @@
 ;; dispatch-test.wat — offline KAT for the §5.2 `peers` grant dimension (id-scope: literal
 ;; match, bare "*" / trailing "/*" / exact, include + exclude), added alongside the fix for
-;; HANDOFF-TO-ARCH-2026-08-13-peers-grant-dimension-oracle-gap.md ($grant_scope_ok /
+;; peers-grant-dimension-oracle-gap.md ($grant_scope_ok /
 ;; $op_scope_ok never checked a grant's `peers` scope; the "peers" string constant was parsed
 ;; into the seed-grant CBOR but never read back at dispatch — the go-oracle has zero test
 ;; coverage of this dimension, AGENTS.md "conformance-green can be vacuous", so this offline

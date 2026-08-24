@@ -12,7 +12,7 @@ reactive patch).
 This doc answers the one question that outlives any individual peer: *given the core protocol and an
 arbitrary programming substrate, what carries over cleanly, what needs a bridge, and what genuinely
 doesn't fit?* It organizes lessons that live operationally in `AGENTS.md` ("Durable cross-language
-lessons") and `research/evaluations/visual-paradigms.md`; read those for the per-case detail.
+lessons") and `protocol-generator/shared/evaluations/visual-paradigms.md`; read those for the per-case detail.
 
 > **2026-07-15 — the last two axes closed.** Oz/Mozart (dataflow-variable concurrency) and Io (pure
 > prototype-based OO) were built to full gate-green (`682·0F @ cc1970f`). They close the last
@@ -162,7 +162,8 @@ handler-outbound demux. The demux is the discriminator — how a peer correlates
   extension — a Wasmtime/WAMR port (which have working AOT) needs a wasi-sockets/preview2 shim for
   just that layer. Three spec findings fell out of this substrate (F33 T2.1 absolute-floor tension,
   F34 tampered-cap-sig coverage gap, F35 §7a reentry-echo skips §5.2 → outbound-authz untested) —
-  see `research/stewardship/HANDOFF-TO-ARCH-2026-07-15-*.md`. **Do NOT** paper over slow crypto
+  see `protocol-generator/shared/findings/concurrency-latency-floor-and-cap-sig-coverage.md`
+  (F33/F34) and `protocol-generator/shared/findings/wasm-dialer-parity-F35-and-execution-mode.md` (F35). **Do NOT** paper over slow crypto
   with a per-connection auth-verdict cache: `security.tampered_signature` proves per-request
   verification is mandatory (it flips the author sig on a warm connection and expects 401).
 - **§7a same-connection reentry needs no true peer-side concurrency (wasm-wat, 2026-07-15).** The
@@ -194,7 +195,7 @@ handler-outbound demux. The demux is the discriminator — how a peer correlates
   are runtime properties, not codegen artifacts, and bit exactly as they did for wasm-wat: **single-send
   framing** (ship `[len][payload]` in ONE write — two sends let Nagle stall the body ~40–200 ms on cold
   round trips → §6.11 churn timeout) and **JIT as the crypto execution-mode contract**. Full head-to-head:
-  `research/evaluations/wasm-codegen-comparison.md`.
+  `protocol-generator/shared/evaluations/wasm-codegen-comparison.md`.
 - **Mature-AOT (wasmtime) gives compile-once-run-native — and wasip1 sufficed, correcting the earlier
   wasip2 prediction (rust-wasm-wasmtime, 2026-07-15).** The SAME `rust-wasm` wasip1 module, run under
   **wasmtime** and precompiled (`wasmtime compile` → `.cwasm`), reaches the SAME `--profile core` 0-FAIL
@@ -211,7 +212,7 @@ handler-outbound demux. The demux is the discriminator — how a peer correlates
   ~5.7 ms) and yielding a **deploy-time native artifact** that boots with zero compile. Cost: the `.cwasm`
   is **wasmtime-version-pinned** (a deploy-time recompile, not portable). Net for the NAD-native arc: the
   substrate is now covered end to end — *author/compile* the compute (~free, portable), *deploy* it AOT on
-  a mature runtime (native boot). Third column of `research/evaluations/wasm-codegen-comparison.md`.- **The sharpest finding — thread-local-free concurrency.** Scratch has *no* per-thread/per-request
+  a mature runtime (native boot). Third column of `protocol-generator/shared/evaluations/wasm-codegen-comparison.md`.- **The sharpest finding — thread-local-free concurrency.** Scratch has *no* per-thread/per-request
   variable scope (all vars are sprite/global). A request-handling peer therefore **structurally
   cannot** process requests concurrently without clobbering its working state → it *must* serialize,
   or cooperatively yield between requests. §6.11's no-serialization / no-head-of-line MUST meets its
@@ -300,8 +301,8 @@ F41 (the decision surface is a monotone deductive system, so an authority-as-der
 make fail-closed + the within-grant conjunction structural invariants rather than silently-violable
 MUSTs). The wrapper-guard held through S4 on both — completing the handler surface added zero imperative
 allow/deny — and *that absence is itself the datum*. Full synthesis:
-`evaluations/authority-as-query.md`; arch routing:
-`stewardship/HANDOFF-TO-ARCH-2026-07-16-authority-as-query.md`.
+`protocol-generator/shared/evaluations/authority-as-query.md`; arch routing:
+`protocol-generator/shared/evaluations/authority-as-query.md`.
 
 ## The meta-takeaway
 
@@ -336,6 +337,6 @@ Otherwise the steady state is maintenance: re-run the cohort against each amendm
 - `research/PEER-ATLAS.md` (which peer probes which axis + the selection principle)
 - `research/CRYPTO-LANDSCAPE.md` (the cross-language cryptography survey — §2's crypto spectrum in full)
 - `AGENTS.md` → "Durable cross-language lessons" (the operational, per-case version)
-- `research/evaluations/visual-paradigms.md` (the visual-track deep dive + field survey)
+- `protocol-generator/shared/evaluations/visual-paradigms.md` (the visual-track deep dive + field survey)
 - `research/LANDSCAPE.md` (tier roster, alien-substrate track, "discovery is substrate-bound")
 - `CONFORMANCE-MATRIX.md` (per-peer transparency + the ‡ exploratory-probe framing)

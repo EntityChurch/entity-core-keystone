@@ -1,5 +1,5 @@
 /* Offline structural KAT for the §5.2 `peers` grant dimension
- * (HANDOFF-TO-ARCH-2026-08-13-peers-grant-dimension-oracle-gap.md). Unlike the
+ * (peers-grant-dimension-oracle-gap.md). Unlike the
  * other authz-*-offline KATs, this one does NOT replay a captured validate-peer
  * wire vector: the handoff doc's headline finding is that the conformance oracle
  * has ZERO test coverage of this dimension (`grep -rn '"peers"' cmd/internal/

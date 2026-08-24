@@ -135,8 +135,8 @@ authzdenykat: external
 	./$(BUILD)/authz-deny-offline
 
 # §5.2 `peers` grant-dimension offline KAT (structural, no wire vector — the
-# conformance oracle has ZERO coverage of this dimension, see HANDOFF-TO-ARCH-
-# 2026-08-13-peers-grant-dimension-oracle-gap.md, so there is no captured frame to
+# conformance oracle has ZERO coverage of this dimension, see
+# protocol-generator/shared/findings/peers-grant-dimension-oracle-gap.md, so there is no captured frame to
 # replay). Hand-builds synthetic capability-grant CBOR and exercises cap_permits'
 # peers scope directly: explicit include/exclude, bare "*", and the
 # omitted-`peers`-defaults-to-local-only fallback (the regression this closes).

@@ -1,7 +1,7 @@
 "entity-core-protocol-smalltalk — SUnit conformance TestCase (EntityCore-Tests).
 
 Regression coverage for the §5.2 `peers` grant dimension (2026-08-13 fix — see
-research/stewardship/HANDOFF-TO-ARCH-2026-08-13-peers-grant-dimension-oracle-gap.md). The
+protocol-generator/shared/findings/peers-grant-dimension-oracle-gap.md). The
 `validate-peer` oracle carries ZERO vectors that mint a grant with an explicit `peers`
 restriction (grep-verified in the handoff doc), so this suite is the ONLY thing that will
 ever catch a regression here (AGENTS.md: 'conformance-green can be vacuous').

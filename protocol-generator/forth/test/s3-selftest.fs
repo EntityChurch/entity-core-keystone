@@ -119,7 +119,8 @@ create sd1 32 allot   create sd2 32 allot   create sd3 32 allot
   s" req-9" 404 empty-params wire-response { ru } { re }
   re resp-status drop 404 =                            s" wire: RESPONSE status field" check ;
 
-\ ── §5.2 `peers` grant dimension (0.8.1 peers-fix, HANDOFF-TO-ARCH-2026-08-13) ──
+\ ── §5.2 `peers` grant dimension (0.8.1 peers-fix; see
+\ protocol-generator/shared/findings/peers-grant-dimension-oracle-gap.md) ──
 \ Regression coverage for capauthz.fs's grant-covers-op-handler / check-permission: the
 \ `peers` scope was previously never read at all (silently equivalent to peers:{include:["*"]}
 \ on every grant). The oracle has ZERO vectors for this dimension (confirmed in the handoff),

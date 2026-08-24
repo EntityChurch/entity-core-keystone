@@ -451,7 +451,7 @@ variable seen-n
   i 0< if ehp-span 2@ exit then
   ehp-span 2@ i 1+ /string ;
 
-\ ── §5.2 `peers` grant dimension (0.8.1, HANDOFF-TO-ARCH-2026-08-13 remediation) ──
+\ ── §5.2 `peers` grant dimension (0.8.1, peers-grant-dimension-oracle-gap remediation) ──
 \ extract-peer ( uri-a uri-u local-a local-u -- peer-a peer-u )  target_peer per spec line
 \ 2196: the EXECUTE's own dispatch URI's first path segment IF it's a valid peer_id (§1.4
 \ seg-is-peerid?, Base58 >=46 chars), else local_peer_id. Strips a leading "entity://" scheme,
@@ -514,7 +514,8 @@ variable seen-n
 \ one grant cover the exec's operation + resolved handler path + target peer + resource targets
 \ (§PR-8 frame)? §5.2/0.8.1 F40: `operations`/`peers` are id-scope (literal), `handlers` is
 \ path-scope (canonicalized). `peers` (0.8.1 peers-fix): the target_peer dimension — MUST-gate,
-\ same as the other three; previously unchecked entirely (HANDOFF-TO-ARCH-2026-08-13).
+\ same as the other three; previously unchecked entirely
+\ (protocol-generator/shared/findings/peers-grant-dimension-oracle-gap.md).
 : grant-covers-op-handler { exec la lu ga gu grant -- flag }
   exec exec-operation { opa opu }
   la lu opa opu grant s" operations" grant-scope SCOPE-ID matches-scope 0= if false exit then
