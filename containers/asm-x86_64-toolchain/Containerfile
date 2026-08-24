@@ -1,0 +1,51 @@
+# x86-64 assembly toolchain image — assembles + links the hand-authored assembly peer
+# (entity-core-protocol-asm-x86_64) per protocol-generator/asm-x86_64/profile.toml.
+#
+# Deliberately THIN. The peer is hand-written GAS/AT&T assembly; the only tools needed
+# are the assembler + a link driver:
+#   - binutils  → `as` (GAS assembler) + `ld`
+#   - gcc       → LINK DRIVER ONLY (crt0 + __libc_start_main + dynamic-linker path).
+#                 No peer C is compiled; gcc is used purely to link the asm objects
+#                 against libc + the codec .so with correct startup. (A-ASM-001.)
+#   - glibc-static → optional: lets the peer link the codec .a into a self-contained
+#                 ELF (the documented static alternative to the dynamic default).
+# No LLVM, no NASM (GAS is the zero-new-dependency assembler — AGENTS-STANDARD minimal deps).
+#
+# The FFI target libentitycore_codec.{so,a} + the C-ABI header are NOT baked in: they are
+# committed repo build outputs under ffi-generator/, reached through the mounted /work
+# tree at build/link time — the same pattern the peers use for the /work/output/s4-oracles
+# binaries. Keeps the image reproducible and provenance-clean (the lib is versioned in-repo,
+# not in the image).
+#
+# S11: pinned NVRs = what fedora:43 shipped at authoring (matches containers/c-toolchain).
+#      Re-verify the >=30-day age + re-pin on rebuild; prefer a base-image digest pin for
+#      full reproducibility.
+#
+# Build:
+#   podman build -t entity-core-keystone/asm-x86_64-toolchain:latest \
+#     -f containers/asm-x86_64-toolchain/Containerfile .
+#
+# Dev loop (assemble + link + self-check, sealed offline):
+#   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm --network=none \
+#     -v "$PWD":/work:Z -w /work/protocol-generator/asm-x86_64 \
+#     entity-core-keystone/asm-x86_64-toolchain:latest make s2
+FROM registry.fedoraproject.org/fedora:43
+
+# Assembler (GAS) + link driver + optional static libc. Pinned NVRs match c-toolchain.
+RUN dnf install -y \
+        binutils-2.45.1-4.fc43 \
+        gcc-15.2.1-7.fc43 \
+        glibc-static-2.42-13.fc43 \
+        make-1:4.4.1-11.fc43 \
+        findutils \
+        which \
+    && dnf clean all
+
+ENV CMAKE_COLOR_DIAGNOSTICS=OFF
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="asm-x86_64-toolchain"
+LABEL org.entity-core-keystone.version="1"
+
+CMD ["/bin/bash"]

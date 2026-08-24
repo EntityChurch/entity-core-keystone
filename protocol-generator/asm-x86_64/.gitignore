@@ -1,0 +1,3 @@
+# Build outputs (assemble + link happen in-container; artifacts are not committed).
+build/
+bin/

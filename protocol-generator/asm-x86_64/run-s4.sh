@@ -1,0 +1,66 @@
+#!/bin/sh
+# S4 conformance harness — entity-core-protocol-asm-x86_64 (hand-written x86-64 asm peer).
+#
+# Runs entirely inside the asm-x86_64-toolchain container (the Go validate-peer oracle is a
+# fedora:43 ELF that runs there too, so oracle + peer share one loopback; stays sealed-offline
+# with --network=none). Builds the peer (make host), provisions the persistent identity at the
+# standard on-disk location, launches the host, waits for its LISTENING line, points
+# validate-peer at it, tears the host down.
+#
+# Invoke from the repo root:
+#   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm --network=none \
+#     -v "$PWD":/work:Z entity-core-keystone/asm-x86_64-toolchain:latest \
+#     sh /work/protocol-generator/asm-x86_64/run-s4.sh [validate-peer-args...]
+#
+# Default args: -profile core (the extension-free gating profile). ORACLE/PORT/NOBUILD/
+# CONFORMANCE/PEERNAME env overrides. The codec .so is reached via LD_LIBRARY_PATH.
+
+set -eu
+PORT="${PORT:-7777}"
+ORACLE="${ORACLE:-/work/output/s4-oracles/validate-peer}"
+PROJ=/work/protocol-generator/asm-x86_64
+CODEC_DIR="${CODEC_DIR:-/work/ffi-generator/c-abi/entity-core-codec-ffi-c/build}"
+cd "$PROJ"
+
+if [ "${NOBUILD:-0}" != "1" ]; then
+  make host >/dev/null
+fi
+
+# Provision the peer's persistent identity at ~/.entity/peers/NAME/keypair — the entity-core
+# PEM = the base64 of a 32-byte seed. Fixed seed 0x11 x 32 (base64 "ERER…") ⇒ deterministic
+# peer_id 2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg, matching what the Go oracle derives.
+NAME="${PEERNAME:-conformance}"
+KPDIR="${HOME:-/root}/.entity/peers/$NAME"
+mkdir -p "$KPDIR"
+printf '%s\n%s\n%s\n' \
+  '-----BEGIN ENTITY PRIVATE KEY-----' \
+  'ERERERERERERERERERERERERERERERERERERERERERE=' \
+  '-----END ENTITY PRIVATE KEY-----' > "$KPDIR/keypair"
+
+HOST_ARGS="--port $PORT --name $NAME --debug-open-grants"
+if [ "${CONFORMANCE:-1}" = "1" ]; then
+  HOST_ARGS="$HOST_ARGS --validate"
+fi
+
+# shellcheck disable=SC2086
+LD_LIBRARY_PATH="$CODEC_DIR" ./bin/host $HOST_ARGS >/tmp/host.out 2>/tmp/host.err &
+HOST_PID=$!
+trap 'kill "$HOST_PID" 2>/dev/null || true' EXIT INT TERM
+
+i=0
+while [ "$i" -lt 100 ]; do
+  if grep -q '^LISTENING' /tmp/host.out 2>/dev/null; then break; fi
+  if ! kill -0 "$HOST_PID" 2>/dev/null; then
+    echo "host exited before LISTENING:" >&2
+    cat /tmp/host.err >&2
+    exit 1
+  fi
+  i=$((i + 1))
+  sleep 0.1
+done
+head -1 /tmp/host.out
+
+if [ "$#" -eq 0 ]; then
+  set -- -profile core -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
+fi
+"$ORACLE" -addr "127.0.0.1:$PORT" "$@" || true

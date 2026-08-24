@@ -1,0 +1,188 @@
+# entity-core-protocol-asm-x86_64 — Language Profile
+#
+# The hand-authored x86-64 assembly peer. This is NOT a cross-compiled C→asm
+# artifact and NOT a "language" in the ecosystem sense — it is the extreme end of
+# the substrate axis: a bare-metal, no-runtime, no-stdlib, syscall-level target
+# authored directly from spec, the way every peer is authored. It exists for
+# GENERATOR-ROBUSTNESS + SUBSTRATE-DYNAMICS research (how the protocol maps onto a
+# machine with no types, no allocator, no error model, no strings — only registers,
+# memory, and `syscall`), not for spec-discovery: the wire-touching axes (integer
+# width / float model / crypto availability / string model) are saturated by the
+# existing 30-peer cohort, so the --profile core gate is expected to land 0-FAIL as
+# corroboration, cohort-consistent (NOT independent convergence — ADR-0012).
+#
+# CODEC STRATEGY = FFI (Level 1). Assembly has no CBOR/Ed25519 stack of any kind, so
+# the first build FFIs the ENTIRE codec + crypto to libentitycore_codec and
+# hand-authors only the machine's own logic (transport / dispatch / store /
+# capability control-flow / the §9.1 floor / host CLI / identity loading). A Level-2
+# hand-rolled-asm CBOR codec (FFI only Ed25519) is a documented later stretch; a
+# fully-pure build (asm SHA-256 + Ed25519 too) is noted "to have available", not this
+# session's scope. See arch/PROFILE-RATIONALE.md.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value is
+# logged in status/SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "asm-x86_64"
+name              = "x86-64 assembly (GAS/AT&T)"
+tier              = "substrate-probe"         # bare-metal syscall-level substrate; corroboration tier (see research/LANDSCAPE.md)
+package_name      = "entity-core-protocol-asm-x86-64"
+runtime           = "asm-x86_64-toolchain"    # references containers/<runtime>/Containerfile
+isa               = "x86-64 (SysV AMD64 ABI, Linux)"  # ARM64 + RISC-V are follow-on ports (need qemu-user); x86-64 is native on the dev host + fedora container → no qemu.
+
+[codec]
+# strategy: FFI. Assembly has NO CBOR, NO Ed25519, NO SHA-2, NO base58 — no library
+# ecosystem at all. The C-ABI (libentitycore_codec) exposes the entire codec + crypto
+# behind the SysV AMD64 calling convention, so Level-1 FFIs all byte-work and crypto
+# and hand-authors only the machine logic. This is the canonical use case the FFI
+# layer was built for (the "gap → hybrid-FFI" end of the crypto-availability spectrum,
+# taken to its limit: EVERYTHING is FFI'd, not just Ed448).
+strategy          = "ffi"
+# The FFI target: the prebuilt libentitycore_codec.so (C impl, entity-core-codec-ffi-c)
+# at ffi-generator/c-abi/entity-core-codec-ffi-c/build/. Provenance via ec_impl_info(),
+# not the filename (C-ABI v1.1). Asm calls the C symbols directly — no shim, no
+# language-runtime binding layer (unlike the tcl/prolog/cobol FFI peers, which bind
+# through a host-language C extension). Asm IS the native ABI.
+ffi_target        = { lib = "libentitycore_codec.so", abi = "c-abi-1.1", header = "ffi-generator/c-abi/spec/entitycore_codec.h" }
+cbor_library      = { name = "FFI:libentitycore_codec", version = "c-abi-1.1", canonical_mode = "ffi-ecf" }  # ec_encode_ecf / ec_decode_entity / ec_content_hash*
+ed25519_library   = { name = "FFI:libentitycore_codec", version = "c-abi-1.1" }  # ec_ed25519_{keygen,sign,verify,seed_to_pubkey}
+ed448_library     = { name = "FFI:libentitycore_codec (deferred)", version = "c-abi-1.1" }  # ec_ed448_* present in the ABI; agility not in the core floor — deferred, see A-ASM-002
+sha256_source     = "FFI:libentitycore_codec ec_sha256 (§9.1 floor hash); ec_sha384 present for agility"
+base58_library    = "FFI:libentitycore_codec ec_peerid_{parse,format}"  # peer-id base58 lives behind the ABI; no hand-rolled base58 at Level 1
+varint_handling   = "FFI:libentitycore_codec ec_hash_format_code_{encode,decode}"  # LEB128 format codes behind the ABI
+
+[error_model]
+# There is NO language error model. The machine has status codes in registers and
+# conditional branches — nothing else. The C-ABI returns int32_t status in %rax
+# (EC_OK=0 … EC_INTERNAL_ERROR=-99); protocol verdicts are integers. At the dispatch
+# boundary the asm maps { C-ABI int32 status, protocol outcome } → the §5.2a / §6.12
+# status codes carried in the response envelope. This is the errno end of the
+# taxonomy taken to the bare metal: no unwinding, no result ADT, no exceptions —
+# just %rax and `jz`/`js`/`test`.
+style             = "errno"                   # register status code + conditional branch; mapped to §5.2a/§6.12 at the dispatch boundary
+error_set         = "int32_t C-ABI status (EC_* in entitycore_codec.h) + protocol verdict integers"
+allocator_failure = "bump-arena exhaustion → EC_ARENA_EXHAUSTED-shaped internal-error verdict; never a trap"
+
+[memory]
+# The extreme end of the no-GC axis: memory is raw. NO malloc, NO allocator param, NO
+# GC. Decoded entity bodies live in an FFI'd ec_arena_t (ec_arena_{new,reset,free}) —
+# the codec owns that memory; asm resets it per request. The peer's OWN working buffers
+# (frame read buffer, response build buffer, store slots, connection state) are a static
+# .bss region carved at assemble time + a hand-rolled bump allocator over an mmap'd
+# region for anything variable-sized. Manual, obviously — every byte is placed by hand.
+gc                = false
+allocator_threading = "none"                  # no allocator abstraction exists; static .bss + bump-over-mmap + FFI'd ec_arena for decoded bodies
+encode_buffer     = "caller-provided (static .bss build buffer); ec_encode_ecf writes into it with the OUT_OF_SPACE grow protocol"
+decode_ownership  = "ec_arena_t (FFI-owned); ec_arena_reset per request, ec_arena_free at shutdown"
+default_test_allocator = "n/a — no leak checker exists; buffer discipline is verified by conformance + valgrind on the linked binary (optional)"
+
+[async]
+# DELIBERATE substrate decision. Assembly has no concurrency runtime. Two options were
+# on the table (logged A-ASM-003): (a) raw kernel threads via the clone(2) syscall +
+# a futex mutex on the shared store, or (b) a single-threaded epoll(7) event loop
+# demuxing connections (and request_id within the §6.11 handler-outbound demux). Chose
+# the EVENT LOOP: managing thread stacks / TLS / futex wake in hand-written asm is
+# materially harder and more error-prone than an epoll readiness loop, and the
+# --profile core concurrency category needs interleaved progress across connections
+# (no head-of-line blocking), not true parallelism. §4.8/§6.11 inbound-concurrent-with-
+# outbound is satisfied structurally by the readiness loop; full handler-initiated
+# origination (dispatch-outbound live) is reference-peer-gated and honest-SKIPs on a
+# single-peer run. §7b throughput floor is TCP_NODELAY (setsockopt), same as every peer.
+style             = "evented"                 # single-threaded epoll event loop; no threads at Level 1
+default_surface   = "blocking-syscalls-over-nonblocking-fds"  # sockets are O_NONBLOCK; epoll_wait drives readiness; per-op read/write are edge-safe loops
+primitive         = "epoll_create1 / epoll_ctl / epoll_wait (raw syscalls 291/233/232); accept4(288) with SOCK_NONBLOCK"
+
+[naming]
+# Assembly naming is convention, not language-enforced. GAS/AT&T. Labels are the only
+# namespace. Chosen conventions for readability + collision-avoidance across .s files:
+type_names        = "n/a"                     # no types; memory layouts documented in comments + .struct-style equ offsets
+function_names    = "snake_case labels, module-prefixed"  # ec_peer_dispatch, ec_wire_read_frame, ec_store_put — global labels prefixed to avoid clashes with the FFI's ec_* C symbols (peer uses ecp_/entcp_-style where collision risk)
+variable_names    = "snake_case .equ / .set for constants + offsets"  # OFF_FRAME_LEN, MAX_FRAME, SYS_accept4
+constant_names    = "SCREAMING_SNAKE via .equ"  # SYS_socket, EC_OK, MAX_FRAME_LEN
+file_names        = "snake_case .s"           # transport.s, dispatch.s, store.s, host.s, ffi.s
+error_names       = "n/a — integer status codes only"
+label_local       = ".L-prefixed local labels"  # GAS local-label convention (.Lloop, .Ldone) — not exported, don't pollute the symbol table
+
+[build]
+# GAS (AT&T syntax) via binutils `as`; link via the `cc`/gcc DRIVER (not bare `ld`).
+# WHY the cc driver and not raw ld: libentitycore_codec.so is dynamically linked
+# against libc (+ statically-private libsodium). Letting cc supply crt0 +
+# __libc_start_main means libc is loaded AND fully initialized before our asm `main`
+# runs — no fighting TLS/errno init from a bare _start. The peer is still "written in
+# assembly" (all logic in .s files); we use the standard system startup + link driver,
+# exactly as any hand-written asm program links on Linux. Transport is raw syscalls
+# regardless (the substrate-research point), even though libc is linkable. A fully
+# freestanding `_start` (no crt, no libc) is a Level-2 purity option — but the codec
+# .so needs libc anyway, so it buys little at Level 1. See A-ASM-001.
+build_tool        = "make + as + cc(link driver)"
+build_command     = "as --64 -o <obj> <src.s>  ;  cc -no-pie -o host *.o -L<lib> -lentitycore_codec"  # -no-pie: hand-authored asm uses absolute addressing for .bss/.data; simplest correct model at Level 1 (PIE/PIC is a documented later hardening)
+test_command      = "make s2   # asm self-check harness drives the 71-vector corpus through the FFI'd codec, asserts byte-identity"
+pack_command      = "make host # the single linked ELF executable is the artifact; 'publish' = commit + matrix row (no package registry for asm)"
+entry_point       = "main (SysV; cc-driver startup) — NOT _start at Level 1"
+
+[layout]
+project_file      = "Makefile"                # thin make over as + cc, container-invoked
+src_dir           = "src/"                    # *.s assembly sources
+test_dir          = "src/"                    # conformance self-check harness is an asm target (src/selfcheck.s) + the shared corpus
+lib_name          = "n/a — the artifact is the `host` executable, not a library"
+module_root       = "src/host.s"              # main entry; pulls in transport.s / dispatch.s / store.s / wire.s / ffi.s / identity.s
+
+[publishing]
+# Assembly has no package registry (no crates.io/npm/hex equivalent, and no meaningful
+# cross-machine binary distribution for a hand-authored ISA-specific ELF). "Publishing"
+# = the source .s files committed in-repo + a CONFORMANCE-MATRIX row. Consumers who
+# want it assemble from source in the container.
+registry          = "none (source-in-repo; ISA-specific ELF)"
+registry_url      = ""
+package_id        = "entity-core-protocol-asm-x86-64"
+license_expression = "Apache-2.0"
+repository_url    = ""                         # in-repo under protocol-generator/asm-x86_64/ until stabilization
+authors           = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default; GAS/binutils is GPL but that governs the assembler, not the assembled output — the peer source is ours, Apache-2.0.
+
+[testing]
+# No test framework exists for raw asm. The conformance self-check is an asm target
+# (src/selfcheck.s) that loads the normative fixture (the 71-vector corpus) and asserts
+# byte-identity of ec_encode_ecf / ec_content_hash / ec_decode_entity output against
+# the golden bytes — exit 0 on all-pass, nonzero + the failing vector index on any
+# mismatch. Live-peer conformance is validate-peer --profile core over the socket
+# (run-s4.sh), identical to every peer.
+framework         = "hand-rolled asm self-check (src/selfcheck.s) + validate-peer oracle"
+leak_checking      = false                    # no automatic leak checker; optional valgrind pass on the linked ELF documents buffer discipline
+
+[container]
+base_image        = "entity-core-keystone/asm-x86_64-toolchain:latest"
+build_in_container = true
+# --network=none honored: binutils + gcc + the prebuilt libentitycore_codec.so/.a +
+# headers are all baked into the image; assemble + link is fully offline.
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/asm-x86_64 entity-core-keystone/asm-x86_64-toolchain:latest make s2"
+
+[idiom]
+# Hints specific to hand-authoring asm.
+assembler                     = "GAS (AT&T syntax), binutils `as`"   # lowest-dependency: binutils already in every toolchain; NASM would add a dnf dep for no correctness gain. A-ASM-001.
+link_mode                     = "dynamic against libentitycore_codec.so via cc driver; -no-pie"  # static .a is a documented alternative (self-contained ELF); dynamic is simpler to iterate. A-ASM-001.
+calling_convention            = "SysV AMD64: int/ptr args rdi,rsi,rdx,rcx,r8,r9; return rax; callee-saved rbx,rbp,r12-r15; 16-byte stack align at every `call`; (ptr,len) passed as two registers"
+syscall_abi                   = "number in rax; args rdi,rsi,rdx,r10,r8,r9; `syscall`; return in rax (-errno on failure). Distinct from the call ABI (rcx→r10, no r9-arg-7)."
+syscall_numbers               = "socket=41 bind=49 listen=50 accept4=288 setsockopt=54 read=0 write=1 close=3 open=2 openat=257 epoll_create1=291 epoll_ctl=233 epoll_wait=232 clone=56(unused@L1) exit=60 mmap=9 brk=12"
+transport_via_syscalls        = true          # raw socket/bind/listen/accept4/read/write/setsockopt — the substrate-research point, even though libc is linked
+crypto_and_codec_via_ffi      = true          # Level 1: entire codec + crypto FFI'd; hand-roll only machine logic
+tcp_nodelay                   = true          # setsockopt IPPROTO_TCP/TCP_NODELAY — the §7b throughput floor (Nagle/delayed-ACK on small frames, the zig lesson)
+stack_alignment_discipline    = "every `call` into the FFI or libc is made with %rsp 16-byte aligned (SysV ABI hard requirement — misalignment faults in SSE-using codec/crypto)"
+
+[deps]
+# Exact pins (S11). The only toolchain deps are binutils (assembler + linker) and gcc
+# (link driver only — no C is compiled for the peer). Both are fedora:43 stock, mirrored
+# in containers/asm-x86_64-toolchain/Containerfile. The FFI target libentitycore_codec is
+# a repo artifact (entity-core-codec-ffi-c), version-pinned by ec_impl_info(), not a
+# distro package.
+binutils          = "2.45.1-4.fc43"           # `as` (GAS) + `ld`; fedora:43 stock at authoring (matches containers/c-toolchain pin). Provides the AT&T assembler — no LLVM/NASM.
+gcc               = "15.2.1-7.fc43"           # LINK DRIVER ONLY (crt0 + __libc_start_main + dynamic-linker path). No peer C code is compiled. fedora:43 stock; matches c-toolchain.
+glibc             = "fedora:43 stock"          # loaded because libentitycore_codec.so needs it; the peer calls it only implicitly (crt startup). Transport is raw syscalls.
+libentitycore_codec = "entity-core-codec-ffi-c, C-ABI 1.1 (provenance via ec_impl_info)"  # repo artifact, not a package. Rebuild-from-source in-container; the prebuilt .so/.a are committed build outputs under ffi-generator/.
+
+[spec]
+v7_version_pinned = "v0.8.0 / V8"             # the single pinned spec snapshot (shared/spec-data/v0.8.0). Core wire byte-unchanged v7.75→v7.77→V8.
+codec_corpus      = "v0.8.0 / conformance-vectors-v1 (71 vectors, sha 9695b1f1…)"  # exercised through the FFI'd codec at Level 1
+oracle_pin        = "cc1970f (fingerprint 8261a033…) — tools/oracle-pin.env; validate-peer --profile core = 0-FAIL target (~292·0F like the recent cohort)"
