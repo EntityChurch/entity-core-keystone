@@ -162,30 +162,31 @@ Both are verbatim, byte-for-byte, SHA-256-pinned snapshots with provenance in th
 
 ## Conformance state, honestly
 
-**The re-pin that was pending here has now happened, and it went red.** As of 2026-08-21 the oracle is
-`entity-core-go @ c1b0708` and the spec snapshot is `v0.8.2`. The cohort is measured at **two pins**:
+As of 2026-08-21 the whole cohort is measured at **one** pin — oracle `entity-core-go @ c1b0708`,
+spec snapshot `v0.8.2` — from a single full census over all 45 measurable peers:
 
-- **The 5 tier-M1 peers** (`go` `haskell` `lean` `ocaml` `swift`) were re-run at `c1b0708`. **All 5
-  FAIL** — `go`/`haskell`/`ocaml` 3F, `swift` 2F, `lean` 83F (2 real + 81 cascade from one defect).
-  Every FAIL is one of the five new core `capability` checks.
-- **The other 40 measured peers** are still on `de8f807` (2026-08-17), where 35 of them were
-  `--profile core` → 0 FAIL. **That verdict does not carry forward** and those rows are labelled
-  historical: they have never been run against the new checks, and the check sets differ (755 vs 740)
-  so the numbers aren't even comparable.
+- **5 peers pass `--profile core` 0-FAIL**: `go` `haskell` `lean` `ocaml` `swift` (tier M1), all
+  fixed in that session. The maintenance-tier gate is green and the re-pin is landed.
+- **31 more fail nothing but three new `capability` checks** — 29 at exactly 3F with a
+  byte-identical breakdown, 2 at 2F. That uniformity is the point: it is **one unimplemented spec
+  feature measured 31 times**, not 31 defects.
+- **`typescript` 84F is 3 real + 81 cascade** from a single connection-killing bug (the same one
+  `lean` had, now fixed there); **`cobol` 30F** is the CAP trio plus its standing 27.
+- **4 peers produced INVALID MEASUREMENTS** (`csharp`, `asm-x86_64`, `asm-arm64`, `riscv64`) —
+  starved runs that executed fewer checks than the pinned set. They are quarantined, not scored.
+  A run measured on a different set of checks is not a worse score; it is not a score.
+- `apl` remains upstream-blocked and unmeasured.
 
-**These are not regressions — they are a feature nobody had implemented.** §5.6's MIN_DEFINED
-temporal-ceiling construction (a minted capability's lifetime must be clamped by the caller's expiry
-and the policy's `ttl_ms`) was never built in any peer; `mintToken` sets no `expires_at` at all, and
-no conformance vector exercised it until now. One of the three is a **fail-open security defect**:
-`go`/`haskell`/`ocaml` *honor* a presented capability whose `expires_at` is negative.
+**The failures were never regressions — they are a feature nobody had implemented.** §5.6's
+MIN_DEFINED temporal ceiling (a minted capability's lifetime must be clamped by the caller's expiry
+and the policy's `ttl_ms`) was absent in every peer: `mintToken` set no `expires_at` at all, and no
+conformance vector exercised it until this pin. Fixing M1 also turned up a **fail-open** —
+`go`/`haskell`/`ocaml` *honored* a capability whose `expires_at` was negative — and a §6.3 rule every
+peer was breaking: a rejected frame is owed a `400 non_canonical_ecf`, not silence.
 
-Also documented, not hidden, at the older pin: `asm-x86_64` / `asm-arm64` / `riscv64` (an invalid
-measurement, see matrix §1a), `cobol` (a standing liveness cascade), `turbowarp` (exploratory, never
-in scope for the core gate); `apl` is upstream-blocked and unmeasured.
-
-> **Do not cite a "40 peers pass" figure from this repo right now.** The honest current statement is
-> the two-pin split above. `CONFORMANCE-MATRIX.md` is authoritative; its 2026-08-21 banner carries the
-> full accounting, and `tools/tier-status.py --gate` exits non-zero until M1 is fixed.
+> **The honest one-line summary: 5 of 45 peers are publishable today.** "No green report → no
+> publish" is unchanged and it now binds 40 peers. `CONFORMANCE-MATRIX.md` is authoritative — its
+> 2026-08-21 banner carries the full accounting, §1a the invalid measurements, §1b the cascade.
 
 ### On the word "independent"
 
