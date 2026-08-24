@@ -27,9 +27,18 @@ NR="/work/protocol-generator/node-red/src"
 TS="/work/protocol-generator/typescript"
 PEERNAME="${PEERNAME:-conformance}"
 
-# Build the delegated TS codec if needed.
-if [ "${NOBUILD:-0}" != "1" ]; then
-  (cd "$TS" && npm ci --offline >/dev/null 2>&1 && npx tsc -p tsconfig.json)
+# Build the delegated TS codec + install Node-RED only if MISSING. Uses `npm install`
+# (online — needs network on the FIRST run; the kc-npm volume caches it thereafter).
+# NOT `npm ci --offline`, which wipes node_modules then fails on an incomplete cache.
+if [ ! -f "$TS/dist/src/index.js" ] || [ ! -d "$TS/node_modules/@noble" ]; then
+  echo "building the delegated TypeScript codec (first run; needs network) …"
+  (cd "$TS" && npm install --no-audit --no-fund && ./node_modules/.bin/tsc -p tsconfig.json) \
+    || { echo "ERROR: TypeScript codec build failed — is network available on this first run?" >&2; exit 1; }
+fi
+if [ ! -x "$NR/node_modules/.bin/node-red" ]; then
+  echo "installing Node-RED (first run; needs network) …"
+  (cd "$NR" && npm install --no-audit --no-fund) \
+    || { echo "ERROR: Node-RED install failed — is network available on this first run?" >&2; exit 1; }
 fi
 
 # Provision a peer identity (so a client can complete a real handshake while you watch).

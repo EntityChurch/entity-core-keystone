@@ -25,9 +25,16 @@ TS="/work/protocol-generator/typescript"
 
 # 1. Build the DELEGATED TS codec (dist/) — the interop dependency.
 if [ "${NOBUILD:-0}" != "1" ]; then
-  (cd "$TS" && npm ci --offline >/dev/null 2>&1 && npx tsc -p tsconfig.json)
-  # Node-RED deps (offline against the committed lockfile).
-  (cd "$NR" && npm ci --offline >/dev/null 2>&1 || npm install --offline --no-audit --no-fund >/dev/null 2>&1)
+  # Build/install only if MISSING (online; needs network on first run). Avoids the
+  # `npm ci --offline` foot-gun (it wipes node_modules then fails on an incomplete cache).
+  if [ ! -f "$TS/dist/src/index.js" ] || [ ! -d "$TS/node_modules/@noble" ]; then
+    (cd "$TS" && npm install --no-audit --no-fund >/dev/null 2>&1 && ./node_modules/.bin/tsc -p tsconfig.json) \
+      || { echo "ERROR: TS codec build failed (network needed on first run)" >&2; exit 1; }
+  fi
+  if [ ! -x "$NR/node_modules/.bin/node-red" ]; then
+    (cd "$NR" && npm install --no-audit --no-fund >/dev/null 2>&1) \
+      || { echo "ERROR: Node-RED install failed (network needed on first run)" >&2; exit 1; }
+  fi
 fi
 
 # 2. Provision the peer's persistent identity at the standard on-disk location so the

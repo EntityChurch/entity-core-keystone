@@ -1,0 +1,82 @@
+# entity-core-protocol-turbowarp — Language Profile
+#
+# Peer #32 — the SECOND of the visual-paradigm probe cohort (Node-RED → TurboWarp →
+# Scratch). TurboWarp is a Scratch VM fork; the peer is authored in **visual blocks**
+# (custom-block procedures) with the **stage** visualizing the protocol as it runs.
+# This is the operator's primary target ("get a version working in Scratch"): TurboWarp
+# is Scratch-plus-custom-JS-extensions, the stepping stone to vanilla Scratch.
+#
+# Like Node-RED, NOT wire-axis discovery (JS runtime, saturated by the TS peer). The
+# axis is paradigm + authoring + VISUALIZATION. Carries forward Node-RED's findings
+# (the msg/state-cloning constraint reappears as Scratch variable semantics; the
+# throughput boundary A-NR-throughput likely recurs, sandbox makes it worse).
+#
+# THE CRUX (settled in PHASE-S1): TurboWarp is SANDBOXED — no raw TCP. The Go
+# validate-peer oracle speaks TCP. So oracle-gating requires a WebSocket↔TCP bridge;
+# pure visualization does not. See [conformance] + PHASE-S1.
+
+[language]
+id                = "turbowarp"
+name              = "TurboWarp / Scratch (visual blocks)"
+tier              = "T5"                     # experimental paradigm probe; the visualization artifact is the point
+package_name      = "entity-core-protocol-turbowarp"
+runtime           = "node24"                 # the JS codec extension bundles + the WS↔TCP bridge run on node24; the .sb3 loads in the TurboWarp editor/VM
+paradigm          = "visual-blocks"          # the axis under test — imperative blocks + sprites/stage state + message-passing (broadcasts)
+authoring_surface = "sb3-project"            # source of truth: a Scratch `.sb3` project (blocks) + a JS custom extension (the codec bridge)
+visualize_first   = true                     # operator intent: load in the TurboWarp editor and SEE the protocol run on the stage
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTHORED-vs-DELEGATED (the whole design). Same interop principle as Node-RED, but
+# the codec must be BROWSER-BUNDLED (not require()'d): the TS peer's codec IS
+# browser-portable (@noble pure-JS, cborg browser-ok — per the TS profile's
+# browser-portability decision), so it bundles into a TurboWarp custom extension.
+# ─────────────────────────────────────────────────────────────────────────────
+[codec]
+strategy          = "interop"                # delegate canonical CBOR + Ed25519 + SHA-256 + the §6.5 engine to a BROWSER BUNDLE of the TS peer
+interop_source    = "entity-core-protocol-typescript"  # bundled (esbuild) for the browser, exposed to blocks via a custom extension's JS
+interop_bundling  = "esbuild-browser-iife"   # the TS codec/engine → one self-contained .js custom-extension (no node:net; transport is authored)
+cbor_library      = { name = "interop:bundled-ts-codec", version = "typescript-peer@0.1.0-pre", canonical_mode = "delegated" }
+crypto_provider   = "interop:@noble"         # @noble is pure-JS/browser-portable — the reason the TS peer chose it (A-001) pays off here
+ed25519_library   = { name = "interop:@noble/curves", version = "typescript-peer" }
+ed448_library     = { name = "deferred", version = "n/a" }
+sha256_library    = { name = "interop:@noble/hashes", version = "typescript-peer" }
+integer_model     = "always-bigint"          # inherited from the bundled TS codec
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTHORED SURFACE — the protocol logic + visualization as Scratch blocks.
+# ─────────────────────────────────────────────────────────────────────────────
+[authored]
+transport         = "extension-websocket"    # a WebSocket in the custom extension (browser CAN'T do raw TCP) — the swapped transport node vs Node-RED's ec-listener
+framing           = "blocks-or-extension"    # §1.6 4-byte-BE framing over the WS byte stream (in the extension; the length math can also be shown in blocks)
+dispatch          = "blocks"                  # §6.5 routing authored as custom-block procedures (define "dispatch frame"); handler resolution as an if/else-if ladder or a broadcast-by-path
+handshake         = "blocks"                  # §4.1 hello → authenticate as a block sequence; per-connection state in lists/variables
+handlers          = "blocks + broadcasts"     # each handler a custom block or a broadcast receiver ("when I receive handler:echo") — adding a handler = adding a receiver (the intuitive-handlers goal, block-native)
+visualization     = "stage"                   # the STAGE shows: handshake legs, frame in/out, dispatch path, capability verdict, established state (the deliverable)
+
+[error_model]
+style             = "status-envelope"        # blocks can't throw — errors are EXECUTE_RESPONSE error envelopes routed like any response (+ a visible red indicator on the stage)
+
+[async]
+style             = "broadcast-message"      # Scratch's native concurrency: broadcasts + "when I receive"; per-frame handling as message-passing (maps to §6.6 dispatch)
+
+[build]
+system            = "sb3 + esbuild-extension" # esbuild the TS codec → custom-extension .js; author the .sb3 (blocks). Load both in the TurboWarp editor/VM.
+editor            = "TurboWarp (turbowarp.org or turbowarp/desktop)"  # the visualization surface; desktop grants more (Node/socket) than browser
+headless_runner   = "scratch-vm + node (headless VM run for smoke/conformance)"  # TurboWarp's scratch-vm can run headless under Node for automated checks
+
+[packaging]
+target            = ".sb3 project + bundled custom-extension .js (+ optional WS↔TCP bridge)"
+license           = "Apache-2.0"
+publish           = "deferred"
+
+[container]
+toolchain         = "node24"                 # esbuild + scratch-vm + the bridge all run on node24. No new Containerfile expected.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFORMANCE — THE CRUX. TurboWarp is sandboxed → no raw TCP. The oracle is TCP.
+# ─────────────────────────────────────────────────────────────────────────────
+[conformance]
+oracle_reachable  = "via-bridge"             # NOT directly. Requires a WebSocket↔TCP MULTIPLEXING bridge (Node): the bridge LISTENs on TCP (the oracle dials it) and relays each TCP connection to the TurboWarp peer over WS (browser initiates the WS). Without the bridge: codec + smoke + visualization only (honest documented scope, not a failure).
+gate              = "validate-peer --profile core (only via the bridge)"
+bridge            = "src/ws-tcp-bridge.js"   # to author at S3/S4 if the oracle gate is pursued
+default_scope     = "visualization-first"    # the primary deliverable is the running visualization; the oracle gate is the harder, optional second path

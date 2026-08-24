@@ -1,0 +1,6 @@
+# Build outputs + deps (reproducible via `npm ci && npm run bundle`).
+src/node_modules/
+src/dist/
+# (the openable Scratch project lives at src/project/entity-core-peer.sb3 — committed.)
+# npm
+src/npm-debug.log

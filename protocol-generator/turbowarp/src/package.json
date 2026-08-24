@@ -1,0 +1,20 @@
+{
+  "name": "entity-core-protocol-turbowarp",
+  "version": "0.1.0-pre",
+  "private": true,
+  "description": "entity-core core-protocol peer authored as TurboWarp/Scratch visual blocks (peer #32, visualization-first). Codec/crypto/engine delegated to a browser bundle of the TypeScript peer; protocol logic + visualization authored as blocks.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "//": "esbuild pinned (S11 cool-down, >=30d). Bundles the browser-safe TS core into a self-contained custom-extension IIFE (no node deps).",
+  "devDependencies": {
+    "esbuild": "0.28.1",
+    "ws": "8.21.0"
+  },
+  "scripts": {
+    "bundle": "esbuild extension/ec-core-browser.js --bundle --format=iife --global-name=EntityCoreBundle --platform=browser --target=es2022 --outfile=dist/ec-core-browser.js",
+    "bundle:extension": "esbuild extension/ec-turbowarp-extension.js --bundle --format=iife --platform=browser --target=es2022 --outfile=dist/entitycore.js",
+    "bundle:utils": "esbuild extension/ec-utils-extension.js --bundle --format=iife --platform=browser --target=es2022 --outfile=dist/ecutils.js",
+    "bundle:sb3": "node project/build-sb3.mjs"
+  }
+}
