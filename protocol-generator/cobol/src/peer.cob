@@ -49,6 +49,37 @@ procedure division using lk-buf lk-off lk-found.
     goback.
 end program env-inc-off.
 
+*> ---- env-kind : classify an envelope root (§6.11 reentry pump) ------
+*> LK-KIND: 2 = EXECUTE_RESPONSE, 1 = EXECUTE, 0 = other. Called by the C
+*> reentry pump (ec_reentry) to recognize the awaited reply on the wire.
+identification division.
+program-id. env-kind.
+data division.
+working-storage section.
+01 root-off  pic 9(9) comp-5.
+01 root-fnd  pic 9(1).
+01 rtype     pic x(64).
+01 rtype-len pic 9(9) comp-5.
+01 t-exec    pic x(23) value "system/protocol/execute".
+01 t-resp    pic x(32) value "system/protocol/execute/response".
+linkage section.
+01 lk-buf  pic x(65535).
+01 lk-len  pic 9(9) comp-5.
+01 lk-kind pic 9(9) comp-5.
+procedure division using lk-buf lk-len lk-kind.
+    move 0 to lk-kind
+    call "env-root-off" using lk-buf root-off root-fnd
+    if root-fnd = 0 then goback end-if
+    call "ent-type" using lk-buf root-off rtype rtype-len
+    evaluate true
+        when rtype-len = 32 and rtype(1:32) = t-resp
+            move 2 to lk-kind
+        when rtype-len = 23 and rtype(1:23) = t-exec
+            move 1 to lk-kind
+    end-evaluate
+    goback.
+end program env-kind.
+
 *> ---- env-wrap : {root, included} envelope, canonicalized -----------
 *> LK-ROOT(1:LK-ROOT-LEN) is a wire entity; LK-INC(1:LK-INC-LEN) is an already-
 *> built CBOR map value (use map(0) 0xA0 for none). Output canonical frame payload.

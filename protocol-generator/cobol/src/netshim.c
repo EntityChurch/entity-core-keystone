@@ -162,6 +162,121 @@ static long be32(const unsigned char *p)
     return ((long)p[0] << 24) | ((long)p[1] << 16) | ((long)p[2] << 8) | p[3];
 }
 
+/* ── §6.11 transport reentry seam (§6.13(b) handler-initiated outbound) ───────
+ * The single-threaded poll host serves ONE outbound EXECUTE at a time on the
+ * slot whose inbound dispatch is currently running (g_active_slot, set by
+ * ec_serve around each dispatch call). ec_reentry writes the outbound frame and
+ * pumps the connection until the correlated EXECUTE_RESPONSE arrives; inbound
+ * EXECUTE frames read while awaiting the reply are queued and pushed back to the
+ * slot buffer so the main serve loop reprocesses them afterwards. Because only
+ * one outbound is ever in flight per slot, the awaited reply is simply the next
+ * EXECUTE_RESPONSE — no request_id map is needed. This is a spec-permitted
+ * impl-private mechanism (§6.11: "any mechanism with equivalent concurrent-
+ * dispatch semantics"); the validator's B-role echo reader services the outbound
+ * leg independently of its blocked callers, so there is no head-of-line deadlock,
+ * and the §6.11(c) per-request deadline is honored via the poll() timeout. */
+#define EC_REENTRY_TIMEOUT_MS 30000
+#define EC_QSLOTS 8
+
+static struct ec_slot *g_active_slot = 0;
+
+static int ec_write_all(int fd, const unsigned char *b, long n)
+{
+    long off = 0;
+    while (off < n) {
+        long w = (long)write(fd, b + off, (size_t)(n - off));
+        if (w <= 0) return -1;
+        off += w;
+    }
+    return 0;
+}
+
+/* Read exactly one length-prefixed frame from slot s into out[cap]. Consumes
+ * bytes already buffered in s->in first, then blocking-reads s->fd with a
+ * per-frame deadline. Returns payload length (>0), 0 clean-close, -1 error/
+ * oversize, -2 recv timeout (§6.11(c)). */
+static long ec_recv_frame(struct ec_slot *s, unsigned char *out, long cap)
+{
+    for (;;) {
+        if (s->have >= 4) {
+            long flen = be32(s->in);
+            if (flen < 0 || flen > EC_FRAMECAP || flen > cap) return -1;
+            if (s->have >= 4 + flen) {
+                memcpy(out, s->in + 4, (size_t)flen);
+                memmove(s->in, s->in + 4 + flen, (size_t)(s->have - 4 - flen));
+                s->have -= (4 + flen);
+                return flen;
+            }
+        }
+        struct pollfd pf;
+        pf.fd = s->fd; pf.events = POLLIN; pf.revents = 0;
+        int pr = poll(&pf, 1, EC_REENTRY_TIMEOUT_MS);
+        if (pr == 0) return -2;
+        if (pr < 0) return -1;
+        long r = (long)read(s->fd, s->in + s->have, (size_t)(sizeof(s->in) - s->have));
+        if (r <= 0) return 0;
+        s->have += r;
+    }
+}
+
+/* Prepend qlen queued framed bytes to the front of s->in so the main serve loop
+ * reprocesses them after the reentry returns. */
+static void ec_pushback(struct ec_slot *s, const unsigned char *q, long qlen)
+{
+    if (qlen <= 0) return;
+    if (s->have + qlen > (long)sizeof(s->in)) return;   /* defensive; test never hits */
+    memmove(s->in + qlen, s->in, (size_t)s->have);
+    memcpy(s->in, q, (size_t)qlen);
+    s->have += qlen;
+}
+
+/* ec_reentry — write one outbound EXECUTE frame on the active slot and return
+ * the correlated EXECUTE_RESPONSE payload. Called from the COBOL
+ * dispatch-outbound handler (§7a.2a). Returns response length (>0), or <=0 on
+ * failure (0 closed, -1 error, -2 recv timeout). */
+long ec_reentry(const unsigned char *out_frame, long out_len,
+                unsigned char *resp, long resp_cap)
+{
+    struct ec_slot *s = g_active_slot;
+    static unsigned char rframe[EC_FRAMECAP];
+    static unsigned char qbuf[EC_QSLOTS * (4 + EC_FRAMECAP)];
+    unsigned char hdr[4];
+    long qlen = 0;
+
+    if (!s || out_len <= 0 || out_len > EC_FRAMECAP) return -1;
+    hdr[0] = (unsigned char)((out_len >> 24) & 0xff);
+    hdr[1] = (unsigned char)((out_len >> 16) & 0xff);
+    hdr[2] = (unsigned char)((out_len >> 8) & 0xff);
+    hdr[3] = (unsigned char)(out_len & 0xff);
+    if (ec_write_all(s->fd, hdr, 4) != 0) return -1;
+    if (ec_write_all(s->fd, out_frame, out_len) != 0) return -1;
+
+    for (;;) {
+        long flen = ec_recv_frame(s, rframe, (long)sizeof(rframe));
+        if (flen <= 0) { ec_pushback(s, qbuf, qlen); return flen; }
+        {
+            int32_t klen = (int32_t)flen;
+            int kind = 0;
+            void *argv[3] = { rframe, &klen, &kind };
+            cob_call("env-kind", 3, argv);
+            if (kind == 2) {                       /* the awaited EXECUTE_RESPONSE */
+                if (flen > resp_cap) { ec_pushback(s, qbuf, qlen); return -1; }
+                memcpy(resp, rframe, (size_t)flen);
+                ec_pushback(s, qbuf, qlen);
+                return flen;
+            }
+        }
+        /* an interleaved inbound frame — queue it (re-framed) for pushback */
+        if (qlen + 4 + flen > (long)sizeof(qbuf)) { ec_pushback(s, qbuf, qlen); return -1; }
+        qbuf[qlen + 0] = (unsigned char)((flen >> 24) & 0xff);
+        qbuf[qlen + 1] = (unsigned char)((flen >> 16) & 0xff);
+        qbuf[qlen + 2] = (unsigned char)((flen >> 8) & 0xff);
+        qbuf[qlen + 3] = (unsigned char)(flen & 0xff);
+        memcpy(qbuf + qlen + 4, rframe, (size_t)flen);
+        qlen += 4 + flen;
+    }
+}
+
 /* Serve all connections arriving on listen_fd until it errors. */
 int ec_serve(int listen_fd)
 {
@@ -169,6 +284,7 @@ int ec_serve(int listen_fd)
     struct pollfd pfds[EC_MAXCONN + 1];
     int nslots = 0;
     unsigned char out[EC_FRAMECAP];
+    unsigned char framebuf[EC_FRAMECAP];
     unsigned char outhdr[4];
 
     for (;;) {
@@ -236,10 +352,20 @@ int ec_serve(int listen_fd)
                             break;
                         }
                         if (s->have < 4 + flen) break;          /* need more */
+                        /* Consume the frame from the slot buffer BEFORE dispatch, so a
+                         * §6.11 reentry (ec_reentry) invoked from inside the handler can
+                         * safely pump further frames on this same slot buffer while it
+                         * awaits its reply. g_active_slot lets ec_reentry find this slot. */
+                        memcpy(framebuf, s->in + 4, (size_t)flen);
+                        long consumed = 4 + flen;
+                        memmove(s->in, s->in + consumed, (size_t)(s->have - consumed));
+                        s->have -= consumed;
                         int32_t env_len = (int32_t)flen, out_len = 0;
                         char hasresp = '0';
-                        void *argv[6] = { s->conn, s->in + 4, &env_len, out, &out_len, &hasresp };
+                        g_active_slot = s;
+                        void *argv[6] = { s->conn, framebuf, &env_len, out, &out_len, &hasresp };
                         cob_call("dispatch", 6, argv);
+                        g_active_slot = 0;
                         if (hasresp == '1' && out_len > 0) {
                             outhdr[0] = (unsigned char)((out_len >> 24) & 0xff);
                             outhdr[1] = (unsigned char)((out_len >> 16) & 0xff);
@@ -250,10 +376,6 @@ int ec_serve(int listen_fd)
                                 closed = 1; break;
                             }
                         }
-                        /* shift the remaining bytes down */
-                        long consumed = 4 + flen;
-                        memmove(s->in, s->in + consumed, (size_t)(s->have - consumed));
-                        s->have -= consumed;
                     }
                 }
             }

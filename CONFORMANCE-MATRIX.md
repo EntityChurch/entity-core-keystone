@@ -2,9 +2,9 @@
 
 **The transparency contract for adopters.** Before you pull a generated peer, check its row here. A peer being a spec-version behind, or lacking Ed448 agility, or carrying a known gap, is a **documented, tracked state** — not a surprise. "This peer doesn't do X yet" lives here, in the open, with a tier that tells you when it'll be caught up.
 
-**Cohort:** 21 peers, all full S1→S5, `--profile core` **665·0F @ e8524ed** on one current oracle (`entity-core-go @e8524ed`, go HEAD). The whole cohort is normalized on a single oracle with uniform oracle-path defaults. (Build order: the original 15-peer cohort, then the two large-ecosystem adoption peers Rust + Python — the 16th + 17th generated — then the reach peers C++, Kotlin, PHP, Dart.)
-**Spec surface:** Entity Core **core floor stable v7.75 → v7.77** (core protocol; standard extensions are out of scope — every peer below is a *core* peer). Spec-data stamp remains **v7.75**; the oracle is the v7.77 reference impl, whose **core category set (`profile.go`) is byte-unchanged** from v7.75 — the v7.77 delta is entirely extension (relay/network/encryption/transport/peer-issued) + the V8-naming kebab fold (which every peer already satisfies).
-**Conformance gate:** `validate-peer --profile core` — the extension-free categories (`connectivity`, `encoding`, `type_system`, `origination`, `resource_bounds`, `concurrency`, + the §10.1 register / §7a conformance-handler gates). **All 21 peers are 0-FAIL on this gate.**
+**Cohort:** 22 peers, all full S1→S5, `--profile core` **0-FAIL**. Twenty-one are normalized at **665·0F @ e8524ed** (`entity-core-go @e8524ed`, go HEAD) with uniform oracle-path defaults; the 22nd, **COBOL** (the FFI-hybrid discovery peer), is **291·0F Result: PASS @ cc1970f** (`entity-core-go` public HEAD, one honest `t1_3_no_head_of_line` skip allow-listed). The `cc1970f` core gate is **functionally identical to the pinned `e8524ed`** — the only `profile.go` delta is a one-line comment reword from V8 release-prep (diff-verified; `74e04e3` vs `e09a865` differ only in that comment), so COBOL's `--profile core` verdict is on the same category set. (Build order: the original 15-peer cohort, then the two large-ecosystem adoption peers Rust + Python — the 16th + 17th generated — then the reach peers C++, Kotlin, PHP, Dart; COBOL the 22nd, closing the §6.11 handler-outbound-dispatch seam.) *A full-cohort re-normalization onto the public-HEAD oracle is tracked in §3.*
+**Spec surface:** Entity Core **v0.8.0 (V8)** core protocol (standard extensions are out of scope — every peer below is a *core* peer). Spec-data stamp is **v0.8.0** (`protocol-generator/shared/spec-data/v0.8.0/`). The **core wire contract is byte-unchanged across the V7→V8 cutover**: the folded 0.7.76/0.7.77 increments + the V8 de-versioning were verdict-timestamp determinism, extension-side type-path renames, and release-prep only — no core map-key or wire change (see `spec-data/v0.8.0/MANIFEST.md`) — so each peer's certification carries forward unchanged. The oracle is `entity-core-go` at go HEAD (`e8524ed`), whose core category set (`profile.go`) gates `--profile core`.
+**Conformance gate:** `validate-peer --profile core` — the extension-free categories (`connectivity`, `encoding`, `type_system`, `origination`, `resource_bounds`, `concurrency`, + the §10.1 register / §7a conformance-handler gates). **All 22 peers are 0-FAIL on this gate.**
 
 > **Reading the conformance numbers.** Every peer is now certified on the **same** oracle (`e8524ed`): **665 total · 0 FAIL**. The `passed` count varies 291–293 and `skip` 95–96 purely from extension *matched-if-present* WARN/PASS and auto-allowlisted skips — the **core verdict is uniform: 0 FAIL, 0 core-floor gap**. (Historical per-oracle totals — 576 @ `b30a589`, 653 @ `75c532e`/`33f35fd` — are superseded by this normalization; see the oracle-vendoring policy in `research/diagnostics/oracle-vendoring-policy.md` for why the totals moved without any verdict changing.)
 
@@ -14,27 +14,28 @@
 
 | Peer | Tier | Spec | Oracle commit | `--profile core` | Codec | Crypto floor (Ed25519 + SHA-256) | Ed448 / SHA-384 agility | Publish |
 |------|:----:|:----:|---------------|:----------------:|-------|----------------------------------|-------------------------|---------|
-| **OCaml** | **1** | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — mirage-crypto-ec + digestif | **FFI-hybrid** (opt-in `entitycore_agility`) | opam, `0.1.0-pre` |
-| **Swift** | **1** | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — swift-crypto | deferred (→ FFI when scoped) | SPM, `0.1.0-pre` |
-| **Haskell** | **1** | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — crypton | **native** — crypton (Ed448) | Cabal, `0.1.0-pre` |
-| **Go** (clean-room) | **1** | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — stdlib `crypto/ed25519` | deferred (→ FFI when scoped) | Go module, `0.1.0-pre` |
-| **Lean** | **1** | v7.77 | `e8524ed` | 665 · **0F** | **pure-Lean proven core** + FFI crypto | **FFI** — C-ABI `ec_ed25519_*` | FFI (deferred) | Lake, `0.1.0-pre` |
-| **C#** | 2 | v7.77 | `e8524ed` | 665 · **0F** | native (Cbor Ctap2 + handroll) | native — NSec | managed — BouncyCastle | NuGet, `0.1.0-pre` |
-| **TypeScript** | 2 | v7.77 | `e8524ed` | 665 · **0F** | native (cborg + handroll) | native — @noble | managed — @noble | npm, `0.1.0-pre` |
-| **Java** | 2 | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — JDK SunEC | JDK / BouncyCastle | Maven, `0.1.0-pre` |
-| **Kotlin** | 2 | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — JDK SunEC | deferred (→ JDK SunEC / BouncyCastle) | Gradle→Maven Central, `0.1.0-pre` |
-| **Elixir** | 2 | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — OTP `:crypto` | **native** — OTP `:crypto` | Hex, `0.1.0-pre` |
-| **Common Lisp** | 2 | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — ironclad (pure-Lisp) | **native** — ironclad (pure-Lisp) | ASDF/Quicklisp, `0.1.0` |
-| **Rust** (clean-room) | 2 | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — ed25519-dalek + sha2 | deferred (→ FFI when scoped) | crates.io, `0.1.0-pre` |
-| **Python** (clean-room) | 2 | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — `cryptography` (OpenSSL) | **native** — `cryptography` (Ed448) | PyPI, `0.1.0` |
-| **Zig** | 3 | v7.77 | `e8524ed` | 665 · **0F** | native (std-only) | native — `std.crypto` | deferred | source, `0.1.0-pre` |
-| **C** | 3 | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — libsodium | deferred (libsodium has no Ed448) | `make dist` + pkg-config |
-| **C++** | 3 | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — libsodium | deferred (libsodium has no Ed448) | CMake pkg + vcpkg + conan, `0.1.0-pre` |
-| **Ada** | 3 | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — libsodium (C binding) | deferred (libsodium has no Ed448) | Alire (optional), `0.1.0-pre` |
-| **Ruby** | 3 | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — stdlib `openssl` | **native** — stdlib `openssl` | RubyGems, `0.1.0.pre` |
-| **Prolog** | 3 | v7.77 | `e8524ed` | 665 · **0F** | **FFI** (C-ABI) | **FFI** — C-ABI (library(crypto) has no Ed25519) | FFI | SWI pack, `0.1.0` |
-| **PHP** | 3 | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — ext-sodium (libsodium) | deferred (ext-sodium has no Ed448; → FFI) | Composer, `0.1.0-pre` |
-| **Dart** | 3 | v7.77 | `e8524ed` | 665 · **0F** | native hand-rolled | native — cryptography_plus (pure-Dart) | deferred (→ FFI when scoped) | pub.dev, `0.1.0-pre` |
+| **OCaml** | **1** | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — mirage-crypto-ec + digestif | **FFI-hybrid** (opt-in `entitycore_agility`) | opam, `0.1.0-pre` |
+| **Swift** | **1** | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — swift-crypto | deferred (→ FFI when scoped) | SPM, `0.1.0-pre` |
+| **Haskell** | **1** | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — crypton | **native** — crypton (Ed448) | Cabal, `0.1.0-pre` |
+| **Go** (clean-room) | **1** | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — stdlib `crypto/ed25519` | deferred (→ FFI when scoped) | Go module, `0.1.0-pre` |
+| **Lean** | **1** | v0.8.0 | `e8524ed` | 665 · **0F** | **pure-Lean proven core** + FFI crypto | **FFI** — C-ABI `ec_ed25519_*` | FFI (deferred) | Lake, `0.1.0-pre` |
+| **C#** | 2 | v0.8.0 | `e8524ed` | 665 · **0F** | native (Cbor Ctap2 + handroll) | native — NSec | managed — BouncyCastle | NuGet, `0.1.0-pre` |
+| **TypeScript** | 2 | v0.8.0 | `e8524ed` | 665 · **0F** | native (cborg + handroll) | native — @noble | managed — @noble | npm, `0.1.0-pre` |
+| **Java** | 2 | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — JDK SunEC | JDK / BouncyCastle | Maven, `0.1.0-pre` |
+| **Kotlin** | 2 | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — JDK SunEC | deferred (→ JDK SunEC / BouncyCastle) | Gradle→Maven Central, `0.1.0-pre` |
+| **Elixir** | 2 | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — OTP `:crypto` | **native** — OTP `:crypto` | Hex, `0.1.0-pre` |
+| **Common Lisp** | 2 | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — ironclad (pure-Lisp) | **native** — ironclad (pure-Lisp) | ASDF/Quicklisp, `0.1.0` |
+| **Rust** (clean-room) | 2 | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — ed25519-dalek + sha2 | deferred (→ FFI when scoped) | crates.io, `0.1.0-pre` |
+| **Python** (clean-room) | 2 | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — `cryptography` (OpenSSL) | **native** — `cryptography` (Ed448) | PyPI, `0.1.0` |
+| **Zig** | 3 | v0.8.0 | `e8524ed` | 665 · **0F** | native (std-only) | native — `std.crypto` | deferred | source, `0.1.0-pre` |
+| **C** | 3 | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — libsodium | deferred (libsodium has no Ed448) | `make dist` + pkg-config |
+| **C++** | 3 | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — libsodium | deferred (libsodium has no Ed448) | CMake pkg + vcpkg + conan, `0.1.0-pre` |
+| **Ada** | 3 | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — libsodium (C binding) | deferred (libsodium has no Ed448) | Alire (optional), `0.1.0-pre` |
+| **Ruby** | 3 | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — stdlib `openssl` | **native** — stdlib `openssl` | RubyGems, `0.1.0.pre` |
+| **Prolog** | 3 | v0.8.0 | `e8524ed` | 665 · **0F** | **FFI** (C-ABI) | **FFI** — C-ABI (library(crypto) has no Ed25519) | FFI | SWI pack, `0.1.0` |
+| **PHP** | 3 | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — ext-sodium (libsodium) | deferred (ext-sodium has no Ed448; → FFI) | Composer, `0.1.0-pre` |
+| **Dart** | 3 | v0.8.0 | `e8524ed` | 665 · **0F** | native hand-rolled | native — cryptography_plus (pure-Dart) | deferred (→ FFI when scoped) | pub.dev, `0.1.0-pre` |
+| **COBOL** | 3 | v0.8.0 | `cc1970f` (≡`e8524ed`) | 291 · **0F** | **FFI-hybrid** (COBOL value-codec + C-ABI) | **FFI** — `libentitycore_codec` (libsodium) | deferred (libsodium has no Ed448) | `make dist`, `0.1.0-pre` |
 
 **Crypto-availability tiers** (the per-ecosystem story an adopter most needs): `native` = ships with runtime/stdlib or an in-language audited lib, no FFI; `managed` = a managed-code crypto package on the language's package manager; `FFI-hybrid` = native floor, Ed448 via `libentitycore_codec`; `FFI` = whole crypto surface via C-ABI; `deferred` = Ed25519+SHA-256 floor only, Ed448 not yet wired.
 
@@ -66,6 +67,7 @@ Feature parity is **not** uniform — the 5 T2 peers (C, Ada, Ruby, Prolog, Go) 
 | Python (clean-room) | 2 | `--name` | ✅ | ✅ genuine + accept-path **ran** (oracle `33f35fd`) | threads + explicit Lock (GIL-aware) | dynamic / duck-typed |
 | PHP | 3 | `--name` | ✅ | ✅ genuine + accept-path **ran** | **single-thread `stream_select` event loop (structural)** | dynamic / **event-loop store-safety** |
 | Dart | 3 | `--name` | ✅ | ✅ genuine + accept-path **ran** | event-loop confinement per isolate (structural) | **sealed-Result + Future / BigInt-web** |
+| COBOL | 3 | `--name` | ✅ | present (11/0 pass) — ✅verify genuine | **single-threaded `poll()` loop + §6.11 reentry pump** | **FFI-hybrid / GnuCOBOL PIC records / COMP-3** |
 
 ¹ "Genuine" = real §3.6 M3 (structure) + M4 (distinct-signer threshold) + M6 (local ∈ signers) with a positive accept-path test, per the multisig cohort closeout. The original 10-peer cohort was verified genuine + accept-path-GREEN against oracle `33f35fd`. The 5 T2 peers carry multisig code but their genuine-vs-frame-only status was **not** independently re-verified in this consolidation — flagged ✅verify in §3. (Multisig is not in `--profile core`, so this does not affect any peer's 0-FAIL.)
 
@@ -81,9 +83,10 @@ Feature parity is **not** uniform — the 5 T2 peers (C, Ada, Ruby, Prolog, Go) 
 |------|-------|----------|-------|
 | ~~**Oracle normalization**~~ ✅ DONE | whole cohort | — | **CLOSED.** All 17 peers re-run on one oracle `entity-core-go @e8524ed` (go HEAD) → uniform **665·0F**. Procedure + the when/why rule now live in `research/diagnostics/oracle-vendoring-policy.md`. (The 649-vs-653 phantom-build lesson is captured there as provenance hygiene: build once into repo-root, never per-peer.) |
 | ~~**run-s4 oracle-path defaults**~~ ✅ DONE | C, Ada, Ruby, Prolog (+ Rust, Python) | — | **CLOSED.** All `run-s4.sh` + `run-origination-core.sh` defaults normalized to the repo-root `/work/output/s4-oracles/…` convention; they now run with no `ORACLE` override. (Lean keeps `/repo/output/…` by its distinct `-v "$PWD":/repo` mount convention — correct as-is.) |
+| **Re-normalize cohort onto public-HEAD oracle** | whole cohort | Medium | The public `entity-core-go` mirror rewrote history — the pinned `e8524ed` no longer resolves; `oracle-bootstrap.sh` falls back to public HEAD `cc1970f`. Its core gate is **diff-verified functionally identical** (comment-only `profile.go` reword; `74e04e3` vs pinned `e09a865`), so verdicts carry. COBOL is already certified on `cc1970f`; re-run the other 21 on it (or re-pin `oracle-pin.env`) for uniform provenance. **Also: harden the core-gate anchor** — hash the normalized category set, not raw `profile.go`, so a comment reword stops false-alarming "core gate moved." |
 | **Scorecard label fix** `62044c5 → b30a589` | provenance | Low | A-C-008 / A-ADA-013: `62044c5` is off-by-one; `b30a589` is the true v7.75 baseline where `resource_bounds` activates under `--profile core`. |
 | **CLI normalization** (`--name` on C, Ada) | T2 | Medium | C/Ada expose identity via `-seed` only; standardize on `--name` persistent-identity to match the cohort + enable the multisig accept-path. |
-| **Verify genuine multisig** on T2 peers | T2 (C, Ada, Ruby, Prolog, Go) | Medium | Confirm §3.6 K-of-N is genuine (not frame-only) + add accept-path tests, matching the original-10 closeout. |
+| **Verify genuine multisig** on later-folded peers | C, Ada, Ruby, Prolog, Go, COBOL | Medium | Confirm §3.6 K-of-N is genuine (not frame-only) + add accept-path tests, matching the original-10 closeout. |
 | **Ed448 agility** for deferred peers | Swift, Zig, C, Ada, Go | Demand-driven | Floor (Ed25519+SHA-256) ships; Ed448 via the OCaml FFI-hybrid pattern or native lib when an adopter needs it. |
 | **Publish** (registry uploads) | all | Demand-driven | All parked at `0.1.0-pre`; per-ecosystem publish is an operator step gated on a community pull. |
 

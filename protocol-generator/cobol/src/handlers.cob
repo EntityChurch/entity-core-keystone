@@ -1443,8 +1443,53 @@ identification division.
 program-id. dispatch-outbound-handler.
 data division.
 working-storage section.
-01 errc   pic x(32).
-01 errcl  pic 9(9) comp-5.
+*> --- inbound params extraction (params entity data map) ---
+01 poff   pic 9(9) comp-5.  01 pfd pic 9(1).
+01 toff   pic 9(9) comp-5.  01 tfd pic 9(1).
+01 target pic x(900).       01 target-len pic 9(9) comp-5.
+01 op     pic x(64).        01 op-len pic 9(9) comp-5.
+01 voff   pic 9(9) comp-5.  01 vfd pic 9(1).
+01 vend   pic 9(9) comp-5.
+01 val    pic x(60000).     01 val-len pic 9(9) comp-5.
+01 st     pic s9(9) comp-5.
+01 one    pic 9(9) comp-5 value 1.
+01 l-prim pic 9(9) comp-5 value 13.
+01 l-exec pic 9(9) comp-5 value 23.
+01 t-prim pic x(13) value "primitive/any".
+01 t-exec pic x(23) value "system/protocol/execute".
+*> --- outbound EXECUTE build ---
+01 pent   pic x(60000).  01 pent-len pic 9(9) comp-5.  01 pent-hash pic x(33).
+01 dmap   pic x(60000).  01 dmap-len pic 9(9) comp-5.
+01 xent   pic x(60000).  01 xent-len pic 9(9) comp-5.  01 xent-hash pic x(33).
+01 emptinc pic x(8).     01 emptinc-len pic 9(9) comp-5.
+01 oframe pic x(65535).  01 oframe-len pic 9(9) comp-5.
+01 reqctr pic 9(9) comp-5 value 0.
+01 num    pic 9(9).
+01 reqid  pic x(32).     01 reqid-len pic 9(9) comp-5.
+*> --- reentry reply parse ---
+01 resp   pic x(65535).  01 resp-len pic s9(18) comp-5.
+01 cap65  pic 9(9) comp-5 value 65535.
+01 rroot  pic 9(9) comp-5.  01 rrfd pic 9(1).
+01 dsoff  pic 9(9) comp-5.  01 dsfd pic 9(1).  01 dstatus pic 9(9) comp-5.
+01 droff  pic 9(9) comp-5.  01 drfd pic 9(1).  01 drend pic 9(9) comp-5.
+01 dres   pic x(60000).  01 dres-len pic 9(9) comp-5.
+*> --- outer DispatchOutboundResult entity {status,result} ---
+01 imap   pic x(60000).  01 imap-len pic 9(9) comp-5.
+01 outent pic x(60000).  01 outent-len pic 9(9) comp-5.  01 outent-hash pic x(33).
+01 dstat18 pic 9(18) comp-5.
+01 n2 pic 9(18) comp-5 value 2.
+01 n4 pic 9(18) comp-5 value 4.
+01 n0 pic 9(18) comp-5 value 0.
+*> --- key names ---
+01 k-params pic x(6)  value "params".      01 k-params-len pic 9(9) comp-5 value 6.
+01 k-target pic x(6)  value "target".      01 k-target-len pic 9(9) comp-5 value 6.
+01 k-op     pic x(9)  value "operation".   01 k-op-len pic 9(9) comp-5 value 9.
+01 k-value  pic x(5)  value "value".       01 k-value-len pic 9(9) comp-5 value 5.
+01 k-rid    pic x(10) value "request_id".  01 k-rid-len pic 9(9) comp-5 value 10.
+01 k-uri    pic x(3)  value "uri".         01 k-uri-len pic 9(9) comp-5 value 3.
+01 k-status pic x(6)  value "status".      01 k-status-len pic 9(9) comp-5 value 6.
+01 k-result pic x(6)  value "result".      01 k-result-len pic 9(9) comp-5 value 6.
+01 errc   pic x(32).  01 errcl pic 9(9) comp-5.
 linkage section.
 01 lk-env pic x(65535).
 01 lk-rootoff pic 9(9) comp-5.
@@ -1453,8 +1498,101 @@ linkage section.
 01 lk-reslen pic 9(9) comp-5.
 01 lk-reshash pic x(33).
 procedure division using lk-env lk-rootoff lk-status lk-res lk-reslen lk-reshash.
-    move 503 to lk-status
-    move "no_outbound_seam" to errc move 16 to errcl
-    call "error-result" using errc errcl lk-res lk-reslen lk-reshash
+    *> 1. locate the params entity, extract target/operation/value
+    call "ent-field" using lk-env lk-rootoff k-params k-params-len poff pfd
+    if pfd = 0 then perform bad-params goback end-if
+    call "ent-field" using lk-env poff k-target k-target-len toff tfd
+    if tfd = 0 then perform bad-params goback end-if
+    call "read-text" using lk-env toff target target-len
+    call "ent-field" using lk-env poff k-op k-op-len voff vfd
+    if vfd = 0 then perform bad-params goback end-if
+    call "read-text" using lk-env voff op op-len
+    call "ent-field" using lk-env poff k-value k-value-len voff vfd
+    if vfd = 0 then perform bad-params goback end-if
+    move voff to vend
+    call "cbor-skip" using lk-env vend st
+    compute val-len = vend - voff
+    move lk-env(voff:val-len) to val(1:val-len)
+
+    *> 2. wrap `value` as the outbound params entity (primitive/any)
+    call "b-entity" using t-prim l-prim val val-len pent pent-len pent-hash st
+    if st not = 0 then perform bad-params goback end-if
+
+    *> 3. fresh per-reentry request_id
+    add 1 to reqctr
+    move reqctr to num
+    move "cbl-re-" to reqid(1:7)
+    move num to reqid(8:9)
+    move 16 to reqid-len
+
+    *> 4. build the outbound EXECUTE {request_id,uri=target,operation,params}
+    move 0 to dmap-len
+    call "b-map"  using dmap dmap-len n4
+    call "b-text" using dmap dmap-len k-rid k-rid-len
+    call "b-text" using dmap dmap-len reqid reqid-len
+    call "b-text" using dmap dmap-len k-uri k-uri-len
+    call "b-text" using dmap dmap-len target target-len
+    call "b-text" using dmap dmap-len k-op k-op-len
+    call "b-text" using dmap dmap-len op op-len
+    call "b-text" using dmap dmap-len k-params k-params-len
+    call "b-raw"  using dmap dmap-len pent one pent-len
+    call "b-entity" using t-exec l-exec dmap dmap-len xent xent-len xent-hash st
+    if st not = 0 then perform bad-params goback end-if
+
+    *> 5. wrap in an envelope {root, included:{}} -> outbound frame payload
+    move 0 to emptinc-len
+    call "b-map" using emptinc emptinc-len n0
+    call "env-wrap" using xent xent-len emptinc emptinc-len oframe oframe-len
+
+    *> 6. §6.11 reentry: write the frame + await the correlated EXECUTE_RESPONSE
+    call "ec_reentry" using
+        by reference oframe(1:oframe-len) by value oframe-len
+        by reference resp by value cap65 returning resp-len
+    if resp-len <= 0
+        move 503 to lk-status
+        move "reentry_dispatch_failed" to errc move 23 to errcl
+        call "error-result" using errc errcl lk-res lk-reslen lk-reshash
+        goback
+    end-if
+
+    *> 7. parse the downstream EXECUTE_RESPONSE {status, result}
+    call "env-root-off" using resp rroot rrfd
+    if rrfd = 0 then perform reentry-bad goback end-if
+    move 200 to dstatus
+    call "ent-field" using resp rroot k-status k-status-len dsoff dsfd
+    if dsfd = 1 then call "read-uint" using resp dsoff dstatus end-if
+    call "ent-field" using resp rroot k-result k-result-len droff drfd
+    if drfd = 0 then perform reentry-bad goback end-if
+    move droff to drend
+    call "cbor-skip" using resp drend st
+    compute dres-len = drend - droff
+    move resp(droff:dres-len) to dres(1:dres-len)
+
+    *> 8. pack §7a.1 result: entity(primitive/any, {status, result})
+    move 0 to imap-len
+    call "b-map"  using imap imap-len n2
+    call "b-text" using imap imap-len k-result k-result-len
+    call "b-raw"  using imap imap-len dres one dres-len
+    call "b-text" using imap imap-len k-status k-status-len
+    move dstatus to dstat18
+    call "b-uint" using imap imap-len dstat18
+    call "b-entity" using t-prim l-prim imap imap-len
+        outent outent-len outent-hash st
+    if st not = 0 then perform reentry-bad goback end-if
+
+    move outent(1:outent-len) to lk-res(1:outent-len)
+    move outent-len to lk-reslen
+    move outent-hash to lk-reshash
+    move 200 to lk-status
     goback.
+
+bad-params.
+    move 400 to lk-status
+    move "invalid_params" to errc move 14 to errcl
+    call "error-result" using errc errcl lk-res lk-reslen lk-reshash.
+
+reentry-bad.
+    move 502 to lk-status
+    move "protocol_error" to errc move 14 to errcl
+    call "error-result" using errc errcl lk-res lk-reslen lk-reshash.
 end program dispatch-outbound-handler.

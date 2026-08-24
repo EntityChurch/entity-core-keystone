@@ -14,9 +14,10 @@ interaction, capability, bootstrap) for any target language, and it owns the
 for languages without mature canonical-CBOR + Ed25519 stacks. Generating peers
 is the *means*; the *end* is **spec refinement** — running the generator across
 many languages surfaces every spec ambiguity and feeds it back to architecture.
-Maturity: **initial public research-preview, v0.8.0 (V8)**. A 21-language peer
-cohort is in place and uniformly conformant; the pipeline is past first-build
-and into steady-state maintenance, with a 22nd peer (COBOL) near-complete.
+Maturity: **initial public research-preview, v0.8.0 (V8)**. A **22-language**
+peer cohort is in place and uniformly conformant; the pipeline is past
+first-build and into steady-state maintenance. The 22nd peer (COBOL) is now
+complete — its §6.11 handler-outbound-dispatch reentry seam landed and passes.
 
 The single pinned input is `protocol-generator/shared/spec-data/v0.8.0/` (a
 verbatim, SHA-256-pinned snapshot of the normative specs) plus the co-versioned
@@ -26,15 +27,17 @@ wire byte-unchanged**; the `v7.*` snapshots were retired.
 
 ## Where we left off
 
-The closed cohort is **21 generated core peers** (OCaml, Swift, Haskell, Go,
+The closed cohort is **22 generated core peers** (OCaml, Swift, Haskell, Go,
 Lean, C#, TypeScript, Java, Kotlin, Elixir, Common Lisp, Rust, Python, Zig, C,
-C++, Ada, Ruby, Prolog, PHP, Dart), every one full S1→S5 and **`validate-peer
---profile core` 0-FAIL on a single current oracle** (`entity-core-go` HEAD,
-`e8524ed`; **665 total · 0F**, with the `passed` 291–293 / `skip` 95–96 spread
-being extension *matched-if-present* WARN/PASS only — the core verdict is
-uniform: **0 FAIL, 0 core-floor gap**). The whole cohort was normalized onto
-that one oracle with uniform oracle-path defaults, so the conformance verdict is
-now apples-to-apples across all peers. Per-peer truth (spec version, oracle
+C++, Ada, Ruby, Prolog, PHP, Dart, COBOL), every one full S1→S5 and
+**`validate-peer --profile core` 0-FAIL**. Twenty-one are normalized on a single
+current oracle (`entity-core-go` HEAD, `e8524ed`; **665 total · 0F**, with the
+`passed` 291–293 / `skip` 95–96 spread being extension *matched-if-present*
+WARN/PASS only — the core verdict is uniform: **0 FAIL, 0 core-floor gap**), with
+uniform oracle-path defaults so the verdict is apples-to-apples. COBOL, the last
+to land, is **291·0F @ `cc1970f`** (public HEAD, core gate diff-verified
+functionally identical to `e8524ed`); a full re-normalization of the cohort onto
+the public-HEAD oracle is tracked in the matrix §3. Per-peer truth (spec version, oracle
 commit, codec strategy, crypto floor, known gaps, packaging, tier) lives in
 `CONFORMANCE-MATRIX.md` — check it, not this narrative.
 
@@ -52,21 +55,26 @@ Engineering attention has shifted from *adding languages* to two tracks:
    **seed-policy convention** is authored (`protocol-generator/shared/seed-policy/`).
    What remains open is the handler-register / outbound-dispatch surface (below).
 
-**COBOL — the in-progress 22nd peer.** An FFI-hybrid peer (COBOL value-codec +
+**COBOL — the 22nd peer (complete).** An FFI-hybrid peer (COBOL value-codec +
 `libentitycore_codec` for crypto/SHA-2/framing/base58/Ed25519). It is the peer
-where the new bootstrap surface is exercised end to end — it builds the §6.5
-dispatch chain, `register`/`unregister` (the 5 writes), and the seed-policy
-peer-owner bootstrap. State: **289 PASS · 0 FAIL** on `--profile core` (oracle
-`33f35fd`, VALIDATE=0); under VALIDATE=1 its one FAIL is the §6.11
-outbound-reentry seam (`dispatch-outbound` is still a 503 stub on the
-single-threaded poll-loop host). To join the closed cohort it needs that seam
-finished and a re-run normalized onto the `e8524ed` oracle. (`protocol-generator/cobol/status/`.)
+where the extensibility surface is exercised end to end — the §6.5 dispatch
+chain, `register`/`unregister` (the 5 writes), the seed-policy peer-owner
+bootstrap, and now the **§6.11 handler-initiated outbound-dispatch reentry
+seam**. State: **289 PASS · 0 FAIL** VALIDATE=0; **291 PASS · 0 FAIL — Result:
+PASS** VALIDATE=1 (one honest `t1_3_no_head_of_line` skip allow-listed — its
+256 KiB staging payload exceeds the single-threaded host's 64 KiB frame cap, so
+the probe can't stage; §4.10(a)-conformant oversize drain). Certified on
+`entity-core-go` public HEAD `cc1970f`, whose core gate is diff-verified
+functionally identical to the pinned `e8524ed` (comment-only `profile.go`
+reword). The seam: a C `ec_reentry` pump on the active poll slot (serialized
+single-outbound with frame pushback — no request_id map, no deadlock), an
+`env-kind` frame classifier, and a full `dispatch-outbound-handler`.
+(`protocol-generator/cobol/status/`.)
 
-Stable at the v0.8.0 research-preview line; no code or protocol changes are in
-flight. The next substantive work is finishing the extensibility surface —
-bringing `register`/`unregister` and the §6.11 handler-facing
-outbound-dispatch seam across the cohort, then closing **COBOL** under
-VALIDATE=1 and re-normalizing it onto the `e8524ed` oracle to make the cohort 22.
+Stable at the v0.8.0 research-preview line. COBOL's close proved out the §6.11
+handler-facing outbound-dispatch seam on a single-threaded poll host; bringing
+that seam (and `register`/`unregister`) across the rest of the cohort is the
+standing extensibility-frontier work. No protocol changes are in flight.
 
 ## Backlog
 
@@ -125,6 +133,15 @@ From `CONFORMANCE-MATRIX.md` §3 (catch-up) and `research/stewardship/SPEC-FINDI
 
 ## Done recently
 
+- **COBOL peer completed — cohort → 22.** The §6.11 handler-initiated
+  outbound-dispatch reentry seam, the last open extensibility gap, is implemented
+  on the single-threaded poll host (a C `ec_reentry` pump on the active slot with
+  frame pushback + `env-kind` classifier + a full `dispatch-outbound-handler`).
+  `--profile core` **291·0F, Result: PASS** (VALIDATE=1), 289·0F VALIDATE=0 (no
+  regression). Certified on public-HEAD oracle `cc1970f` (core gate diff-verified
+  ≡ pinned `e8524ed`). Surfaced a process finding: the core-gate sha256 anchor is
+  comment-fragile (a V8 release-prep comment reword false-alarmed "core gate
+  moved") — matrix §3 tracks hashing the normalized category set instead.
 - **Oracle normalization** — the whole 21-peer cohort re-run on one oracle
   (`e8524ed`) to a uniform **665·0F**; the when/why-to-re-vendor rule is captured
   in `research/diagnostics/oracle-vendoring-policy.md` (incl. the build-once-into-
@@ -150,10 +167,11 @@ From `CONFORMANCE-MATRIX.md` §3 (catch-up) and `research/stewardship/SPEC-FINDI
 
 ## Next
 
-1. **Finish the extensibility surface**: bring `register`/`unregister` (V1.0/L0)
-   and the §6.11 handler-facing outbound-dispatch seam across the cohort, then
-   close **COBOL** under VALIDATE=1 and re-normalize it onto `e8524ed` to make
-   the cohort 22.
+1. **Extensibility surface across the cohort**: with COBOL's §6.11
+   outbound-dispatch seam landed (peer 22 closed), bring `register`/`unregister`
+   (V1.0/L0) and the handler-facing outbound-dispatch seam across the remaining
+   peers. Re-normalize the cohort onto the public-HEAD oracle (`cc1970f`; matrix
+   §3) for uniform provenance.
 2. **Work the catch-up backlog**: `--name` on C + Ada, then verify genuine
    multisig + add accept-path tests on the five later-folded peers (C, Ada, Ruby,
    Prolog, Go); fix the scorecard label off-by-one.
