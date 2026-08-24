@@ -42,9 +42,11 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 # `[text](target)` — target up to the first '#', ')' or whitespace.
 LINK = re.compile(r"\[[^\]]*\]\(\s*([^)\s#]+)(?:#[^)]*)?\s*\)")
 
-# Skipped wholesale: the injected ecosystem ADRs are byte-identical copies authored in
-# another repo, where their relative links resolve. They are undeclared and never publish,
-# and editing them is forbidden — so their links are not ours to fix or to gate.
+# Skipped wholesale: the ecosystem ADRs are byte-identical copies of files authored in
+# another repo, where their relative links resolve. They are undeclared, they strip at
+# release by standing ruling, and editing them here is forbidden — so their links are
+# neither ours to fix nor a public reader's to follow. (Hand-synced; there is no automated
+# transport, and that is deliberate rather than pending.)
 SKIP_PREFIXES = ("docs/adr/ecosystem/",)
 
 

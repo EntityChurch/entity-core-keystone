@@ -7,13 +7,28 @@
 # alone" — it is "removed from the public tree." The scope is exact and worth
 # knowing, because it decides what a mistake here can destroy:
 #
-#   * loose TOP-LEVEL prose (`.md .markdown .rst .txt .adoc`, no `/` in the path) —
-#     droppable. Top-level non-prose (LICENSE, NOTICE, VERSION, Makefile) is safe.
-#   * anything under a doc-root PREFIX — `docs/ research/ reviews/ status/
-#     validation/ stewardship/ proposals/ notes/ handoffs/ audits/ design/ …` —
-#     droppable regardless of extension. Prefix means at the START of the path, so
+#   * ONLY PROSE IS EVER DROPPED — `.md .markdown .rst .txt .adoc`, plus `.patch`
+#     and `.diff` (records, not inputs). A `.py`, `.sh`, `.cbor`, `.json` or any
+#     source file is NEVER dropped, wherever it sits.
+#   * ...and only when that prose is either LOOSE AT THE TOP LEVEL (no `/` in the
+#     path) or under a doc-root PREFIX: `docs/ doc/ reviews/ review/ research/
+#     explorations/ exploration/ proposals/ proposal/ validation/ stewardship/
+#     status/ reports/ report/ notes/ handoffs/ handoff/ audits/ audit/ planning/
+#     design/ designs/`. Prefix means at the START of the path, so
 #     `protocol-generator/<lang>/status/*.md` is NOT in scope and never has been.
-#   * everything else — source, configs, vectors, spec-data — always kept.
+#   * everything else is always kept.
+#
+# ** CORRECTED 2026-08-24. This header said "droppable REGARDLESS OF EXTENSION." **
+# That was true of the tool when written and is now false: `canon-filter` was fixed
+# on 2026-08-23 to prose-only, because the old rule shipped an `entity-core-go`
+# mirror that FAILED ITS OWN TEST SUITE on a clean clone — it had stripped four
+# conformance `.cbor` vectors and a `.json` baseline that published code reads,
+# purely because they were filed under `docs/validation/`. Location is not function.
+# Verified here by reading `internal/canon/canon.go` (`if !proseExt[ext] { return
+# nil }`), not by inference and not from a summary. Consequence for us: of the four
+# diagnostics moved out of `research/` on 2026-08-23, only the `.md` one was ever at
+# risk; the `.sh`/`.py` pair was already safe. The move stands — they belong with
+# the work they support — but the REASON recorded for it was wrong.
 #
 # `README.md` is force-kept by the tool even if omitted. `CANONICAL-DOCS.toml`
 # keeps itself.
@@ -47,9 +62,18 @@
 # (This header asserted the answer twice in opposite directions inside a week. Both times the
 # rule lived only in a comment here. It is now in an ADR, which is where it should have been.)
 #
-# `docs/adr/ecosystem/` is injected and read-only ([ADR-0030]) and is deliberately
-# NOT declared. `WORKSTREAMS.md` stays undeclared too — ephemeral steward planning,
-# honest absence per [ADR-0012]; the README's three-arms section conveys the shape.
+# ** THE ECOSYSTEM ADRs DO NOT PUBLISH — standing operator ruling, 2026-08-24. **
+# Every file under `docs/adr/` is deliberately NOT declared and strips at release. If a
+# release simulation reports all 33 as dropped, that is the correct answer, not a finding.
+# Citing `[ADR-NNNN]` by NUMBER in published prose stays fine — the number references a
+# decision, not a promise of a file — but published prose must never send a reader to the
+# PATH, because that directory does not exist in the mirror. (There is also no automated
+# transport for the copies: [ADR-0030] specified injection, was executed and retracted, and
+# the question is blocked behind a decision on publishing ADRs at all. We hand-sync and say
+# so in the commit message. Do not build a local mechanism for it.)
+#
+# `WORKSTREAMS.md` stays undeclared too — ephemeral steward planning, honest absence per
+# [ADR-0012]; the README's three-arms section conveys the shape.
 
 [project]
 name   = "Entity Core Keystone"

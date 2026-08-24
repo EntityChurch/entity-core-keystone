@@ -98,6 +98,26 @@ more found by walking the published tree by hand:
   release pipeline and none asked whether a published document points at something a reader can
   open. It caught three breaks the findings rename itself introduced.
 
+**Closed 2026-08-24 — the strip list, the ADR ruling, and a correction to our own rule.**
+
+- **The eight dated cross-cutting syntheses now publish** — the red-team critical review of our
+  own claims (954 lines), the convergence set, substrate-theory alignment, the machine-boundary
+  assessment. `protocol-generator/shared/syntheses/`, undated, with an index. They were stripping
+  at release while three of them were cited from the published surface. **The `research/` bucket
+  of the strip list is now empty**; the remaining 111 files are the four buckets that are correct
+  by ruling — ADRs, `docs/status/`, `docs/archive/`, in-flight `research/stewardship/`.
+- **The ecosystem ADRs do not publish** — standing operator ruling. All 33 strip, deliberately.
+  Citing `[ADR-NNNN]` by number stays fine; pointing a reader at the path does not.
+- **Our documented `canon-filter` scope was FALSE and is corrected.** It said prose under a doc
+  root drops "regardless of extension"; the tool was fixed to **prose-only** on 2026-08-23 after
+  the old rule shipped a go mirror that failed its own test suite on stripped `.cbor` vectors.
+  Found because a routed 119-file strip list disagreed with our own recomputation by three `.sh`
+  files. Only the `.md` diagnostic was ever at risk; the moves stand, the recorded reason did not.
+- **A near-miss that arrived through good behaviour:** the faithfully re-synced
+  `AGENTS-STANDARD.md` pointed a public reader at `docs/adr/ecosystem/`, which strips. DevOps
+  repaired the master; we re-synced again and found **three more of the same in our own authored
+  files**, which their repair could not have reached.
+
 **Closed 2026-08-22 — the committed reports match what we publish.** Every tracked per-peer
 `status/CONFORMANCE-REPORT.{md,json}` had drifted a full oracle pin behind the matrix, so a clone
 showed each peer contradicting its own published row. §1 was never wrong — it is census-backed — but

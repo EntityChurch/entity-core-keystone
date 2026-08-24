@@ -615,8 +615,8 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   PUBLIC): an identifier is only a pin if it resolves for the audience the claim is published to.
   A commit hash never does. Publish the content digest.** Raised by the operator, measured by arch
   (`ROUTING-2026-08-23` / `COHORT-OPEN-ITEMS` §1k **P-1**), landed here 2026-08-23, and now the
-  ecosystem rule: **[ADR-0012] Amendment 1** (`docs/adr/ecosystem/`, injected read-only per
-  [ADR-0030]) — *"the digest is the normative anchor; `N·0F @ <digest>` is the citable form."*
+  ecosystem rule: **[ADR-0012] Amendment 1** — *"the digest is the normative anchor; `N·0F @
+  <digest>` is the citable form."*
   **The mechanism, and it is not a rewrite story.** [ADR-0027] authors every published commit
   **fresh at the release boundary**, so public `master` is a *different history* from `dev` — `dev`
   is never rewritten and `master` is fast-forward-only; the two lines simply are not the same line.
@@ -742,28 +742,46 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   it conforms, the build whether it works — none asks *does this still contain what we already
   gave people*. Only `[6/6] public-regress` does, and it is new.
   **Know the scope exactly, because it decides what a mistake can destroy** (verified by reading
-  `internal/canon/canon.go`, not by inference): loose **top-level prose** (`.md .markdown .rst
-  .txt .adoc`, no `/` in the path) is droppable, top-level non-prose (`LICENSE` `NOTICE`
-  `VERSION` `Makefile`) is safe; anything under a doc-root **prefix** (`docs/ research/ status/
-  reviews/ validation/ stewardship/ …`) is droppable *regardless of extension*; everything else
-  is always kept. **Prefix means at the START of the path** — `strings.HasPrefix`, so
-  `protocol-generator/<lang>/status/*.md` is out of scope and the 268-file public tree is not at
-  risk, only the 8. Getting that wrong in either direction produces a wildly wrong blast radius.
+  `internal/canon/canon.go`, not by inference): **only PROSE is ever dropped** — `.md .markdown
+  .rst .txt .adoc` plus `.patch`/`.diff` — **and only** when it is loose at the top level (no `/`
+  in the path) or under a doc-root **prefix** (`docs/ doc/ reviews/ review/ research/
+  explorations/ proposals/ validation/ stewardship/ status/ reports/ notes/ handoffs/ audits/
+  planning/ design/ designs/` and their singular/plural twins). Everything else — source,
+  configs, vectors, `.py`, `.sh` — is **always kept, wherever it sits**. **Prefix means at the
+  START of the path** — `strings.HasPrefix`, so `protocol-generator/<lang>/status/*.md` is out
+  of scope and never has been at risk.
+  **CORRECTED 2026-08-24, and the correction is the lesson: this entry said "droppable REGARDLESS
+  OF EXTENSION," which was true of the tool when written and is now false.** `canon-filter` was
+  fixed to prose-only on 2026-08-23 after the old rule shipped an `entity-core-go` mirror that
+  **failed its own test suite on a clean clone** — it had stripped four conformance `.cbor`
+  vectors and a `.json` baseline that published code reads, because they were filed under
+  `docs/validation/`. *Location is not function.* The operator's ruling on the fix shape is worth
+  carrying: **"we fix our thing that doesn't strip out essential things from repos"** — not a
+  keep-list entry per artifact, which would be a permanent public-surface commitment made to work
+  around a filter defect. **The general rule: a documented fact about someone else's tool has a
+  shelf life, and re-reading the source is cheap.** We caught this only because a routed strip
+  list disagreed with our own recomputation by exactly three `.sh` files — **diff a supplied list
+  against your own before accepting either.**
   **Enforcement:** simulate before every release — walk `git ls-tree -r origin/master`, subtract
   the declared set, apply those two scope rules, and require the remainder to be empty or
   declared in `.release-removals`. Currently: **0 undeclared deletions, 1 declared**
   (`docs/status` — [ADR-0031], and it is a MOVE of `STATUS.md` to `docs/`, not a withdrawal).
   **RATIFIED 2026-08-23, second occurrence and a different shape: "regardless of extension" is
-  the half that bites, because it deletes the things you tell people to RUN.** The first
-  occurrence was eight prose files. This one was four **executables and data** under
-  `research/diagnostics/` plus five cross-cutting paradigm surveys under `research/evaluations/`,
-  every one of them named from the published surface — and the sharpest is not a doc link at
-  all: **`tools/check-set-gate.py` PRINTS the starved-categories probe's path at RUNTIME as the
-  reader's next step.** So a reader running our own gate, on our own instruction, was sent after
-  a file we had deleted from what we gave them. `tools/oracle-pin.env` names the second, a
-  published finding the third, the go and rust peers' concurrency **test source** the fourth,
-  and the five surveys are cited from `AGENTS.md`, `CONFORMANCE-MATRIX.md`, four peers'
-  `PROFILE-RATIONALE.md`, `sql/profile.toml` and two `Containerfile`s.
+  the half that bites is *prose under a doc root*, because that is where the durable writing
+  lives.** The first occurrence was eight prose files. The second was **fourteen** — five
+  cross-cutting paradigm surveys under `research/evaluations/`, `rt13-write-concurrency-classes.md`
+  under `research/diagnostics/`, and eight dated cross-cutting syntheses at `research/` top level
+  including the **954-line red-team review of our own claims** and one that calls itself *the
+  front-door document*. Every one was named from the published surface: the surveys from
+  `AGENTS.md`, `CONFORMANCE-MATRIX.md`, four peers' `PROFILE-RATIONALE.md`, `sql/profile.toml` and
+  two `Containerfile`s; `rt13` from the go and rust peers' concurrency **test source**; three
+  syntheses from a published finding.
+  **The sharpest instance is still not a doc link at all — `tools/check-set-gate.py` PRINTS a
+  diagnostic's path at RUNTIME as the reader's next step** — but note the correction directly
+  above: that diagnostic is a `.sh` and, since the 2026-08-23 prose-only fix, was never actually
+  at risk. **The instinct was right and the reason was wrong**, which is worth more than being
+  right for the right reason would have been: it is why the scope statement got re-derived from
+  source instead of carried forward.
   **THE FIX IS TO MOVE THE FILE, NOT TO DECLARE IT — operator ruling, 2026-08-23, and it
   reverses what this entry said when it was first written a few hours earlier.** The reflex on
   finding an undeclared file that ought to publish is to add a `[[doc]]` block, and it is wrong:
@@ -776,10 +794,41 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   **The standing answer to the whole class: `protocol-generator/**` is outside every doc-root
   prefix and publishes with NO declaration at all. Anything that must ship and is not
   documentation goes there; declaration is reserved for documents.** The keep-list grew by
-  exactly one entry this cycle — `docs/STATUS.md`, which is a canonical doc.
+  exactly one entry across the whole release-readiness push — `docs/STATUS.md`, which is a
+  canonical doc — while 33 documents moved into publication without touching it.
   **Enforcement, one grep, and run it against `tools/` too:** every `research/` and `docs/` path
   NAMED by a published artifact must either be declared or not be under a doc root. Reading the
-  `.md` files alone finds three of these nine and misses the worst one.
+  `.md` files alone misses the paths named from `Containerfile`s, a `profile.toml` and a test
+  source, which is where a third of these were hiding.
+- **THE ECOSYSTEM ADRs DO NOT PUBLISH — standing operator ruling, 2026-08-24. `docs/adr/ecosystem/`
+  stays undeclared, all 33 strip, and that is the correct answer rather than a finding.** Cite
+  `[ADR-NNNN]` by NUMBER in published prose freely — the number references a decision, not a
+  promise of a file — but **never send a published reader to the PATH**, because that directory is
+  not in the mirror. The transport question (with [ADR-0030] retracted there is no automated
+  injection, so hand-synced copies rot) is **correctly identified and deliberately unanswered** —
+  blocked behind a decision on what publishing an ADR means at all. Hand-sync, say so in the
+  commit message, and **do not build a local mechanism for it.**
+  **The near-miss is the part to remember, because it came in through good behaviour.** We
+  re-synced `AGENTS-STANDARD.md` faithfully; the authored copy then said *"`docs/adr/ecosystem/`
+  carries the full text of every ecosystem ADR… It is now local."* `AGENTS-STANDARD.md` is
+  **declared**, so the cut would have published a canonical document telling a reader to open a
+  directory the release deletes — **the index shipping while the evidence does not, inside the
+  standard that warns about that exact shape.** The four already-public repos were clean only
+  because their copies were *stale*; keystone was first precisely because it was in sync.
+  **Being current is not the same as being correct, and a re-sync inherits the upstream's
+  defects along with its fixes** — so after every overlay pull, grep the *published* surface for
+  paths the release strips, not just for drift. That grep found three more in **our own**
+  authored files (`AGENTS.md`, the keep-list header, `link-gate.py`'s comment) that the upstream
+  repair could not have touched.
+- **A ROUTED LIST THAT DISAGREES WITH YOUR OWN RECOMPUTATION BY THREE FILES IS A FINDING, NOT A
+  ROUNDING ERROR.** 2026-08-24: DevOps sent a 119-file strip list; recomputing it here gave
+  **122** — the delta was three `.sh` files under `research/diagnostics/`. Chasing that gap is
+  what surfaced that `canon-filter` had been **corrected to prose-only** on 2026-08-23 and that
+  our documented scope statement had been false ever since (see the keep-list entry above).
+  **Neither list was wrong about its own tool; ours was wrong about a tool that had changed.**
+  Enforcement, and it is cheap: **recompute any supplied inventory and diff it** — the diff is
+  the question worth asking, and a zero diff is a corroboration worth having. Pairs with the
+  routed-claim rule below: this is the same discipline applied to a *list* rather than a *claim*.
 - **VERIFY A ROUTED CLAIM BEFORE ACTING ON IT, ESPECIALLY THE EXCULPATORY HALF — a packet's
   parenthetical "we checked, this one doesn't apply to you" is the sentence most likely to be
   wrong and least likely to be re-checked.** Same session, first occurrence, candidate. The
