@@ -5,7 +5,7 @@
 Third and final clean visual-paradigm probe, after Node-RED (#31, flow-based) and TurboWarp (#32,
 imperative-block). Pd is the ONLY cleanly-probeable member of the **reactive-patch / signal-graph**
 class (Max/MSP, vvvv, LabVIEW, Simulink are proprietary / no-headless / no-socket — see
-`research/evaluations/visual-paradigms.md`). One probe exhausts the accessible surface of the class.
+`protocol-generator/shared/evaluations/visual-paradigms.md`). One probe exhausts the accessible surface of the class.
 
 ## Honest framing (ADR-0012)
 

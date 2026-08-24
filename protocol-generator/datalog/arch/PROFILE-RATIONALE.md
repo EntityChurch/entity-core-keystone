@@ -8,7 +8,7 @@ as bottom-up Datalog rules vs. leaks to the host). One paragraph per choice.
 ## Engine — embedded Ascent, NOT batch Soufflé, NOT CozoDB (the S1 discrepancy, resolved)
 
 The handoff §Feasibility floated **Soufflé / CozoDB / Nemo** (batch bottom-up); the
-deep-dive (`research/evaluations/declarative-query-viability.md` §Datalog runtime options)
+deep-dive (`protocol-generator/shared/evaluations/declarative-query-viability.md` §Datalog runtime options)
 instead recommended a **Rust host + Ascent (or Datafrog)**. S1 weighed embedded vs. batch
 with real evidence (the GO-gate build below) and chose **embedded Ascent in a Rust host**:
 

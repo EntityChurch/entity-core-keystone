@@ -13,7 +13,7 @@ Peer target `datalog`; the cohort's **authority-as-query paradigm probe**
 > payoff is the **finding**, not a deployment: the §5/§6.6 decision surface **is a
 > monotone deductive system**, and the seam split (which half of the protocol is
 > deductive vs. stateful-sequential) is the co-equal deliverable
-> (`../../research/evaluations/authority-as-query.md`).
+> (`protocol-generator/shared/evaluations/authority-as-query.md`).
 
 ## The probe — the authority interior IS a query
 

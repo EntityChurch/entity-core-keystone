@@ -19,7 +19,7 @@
 # change. wasip2 would add a second variable (a different socket ABI) and cost the
 # no-rustup supply-chain rule (fedora ships no wasip2 std). It is a deferred forward-ABI
 # probe, not a prerequisite for the AOT column. See ../rust-wasm and
-# research/evaluations/wasm-codegen-comparison.md.
+# protocol-generator/shared/evaluations/wasm-codegen-comparison.md.
 [package]
 name        = "entity-core-protocol-rust-wasm-wasmtime"
 version     = "0.1.0-pre"

@@ -8,8 +8,8 @@ import (
 )
 
 // RT-13b §4.1 Class R — a >=2-writer test asserting FRAME-BOUNDARY INTEGRITY of
-// the emitted stream, not demux timing (research/diagnostics/
-// rt13-write-concurrency-classes.md). The gap this closes: the ground-up Go
+// the emitted stream, not demux timing (protocol-generator/shared/
+// diagnostics/rt13-write-concurrency-classes.md). The gap this closes: the ground-up Go
 // peer's own connection_multiplex_test.go exercises the write path but asserts
 // response routing, not that concurrent writers never interleave two frames'
 // bytes on the wire — a property writeLock (transport.go) is supposed to

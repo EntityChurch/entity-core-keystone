@@ -10,7 +10,7 @@ self-test green, no blocking ambiguity.
 - The S1 feasibility gate had already PASSED (2026-07-15 session, committed
   `3faf205`): live in-container probes proved headless `io -e`, the manual
   Socket-addon build, and a byte-identical coroutine TCP echo incl 0x00/0xFF.
-  Full evidence: `research/evaluations/oz-io-viability.md` §S1. This phase
+  Full evidence: `protocol-generator/shared/evaluations/oz-io-viability.md` §S1. This phase
   *encoded* that evidence; it did not re-decide feasibility.
 - Build plan: `docs/status/HANDOFF-2026-07-15-oz-io-s1-go.md`.
 

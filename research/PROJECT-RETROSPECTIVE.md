@@ -279,7 +279,7 @@ concurrency mechanism.
 
 The SQL and Datalog peers were the only probes built to interrogate the *protocol* rather than the
 substrate, and they returned the exercise's sharpest protocol result (full write-up:
-[`evaluations/authority-as-query.md`](evaluations/authority-as-query.md)):
+[`protocol-generator/shared/evaluations/authority-as-query.md`](../protocol-generator/shared/evaluations/authority-as-query.md)):
 
 **Authorization is a query; the protocol around it is a state machine.** Everything that is a *pure
 function of the projected request facts* — the §5.2 verify ladder, the §5.5 delegation-chain closure,
@@ -992,8 +992,8 @@ and a one-line §6.5 clarity note (F45), not a redundancy.
 - **Territory + queue:** [`PARADIGM-MAP.md`](PARADIGM-MAP.md) ·
   [`COMPLETENESS-ROADMAP.md`](COMPLETENESS-ROADMAP.md) · [`LANDSCAPE.md`](LANDSCAPE.md)
 - **Per-peer ground truth:** [`CONFORMANCE-MATRIX.md`](../CONFORMANCE-MATRIX.md)
-- **Deep-dives:** [`evaluations/authority-as-query.md`](evaluations/authority-as-query.md) ·
-  [`evaluations/visual-paradigms.md`](evaluations/visual-paradigms.md) ·
-  [`evaluations/wasm-codegen-comparison.md`](evaluations/wasm-codegen-comparison.md)
+- **Deep-dives:** [`protocol-generator/shared/evaluations/authority-as-query.md`](../protocol-generator/shared/evaluations/authority-as-query.md) ·
+  [`protocol-generator/shared/evaluations/visual-paradigms.md`](../protocol-generator/shared/evaluations/visual-paradigms.md) ·
+  [`protocol-generator/shared/evaluations/wasm-codegen-comparison.md`](../protocol-generator/shared/evaluations/wasm-codegen-comparison.md)
 - **Findings register + arch routing:** [`stewardship/SPEC-FINDINGS-LOG.md`](stewardship/SPEC-FINDINGS-LOG.md) ·
   the F32–F41 aggregate digest in `stewardship/`

@@ -21,8 +21,8 @@
 # consumed by one owning thread), which is actor-shape but built FROM dataflow
 # primitives (the stream IS a dataflow list). See arch/PROFILE-RATIONALE.md.
 #
-# S1 verdict (2026-07-15, live in-container probes — research/evaluations/
-# oz-io-viability.md §S1): GO. RPM installs on fedora:43 via plain dnf; headless
+# S1 verdict (2026-07-15, live in-container probes — protocol-generator/shared/
+# evaluations/oz-io-viability.md §S1): GO. RPM installs on fedora:43 via plain dnf; headless
 # ozc/ozengine; dataflow threads live; Open.socket byte-clean; Open.pipe byte-clean.
 #
 # Profile authority (PROMPT-CONSTANTS): the agent MUST use the values declared

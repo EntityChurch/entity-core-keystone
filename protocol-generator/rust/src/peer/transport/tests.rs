@@ -1,6 +1,6 @@
 //! RT-13b §4.1 Class R — a >=2-writer test asserting FRAME-BOUNDARY INTEGRITY of
-//! the emitted stream, not demux timing (research/diagnostics/
-//! rt13-write-concurrency-classes.md). The gap this closes: the ground-up Rust
+//! the emitted stream, not demux timing (protocol-generator/shared/
+//! diagnostics/rt13-write-concurrency-classes.md). The gap this closes: the ground-up Rust
 //! peer's own multiplex test exercises the write path but asserts response
 //! routing, not that concurrent writers never interleave two frames' bytes on
 //! the wire — a property `write_stream`'s `Mutex` (super::Io) is supposed to

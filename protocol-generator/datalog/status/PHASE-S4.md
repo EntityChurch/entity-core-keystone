@@ -86,7 +86,7 @@ not escalated.
 
 1. **The gate is GREEN at `cc1970f`** — do not re-pin to go HEAD (moved past on NETWORK
    work; re-pinning is policy-§4, not S5). S5 is the retrospective + publish (0.1.0-pre).
-2. **The co-equal deliverable to synthesize** (`research/evaluations/authority-as-query.md`,
+2. **The co-equal deliverable to synthesize** (`protocol-generator/shared/evaluations/authority-as-query.md`,
    authored at S5): the seam split held at the LIVE bar. §5.2/§5.5/§3.6/§5.5a/§6.6 stayed
    deductive rules driving the verdict; the entire S4 growth was host-seam (protocol
    sequencing + I/O + handler bodies). The candidate `HANDOFF-TO-ARCH` (authority-as-query

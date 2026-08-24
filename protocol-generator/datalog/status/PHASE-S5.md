@@ -61,7 +61,7 @@ of the default tier, because the diff shows on the rule text.
   policy-§4 decision, not an S5 step).
 - **Shared files NOT touched** by this S5 pass (out of peer-local scope):
   `CONFORMANCE-MATRIX.md`, `research/*`, `AGENTS.md`, repo-root `STATUS.md`. The overseer
-  adds the matrix row and authors `research/evaluations/authority-as-query.md` +
+  adds the matrix row and authors `protocol-generator/shared/evaluations/authority-as-query.md` +
   the `HANDOFF-TO-ARCH` for A-DL-013 (the authority-as-derivation appendix).
 - **Proposed `CONFORMANCE-MATRIX.md` §1 row** (overseer to add):
   Peer `Datalog`‡ · Tier `probe` · Spec `v0.8.0` · Oracle `cc1970f` ·

@@ -3,7 +3,7 @@
 **Date:** 2026-07-15. **Verdict: COMPLETE — S2 unblocked.**
 
 S1 feasibility was pre-gated GO on 2026-07-15 (live in-container probes,
-`research/evaluations/oz-io-viability.md` §S1; build plan
+`protocol-generator/shared/evaluations/oz-io-viability.md` §S1; build plan
 `docs/status/HANDOFF-2026-07-15-oz-io-s1-go.md`). This phase encoded that
 evidence into the pinned recipe + profile.
 

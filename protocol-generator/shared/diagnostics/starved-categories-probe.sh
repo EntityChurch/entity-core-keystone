@@ -21,7 +21,7 @@
 # Then run this INSIDE the peer's toolchain container, from the repo root:
 #   podman run $PODMAN_RUN_CAPS --rm --network=none -v "$PWD":/work:Z \
 #     localhost/entity-core-keystone/<peer>-toolchain:latest \
-#     sh /work/research/diagnostics/starved-categories-probe.sh <peer> [category...]
+#     sh /work/protocol-generator/shared/diagnostics/starved-categories-probe.sh <peer> [category...]
 #
 # Results land in output/scratch/starved/<peer>/<category>.json (gitignored).
 set -u

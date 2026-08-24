@@ -10,7 +10,7 @@
 # SecPAL/Binder ARE query languages); grant-scope matching, the §5.5 delegation
 # chain-walk, K-of-N threshold, and §6.6 longest-prefix resolution are relational/set
 # operations. The FINDING (co-equal with a green gate) is the SEAM SPLIT itself.
-# See arch/PROFILE-RATIONALE.md + research/evaluations/declarative-query-viability.md.
+# See arch/PROFILE-RATIONALE.md + protocol-generator/shared/evaluations/declarative-query-viability.md.
 #
 # *** THE WRAPPER-GUARD (load-bearing — this is what makes it a probe, not a wrapper) ***
 # If §5 collapses to one host call with SQLite as decoration, the probe yields NOTHING.

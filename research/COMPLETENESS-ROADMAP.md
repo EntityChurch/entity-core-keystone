@@ -2,7 +2,7 @@
 
 **Purpose.** A forward-looking work tracker for the *ecosystem-completeness* phase. Distinct from
 its two siblings: `LANDSCAPE.md` is the **current-state roster + tier policy**;
-`evaluations/visual-paradigms.md` is the **visual-paradigm field survey**. This doc is the **queue**
+`protocol-generator/shared/evaluations/visual-paradigms.md` is the **visual-paradigm field survey**. This doc is the **queue**
 — what's left to build and in what priority — so work has a guide.
 
 **Framing (read first).** The spec-discovery well is dry on the current wire surface (see
@@ -27,7 +27,7 @@ or is it a catalog row over an already-covered substrate.
 
 | # | Language | Status | Novelty | Notes |
 |---|----------|:--:|---------|-------|
-| — | **Pure Data** | ☑ done *(2026-07-15)* | Distinct paradigm (reactive patch) | **Closed the visual track at full gate: 682·0F Result: PASS @ `cc1970f`** on the real Pd runtime over real TCP — the only visual probe to clear it (matrix row #33; retrospective in `evaluations/visual-paradigms.md` §5a). Surfaced F34/F35 (mint-timestamp precision; open-seed resource form) → arch handoff drafted. |
+| — | **Pure Data** | ☑ done *(2026-07-15)* | Distinct paradigm (reactive patch) | **Closed the visual track at full gate: 682·0F Result: PASS @ `cc1970f`** on the real Pd runtime over real TCP — the only visual probe to clear it (matrix row #33; retrospective in `protocol-generator/shared/evaluations/visual-paradigms.md` §5a). Surfaced F34/F35 (mint-timestamp precision; open-seed resource form) → arch handoff drafted. |
 | 1 | **Scala** | ☐ | **High** — JVM functional/OO hybrid, large ecosystem | Distinct from Java/Kotlin (implicits, HKT, pattern-matching); already T1 not-started in LANDSCAPE. Highest-value conventional gap. |
 | 2 | **Objective-C** | ☐ | **Medium-high** — dynamic message-passing dispatch (`objc_msgSend`), Apple heritage | A genuinely distinct dispatch model + the pre-Swift Apple substrate. |
 | 3 | **Lua** | ☐ | **Low** (ubiquity pick) | "Everywhere" (embedded/games/config). Caveat noted: Lua is C-hosted, so the substrate is close to our C peer — completeness/reach value, not a new axis. |
@@ -56,11 +56,11 @@ than imperative code. See `PARADIGM-MAP.md` §declarative for the full argument.
 > deductive one and closest to the trust-management literature. Nothing high-signal remains on this
 > axis; steady-state value is **re-running these two authority interiors against each §5 amendment**
 > (a §5 change shows up here as a diff to the *derivation*). What's left below is
-> esoteric/substrate-limit curiosity only. Synthesis: `evaluations/authority-as-query.md`.
+> esoteric/substrate-limit curiosity only. Synthesis: `protocol-generator/shared/evaluations/authority-as-query.md`.
 
 | Target | Status | Why |
 |--------|:--:|-----|
-| **SQL** (SQLite) | ☑ **done** *(2026-07-16)* | **Authority-as-query — LANDED.** SQLite + C seam; §5.2 ladder / §5.5 chain-walk (recursive CTE) / K-of-N (`HAVING count DISTINCT`) / §6.6 (`ORDER BY length DESC`) authored as real SQL. `682·0F Result: PASS @ cc1970f`. Finding: authorization is a query, the protocol around it is a state machine → F40 (typed scope matching). Retrospective: `evaluations/authority-as-query.md`. |
+| **SQL** (SQLite) | ☑ **done** *(2026-07-16)* | **Authority-as-query — LANDED.** SQLite + C seam; §5.2 ladder / §5.5 chain-walk (recursive CTE) / K-of-N (`HAVING count DISTINCT`) / §6.6 (`ORDER BY length DESC`) authored as real SQL. `682·0F Result: PASS @ cc1970f`. Finding: authorization is a query, the protocol around it is a state machine → F40 (typed scope matching). Retrospective: `protocol-generator/shared/evaluations/authority-as-query.md`. |
 | **Datalog** | ☑ **done** *(2026-07-16)* | **Authority-as-query, deductive half — LANDED.** Embedded Ascent (bottom-up, terminating; distinct from the Prolog peer) + Rust seam; §5.5 delegation as recursive rules to least fixpoint (SecPAL/Binder shape), verdict as a derived `allow` fact. `682·0F Result: PASS @ cc1970f`. Finding: the §5/§6.6 decision surface IS a monotone deductive system → F41 (authority-as-derivation appendix). |
 
 ### Curiosity / substrate-limit probes (do *not* graduate to the extension layer)
@@ -86,7 +86,7 @@ want to see **both** WASM authoring styles side by side:
 | Target | Status | Notes |
 |--------|:--:|-------|
 | **Natively-authored WASM (WAT)** | ☑ **done** *(2026-07-15)* | Hand-authored `.wat`, the WASM analog of the asm peer (`protocol-generator/wasm-wat/`). **Full gate `682·0F Result: PASS @ cc1970f`** (matrix row `wasm-wat`). Host model = **stock runtime** (WasmEdge flat sockets + Rust codec→wasm `wasm-merge`'d, no native host); §6.11 passes under `--enable-jit` (interpreter crypto too slow — the execution-mode-is-conformance lesson). Surfaced F33/F34/F35 (T2.1 absolute-floor tension; tampered-cap-sig coverage gap; §7a reentry-echo skips §5.2). |
-| **Rust → WASM (cross-compiler)** | ☑ **done** *(2026-07-15)* | The "compile an existing peer to WASM" path — the `../rust` peer cross-compiled **unmodified** to `wasm32-wasip1` behind a `poll_oneoff` transport seam. **Full gate `682·0F Result: PASS @ cc1970f`** (matrix rows `rust-wasm`, WasmEdge/JIT; + `rust-wasm-wasmtime`, the SAME module under **wasmtime AOT**, compile-once-run-native). Codegen + runtime/AOT head-to-head: `evaluations/wasm-codegen-comparison.md`. |
+| **Rust → WASM (cross-compiler)** | ☑ **done** *(2026-07-15)* | The "compile an existing peer to WASM" path — the `../rust` peer cross-compiled **unmodified** to `wasm32-wasip1` behind a `poll_oneoff` transport seam. **Full gate `682·0F Result: PASS @ cc1970f`** (matrix rows `rust-wasm`, WasmEdge/JIT; + `rust-wasm-wasmtime`, the SAME module under **wasmtime AOT**, compile-once-run-native). Codegen + runtime/AOT head-to-head: `protocol-generator/shared/evaluations/wasm-codegen-comparison.md`. |
 
 **Coordination:** both flavors shipped, deliberately split across the two host models for coverage —
 the WAT-native peer proved **stock-runtime, no-native-host** (WasmEdge sockets + `wasm-merge`'d codec),
@@ -99,7 +99,7 @@ substrate is covered end-to-end (author/compile portable + deploy AOT native —
 
 ## 3. Visual & dataflow paradigms — status of the class
 
-**Pure Data closes the *visual* track.** Our field survey (`evaluations/visual-paradigms.md`) mapped
+**Pure Data closes the *visual* track.** Our field survey (`protocol-generator/shared/evaluations/visual-paradigms.md`) mapped
 the whole visual space:
 
 - **Imperative block** (Scratch) → PROBED (#32 TurboWarp).
@@ -108,7 +108,7 @@ the whole visual space:
   2026-07-15 — full gate `Result: PASS` on the real runtime)**. Pd was the ONLY cleanly probeable
   member (open, headless `pd -nogui`, raw TCP in-patch); one probe exhausts the accessible surface
   of this class. **All three visual paradigms are now probed — the visual track is closed** (the
-  well-is-dry verdict stands three-of-three; see `evaluations/visual-paradigms.md` §5a).
+  well-is-dry verdict stands three-of-three; see `protocol-generator/shared/evaluations/visual-paradigms.md` §5a).
 
 ### Inaccessible / stunt (captured for honesty, not queued)
 
@@ -125,7 +125,7 @@ dead/academic or inaccessible, but a couple are real research candidates:
 
 | Language | Class | Verdict |
 |----------|-------|---------|
-| **Oz / Mozart** | Declarative dataflow-variable concurrency | **☑ done (2026-07-15)** — built to full gate (`682·0F Result: PASS @ cc1970f`); the 4th §7b concurrency shape validated (the dataflow variable *is* the §6.11 demux, A-OZ-006). The textual-dataflow class is now represented. See `evaluations/oz-io-viability.md` + `protocol-generator/oz/status/`. |
+| **Oz / Mozart** | Declarative dataflow-variable concurrency | **☑ done (2026-07-15)** — built to full gate (`682·0F Result: PASS @ cc1970f`); the 4th §7b concurrency shape validated (the dataflow variable *is* the §6.11 demux, A-OZ-006). The textual-dataflow class is now represented. See `protocol-generator/shared/evaluations/oz-io-viability.md` + `protocol-generator/oz/status/`. |
 | **Ballerina** | Modern network-integration dataflow | **? candidate** — network-native primitives, but JVM substrate (partial overlap). |
 | **Lustre / Esterel / Signal / SCADE** | Synchronous dataflow (avionics/reactive) | ⛔ likely wrapper — compile-to-C, no socket-from-language; SCADE is commercial. |
 | **Lucid, SISAL** | Seminal / HPC dataflow | ⛔ dead — no runnable modern tooling. |
@@ -174,5 +174,5 @@ should not be dressed up as a discovery peer.
 - **The built cohort mapped by substrate form + the selection principle: `research/PEER-ATLAS.md`**
 - **Whole-territory paradigm cartography + viability filter: `research/PARADIGM-MAP.md`**
 - Current-state roster + tier policy: `research/LANDSCAPE.md`
-- Visual-paradigm field survey + when-to-stop verdict: `research/evaluations/visual-paradigms.md`
+- Visual-paradigm field survey + when-to-stop verdict: `protocol-generator/shared/evaluations/visual-paradigms.md`
 - What translates / needs a seam / doesn't, across substrates: `research/SUBSTRATE-TAKEAWAYS.md`

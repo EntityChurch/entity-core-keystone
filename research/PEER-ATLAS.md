@@ -283,6 +283,6 @@ viability, and `COMPLETENESS-ROADMAP.md` carries the current queue. The generato
 | Whole-territory cartography + viability filter | `research/PARADIGM-MAP.md` |
 | Build queue and priorities | `research/COMPLETENESS-ROADMAP.md` |
 | The narrative capstone — how we got here | `research/PROJECT-RETROSPECTIVE.md` |
-| Authority-as-query deep dive | `research/evaluations/authority-as-query.md` |
-| Visual-paradigm field survey | `research/evaluations/visual-paradigms.md` |
+| Authority-as-query deep dive | `protocol-generator/shared/evaluations/authority-as-query.md` |
+| Visual-paradigm field survey | `protocol-generator/shared/evaluations/visual-paradigms.md` |
 | Maintenance tiers — who gets re-measured when | `CONFORMANCE-MATRIX.md` §4 · `tools/peer-tiers.tsv` |

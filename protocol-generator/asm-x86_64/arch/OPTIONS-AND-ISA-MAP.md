@@ -238,7 +238,7 @@ remaining on this substrate is **corroboration, not discovery**.
   WASI-version-agnostic, so wasip1 gives a controlled comparison + a distro-pure toolchain
   (fedora ships no wasip2 std); a **host-preopened listener** (`-S tcplisten`) + standard wasip1
   `sock_accept` replaced the presumed wasi-sockets/preview2 shim. See
-  `research/evaluations/wasm-codegen-comparison.md` +
+  `protocol-generator/shared/evaluations/wasm-codegen-comparison.md` +
   `docs/status/HANDOFF-2026-07-15-wasmtime-aot-green-wasm-branch-complete.md`. wasip2 is a
   deferred forward-ABI probe.
 

@@ -1,7 +1,7 @@
 # entity-core-protocol-io — Profile Rationale (S1)
 
 Why each major profile choice was made. Companion to `../profile.toml`; the live
-S1 evidence is `research/evaluations/oz-io-viability.md` §S1 (2026-07-15, GO).
+S1 evidence is `protocol-generator/shared/evaluations/oz-io-viability.md` §S1 (2026-07-15, GO).
 
 ## Why Io at all — the paradigm axis
 

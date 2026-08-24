@@ -8,7 +8,7 @@
 #   - rust-wasm = a whole existing peer (Rust) COMPILED to wasm (LLVM codegen).
 # Running BOTH on the SAME runtime (WasmEdge 0.17.1) isolates the head-to-head to ONE
 # variable — codegen: hand-written WAT vs Rust→LLVM→wasm. See
-# research/evaluations/wasm-codegen-comparison.md.
+# protocol-generator/shared/evaluations/wasm-codegen-comparison.md.
 #
 # The thesis this peer makes literal: the whole protocol PAYLOAD is substrate-neutral. The
 # ~4,000-line interior (codec, §5 authorization, §6 dispatch, §9.5 type floor, crypto)

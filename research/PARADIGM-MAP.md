@@ -84,7 +84,7 @@ pick. **NATIVE** where built.
 **authorization/trust-management logics are historically Datalog-based** (Binder, SecPAL, DKAL are
 literally Datalog dialects for delegation). The bet paid: §5.5 delegation authored as recursive rules to
 least fixpoint, the §5.2 verdict as a derived `allow` fact, K-of-N as a counting aggregate. Produced
-**F41** (the decision surface is a monotone deductive system). Detail: `evaluations/authority-as-query.md`.
+**F41** (the decision surface is a monotone deductive system). Detail: `protocol-generator/shared/evaluations/authority-as-query.md`.
 
 ### Declarative — **relational query (SQL)** ← CLOSED, and it paid
 **SQL**(built #39, SQLite) · Postgres PL/pgSQL · SPARQL · DAX
@@ -94,7 +94,7 @@ was built for, and the peer authored all of them as real SQL against grant/token
 host for I/O. The viability question the probe existed to answer — *how much interior stays in the query
 language vs leaks to the host* — is answered: **everything that is a pure function of the projected
 request facts stays; everything stateful-sequential leaks.** Produced **F40** (§3.6 scope matching is
-typed), surfaced as a real ALLOW bug. Detail: `evaluations/authority-as-query.md`.
+typed), surfaced as a real ALLOW bug. Detail: `protocol-generator/shared/evaluations/authority-as-query.md`.
 
 ### Term rewriting / equational ← genuine gap (headline miss)
 **Wolfram/Mathematica · Maude** (rewriting logic) · **Pure** · Refal · OBJ/CafeOBJ
@@ -114,7 +114,7 @@ demux collapses to one single-assignment variable per pending request — the va
 correlation map (A-OZ-006), the cleanest §6.11 substrate in the cohort. The one distinct *textual*
 dataflow probe (visual dataflow = Pd, §visual). **ASP (clingo)** remains an adjacent distinct logic
 (stable-model semantics) — a possible catalog note, not a gap. Deep-dive:
-`evaluations/oz-io-viability.md`.
+`protocol-generator/shared/evaluations/oz-io-viability.md`.
 
 ### Resource-typed / smart-contract ← distinct domain, mostly not-a-peer
 **Solidity/EVM** · **Move** (linear resources) · Michelson · Vyper · Clarity
@@ -138,7 +138,7 @@ out — they're config languages, not general runtimes.
 Visual patch: **Pure Data**(built #33) — the one clean visual probe, and **the only visual peer to clear
 the full core gate on its real runtime over real TCP**. Textual synchronous: Lustre · Esterel · Signal ·
 SCADE — **WRAPPER-ONLY** (compile-to-C, no socket-from-language; SCADE commercial). Seminal: Lucid ·
-SISAL — **STUNT** (dead tooling). See `evaluations/visual-paradigms.md`.
+SISAL — **STUNT** (dead tooling). See `protocol-generator/shared/evaluations/visual-paradigms.md`.
 
 ### Visual — block & flow
 **TurboWarp/Scratch**(#32) · **Node-RED**(#31) — **PROBED.** Rest of class same-family or inaccessible.
@@ -172,7 +172,7 @@ curiosity. HDL (Verilog/VHDL) = **STUNT** (hardware description, not a software 
 peer — WAT is already planned; JVM-bytecode/CIL/LLVM-IR would be curiosities, same class.*
 
 ### Spreadsheet / reactive-cell
-Excel · Sheets · Calc — **STUNT** (socket I/O = macro wrapper). See `evaluations/visual-paradigms.md`.
+Excel · Sheets · Calc — **STUNT** (socket I/O = macro wrapper). See `protocol-generator/shared/evaluations/visual-paradigms.md`.
 
 ---
 
@@ -223,10 +223,10 @@ kind of substrate is most worth proposing and how to do it.
 
 ## Cross-references
 - **The built cohort mapped by substrate form + the selection principle: `research/PEER-ATLAS.md`**
-- **SQL/Datalog deep-dive (runtime model + what the code looks like): `research/evaluations/declarative-query-viability.md`**
-- Authority-as-query synthesis (what the closed frontier produced): `research/evaluations/authority-as-query.md`
-- **Oz/Mozart & Io deep-dive (dataflow-variable concurrency + prototype OO): `research/evaluations/oz-io-viability.md`**
+- **SQL/Datalog deep-dive (runtime model + what the code looks like): `protocol-generator/shared/evaluations/declarative-query-viability.md`**
+- Authority-as-query synthesis (what the closed frontier produced): `protocol-generator/shared/evaluations/authority-as-query.md`
+- **Oz/Mozart & Io deep-dive (dataflow-variable concurrency + prototype OO): `protocol-generator/shared/evaluations/oz-io-viability.md`**
 - Build queue + priorities: `research/COMPLETENESS-ROADMAP.md`
 - Current-state roster + tiers: `research/LANDSCAPE.md`
-- Visual-paradigm survey: `research/evaluations/visual-paradigms.md`
+- Visual-paradigm survey: `protocol-generator/shared/evaluations/visual-paradigms.md`
 - What translates across substrates: `research/SUBSTRATE-TAKEAWAYS.md`

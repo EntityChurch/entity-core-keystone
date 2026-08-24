@@ -161,7 +161,7 @@ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); \
 whole suite behind the hang:
 
 ```
-research/diagnostics/starved-categories-probe.sh <peer> [category...]
+protocol-generator/shared/diagnostics/starved-categories-probe.sh <peer> [category...]
 ```
 
 `-category <name>` runs each starved category on its own in seconds, and keeps the published gate

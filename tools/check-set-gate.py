@@ -22,7 +22,7 @@ matrix recorded 1, for four consecutive census runs.
 This gate closes that hole on our side. It does NOT patch or second-guess the oracle (forbidden
 -- AGENTS.md "Boundaries"); it validates the oracle's own output before we are allowed to
 publish a comparison. The oracle-side reporting defect is escalated separately in
-`research/stewardship/HANDOFF-TO-ARCH-2026-08-17-budget-exhaustion-reporting.md`.
+`protocol-generator/shared/findings/budget-exhaustion-reporting.md`.
 
 WHAT IT ENFORCES
 ----------------
@@ -321,7 +321,7 @@ def main(argv):
                 print(f"    !! {len(core)} of these are CORE GATE categories: {', '.join(core)}")
         print()
     print("Fix the peer (or re-measure the starved categories with")
-    print("`research/diagnostics/starved-categories-probe.sh <peer>`) before comparing scores.")
+    print("`protocol-generator/shared/diagnostics/starved-categories-probe.sh <peer>`) before comparing scores.")
     print("Raising -timeout to make the report green is forbidden — see AGENTS.md.")
     return 1
 

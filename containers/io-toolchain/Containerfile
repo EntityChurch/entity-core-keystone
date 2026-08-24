@@ -12,7 +12,7 @@
 # This Containerfile is the pinned recipe.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# S1 FINDINGS (2026-07-15, research/evaluations/oz-io-viability.md §S1):
+# S1 FINDINGS (2026-07-15, protocol-generator/shared/evaluations/oz-io-viability.md §S1):
 #   * UPSTREAM PIVOT: IoLanguage/io master is now a WebAssembly/WASI port; the
 #     native line (DynLib / AddonLoader / addons) is PERMANENTLY frozen at tag
 #     2026.04.20-native-final (commit e5024305...), and the addon repos (incl.

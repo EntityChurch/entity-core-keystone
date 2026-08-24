@@ -3,7 +3,7 @@
 Audit trail for `protocol-generator/sql/profile.toml`. One paragraph per major choice.
 This is the **authority-as-query probe**: a spec-discovery probe (not a substrate probe)
 whose finding is *how much of the §5/§6.6 authority interior stays expressible as SQL vs.
-leaks to the host seam*. Companion: `research/evaluations/declarative-query-viability.md`.
+leaks to the host seam*. Companion: `protocol-generator/shared/evaluations/declarative-query-viability.md`.
 
 ## Query engine — SQLite 3.50.4 (over DuckDB / PostgreSQL PL/pgSQL)
 

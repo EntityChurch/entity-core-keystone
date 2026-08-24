@@ -10,7 +10,7 @@
  * io/ layer references, in dependency order (EventManager first — the
  * libevent loop the Event/Socket protos wait on).
  *
- * Proven at S1 (2026-07-15, research/evaluations/oz-io-viability.md §S1).
+ * Proven at S1 (2026-07-15, protocol-generator/shared/evaluations/oz-io-viability.md §S1).
  * Apache-2.0 (keystone S9).
  */
 

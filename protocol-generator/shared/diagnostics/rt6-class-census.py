@@ -6,8 +6,7 @@ the connectivity/handshake_nonce_single_use check, per entity-core-go `fceb61f`
 
 Companion to f40-scope-typing-differential.py's attribution mode — same idea,
 applied to RT-6's ladder instead of F40's A/B rows. Retires the af8a582 handoff's
-hand-built §6 roll-up table (research/stewardship/HANDOFF-TO-ARCH-2026-07-27-
-af8a582-cohort-remeasurement.md §2/§6), which was accurate for that oracle build
+hand-built §6 roll-up table (protocol-generator/shared/findings/af8a582-cohort-remeasurement.md §2/§6), which was accurate for that oracle build
 but is now superseded by the six-class ladder.
 
 The six classes (severity, rt6_class detail — see oracle-pin.env's 2026-07-28
@@ -30,7 +29,7 @@ lands. Until then, THIS SCRIPT distinguishes them itself from `details.status`
 trusting the shared label — see `classify()`.
 
 Usage:
-    python3 research/diagnostics/rt6-class-census.py <reports_dir>
+    python3 protocol-generator/shared/diagnostics/rt6-class-census.py <reports_dir>
 """
 import json
 import pathlib

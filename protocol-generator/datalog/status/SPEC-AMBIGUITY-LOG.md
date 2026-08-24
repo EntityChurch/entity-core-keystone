@@ -198,7 +198,7 @@ authority model have an implicit deductive structure that imperative peers obscu
 says **yes**, for the whole §5/§6.6 decision surface.
 **Escalation:** arch — **escalated to arch, overseer-routed** (the overseer is authoring the
 `HANDOFF-TO-ARCH` for the authority-as-query appendix; synthesized in
-`research/evaluations/authority-as-query.md`). This peer's full-gate green + the wrapper-guard
+`protocol-generator/shared/evaluations/authority-as-query.md`). This peer's full-gate green + the wrapper-guard
 holding at the live bar are the evidence backing the handoff. **Open, named-owner (arch).**
 
 ## A-DL-014: §6.6 handler resolution — longest-prefix as stratified negation (S3)
@@ -277,5 +277,5 @@ blocking-severity item remains open unowned).
 
 **Net:** 14 resolved, 1 named-owner-escalated to arch (A-DL-013, overseer-routed). The
 `[expressibility]` findings (A-DL-010/011/012/013/014/015) are synthesized in the S5
-retrospective `research/evaluations/authority-as-query.md` (overseer-authored — outside
+retrospective `protocol-generator/shared/evaluations/authority-as-query.md` (overseer-authored — outside
 this peer-local S5 scope).

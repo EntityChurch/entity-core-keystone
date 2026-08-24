@@ -10,7 +10,7 @@
 # The point of the split IS the thesis: the transportable compute payload is untouched;
 # only the ~one-file host seam changes per substrate. Companion to the hand-authored WAT
 # peer (protocol-generator/wasm-wat) — same runtime (WasmEdge), so the head-to-head is
-# isolated to codegen. See research/evaluations/wasm-codegen-comparison.md.
+# isolated to codegen. See protocol-generator/shared/evaluations/wasm-codegen-comparison.md.
 [package]
 name        = "entity-core-protocol-rust-wasm"
 version     = "0.1.0-pre"

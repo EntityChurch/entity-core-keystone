@@ -20,7 +20,7 @@ actually behaves today, run its Part-B fixture test against
 The static model above answers "what SHOULD happen"; it cannot attribute a live
 peer's 403 to canonicalization vs. an unrelated delegation denial (the confound
 that false-positived `swift` at `af8a582` — see
-research/stewardship/HANDOFF-TO-ARCH-2026-07-27-af8a582-cohort-remeasurement.md §3).
+protocol-generator/shared/findings/af8a582-cohort-remeasurement.md §3).
 Arch's fix at `fceb61f` adds a control row (`f40_id_scope_include_control`, Row A:
 the same grant minus the exclude) and rewrites `f40_id_scope_exclude_literal` (Row B)
 to carry BOTH rows' (status, code, allow) in its `details`, scored as the A→B
@@ -28,7 +28,7 @@ differential rather than Row B in isolation. Run this file with a directory of
 per-peer `validate-peer` JSON reports to attribute all 46 peers directly from that
 measured data, no grep, no modelling:
 
-    python3 research/diagnostics/f40-scope-typing-differential.py <reports_dir>
+    python3 protocol-generator/shared/diagnostics/f40-scope-typing-differential.py <reports_dir>
 
 `<reports_dir>` holds one JSON report per peer, named `<peer>.json` (the raw
 `-json-out` of a `-category authz` or `--profile core` run against the pinned

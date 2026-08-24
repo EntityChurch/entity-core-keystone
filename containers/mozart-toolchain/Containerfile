@@ -11,7 +11,7 @@
 # is the pinned recipe.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# S1 FINDING (2026-07-15, research/evaluations/oz-io-viability.md §S1): the release
+# S1 FINDING (2026-07-15, protocol-generator/shared/evaluations/oz-io-viability.md §S1): the release
 # RPM `mozart2-2.0.1-x86_64-linux.rpm` (2018-09, S11-clean by years) installs on
 # fedora:43 via plain `dnf install` — its only repo deps are glibc/libstdc++ basics +
 # tcl/tk 8.6 (still packaged in fedora:43). tk belongs to `ozwish` (the GUI ELF) alone;

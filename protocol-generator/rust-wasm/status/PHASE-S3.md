@@ -67,7 +67,7 @@ so `src/main.rs` does the same work single-threaded:
 `out/peer.wasm` = **247,596 bytes** (opt-level=s + LTO + strip), vs the hand-authored
 `wasm-wat` peer.wasm = **347,644 bytes** — the LLVM-compiled Rust peer is ~29% smaller. Not yet
 apples-apples (different codec inclusion); the head-to-head (size + t2_1/t2_2 timing + verify
-latency, both under WasmEdge 0.17.1 JIT) is in `research/evaluations/wasm-codegen-comparison.md`.
+latency, both under WasmEdge 0.17.1 JIT) is in `protocol-generator/shared/evaluations/wasm-codegen-comparison.md`.
 
 ## No new spec finding
 

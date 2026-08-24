@@ -2,7 +2,7 @@
 
 Audit trail for the S1 profile choices. Peer target `oz` (Oz 3 / Mozart 2.0.1) —
 the dataflow-variable concurrency probe, the fourth structural §7b shape.
-S1 feasibility evidence: `research/evaluations/oz-io-viability.md` §S1 (2026-07-15,
+S1 feasibility evidence: `protocol-generator/shared/evaluations/oz-io-viability.md` §S1 (2026-07-15,
 GO); build plan: `docs/status/HANDOFF-2026-07-15-oz-io-s1-go.md`.
 
 ## Why the release RPM, not a source build

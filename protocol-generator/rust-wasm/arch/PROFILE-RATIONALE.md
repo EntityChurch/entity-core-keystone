@@ -16,7 +16,7 @@ binary target — `src/main.rs`, the transport seam.
    from spec; this peer *compiles* an existing Rust peer to wasm. Both run on the same WasmEdge
    runtime, so a head-to-head (module size, sustained-load + churn latency, verify cost) isolates
    the one variable that differs — hand-written WAT vs Rust→LLVM→wasm codegen. That comparison is
-   the concrete research payoff (`research/evaluations/wasm-codegen-comparison.md`).
+   the concrete research payoff (`protocol-generator/shared/evaluations/wasm-codegen-comparison.md`).
 2. **The transportable-compute layer.** The larger arc (NAD native peers, the computational
    genome) needs the smallest substrate-specific layer you can ship from the tree and bootstrap
    onto an arbitrary architecture. This peer *measures* that layer empirically: how much of a real

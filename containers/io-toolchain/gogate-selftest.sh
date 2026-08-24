@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # GO-gate self-test — baked into the io-toolchain image build (and runnable
 # standalone). Asserts the S1 feasibility gate for the Io prototype-OO peer
-# (research/evaluations/oz-io-viability.md §S1, 2026-07-15):
+# (protocol-generator/shared/evaluations/oz-io-viability.md §S1, 2026-07-15):
 #   1. `io -e` boots headless (no X) and evaluates code.
 #   2. The hand-built Socket addon loads (Server/Socket coroutine protos live).
 #   3. A Server echo round-trips a raw TCP payload byte-identically,

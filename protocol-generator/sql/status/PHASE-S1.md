@@ -7,7 +7,7 @@ First of the two last major spec-discovery bets (SQL + Datalog). NOT a wire-axis
 substrate probe — the axis is **spec-shaped**: how much of the §5/§6.6 authority interior
 stays expressible as SQL vs. leaks to the host seam. See the handoff
 `docs/status/HANDOFF-2026-07-16-sql-datalog-parallel-build.md` and the deep-dive
-`research/evaluations/declarative-query-viability.md`.
+`protocol-generator/shared/evaluations/declarative-query-viability.md`.
 
 ## Honest framing (ADR-0012)
 

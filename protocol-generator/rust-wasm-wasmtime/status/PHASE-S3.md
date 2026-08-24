@@ -71,4 +71,4 @@ choice is what keeps the rest distro-pure.
 Substrate-dynamics + the production story, not spec-discovery (the wire axes are saturated —
 well dry). Cohort-consistent, NOT independent convergence (shared Rust generation lineage +
 shared crypto crates with the native peer, ADR-0012). The AOT warmup/size result is folded
-into `research/SUBSTRATE-TAKEAWAYS.md §4` and `research/evaluations/wasm-codegen-comparison.md`.
+into `research/SUBSTRATE-TAKEAWAYS.md §4` and `protocol-generator/shared/evaluations/wasm-codegen-comparison.md`.
