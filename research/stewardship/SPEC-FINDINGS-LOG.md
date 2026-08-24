@@ -10,6 +10,20 @@ Cross-language register of findings surfaced by keystone work. Per-language spec
 
 **Why this section exists**: arch caught itself twice in one session about to draft proposals for already-folded work because the pipe-table cells below carried stale "Open" status. Cells are append-only history; this section is the **current** disposition. Read here first; pipe-table is for provenance.
 
+> **Critical-review capstone (2026-07-18):** a four-dimension adversarial review of core (minimality/security/
+> design/implementation-history) is complete. Converged view: [`../SYNTHESIS-RECONCILIATION-2026-07-18.md`](../SYNTHESIS-RECONCILIATION-2026-07-18.md)
+> (front door); net-new arch items: [`HANDOFF-TO-ARCH-2026-07-18-critical-review-outputs.md`](HANDOFF-TO-ARCH-2026-07-18-critical-review-outputs.md).
+> **No novel in-core defect found; core is sufficient for its own central paradigm (compute rides the frozen
+> core with zero forced change — RT-15) and the coverage well is confirmed dry.** Net-new residue: RT-13 (§4.8
+> atomic-refcount + §1.6 frame-write atomicity — two one-line MUSTs), RT-14 (normative lowercase-hex — the
+> RT-3 Go-ism receipt), RT-10 (name the continuation `suspend()` seam in core §6.13; its `chain_depth` half is
+> in-flight as PROPOSAL-CONTINUATION-BOUNDS-PROPAGATION), a format_code=128 clarifying sentence, an
+> `unregister` refcount note, and W6 (mint-time resource absolutization — design proposal). Extension-layer:
+> F-PQ (cross-algorithm identity migration → identity/quorum, core not implicated). Editorial: right-size the
+> retrospective's minimality verdict (asserted, not proven). Detail:
+> [`../RED-TEAM-CRITICAL-REVIEW-2026-07-18.md`](../RED-TEAM-CRITICAL-REVIEW-2026-07-18.md) +
+> [`../IMPLEMENTATION-HISTORY-REVIEW-2026-07-18.md`](../IMPLEMENTATION-HISTORY-REVIEW-2026-07-18.md).
+>
 > **Aggregate digest for arch:** the open spec surface (**F32–F41**, 10 findings across 7 handoffs) plus the retrospective minimality-analysis outputs are consolidated in [`HANDOFF-TO-ARCH-2026-07-17-AGGREGATE-F32-F41.md`](HANDOFF-TO-ARCH-2026-07-17-AGGREGATE-F32-F41.md) (single front door; this sweep stays source-of-truth on status). After the **full section-by-section core-spec read** (retrospective §8.7, all 4,184 lines): **F42/F43 CLOSED** — float/hash and crypto agility were never in the mandatory core; §9.1 MUST is SHA-256 + Ed25519 only, all agility is §9.3 MAY, so the spec's own MUST/MAY split already *is* the forced-vs-chosen minimality partition. F43 is additionally **downgrade-free by design** (§4.5 makes `key_type` an identity-bound accept-set, not a negotiated single value — no downgrade surface). Three small residues remain: **F44** (narrowed — caveat *mechanism* is §9.1 MUST; open question is only accept-path oracle coverage), **F45** (a one-line §6.5 clarity note on transient request-signature persistence), and **F46** (forward-looking — the `hello` negotiation isn't transcript-authenticated; benign today but a constraint for any future security-bearing negotiated parameter).
 
 | ID | Status | Closing cite | One-line disposition |
