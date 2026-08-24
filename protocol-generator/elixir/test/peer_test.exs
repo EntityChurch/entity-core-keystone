@@ -128,7 +128,10 @@ defmodule EntityCore.PeerTest do
         Model.make("primitive/any", %{
           "target" => "system/validate/echo",
           "operation" => "echo",
-          "value" => "round-trip-99",
+          # §7a.1: the `value` field carries the outbound params entity DATA —
+          # the `{value: X}` echo-shape (per the Go oracle + GUIDE-CONFORMANCE),
+          # forwarded verbatim by the pass-through handler; NOT a bare scalar.
+          "value" => %{"value" => "round-trip-99"},
           "reentry_capability" => Model.to_cbor(cap),
           "reentry_granter" => Model.to_cbor(granter),
           "reentry_cap_signature" => Model.to_cbor(capsig)

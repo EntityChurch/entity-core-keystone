@@ -57,7 +57,10 @@ public sealed class ConformanceHandlersTests
         Entity prm = Entity.Create(TypeNames.PrimitiveAny, Ecf.Map(
             ("target", Ecf.Text("system/validate/echo")),
             ("operation", Ecf.Text("echo")),
-            ("value", Ecf.Text("round-trip-99")),
+            // §7a.1: the `value` field carries the outbound params entity DATA — the
+            // `{value: X}` echo-shape (Go oracle + GUIDE-CONFORMANCE), forwarded verbatim by
+            // the pass-through handler; NOT a bare scalar (a scalar has no `value` to echo back).
+            ("value", Ecf.Map(("value", Ecf.Text("round-trip-99")))),
             ("reentry_capability", new EcfValue.PreEncoded(cap.Entity.WireBytes)),
             ("reentry_granter", new EcfValue.PreEncoded(caller.LocalIdentity.PeerEntity.WireBytes)),
             ("reentry_cap_signature", new EcfValue.PreEncoded(capSig.WireBytes))));

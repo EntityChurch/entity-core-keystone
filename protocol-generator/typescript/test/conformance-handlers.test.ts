@@ -67,7 +67,10 @@ test("§7a dispatch-outbound originates a reentry EXECUTE back to the caller", a
       Ecf.map(
         ["target", Ecf.text("system/validate/echo")],
         ["operation", Ecf.text("echo")],
-        ["value", Ecf.text("round-trip-99")],
+        // §7a.1: the `value` field carries the outbound params entity DATA — the
+        // `{value: X}` echo-shape (Go oracle + GUIDE-CONFORMANCE), forwarded verbatim by the
+        // pass-through handler; NOT a bare scalar (a scalar has no `value` to echo back).
+        ["value", Ecf.map(["value", Ecf.text("round-trip-99")])],
         ["reentry_capability", ecfPreEncoded(cap.entity.wireBytes)],
         ["reentry_granter", ecfPreEncoded(caller.localIdentity.peerEntity.wireBytes)],
         ["reentry_cap_signature", ecfPreEncoded(capSig.wireBytes)],

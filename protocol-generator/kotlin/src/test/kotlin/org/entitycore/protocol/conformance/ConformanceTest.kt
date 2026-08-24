@@ -15,7 +15,7 @@ class ConformanceTest {
         val result = ConformanceHarness.run(ConformanceHarness.defaultFixture())
         println("ECF conformance: ${result.pass}/${result.total} PASS (${result.fail} fail)")
         result.failures.forEach { println("  $it") }
-        assertTrue(result.total >= 69, "expected >= 69 testable vectors, got ${result.total}")
+        assertTrue(result.total >= 71, "expected >= 71 testable vectors, got ${result.total}")
         assertEquals(0, result.fail, "byte-identity failures:\n" + result.failures.joinToString("\n"))
         assertEquals(result.total, result.pass)
     }

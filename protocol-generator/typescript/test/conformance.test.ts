@@ -12,5 +12,5 @@ test("ECF conformance corpus — every vector byte-identical to the cross-blesse
   const report = runConformance(loadCorpusBytes());
   const failures = report.results.filter((r) => !r.pass).map((r) => `${r.id} [${r.kind}]: ${r.message}`);
   assert.deepEqual(failures, [], `\nfailing vectors:\n${failures.join("\n")}\n`);
-  assert.ok(report.results.length >= 69, `expected ≥69 vectors, ran ${report.results.length}`);
+  assert.ok(report.results.length >= 71, `expected ≥71 vectors, ran ${report.results.length}`);
 });

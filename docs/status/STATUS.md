@@ -42,6 +42,30 @@ wire byte-unchanged**; the `v7.*` snapshots were retired.
 
 ## Where we left off
 
+**Most recent — F29/F30 corpus re-vendor + cohort codec re-run (2026-07-12).** Arch
+finalized the ECF wire-conformance corpus (**69 → 71 vectors**: F29 `nested.5`/`nested.6`
+array-of-maps head boundary + F30 `tag_reject.1/2/3/5` regenerated to genuinely gate the
+§6.3 tag scanner) and committed it in `entity-core-protocol` @ `be54baf`. Re-vendored here as
+`9695b1f1…` (supersedes the 69-vector `41d68d2d…`), artifact **decode-verified** per the F16
+lesson (71 vectors, every canonical byte matched `.diag`, nested pins exact). **Cohort
+`wire-conformance` re-run: 71/71 (0 FAIL) across all 27 codec peers** — incl. the F29
+surfacers Forth/Smalltalk and the F30 surfacer Fortran; go independently tallied 66
+encode_equal + 5 decode_reject; cobol 70-pass/1-carve-out-skip. Count/SHA assertions bumped
+in the peers that pinned them (python/swift/haskell/dart/cpp SHA+count; java/kotlin/php/ts
+floor). **F29 + F30 CLOSED** (`research/stewardship/SPEC-FINDINGS-LOG.md`; the two
+HANDOFF-TO-ARCH docs archived). This **closes the alien-substrate discovery sweep** — F29/F30
+were its last corpus asks. *(**F31 CLOSED** the same day: elixir/csharp/cobol/typescript each had a peer-layer
+unit test fail while codec-green + validate-peer-S4-conformant. Bisected to two **stale-test**
+causes, both test-side (no handler/peer code was wrong): (A) three §7a dispatch-outbound reentry
+tests sent the `value` field as a bare scalar instead of the `{value:X}` entity-data map the
+§7a.1 contract requires — per the Go oracle + the passing kotlin test; wrapping is what the
+pass-through handler forwards, a scalar has no `value` to echo back; (B) cobol's dispatch
+skeleton test expected 404 for an *unauthenticated* unknown-handler EXECUTE, but §6.5
+authenticates before resolving, so 401 is the spec-correct status. Fixed all four (elixir 28/28,
+csharp 34/34, ts 62/62, cobol suite PASS); details in `SPEC-FINDINGS-LOG.md` F31. **Policy call flagged for a maintainer:** whether keystone keeps
+*vendoring* the corpus or moves to Go's drift-proof *canonical-source* pattern — see the
+handoff; not changed unilaterally.)*
+
 The closed cohort is **28 generated core peers** (OCaml, Swift, Haskell, Go,
 Lean, C#, TypeScript, Java, Kotlin, Elixir, Common Lisp, Rust, Python, Zig, C,
 C++, Ada, Ruby, Prolog, PHP, Dart, COBOL, Tcl, Rexx, Forth, Smalltalk, Fortran,

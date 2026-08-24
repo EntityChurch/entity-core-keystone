@@ -1,8 +1,15 @@
 >>SOURCE FORMAT FREE
 *> entity-core-protocol-cobol — dispatch skeleton self-test (in-process).
-*> Builds an EXECUTE envelope for an unknown handler, runs dispatch, and checks
-*> the response is a 404 handler_not_found EXECUTE_RESPONSE with the request_id
-*> echoed. Exercises the full build -> canon -> dispatch -> decode pipeline.
+*> Builds an UNAUTHENTICATED EXECUTE envelope (no author/signature) and runs
+*> dispatch. Per §6.5 the dispatch chain runs verify_request (authentication) at
+*> the wire boundary BEFORE handler resolution (ENTITY-CORE-PROTOCOL.md §6.5,
+*> "verify_ctx ... constructed ... before handler resolution"), so an unauthored
+*> request is rejected 401 authentication_failed regardless of whether the target
+*> handler exists — the unknown-handler 404 path is only reachable AFTER auth.
+*> Checks the response is a 401 EXECUTE_RESPONSE with the request_id echoed.
+*> Exercises the full build -> canon -> dispatch -> decode pipeline. (The genuine
+*> 404 handler_not_found path is exercised under authenticated dispatch by the
+*> validate-peer S4 oracle.)
 identification division.
 program-id. dispatch-test.
 data division.
@@ -70,7 +77,7 @@ procedure division.
         display "FAIL no response for EXECUTE" add 1 to fails
     end-if
 
-    *> decode response: rstatus = 404, request_id echoed
+    *> decode response: rstatus = 401 (authn before resolution, §6.5), request_id echoed
     call "env-root-off" using resp root-off root-fnd
     if root-fnd = 0
         display "FAIL response has no root" add 1 to fails
@@ -78,8 +85,8 @@ procedure division.
         call "ent-field" using resp root-off k-stat k-stat-len voff vfnd
         if vfnd = 1
             call "read-uint" using resp voff rstatus
-            if rstatus = 404
-                display "PASS rstatus 404 handler_not_found"
+            if rstatus = 401
+                display "PASS rstatus 401 authentication_failed"
             else
                 display "FAIL rstatus = " rstatus add 1 to fails
             end-if

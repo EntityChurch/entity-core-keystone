@@ -16,7 +16,7 @@ final class ConformanceTest {
         for (String f : r.failures()) {
             System.out.println("  " + f);
         }
-        assertTrue(r.total() >= 69, "expected at least 69 testable vectors, got " + r.total());
+        assertTrue(r.total() >= 71, "expected at least 71 testable vectors, got " + r.total());
         assertEquals(0, r.fail(), "wire-conformance must be all-PASS");
     }
 }

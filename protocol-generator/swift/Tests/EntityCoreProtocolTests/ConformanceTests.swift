@@ -35,7 +35,7 @@ final class ConformanceTests: XCTestCase {
             .path
     }()
 
-    static let expectedSHA256 = "41d68d2d717f84e195d46ec002fce6b8729742026256e72dc7a3a8b6c0c6a052"
+    static let expectedSHA256 = "9695b1f1d939cfdfdd4297f8ad32122d424b1ec180cfae74c92d509d88f7c6dc"
 
     func loadVectors() throws -> [CBORValue] {
         let data = try Data(contentsOf: URL(fileURLWithPath: Self.corpusPath))
@@ -103,7 +103,7 @@ final class ConformanceTests: XCTestCase {
 
     func testConformanceCorpus() throws {
         let vectors = try loadVectors()
-        XCTAssertEqual(vectors.count, 69, "expected 69 vectors in the v1 corpus")
+        XCTAssertEqual(vectors.count, 71, "expected 71 vectors in the v1 corpus")
 
         var pass = 0
         var fail = 0
@@ -159,6 +159,6 @@ final class ConformanceTests: XCTestCase {
         if !failures.isEmpty { print("FAILURES:\n  " + failures.joined(separator: "\n  ")) }
 
         XCTAssertEqual(fail, 0, "conformance failures:\n" + failures.joined(separator: "\n"))
-        XCTAssertEqual(pass, 69)
+        XCTAssertEqual(pass, 71)
     }
 }

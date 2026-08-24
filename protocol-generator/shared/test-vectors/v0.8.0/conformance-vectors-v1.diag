@@ -107,30 +107,45 @@
   { "id": "nested.2", "description": "three-level: {outer: {inner: {deep: 1}}}",                  "kind": "encode_equal", "input": {"outer": {"inner": {"deep": 1}}},                "canonical": h'a1656f75746572a165696e6e6572a1646465657001' },
   { "id": "nested.3", "description": "entity carrier shape: {type, data} with multi-field data",  "kind": "encode_equal", "input": {"type": "test/v1", "data": {"a": 1, "b": "two"}}, "canonical": h'a26464617461a261610161626374776f647479706567746573742f7631' },
   { "id": "nested.4", "description": "hash-keyed inner map (envelope-included-like)",             "kind": "encode_equal", "input": {"included": {h'0001020304050607080910111213141516171819202122232425262728293031': 1}}, "canonical": h'a168696e636c75646564a15820000102030405060708091011121314151617181920212223242526272829303101' },
+  / nested.5/.6 (F29): the CBOR text-head boundary INSIDE an array element —  /
+  / an array whose elements are maps carrying a >=24-byte (minor-24, 0x78)   /
+  / and >=256-byte (minor-25, 0x79) text value. Absent from the original 69  /
+  / corpus, so a defective +1/+2-byte head branch passed 69/69 and faulted   /
+  / only at S4 type-registry publish (Forth #25 A-FT-017). Cross-blessed     /
+  / byte-identical across Go x Rust x Python (Appendix E.4). See F29.        /
+  { "id": "nested.5", "description": "array-of-maps, inner text head boundary (24/30-byte values, minor-24 head)", "kind": "encode_equal", "input": [{"k": "aaaaaaaaaaaaaaaaaaaaaaaa"}, {"k": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}], "canonical": h'82a1616b7818616161616161616161616161616161616161616161616161a1616b781e626262626262626262626262626262626262626262626262626262626262' },
+  { "id": "nested.6", "description": "array-of-map with a 256-byte inner text value (minor-25 2-byte head)", "kind": "encode_equal", "input": [{"k": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}], "canonical": h'81a1616b79010063636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363' },
 
   / tag_reject — §6.3 rejection vectors. canonical bytes ARE the wire input /
   / to feed the decoder; the decoder MUST reject (typical error code:      /
   / 400 non_canonical_ecf). The encoder MUST NOT produce these.            /
 
-  / tag_reject.1: wrapper {type, data} with tag-0 (datetime) at data.ts.    /
-  / Wire bytes: a2 64 t y p e 67 t e s t / v 1 64 d a t a a1 62 t s c0 74  /
-  /             "2026-06-06T12:00:00Z" (20 char string).                   /
-  { "id": "tag_reject.1", "description": "tag 0 (datetime) in data field — MUST reject", "kind": "decode_reject", "canonical": h'a2647479706567746573742f7631646461746161316274736374323032362d30362d30365431323a30303a30305a' },
+  / tag_reject.1: {data:{ts: 0("2026-06-06T12:00:00Z")}, type:"test/v1"} —  /
+  / canonical ECF (keys length-then-lex: data before type) EXCEPT the c0    /
+  / tag-0 on data.ts. Rejects via the §6.3 tag scanner, not trailing data.  /
+  / F30 regen: the prior bytes decoded as a complete {type,data:"1"} map    /
+  / followed by trailing garbage, so they rejected on full-consumption and  /
+  / never gated N2 (only .4 carried a real tag). See SPEC-FINDINGS F30.     /
+  { "id": "tag_reject.1", "description": "tag 0 (datetime) in data field — MUST reject", "kind": "decode_reject", "canonical": h'a26464617461a1627473c074323032362d30362d30365431323a30303a30305a647479706567746573742f7631' },
 
-  / tag_reject.2: tag-1 (epoch timestamp) wrapping a uint at data.ts.       /
-  { "id": "tag_reject.2", "description": "tag 1 (epoch ts) in data field — MUST reject", "kind": "decode_reject", "canonical": h'a2647479706567746573742f7631646461746161316274731a661fa680' },
+  / tag_reject.2: {data:{ts: 1(1713350272)}, type} — canonical except the   /
+  / c1 tag-1 (epoch ts) on the uint at data.ts. F30 regen (was trailing).   /
+  { "id": "tag_reject.2", "description": "tag 1 (epoch ts) in data field — MUST reject", "kind": "decode_reject", "canonical": h'a26464617461a1627473c11a661fa680647479706567746573742f7631' },
 
-  / tag_reject.3: tag-37 (UUID) wrapping a 16-byte bstr at data.id.         /
-  { "id": "tag_reject.3", "description": "tag 37 (UUID) in data field — MUST reject", "kind": "decode_reject", "canonical": h'a2647479706567746573742f7631646461746161316269643350112233445566778899aabbccddeeff' },
+  / tag_reject.3: {data:{id: 37(h'…16 bytes…')}, type} — canonical except   /
+  / the d825 tag-37 (UUID) on the 16-byte bstr at data.id. F30 regen.       /
+  { "id": "tag_reject.3", "description": "tag 37 (UUID) in data field — MUST reject", "kind": "decode_reject", "canonical": h'a26464617461a1626964d82550112233445566778899aabbccddeeff00647479706567746573742f7631' },
 
   / tag_reject.4: tag 55799 (self-described CBOR magic) wrapping a wire     /
   / frame — explicitly forbidden in §6.3.                                   /
   { "id": "tag_reject.4", "description": "tag 55799 (self-describe) on wire frame — MUST reject", "kind": "decode_reject", "canonical": h'd9d9f7a0' },
 
-  / tag_reject.5: nested tag inside included entity data (deep rejection). /
-  / outer envelope { root: {...}, included: { hash: { type, data: {ts:    /
-  / tag-0("2026-06-06T12:00:00Z")} } } }                                   /
-  { "id": "tag_reject.5", "description": "tag 0 nested in included entity data — MUST reject", "kind": "decode_reject", "canonical": h'a26472 6f6f74a2647479706567746573742f7631646461746160 68696e636c75646564 a158210000000000000000000000000000000000000000000000000000000000000001a2647479706567746573742f7631646461746161316274736374323032362d30362d30365431323a30303a30305a' },
+  / tag_reject.5: deep rejection — envelope {root:{data:{},type}, included: /
+  / { <33B content-hash>: {data:{ts: 0("2026-06-06T12:00:00Z")}, type} } }. /
+  / Fully canonical (root + included both keys length-then-lex) EXCEPT the  /
+  / c0 tag-0 nested in the included entity's data.ts — the §6.3 "at any     /
+  / nesting depth, inside included entities" clause. F30 regen.             /
+  { "id": "tag_reject.5", "description": "tag 0 nested in included entity data — MUST reject", "kind": "decode_reject", "canonical": h'a264726f6f74a26464617461a0647479706567746573742f763168696e636c75646564a15821000000000000000000000000000000000000000000000000000000000000000001a26464617461a1627473c074323032362d30362d30365431323a30303a30305a647479706567746573742f7631' },
 
   / ─────────────────────────────────────────────────────────────────────── /
   / CLASS B — protocol-surface conformance                                   /

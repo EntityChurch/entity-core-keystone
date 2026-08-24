@@ -1,4 +1,4 @@
-\ entity-core-protocol-forth — S2 FULL codec conformance (v0.8.0 corpus, 69 vectors).
+\ entity-core-protocol-forth — S2 FULL codec conformance (v0.8.0 corpus, 71 vectors).
 \
 \ Walks the pinned corpus (decoded with OUR OWN decoder) and asserts, per vector:
 \ encode(reconstructed input) == canonical bytes; and decode(canonical) REJECTS (throws a

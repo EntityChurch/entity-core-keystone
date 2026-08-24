@@ -5,7 +5,7 @@ import 'package:test/test.dart';
 /// corpus must be byte-identical (encode) / correctly rejected (decode_reject).
 /// A FAIL here means the CODE is wrong (S5 discipline) — never the corpus.
 void main() {
-  test('wire-conformance corpus is byte-identical (69/69)', () async {
+  test('wire-conformance corpus is byte-identical (71/71)', () async {
     final result = await ConformanceHarness.run(ConformanceHarness.defaultFixture());
     if (result.failures.isNotEmpty) {
       // ignore: avoid_print
@@ -16,6 +16,6 @@ void main() {
         '${result.fail} FAIL ==');
     expect(result.fail, 0, reason: result.failures.join('\n'));
     expect(result.pass, result.total);
-    expect(result.total, 69, reason: 'expected 69 testable vectors in v7.71');
+    expect(result.total, 71, reason: 'expected 71 testable vectors (F29/F30 corpus)');
   });
 }

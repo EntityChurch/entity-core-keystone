@@ -8,14 +8,16 @@
 
 ### 1. ECF codec corpus
 
-The lower-bar codec conformance set. **Wire-format byte-stable** — the ECF corpus has not changed across spec revisions.
+The lower-bar codec conformance set. **F29/F30 re-vendor (2026-07-12):** the prior corpus was **69 vectors** (64 `encode_equal` + 5 `decode_reject`); this snapshot is the finalized **71** — F29 added `nested.5`/`nested.6` (array-of-maps text-head boundary), F30 regenerated `tag_reject.1/.2/.3/.5` to be truly canonical-except-the-tag (the old bytes had `type` before `data`, so they rejected on trailing-data instead of the §6.3 tag scanner — a vacuous pass). See the re-vendor note below.
 
 | File | Role | SHA-256 |
 |---|---|---|
-| `conformance-vectors-v1.cbor` | Normative ECF corpus (64 encode + 5 reject + 2 meta = 71 vectors). | `41d68d2d717f84e195d46ec002fce6b8729742026256e72dc7a3a8b6c0c6a052` |
-| `conformance-vectors-v1.diag` | Human source-of-truth (CBOR diagnostic notation). | `987672147c90e252fdee51334fe1faa60baff453c2743d44724b29cb671e25fe` |
+| `conformance-vectors-v1.cbor` | Normative ECF corpus (66 `encode_equal` + 5 `decode_reject` = **71 vectors**). | `9695b1f1d939cfdfdd4297f8ad32122d424b1ec180cfae74c92d509d88f7c6dc` |
+| `conformance-vectors-v1.diag` | Human source-of-truth (CBOR diagnostic notation). | `71015b729b205f39e29750e632a136844fe7da3f9e37800e870d14bf87086544` |
 
-Source: arch `specs/test-vectors/ecf-conformance/`, commit `23db2546`. C# / Rust-FFI / C-FFI all 69/69 — **carries forward unchanged.**
+Source: arch `entity-core-protocol` `specs/test-vectors/ecf-conformance/`, commit **`be54baf`** (`fix(corpus): close F30 tag_reject + F29 array-of-maps head-boundary gaps`). Three-way byte-equality (Go × Rust × Python) → 71/71 PASS.
+
+> **F29/F30 re-vendor (2026-07-12).** Supersedes the prior `41d68d2d…` (`.cbor`) / `987672147c90…` (`.diag`) 69-vector corpus. That corpus's table row here had been pre-stamped "71" while its own `.diag` carried only 69 vectors — the discrepancy this re-vendor reconciles. The new `.cbor` is **byte-identical to arch**; the `.diag` is copied **byte-identical** as well (unlike the agility `.diag`, this file carries no provenance-date lines to strip — its only dates are the `2026-06-06T12:00:00Z` datetime literals *inside* `tag_reject` vector data, which are canonical vector content). Verified per the F16 lesson by **decoding the `.cbor` artifact** and cross-checking all 71 ids + canonical byte values against the `.diag` (zero mismatches, no placeholder text), plus the F29 byte pins: `nested.5` = `82a1616b7818`+24×`61`+`a1616b781e`+30×`62`, `nested.6` = `81a1616b790100`+256×`63`.
 
 ### 2. Crypto-agility corpus (vendored from arch, byte-pinned)
 

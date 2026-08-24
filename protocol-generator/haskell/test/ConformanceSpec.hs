@@ -20,10 +20,10 @@ corpusPath = "../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"
 
 -- The locked corpus sha256 (verify by decoding, do not assume).
 corpusSha :: String
-corpusSha = "41d68d2d717f84e195d46ec002fce6b8729742026256e72dc7a3a8b6c0c6a052"
+corpusSha = "9695b1f1d939cfdfdd4297f8ad32122d424b1ec180cfae74c92d509d88f7c6dc"
 
 spec :: Spec
-spec = describe "ECF conformance corpus (v0.8.0, 69 vectors)" $ do
+spec = describe "ECF conformance corpus (v0.8.0, 71 vectors)" $ do
   result <- runIO (loadVectors corpusPath)
   rawBytes <- runIO (BS.readFile corpusPath)
 
@@ -33,8 +33,8 @@ spec = describe "ECF conformance corpus (v0.8.0, 69 vectors)" $ do
   case result of
     Left err -> it "loads the corpus" $ expectationFailure err
     Right vectors -> do
-      it "decoded exactly 69 vectors" $
-        length vectors `shouldBe` 69
+      it "decoded exactly 71 vectors" $
+        length vectors `shouldBe` 71
 
       it "covers all 11 categories" $
         nub (map (T.unpack . vectorCategory) vectors)

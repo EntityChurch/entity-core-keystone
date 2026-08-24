@@ -20,10 +20,11 @@ def test_no_failures():
 
 
 def test_full_corpus_count():
-    # The v7.56 corpus array holds 69 testable vectors (64 encode_equal + 5
-    # decode_reject; the manifest's "71" counts 2 metadata-agreement checks
-    # that are not array entries). All must run and pass (S7 lower bar).
-    assert _REPORT["total"] == 69, f"expected 69 vectors, ran {_REPORT['total']}"
+    # The finalized F29/F30 corpus holds 71 testable vectors: 66 encode_equal
+    # (incl. the F29 nested.5/nested.6 array-of-maps head-boundary pair) + 5
+    # decode_reject (the F30-regenerated tag_reject battery). All must run and
+    # pass (S7 lower bar).
+    assert _REPORT["total"] == 71, f"expected 71 vectors, ran {_REPORT['total']}"
     assert _REPORT["fail"] == 0
 
 

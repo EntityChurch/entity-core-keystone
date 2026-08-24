@@ -1,4 +1,4 @@
-"entity-core-protocol-smalltalk — S2 FULL codec conformance (v0.8.0 corpus, 69 vectors).
+"entity-core-protocol-smalltalk — S2 FULL codec conformance (v0.8.0 corpus, 71 vectors).
 
 Walks the pinned corpus (decoded with OUR OWN EcCborDecoder) and asserts, per vector:
   - encode_equal: encode(reconstructed input) == canonical bytes (byte-identical);

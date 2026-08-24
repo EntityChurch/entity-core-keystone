@@ -34,6 +34,6 @@ final class ConformanceTest extends TestCase
 
         \fwrite(STDERR, "\nECF corpus: {$passes}/" . \count($results) . " PASS\n");
         self::assertSame([], \array_values($failures), \count($failures) . ' vector(s) failed');
-        self::assertGreaterThanOrEqual(69, \count($results), 'expected at least 69 conformance vectors');
+        self::assertGreaterThanOrEqual(71, \count($results), 'expected at least 71 conformance vectors');
     }
 }
