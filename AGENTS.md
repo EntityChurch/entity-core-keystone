@@ -796,10 +796,31 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   documentation goes there; declaration is reserved for documents.** The keep-list grew by
   exactly one entry across the whole release-readiness push — `docs/STATUS.md`, which is a
   canonical doc — while 33 documents moved into publication without touching it.
-  **Enforcement, one grep, and run it against `tools/` too:** every `research/` and `docs/` path
-  NAMED by a published artifact must either be declared or not be under a doc root. Reading the
-  `.md` files alone misses the paths named from `Containerfile`s, a `profile.toml` and a test
-  source, which is where a third of these were hiding.
+  **RATIFIED 2026-08-24, third occurrence, and it is now a GATE rather than a grep —
+  `tools/link-gate.py` check 2, in `make lint`.** A published file must not NAME a path the
+  release strips. Check 1 (link resolution) is structurally blind to this: the target exists in
+  our tree, so the link resolves here and is dead for the reader. The three occurrences were the
+  sixteen non-doc citations that defeated the first findings rename, the diagnostic
+  `check-set-gate.py` printed at runtime, and — found by DevOps' independent pass, not by us —
+  **three source comments citing dated snapshots, two of them in published peer source, a `.c`
+  and an `.s`.**
+  **We had already run this check and reported "one hit." It was three.** The scan was scoped to
+  `*.sh *.py *.go *.rs *.toml Makefile` and never opened a `.c` or an `.s`; and it matched bare
+  basenames, so 66 of 69 raw hits were `README.md` colliding with itself, which is precisely the
+  noise that makes a reader dismiss the other three. **Two failure modes in one grep — wrong file
+  set, and a signal-to-noise ratio that hid the answer inside its own output.** Match FULL PATHS,
+  scan EVERY extension.
+  **And the wrapped form is not an edge case here — it was two of the three.** The gate reads the
+  JOINED text and tolerates a comment marker on the continuation line (`//`, `#`, `;`, `*`, `--`,
+  `!`, `%`), because a path broken across a line with `# ` starting the next one is invisible to
+  every per-line tool. Fourth time this shape has cost real time.
+  **Severity is split on purpose, same principle as `check-set-gate`'s disclosed debt:** non-prose
+  citations FAIL (shipped engineering provenance, small and actionable — currently 0), prose-to-
+  prose citations are REPORTED and do not fail (26 dated snapshots cited from published docs,
+  measured and parked by operator ruling). Hard-failing those would hold the gate permanently red,
+  which teaches people to skip it — a failure mode written down twice in this file already.
+  Regression-tested against all four cases: plain non-prose citation → exit 1, wrapped non-prose
+  citation → exit 1, prose citation → exit 0 with a report, clean tree → exit 0.
 - **THE ECOSYSTEM ADRs DO NOT PUBLISH — standing operator ruling, 2026-08-24. `docs/adr/ecosystem/`
   stays undeclared, all 33 strip, and that is the correct answer rather than a finding.** Cite
   `[ADR-NNNN]` by NUMBER in published prose freely — the number references a decision, not a

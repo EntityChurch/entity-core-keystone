@@ -21,8 +21,9 @@
  *                   placeholder handler tree (the WALK is on the canvas).
  *   §4.1 handshake  peer_id / build_hello — Ed25519 identity + hello response.
  * NEXT (authenticate leg, §4.6): byte-field + included-map decode, signature
- * verify (ec_ed25519_verify), and the §4.4 capability-grant construction. See
- * docs/status/HANDOFF-2026-07-14-puredata-s34-authenticate.md.
+ * verify (ec_ed25519_verify), and the §4.4 capability-grant construction.
+ * (Sequenced in an internal build handoff, 2026-07-14 — not published; the
+ * authored canvas and this file are the record that matters here.)
  * The wrapper-guard holds: this owns bytes/CBOR/crypto/store; the §6.5/§6.6
  * dispatch logic is authored on the canvas.
  */

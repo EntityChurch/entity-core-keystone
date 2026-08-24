@@ -6,8 +6,9 @@
 # ============================ PORTING CONVENTION ============================
 # The whole asm family isolates "what is protocol" (invariant) from "what is machine".
 # This is the aarch64 → riscv64 register/ABI map, applied CONSISTENTLY across every module
-# so the ported functions interoperate. (See asm-x86_64/arch/OPTIONS-AND-ISA-MAP.md, Axis A,
-# and docs/status/HANDOFF-2026-07-15-riscv-l1-next.md for the worked table.)
+# so the ported functions interoperate. (See asm-x86_64/arch/OPTIONS-AND-ISA-MAP.md, Axis A.
+# The worked table was derived in an internal build handoff, 2026-07-15 — not published; it
+# is reproduced in full below, so nothing is lost by not having it.)
 #
 #   aarch64 (AAPCS64)     riscv64 (RV64 LP64D)   role
 #   x0 x1 x2 x3 x4 x5     a0 a1 a2 a3 a4 a5       call args (line up → no arg shuffle at a call)

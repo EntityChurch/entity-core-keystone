@@ -13,22 +13,38 @@ two spec findings at `research/stewardship/HANDOFF-TO-ARCH-*.md` paths that had 
 since those findings were archived weeks earlier — dangling out of a PUBLISHED file, past
 every gate, for weeks. Nobody found it by reading. This finds it in a second.
 
-WHAT IT DOES NOT CATCH, and the limit is the point rather than an apology:
+CHECK 2 — no published file may NAME a path the release strips.
 
-  * a path in backticks rather than a markdown link — most of this repo's cross-references
-    are inline code, deliberately, because they are paths and not navigation;
-  * a truncated path split across a wrapped line (the class that already burned us once:
-    a backtick span that WRAPS is invisible to a per-line scan, so README's headline number
-    sat anchored to a dead identifier with the gate reporting clean);
+A link that resolves on disk can still be dead for a reader, because `canon-filter` deletes
+undeclared prose under a doc root on the way out. Check 1 cannot see this: the target exists
+here. This check replays the filter's rule (prose-only, doc-root prefixes — read from
+`internal/canon/canon.go`, and re-read it, because that rule was silently corrected once) and
+scans every file that survives it for a path that does not.
+
+It reads the JOINED text, not lines, so a path wrapped across a line break with a comment
+prefix on the continuation still matches. That is not hypothetical: two of the three
+citations this check was built for were exactly that shape, in a `.c` and an `.s`, and a
+`.md`-only per-line grep found neither.
+
+**Severity is split, deliberately, on the same principle as `check-set-gate`'s disclosed
+debt.** Non-prose citations — source, scripts, configs — FAIL: they are shipped engineering
+provenance and the set is small and actionable. Prose-to-prose citations are REPORTED and do
+not fail: ~25 of those are dated internal snapshots cited from published docs, measured and
+parked by operator ruling. Hard-failing them would leave the gate permanently red, which
+teaches people to skip it — the failure mode this repo has already written down twice.
+
+WHAT NEITHER CHECK CATCHES, and the limit is the point rather than an apology:
+
   * a path a TOOL prints at runtime — `check-set-gate.py` names a diagnostic as the reader's
-    next step, and that diagnostic was being deleted at release;
-  * a link that resolves but points at the wrong thing.
+    next step, and that diagnostic was once being deleted at release;
+  * a link that resolves but points at the wrong thing;
+  * a claim in prose that has gone stale without any path being wrong at all.
 
 So this is the cheap floor, not the coverage story. **The hand-walk of the published tree
 stays mandatory** (AGENTS.md, "no gate asks whether the published tree is internally
 coherent"). A gate that made people feel the walk was covered would be worse than no gate.
 
-Exit 0 clean, 1 on any broken link.
+Exit 0 clean, 1 on a broken link or a non-prose citation of a stripped path.
 """
 
 import os
@@ -41,6 +57,43 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 
 # `[text](target)` — target up to the first '#', ')' or whitespace.
 LINK = re.compile(r"\[[^\]]*\]\(\s*([^)\s#]+)(?:#[^)]*)?\s*\)")
+
+# --- canon-filter's rule, replayed. Read from entity-core-devops
+# `tools/release-builder/internal/canon/canon.go`. CORRECTED UPSTREAM 2026-08-23 to
+# prose-only; it previously dropped ANY extension under a doc root, which shipped a
+# sibling mirror that failed its own test suite on stripped .cbor vectors. If this
+# ever disagrees with a supplied strip list, re-read canon.go before trusting either.
+PROSE_EXT = (".md", ".markdown", ".rst", ".txt", ".adoc", ".patch", ".diff")
+DOC_ROOTS = (
+    "docs/", "doc/", "reviews/", "review/", "research/", "explorations/", "exploration/",
+    "proposals/", "proposal/", "validation/", "stewardship/", "status/", "reports/",
+    "report/", "notes/", "handoffs/", "handoff/", "audits/", "audit/", "planning/",
+    "design/", "designs/",
+)
+MANIFEST = "CANONICAL-DOCS.toml"
+
+# A path continuing on the next line may carry a comment marker. Covers //, #, ;, *,
+# --, !, % and a bare continuation — i.e. every comment syntax in this cohort.
+_WRAP = "/(?:\\x00[ \\t]*(?://|#|;|\\*|--|!|%)?[ \\t]*)?"
+
+
+def _declared():
+    """Paths declared canonical. Deliberately a regex, not a TOML parse: this must run
+    with no third-party dependency, and the manifest's `path = "..."` lines are the only
+    thing it needs."""
+    text = (REPO / MANIFEST).read_text(encoding="utf-8")
+    keep = set(re.findall(r'^path\s*=\s*"([^"]+)"', text, re.M))
+    keep.update({"README.md", MANIFEST})
+    return keep
+
+
+def _strips(rel, declared):
+    if rel in declared:
+        return False
+    if not rel.lower().endswith(PROSE_EXT):
+        return False
+    return rel.startswith(DOC_ROOTS) or "/" not in rel
+
 
 # Skipped wholesale: the ecosystem ADRs are byte-identical copies of files authored in
 # another repo, where their relative links resolve. They are undeclared, they strip at
@@ -91,8 +144,64 @@ def main() -> int:
         )
         return 1
 
+    # --- check 2: published files naming a path the release strips
+    declared = _declared()
+    all_tracked = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=REPO, capture_output=True, text=True, check=True
+    ).stdout.split("\0")
+    all_tracked = [p for p in all_tracked if p]
+    strip_set = {p for p in all_tracked if _strips(p, declared)}
+    published = [p for p in all_tracked if p not in strip_set]
+
+    # Compile each stripped path ONCE. Naively this is |published| x |strip_set| regex
+    # compiles — 300k of them, which took `make lint` from 0.18 s to 2 s and would have
+    # handed the per-commit release oracle a 10x regression for no added coverage.
+    patterns = [
+        (target, re.compile(re.escape(target).replace(r"/", _WRAP)))
+        for target in sorted(strip_set)
+    ]
+    # Cheap prefilter: a file that never mentions any doc-root prefix cannot cite a
+    # stripped path, and that is the overwhelming majority of a 2,700-file tree.
+    roots = tuple(r.rstrip("/") for r in DOC_ROOTS)
+
+    dead_code, dead_prose = [], []
+    for rel in published:
+        if rel.startswith(SKIP_PREFIXES) or rel == "tools/link-gate.py":
+            continue
+        try:
+            text = (REPO / rel).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if not any(r in text for r in roots):
+            continue
+        joined = text.replace("\n", "\x00")
+        bucket = dead_prose if rel.lower().endswith(PROSE_EXT) else dead_code
+        for target, pat in patterns:
+            for m in pat.finditer(joined):
+                bucket.append((rel, joined.count("\x00", 0, m.start()) + 1, target))
+
+    if dead_code:
+        print(
+            f"link-gate: {len(dead_code)} NON-PROSE file(s) name a path the release strips:",
+            file=sys.stderr,
+        )
+        for rel, line, target in sorted(dead_code):
+            print(f"  {rel}:{line}  ->  {target}", file=sys.stderr)
+        print(
+            "\nThis is shipped engineering provenance pointing at a file the reader will not "
+            "receive.\nReword to describe the source rather than name its path, or move the "
+            "target out of a doc root.",
+            file=sys.stderr,
+        )
+        return 1
+
     if not quiet:
         print(f"link-gate: OK — {n_links} relative links across {n_files} files all resolve")
+        print(
+            f"link-gate: OK — 0 of {len(published)} published files name a stripped path "
+            f"from code ({len(dead_prose)} prose citations reported, not gated — "
+            "dated snapshots, parked by ruling)"
+        )
     return 0
 
 
