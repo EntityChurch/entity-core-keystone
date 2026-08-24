@@ -4,3 +4,9 @@ build/
 *.a
 *.dylib
 *.dll
+
+# aarch64 cross-build outputs (rebuilt in-container, not committed)
+build-aarch64/
+
+# riscv64 cross-build outputs (rebuilt in-container, not committed)
+build-riscv64/

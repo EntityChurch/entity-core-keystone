@@ -1,0 +1,61 @@
+# entity-core-protocol-riscv64 — Language Profile
+#
+# The THIRD ISA of the hand-authored assembly peer (after x86-64 and aarch64): the SAME peer,
+# transliterated to riscv64 (RV64GC, GAS) and run under qemu-riscv64-static. Ported off
+# **asm-arm64**, NOT asm-x86_64 — aarch64 and riscv64 both use the kernel's *generic* syscall
+# table (asm-generic/unistd.h), so arm64 already pre-adapted every generic-table quirk
+# (fork→clone, epoll_pwait, openat-only). It exists for SUBSTRATE-DYNAMICS / GENERATOR-ROBUSTNESS
+# research — the ISA-MAP Axis-A thesis (protocol interior = mechanical register/syscall swap once
+# codec/crypto/peer-id are behind the FFI). It is NOT a spec-discovery probe: --profile core lands
+# 0-FAIL as CORROBORATION — cohort-consistent AND sharing the x86-64/arm64 generation lineage +
+# the same FFI codec, NOT independent convergence (ADR-0012).
+#
+# This profile declares only the riscv64 DELTAS from the aarch64 sibling; everything not restated
+# here is INHERITED by reference from ../asm-arm64/profile.toml + ../asm-x86_64/profile.toml +
+# ../asm-x86_64/arch/ (codec=FFI strategy, error model, no-runtime substrate rationale, the
+# A-ASM-*/A-ARM64-* findings). The port changes the machine, not the protocol.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value is logged in
+# status/SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "riscv64"
+name              = "riscv64 assembly (GAS, RV64GC)"
+tier              = "substrate-probe"          # bare-metal syscall-level substrate; corroboration tier (research/LANDSCAPE.md)
+package_name      = "entity-core-protocol-riscv64"
+runtime           = "riscv64-toolchain"        # containers/riscv64-toolchain/Containerfile
+isa               = "riscv64 RV64GC (LP64D, Linux, asm-generic syscall table)"
+ported_from       = "asm-arm64"                # transliteration off the generic-table sibling, not a fresh S1→S5
+execution         = "qemu-riscv64-static"      # cross-assembled/linked; run under qemu-user (no native riscv64 host)
+
+[abi_map]
+# The codified aarch64(AAPCS64) → riscv64(LP64D) transliteration convention (src/macros.s). A clean
+# bijection (both ISAs have ample registers + the same arg model), so cross-function ABI carries
+# verbatim. Applied CONSISTENTLY across all modules.
+call_args         = "x0 x1 x2 x3 x4 x5  →  a0 a1 a2 a3 a4 a5"
+return            = "x0 → a0"
+callee_saved      = "x19 x20 x21 x22 x23 x24 x25 x26 x28  →  s1 s2 s3 s4 s5 s6 s7 s8 s10"
+cbor_cursor       = "x24 → s6 GLOBALLY (the CBOR writer cursor; every w_* builder assumes s6)"
+syscall           = "nr in a7, args a0-a5, `ecall` — same generic-table numbers as aarch64 (a7 is arg8 too, but no syscall here takes >6 args)"
+frames            = "stp/ldp → addi sp + individual sd/ld (no pair op); keep the aarch64 frame size (already 16-aligned); live-across-call values in s1-s10"
+gotchas           = "bswap: no base-ISA byte-swap (no Zbb rev8) → hand-rolled bswap16/32/64 macros (A-RISCV-001); no condition flags → every cmp+b.cc becomes a fused compare-branch repeating operands; cmp-with-imm → li into a temp first; indexed/post-index addressing → explicit address add"
+
+[codec]
+# INHERITED: strategy = FFI (Level 1). The riscv64 deltas: libentitycore_codec.so is CROSS-BUILT
+# for riscv64 (riscv64-cross-toolchain.cmake), resolving glibc + libsodium from a **Debian trixie
+# riscv64 sysroot** — riscv64 is a Fedora *secondary* arch (no forcearch/sysroot path; the retired
+# "BLOCKED" finding), so the sysroot comes from Debian's first-class riscv64 port (A-RISCV-002).
+# libsodium is 1.0.18 on Debian vs 1.0.22 on fedora x86/arm64 — same stable C-ABI (A-RISCV-003).
+strategy          = "ffi"
+ffi_target        = { lib = "libentitycore_codec.so (cross-built riscv64)", abi = "c-abi-1.1", header = "ffi-generator/c-abi/spec/entitycore_codec.h" }
+codec_build_dir   = "ffi-generator/c-abi/entity-core-codec-ffi-c/build-riscv64"
+
+[concurrency]
+# INHERITED from arm64: clone(SIGCHLD)-per-connection (the generic table has no `fork`; A-ARM64-001,
+# carried). wait4/accept4 present + unchanged. host.s handles this; dispatch.s issues no fork.
+model             = "clone(SIGCHLD)-per-connection"
+
+[conformance]
+oracle            = "cc1970f"
+profile_core      = "682·0F (Result: PASS) — 583P/3W/0F/96S, byte-identical to asm-x86_64/asm-arm64"
+notes             = "§7a validate_echo_dispatch PASS; concurrency 5/5 (fork-fidelity under qemu-riscv64); §5.5 multisig 11/11 accept; security 28/29; the 3 benign WARNs match the x86-64/arm64 siblings. Landed 0-FAIL on the FIRST full run — the A-ARM64-003 seam bug did not recur (the arm64→riscv64 map is a clean bijection; A-RISCV-004)."

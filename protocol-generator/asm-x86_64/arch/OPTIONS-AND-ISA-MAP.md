@@ -123,7 +123,7 @@ dependency — only the register file changes. Axes B and A are coupled: if the 
 |---|---|---|---|---|
 | **L1** (current) | transport, envelope/data-map CBOR, dispatch, store, capability walk, §9.1 floor, identity, CLI | **entire** entity codec + Ed25519 + SHA-256 + base58 + peer-id | lowest | protocol control-flow on bare metal; the A-ASM-004 envelope-CBOR surface |
 | **L2** | + the canonical **entity ECF codec** (varint, shortest-float f16 ladder, length-then-lex key sort, recursive tag-reject, base58) | Ed25519 only (field arithmetic) | high | canonical-CBOR byte-work in asm — the codec conformance floor becomes native |
-| **L3** (pure) | + **SHA-256 + Ed25519** (RFC 8032 field arithmetic) | nothing | very high | a fully self-contained peer, zero external deps — max portability, max effort |
+| **L3** (pure) — **DEFERRED indefinitely (2026-07-15)** | + **SHA-256 + Ed25519** (RFC 8032 field arithmetic) | nothing | very high | a fully self-contained peer, zero external deps — but per-ISA (doesn't aid ports), high-risk crypto, ~zero discovery value; crypto stays linked-compiled. See matrix point 5. |
 
 Note A-ASM-004: even L1 is not "zero CBOR" — the envelope/data maps are always
 hand-rolled. L2's added surface is the *entity* codec (the hard canonical layer). L3 adds
@@ -175,26 +175,72 @@ Not all 3×3×3×2 points are distinct research. The non-redundant sequence:
 3. **ARM64 · L1 · cc+main · epoll** — first ISA port. Proves the shell is register-file-swap
    + generic-table. *Requires the codec built for arm64* (the FFI×ISA cost) — or defer to a
    pure track to avoid it.
-4. **RISC-V · L1 · cc+main · epoll** — nearly free after arm64 (shared generic table); proves
-   the port is now a rename. Corroboration.
-5. **x86-64 · L3 · `_start` · static · epoll** — the purity capstone: zero-dependency,
-   self-contained ELF. Also the *enabler* for cheap arm64/riscv ports (no foreign libsodium).
+4. **RISC-V · L1 · cc+main** — ~~nearly free after arm64 (shared generic table)~~
+   ~~BLOCKED (2026-07-15) → move to L3~~ ~~UNBLOCKED (2026-07-15, corrected)~~ **✅ LANDED GREEN
+   (2026-07-16, `protocol-generator/riscv64/`): `--profile core` = 682·0F (Result: PASS),
+   583P/3W/0F/96S @ `cc1970f`, byte-identical to x86-64/arm64.** The block was a Fedora-only
+   packaging gap, not a riscv problem: riscv64 is a Fedora *secondary* arch (no prebuilt glibc
+   sysroot, `forcearch riscv64` 404s), but **Debian trixie ships riscv64 as a first-class release
+   architecture**. The **actual landed path was even cleaner than the predicted
+   `--platform linux/riscv64 debian:trixie` full-container route**: base the toolchain container on
+   `fedora:43` (cross binutils/gcc + `qemu-user-static-riscv`, as arm64), and assemble the
+   glibc+libsodium sysroot from Debian trixie riscv64 **`.debs`** (fetched from deb.debian.org,
+   resolved via the signed Packages index, extracted with `ar`+`tar`). That needs **no host
+   binfmt/qemu registration and executes no foreign-arch code at build time** — the peer runs under
+   `qemu-riscv64-static` invoked explicitly and the Go oracle stays native x86-64 (the arm64 model,
+   sysroot-source swapped). No crypto, no L3 dependency. Findings: A-RISCV-002 (Debian sysroot,
+   retires "BLOCKED"), A-RISCV-001 (hand-rolled bswap — no base-ISA `rev8`), A-RISCV-004 (the
+   arm64→riscv64 map is a clean **bijection**, so the A-ARM64-003 inter-function seam bug did NOT
+   recur — 0-FAIL first run across a 9-way parallel fan-out; fan-out risk ∝ distance from a
+   bijection). Detail: `protocol-generator/riscv64/status/` +
+   `docs/status/HANDOFF-2026-07-16-riscv-l1-GREEN.md`.
+5. **x86-64 · L3 · `_start` · static · epoll** — the purity capstone. **DEFERRED (2026-07-15,
+   user decision) — likely indefinitely.** Rationale: (a) **it does not serve riscv** — the
+   headline justification ("L3 enables cheap riscv") was *backwards*: hand-written asm crypto is
+   **per-ISA**, so it would have to be re-authored for riscv, the *least* portable option; riscv
+   is unblocked at L1 (point 4) with zero hand-crypto. (b) **Crypto is the boundary the
+   methodology deliberately does not hand-author** — AGENTS: *"crypto … stays owned by KATs …"*;
+   Ed25519 field arithmetic (mod 2²⁵⁵−19: carry propagation, constant-time) is exactly the
+   high-blast-radius code a single bug ruins. (c) **~Zero discovery value** — L2 already retired
+   the "can asm express canonical CBOR byte-exact" question; L3 is a purity artifact, not a
+   finding. **Crypto stays linked-compiled (the existing FFI codec / a self-contained ref lib
+   for foreign arches), never hand-written.** Revisit only as a deliberate bare-metal exercise
+   for a genuinely bespoke architecture with no C toolchain — not on the current roadmap.
 
 Everything else (e.g. clone-threads, freestanding `_start` at L1) is a redundant or
 incoherent point — noted here so the roadmap doesn't wander into it.
 
 ## Recommended roadmap
 
-- **Now:** finish point 1 (x86-64 L1 green: S2 self-check → S3 peer → S4 `--profile core`
-  0-FAIL). Write the x86-64 shell *pre-adapted* to generic conventions (`openat`,
-  `epoll_pwait`) so ports are mechanical.
-- **Then, by signal:** point 2 (L2 asm codec, the real discovery bet) **or** point 3
-  (arm64 port, the reach bet). If reach is the goal, seriously weigh jumping to the L3/pure
-  track to sidestep per-arch codec builds — the FFI×ISA finding says pure is *more* portable.
-- **Corroboration:** riscv after arm64 (shared table → cheap).
+**Status (2026-07-15): the asm probe's discovery arc is complete.** Points 1, 2, 3 are DONE
+(x86-64 L1 green 682·0F; x86-64 L2 native codec green, `signature`-construction finding A-ASM-018
+harvested; arm64 L1 green, byte-identical). L2 answered the real discovery bet ("can asm express
+canonical-CBOR N1–N4 byte-exact?" → yes). Per AGENTS' own doctrine — *"a peer novel only off-wire
+adds generator robustness, not new findings … the spec-discovery well is dry"* — everything
+remaining on this substrate is **corroboration, not discovery**.
+
+- **Done:** points 1 (x86 L1), 2 (x86 L2), 3 (arm64 L1). The x86 shell was written pre-adapted to
+  generic conventions (`openat`, `epoll_pwait`), so the arm64 port was a register-file swap as
+  predicted.
+- **L3 (point 5): DEFERRED indefinitely** (see point 5) — no discovery value, high risk,
+  crypto stays linked-compiled. Not a hand-write-crypto project.
+- **RISC-V L1 (point 4): the one remaining *optional* item** — a portfolio/robustness "third ISA"
+  point, not new signal. Achievable in ~hours via a first-class-riscv64 distro under
+  `qemu-riscv64-static` (or full-system QEMU) — **no crypto, no L3**. Pick it up only if the
+  third-ISA breadth is wanted for its own sake.
+- **Steady state:** re-run the asm cohort (x86 + arm64, + riscv if built) against each spec
+  amendment — the ecosystem's stated steady-state value, not adding levels or ISAs.
 - **WASM/WASI** is a *different* substrate axis (sandboxed, capability-based, linear-memory)
-  and a separate track — compile the green Rust peer to `wasm32-wasip2` under wasmtime; not
-  an asm-family point. (See `docs/status/HANDOFF-2026-07-13-asm-wasm-next.md`.)
+  and a separate track — **now COMPLETE (2026-07-15):** three peers landed green — `wasm-wat`
+  (hand-authored WAT), `rust-wasm` (Rust→`wasm32-wasip1`, WasmEdge/JIT), and `rust-wasm-wasmtime`
+  (the SAME module under wasmtime **AOT**, compile-once-run-native). Note the correction to the
+  plan above: the AOT peer targets **`wasm32-wasip1`, not wasip2** — `wasmtime compile` is
+  WASI-version-agnostic, so wasip1 gives a controlled comparison + a distro-pure toolchain
+  (fedora ships no wasip2 std); a **host-preopened listener** (`-S tcplisten`) + standard wasip1
+  `sock_accept` replaced the presumed wasi-sockets/preview2 shim. See
+  `research/evaluations/wasm-codegen-comparison.md` +
+  `docs/status/HANDOFF-2026-07-15-wasmtime-aot-green-wasm-branch-complete.md`. wasip2 is a
+  deferred forward-ABI probe.
 
 ## Honesty framing (ADR-0012)
 

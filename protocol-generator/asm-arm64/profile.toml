@@ -1,0 +1,60 @@
+# entity-core-protocol-asm-arm64 — Language Profile
+#
+# The FIRST ISA PORT off the hand-authored x86-64 assembly peer: the SAME peer,
+# transliterated to aarch64 (GAS native ARM syntax) and run under qemu-aarch64-static.
+# It exists for SUBSTRATE-DYNAMICS / GENERATOR-ROBUSTNESS research — specifically to
+# test the ISA-MAP Axis-A thesis: with the codec/crypto/peer-id behind the FFI, is the
+# protocol interior a mechanical register/syscall swap across ISAs? (Answer: yes,
+# end-to-end — see status/PHASE-S3.md.) It is NOT a spec-discovery probe: the
+# wire-touching axes are saturated by the cohort, so --profile core lands 0-FAIL as
+# CORROBORATION — cohort-consistent AND sharing the x86-64 peer's generation lineage,
+# NOT independent convergence (ADR-0012).
+#
+# This profile declares only the aarch64 DELTAS from the x86-64 sibling; everything not
+# restated here is INHERITED by reference from ../asm-x86_64/profile.toml +
+# ../asm-x86_64/arch/ (codec=FFI strategy, error model, no-runtime substrate rationale,
+# the A-ASM-* protocol findings). The port changes the machine, not the protocol.
+#
+# Profile authority: the agent MUST use the values declared here. A "TBD" value is
+# logged in status/SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "asm-arm64"
+name              = "aarch64 assembly (GAS, native ARM syntax)"
+tier              = "substrate-probe"          # bare-metal syscall-level substrate; corroboration tier (research/LANDSCAPE.md)
+package_name      = "entity-core-protocol-asm-arm64"
+runtime           = "asm-arm64-toolchain"      # containers/asm-arm64-toolchain/Containerfile
+isa               = "aarch64 (AAPCS64, Linux, asm-generic syscall table)"
+ported_from       = "asm-x86_64"               # transliteration, not a fresh S1→S5 generation
+execution         = "qemu-aarch64-static"      # cross-assembled/linked; run under qemu-user (no native aarch64 host)
+
+[abi_map]
+# The codified x86-64(SysV) → aarch64(AAPCS64) transliteration convention (src/macros.s).
+# Applied CONSISTENTLY across all modules so ported functions interoperate.
+call_args         = "rdi rsi rdx rcx r8 r9  →  x0 x1 x2 x3 x4 x5"
+return            = "rax → x0"
+callee_saved      = "rbx rbp r12 r13 r14 r15  →  x19 x20 x21 x22 x23 x24"
+cbor_cursor       = "x86 r15 → x24 GLOBALLY (the CBOR writer cursor; every w_* builder assumes x24)"
+syscall           = "nr in x8, args x0-x5, `svc #0` — NO r10-for-arg4 divergence (4th arg stays x3)"
+frames            = "push/pop of callee-saved → 16-aligned stp/ldp frames; values live across a `bl` must be in x19-x28"
+gotchas           = "bswap→rev/rev16; logical-immediate 0x18/0x19/0x1a/0x1b/0xa0/... not encodable → mov-scratch-then-orr; store-imm→mov-then-strb"
+
+[codec]
+# INHERITED: strategy = FFI (Level 1) — see ../asm-x86_64/profile.toml [codec]. The ONE
+# aarch64 delta is that libentitycore_codec.so is CROSS-BUILT for aarch64 (there is no
+# packaged aarch64 libsodium on fedora → dnf download --forcearch into the cross sysroot;
+# A-ARM64-002), reached through the mounted tree at build-aarch64/, NOT baked into the image.
+strategy          = "ffi"
+ffi_target        = { lib = "libentitycore_codec.so (cross-built aarch64)", abi = "c-abi-1.1", header = "ffi-generator/c-abi/spec/entitycore_codec.h" }
+codec_build_dir   = "ffi-generator/c-abi/entity-core-codec-ffi-c/build-aarch64"
+
+[concurrency]
+# INHERITED: fork-per-connection (A-ASM-003 shipped model). The ONE aarch64 delta:
+# the generic syscall table has NO `fork` — the fork-equivalent is clone(SIGCHLD,0,0,0,0)
+# (A-ARM64-001). wait4/accept4 present + unchanged. host.s handles this; dispatch.s issues no fork.
+model             = "clone(SIGCHLD)-per-connection"
+
+[conformance]
+oracle            = "cc1970f"
+profile_core      = "682·0F (Result: PASS) — 583P/3W/0F/96S, byte-identical to asm-x86_64"
+notes             = "§7a validate_echo_dispatch PASS; concurrency 5/5; §5.5 multisig accept; 3 benign WARNs match the x86-64 sibling"

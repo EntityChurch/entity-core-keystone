@@ -1,0 +1,118 @@
+# RISC-V (RV64GC) assembly toolchain image — cross-assembles + cross-links the hand-authored
+# riscv64 assembly peer (entity-core-protocol-riscv64) and RUNS it under qemu-user, sharing one
+# loopback with the NATIVE x86-64 Go validate-peer oracle. Third ISA port; off the arm64 template
+# (protocol-generator/asm-arm64), NOT x86-64 — arm64 and riscv64 both use the kernel's *generic*
+# syscall table (asm-generic/unistd.h: read=63 write=64 openat=56 socket=198 accept4=242
+# clone=220 epoll_pwait=22 exit_group=94 …), so arm64 already pre-adapted every generic-table
+# quirk. See asm-x86_64/arch/OPTIONS-AND-ISA-MAP.md (Axis A) + the peer's status/PHASE-S1.md.
+#
+# Deliberately THIN, three capabilities (mirrors containers/asm-arm64-toolchain):
+#   1. CROSS-ASSEMBLE/LINK the riscv64 peer:
+#        - binutils-riscv64-linux-gnu → riscv64 `as` (GAS) + `ld`
+#        - gcc-riscv64-linux-gnu       → LINK DRIVER ONLY (crt0 + __libc_start_main + the riscv64
+#                                        dynamic-linker path). No peer C is compiled.
+#        - Debian riscv64 sysroot      → the glibc sysroot the cross driver links against (see #4)
+#   2. CROSS-BUILD the codec .so for riscv64 (the FFI×ISA cost, ISA-MAP "load-bearing finding"):
+#        - cmake + make                → drives ffi-generator/c-abi/entity-core-codec-ffi-c
+#        - riscv64 libsodium (static)  → from Debian libsodium-dev (libsodium.a); the codec links
+#                                        it statically + privately, so the .so is self-contained.
+#   3. RUN the riscv64 peer under emulation:
+#        - qemu-user-static-riscv      → `qemu-riscv64-static ./peer`, invoked EXPLICITLY (not via
+#                                        binfmt) so it is robust regardless of host registration —
+#                                        and needs NO host qemu/binfmt setup at all.
+#
+# The x86-64 Go `validate-peer` oracle is a native fedora:43 ELF that runs directly in this same
+# container, so oracle + qemu-emulated peer share one loopback → `--network=none` seals the run.
+#
+# WHY DEBIAN FOR THE SYSROOT (the retired "riscv BLOCKED" finding, A-RISCV-002).
+#   riscv64 is a Fedora *secondary* arch: `dnf download --forcearch riscv64` 404s (no mirror
+#   metalink) and Fedora ships no `sysroot-riscv64-fc43-glibc`, so the arm64-style forcearch path
+#   does not exist. But Debian trixie ships riscv64 as a *first-class release architecture* — an
+#   official, signed distro port (same trust class as Fedora x86_64), NOT a "non-standard repo".
+#   We assemble the glibc + libsodium sysroot from Debian trixie riscv64 .debs (fetched from the
+#   official deb.debian.org mirror, resolved via the signed Packages index, extracted with
+#   ar+tar — NO foreign-arch code is executed at build time, no host binfmt/qemu needed). This is
+#   the single "first-class riscv64 distro base" deviation from the fedora:43 sysroot; everything
+#   else — cross tools, qemu, the Go oracle — stays native fedora:43 x86-64.
+#
+# PINS: fedora cross NVRs = what fedora:43 shipped at authoring (2026-07-15). Debian .deb versions
+#   are resolved from the *current* trixie riscv64 Packages index at build time (documented below
+#   for provenance); Debian's pool prunes superseded versions, so a hard URL pin would rot — the
+#   index resolve stays green across trixie point updates. Authoring-time versions (2026-07-15):
+#     libc6/libc6-dev 2.41-12+deb13u3 · libgcc-s1 14.2.0-19 · linux-libc-dev 6.12.86-1
+#     libsodium23/libsodium-dev 1.0.18-1+deb13u1
+#   (Debian libsodium is 1.0.18 vs Fedora's 1.0.22 on x86/arm64 — same stable C-ABI the codec
+#   uses: Ed25519, SHA-256/512, generichash all long predate 1.0.18. Logged A-RISCV-003.)
+#   Re-verify the >=30-day age + re-pin on rebuild; prefer a base-image digest pin for full repro.
+#
+# Build:
+#   podman build -t entity-core-keystone/riscv64-toolchain:latest \
+#     -f containers/riscv64-toolchain/Containerfile .
+#
+# Dev loop (cross-assemble + link + run self-check under qemu, sealed offline):
+#   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm --network=none \
+#     -v "$PWD":/work:Z -w /work/protocol-generator/riscv64 \
+#     entity-core-keystone/riscv64-toolchain:latest make host
+FROM registry.fedoraproject.org/fedora:43
+
+# Cross assembler (GAS) + cross link driver + qemu-user + host binutils (ar, for .deb extract) +
+# codec build deps. NVRs pinned to fedora:43 @ 2026-07-15.
+RUN dnf install -y --setopt=install_weak_deps=False \
+        binutils-riscv64-linux-gnu-2.45-1.fc43 \
+        gcc-riscv64-linux-gnu-15.2.1-1.fc43 \
+        qemu-user-static-riscv-2:10.1.5-1.fc43 \
+        binutils-2.45-1.fc43 \
+        cmake-3.31.11-1.fc43 \
+        make-1:4.4.1-11.fc43 \
+        curl \
+        xz \
+        cpio \
+        file \
+        findutils \
+        which \
+    && dnf clean all
+
+# Assemble the Debian trixie riscv64 glibc + libsodium sysroot (see header "WHY DEBIAN"). No
+# foreign-arch execution: fetch .debs from the official mirror, extract with ar+tar. The exact
+# pool paths are resolved from the signed Packages index so this stays green across point updates.
+ENV RISCV_SYSROOT=/opt/riscv64-sysroot
+RUN set -eux; \
+    S="$RISCV_SYSROOT"; mkdir -p "$S" /tmp/debs; \
+    MIRROR=http://deb.debian.org/debian; \
+    curl -fsSL "$MIRROR/dists/trixie/main/binary-riscv64/Packages.xz" -o /tmp/Packages.xz; \
+    xz -d /tmp/Packages.xz; \
+    pkg_file() { awk -v p="$1" '/^Package: /{n=$2} /^Filename: /{if(n==p){print $2; exit}}' /tmp/Packages; }; \
+    for p in libc6 libc6-dev libgcc-s1 linux-libc-dev libsodium23 libsodium-dev; do \
+      f="$(pkg_file "$p")"; \
+      test -n "$f" || { echo "!! $p not in trixie riscv64 index"; exit 3; }; \
+      echo "  $p -> $f"; \
+      curl -fsSL "$MIRROR/$f" -o "/tmp/debs/$(basename "$f")"; \
+    done; \
+    cd /tmp/debs; \
+    for d in *.deb; do ar x "$d"; tar -xf data.tar.*; rm -f data.tar.* control.tar.* debian-binary; done; \
+    cp -a etc usr "$S/" 2>/dev/null || true; \
+    cd /; rm -rf /tmp/debs /tmp/Packages; \
+    # Debian trixie is merged-usr: everything ships under usr/, no top-level /lib. One lib->usr/lib
+    # symlink resolves both the libc.so linker-script's absolute /lib/riscv64-linux-gnu/libc.so.6
+    # refs AND the DT_INTERP /lib/ld-linux-riscv64-lp64d.so.1 (the loader has a compat symlink at
+    # usr/lib/ld-linux-riscv64-lp64d.so.1 already). QEMU_LD_PREFIX=$S then resolves the guest loader.
+    ln -sfn usr/lib "$S/lib"; \
+    ln -sfn usr/lib "$S/lib64"; \
+    # The codec cmake's find_library(libsodium.a PATHS /usr/lib64 /usr/lib) is fedora-shaped; Debian
+    # multiarch puts it under usr/lib/riscv64-linux-gnu. Symlink it onto /usr/lib64 so find_library
+    # (re-rooted under the sysroot) resolves it without patching the shared CMakeLists.
+    ln -sfn lib/riscv64-linux-gnu "$S/usr/lib64"; \
+    # Sanity: the three artifacts the peer + codec link against must be present.
+    test -e "$S/lib/ld-linux-riscv64-lp64d.so.1"; \
+    test -e "$S/lib/riscv64-linux-gnu/libc.so.6"; \
+    test -f "$S/usr/include/sodium.h"; \
+    test -f "$S/usr/lib64/libsodium.a"
+
+ENV CMAKE_COLOR_DIAGNOSTICS=OFF
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="riscv64-toolchain"
+LABEL org.entity-core-keystone.version="1"
+
+CMD ["/bin/bash"]

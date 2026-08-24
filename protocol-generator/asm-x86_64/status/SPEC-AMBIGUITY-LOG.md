@@ -22,6 +22,10 @@ and, if normative, a `HANDOFF-TO-ARCH-*.md`. Severity: `decision` (recorded, non
 | A-ASM-012 | info | S3 | Multisig (§3.6 M3) accept needs full structural validation (threshold ≥ 2, 2 ≤ threshold ≤ N, N ≥ 2, distinct signers, null parent, local peer ∈ signers) or it regresses the 10 reject probes that currently pass fail-closed |
 | A-ASM-013 | info | S3 | A `system/handler` **dispatch** entity `{interface:<path>}` at the bare pattern path (distinct from the interface entity at `system/handler/<pattern>`) is what the §6.2 N2/N5 `dispatch_type`/`interface_ref` checks read; publishing built-ins per fork closes them. Publishing `system/handler/system/validate/dispatch-outbound` is the oracle's `--validate` gate for both §7a checks |
 | A-ASM-014 | info | S3 | **CORRECTS A-ASM-013's premise.** §7a.2a concurrent reentrant dispatch-outbound is NOT out of reach for a blocking fork peer: the reentry is on ONE socket (the validator plays peer B), so a single-threaded loop that routes inbound frames by root type (request vs `…/execute/response`) + a `pending_tab` demux of echo replies by `request_id` handles all N pipelined dispatches with no threads/epoll. `--profile core` = Result: PASS |
+| A-ASM-015 | info | L2 | Native canonical-CBOR codec ports cleanly to asm (61/61); but F6 `bare_value` identity does NOT exercise key-sort — the vacuous-green trap |
+| A-ASM-016 | info | L2 | f16 **subnormal input** decode is a documented reject-gap (no corpus vector) |
+| A-ASM-017 | info | L2 | Full 71-vector ECF corpus green on native asm codec (crypto-only FFI, symbol-verified) |
+| A-ASM-018 | info | L2 | Corpus `signature` vectors sign the entity's **ECF bytes**, NOT its content_hash (cf. §7.3) |
 
 ---
 
@@ -230,3 +234,82 @@ consumes directly; the pending table is the only state needed. Result: **`--prof
 Result: PASS, 583·0F**, matching the reference on every check it passes. The takeaway: "assembly
 can't do X" is almost never the real constraint — the fork *architecture*'s apparent limit
 dissolved once the reentry was seen as one-socket demux rather than cross-thread concurrency.
+
+## A-ASM-015 — Native canonical-CBOR ports cleanly to asm; but bare_value identity ≠ key-sort coverage (info, L2)
+
+**Finding (L2 discovery bet, positive).** The canonical-CBOR core — the part L1 kept behind
+the FFI (A-ASM-004) — expresses byte-exactly in hand-written x86-64 asm. `src/codec.s`
+implements the C-ABI F6 hook `ec_encode_bare_value` as a recursive-descent **transcoder**
+(decode one value → re-derive canonical form → re-emit): RFC 8949 Rule 1 integer/length
+minimization, the **Rule 4/4a shortest-float f16/f32/f64 ladder** (incl. NaN→`f97e00`,
+±Inf→`f97c00`/`f9fc00`, ±0, and the 65503→f32 vs 65504→f16 boundary), definite-length only,
+and a **recursive major-type-6 tag REJECT at every depth** (N2). Result: **61/61** of the
+Class-A + tag_reject corpus (`make diff`), byte-identical to the 3-way-locked
+(Go×Rust×Python) golden vectors. The float ladder — the single hardest canonical primitive —
+went green on the first assemble. This retires the ISA-MAP's "can asm express the
+canonical-CBOR invariants byte-exact?" for everything except key-sort (below).
+
+**Honesty caveat (ADR-0012 + the "conformance-green can be vacuous" lesson).** The F6
+`bare_value` differential is *identity-on-canonical-input*: it feeds each vector's already-
+canonical golden bytes through decode+re-encode and checks the output reproduces them. That
+rigorously exercises the ladder and minimization (a wrong choice diverges from golden), **but
+it does NOT exercise length-then-lex map key SORTING** — the corpus `map_keys` inputs are
+pre-sorted, so emitting map entries in input order passes them vacuously. M1 `codec.s`
+therefore emits maps in **input order** and makes **no canonical-sort claim**. The sort is
+load-bearing in the real ECF encoder (`ec_encode_ecf`/`ec_content_hash`), where
+`content_hash.3`'s data map `{"z":1,"a":2,"bb":3,"aaa":4}` is UNSORTED and its golden hash is
+over the canonical sorted form — that is the correct, non-vacuous place to implement + prove
+the sort (next: M2, with the content_hash differential). Likewise `bare_value` does not
+enforce minimal-head-on-*input* (non-canonical input isn't in this corpus). Non-blocking;
+scopes M2.
+
+## A-ASM-016 — f16 subnormal input decode is a documented reject-gap (info, L2)
+
+**Finding.** `f16_to_f64` (decoding an input half-float to re-run the ladder) handles zero /
+normal / ±Inf / NaN but **rejects f16 subnormals** (`EC_DECODE_ERROR`) rather than decode
+them. No corpus vector is an f16 subnormal, so this is unobserved; a reject (not a silent
+mis-decode) is the fail-safe. To be a fully general canonical encoder it must normalize
+subnormals (bsr + shift); deferred to M1b with a synthetic vector. Non-blocking.
+
+## A-ASM-017 — Full 71-vector ECF corpus green on the native asm codec (info, L2 — M2 complete)
+
+**Result.** The **entire** ECF conformance corpus passes on the hand-written x86-64 asm codec,
+with only Ed25519 + SHA-256 behind the FFI (the L2 boundary):
+
+| Category | n | Native surface (asm) | FFI |
+|---|---|---|---|
+| float/int/map_keys/length/primitive/nested/envelope | 56 | `ec_encode_bare_value` transcoder | — |
+| tag_reject | 5 | recursive major-6 reject | — |
+| content_hash | 4 | `ec_content_hash{,_with_format}` = native ECF (sorted) + FFI sha256 | sha256 |
+| peer_id | 3 | `ec_peerid_format` = native base58 + LEB128 varint | — |
+| signature | 3 | native `ec_encode_ecf` (sorted) + FFI ed25519 sign | ed25519 |
+
+Plus 4 synthetic unsorted→canonical vectors (key-sort proof). Run: `make diff` → 71 corpus +
+4 synthetic, 0 FAIL.
+
+**Non-vacuous (symbol-verified).** `codec.o` and `libentitycore_codec` both export
+`ec_content_hash` / `ec_encode_ecf` / `ec_peerid_format`; `nm bin/diff` confirms these resolve
+to **T** (our .o, linked first), while `ec_sha256` / `ec_ed25519_sign` are **U** (imported
+from the .so). So the differential exercises OUR asm codec, not the library's — the base58,
+canonical encode, and key-sort are genuinely under test. This is **corroboration** (ADR-0012):
+a native transcode of the same canonical rules, cross-checked against the 3-way-locked corpus,
+not an independent spec. **Not yet peer-integrated** (M3): the live peer still calls the FFI
+codec; the CONFORMANCE-MATRIX gains an L2 row only when `run-s4.sh --profile core` is 0-FAIL on
+the native-codec-linked peer.
+
+## A-ASM-018 — Corpus signature vectors sign the ECF bytes, not the content_hash (info, L2)
+
+**Finding (spec-clarity, surfaced by the differential).** The ECF corpus's `signature`
+category signs the target entity's **canonical ECF bytes** — `ed25519_sign(seed, ECF({type,
+data}))` — determined empirically (the golden 64-byte sigs matched signing the ECF, and did
+**not** match signing the 33-byte content_hash nor the 32-byte digest; sign/verify round-trips
+independently, isolating this to message choice). This is a **different construction** from the
+*protocol* signature in `ENTITY-CORE-PROTOCOL.md` §7.3, which signs the **content_hash** ("Sign
+full hash bytes: format code + digest") for authenticate/capability entities. Both are
+legitimate — the corpus tests the lower-level "canonical-encode-then-sign" codec primitive; the
+protocol wraps it over the content_hash — but an implementer reading only §7.3 and assuming
+"signatures sign the content_hash" will fail the corpus `signature` vectors. signature.2's
+unsorted data `{z:1,a:2}` additionally confirms the key-sort must reach the signed ECF (our
+native sorted `ec_encode_ecf` matches; the FFI encoder fed unsorted data did not). Worth a
+one-line spec note distinguishing the two signature constructions; flagged for arch review, not
+a defect. Non-blocking.
