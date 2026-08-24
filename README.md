@@ -20,7 +20,8 @@ The genuinely independent code bases are the **bespoke ground-up reference impls
 - **`ffi-generator/`** — FFI binding generation, organized by binding *shape*. `c-abi/` is the first: a canonical C-ABI codec spec (`c-abi/spec/`) with interchangeable impls `entity-core-codec-ffi-{rust,c}` and a differential conformance harness; future `wasm-abi/` etc. as needed.
 - **`research/`** — landscape + evaluations + diagnostics + stewardship. The cross-arm knowledge base. The conformance harness contract lives in `research/diagnostics/` (`validate-peer-usage.md`, `conformance-invariants.md`, `oracle-vendoring-policy.md`).
 
-Plus `containers/` (Podman base images per toolchain), `ops/` (CI + release scripts), and `.claude/skills/entity-rosetta/` (the user-facing `/entity-rosetta` skill).
+Plus `containers/` (Podman base images per toolchain), `ops/` (CI + release scripts), and `skills/entity-rosetta/` (the user-facing `/entity-rosetta` skill — a
+tool-neutral Agent-Skill, not tied to any one agent vendor).
 
 ## Where the spec and the test vectors live
 

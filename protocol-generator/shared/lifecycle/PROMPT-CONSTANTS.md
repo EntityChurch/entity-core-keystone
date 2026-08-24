@@ -4,7 +4,7 @@
 
 ## You are generating a full core protocol peer
 
-You are generating `entity-core-protocol-<lang>`: a full core protocol peer in the target language. The scope is **V7 Layers 0–4** (substrate, identity, interaction, capability, bootstrap). You are NOT implementing any standard-extension (TREE, CONTENT, IDENTITY, ATTESTATION, QUORUM, REGISTRY, RELAY, etc.). The extension surface stops at the dispatcher interface — community installs handlers above that boundary.
+You are generating `entity-core-protocol-<lang>`: a full core protocol peer in the target language. The scope is **core Layers 0–4** (substrate, identity, interaction, capability, bootstrap; unchanged across the V7→V8 cutover). You are NOT implementing any standard-extension (TREE, CONTENT, IDENTITY, ATTESTATION, QUORUM, REGISTRY, RELAY, etc.). The extension surface stops at the dispatcher interface — community installs handlers above that boundary.
 
 ## The spec is authoritative
 

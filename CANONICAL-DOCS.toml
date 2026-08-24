@@ -15,8 +15,8 @@ repo   = "entity-core-keystone"
 github = "https://github.com/EntityChurch/entity-core-keystone"
 intro  = """
 The keystone of the Entity Core arch: a generator that emits a full core
-protocol peer (entity-core-protocol-<lang>) for any target language from the V7
-spec, plus a language-agnostic codec C-ABI. The cohort is 21 generated core
+protocol peer (entity-core-protocol-<lang>) for any target language from the
+v0.8.0 (V8) spec, plus a language-agnostic codec C-ABI. The cohort is 21 generated core
 peers, each passing the validate-peer --profile core conformance gate with 0
 FAIL on one current oracle — see the conformance matrix for the per-peer
 transparency contract (spec version, oracle commit, codec/crypto strategy,

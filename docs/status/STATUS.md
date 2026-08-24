@@ -14,11 +14,14 @@ interaction, capability, bootstrap) for any target language, and it owns the
 for languages without mature canonical-CBOR + Ed25519 stacks. Generating peers
 is the *means*; the *end* is **spec refinement** — running the generator across
 many languages surfaces every spec ambiguity and feeds it back to architecture.
-Maturity: **initial public research-preview, v0.8.0 (V8)**. A **23-language**
+Maturity: **initial public research-preview, v0.8.0 (V8)**. A **24-language**
 peer cohort is in place and uniformly conformant; the pipeline is past
-first-build and into steady-state maintenance. The 23rd peer (**Tcl** — the
-alien-substrate Everything-Is-A-String probe) is now complete S1→S5, measured
-natively at `cc1970f` (**682·0F**, genuine 2-of-3 multisig accept-path passed).
+first-build and into steady-state maintenance. The two newest are alien-substrate
+probes: **Tcl** (#23 — Everything-Is-A-String) and **Rexx** (#24 — native-decimal
+number model), both complete S1→S5 and measured natively at `cc1970f`
+(**682·0F** each). Peer **#25 (Forth** — the stack-machine/no-types substrate) is
+now in build via the overseer + per-stage-sub-agent orchestration
+(`protocol-generator/shared/lifecycle/ORCHESTRATION.md`).
 
 The single pinned input is `protocol-generator/shared/spec-data/v0.8.0/` (a
 verbatim, SHA-256-pinned snapshot of the normative specs) plus the co-versioned
@@ -28,13 +31,16 @@ wire byte-unchanged**; the `v7.*` snapshots were retired.
 
 ## Where we left off
 
-The closed cohort is **23 generated core peers** (OCaml, Swift, Haskell, Go,
+The closed cohort is **24 generated core peers** (OCaml, Swift, Haskell, Go,
 Lean, C#, TypeScript, Java, Kotlin, Elixir, Common Lisp, Rust, Python, Zig, C,
-C++, Ada, Ruby, Prolog, PHP, Dart, COBOL, Tcl), every one full S1→S5 and
-**`validate-peer --profile core` 0-FAIL**. **Tcl** (the alien-substrate EIAS
-probe) is the newest — measured **natively** at `cc1970f` (**682·0F**; genuine
-2-of-3 multisig, structural event-loop concurrency), no spec-precision finding
-(clean corroboration end to end — the answer the probe was built to get). The whole cohort is now normalized on
+C++, Ada, Ruby, Prolog, PHP, Dart, COBOL, Tcl, Rexx), every one full S1→S5 and
+**`validate-peer --profile core` 0-FAIL**. **Rexx** (the native-decimal
+number-model probe) is the newest — measured **natively** at `cc1970f`
+(**682·0F**, 291P/295W/0F/96S; genuine 2-of-3 multisig accept-path;
+origination-core `dispatch_outbound_reentry` 3/3). Its S4 surfaced two
+§4.9/§4.10 resilience findings, both fixed (unbounded per-request signature
+ingest A-RX-014; the §4.10(c) connection-admission cap). **Tcl** (the EIAS
+probe) preceded it at the same **682·0F**. The whole cohort is now normalized on
 the reproducible public-HEAD oracle `cc1970f` (2026-07-10 re-normalization). The
 `--profile core` **0-FAIL** gate at `cc1970f` is *proven* the same gate the cohort
 converged against — its normalized core-gate fingerprint (the 16-category set +
@@ -140,6 +146,19 @@ From `CONFORMANCE-MATRIX.md` §3 (catch-up) and `research/stewardship/SPEC-FINDI
 
 ## Done recently
 
+- **Alien-substrate probes Tcl (#23) + Rexx (#24) completed — cohort → 24.** Two
+  probes on the least-saturated wire axes: Tcl (Everything-Is-A-String) and Rexx
+  (native-decimal number model, no binary int/float type). Both full S1→S5,
+  FFI-hybrid (hand-rolled canonical CBOR + crypto over `libentitycore_codec`),
+  measured natively at `cc1970f` — **682·0F** each. Rexx's S4 surfaced and fixed
+  two §4.9/§4.10 resilience findings (A-RX-014 unbounded signature ingest; the
+  §4.10(c) connection cap); Tcl was clean corroboration. Per-peer truth in
+  `CONFORMANCE-MATRIX.md`.
+- **Orchestration pattern documented.** The overseer + per-stage-sub-agent model
+  used to drive the pipeline (a fresh sub-agent per S-phase, the overseer tracking
+  transitions and gating each stage on its oracle verdict) is now written down at
+  `protocol-generator/shared/lifecycle/ORCHESTRATION.md`, cross-referencing the
+  meta-repo parallel-languages runbook rather than duplicating it.
 - **COBOL peer completed — cohort → 22.** The §6.11 handler-initiated
   outbound-dispatch reentry seam, the last open extensibility gap, is implemented
   on the single-threaded poll host (a C `ec_reentry` pump on the active slot with
@@ -182,6 +201,14 @@ From `CONFORMANCE-MATRIX.md` §3 (catch-up) and `research/stewardship/SPEC-FINDI
 
 ## Next
 
+0. **Forth (#25) — in build now** via the overseer + per-stage-sub-agent pattern
+   (`ORCHESTRATION.md`). The stack-machine / concatenative / no-types substrate —
+   a generator-stress probe, expected FFI-hybrid (COBOL/Tcl/Rexx family: gforth,
+   hand-rolled CBOR, crypto + sockets over a C external extension, fixed-width
+   cells → int head-form self-test). A second machine is building **Fortran** in
+   parallel off this same status. Corroboration/robustness first; a fresh spec
+   finding is the upside, not the expectation (the well is dry on the current
+   surface).
 1. **Extensibility surface across the cohort**: with COBOL's §6.11
    outbound-dispatch seam landed (peer 22 closed), bring `register`/`unregister`
    (V1.0/L0) and the handler-facing outbound-dispatch seam across the remaining

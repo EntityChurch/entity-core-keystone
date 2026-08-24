@@ -4,11 +4,11 @@
 
 ## Objective
 
-Build the peer machinery of `entity-core-protocol-<lang>` on top of the S2 codec. V7 Layers 1–4 plus foundation.
+Build the peer machinery of `entity-core-protocol-<lang>` on top of the S2 codec. Core Layers 1–4 plus foundation.
 
 ## Surfaces
 
-| V7 layer | What you implement |
+| Core layer | What you implement |
 |---|---|
 | **L1 Identity** | Identity bundle + keystore primitive; peer-id resolution; signature target rules; `system/peer` and `system/signature` entity types fully integrated with the codec |
 | **L2 Interaction** | **Only two wire message types: `EXECUTE` and `EXECUTE_RESPONSE`** (V7 §3.3) — typed builders + parsers + dispatchers; any other root type → close connection. `hello`/`authenticate` are *operations* on the `system/protocol/connect` handler (§4.1), **not** message types. `request_id` demux for out-of-order replies (V7 §6.11); per-request transport error codes (§6.12: `recv_timeout`/`connection_broken`/`protocol_error`) |
