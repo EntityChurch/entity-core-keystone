@@ -66,18 +66,23 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 PIN = REPO / "tools" / "oracle-pin.env"
 MATRIX = REPO / "CONFORMANCE-MATRIX.md"
 
-# Docs whose anchor-shaped tokens must resolve. The first three are declared in
-# CANONICAL-DOCS.toml and reach a public reader. `docs/status/STATUS.md` no longer does
-# ([ADR-0031] took docs/status/ off the keep-list) and is gated anyway: it quotes the pin,
-# and a digest that has drifted misleads the next session exactly as it would mislead an
-# adopter. Internal is not a reason to carry a wrong number.
+# Docs whose anchor-shaped tokens must resolve. All of these are declared in
+# CANONICAL-DOCS.toml and reach a public reader.
+#
+# `STATUS.md` moved `docs/status/` → `docs/` on 2026-08-23 and publishes again
+# ([ADR-0031]'s correction: the DATED snapshots are working memory, the single rolling
+# canonical log is not, and the two are now separable by PATH instead of by remembering a
+# filename). It was gated here even during the window it did not publish — it quotes the
+# pin, and a digest that has drifted misleads the next session exactly as it would mislead
+# an adopter. Internal was never a reason to carry a wrong number; that it is public again
+# only removes the need to argue the point.
 ANCHORED_DOCS = [
     "CONFORMANCE-MATRIX.md",
     "README.md",
     "CHANGELOG.md",
     "research/diagnostics/oracle-vendoring-policy.md",
     "research/diagnostics/validate-peer-usage.md",
-    "docs/status/STATUS.md",
+    "docs/STATUS.md",
 ]
 
 # Docs where a bare git short-SHA is a defect anywhere in the file.

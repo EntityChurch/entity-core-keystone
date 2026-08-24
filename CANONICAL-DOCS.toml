@@ -26,13 +26,26 @@
 # that keeps a file.
 #
 # ** WHAT `docs/status/` PUBLISHES: NOTHING ([ADR-0031], 2026-08-23). **
-# Both kinds — the singular rolling `STATUS.md` and the dated `STATUS-*`/`HANDOFF-*`/
-# `CHECKPOINT-*` snapshots beside it — are internal working memory now, with no scrub
-# obligation, no pin hygiene, and no audience. `STATUS.md` was the single declared
-# exception until today; the entry is removed below with the reasoning inline.
-# (This header asserted the opposite twice, in opposite directions, within a week.
-# The rule is now in an ADR that ships into this repo at `docs/adr/ecosystem/`, which
-# is where it should have been.)
+# The dated `STATUS-*`/`HANDOFF-*`/`CHECKPOINT-*`/`SESSION-*` snapshots under
+# `docs/status/` are internal working memory: no scrub obligation, no pin hygiene, no
+# audience. Write them for the next session.
+#
+# ** The single rolling canonical log DOES publish, and it is now `docs/STATUS.md`. **
+# [ADR-0031] was CORRECTED the day it landed — as first written it banned the directory,
+# which took the rolling log with it, and the evidence never supported that. The six repos
+# in its concentration table hold all 466 unreachable citations; neither `entity-core-protocol`
+# nor this repo appears, because both measure ZERO. A rule derived from six repos' logs was
+# applied first to the two it did not describe, and `entity-core-protocol` had already lost a
+# clean STATUS.md to it.
+#
+# The fix is a MOVE, not a re-declaration, and that is the durable part: with the rolling log
+# at `docs/STATUS.md`, the two kinds are separable by PATH instead of by remembering a
+# filename. `docs/status/` can then be dropped wholesale — as `.release-removals` does — and
+# the canonical log is never in the blast radius. That property's absence is what made this
+# mistake available in the first place.
+#
+# (This header asserted the answer twice in opposite directions inside a week. Both times the
+# rule lived only in a comment here. It is now in an ADR, which is where it should have been.)
 #
 # `docs/adr/ecosystem/` is injected and read-only ([ADR-0030]) and is deliberately
 # NOT declared. `WORKSTREAMS.md` stays undeclared too — ephemeral steward planning,
@@ -76,17 +89,17 @@ title = "entity-core-keystone — overview, build, honest independence"
 blurb = "What the keystone is, the three arms (protocol-generator / ffi-generator / research), the make+podman bare-host build, and the precise independence framing."
 group = "Overview"
 
-# `docs/status/STATUS.md` WAS declared here and is NO LONGER — [ADR-0031], 2026-08-23.
-# `docs/status/` now publishes nothing. A rolling status file is working memory: dated
-# measurements, seat names, blockers, half-verified numbers. Publishing it put exactly the
-# material the *spec text is not our log* rule exists to keep out onto the public surface,
-# and the ecosystem measurement found 466 of 670 unreachable commit citations living in
-# these files fleet-wide. Sweeping them was the wrong fix — they regenerate the problem by
-# being used as intended. This is one line instead, and our own STATUS.md already opened by
-# deferring to CONFORMANCE-MATRIX.md for every number, which is the argument for it.
-# It is currently on public `master`, so removing the declaration is a DELETION against the
-# published tree: declared in `.release-removals` at the repo root, which is what makes the
-# `public-regress` gate pass. Reversible — restore the `[[doc]]` block.
+# The rolling canonical log — moved `docs/status/STATUS.md` → `docs/STATUS.md` on
+# 2026-08-23 and re-declared, per [ADR-0031] as corrected. See the header for why the
+# MOVE is the fix and a re-declaration would not have been. Against the published tree
+# this reads as a deletion of the old path plus an addition of the new one; the
+# `docs/status` prefix in `.release-removals` covers the deletion half, and that file
+# says outright that it is a move so the record is not mistaken for a withdrawal.
+[[doc]]
+path  = "docs/STATUS.md"
+title = "Status — where the keystone stands"
+blurb = "The rolling orientation note: cohort state at the current pin, what is publishable, and what is next. Deliberately thin — CONFORMANCE-MATRIX.md is authoritative for every per-peer number and wins when the two disagree."
+group = "Overview"
 
 # ── Conformance ─────────────────────────────────────────────────────────────
 [[doc]]
