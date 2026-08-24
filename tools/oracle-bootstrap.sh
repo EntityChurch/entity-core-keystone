@@ -56,8 +56,14 @@ die(){ echo "oracle-bootstrap: ERROR $*" >&2; exit 1; }
 #
 # So: fingerprint unchanged + digest unchanged => a carry-forward is defensible.
 # Fingerprint unchanged + digest MOVED => the gate moved; re-run the cohort.
+#
+# 2026-08-16: extended \.Declare\( to \.Declare(Self)?\( — arch added a
+# .DeclareSelf( method (offline/client-free checks) that the original regex was
+# blind to (35 sites at go de8f807), which would have under-counted the check set
+# on any re-pin done before this fix. See W1 in
+# research/stewardship/SESSION-HANDOFF-2026-08-13-peers-fix-oracle-drift-watch.md.
 check_set_digest() {
-  grep -oE '\.Declare\("[a-z0-9_]+"' | sed 's/.*("//; s/"//' | sort -u | sha256sum | cut -d' ' -f1
+  grep -oE '\.Declare(Self)?\("[a-z0-9_]+"' | sed 's/.*("//; s/"//' | sort -u | sha256sum | cut -d' ' -f1
 }
 
 # core_gate_fingerprint — the AUTHORITATIVE, mirror-stable identity of the core
