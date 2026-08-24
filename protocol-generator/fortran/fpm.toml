@@ -1,0 +1,59 @@
+# entity-core-protocol-fortran — fpm manifest (Fortran Package Manager).
+#
+# IDIOMATIC manifest for fpm users. NOTE: fpm is NOT the container build path — fpm 0.12.0
+# is not in fedora:43 dnf (A-FTN-008), so the pinned, reproducible build is `make` (gfortran +
+# the image gcc); see the Makefile + README. This manifest keeps the peer idiomatic and
+# `fpm build`/`fpm test`-able for downstream fpm users. `0.1.0-pre` until first tagged release.
+#
+# FFI-HYBRID codec (codec_strategy = "ffi"): the pure-Fortran canonical CBOR value codec is
+# in-repo; crypto / entity-framing / base58 ride the C-ABI shared library
+# `libentitycore_codec` (C-ABI version 1.1 — `ec_abi_version() == "1.1"`), bound directly via
+# iso_c_binding. That .so is a RUNTIME dependency built from the FFI repo
+# (ffi-generator/c-abi/entity-core-codec-ffi-c) or any interchangeable entity-core-codec-ffi-*
+# build; it is NOT an fpm package (no fpm registry entry for a C .so) — link it with the flags
+# below and point LD_LIBRARY_PATH / -rpath at its build dir. The only C source built here is
+# the socket net-shim (src/ext/net_shim.c).
+
+name        = "entity-core-protocol-fortran"
+version     = "0.1.0-pre"                # tracks ENTITY-CORE-PROTOCOL v0.8.0 (V8); oracle cc1970f
+license     = "Apache-2.0"
+author      = "Entity Core Protocol contributors"
+maintainer  = "Entity Core Protocol contributors"
+copyright   = "Copyright 2026, Entity Core Protocol contributors"
+description = "Core-protocol Entity Core peer in Fortran — the fixed-width signed-only numeric-model probe (FFI-hybrid: pure-Fortran canonical CBOR value codec + libentitycore_codec C-ABI crypto)."
+
+[build]
+auto-executables = false
+auto-tests       = false
+# Link the codec C-ABI shared library (libentitycore_codec, C-ABI 1.1) + build/link the C
+# net-shim. Adjust -L/-rpath to the codec build dir on the consumer's machine (the `make`
+# path wires this automatically to ffi-generator/c-abi/entity-core-codec-ffi-c/build).
+link             = ["entitycore_codec"]
+
+[fortran]
+implicit-typing   = false               # -fimplicit-none is a hard gate (profile [idiom] compile_gate)
+implicit-external = false
+source-form       = "free"
+
+[install]
+library = false
+
+# The peer host executable. (fpm compiles src/*.f90 as the library modules automatically;
+# bin/peer.f90 is the PROGRAM entry.)
+[[executable]]
+name       = "peer"
+source-dir = "bin"
+main       = "peer.f90"
+
+# Pinned toolchain + FFI artifact (mirrors profile.toml [deps] + containers/fortran-toolchain).
+# These are recorded for provenance; fpm does not resolve system toolchains or the C .so.
+[extra.entity-core]
+spec-version         = "0.8.0"          # V8; core wire byte-unchanged v7.75 -> v7.77 -> V8
+oracle-commit        = "cc1970f"        # go validate-peer; core-gate fingerprint 8261a033...
+conformance          = "682 · 0F @ cc1970f (292P/294W/0F/96S) --profile core PASS"
+gfortran             = "15.2.1"         # fedora:43 GNU Toolchain (GCC 15.2)
+gcc                  = "15.2.1"         # builds the C net-shim + lowers the C-ABI codec
+libentitycore_codec  = "C-ABI 1.1"      # ec_abi_version() == "1.1"; the crypto floor .so (FFI)
+libsodium            = "1.0.22"         # statically + privately linked into libentitycore_codec
+test_drive           = "0.6.1"          # vendored testdrive.F90 (fortran-lang), when brought in offline
+crypto-floor         = "Ed25519 + SHA-256 (FFI); Ed448 + SHA-384 agility deferred (opt-in ec_ed448_*)"

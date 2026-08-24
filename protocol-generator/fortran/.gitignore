@@ -1,0 +1,6 @@
+# gfortran build artifacts (modules, objects, binaries) — rebuilt by `make`
+build/
+dbg/
+# codec .so is built under the ffi-generator tree (its own .gitignore), not here
+# S5 source-distribution tarball (rebuilt by `make dist`) — not tracked
+dist/

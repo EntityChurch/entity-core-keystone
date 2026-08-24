@@ -1,0 +1,172 @@
+# Fortran toolchain image — builds the ALIEN-SUBSTRATE peer
+# (entity-core-protocol-fortran) per protocol-generator/fortran/profile.toml.
+# Mirrors the structure of containers/cobol-toolchain + containers/rexx-toolchain.
+#
+# ALIEN-SUBSTRATE PROBE: fixed-width SIGNED-ONLY numeric model + native IEEE floats.
+# Fortran's widest portable integer is the SIGNED integer(int64); there is NO portable
+# unsigned type, so the ECF uint64 tower [2^63, 2^64-1] is carried as a 64-bit BIT
+# PATTERN in a signed carrier and byte-emitted via ishft/iand (the probe). Floats are
+# NATIVE IEEE real(real64/real32) with a transfer() bits path (tractable, unlike Rexx);
+# only f16 + the shortest ladder are hand-rolled. The codec is hand-rolled pure Fortran;
+# crypto/entity-framing/base58 cross the C-ABI (libentitycore_codec) DIRECTLY via
+# iso_c_binding (no C wrapper — Fortran's first-class C interop). The ONLY C wrapper is
+# the socket net-shim (Fortran has no native sockets).
+#
+# S11: pin the toolchain + every dependency to an exact version. gfortran ships with the
+#      fedora:43 GNU Toolchain (GCC 15.2). libentitycore_codec statically links the
+#      image's libsodium.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PIN STATUS: pinned (S11). Versions on fedora:43 (GNU Toolchain F43, GCC 15.2):
+#   gfortran / gcc  15.2.x  — the fedora:43 GNU Toolchain (GCC 15 = 2025 annual line;
+#                             well over the S11 30-day floor). gcc-gfortran provides
+#                             gfortran (compiler) + libgfortran; gcc/gcc-c++ lower the
+#                             C net-shim + the C-ABI codec.
+#   libsodium       1.0.22  — statically + privately linked into
+#                             libentitycore_codec.{so,a} by its CMake.
+# CBOR + varint are hand-rolled pure Fortran in-repo (no Fortran pkg gives canonical
+# ECF; the A-005 pattern). base58/peer-id ride the C-ABI (no Fortran bignum). No native
+# audited Fortran crypto → the crypto floor is FFI (like COBOL). test-drive (0.6.1) is
+# VENDORED as a single file in-repo, NOT installed here. fpm is NOT installed (not in
+# fedora dnf; the build is gfortran + make — A-FTN-008).
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Build (capped per RESOURCE-CAPS.md; S1 verification of the substrate probes):
+#   podman build $PODMAN_BUILD_CAPS -t entity-core-keystone/fortran-toolchain:latest \
+#     -f containers/fortran-toolchain/Containerfile .
+FROM registry.fedoraproject.org/fedora:43
+
+# System deps.
+# gcc-gfortran: the Fortran compiler (gfortran) + libgfortran runtime.
+# gcc/gcc-c++: the C net-shim + lowering the C-ABI codec (libentitycore_codec).
+# cmake/make/pkgconfig: build the C-ABI codec via its CMake; drive the peer's Makefile.
+# libsodium-static + libsodium-devel: the C-ABI CMake STATICALLY + PRIVATELY links
+#   libsodium into libentitycore_codec.{so,a}. Without these the C-ABI build FATALs.
+RUN dnf install -y \
+        gcc-gfortran gcc gcc-c++ \
+        cmake make pkgconfig \
+        libsodium-static libsodium-devel \
+        git curl ca-certificates findutils which glibc-langpack-en tar \
+    && dnf clean all
+
+# Wire data is byte-oriented; pin a UTF-8 locale so non-ASCII text vectors + argv load
+# cleanly (default-kind Fortran character is byte-oriented, but the shell/env still needs
+# a sane locale).
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# ── Verify the gfortran pin + the SIGNED-CARRIER / IEEE probe primitives (A-FTN-002/004/005) ──
+# The seams this peer exists to exercise must have working primitives:
+#   - signed integer(int64) holds the uint64 boundary AS A BIT PATTERN; ishft/iand
+#     extract big-endian octets sign-agnostically (2^64-1 -> FF FF FF FF FF FF FF FF)
+#   - transfer() reads real(real64) IEEE bits (1.0d0 -> 0x3FF0000000000000)
+#   - ieee_arithmetic classifies a NaN
+#   - iso_c_binding is available (the crypto/net FFI substrate)
+RUN cat > /tmp/probe.f90 <<'F90' && gfortran -std=f2018 -fimplicit-none -O2 -o /tmp/probe /tmp/probe.f90 && /tmp/probe && rm -f /tmp/probe /tmp/probe.f90
+program probe
+  use, intrinsic :: iso_fortran_env, only : int8, int32, int64, real32, real64, compiler_version
+  use, intrinsic :: ieee_arithmetic, only : ieee_is_nan, ieee_value, ieee_quiet_nan
+  use, intrinsic :: iso_c_binding, only : c_int, c_ptr, c_size_t
+  implicit none
+  integer(int64) :: umax, bits
+  integer(int32) :: fbits
+  real(real64)   :: d
+  real(real32)   :: f
+  integer        :: k
+  character(len=2) :: hexb
+  character(len=16):: hexq
+  logical        :: nan_ok
+
+  print '(a)', 'gfortran: '//trim(compiler_version())
+
+  ! uint64 boundary as a signed bit pattern: 2^64-1 == -1 in two's complement int64.
+  umax = -1_int64
+  ! big-endian octet extraction via ishft/iand (sign-agnostic): every byte must be 0xFF.
+  hexq = ''
+  do k = 0, 7
+     write(hexb,'(z2.2)') int(iand(ishft(umax, -8*(7-k)), 255_int64))
+     hexq(2*k+1:2*k+2) = hexb
+  end do
+  if (hexq /= 'FFFFFFFFFFFFFFFF') then
+     print '(a)', 'FATAL: uint64 big-endian octet extraction wrong ('//hexq//')'
+     stop 1
+  end if
+  print '(a)', 'signed-carrier uint64 [2^64-1] big-endian octets OK '//hexq
+
+  ! also the mid-boundary 2^63 (== -9223372036854775808, high bit set only)
+  umax = -9223372036854775807_int64 - 1_int64   ! = -2^63 exactly (avoids the literal-overflow gripe)
+  if (iand(ishft(umax, -56), 255_int64) /= 128_int64) then
+     print '(a)', 'FATAL: 2^63 top octet not 0x80'
+     stop 1
+  end if
+  print '(a)', 'signed-carrier 2^63 top octet OK 0x80'
+
+  ! transfer() reads IEEE binary64 bits: 1.0d0 -> 0x3FF0000000000000
+  d = 1.0d0
+  bits = transfer(d, 0_int64)
+  write(hexq,'(z16.16)') bits
+  if (hexq /= '3FF0000000000000') then
+     print '(a)', 'FATAL: transfer(real64) bits wrong ('//hexq//')'
+     stop 1
+  end if
+  print '(a)', 'transfer(real64) IEEE bits OK 0x'//hexq
+
+  ! transfer() reads IEEE binary32 bits: 1.0 -> 0x3F800000
+  f = 1.0
+  fbits = transfer(f, 0_int32)
+  write(hexq(1:8),'(z8.8)') fbits
+  if (hexq(1:8) /= '3F800000') then
+     print '(a)', 'FATAL: transfer(real32) bits wrong ('//hexq(1:8)//')'
+     stop 1
+  end if
+  print '(a)', 'transfer(real32) IEEE bits OK 0x'//hexq(1:8)
+
+  ! ieee_arithmetic classifies a NaN
+  d = ieee_value(0.0d0, ieee_quiet_nan)
+  nan_ok = ieee_is_nan(d)
+  if (.not. nan_ok) then
+     print '(a)', 'FATAL: ieee_is_nan failed'
+     stop 1
+  end if
+  print '(a)', 'ieee_arithmetic NaN classification OK'
+
+  ! iso_c_binding kinds available (the FFI substrate)
+  if (c_int <= 0 .or. c_size_t <= 0) then
+     print '(a)', 'FATAL: iso_c_binding kinds unavailable'
+     stop 1
+  end if
+  print '(a)', 'iso_c_binding available (crypto/net FFI substrate OK)'
+end program probe
+F90
+
+# ── Verify a trivial iso_c_binding call into libc resolves at link (FFI end-to-end) ──
+# Confirms Fortran can BIND + CALL a C symbol — the mechanism the crypto FFI + net-shim
+# rely on. Binds C strlen and checks the length of a known string.
+RUN cat > /tmp/ffi.f90 <<'F90' && gfortran -std=f2018 -fimplicit-none -o /tmp/ffi /tmp/ffi.f90 && /tmp/ffi && rm -f /tmp/ffi /tmp/ffi.f90
+program ffi
+  use, intrinsic :: iso_c_binding, only : c_char, c_size_t, c_null_char
+  implicit none
+  interface
+     function c_strlen(s) bind(c, name='strlen') result(n)
+       import :: c_char, c_size_t
+       character(kind=c_char), intent(in) :: s(*)
+       integer(c_size_t) :: n
+     end function c_strlen
+  end interface
+  integer(c_size_t) :: n
+  n = c_strlen('entity-core'//c_null_char)
+  if (n /= 11_c_size_t) then
+     print '(a,i0)', 'FATAL: iso_c_binding strlen wrong: ', n
+     stop 1
+  end if
+  print '(a)', 'iso_c_binding C-call OK (strlen entity-core = 11)'
+end program ffi
+F90
+
+WORKDIR /work
+
+LABEL org.entity-core-keystone.role="fortran-toolchain"
+LABEL org.entity-core-keystone.version="1"
+LABEL org.entity-core-keystone.gfortran="15.2"
+LABEL org.entity-core-keystone.experimental="fixed-width-signed-only-numeric-model-alien-substrate-probe"
+
+CMD ["/bin/bash"]

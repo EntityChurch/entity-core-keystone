@@ -1,0 +1,270 @@
+# entity-core-protocol-fortran — Language Profile
+#
+# ALIEN-SUBSTRATE PROBE (fixed-width SIGNED-ONLY numeric substrate + native IEEE).
+# Peer #25 (this machine's slot; a sibling machine builds Forth #26 in parallel).
+# Authored FRESH in S1 from the V8 spec-data + gfortran-15/Fortran-2018+2023
+# research — NOT ported from any prior peer's profile. Fortran is the FFI-hybrid
+# COBOL/Rexx/Tcl family (hand-rolled native value codec + C-ABI crypto), but its
+# headline novelty is a DIFFERENT wire-touching axis from every prior alien peer.
+#
+# *** THE EXPERIMENTAL QUESTION THIS PROFILE EXISTS TO ANSWER ***
+# ECF's canonical wire carries a BINARY UNSIGNED integer tower (CBOR mt0 uint64,
+# network-order octets) with a shortest-head ladder that reaches the FULL uint64
+# range [0, 2^64-1]. Fortran's largest portable-standard integer is the SIGNED
+# `integer(int64)` — a two's-complement int64 whose value range stops at 2^63-1.
+# There is NO portable unsigned integer type: the [2^63, 2^64-1] octet of the
+# uint64 tower is the sharp edge (Fortran 2023 adds an UNSIGNED type but it is
+# gfortran-experimental + flag-gated + array-index-hostile — A-FTN-001). So: can a
+# peer whose only wide integer is SIGNED carry the full uint64 head-form ladder
+# exactly — emitting and parsing every 2^63..2^64-1 value as a 64-bit BIT PATTERN
+# held in a signed carrier — without the spec's numeric determinism (uint boundary,
+# minimal-int head, int-vs-float intent) leaking into ad-hoc convention? This is
+# the "integer head-form is a fixed-width artifact, not a protocol property" lesson
+# (AGENTS.md durable lessons) taken to its sharpest fixed-width case — sharper than
+# C# `ulong` / Zig `u64` / OCaml int63, because Fortran lacks even an unsigned 64-bit
+# carrier. The SECOND, softer axis: unlike Rexx (no binary float type at all),
+# Fortran HAS native IEEE `real(real64)`/`real(real32)` + a `transfer()` bits path,
+# so the float tower is TRACTABLE — only f16 (binary16, no native kind guaranteed)
+# and the shortest-float ladder are hand-rolled. The bet: the signed-carrier uint64
+# seam (A-FTN-002) and the int-vs-float intent seam (A-FTN-003) surface a real
+# fixed-width-numeric finding, or confirm the spec is already tight enough to force
+# even a signed-only substrate to carry the unsigned tower as an explicit bit
+# pattern (which is itself the answer). See arch/PROFILE-RATIONALE.md.
+#
+# Profile authority (PROMPT-CONSTANTS): the agent MUST use the values declared here.
+# A "TBD" value is logged in SPEC-AMBIGUITY-LOG.md and blocks the dependent phase.
+
+[language]
+id                = "fortran"
+name              = "Fortran (gfortran)"
+tier              = "alien-substrate-probe"   # not a Tier-1..5 cohort slot; a fixed-width SIGNED-ONLY numeric-model probe
+package_name      = "entity-core-protocol-fortran"   # keystone peer id
+runtime           = "fortran-toolchain"       # references containers/fortran-toolchain/Containerfile
+compiler          = "GNU Fortran (gfortran) 15.2, Fortran 2018 + selected 2023 (ISO_FORTRAN_ENV, iso_c_binding, ieee_arithmetic)"
+
+[codec]
+# strategy: FFI-HYBRID (codec_strategy = "ffi"). Hand-rolled canonical CBOR VALUE
+# codec in PURE FORTRAN (the numeric probe lives here) + crypto/entity-framing/
+# base58/Ed25519 over the C-ABI (libentitycore_codec) via iso_c_binding. Same
+# family as COBOL (#22), Tcl (#23), Rexx (#24). Rationale for each half:
+#
+#   (1) CBOR VALUE codec: hand-rolled canonical encoder/decoder in pure Fortran
+#       (src/cbor.f90). No Fortran CBOR package gives canonical ECF (the A-005
+#       pattern, now continuing — the surveyed fortran-cryptography / Fortran-Crypto
+#       repos are exploratory, unaudited, and CBOR-less). Fortran's bit intrinsics
+#       ARE a competent byte assembler for the INTEGER tower:
+#         ishft/iand/ior/ieor/ibits/mvbits → bit ops on a 64-bit pattern
+#         transfer(x, mold) → reinterpret any scalar's bits as int8/int32/int64
+#         integer(int8) arrays → the byte buffer (SIGNED byte, A-FTN-004)
+#       The uint64 boundary [2^63, 2^64-1] is carried as a 64-bit BIT PATTERN in a
+#       SIGNED integer(int64) carrier: byte emission uses ishft/iand (sign-agnostic
+#       bit extraction), NOT signed arithmetic; unsigned comparison uses a bias/
+#       top-byte trick, never a bare `<` on the signed carrier (A-FTN-002). This is
+#       the fixed-width head-form artifact + mandated self-test on [2^63, 2^64-1].
+#       The FLOAT tower (mt7) is TRACTABLE (contrast Rexx): real(real64)/real(real32)
+#       are native IEEE-754 binary64/binary32, and transfer(x, 0_int64/0_int32) reads
+#       their bits directly. Only f16 (binary16 — no guaranteed native real kind) is
+#       hand-rolled bit arithmetic, and the shortest-float ladder (does this value
+#       round-trip through f16/f32 exactly?) is hand-decided regardless (Rule 4).
+#       Endianness: transfer() yields NATIVE-endian octets → the codec byte-swaps to
+#       big-endian (network order) explicitly (A-FTN-005).
+#
+#   (2) Crypto + entity framing + base58: FFI over the C-ABI. NO native audited
+#       Fortran crypto exists → the §9.1 signature floor is an FFI obligation from
+#       the start (like COBOL/Tcl/Rexx). Fortran's FIRST-CLASS C interop (iso_c_binding)
+#       binds libentitycore_codec's ec_* symbols DIRECTLY via interface blocks matching
+#       the verbatim entitycore_codec.h — NO C wrapper needed for crypto (cleaner than
+#       Rexx's SAA-API C ext / Tcl's stubs shim). ec_ed25519_{seed_to_pubkey,sign,
+#       verify}, ec_sha256/384, ec_encode_ecf/ec_content_hash (entity framing), and
+#       ec_peerid_{parse,format} (base58 — Fortran has NO bignum, so base58 rides the
+#       C-ABI, the COBOL choice — A-FTN-006) all cross iso_c_binding.
+strategy          = "ffi"                     # ffi-hybrid: native value codec + C-ABI crypto/framing/base58
+cbor_library      = { name = "hand-rolled", version = "in-repo", canonical_mode = "ecf-native-value", impl = "pure-Fortran over ishft/iand/ibits/transfer + integer(int8) byte arrays; int64 tower via SIGNED bit-carrier; f32/f64 bits via transfer(); f16 + shortest ladder hand-rolled" }
+entity_framing    = { name = "libentitycore_codec (FFI via iso_c_binding)", strategy = "ffi", c_abi_version = "1.1", api = "ec_encode_ecf / ec_content_hash{,_with_format} — wrap Fortran-built canonical `data` into the canonical entity + hash it" }
+ed25519_library   = { name = "libentitycore_codec (FFI via iso_c_binding — direct, no C wrapper)", version = "C-ABI 1.1", api = "ec_ed25519_{seed_to_pubkey,sign,verify} + ec_sha256/384" }
+ed448_library     = { name = "libentitycore_codec (FFI via iso_c_binding)", version = "C-ABI 1.1", strategy = "ffi", api = "ec_ed448_{seed_to_pubkey,sign,verify} + ec_sha384 — agility higher bar, opt-in; no native Fortran Ed448" }
+sha256_source     = "libentitycore_codec ec_sha256 (FFI via iso_c_binding); no native audited Fortran SHA — one consistent crypto surface over the C-ABI"
+sha384_source     = "libentitycore_codec ec_sha384 (FFI)"
+base58_library    = "libentitycore_codec ec_peerid_{parse,format} (FFI) — Fortran has NO bignum type; base58 base-256->base-58 long-division rides the C-ABI (COBOL choice, A-FTN-006)"
+varint_handling   = "native"                  # LEB128 multikey/hash-format varint (N1, §3.1) — 1-byte codes trivially inline in cbor.f90 over ishft/iand
+numeric_model     = "fixed-width-signed"      # integer(int64) signed two's-complement is the widest carrier; NO portable unsigned type (the probe axis). Native IEEE real(real64/real32) floats.
+
+[numeric]
+# THE probe axis (A-FTN-001/002/003). Fortran ISO_FORTRAN_ENV kinds:
+#   int8/int16/int32/int64 (signed) ; real32/real64 (IEEE binary32/binary64).
+int_carrier       = "integer(int64)"          # selected via ISO_FORTRAN_ENV int64; signed two's-complement, range [-2^63, 2^63-1]
+uint64_representation = "64-bit BIT PATTERN in a signed integer(int64) carrier" # values in [2^63,2^64-1] wrap to negative signed values with the SAME 64 bits
+uint64_byte_emit  = "ishft/iand bit extraction (sign-agnostic): byte k = iand(ishft(v, -8*k), 255_int64)" # NEVER signed arithmetic on the carrier for wire bytes
+uint64_compare    = "bias trick — compare ieor(v, min_int64) as if biased, OR compare top byte first; NEVER a bare signed `<` on the uint carrier (A-FTN-002)"
+head_form_selftest = "MANDATORY: encode/decode round-trip every value in {0, 2^63-1, 2^63, 2^64-2, 2^64-1} byte-exact (the fixed-width uint64-boundary self-test — AGENTS.md durable lesson)"
+unsigned_type_declined = "-funsigned / UNSIGNED (Fortran 2023, gfortran 15) EXISTS but DECLINED: experimental, flag-gated, cannot index arrays/DO, mixed arithmetic needs explicit conversion — the signed bit-carrier is portable + keeps the probe pure (A-FTN-001)"
+float_carrier     = "real(real64) binary64 / real(real32) binary32 — NATIVE IEEE-754 (ieee_arithmetic module for ieee_is_nan/ieee_is_finite/ieee_class)"
+float_bits_path   = "transfer(x, 0_int64) / transfer(x, 0_int32) — reinterpret f64/f32 bits directly (the tractable-vs-Rexx difference)"
+float16_handling  = "HAND-ROLLED bit arithmetic — binary16 has no guaranteed native real kind; compute sign/biased-exp/10-bit mantissa; shortest ladder (f16<-f32<-f64 round-trip test) hand-decided (Rule 4)"
+endianness        = "transfer() yields NATIVE-endian; codec byte-swaps to BIG-ENDIAN (network order) explicitly on every head (A-FTN-005)"
+byte_buffer       = "integer(int8), dimension(:), allocatable — SIGNED byte (-128..127): 0xFF reads as -1, mask iand(b, 255) when treating as unsigned octet (A-FTN-004)"
+
+[error_model]
+# Fortran has NO exception/Result machinery. The native pattern is an integer
+# status flag returned/set at the call site (mirroring iostat=/stat= and the
+# language's own I/O error convention), plus `error stop` for unrecoverable faults.
+# This maps directly onto the C-ABI's int32_t EC_* codes AND the protocol's numeric
+# status codes (200/400/403/404/413/…) — the SAME shape as COBOL's status-code
+# return. Every fallible subroutine takes an intent(out) integer `stat` argument the
+# caller tests before using the result; a hard reject (non-canonical / truncated /
+# bad seed / tag) sets a distinguished negative code. In-band "absent"/"not found"
+# is a distinguished sentinel in the tagged value model, NOT a status code (the
+# empty byte/text string is a legitimate wire value — A-FTN-007).
+style             = "status-code"             # integer intent(out) `stat` argument + `error stop` for faults; the COBOL/errno family
+error_type        = "integer(int32) stat code (EC_*-aligned) + named integer PARAMETER constants for kinds"
+leaf_kinds        = "NON_CANONICAL_ECF | TRUNCATED_INPUT | TAG_REJECTED | BAD_SEED | UNSUPPORTED_CONTENT_HASH_FORMAT | UNSUPPORTED_KEY_TYPE (integer PARAMETERs, EC_*-aligned)"
+convention        = "every fallible subroutine sets intent(out) `stat`; caller tests `stat /= EC_OK` before use (COBOL analogue)"
+absent_sentinel   = "a tagged 'present=.false.' discriminant in the value derived type — NOT an empty character/int8 array (empty byte/text string is a real wire value, A-FTN-007)"
+
+[async]
+# Fortran has no language-level network concurrency. `do concurrent` is data-
+# parallel (not general concurrency), coarrays are SPMD/PGAS (wrong model for a
+# reactor), OpenMP is loop parallelism. The idiomatic path for a single network
+# peer is a SINGLE-THREADED SELECT/POLL LOOP over a thin C net-shim bound via
+# iso_c_binding (Fortran has NO native sockets) — the COBOL poll() / Rexx select
+# shape. §7b store-safety is STRUCTURAL: one image, one thread, no concurrent store
+# access → no lock, no race. The §6.11 handler-initiated outbound-dispatch reentry
+# is a MANUAL pump (as in COBOL/Rexx): the handler calls ec_net_send then re-enters
+# a bounded ec_net_select/ec_net_recv loop to await the correlated reply by
+# request_id — no thread (a dedicated reentry pump; the correlation-map tax the
+# non-actor/non-CSP peers pay).
+style             = "single-thread-select"    # C net-shim select loop via iso_c_binding; no threads
+socket_source     = "thin C net-shim (ec_net_listen/accept/connect/send/recv/select/close/nodelay) bound via iso_c_binding — Fortran has NO native sockets (the ONLY C wrapper; crypto binds the .so directly)"
+event_primitive   = "ec_net_select over the listen socket + per-connection sockets; ec_net_recv/ec_net_send"
+request_demux     = "request_id -> a pending entry in a module-level allocatable table in the one image; matched in the reentry pump"
+store_model       = "module-level allocatable arrays / derived-type records in the one image — structurally race-free (single thread)"   # §4.8/§7b; no lock
+tcp_nodelay       = true                       # ec_net_nodelay (setsockopt TCP_NODELAY) in the C net-shim on accepted/dialed sockets (§7b)
+blocking_discipline = "ec_net_select gates every recv/send so no call blocks the single loop indefinitely; a per-op timeout bounds the reentry pump"
+
+[naming]
+# Fortran is CASE-INSENSITIVE (identifiers fold). The modern community convention
+# (fortran-lang / stdlib / fpm ecosystem) is lower_snake_case for procedures,
+# variables, and derived types, with UPPER_SNAKE for named PARAMETER constants and
+# lowercase keywords. MODULES are the namespace/module unit (there is no separate
+# package namespace); public procedures live in modules and are exposed via `public`.
+# We suffix derived types with `_t` (the stdlib convention) and prefix module-public
+# procedures with a module tag where the flat public name space needs disambiguation.
+module_names      = "snake_case"              # modules ARE the namespace: entity_core_cbor, entity_core_peer, entity_core_ffi
+procedure_names   = "snake_case"              # cbor_encode, peer_dispatch, cap_verify_request (module-tag prefix where needed)
+derived_type_names = "snake_case + _t suffix" # value/entity aggregate: ecf_value_t, peer_id_t, entity_t (the struct analogue; stdlib convention)
+variable_names    = "snake_case"              # locals + module vars: pub_key, seed_bytes, req_id
+constant_names    = "UPPER_SNAKE"             # `integer, parameter :: MAX_DEPTH = 64` — Fortran PARAMETER constants
+file_names        = "snake_case.f90"          # cbor.f90, peer_id.f90, entity.f90 (one module per file)
+keyword_case      = "lowercase"               # modern Fortran: lowercase keywords (module/subroutine/end)
+aggregate_unit    = "derived type (TYPE ... END TYPE) with an integer major-type discriminant — the tagged-union analogue (Fortran has NO native sum type; A-FTN-003)"
+
+[build]
+# Fortran is COMPILED (gfortran -> native). Two build tools surveyed:
+#   - fpm (Fortran Package Manager) 0.12.0: the MODERN idiomatic build+package tool.
+#     BUT NOT in fedora:43 dnf (snap/conda-forge/pypi/binary-download only) — pulling
+#     it into the container adds network/supply-chain friction. Provided as an
+#     idiomatic `fpm.toml` manifest for fpm users; NOT the container build path.
+#   - gfortran + make: self-contained, no extra toolchain download, module
+#     dependency ordering handled by the Makefile — the COBOL/Rexx alien-substrate
+#     choice. THIS is the container build. A tiny C net-shim compiles with the image
+#     gcc; libentitycore_codec is built from the ffi-generator C-ABI + linked.
+build_tool        = "gfortran + make"         # container build; fpm.toml also shipped for fpm users (A-FTN-008)
+build_command     = "make            # compile .f90 modules (dep order) + the C net-shim + link libentitycore_codec"
+compile_flags     = "-std=f2018 -ffree-form -O2 -Wall -fimplicit-none -fcheck=bounds (dev)"
+link_flags        = "-L<codec-build-dir> -lentitycore_codec (+ the C net-shim .o)"
+test_command      = "make test       # test-drive suites + hand-rolled conformance corpus driver"
+package_command   = "make dist       # tar the .f90 tree + C net-shim + fpm.toml + build recipe (source distribution)"
+fpm_manifest      = "fpm.toml"                # provided for the fpm ecosystem; `fpm build`/`fpm test` work for fpm users but the container uses make
+
+[layout]
+src_dir           = "src/"                    # the *.f90 module files (cbor, varint, peer_id, entity, identity, store, wire, capability, transport, peer)
+test_dir          = "test/"                   # test-drive suites + conformance corpus driver
+ext_dir           = "src/ext/"                # the thin C net-shim (net_shim.c -> compiled .o); crypto needs NO wrapper (iso_c_binding direct)
+ffi_module        = "src/entity_core_ffi.f90" # iso_c_binding interface blocks matching entitycore_codec.h (ec_* symbols) + the net-shim ec_net_*
+entry_point       = "src/entity_core.f90"     # umbrella module that `use`s every sub-module; bin/peer.f90 is the program entry
+program_entry     = "bin/peer.f90"            # PROGRAM peer — the peer executable validate-peer drives
+project_file      = "Makefile"
+
+[publishing]
+# Fortran's living distribution norm is the fpm ecosystem: an `fpm.toml` manifest in
+# a git repo, discoverable via the fortran-lang package registry (the CPAN/PyPI/
+# crates analogue for Fortran, though younger). Publish = tag a git release with a
+# working fpm.toml; registry inclusion is a later community step. Analogous to the
+# Tcl pkgIndex / SWI-pack git-indexed model, not a mature binary registry.
+registry          = "fpm registry (fortran-lang) + git"
+registry_url      = "https://registry.fortran-lang.org/"
+package_id        = "entity-core-protocol-fortran"
+license_expression = "Apache-2.0"
+repository_url    = ""                          # TBD on first publish
+maintainers       = "Entity Core Protocol contributors"
+
+[license]
+generated_outputs = "Apache-2.0"              # S9 default. gfortran runtime is GPL-with-runtime-exception; the ecosystem is license-mixed with no mandate — keep the Apache-2.0 default (explicit patent grant).
+
+[testing]
+# Fortran DOES have a dominant community unit-test framework: test-drive
+# (fortran-lang/test-drive) — lightweight, pure standard Fortran, no macros, and
+# EXPLICITLY redistributable as a single vendored `testdrive.F90` (README: "the
+# testdrive.F90 source file can be redistributed in the project's testsuite"). This
+# is unlike COBOL/Rexx (no framework → hand-rolled): Fortran has a real standard, so
+# the profile follows research and USES it (the Tcl/tcltest reasoning). It is
+# vendored (not fpm-fetched) so the make/gfortran container stays self-contained.
+# The CONFORMANCE probe is a hand-rolled corpus DRIVER (test/conformance.f90) that
+# loads the pinned v0.8.0 fixture and asserts byte-identity against the hand-rolled
+# codec + the FFI crypto; test-drive structures the unit assertions around it.
+framework         = "test-drive"              # fortran-lang/test-drive, vendored testdrive.F90 (single file); the ecosystem standard
+framework_version = "0.6.1"                    # 2025-06-13 release; S11-clean (>30d at 2026-07-11); guards gfortran 15.1/GCC 15
+runner            = "test/conformance.f90 (corpus driver) + test-drive suites (make test)"
+conformance_probe = "load spec-data v0.8.0 fixtures (test-vectors/v0.8.0/conformance-vectors-v1.cbor); assert byte-identity vs hand-rolled codec + wire-conformance oracle"
+
+[container]
+base_image        = "entity-core-keystone/fortran-toolchain:latest"
+build_in_container = true
+dev_loop          = "podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/fortran entity-core-keystone/fortran-toolchain:latest sh -c 'make && make test'"
+
+[idiom]
+# Fixed-width SIGNED-ONLY numeric-model + native-IEEE hints — the seams where this
+# substrate is unlike every prior peer (INCLUDING Rexx, which had NO binary float,
+# and COBOL, which is decimal-first with a full-width COMP-5 uint carrier).
+signed_only_int64       = true                # THE headline. integer(int64) is the widest carrier and it is SIGNED; the uint64 tower [2^63,2^64-1] is held as a 64-bit BIT PATTERN in the signed carrier, byte-emitted via ishft/iand (never signed arithmetic). A-FTN-002. Sharper than C# ulong / Zig u64 / OCaml int63 — no unsigned 64-bit carrier at all.
+no_portable_unsigned    = true                # A-FTN-001: Fortran 2023 UNSIGNED (-funsigned, gfortran 15, uint64 in ISO_FORTRAN_ENV) EXISTS but is experimental/flag-gated/array-index-hostile → DECLINED; the signed bit-carrier is portable and keeps the probe pure. A genuine "the framing is slightly outdated but the declined path is correct" finding.
+native_ieee_float       = true                # A-FTN-005: real(real64)/real(real32) are native IEEE binary64/binary32 + ieee_arithmetic classification + transfer() bits. The float tower is TRACTABLE (contrast Rexx's fully-hand-rolled floats). Only f16 + shortest ladder are hand-rolled bit arithmetic (Rule 4).
+transfer_bits_path      = true                # transfer(x, 0_int64/0_int32) reinterprets a scalar's bits as an integer — the f32/f64 bit reader. transfer is native-endian → byte-swap to big-endian explicitly.
+signed_byte_trap        = true                # A-FTN-004: integer(int8) byte buffers are SIGNED (-128..127); octet 0xFF reads as -1. Mask iand(b, 255) when treating a byte as an unsigned octet; the classic Fortran/C signed-char trap on the wire.
+tagged_union_value      = true                # A-FTN-003: Fortran has NO native sum type. The value model is a derived type with an integer major-type discriminant carrying int-vs-float AND byte-vs-text intent EXPLICITLY; NEVER infer mt0/1-vs-7 or mt2-vs-3 from the Fortran storage kind alone.
+byte_vs_text_explicit   = true                # mt2 (byte string) vs mt3 (text string): default-kind character IS a byte string (c_char, 1 byte, LEN counts bytes — no Rexx/Tcl char-vs-byte trap for default kind). Text is UTF-8 bytes; byte-vs-text intent carried in the tagged value, not inferred from storage.
+iso_c_binding_direct    = true                # crypto/framing/base58 bind libentitycore_codec DIRECTLY via iso_c_binding interface blocks matching the verbatim header — NO C wrapper (cleaner than Rexx SAA / Tcl stubs). The ONLY C wrapper is the socket net-shim.
+single_thread_select    = true                # C net-shim BSD-socket select loop; §7b store-safety structural (single thread, one image); §6.11 reentry a manual pump (COBOL/Rexx shape, correlation-map tax).
+compile_gate            = true                # COMPILED: gfortran -std=f2018 -Wall -fimplicit-none is a real static gate (unlike the interpreted Rexx/Tcl peers) — implicit-none + explicit interfaces catch shape/type mismatches at build.
+fortran_standard        = "Fortran 2018 (+ ISO_FORTRAN_ENV, iso_c_binding, ieee_arithmetic); Fortran 2023 UNSIGNED surveyed + declined (A-FTN-001)"
+
+[deps]
+# Exact pins (S11; all >= 30 days old at 2026-07-11). Toolchain pins mirrored in
+# containers/fortran-toolchain/Containerfile. Third-party RUNTIME surface is small:
+# gfortran (compiler) + libentitycore_codec (crypto floor .so) + the C net-shim
+# (built here). CBOR/varint hand-rolled pure Fortran; base58/peer-id ride the C-ABI.
+gfortran          = "15.2.1 (gcc-gfortran, fedora:43 GNU Toolchain F43 — GCC 15.2)"  # the fedora:43-packaged gfortran; GCC 15 is the 2025 annual line, well over the S11 30-day floor
+gcc               = "15.2.1 (fedora:43) — builds the C net-shim + lowers the C-ABI codec"
+libentitycore_codec = "C-ABI 1.1"             # the crypto floor .so (pinned at the ffi-generator layer). iso_c_binding links it.
+libsodium         = "1.0.22 (image-provided, fedora:43) — statically + privately linked into libentitycore_codec by its CMake"
+test_drive        = "0.6.1 (2025-06-13) — vendored testdrive.F90 single file; the ecosystem unit-test standard"
+fpm               = "0.12.0 (2025-05-18) — idiomatic package manager; fpm.toml shipped, NOT the container build (not in fedora dnf; A-FTN-008)"
+# ieee_arithmetic + iso_c_binding + ISO_FORTRAN_ENV are STANDARD intrinsic modules
+# (gfortran-provided) — no pin. cmake/make/pkgconfig are image-provided build tools.
+
+[spec]
+spec_version_pinned = "0.8.0"                 # spec-data snapshot protocol-generator/shared/spec-data/v0.8.0/ (V8). Confirm the three SHA-256 pins in MANIFEST.md unchanged at S2.
+codec_corpus      = "v0.8.0"                  # ECF corpus protocol-generator/shared/test-vectors/v0.8.0/ (conformance-vectors-v1.cbor); core wire byte-unchanged across V7->V8.
+oracle_commit     = "cc1970f"                 # go oracle for S4 (public HEAD, re-normalized 2026-07-10). core-gate fingerprint 8261a033… ; target --profile core = 0 FAIL. Build via tools/oracle-bootstrap.sh.
+# PEER_ID CONSTRUCTION (corroborates the cohort): derive the Ed25519 peer_id from the
+# §1.5 CANONICAL-FORM TABLE — hash_type = 0x00 identity-multihash, digest = the RAW
+# 32-byte public key (NO SHA256(pubkey) skeleton). peer_id wire form =
+# Base58(key_type || hash_type || digest). §7.4 already defers to the §1.5 table on
+# the v0.8.0 snapshot — settled, baked in to avoid the S4 handshake debug cycle.
+# base58 rides ec_peerid_{parse,format} (no Fortran bignum — A-FTN-006).
+# COHORT-SETTLED TRAPS pre-resolved here (do NOT re-burn): lowercase %02x hex for
+# §3.4/§3.5 tree-paths (A-CL-009); §5.2 401/403/401-unresolvable authz trichotomy;
+# entity `data` is an arbitrary ECF value, NOT necessarily a map (A-JAVA-010);
+# §4.10 chain-depth pre-check -> 400 chain_depth_exceeded (depth 64), 16 MiB payload
+# -> 413 payload_too_large; §7b store-race-safety (structural here) + TCP_NODELAY +
+# no blocking calls on the select path.
