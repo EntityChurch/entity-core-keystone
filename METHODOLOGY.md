@@ -387,8 +387,8 @@ missing is that they are not assembled as a discipline set with a promotion ladd
 anti-pattern catalog, and an audit doctrine — so drift there is invisible the same way it was
 invisible in go.
 
-**Arch assembled and ratified this set on 2026-08-15** — `entity-system-architecture/docs/DISCIPLINE-CHARTER.md`
-is the canonical home. The table below is the ecosystem-visible summary; **the
+**Arch assembled and ratified this set on 2026-08-15** — the **Discipline Charter** in the
+`entity-system-architecture` repo is the canonical home. The table below is the ecosystem-visible summary; **the
 charter wins on its own content.** Three corrections came back from that ratification and are folded
 in here, because meta drafted these as `A1–A6` and got three things wrong:
 
@@ -470,7 +470,7 @@ Four independent instances, built over roughly eight months, reconciled here.
 | **entity-browser-rust** | `DISCIPLINE-REFRAME-BROWSER-SUBSTRATE.md` · `DOCTRINES-BROWSER-SUBSTRATE.md` · `MODEL-BROWSER-WASM-RUNTIME.md` | **The generalization proof** — took the skeleton verbatim and re-earned the substrate layer on its own bugs. Contributed the §0.5 *name the recurring cycle* practice, the configuration-matrix step, *trace before you theorize*, delivery-path verification, and the enforcement-point requirement |
 | **entity-workbench-go** | `DISCIPLINE-CHARTER.md` · `MODEL-AVALONIA-RUNTIME.md` · `GUIDE-AVALONIA-PANEL-PATTERNS.md` · `TESTING-STRATEGY.md` | **The second generalization** — inherited D1–D11 verbatim across a completely different stack. Contributed the explicit promotion criteria (§5 of its charter), the enforcement-surfaces table, test-depth honesty (*naming the tier is the discipline*), and the AP-grounded-by-commit convention |
 | **entity-system-architecture** | `guides/GUIDE-IMPL-DISCIPLINE.md` · `DOCTRINE-COHORT-STATE-TRACKING.md` | **The outward publication** — carried D7–D12 into a contributor-facing guide, and added the architecture-side mirror disciplines (A-D1…A-D6) addressing the *"we aligned but never followed up"* pattern |
-| **entity-core-go** | `docs/reviews/2026-08-12-discipline-audit…` | **The diagnosis** — the self-audit that measured drift in a Core-tier repo and named the root cause: rules with no home in the repo that must follow them |
+| **entity-core-go** | its 2026-08-12 discipline self-audit | **The diagnosis** — the self-audit that measured drift in a Core-tier repo and named the root cause: rules with no home in the repo that must follow them |
 
 ---
 

@@ -158,8 +158,9 @@ the contract, flag the cosmetics):
 |---|---|
 | Reference / durable docs, specs | `docs/`, `docs/{architecture,reference,spec}/` — edit in place |
 | Agent guidance | `AGENTS.md` + `AGENTS-STANDARD.md` + `CLAUDE.md` (root) |
-| Dated status / handoffs | `docs/status/` (`STATUS.md`, `HANDOFF-*`, `CHECKPOINT-*`) — ephemeral, **and never published** ([ADR-0031]) |
-| **Ecosystem ADRs** (the decisions that bind every repo) | **`docs/adr/ecosystem/` — injected, read-only** ([ADR-0030]) |
+| Dated status / handoffs | `docs/status/` (`HANDOFF-*`, `CHECKPOINT-*`, dated snapshots) — ephemeral, **and never published** ([ADR-0031]) |
+| **The rolling canonical status log** | **`docs/STATUS.md`** — one file, not dated, **publishes if you declare it.** Separated from the snapshots **by path**, so `docs/status/` can be dropped wholesale without taking it ([ADR-0031], as corrected) |
+| **Ecosystem ADRs** (the decisions that bind every repo) | **`docs/adr/ecosystem/` — internal, read-only, and NOT published** — see below |
 | Your repo's own ADRs | `docs/adr/` (`NNNN-slug.md`) — your numbering, your call |
 | Scratch / local | `.gitignore` — never committed |
 
@@ -168,22 +169,39 @@ the contract, flag the cosmetics):
 - **Archive, don't delete** — move closed docs to `docs/archive/` with an `INDEX.md`
   breadcrumb; status snapshots are immutable once published; no `-v2` files.
 
-## The decisions that bind you are IN YOUR REPO now ([ADR-0030])
+## The ecosystem ADRs — how to cite them, and why they do NOT publish
 
-**`docs/adr/ecosystem/` carries the full text of every ecosystem ADR**, injected
-byte-identical alongside this file. Until 2026-08-23 it did not exist, and this standard
-cited nine ADRs by number that were physically absent from all eleven repos — so if you
-have been citing `[ADR-0023]` without being able to read it, that was our defect, not
-yours. **Read the ADR before citing it.** It is now local.
+**`[ADR-NNNN]` unqualified always means the ecosystem ADR.** Cite your own repo's ADRs as
+`[<repo>-ADR-NNNN]`. The two numbering spaces are different decisions — ecosystem
+`[ADR-0002]` is the version scheme; `entity-browser-rust`'s own `0002` is its Tauri release
+model.
 
-- **`[ADR-NNNN]` unqualified always means the ecosystem ADR.** Cite your own repo's ADRs as
-  `[<repo>-ADR-NNNN]`. The two numbering spaces are different decisions — ecosystem
-  `[ADR-0002]` is the version scheme; `entity-browser-rust`'s own `0002` is its Tauri
-  release model.
-- **Do not edit anything in `docs/adr/ecosystem/`** — same rule as this file and
-  `METHODOLOGY.md`. Propose the change to meta; it is re-injected. `inject-overlay.sh
-  --check` fails on drift.
-- **These are internal.** They are not in your `CANONICAL-DOCS.toml` and should not be.
+**Citing an ecosystem ADR by number in a published document is fine and stays fine.** The
+number references a decision; it is not a promise of a file.
+
+**But the ADRs themselves are NOT a publication surface, and this is a standing operator
+ruling (2026-08-24), not a gap:**
+
+> *"We're not exporting the ADRs yet. We haven't decided what publishing them means — there
+> has to be an ADR on publishing before we publish the ADRs. It's fine if we reference the
+> ADRs in our stuff; we're not publishing them yet."*
+
+- **Do not declare anything under `docs/adr/` in `CANONICAL-DOCS.toml`.** They strip, by
+  design. If your release simulation reports them as dropped, that is the correct answer.
+- **Do not edit anything in `docs/adr/ecosystem/`** if your repo carries a copy. Propose the
+  change to meta.
+- **Do not write published prose that sends a reader to `docs/adr/ecosystem/`.** That
+  directory does not exist in the mirror. *(This paragraph exists because this file used to
+  do exactly that — a canonical doc pointing a public reader at a stripped directory, which
+  is the index-ships-evidence-doesn't shape, committed in the standard that warns about it.
+  Caught pre-cut by `entity-core-keystone` on 2026-08-24, before it reached any mirror.)*
+
+**Whether a repo carries the ADR text at all is currently unsettled.** [ADR-0030] specified
+injecting it into every repo, was executed the same hour, and was **stopped and retracted** —
+`OVERLAY_DIRS` is empty and stays empty. Meta reads a repo; meta does not write to one. So
+there is **no automated transport** today: a repo that wants the text hand-syncs it and says
+so in the commit message. That is known, deliberate, and blocked behind the publishing
+decision above. **Do not build a mechanism for it locally.**
 
 ## Cite by CONTENT, never by commit SHA — in anything that publishes ([ADR-0012] Am. 1)
 
@@ -215,15 +233,25 @@ job you are not positioned to do.
 | Which files reach public `master`, the release branch, the gates, the forge push | **DevOps** — `canon-filter`, `leak-audit`, `public-regress`, the promote pipeline |
 | Your internal docs | **you**, unconstrained — see below |
 
-**Write your internal status docs for the next session, not for an audience.** They are
-never published ([ADR-0031]: `docs/status/` publishes **nothing**, including `STATUS.md`,
-which used to be the one exception). Keep them frank — blockers, half-verified
-measurements, seat-by-seat argument, mistakes. That candor is why they are useful, and it
-survives only because nobody outside reads them. **No scrub obligation, no pin hygiene, no
-audience.**
+**Write your internal status docs for the next session, not for an audience.** Everything
+under `docs/status/` is never published ([ADR-0031]) — handoffs, checkpoints, dated
+snapshots. Keep them frank: blockers, half-verified measurements, seat-by-seat argument,
+mistakes. That candor is why they are useful, and it survives only because nobody outside
+reads them. **No scrub obligation, no pin hygiene, no audience.**
+
+> **Corrected 2026-08-23. This used to read "`docs/status/` publishes nothing, *including*
+> `STATUS.md`."** [ADR-0031] as first written dropped the whole directory, which took the
+> single **rolling canonical** `STATUS.md` with it — and nothing in its evidence supported
+> that: the six repos holding all 466 unreachable citations do not include the two repos
+> that shipped under the rule, both of which measure **zero**. `entity-core-protocol` lost a
+> clean 125-line `STATUS.md` to it. **The durable fix is a MOVE, not an exemption:** the
+> rolling log lives at **`docs/STATUS.md`**, so the two kinds of document are separable by
+> **path** rather than by remembering a filename, and `docs/status/` can be dropped wholesale
+> forever. Declare `docs/STATUS.md` if you want a public reader to have it.
 
 What the public reader actually gets from you: `README.md` (what this is), `CHANGELOG.md`
-(what changed), and your conformance artifact if you have one. All already declared.
+(what changed), `docs/STATUS.md` if you declare it, and your conformance artifact if you
+have one.
 
 ## Multi-forge ([ADR-0014])
 
@@ -255,6 +283,7 @@ carries the cross-cutting "how we work."
 0012 conformance · 0014 multi-forge · 0015 branch/release · 0016 AGENTS.md · 0017 AI-policy ·
 0018 tree-hygiene · 0019 build-vocabulary (Proposed) · 0020 local-agent-context dir (Proposed) ·
 0021 canonical-docs link integrity (Proposed) · 0027 release-history-model ·
-0028 methodology · 0030 ADRs-ship-into-every-repo · 0031 status-docs-not-published.
-**These are no longer a reading list you cannot reach — the full text is in
-`docs/adr/ecosystem/` in this repo ([ADR-0030]).** -->
+0028 methodology · 0030 ADRs-ship-into-every-repo (RETRACTED — see above) ·
+0031 status-docs-not-published (as corrected). **Full text is authored in meta's
+`docs/adr/`. There is no automated transport into your repo and the ADRs do not publish —
+cite by number; do not link a public reader at a path.** -->
