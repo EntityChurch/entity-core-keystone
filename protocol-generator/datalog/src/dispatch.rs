@@ -97,6 +97,23 @@ struct Outcome {
     result: Entity,
     included: Vec<Entity>,
 }
+
+/// The §6.6 HandlerContext threaded into a handler.
+///
+/// `caller_cap` and `pattern` are the two values §6.3's `check_path_permission` needs and
+/// the dispatch-level check ALREADY COMPUTED. They are CARRIED rather than recomputed,
+/// because the handler-level check MUST run against the same authority the dispatch check
+/// resolved — recomputing invites the two to drift, and §6.8 is explicit that the
+/// authority is selected by who named the path.
+///
+/// `pattern` is the OWNING handler's pattern (§6.3, 0.8.2.23). For the tree handler the
+/// owner and the runner coincide, so the distinction is not observable on the wire here,
+/// but the field is named for the OWNER because that is what the parameter means.
+struct DispatchCtx<'a> {
+    exec: &'a Entity,
+    caller_cap: Option<&'a Entity>,
+    pattern: &'a str,
+}
 fn ok(result: Entity) -> Outcome {
     Outcome {
         status: 200,
@@ -585,8 +602,13 @@ impl Peer {
         let caller_cap = exec
             .bytes_field("capability")
             .and_then(|ch| env.included_get(ch).cloned());
+        let ctx = DispatchCtx {
+            exec,
+            caller_cap: caller_cap.as_ref(),
+            pattern: &pattern,
+        };
         match stripped.as_str() {
-            "system/tree" => self.tree_handler(exec),
+            "system/tree" => self.tree_handler(&ctx),
             "system/capability" => self.capability_handler(exec, caller_cap.as_ref()),
             "system/handler" => self.handlers_handler(exec),
             "system/type" => err_out(501, "unsupported_operation"),
@@ -861,13 +883,23 @@ impl Peer {
             let gi = i as u32;
             f.scope_grant.push((leaf_id.to_string(), gi));
             let sc = |key: &str| scope_of(cbor_host::map_get(g, key));
-            if matches_scope(&self.local_peer, operation, &sc("operations"), ScopeKind::Id) {
+            if matches_scope(
+                &self.local_peer,
+                operation,
+                &sc("operations"),
+                ScopeKind::Id,
+            ) {
                 f.g_op.push((leaf_id.to_string(), gi));
             }
             // handler pattern: for the wire request the "handler" dimension is the
             // canonicalized uri's handler (§5.4). Use the target path.
             let handler_pattern = strip_peer(uri);
-            if matches_scope(&self.local_peer, &handler_pattern, &sc("handlers"), ScopeKind::Path) {
+            if matches_scope(
+                &self.local_peer,
+                &handler_pattern,
+                &sc("handlers"),
+                ScopeKind::Path,
+            ) {
                 f.g_handler.push((leaf_id.to_string(), gi));
             }
             let peers = match cbor_host::map_get(g, "peers") {
@@ -1179,38 +1211,101 @@ impl Peer {
 
     // ── tree handler (§6.3) — minimal get/put ───────────────────────────────────
 
-    fn tree_handler(&self, exec: &Entity) -> Outcome {
+    /// RULE G — THE OPERATION IS RESOLVED FIRST AND THE §3.3 RESOURCE LADDER IS REACHED
+    /// ONLY FOR A KNOWN OPERATION. `match op` selects before either arm reads `resource`,
+    /// so `system/tree:bogusop` answers `501 unsupported_operation` whether or not a
+    /// resource is present. A handler that validates the resource first answers a
+    /// RESOURCE fault for an OPERATION fault, for every unknown operation
+    /// (`entity-system-conformance` X9/F52; `ocaml` carried exactly that shape).
+    fn tree_handler(&self, ctx: &DispatchCtx) -> Outcome {
+        let exec = ctx.exec;
         let op = exec.text_field("operation").unwrap_or("");
-        let target = resource_target(exec);
         match op {
             "get" => {
-                let target = match target {
-                    None => return self.build_listing(&format!("/{}/", self.local_peer)),
-                    Some(t) => t,
-                };
+                // §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+                // `resource.targets`: a handler that counts the effective list and then
+                // indexes targets[0] has implemented the arithmetic completely and is
+                // still reading a path no authorization covered.
+                let (eff, had_resource) = effective_targets(&self.local_peer, exec);
+                if !had_resource {
+                    // THE TWO EMPTIES ARE DISTINCT HERE AND THE OPERATION'S OWN
+                    // SPECIFICATION IS WHAT SAYS SO. §3.3's "an empty effective list IS
+                    // the absent case" is scoped "for an operation that REQUIRES a
+                    // resource" (0.8.2.24, N7); `get` does not. For a resource-OPTIONAL
+                    // operation 0.8.2.25 (N10) decides the present-but-empty case by
+                    // whether the absent case is WIDER than the request — BROAD-RESULT
+                    // refuses it, OPTIONAL-FILTER answers it empty — and requires the
+                    // operation to declare which it is. EXTENSION-TREE §2.2a (v4.11) is
+                    // that declaration: `get` is resource-OPTIONAL and BROAD-RESULT,
+                    // absent-case answer "the root listing", self-excluded case
+                    // "400 path_required". Both arms are pinned by text.
+                    return self.build_listing(ctx, &format!("/{}/", self.local_peer));
+                }
+                if eff.is_empty() {
+                    // `resource` PRESENT, every target carved out by the caller's own
+                    // exclude. Serving it the absent case "answers a request for one
+                    // excluded path with a listing of the tree" (EXTENSION-TREE §2.2a).
+                    return err_out(400, "path_required");
+                }
+                if eff.len() > 1 {
+                    return err_out(400, "ambiguous_resource");
+                }
+                let target = eff[0].clone();
                 // §1.4 / v7.72 §9.5a CORE-TREE-PATH-FLEX-1 path validity.
                 if !valid_caller_target(&target) {
                     return err_out(400, "invalid_path");
                 }
                 if target.is_empty() || target.ends_with('/') {
-                    return self.build_listing(&canonicalize(&self.local_peer, &target));
+                    return self.build_listing(ctx, &canonicalize(&self.local_peer, &target));
+                }
+                if is_pattern_path(&target) {
+                    return err_out(400, "malformed_resource");
                 }
                 let path = canonicalize(&self.local_peer, &target);
+                // §6.3: the handler MUST verify the CALLER's capability covers the path
+                // it is about to read. Not a secondary check — the dispatch-level check
+                // never saw this path if the caller excluded it.
+                if let Some(cap) = ctx.caller_cap {
+                    if !check_path_permission(&self.local_peer, "get", &path, cap, ctx.pattern) {
+                        return err_out(403, "capability_denied");
+                    }
+                }
                 match self.store.get_at(&path) {
                     Some(e) => ok(e),
                     None => err_out(404, "not_found"),
                 }
             }
             "put" => {
-                let target = match target {
-                    Some(t) => t,
-                    None => return err_out(400, "ambiguous_resource"),
-                };
+                // The same ladder with the two empties COLLAPSED rather than split:
+                // EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so
+                // §3.3's "an empty effective list IS the absent case" applies in its
+                // unscoped form and both empties answer `path_required`.
+                //
+                // NOTE THE CODE CHANGE 0.8.2.20 FORCED: this arm answered
+                // `ambiguous_resource` for a MISSING target, which 0.8.2.20 names as the
+                // exact inversion it forbids. The remedies differ — *supply a resource*
+                // is not *disambiguate your request* — and the code selects between them.
+                let (eff, had_resource) = effective_targets(&self.local_peer, exec);
+                if !had_resource || eff.is_empty() {
+                    return err_out(400, "path_required");
+                }
+                if eff.len() > 1 {
+                    return err_out(400, "ambiguous_resource");
+                }
+                let target = eff[0].clone();
                 // §1.4 path validity — reject before the write reaches the store.
                 if !valid_caller_target(&target) {
                     return err_out(400, "invalid_path");
                 }
+                if is_pattern_path(&target) {
+                    return err_out(400, "malformed_resource");
+                }
                 let path = canonicalize(&self.local_peer, &target);
+                if let Some(cap) = ctx.caller_cap {
+                    if !check_path_permission(&self.local_peer, "put", &path, cap, ctx.pattern) {
+                        return err_out(403, "capability_denied");
+                    }
+                }
                 let params = exec.entity_field("params");
                 let expected = params
                     .as_ref()
@@ -1264,11 +1359,26 @@ impl Peer {
         }
     }
 
-    fn build_listing(&self, path: &str) -> Outcome {
+    /// §6.3 (0.8.2.21/.22): "When any handler returns a multi-entry result whose entries
+    /// are tree paths, each entry MUST be individually checked using
+    /// `check_path_permission`. Entries for which it returns DENY MUST be omitted. The
+    /// result's `count` field MUST reflect the FILTERED entry count, not the source
+    /// tree's total count." A `count` that still reports the source total is exactly the
+    /// disclosure the rule exists to prevent, so `shown` is incremented only where an
+    /// entry survives.
+    ///
+    /// THE DIRECTORY ITSELF IS DELIBERATELY NOT CHECKED — §6.3 makes each ENTRY the
+    /// subject, and testing the prefix would deny a listing to a caller whose grant
+    /// covers children but not the node above them, which is the ordinary shape of a
+    /// narrowed grant.
+    fn build_listing(&self, ctx: &DispatchCtx, path: &str) -> Outcome {
         let entries = self.store.listing(path);
         let mut entry_pairs: Vec<(Key, Value)> = vec![];
         let mut shown = 0u64;
         for le in &entries {
+            if !self.entry_visible(ctx, path, &le.seg) {
+                continue;
+            }
             // §6.3 / v7.72 §9.5a CORE-TREE-DELETE-1: a leaf bound to a
             // system/deletion-marker reads as absent → omit it from the listing. A
             // marker that still prefixes deeper live paths survives as a pure prefix
@@ -1304,6 +1414,23 @@ impl Peer {
                 (Key::Text("count".into()), Value::UInt(shown)),
             ]),
         ))
+    }
+
+    /// §6.3's per-entry listing check for one child segment.
+    ///
+    /// AN UNAUTHENTICATED CONTEXT IS NOT FILTERED — the filter's subject is "the caller's
+    /// verified capability", and where there is none there is no caller to narrow. That
+    /// is the bootstrap path.
+    fn entry_visible(&self, ctx: &DispatchCtx, dir: &str, segment: &str) -> bool {
+        let Some(cap) = ctx.caller_cap else {
+            return true;
+        };
+        let mut child = dir.to_string();
+        if !child.ends_with('/') {
+            child.push('/');
+        }
+        child.push_str(segment);
+        check_path_permission(&self.local_peer, "get", &child, cap, ctx.pattern)
     }
 
     // ── capability handler (§6.2) — request/delegate/revoke ─────────────────────
@@ -1946,11 +2073,23 @@ fn covered_id(value: &str, pats: &[String]) -> bool {
 }
 
 fn matches_scope(local_peer: &str, value: &str, s: &Scope, kind: ScopeKind) -> bool {
-    if exclude_is_unmatchable(local_peer, &s.excl) {
-        return false; // 0.8.2.21 — deny, do not carve out nothing
-    }
     if kind == ScopeKind::Id {
+        // NO SENTINEL TEST ON THIS ARM (0.8.2.24, N2/N3). The guard used to sit above
+        // the type dispatch, transcribing §5.2's loop before that loop grew one — and
+        // NEVER_MATCH is a §5.4 PATH-canonicalization sentinel with no meaning on an
+        // id-scope dimension, whose patterns are literal identifiers §5.2's own id arm
+        // forbids putting through the §5.4 transforms. Asking it here ran an id pattern
+        // through those transforms purely to classify it and then DENIED THE WHOLE
+        // DIMENSION on a property unrelated to whether the exclude carves anything out:
+        // an `operations` exclude of `*/apply` — an ordinary namespaced operation name,
+        // a literal matching nothing under the id grammar — canonicalized to the
+        // sentinel and denied every operation. Over-denial, invisible on well-formed
+        // grants. §5.4: "a capability carrying an unmatchable PATH-SCOPE pattern is
+        // INVALID … It does NOT reach `operations` or `peers` [MUST]".
         return covered_id(value, &s.incl) && !covered_id(value, &s.excl);
+    }
+    if exclude_is_unmatchable(local_peer, &s.excl) {
+        return false; // 0.8.2.21 — deny, do not carve out nothing (path-scope only)
     }
     let cv = canonicalize(local_peer, value);
     covered(local_peer, &cv, &s.incl) && !covered(local_peer, &cv, &s.excl)
@@ -1979,6 +2118,108 @@ fn check_resource_scope(local_peer: &str, granter_peer: &str, resource: &Value, 
     true
 }
 
+// ── §5.2 effective targets and §6.3 check_path_permission ──────────────────────
+
+/// §5.2's effective target list (0.8.2.20): the caller's own `resource.exclude` removes
+/// entries from `resource.targets` BEFORE anything else looks at the request.
+///
+/// The survivors are returned in the caller's OWN SPELLING, not canonicalized — 0.8.2.21
+/// is explicit that `effective_targets` yields raw survivors, and the distinction is
+/// load-bearing here because the value flows on to `store.get_at`, which canonicalizes
+/// for itself.
+///
+/// The second return says whether a `resource` was present AT ALL. An ABSENT resource and
+/// a resource whose every target was excluded are different REQUESTS for a
+/// resource-OPTIONAL operation (0.8.2.24, N7), not merely different inputs to one answer.
+///
+/// THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES [MUST] (0.8.2.25, N11): "where an
+/// implementation projects resource.targets onto the effective set ahead of the handler,
+/// that projection MUST NOT be lossy about its own emptiness". A function returning only
+/// a list cannot satisfy that — collapsing `[qA] exclude [qA]` to `[]` deletes the
+/// two-empties discriminator before any handler can read it. This peer has exactly ONE
+/// narrowing seam (this function, called by the handler); §6.5's dispatch chain passes
+/// `exec` through untouched and `check_resource_scope` reads `resource` for itself, so
+/// there is no second door to keep in step.
+fn effective_targets(local_peer: &str, exec: &Entity) -> (Vec<String>, bool) {
+    let Some(r) = exec.field("resource") else {
+        return (vec![], false);
+    };
+    let Some(targets_v) = cbor_host::map_get(r, "targets") else {
+        return (vec![], false);
+    };
+    let targets = text_list(Some(targets_v));
+    let caller_excl = text_list(cbor_host::map_get(r, "exclude"));
+    let mut out = Vec::with_capacity(targets.len());
+    for t in targets {
+        let ct = canonicalize(local_peer, &t);
+        // THE CALLER-EXCLUDE ARM IS FAIL-OPEN ON AN UNMATCHABLE PATTERN — §5.4's table
+        // rules it separately from the GRANT arm: `canonicalize` answers NEVER_MATCH,
+        // `matches_pattern` then answers false, and the target simply survives. That
+        // asymmetry is 0.8.2.21's whole point and it is INHERITED from the primitives
+        // here rather than restated.
+        let dropped = caller_excl
+            .iter()
+            .any(|x| matches_pattern(&ct, &canonicalize(local_peer, x)));
+        if !dropped {
+            out.push(t);
+        }
+    }
+    (out, true)
+}
+
+/// §6.3's handler-level path check.
+///
+/// IT IS NOT A SECONDARY CHECK (§5.2, 0.8.2.20). It is the SOLE enforcement wherever the
+/// subject is derived after dispatch, because the dispatch-level check can be made
+/// VACUOUS by caller-controlled input: a caller who excludes the one target its
+/// capability does not cover removes that target from `check_resource_scope`'s view
+/// entirely, and a handler that then acts on it has authorized nothing.
+///
+/// THREE DIMENSIONS, NOT FOUR. `peers` is not consulted — the path is local by
+/// construction at this point (§1.4's inbound rule refuses a foreign namespace at §6.5
+/// step 3, before any handler runs), and §6.3's signature names only handlers, operations
+/// and resources.
+///
+/// THE FRAME IS `local_peer`, NOT THE GRANTER, and that is the spec's own signature
+/// rather than a choice: §6.3's block reads
+/// `matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id)` — there
+/// is no granter parameter to pass. §5.5a governs chain ATTENUATION, where the subject is
+/// a PATTERN compared against a parent's pattern; this call site compares a CONCRETE
+/// LOCAL PATH the handler is about to touch.
+///
+/// There is no caller-exclude set at this call site: the subject is a single concrete
+/// path and the caller's own exclusions were already applied in deriving it. An empty
+/// `resources.include` is a legal grant shape (§5.2) and DENIES every path here, which is
+/// what that note says it should — `covered` over an empty include list is false.
+fn check_path_permission(
+    local_peer: &str,
+    operation: &str,
+    path: &str,
+    token: &Entity,
+    handler_pattern: &str,
+) -> bool {
+    // `canonicalize` is total and may answer NEVER_MATCH, which matches no grant (§5.4),
+    // so a malformed path falls through to DENY rather than being matched at all.
+    let cp = canonicalize(local_peer, path);
+    grants_of(token).iter().any(|g| {
+        let sc = |k: &str| scope_of(cbor_host::map_get(g, k));
+        matches_scope(
+            local_peer,
+            handler_pattern,
+            &sc("handlers"),
+            ScopeKind::Path,
+        ) && matches_scope(local_peer, operation, &sc("operations"), ScopeKind::Id)
+            && matches_scope(local_peer, &cp, &sc("resources"), ScopeKind::Path)
+    })
+}
+
+/// A resource target is a §5.4 PATTERN rather than a concrete path iff it carries a `*`.
+/// A resource-requiring operation takes a concrete path (0.8.2.20); a trailing `/` is a
+/// LISTING request rather than a pattern — only a `*` makes it one.
+fn is_pattern_path(t: &str) -> bool {
+    t.contains('*')
+}
+
 // ── §5.6 attenuation (host structural check; gates the verified_link fact) ──────
 
 fn grants_of(token: &Entity) -> Vec<Value> {
@@ -1987,14 +2228,42 @@ fn grants_of(token: &Entity) -> Vec<Value> {
         _ => vec![],
     }
 }
-fn scope_subset(child_peer: &str, parent_peer: &str, child: &Scope, parent: &Scope) -> bool {
+/// §5.5a subset check: every child include must be covered by some parent include.
+///
+/// TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16; `entity-core-formalization` K-7).
+/// §3.6's id-scope grammar binds the scope TYPE, not one function — "An implementation
+/// on the canonicalizing reading is non-conformant and MUST adopt the literal matcher" —
+/// so the rule F40 landed on `matches_scope` reaches here too, with delegation-chain
+/// WIDENING named as the reason: on the canonicalizing reading `/tree/get` is covered by
+/// `*` in one direction and `*/apply` is not, and a child grant can come out wider than
+/// its parent. `lean`'s differential put it at 2 of 64 include pairs, fail-closed, with
+/// a 16-pair control alphabet reporting 0 — which is why every hand-tried example missed
+/// it.
+///
+/// `kind` has NO DEFAULT and is named at every call site, because a default is how the
+/// next dimension inherits the wrong matcher silently — the original F40 defect.
+/// `handlers`/`resources` -> Path; `operations`/`peers` -> Id. The per-link granter
+/// frames are meaningless on the Id arm (an id pattern is never canonicalized) and are
+/// simply unread there rather than being a second parameter to get wrong.
+fn scope_subset(
+    child_peer: &str,
+    parent_peer: &str,
+    child: &Scope,
+    parent: &Scope,
+    kind: ScopeKind,
+) -> bool {
     for cp in &child.incl {
-        let cc = canonicalize(child_peer, cp);
-        if !parent
-            .incl
-            .iter()
-            .any(|pp| matches_pattern(&cc, &canonicalize(parent_peer, pp)))
-        {
+        let hit = match kind {
+            ScopeKind::Path => {
+                let cc = canonicalize(child_peer, cp);
+                parent
+                    .incl
+                    .iter()
+                    .any(|pp| matches_pattern(&cc, &canonicalize(parent_peer, pp)))
+            }
+            ScopeKind::Id => parent.incl.iter().any(|pp| matches_id_pattern(cp, pp)),
+        };
+        if !hit {
             return false;
         }
     }
@@ -2018,22 +2287,28 @@ fn grant_subset(
     child: &Value,
     parent: &Value,
 ) -> bool {
+    // The scope KIND is a property of the DIMENSION, named here and never defaulted
+    // (F50 / 0.8.2.16). Only RESOURCES takes the §5.5a per-link granter frames;
+    // handlers stays local, and `operations` does not canonicalize at all.
     let cs = |v: &Value, k: &str| scope_of(cbor_host::map_get(v, k));
     scope_subset(
         local,
         local,
         &cs(child, "handlers"),
         &cs(parent, "handlers"),
+        ScopeKind::Path,
     ) && scope_subset(
         local,
         local,
         &cs(child, "operations"),
         &cs(parent, "operations"),
+        ScopeKind::Id,
     ) && scope_subset(
         child_frame,
         parent_frame,
         &cs(child, "resources"),
         &cs(parent, "resources"),
+        ScopeKind::Path,
     )
 }
 
@@ -2086,16 +2361,6 @@ fn req_grants(params: Option<&Entity>) -> Vec<Value> {
     match params.and_then(|p| p.field("grants")) {
         Some(Value::Array(arr)) => arr.clone(),
         _ => vec![],
-    }
-}
-fn resource_target(exec: &Entity) -> Option<String> {
-    let r = exec.field("resource")?;
-    match cbor_host::map_get(r, "targets")? {
-        Value::Array(arr) => match arr.first() {
-            Some(Value::Text(s)) => Some(s.clone()),
-            _ => None,
-        },
-        _ => None,
     }
 }
 
@@ -2259,8 +2524,546 @@ mod tests {
         let out = p.connect_handler(&mut conn, &env.root, &env);
         assert_eq!(out.status, 400);
         assert_eq!(out.result.text_field("code"), Some("invalid_request"));
-        let out = p.tree_handler(&unknown("system/tree"));
+        let ex = unknown("system/tree");
+        let out = p.tree_handler(&DispatchCtx {
+            exec: &ex,
+            caller_cap: None,
+            pattern: "system/tree",
+        });
         assert_eq!(out.status, 501);
         assert_eq!(out.result.text_field("code"), Some("unsupported_operation"));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 0.8.2.25 — the §3.3 effective-targets ladder, §6.3 `check_path_permission`, the
+// listing filter, the §5.4 sentinel's scope-type scoping, and operation-before-
+// resource resolution. Driven through the peer's own handler, never through a
+// re-implementation of it.
+// ─────────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod spec0825 {
+    use super::*;
+
+    fn peer() -> Peer {
+        Peer::create(CreateOptions {
+            seed: [7u8; 32],
+            ..Default::default()
+        })
+    }
+
+    fn sc(incl: &[&str], excl: &[&str]) -> Value {
+        let mut kv: Vec<(&str, Value)> = vec![("include", cbor_host::text_array(incl))];
+        if !excl.is_empty() {
+            kv.push(("exclude", cbor_host::text_array(excl)));
+        }
+        cbor_host::map(kv)
+    }
+
+    /// A capability entity carrying one grant. Only the `grants` field is read by
+    /// `check_path_permission`, which is the whole subject here.
+    fn cap(handlers: Value, operations: Value, resources: Value) -> Entity {
+        Entity::make(
+            "system/capability",
+            cbor_host::map(vec![(
+                "grants",
+                Value::Array(vec![cbor_host::map(vec![
+                    ("handlers", handlers),
+                    ("operations", operations),
+                    ("resources", resources),
+                ])]),
+            )]),
+        )
+    }
+
+    fn tree_exec(op: &str, resource: Option<Value>) -> Entity {
+        crate::host::make_execute(crate::host::ExecuteFields {
+            request_id: "t1",
+            uri: "system/tree",
+            operation: op,
+            params: empty_params(),
+            resource,
+            author: None,
+            capability: None,
+        })
+    }
+
+    fn resource(targets: &[&str], exclude: &[&str]) -> Value {
+        let mut kv: Vec<(&str, Value)> = vec![("targets", cbor_host::text_array(targets))];
+        if !exclude.is_empty() {
+            kv.push(("exclude", cbor_host::text_array(exclude)));
+        }
+        cbor_host::map(kv)
+    }
+
+    fn run(p: &Peer, exec: &Entity, caller_cap: Option<&Entity>) -> (u64, String) {
+        let out = p.tree_handler(&DispatchCtx {
+            exec,
+            caller_cap,
+            pattern: &format!("/{}/system/tree", p.local_peer),
+        });
+        (
+            out.status,
+            out.result.text_field("code").unwrap_or("").to_string(),
+        )
+    }
+
+    // ── §3.3 effective-targets ladder (RULE A) ────────────────────────────────
+
+    #[test]
+    fn effective_targets_applies_the_callers_own_exclude() {
+        let p = peer();
+        let ex = tree_exec("get", Some(resource(&["a", "b"], &["b"])));
+        let (eff, had) = effective_targets(&p.local_peer, &ex);
+        assert!(had, "a resource WAS present");
+        assert_eq!(eff, vec!["a".to_string()], "b is carved out by the caller");
+    }
+
+    #[test]
+    fn effective_targets_returns_raw_survivors_not_canonical_forms() {
+        // 0.8.2.21: the survivors are the CALLER'S OWN SPELLING. The value flows on to
+        // the store lookup, which canonicalizes for itself.
+        let p = peer();
+        let ex = tree_exec("get", Some(resource(&["x/y"], &[])));
+        let (eff, _) = effective_targets(&p.local_peer, &ex);
+        assert_eq!(eff, vec!["x/y".to_string()]);
+    }
+
+    #[test]
+    fn effective_targets_is_non_lossy_about_its_own_emptiness() {
+        // 0.8.2.25 N11 [MUST]: the pair keeps the two-empties discriminator. A function
+        // returning only a list collapses them and the handler's refusal arm becomes
+        // dead code that only a WIRE drive can detect.
+        let p = peer();
+        let absent = tree_exec("get", None);
+        assert_eq!(effective_targets(&p.local_peer, &absent), (vec![], false));
+        let self_excluded = tree_exec("get", Some(resource(&["a"], &["a"])));
+        let (eff, had) = effective_targets(&p.local_peer, &self_excluded);
+        assert!(eff.is_empty());
+        assert!(had, "PRESENT-but-empty is not the absent case");
+    }
+
+    #[test]
+    fn caller_exclude_arm_is_fail_open_on_an_unmatchable_pattern() {
+        // §5.4 rules the CALLER arm separately from the GRANT arm: canonicalize answers
+        // NEVER_MATCH, matches_pattern answers false, and the target SURVIVES. The
+        // opposite reading (deny) is what the grant arm does, and conflating them
+        // silently narrows every request carrying a malformed exclude.
+        let p = peer();
+        let ex = tree_exec("get", Some(resource(&["a"], &["../nope"])));
+        let (eff, had) = effective_targets(&p.local_peer, &ex);
+        assert!(had);
+        assert_eq!(eff, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn get_absent_resource_is_the_root_listing_and_present_but_empty_is_path_required() {
+        // EXTENSION-TREE §2.2a (v4.11): `get` is resource-OPTIONAL and BROAD-RESULT, so
+        // the two empties are DISTINCT (0.8.2.24 N7 / 0.8.2.25 N10).
+        let p = peer();
+        let (st, _) = run(&p, &tree_exec("get", None), None);
+        assert_eq!(st, 200, "absent resource -> the root listing");
+        let (st, code) = run(&p, &tree_exec("get", Some(resource(&["a"], &["a"]))), None);
+        assert_eq!((st, code.as_str()), (400, "path_required"));
+    }
+
+    #[test]
+    fn get_more_than_one_effective_target_is_ambiguous_resource() {
+        let p = peer();
+        let (st, code) = run(
+            &p,
+            &tree_exec("get", Some(resource(&["a", "b"], &[]))),
+            None,
+        );
+        assert_eq!((st, code.as_str()), (400, "ambiguous_resource"));
+        // ... and the SAME two targets with one excluded resolve to a single survivor,
+        // which is what says the count is taken over the EFFECTIVE list and not over
+        // `resource.targets`.
+        let (st, _) = run(
+            &p,
+            &tree_exec("get", Some(resource(&["a", "b"], &["b"]))),
+            None,
+        );
+        assert_eq!(
+            st, 404,
+            "one survivor -> an ordinary miss, not a count fault"
+        );
+    }
+
+    #[test]
+    fn put_collapses_the_two_empties_onto_path_required_not_ambiguous_resource() {
+        // 0.8.2.20 names `ambiguous_resource` for a MISSING target as the exact inversion
+        // it forbids: *supply a resource* is not *disambiguate your request*, and the
+        // code is what selects the remedy. This arm answered `ambiguous_resource`.
+        let p = peer();
+        let (st, code) = run(&p, &tree_exec("put", None), None);
+        assert_eq!((st, code.as_str()), (400, "path_required"));
+        let (st, code) = run(&p, &tree_exec("put", Some(resource(&["a"], &["a"]))), None);
+        assert_eq!((st, code.as_str()), (400, "path_required"));
+        let (st, code) = run(
+            &p,
+            &tree_exec("put", Some(resource(&["a", "b"], &[]))),
+            None,
+        );
+        assert_eq!((st, code.as_str()), (400, "ambiguous_resource"));
+    }
+
+    #[test]
+    fn a_pattern_subject_is_malformed_resource_on_both_operations() {
+        // 0.8.2.20: a resource-requiring operation takes a CONCRETE path. A trailing "/"
+        // is a listing request rather than a pattern — only a `*` makes it one.
+        let p = peer();
+        for op in ["get", "put"] {
+            let (st, code) = run(&p, &tree_exec(op, Some(resource(&["a/*"], &[]))), None);
+            assert_eq!((st, code.as_str()), (400, "malformed_resource"), "op={op}");
+        }
+        let (st, _) = run(&p, &tree_exec("get", Some(resource(&["a/"], &[]))), None);
+        assert_eq!(st, 200, "a trailing slash is a LISTING, not a pattern");
+    }
+
+    // ── §6.3 check_path_permission (RULE A) ───────────────────────────────────
+
+    #[test]
+    fn check_path_permission_accepts_a_covering_grant() {
+        // THE ACCEPT CASE IS WHAT VALIDATES THE FIXTURE. Without it a grant that parsed
+        // as empty would make every deny assertion below pass for free.
+        let p = peer();
+        let c = cap(sc(&["*"], &[]), sc(&["*"], &[]), sc(&["*"], &[]));
+        assert!(check_path_permission(
+            &p.local_peer,
+            "get",
+            &format!("/{}/q/a", p.local_peer),
+            &c,
+            &format!("/{}/system/tree", p.local_peer)
+        ));
+    }
+
+    #[test]
+    fn check_path_permission_denies_per_dimension() {
+        // ONE DENY PER DIMENSION: a single deny cannot distinguish "the predicate checks
+        // the dimension I care about" from "the predicate denies".
+        let p = peer();
+        let path = format!("/{}/q/a", p.local_peer);
+        let pat = format!("/{}/system/tree", p.local_peer);
+        let star = || sc(&["*"], &[]);
+        // resources
+        let c = cap(star(), star(), sc(&["q/b"], &[]));
+        assert!(!check_path_permission(
+            &p.local_peer,
+            "get",
+            &path,
+            &c,
+            &pat
+        ));
+        // operations (id-scope: a literal)
+        let c = cap(star(), sc(&["put"], &[]), star());
+        assert!(!check_path_permission(
+            &p.local_peer,
+            "get",
+            &path,
+            &c,
+            &pat
+        ));
+        // handlers
+        let c = cap(sc(&["system/capability"], &[]), star(), star());
+        assert!(!check_path_permission(
+            &p.local_peer,
+            "get",
+            &path,
+            &c,
+            &pat
+        ));
+    }
+
+    #[test]
+    fn an_empty_resources_include_denies_every_path() {
+        // §5.2's note: an empty include is a LEGAL grant shape (handlers that touch no
+        // tree paths) and `covered` over an empty list is false.
+        let p = peer();
+        let c = cap(sc(&["*"], &[]), sc(&["*"], &[]), sc(&[], &[]));
+        assert!(!check_path_permission(
+            &p.local_peer,
+            "get",
+            &format!("/{}/q/a", p.local_peer),
+            &c,
+            &format!("/{}/system/tree", p.local_peer)
+        ));
+    }
+
+    #[test]
+    fn a_malformed_path_falls_through_to_deny_rather_than_matching() {
+        // canonicalize is TOTAL and answers NEVER_MATCH, which matches no grant (§5.4).
+        //
+        // THE GRANT PATTERN HERE IS `/*`, NOT `*`, AND THAT IS THE WHOLE TEST. A bare `*`
+        // canonicalizes to `/{granter}/*`, whose prefix test `/never-match`.starts_with
+        // fails ANYWAY — so a `*` fixture passes with the sentinel arm REMOVED and
+        // measures nothing. `/*` is already absolute, so it survives canonicalization
+        // unchanged, and its own prefix test is `starts_with("/")`, which `/never-match`
+        // satisfies. The matcher's FIRST arm is the only thing that refuses it. Measured:
+        // deleting that arm leaves a `*` fixture green and reddens this one.
+        let p = peer();
+        let pat = format!("/{}/system/tree", p.local_peer);
+        let c = cap(sc(&["*"], &[]), sc(&["*"], &[]), sc(&["/*"], &[]));
+        // CONTROL — an ordinary local path IS covered by `/*`, so the denial below is
+        // about the sentinel and not about the grant being empty.
+        assert!(check_path_permission(
+            &p.local_peer,
+            "get",
+            &format!("/{}/q/a", p.local_peer),
+            &c,
+            &pat
+        ));
+        assert!(!check_path_permission(
+            &p.local_peer,
+            "get",
+            "../escape",
+            &c,
+            &pat
+        ));
+    }
+
+    #[test]
+    fn the_handler_refuses_a_path_the_dispatch_check_never_saw() {
+        // §6.3 IS NOT A SECONDARY CHECK. The caller excludes qB from its own request, so
+        // the dispatch-level resource match never evaluates qB — and the handler then
+        // acts on qA. Here the capability covers only qB, so the surviving target qA is
+        // outside it and the handler must refuse.
+        let p = peer();
+        let c = cap(sc(&["*"], &[]), sc(&["*"], &[]), sc(&["q/b"], &[]));
+        let ex = tree_exec("get", Some(resource(&["q/a", "q/b"], &["q/b"])));
+        let (st, code) = run(&p, &ex, Some(&c));
+        assert_eq!((st, code.as_str()), (403, "capability_denied"));
+        // CONTROL: the same request under a capability that DOES cover qA reaches the
+        // store (404, an ordinary miss) rather than the authorization refusal.
+        let c = cap(sc(&["*"], &[]), sc(&["*"], &[]), sc(&["q/a"], &[]));
+        let (st, _) = run(&p, &ex, Some(&c));
+        assert_eq!(st, 404);
+    }
+
+    #[test]
+    fn an_unauthenticated_context_is_not_path_checked() {
+        // The filter's subject is "the caller's VERIFIED capability"; where there is none
+        // there is no caller to narrow. This is the bootstrap path.
+        let p = peer();
+        let ex = tree_exec("get", Some(resource(&["q/a"], &[])));
+        let (st, _) = run(&p, &ex, None);
+        assert_eq!(st, 404, "reached the store, was not refused");
+    }
+
+    // ── §6.3 listing filter (RULE A piece 5) ──────────────────────────────────
+
+    #[test]
+    fn a_listing_omits_excluded_entries_and_the_count_follows_the_filter() {
+        let p = peer();
+        let leaf = |n: &str| {
+            Entity::make(
+                "primitive/any",
+                cbor_host::map(vec![("n", cbor_host::text(n))]),
+            )
+        };
+        p.store.bind(&format!("/{}/q/a", p.local_peer), &leaf("a"));
+        p.store.bind(&format!("/{}/q/b", p.local_peer), &leaf("b"));
+        let dir = resource(&["q/"], &[]);
+
+        // CONTROL — no capability: both entries, count 2. Without it a filter that
+        // omitted EVERYTHING would satisfy the assertion below.
+        let (st, _) = run(&p, &tree_exec("get", Some(dir.clone())), None);
+        assert_eq!(st, 200);
+        let full = p.tree_handler(&DispatchCtx {
+            exec: &tree_exec("get", Some(dir.clone())),
+            caller_cap: None,
+            pattern: &format!("/{}/system/tree", p.local_peer),
+        });
+        assert_eq!(full.result.uint_field("count"), Some(2));
+
+        // A capability covering only q/a: q/b is omitted AND the count agrees with the
+        // entries returned. A `count` that still reports the SOURCE total is exactly the
+        // disclosure §6.3 exists to prevent.
+        let c = cap(sc(&["*"], &[]), sc(&["*"], &[]), sc(&["q/a"], &[]));
+        let filtered = p.tree_handler(&DispatchCtx {
+            exec: &tree_exec("get", Some(dir)),
+            caller_cap: Some(&c),
+            pattern: &format!("/{}/system/tree", p.local_peer),
+        });
+        assert_eq!(filtered.result.uint_field("count"), Some(1));
+        let entries = filtered.result.field("entries").cloned().unwrap();
+        assert!(cbor_host::map_get(&entries, "a").is_some(), "q/a survives");
+        assert!(
+            cbor_host::map_get(&entries, "b").is_none(),
+            "q/b is the entry the caller's own capability excludes"
+        );
+    }
+
+    // ── RULE B — the §5.4 sentinel is scoped to PATH-SCOPE (0.8.2.24 N2/N3) ───
+
+    #[test]
+    fn an_unmatchable_exclude_denies_on_path_scope() {
+        // 0.8.2.21, unchanged: an unmatchable exclude in a PATH-scope dimension excludes
+        // everything. This is the half that must NOT regress while the id half is scoped
+        // out.
+        let p = peer();
+        let s = Scope {
+            incl: vec!["*".into()],
+            excl: vec!["../nope".into()],
+        };
+        assert!(!matches_scope(&p.local_peer, "q/a", &s, ScopeKind::Path));
+    }
+
+    #[test]
+    fn an_unmatchable_looking_exclude_does_not_reach_id_scope() {
+        // §5.4 [MUST] at 0.8.2.24: "It does NOT reach `operations` or `peers`." `*/apply`
+        // is an ordinary NAMESPACED OPERATION NAME; under the id grammar it is a literal
+        // that matches nothing. Running it through the §5.4 PATH transforms purely to
+        // classify it answered NEVER_MATCH and DENIED THE WHOLE DIMENSION — over-denial,
+        // invisible on any well-formed grant.
+        let p = peer();
+        let s = Scope {
+            incl: vec!["*".into()],
+            excl: vec!["*/apply".into()],
+        };
+        assert!(
+            matches_scope(&p.local_peer, "get", &s, ScopeKind::Id),
+            "an operations exclude of `*/apply` must not deny `get`"
+        );
+        // ... and the exclude still WORKS as a literal in its own dimension.
+        assert!(!matches_scope(&p.local_peer, "*/apply", &s, ScopeKind::Id));
+    }
+
+    // ── RULE E — `scope_subset` is typed by scope kind (F50 / 0.8.2.16) ───────
+
+    #[test]
+    fn scope_subset_is_typed_by_scope_kind() {
+        // The formalization differential (K-7): 2 of 64 include pairs disagree between
+        // the two readings, fail-closed, and a 16-pair control alphabet reports 0 — which
+        // is why every hand-tried example missed it.
+        let p = peer();
+        let child = Scope {
+            incl: vec!["*/apply".into()],
+            excl: vec![],
+        };
+        let parent = Scope {
+            incl: vec!["*".into()],
+            excl: vec![],
+        };
+        // Id: `*` covers any literal, so the child IS a subset.
+        assert!(scope_subset(
+            &p.local_peer,
+            &p.local_peer,
+            &child,
+            &parent,
+            ScopeKind::Id
+        ));
+        // Path: `*/apply` canonicalizes to NEVER_MATCH, which matches nothing in EITHER
+        // operand — so the same pair is NOT a subset on the path reading. The two arms
+        // must therefore be distinguishable, which they are only if the kind is read.
+        assert!(!scope_subset(
+            &p.local_peer,
+            &p.local_peer,
+            &child,
+            &parent,
+            ScopeKind::Path
+        ));
+        // The control alphabet: an ordinary concrete-under-star pair agrees on both
+        // readings, which is why a coarse survey reports no disagreement.
+        let child = Scope {
+            incl: vec!["tree/get".into()],
+            excl: vec![],
+        };
+        assert!(scope_subset(
+            &p.local_peer,
+            &p.local_peer,
+            &child,
+            &parent,
+            ScopeKind::Id
+        ));
+        assert!(scope_subset(
+            &p.local_peer,
+            &p.local_peer,
+            &child,
+            &parent,
+            ScopeKind::Path
+        ));
+    }
+
+    // ── RULE F — the sentinel guard sits on every path reaching the decision ──
+
+    #[test]
+    fn the_sentinel_guard_reaches_every_path_match_decision() {
+        // 0.8.2.22: "a sentinel arm is a control-flow obligation, not a line … the guard
+        // MUST sit on every path that reaches the decision it protects."
+        //
+        // ON THIS PEER IT IS SATISFIED BY CONSTRUCTION AND THAT IS THE EVIDENCE, NOT AN
+        // ASSUMPTION: the guard is the FIRST ARM OF `matches_pattern` ITSELF, over BOTH
+        // operands, and there is no unguarded variant to call. Every path-match decision
+        // in the peer goes through it — four call sites, enumerated: the `/*/` recursion,
+        // `covered` (which `matches_scope` and `check_resource_scope` reach),
+        // `effective_targets`' caller-exclude arm, and `scope_subset`'s Path arm. That is
+        // the opposite of `lean`, where the guard lives in a WRAPPER and the raw matcher
+        // stays callable — which is exactly how `scopeSubset` bypassed it, permissively.
+        //
+        // The ATTENUATION path is the one that was bypassed there, so it is asserted here
+        // in both operands rather than left to the construction argument.
+        //
+        // EACH ARM'S FIXTURE IS CHOSEN SO THE ARM DECIDES IT. A pattern that fails the
+        // ordinary matcher anyway measures the ordinary matcher, not the guard — which is
+        // what the first draft of this test did, and deleting the guard left it green.
+        let p = peer();
+        let sub = |c: &[&str], pp: &[&str]| {
+            scope_subset(
+                &p.local_peer,
+                &p.local_peer,
+                &Scope {
+                    incl: c.iter().map(|s| s.to_string()).collect(),
+                    excl: vec![],
+                },
+                &Scope {
+                    incl: pp.iter().map(|s| s.to_string()).collect(),
+                    excl: vec![],
+                },
+                ScopeKind::Path,
+            )
+        };
+        // CHILD side unmatchable, against a parent `/*` — which is ALREADY ABSOLUTE, so
+        // it survives canonicalization and its prefix test is `starts_with("/")`, which
+        // `/never-match` satisfies. Without the guard this is a SUBSET: a child grant
+        // nobody can use is admitted as an attenuation of everything.
+        assert!(!sub(&["../nope"], &["/*"]));
+        // PARENT side unmatchable, against a child that is ALSO unmatchable by a
+        // DIFFERENT malformed spelling. Without the guard both canonicalize to the same
+        // sentinel string, the default arm compares them EQUAL, and two unrelated broken
+        // patterns certify each other as an attenuation.
+        assert!(!sub(&["../other"], &["../nope"]));
+        // CONTROLS — the same parents cover an ordinary concrete child, so the two
+        // denials above are about the sentinel and not about `scope_subset` denying.
+        assert!(sub(&["q/a"], &["/*"]));
+        assert!(sub(&["q/a"], &["*"]));
+    }
+
+    // ── RULE G — operation resolution precedes resource validation ────────────
+
+    #[test]
+    fn an_unknown_operation_answers_an_operation_fault_with_or_without_a_resource() {
+        // THE DIFFERENTIAL, because "501 to everything" satisfies the first two rows
+        // vacuously: a KNOWN operation must still route. `ocaml` put the
+        // any-operation-no-resource arm ABOVE the unknown-operation arm, so
+        // `system/tree:bogusop` with no resource answered a RESOURCE fault
+        // (`ambiguous_resource`) for an OPERATION fault, while the same call WITH a
+        // resource correctly answered 501 — which is why only the pair can see it.
+        let p = peer();
+        let (st, code) = run(&p, &tree_exec("bogusop", None), None);
+        assert_eq!((st, code.as_str()), (501, "unsupported_operation"));
+        let (st, code) = run(
+            &p,
+            &tree_exec("bogusop", Some(resource(&["q/a"], &[]))),
+            None,
+        );
+        assert_eq!((st, code.as_str()), (501, "unsupported_operation"));
+        // The known operation still routes to the §3.3 ladder rather than to 501.
+        let (st, code) = run(
+            &p,
+            &tree_exec("get", Some(resource(&["a", "b"], &[]))),
+            None,
+        );
+        assert_eq!((st, code.as_str()), (400, "ambiguous_resource"));
     }
 }

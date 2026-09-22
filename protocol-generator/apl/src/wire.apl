@@ -80,14 +80,48 @@ EnvRoot←{1⊃⍵} ⋄ EnvInc←{2⊃⍵}
 
 WireFrameOfEnvelope←{CborEncode EnvToCbor ⍵}    ⍝ envelope -> canonical-ECF payload bytes
 
-⍝ decode a payload -> (env ok); §6.3 full-consumption reject (A-FTN-012 discipline).
+⍝ decode a payload -> (env ok rc); §6.3 full-consumption reject (A-FTN-012 discipline).
+⍝
+⍝ THE THIRD RESULT IS THE CAUSE, AND IT USED TO BE THROWN AWAY. §4.11 (0.8.2.25) makes
+⍝ the frame obligation belong to the CLASS and the CODE belong to the CAUSE [MUST], and
+⍝ §5.2a (0.8.2.24 N4/N5, 0.8.2.25 N16) pins the decode-boundary mis-keyed `included` case
+⍝ to `400 hash_mismatch` and rules `400 non_canonical_ecf` NOT CONFORMANT there. This
+⍝ function already HAD the distinction -- EnvOfCbor answers EC_HASH_MISMATCH and the
+⍝ decoder answers EC_TAG_REJECTED -- and collapsed both into one boolean, so OnFrame
+⍝ answered non_canonical_ecf for every cause. A mis-keyed entry carries no tag and its
+⍝ encoding IS canonical; what is false is the claim the KEY makes.
 ∇Z←WireEnvelopeOfFrame payload;d;v;consumed;rc;r
- Z←(EntAbsent(⍬))0
+ Z←(EntAbsent(⍬))0 EC_DECODE_ERROR
  d←CborDecode payload ⋄ v←1⊃d ⋄ consumed←2⊃d ⋄ rc←3⊃d
- →(EC_OK≠rc)/0
- →(consumed≠≢payload)/0
- r←EnvOfCbor v
- Z←(1⊃r)(EC_OK=2⊃r)
+ →(EC_OK=rc)/decoded
+ Z←(EntAbsent(⍬))0 rc ⋄ →0
+ decoded:→(consumed=≢payload)/whole
+ Z←(EntAbsent(⍬))0 EC_DECODE_ERROR ⋄ →0   ⍝ trailing data: never becomes an Envelope
+ whole:r←EnvOfCbor v
+ Z←(1⊃r)(EC_OK=2⊃r)(2⊃r)
+∇
+
+⍝ ⍵=rc -> the §4.11 / §5.2a (status code) pair the CAUSE selects.
+⍝
+⍝   resolution integrity (mis-keyed / carried hash disagrees)  400 hash_mismatch
+⍝   CBOR tag-policy violation                                  400 non_canonical_ecf
+⍝   anything else that never becomes an Envelope               400 invalid_request
+⍝
+⍝ THE TAG ARM KEEPS `non_canonical_ecf` AND THAT IS DELIBERATE. §4.11 rules that code
+⍝ non-conformant "on the framing arm" and gives its reason in the same sentence:
+⍝ ENTITY-CBOR-ENCODING §5.4 "defines that code for CBOR tag-policy violations
+⍝ specifically", which that document still MUSTs at decode time. The two texts are only
+⍝ compatible if the tag case is not read as part of the framing arm, even though §4.11's
+⍝ row says "non-canonical CBOR" and a tagged frame is literally that. This branch takes
+⍝ the reading that keeps BOTH MUSTs satisfiable and preserves the behaviour the
+⍝ tag_reject vectors were written against.
+∇Z←WireRefusalOfRc rc
+ Z←400 'invalid_request'
+ →(rc=EC_HASH_MISMATCH)/hm
+ →(rc=EC_TAG_REJECTED)/tg
+ →0
+ hm:Z←400 'hash_mismatch' ⋄ →0
+ tg:Z←400 'non_canonical_ecf'
 ∇
 
 ⍝ peek root type + request_id from a raw payload WITHOUT hash validation — the §6.11

@@ -87,11 +87,12 @@ internal static class Attenuation
     private static bool GrantSubset(GrantEntry child, GrantEntry parent, string localPeerId, string childPeerId, string parentPeerId)
     {
         // §5.5a: only the RESOURCE dimension uses the per-link granter frames; the
-        // other dimensions stay on the local frame.
-        if (!ScopeSubset(child.Handlers, parent.Handlers, localPeerId, localPeerId)) return false;
-        if (!ScopeSubset(child.Operations, parent.Operations, localPeerId, localPeerId)) return false;
-        if (!ScopeSubset(child.Resources, parent.Resources, childPeerId, parentPeerId)) return false;
-        if (!ScopeSubset(child.EffectivePeers(localPeerId), parent.EffectivePeers(localPeerId), localPeerId, localPeerId)) return false;
+        // other dimensions stay on the local frame. The scope KIND is a property of the
+        // DIMENSION and is named at every call site, never defaulted (F50 / 0.8.2.16).
+        if (!ScopeSubset(child.Handlers, parent.Handlers, localPeerId, localPeerId, ScopeKind.Path)) return false;
+        if (!ScopeSubset(child.Operations, parent.Operations, localPeerId, localPeerId, ScopeKind.Id)) return false;
+        if (!ScopeSubset(child.Resources, parent.Resources, childPeerId, parentPeerId, ScopeKind.Path)) return false;
+        if (!ScopeSubset(child.EffectivePeers(localPeerId), parent.EffectivePeers(localPeerId), localPeerId, localPeerId, ScopeKind.Id)) return false;
 
         // Constraint attenuation: parent keys retained + byte-equal values.
         if (!ConstraintsRetained(parent.Constraints, child.Constraints)) return false;
@@ -102,14 +103,41 @@ internal static class Attenuation
         return true;
     }
 
-    private static bool ScopeSubset(Scope child, Scope parent, string childPeerId, string parentPeerId)
+    /// <summary>
+    /// §5.5a subset check: every child include must be covered by some parent include, and
+    /// every parent exclude must be inherited by some child exclude.
+    /// <para>
+    /// TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16; <c>entity-core-formalization</c> K-7).
+    /// §3.6's id-scope grammar binds the scope TYPE, not one function — <em>"An implementation
+    /// on the canonicalizing reading is non-conformant and MUST adopt the literal matcher"</em>
+    /// — so the rule F40 landed on <see cref="Scope.Matches"/> reaches here too, with
+    /// delegation-chain WIDENING named as the reason: on the canonicalizing reading a bare id
+    /// include reads as covered by a path-form parent pattern it does not literally match, and
+    /// a child grant comes out wider than its parent. <c>lean</c>'s differential put it at 2 of
+    /// 64 include pairs and 2 of 64 exclude pairs, fail-closed, with a 16-pair control alphabet
+    /// reporting 0 — which is why every hand-tried example missed it.
+    /// </para>
+    /// <para>
+    /// <paramref name="kind"/> has NO DEFAULT and is named at every call site, because a
+    /// default is how the next dimension inherits the wrong matcher silently — the original
+    /// F40 defect. The per-link granter frames are meaningless on the id arm (an id pattern is
+    /// never canonicalized) and are simply unread there.
+    /// </para>
+    /// </summary>
+    private static bool ScopeSubset(
+        Scope child, Scope parent, string childPeerId, string parentPeerId, ScopeKind kind)
     {
+        string Frame(string pattern, string peerId) =>
+            kind == ScopeKind.Path ? Paths.Canonicalize(pattern, peerId) : pattern;
+        bool Covers(string pattern, string value) =>
+            kind == ScopeKind.Path ? Paths.MatchesPattern(value, pattern) : Scope.MatchesIdPattern(value, pattern);
+
         // Every child include pattern (child granter frame) must be covered by some
         // parent include (parent granter frame).
         foreach (string childPattern in child.Include)
         {
-            string cc = Paths.Canonicalize(childPattern, childPeerId);
-            bool covered = parent.Include.Any(pp => Paths.MatchesPattern(cc, Paths.Canonicalize(pp, parentPeerId)));
+            string cc = Frame(childPattern, childPeerId);
+            bool covered = parent.Include.Any(pp => Covers(Frame(pp, parentPeerId), cc));
             if (!covered)
             {
                 return false;
@@ -121,9 +149,9 @@ internal static class Attenuation
         {
             foreach (string parentEx in parent.Exclude)
             {
-                string cp = Paths.Canonicalize(parentEx, parentPeerId);
+                string cp = Frame(parentEx, parentPeerId);
                 bool childHas = child.Exclude is not null
-                    && child.Exclude.Any(ce => Paths.MatchesPattern(cp, Paths.Canonicalize(ce, childPeerId)));
+                    && child.Exclude.Any(ce => Covers(Frame(ce, childPeerId), cp));
                 if (!childHas)
                 {
                     return false;

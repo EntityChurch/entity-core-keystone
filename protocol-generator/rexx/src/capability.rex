@@ -194,8 +194,23 @@ Cap_Canonicalize: procedure expose EC.
 /* AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED in
    an include (covers nothing -> the grant grants nothing) and fail-OPEN in an exclude
    (carves out nothing), so the reading is chosen where the POSITION is known and
-   Cap_MatchesPattern stays uniform over its operands. The guard sits outside the
-   scope-type dispatch, transcribing 5.2s loop literally. */
+   Cap_MatchesPattern stays uniform over its operands.
+
+   ASK THIS ONLY OF A PATH-SCOPE DIMENSION (0.8.2.24, N2/N3). Cap_NeverMatch is a 5.4
+   PATH-canonicalization sentinel; an id-scope pattern is a literal identifier that 5.2's
+   own id-scope arm forbids putting through the 5.4 transforms. This guard used to sit
+   OUTSIDE the type dispatch, transcribing 5.2's loop as it read before that loop grew
+   one -- which ran an id pattern through those transforms purely to classify it and then
+   DENIED THE WHOLE DIMENSION on a property unrelated to whether the exclude carves
+   anything out: an `operations` exclude of a namespaced operation name such as the
+   apply-under-star form -- an ordinary literal that matches nothing under the id-scope
+   grammar -- canonicalized to the sentinel and denied every operation. Over-denial, and
+   invisible on any well-formed grant.
+
+   5.4 says outright that the rule "does NOT reach `operations` or `peers` [MUST]", and it
+   does not leave the id dimensions unprotected by oversight: under the id-scope grammar
+   every non-star pattern is a literal and a literal is never structurally unmatchable, so
+   there is nothing here for this sentinel to detect. A scope boundary, not an omission. */
 _exclude_unmatchable: procedure expose EC.
   parse arg frame, excl
   n = Lst_Count(excl)
@@ -258,7 +273,11 @@ _covered_id: procedure expose EC.
    cannot inherit the wrong matcher silently, which is exactly the F40 defect. */
 Cap_MatchesScope: procedure expose EC.
   parse arg local_peer, value, s, kind
-  if _exclude_unmatchable(local_peer, Scope_Excl(s)) then return 0   /* 0.8.2.21 */
+  /* SCOPED TO PATH-SCOPE (0.8.2.24). 5.2's exclude loop tests the sentinel INSIDE
+     `if dimension_type == "system/capability/path-scope"`, and 5.4 scopes its own
+     invalid-capability rule the same way. `kind` already names the dimension here, so the
+     scoping costs one term and cannot be got wrong by a new call site. */
+  if kind == 'path' & _exclude_unmatchable(local_peer, Scope_Excl(s)) then return 0   /* 0.8.2.21 */
   if kind == 'id' then do
     if \_covered_id(Scope_Incl(s), value) then return 0
     return \_covered_id(Scope_Excl(s), value)
@@ -298,7 +317,13 @@ Cap_CheckResourceScope: procedure expose EC.
   if Lst_Count(targets) == 0 then return 0
   /* An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
      target: the coverage test below is correct in isolation and is simply never
-     reached on a sentinel, because Cap_MatchesPattern answers 0. */
+     reached on a sentinel, because Cap_MatchesPattern answers 0.
+
+     UNGUARDED ON PURPOSE, unlike Cap_MatchesScope's (0.8.2.24): `s` here is ALWAYS the
+     RESOURCES dimension, which 5.2 fixes as path-scope, so the type test that call site
+     performs would be a constant here. The single-dimension signature is what makes that
+     checkable -- a granter frame reaching an id-scope call site is the defect, and this
+     routine cannot be one. */
   if _exclude_unmatchable(granter_peer, Scope_Excl(s)) then return 0
   do i = 1 to Lst_Count(targets)
     ct = Cap_Canonicalize(local_peer, Lst_Item(targets, i))
@@ -307,6 +332,113 @@ Cap_CheckResourceScope: procedure expose EC.
     if _covered(granter_peer, Scope_Excl(s), ct) then return 0
   end
   return 1
+
+/* ── §3.3 effective targets + §6.3 check_path_permission ── */
+
+/* Cap_EffectiveTargets -- §5.2's effective target list (0.8.2.20): the caller's own
+   `resource.exclude` removes entries from `resource.targets` BEFORE anything else looks
+   at the request.
+ *
+ * Returns a PAIR packed as one string: a single '1'/'0' flag saying whether a `resource`
+ * was present at all, followed by the packed survivor list. Read it with Eff_Had / a
+ * substr, never by length -- an empty survivor list is the empty string here.
+ *
+ * THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES [MUST] (0.8.2.25, N11): "where an
+ * implementation projects resource.targets onto the effective set ahead of the handler,
+ * that projection MUST NOT be lossy about its own emptiness -- narrow when narrowing
+ * leaves something, and retain the raw pair when narrowing would empty it." A routine
+ * returning only the packed list could not satisfy that on this substrate, where an empty
+ * packed list and an absent value are BYTE-IDENTICAL (both the empty string): collapsing
+ * `[qA] exclude [qA]` to '' would delete the two-empties discriminator before any handler
+ * can read it, and the handler's refusal arm becomes dead code that only a WIRE drive can
+ * detect. The flag is what keeps the discriminator by construction.
+ *
+ * The survivors are in the caller's OWN SPELLING, not canonicalized -- 0.8.2.21 is
+ * explicit that effective_targets yields raw survivors, and the distinction is
+ * load-bearing because the value flows on to the store lookup, which canonicalizes for
+ * itself.
+ *
+ * "Every seam that narrows is exempted alike, inbound-wire and in-process sub-dispatch,
+ * or one request receives two different answers according to which door it arrived
+ * through." This peer has exactly ONE narrowing seam -- this routine, called by the tree
+ * handler -- and §6.5's dispatch chain does not project: _dispatch_inner passes `exec`
+ * through untouched and Cap_CheckPermission reads `resource` for itself. So there is no
+ * second door to keep in step, and adding a projection at dispatch would create one.
+ *
+ * A PRESENT-BUT-EMPTY `targets` IS **PRESENT**, with an empty survivor list. Reporting it
+ * absent would serve the WIDER absent-case answer to a request that named a resource,
+ * which is N11's own defect one field over.
+ *
+ * The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4 rules it separately
+ * from the grant arm) and that is INHERITED here rather than restated: Cap_Canonicalize
+ * answers the sentinel, Cap_MatchesPattern then answers 0, and the target simply
+ * survives. */
+Cap_EffectiveTargets: procedure expose EC.
+  parse arg local_peer, exec
+  r = Ent_MapField(exec, 'resource')
+  if r == '' then return '0'
+  if \Ecf_Has(r, 'targets') then return '0'
+  targets = Ecf_TextList(r, 'targets')
+  excl = Ecf_TextList(r, 'exclude')
+  out = ''
+  nx = Lst_Count(excl)
+  do i = 1 to Lst_Count(targets)
+    t = Lst_Item(targets, i)
+    ct = Cap_Canonicalize(local_peer, t)
+    dropped = 0
+    do j = 1 to nx
+      if Cap_MatchesPattern(ct, Cap_Canonicalize(local_peer, Lst_Item(excl, j))) then do; dropped = 1; leave; end
+    end
+    if \dropped then out = Lst_Add(out, t)
+  end
+  return '1' || out
+
+/* the two accessors on the pair above -- named so a call site cannot mistake the flag
+   byte for the first list item. */
+Eff_Had: procedure
+  parse arg e
+  return (left(e, 1) == '1')
+Eff_List: procedure
+  parse arg e
+  return substr(e, 2)
+
+/* Cap_CheckPathPermission -- §6.3's handler-level path check: may the caller access
+ * `path` AS A TREE PATH, under `handler_pattern`, with `token`?  -> 1 ALLOW / 0 DENY.
+ *
+ * IT IS NOT A SECONDARY CHECK (§6.3, 0.8.2.20). It is the enforcement wherever the
+ * subject is derived after dispatch, and the dispatch-level check can be made VACUOUS by
+ * caller-controlled input: a caller who excludes the one target its capability does not
+ * cover removes that target from Cap_CheckPermission's view entirely, and a handler that
+ * then acts on it has authorized nothing.
+ *
+ * THREE DIMENSIONS, NOT FOUR. `peers` is not consulted -- the path is local by
+ * construction at this point (§1.4's inbound rule refuses a foreign namespace at §6.5
+ * step 3, before any handler runs), and §6.3's signature names only handlers, operations
+ * and resources.
+ *
+ * THE FRAME IS THE LOCAL PEER, NOT THE GRANTER, and that is the spec's own signature
+ * rather than a choice: §6.3's block reads
+ * `matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id)` -- there
+ * is no granter parameter to pass. §5.5a governs chain ATTENUATION, where the subject is
+ * a pattern compared against a parent's pattern; this call site compares a CONCRETE local
+ * path the handler is about to touch.
+ *
+ * Scope types: handlers -> path-scope, operations -> id-scope, resources -> path-scope.
+ * An empty resources.include is a legal grant shape (§5.2: handlers that touch no tree
+ * paths) and DENIES every path here, which is what that note says it should. A malformed
+ * path canonicalizes to Cap_NeverMatch, which matches no grant, so it falls through to
+ * DENY rather than being matched against anything. */
+Cap_CheckPathPermission: procedure expose EC.
+  parse arg local_peer, operation, path, token, handler_pattern
+  gs = Cap_GrantsOfToken(token)
+  do i = 1 to Lst_Count(gs)
+    g = Lst_Item(gs, i)
+    if \Cap_MatchesScope(local_peer, handler_pattern, Grant_Handlers(g), 'path') then iterate
+    if \Cap_MatchesScope(local_peer, operation, Grant_Operations(g), 'id') then iterate
+    if \Cap_MatchesScope(local_peer, path, Grant_Resources(g), 'path') then iterate
+    return 1
+  end
+  return 0
 
 /* §PR-8: the granter's peer_id frames a cap's resource patterns. */
 Cap_ResolveGranterPeerId: procedure expose EC.
@@ -472,25 +604,61 @@ _link_granter_peer: procedure expose EC.
   if pk == '' then return ''
   return Id_PeerIdOfPubkey(pk)
 
+/* _ss_frame / _ss_covers -- the two halves of the scope typing, split so each can be
+   mutated independently. Measured on the sibling `tcl` peer by planting: mutating the
+   MATCHER alone is INERT for the published K-7 witnesses, because for the
+   star-slash-apply form vs a bare star
+   the two matchers AGREE (both take the bare-star arm) and the whole divergence comes
+   from CANONICALIZATION manufacturing the sentinel. The frame is the half that bites;
+   the matcher half needs a pair such as /a/get against the peer-wildcard form
+   (slash star slash get), which canonicalizes to itself and is a PATTERN to one matcher
+   and a literal to the other. */
+_ss_frame: procedure expose EC.
+  parse arg kind, pattern, peer
+  if kind == 'path' then return Cap_Canonicalize(peer, pattern)
+  return pattern
+
+_ss_covers: procedure expose EC.
+  parse arg kind, pattern, value
+  if kind == 'path' then return Cap_MatchesPattern(value, pattern)
+  return Cap_MatchesIdPattern(value, pattern)
+
+/* 5.5a/5.6 subset check: every child include must be covered by some parent include, and
+   every parent exclude must be inherited by some child exclude.
+
+   TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16; entity-core-formalization K-7). 3.6's
+   id-scope grammar binds the scope TYPE, not one function -- "An implementation on the
+   canonicalizing reading is non-conformant and MUST adopt the literal matcher" -- so the
+   rule F40 landed on Cap_MatchesScope reaches here too, with delegation-chain WIDENING
+   named as the reason: on the canonicalizing reading a bare id include reads as covered
+   by a path-form parent pattern it does not literally match, and a child grant comes out
+   wider than its parent. `lean`'s differential put it at 2 of 64 include pairs and 2 of
+   64 exclude pairs, fail-closed, with a 16-pair control alphabet reporting 0 -- which is
+   why every hand-tried example missed it.
+
+   `kind` has NO DEFAULT and is named at every call site, because a default is how the
+   next dimension inherits the wrong matcher silently -- the original F40 defect. The
+   per-link granter frames are meaningless on the id arm (an id pattern is never
+   canonicalized) and are simply unread there. */
 _scope_subset: procedure expose EC.
-  parse arg child_peer, parent_peer, child, parent
+  parse arg child_peer, parent_peer, child, parent, kind
   ci = Scope_Incl(child)
   do i = 1 to Lst_Count(ci)
-    cc = Cap_Canonicalize(child_peer, Lst_Item(ci, i))
+    cc = _ss_frame(kind, Lst_Item(ci, i), child_peer)
     covered = 0
     pin = Scope_Incl(parent)
     do j = 1 to Lst_Count(pin)
-      if Cap_MatchesPattern(cc, Cap_Canonicalize(parent_peer, Lst_Item(pin, j))) then do; covered = 1; leave; end
+      if _ss_covers(kind, _ss_frame(kind, Lst_Item(pin, j), parent_peer), cc) then do; covered = 1; leave; end
     end
     if \covered then return 0
   end
   pex = Scope_Excl(parent)
   do i = 1 to Lst_Count(pex)
-    cpe = Cap_Canonicalize(parent_peer, Lst_Item(pex, i))
+    cpe = _ss_frame(kind, Lst_Item(pex, i), parent_peer)
     covered = 0
     cex = Scope_Excl(child)
     do j = 1 to Lst_Count(cex)
-      if Cap_MatchesPattern(cpe, Cap_Canonicalize(child_peer, Lst_Item(cex, j))) then do; covered = 1; leave; end
+      if _ss_covers(kind, _ss_frame(kind, Lst_Item(cex, j), child_peer), cpe) then do; covered = 1; leave; end
     end
     if \covered then return 0
   end
@@ -498,12 +666,15 @@ _scope_subset: procedure expose EC.
 
 Cap_GrantSubset: procedure expose EC.
   parse arg local_peer, child_peer, parent_peer, child, parent
-  if \_scope_subset(local_peer, local_peer, Grant_Handlers(child), Grant_Handlers(parent)) then return 0
-  if \_scope_subset(local_peer, local_peer, Grant_Operations(child), Grant_Operations(parent)) then return 0
-  if \_scope_subset(child_peer, parent_peer, Grant_Resources(child), Grant_Resources(parent)) then return 0
+  /* 5.5a: only the RESOURCE dimension uses the per-link granter frames; the other
+     dimensions stay on the local frame. The scope KIND is a property of the DIMENSION and
+     is named at every call site, never defaulted (F50 / 0.8.2.16). */
+  if \_scope_subset(local_peer, local_peer, Grant_Handlers(child), Grant_Handlers(parent), 'path') then return 0
+  if \_scope_subset(local_peer, local_peer, Grant_Operations(child), Grant_Operations(parent), 'id') then return 0
+  if \_scope_subset(child_peer, parent_peer, Grant_Resources(child), Grant_Resources(parent), 'path') then return 0
   cp = Grant_Peers(child); if cp == '' then cp = Scope_Make(Lst_Add('', local_peer), '')
   pp = Grant_Peers(parent); if pp == '' then pp = Scope_Make(Lst_Add('', local_peer), '')
-  return _scope_subset(local_peer, local_peer, cp, pp)
+  return _scope_subset(local_peer, local_peer, cp, pp, 'id')
 
 _is_attenuated: procedure expose EC.
   parse arg local_peer, child_peer, parent_peer, child, parent

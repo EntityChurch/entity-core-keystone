@@ -44,8 +44,64 @@ Envelope envelopeOfFrame(Uint8List payload) {
       }
       return Envelope.ofCbor(value);
     case Err(:final error):
-      throw EntityTransportException('frame decode: ${error.message}');
+      // THE CAUSE HAS TO SURVIVE THE THROW. This used to collapse every codec
+      // failure into one untyped transport exception carrying only a MESSAGE, which
+      // is the erasure that made `non_canonical_ecf` the answer to five different
+      // questions (§4.11, 0.8.2.25). [DecodeRefusal] carries the sealed
+      // [EntityError] so [classifyPreAdmission] can dispatch on it.
+      throw DecodeRefusal(error);
   }
+}
+
+// ── §4.11 pre-admission refusal classification (0.8.2.25) ────────────────────
+
+/// The `(status, code, message)` §4.11 assigns a pre-admission failure's CAUSE.
+///
+/// "The frame obligation belongs to the class; the CODE belongs to the cause [MUST]"
+/// — a single code for the class would answer an honest caller under the wrong reason
+/// and send them to the wrong layer.
+///
+///     connect-auth proof-of-possession      401 authentication_failed  (§4.6/§4.7 —
+///                                              the connect handler's, not here)
+///     envelope over the configured maximum  413 payload_too_large      (§4.10(a), N14)
+///     resolution integrity (mis-keyed inc.) 400 hash_mismatch          (§5.2a, §1.8)
+///     framing / never becomes an Envelope   400 invalid_request        (§4.7, §4.11)
+///     root is neither EXECUTE nor E_R       400 invalid_request        (§3.3, §4.11 —
+///                                              in Peer.dispatch, not here)
+///
+/// THE TAG ARM KEEPS `non_canonical_ecf` AND THAT IS DELIBERATE. §4.11 rules that code
+/// non-conformant "on the framing arm" and gives its reason in the same sentence:
+/// ENTITY-CBOR-ENCODING defines it for CBOR tag-policy violations specifically, which
+/// that document still MUSTs at decode time (§6.3). The two rows are disjoint by CAUSE
+/// rather than in conflict. Everything else this decoder calls non-canonical (a
+/// non-minimal head, an indefinite length, mis-ordered keys) is genuinely
+/// "non-canonical CBOR that never becomes an Envelope" and takes invalid_request.
+///
+/// ORDER IS LOAD-BEARING: [TagRejected] and [NonCanonicalEcf] are siblings under the
+/// sealed [CodecError], but [HashMismatch] is a [ProtocolError] and a `switch` on the
+/// runtime type must name the specific arms before any catch-all.
+///
+/// The messages are a FIXED TABLE, never the internal exception text: an exception
+/// message is a developer diagnostic and can name internal state. ASCII by discipline.
+final class PreAdmissionRefusal {
+  const PreAdmissionRefusal(this.status, this.code, this.message);
+  final int status;
+  final String code;
+  final String message;
+}
+
+PreAdmissionRefusal classifyPreAdmission(Object e) {
+  final cause = e is DecodeRefusal ? e.cause : e;
+  return switch (cause) {
+    PayloadTooLarge() => const PreAdmissionRefusal(
+        413, 'payload_too_large', 'frame exceeds the configured maximum'),
+    HashMismatch() => const PreAdmissionRefusal(
+        400, 'hash_mismatch', 'included entry does not bind to its key'),
+    TagRejected() => const PreAdmissionRefusal(
+        400, 'non_canonical_ecf', 'CBOR tag in a data-field position'),
+    _ => const PreAdmissionRefusal(
+        400, 'invalid_request', 'frame does not decode to an envelope'),
+  };
 }
 
 Uint8List frameOfEnvelope(Envelope env) => Ecf.encodeOrThrow(env.toCbor());

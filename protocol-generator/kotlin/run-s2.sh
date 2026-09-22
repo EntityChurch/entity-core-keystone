@@ -31,7 +31,7 @@
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$REPO_ROOT/tools/podman-caps.sh"
-FLOOR="${KOTLIN_TEST_FLOOR:-7}"
+FLOOR="${KOTLIN_TEST_FLOOR:-24}"
 
 podman run $PODMAN_RUN_CAPS --rm --network=none \
   -v "$REPO_ROOT":/work:Z -w /work/protocol-generator/kotlin \

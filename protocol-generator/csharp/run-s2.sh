@@ -8,7 +8,7 @@
 # been carrying transcribed pins from a superseded corpus — passing, because the
 # peer computed the same wrong thing the test expected.
 #
-#   ./run-s2.sh          # ECF corpus (71) + unit tests (34) + agility harness
+#   ./run-s2.sh          # ECF corpus (71) + unit tests (51) + agility harness (24)
 #   ./run-s2.sh agility  # agility harness only
 #
 # NETWORK: none, like every sibling. This used to say the opposite, and named the gap

@@ -99,6 +99,67 @@ package Entity_Core.Protocol.Capability is
       H   : Byte_Array;
       Found : out Boolean) return Materialized_Entity;
 
+   ---------------------------------------------------------------------------
+   --  §5.2 effective targets and §6.3 check_path_permission.
+   ---------------------------------------------------------------------------
+
+   --  §5.2's effective target list (0.8.2.20): the caller's OWN resource.exclude
+   --  removes entries from the request BEFORE anything else looks at it.
+   --
+   --  The survivors come back in the caller's OWN SPELLING, not canonicalized --
+   --  0.8.2.21 is explicit that effective_targets yields raw survivors, and the
+   --  distinction is load-bearing because the value flows on to the store lookup,
+   --  which canonicalizes for itself.
+   --
+   --  Has_Resource says whether a `resource` was present AT ALL. An ABSENT
+   --  resource and a resource whose every target was excluded are different inputs
+   --  to §3.3, and for a resource-OPTIONAL operation 0.8.2.24 (N7) makes them
+   --  DIFFERENT REQUESTS with different answers.
+   --
+   --  THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES [MUST] (0.8.2.25, N11):
+   --  "that projection MUST NOT be lossy about its own emptiness -- narrow when
+   --  narrowing leaves something, and retain the raw pair when narrowing would
+   --  empty it." A function returning only a list cannot satisfy that: collapsing
+   --  a one-target self-excluded request to an empty list deletes the two-empties
+   --  discriminator before any handler can read it, and the handler's refusal arm
+   --  becomes dead code only a WIRE drive can detect. The (vector, out Boolean)
+   --  shape is this package's existing Text_List idiom, which already carries
+   --  exactly that discriminator.
+   function Effective_Targets
+     (Local_Peer   : String;
+      Exec         : Materialized_Entity;
+      Has_Resource : out Boolean) return Entity_Core.Codec.Value.Value_Vector;
+
+   --  §6.3's handler-level path check.
+   --
+   --  IT IS NOT A SECONDARY CHECK (§5.2, 0.8.2.20). It is the enforcement wherever
+   --  the subject is derived after dispatch, and the dispatch-level check can be
+   --  made VACUOUS by caller-controlled input: a caller who excludes the one target
+   --  its capability does not cover removes that target from Check_Permission's
+   --  view entirely, and a handler that then acts on it has authorized nothing.
+   --
+   --  THREE DIMENSIONS, NOT FOUR. `peers` is not consulted here -- the path is
+   --  local by construction at this point (§1.4's inbound rule refuses a foreign
+   --  namespace at §6.5 step 3, before any handler runs), and §6.3's signature
+   --  names only handlers, operations and resources.
+   --
+   --  THE FRAME IS Local_Peer, NOT THE GRANTER, AND THAT IS THE SPEC'S OWN
+   --  SIGNATURE RATHER THAN A CHOICE. §6.3's block reads
+   --  matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id)
+   --  -- there is no granter parameter to pass. §5.5a governs chain ATTENUATION,
+   --  where the subject is a pattern compared against a parent's pattern; this
+   --  call site compares a CONCRETE local path the handler is about to touch.
+   --
+   --  An empty resources.include is a legal grant shape (§5.2: handlers that touch
+   --  no tree paths) and DENIES every path here, which is what that note says it
+   --  should.
+   function Check_Path_Permission
+     (Local_Peer      : String;
+      Operation       : String;
+      Path            : String;
+      Token           : Materialized_Entity;
+      Handler_Pattern : String) return Boolean;
+
    --  §6.2 / §5.6 mint-bound: True iff every grant in Requested (a grants
    --  ARRAY) is a subset of SOME grant in Authorized (a grants ARRAY). Used by
    --  the capability/request handler to refuse a grant exceeding the presented

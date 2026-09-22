@@ -18,7 +18,7 @@ internal sealed record ResourceTarget(IReadOnlyList<string> Targets, IReadOnlyLi
         IReadOnlyList<string> targets = Ecf.AsArray(Ecf.Require(value, "targets")).Select(Ecf.AsText).ToList();
         if (targets.Count == 0)
         {
-            throw new EntityProtocolException("resource-target.targets MUST contain at least one entry (§3.2)");
+            throw new EntityProtocolException("resource-target.targets MUST contain at least one entry (section 3.2)");
         }
         EcfValue? exclude = Ecf.Field(value, "exclude");
         IReadOnlyList<string>? excludes = exclude is null

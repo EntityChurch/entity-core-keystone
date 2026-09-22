@@ -24,7 +24,7 @@ CODEC_DEPS := $(shell find $(CODEC_SRC)/src $(CODEC_SRC)/include \
 
 ADDON_SO    := $(BUILD)/libIoEntityCodec.so
 
-.PHONY: all addon codec install-addon smoke s2 clean
+.PHONY: all addon codec install-addon smoke s2 sweep unit clean
 
 all: addon
 
@@ -63,14 +63,28 @@ smoke: install-addon
 
 # S2 gate: the pinned v0.8.0 corpus (71 vectors) byte-identical + the §9.5
 # type-floor render-from-model drift check (53/53 byte-identical to the oracle).
-s2: install-addon
+s2: install-addon sweep
 	io test/s2-corpus.io ../shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 	io test/typecheck.io ../shared/test-vectors/type-registry/type-registry-vectors.cbor
 
 # genuine §3.6 K-of-N multisig ACCEPT-path unit test (the oracle-uncoverable
-# direction) + M3/M4/M6 negatives.
-unit: install-addon
+# direction) + M3/M4/M6 negatives, + the 0.8.2.25 sweep unit gate (the 3.3 ladder,
+# 6.3's path check + listing filter, 5.4's sentinel scoping, 5.5a's scope typing,
+# and 4.11's code-belongs-to-the-cause classification, driven from real bytes).
+unit: install-addon sweep
 	io test/multisig-accept.io
+
+# The 0.8.2.25 sweep unit gate. A separate target so it can be driven alone while
+# diagnosing, and a PREREQUISITE of both `unit` and `s2` so it cannot rot unrun --
+# an axis's per-peer gates rot exactly where no cohort runner reaches, and `s2` is
+# what this peer's run-s2.sh actually invokes.
+# `io` EXITS 0 ON AN UNCAUGHT EXCEPTION (measured in this image: a script referencing a
+# missing slot prints the exception and exits 0), so the exit code alone cannot tell a
+# green suite from one that raised on its third case. The recipe asserts the POSITIVE
+# verdict line the script prints only after every case has run.
+sweep: install-addon
+	@out=$$(io test/sweep-0-8-2-25.io 2>&1); echo "$$out"; \
+	  echo "$$out" | grep -q '^SWEEP-0.8.2.25 OK$$' || { echo "SWEEP GATE FAILED (no OK verdict line)"; exit 1; }
 
 clean:
 	rm -rf $(BUILD)

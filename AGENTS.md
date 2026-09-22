@@ -407,6 +407,15 @@ Two conformance **oracles** are ground truth (built from `entity-core-go`, see B
   authority (S3) is the one whose checks went stale, silently, while the peers stayed `756 · 0F`.
   **So a requirement of that kind ships with its executable gate or it does not ship** — not a census
   document, not a table, not a source read.
+- **The keystone peer contract suite (v2.0-draft.1, provisional) — `tools/peer-contract/run.sh <peer>`.**
+  One Go driver for every language measures a peer's *contract host* (`run_host(argv,
+  install_fixtures)`, a separate package, specified byte-for-byte in
+  `protocol-generator/shared/peer-contract/FIXTURE-HOST.md`), plus a few local tests for what the wire
+  cannot see; `report.py` computes `certified | not-certified` from `requirements.toml`, and
+  `report.py --check` recomputes every committed `status/KEYSTONE-PEER-REPORT.json` in `make lint`.
+  **`plant.py <peer>` is part of bringing a peer up, not an extra**: named defects in a scratch copy must
+  turn named cases red after an unplanted copy runs green. `rust` is the one peer brought up (certified,
+  13/13 plants caught). `docs/spec/SPEC-KEYSTONE-PEER.md` v1.0 stays pinned until v2 is ratified.
 - **Peer startup convention: `--name NAME`** loads the peer's Ed25519 identity from
   `~/.entity/peers/NAME/keypair` (entity-core PEM = base64 of a 32-byte seed) — persistent
   identity + peer-manager interop. `--validate` enables the `system/validate/*` conformance
@@ -1348,6 +1357,127 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   idle deadline is NOT the §6.11(c) per-request deadline** — §6.11 separately forbids implementing
   that one as a connection-wide primitive; the two are only compatible because a forked child owns
   its connection exclusively and serves one frame at a time. Say which one you built.
+- **ON A MANAGED RUNTIME, WHETHER A REFUSAL REACHES THE WIRE IS DECIDED BY THE STREAM LAYER'S
+  DEFAULTS, NOT BY THE CODE THAT WRITES IT — and every throw site reads correctly while it fails.**
+  RATIFIED 2026-09-14 (`typescript`, two independent mechanisms in one peer, landing §4.11). Both
+  were found by INSTRUMENTING THE CATCH, not by reading the emission path, and neither would have
+  been predicted from the vanguards because `go`'s `TCPConn` happens to default the other way:
+  - **`for await (const chunk of socket)` destroys the stream when the loop body throws AND
+    replaces the thrown error.** Node's async-iterator cleanup is `destroyOnReturn: true` by
+    default, so BOTH halves of §4.11 — *put a coded frame on the wire* and *the code belongs to the
+    cause* — were lost to one defaulted option. The catch received
+    `ERR_STREAM_PREMATURE_CLOSE` with `socket.destroyed === true`. Fixed with
+    `socket.iterator({ destroyOnReturn: false })`.
+  - **`allowHalfOpen: true` is a §4.11 REQUIREMENT on Node, not a tuning knob.** A truncated frame
+    is only knowable at end-of-stream, and Node's default ENDS the server's write side on the
+    client's FIN — so the runtime refuses the mandatory coded response with *"This socket has been
+    ended by the other party."*
+  **RATIFIED THE SAME DAY BY A SECOND RUNTIME, AND THE PARAMETER HAS A DIFFERENT NAME EVERY TIME:
+  on the BEAM it is `exit_on_close: false`.** Under `:gen_tcp`'s default, the VM closes our write
+  side on the client's FIN, so a truncated frame **cannot** be answered — §4.11 is defeated by the
+  runtime with no line of the connection module being wrong. `elixir` needed it; `go`'s `TCPConn`
+  has the behaviour by default, which is exactly why neither vanguard would have predicted either
+  one. Two runtimes, two spellings, one rule — so **look for the knob rather than waiting to be
+  bitten by it**: Node `allowHalfOpen`, BEAM `exit_on_close`, and ask the equivalent question of
+  any managed substrate whose socket layer owns the FIN.
+  **Enforcement: for any peer on a managed runtime, drive the refusal arms OVER A SOCKET and assert
+  the frame ARRIVES.** A unit test that calls the refusal function passes in both worlds. Generalize
+  past Node: ask what the stream layer does on (a) an exception inside the read loop and (b) the
+  peer's FIN, before claiming a refusal path works.
+- **A §4.11 TEST WITH NO READ DEADLINE HANGS ON THE PLANT INSTEAD OF FAILING — because the
+  non-conformant behaviour IS "no response".** RATIFIED 2026-09-14/15 (`ruby`, then `common-lisp`
+  identically an hour later). This is the one place where the standing plant discipline turns on
+  itself: the mutation that proves a §4.11 fix is *restore the silent drop*, and a reader with no
+  deadline then parks forever rather than reporting red. It cost a 50-minute plant batch, an
+  orphaned container, and then repeated on a second peer before it was understood.
+  **Two enforcement points, and both are needed:** every wire case carries an explicit deadline with
+  the reason at the site (`Timeout.timeout(5)`, `sb-ext:with-timeout`), **and** the plant RUNNER
+  carries a per-plant timeout so a hang costs one plant rather than the batch.
+  ⚠ **A socket option is NOT the deadline on every substrate:** Ruby's `IO#read` on a `TCPSocket`
+  does **not** honour `SO_RCVTIMEO` — it retries through `EAGAIN` — so the first, obvious fix did
+  nothing. Use the language's own timeout construct and verify it fires.
+  *(Sub-lesson, the comment-is-code class in a FOURTH syntax: a `; PLANTED DEFECT` marker appended
+  in Lisp swallowed six closing parens, and an inline marker in Ruby commented out a closing `))`.
+  A plant MARKER is a mechanical edit and obeys the same rule as any other — put it where the
+  language's comment ends at the newline, or on its own line, and have the runner assert the plant
+  is present rather than trusting the write.)*
+- **RATIFIED, SECOND AND THIRD OCCURRENCE — A RELEASE MUST BE DISARMED WHEN OWNERSHIP TRANSFERS,
+  AND THE DANGEROUS FORM IS A CONSTRUCTOR THAT TAKES OWNERSHIP *ON SUCCESS ONLY*.** First
+  occurrence was `zig`'s `model.ofCbor` (2026-09-14, routed to us as a SYMPTOM by
+  `entity-system-conformance` X14/F60 — *"panic: switch on corrupt value"* — and root-caused here):
+  `errdefer data.deinit(gpa)` stayed armed after `Entity.make` took ownership, so
+  `error.ContentHashMismatch` unwound through BOTH releases and freed one tree twice. A double free
+  of a tagged union leaves a corrupt tag, and the abort surfaces LATER in an unrelated `deinit`,
+  which reads as a codec fault and is a lifetime fault. **It is remotely reachable and needs no
+  valid request** — §1.8 validate-on-receipt runs on every inbound entity.
+  **Second and third: `zig`'s `wire.makeResponse`/`makeExecute`, found the same week one module
+  over, and they are the subtler shape — the contract was CONDITIONAL.** `try f.params.toCbor(gpa)`
+  consumed its argument on success and leaked it on OOM, so *whether the caller still owns the value
+  depended on which branch ran*. A conditional ownership contract cannot be reasoned about at the
+  call site at all. Both now consume on every path, which is why the new refusal paths need no
+  release of their own.
+  **Enforcement, and it is a question rather than a grep: for every constructor that takes
+  ownership, say IN ITS DOC whether it does so unconditionally or only on success — and at each
+  call site, release with a `catch` on the call, never an `errdefer` above it.** An `errdefer` above
+  the transfer is correct until the transfer happens and wrong forever after. The tell that it went
+  unnoticed: the test beside it drove only the ACCEPT direction, so nothing ever unwound.
+- **RATIFIED, THIRD FORMAT — A COMMENT DELIMITER IS CODE, AND THE RULE'S OWN CANONICAL WITNESS IS
+  WHAT BREAKS IT.** After Pd (`,`/`;` terminate a record inside a `#X text` comment) and Smalltalk
+  (a `'` terminates the chunk-format outer string), the third is the plainest: **a C block comment
+  cannot contain `*/`** — and the canonical witness for the §5.4 sentinel rule *is* `*/apply`.
+  Writing the rule's own example into a `/* … */` comment in `c` terminated the comment early and
+  produced eight cascading errors, including a bogus *"missing terminating `'`"* from the next
+  line's apostrophe — i.e. the diagnostic points at the WRONG LINE and at the wrong defect.
+  **Enforcement: before pasting a protocol literal into a comment, ask whether the literal contains
+  the comment's own terminator.** `*/` `;` `,` `'` `"""` are the ones this cohort has hit. Spell it
+  in prose (*"a bare star, a slash, then apply"*) or escape it; `//` comments are unaffected, and
+  preferring them for anything quoting a pattern is cheap insurance.
+- **A GATE'S OWN TIGHTENING CAN GO BLIND, IN THE DIRECTION NOBODY RE-CHECKS — DIFF THE HIT LIST
+  ACROSS EVERY CHANGE TO A DETECTOR.** Candidate (2026-09-14, `tools/ascii-wire-gate.py`, and the
+  defect was authored by the same session that wrote the gate). The first cut returned 34 hits of
+  which three were noise, so the pattern was tightened to require `token(` — an obviously-right
+  repair that **silently dropped every prefix-notation peer in the cohort**, because their paren
+  comes BEFORE the token: `(err 503 "…")` in common-lisp, `[err 403 …]` in tcl, `errMsg 403 "…"` in
+  unison. Three peers vanished from the report; the count fell 20 → 16, **and 16 is a perfectly
+  plausible number.** Caught only by comparing the hit lists before and after.
+  **Two rules. (a) The discriminator belongs on POSITION, not on vocabulary** — requiring the
+  offending literal to be an ARGUMENT to the emitter killed all three false positives without
+  touching any syntax family, where the vocabulary constraint killed three peers to fix three lines.
+  **(b) A detector's self-test needs a positive control PER SYNTAX FAMILY**, not one per defect
+  class: four call shapes exist in this cohort (infix, s-expression, bracket-command, juxtaposition)
+  and a suite carrying only the first would have passed the blind gate.
+- **RATIFIED — AN "ALREADY SATISFIED" IS A MEASUREMENT AND MUST SHIP ITS EVIDENCE.** Across the
+  0.8.2.25 sweep, two of eight rules came back *already satisfied by construction* on most peers,
+  and that is the correct outcome rather than a gap — but only because each report named WHY.
+  The sentinel-guard rule (F) is satisfied wherever the guard is the first arm INSIDE the single
+  matcher, so every call site reaches it; it needs work only where a WRAPPER exists that some
+  callers bypass, which was `lean` alone. The accepted form of the claim is **the enumerated call
+  sites** (`zig` 4, `c` 1, `cpp` 1, `csharp` 7, `java` 6, `kotlin` 6), not the sentence. The
+  operation-before-resource rule (G) was likewise already correct on most peers and was **pinned
+  with a differential anyway** — unknown op WITH and WITHOUT a resource — so that the ordering is
+  measured rather than incidental. **A rule reported as satisfied without either an enumeration or a
+  test is a rule nobody checked.**
+- **EIGHT INERT CONTROLS IN ONE SWEEP, EVERY ONE FOUND BY PLANTING AND NONE BY READING — AND ONE
+  WAS IN THREE PEERS AT ONCE.** 2026-09-14/15. The examined-zero-things class has now caught more
+  TESTS than gates, and the recurring mechanism is that **a control exercises one half of a
+  two-part mechanism while its witness is decided by the other half**:
+  - The RULE E control (`scope_subset` typing) was inert on `csharp`, `java` AND `kotlin`: its
+    `*/apply` witnesses are decided by the SENTINEL, so mutating only the MATCHER left every
+    assertion green. The witness that discriminates is child `operations: ["/x/get"]` under parent
+    `["/*/get"]` — §5.4's peer-wildcard walk says TRUE, §3.6's literal matcher says FALSE, so the
+    canonicalizing reading makes **a child grant wider than its parent**, which is the delegation
+    widening F50 names. After the fix, frame-only and matcher-only mutations redden it
+    **independently**, which is what says the two halves are separately measured.
+  - The same plant BEHAVED DIFFERENTLY ON TWO PEERS FOR A REASON WORTH KNOWING: it worked on `c` and
+    was partial on `cpp`, because `c`'s `ec_canonicalize` FAILS where `cpp`'s answers the sentinel.
+    **A plant's adequacy is a property of the peer's error model, not of the plant.**
+  - A §4.11 driver had no partial-length-prefix arm at all — its "truncated frame" case sends a
+    COMPLETE 4-byte prefix, so the truncation was detected in the body read and the prefix
+    discrimination had nothing driving it. The plant came back INERT and said so.
+  **Enforcement, unchanged and now earning itself every session: assert the plant is PRESENT before
+  the mutated run, require it to redden a NAMED case, and treat a plant that runs green as a finding
+  about the TEST.** Add: when a mechanism has two halves, mutate each half separately and require
+  each to redden the control alone.
 - **FFI shared-lib gotchas** (every `entity-core-codec-ffi-<lang>` + any dual-impl
   differential): with a verbatim header + linker version-script, do **not** use
   `-fvisibility=hidden` (hidden symbols can't be promoted by `global:` → zero exports; let
@@ -1620,6 +1750,39 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   recipe.** It is one command and it is the only thing that distinguishes a stale number from a
   fabricated one — and note the four documents agreed with each other, so cross-reading them
   corroborates the claim instead of testing it.
+- **THE ECF CORPUS'S `map_keys` VECTORS ARE ALL `encode_equal` — THE S2 AXIS TESTS THE ENCODER'S KEY
+  ORDERING AND SAYS NOTHING ABOUT DECODE-SIDE REJECTION, AND A PEER CAN BE 71/71 WHILE ACCEPTING
+  NON-CANONICAL BYTES ON THE WIRE.** RATIFIED 2026-09-14, and it is *conformance-green-can-be-vacuous*
+  on the axis we consume rather than on the one we author. Found twice the same session, from
+  opposite directions, which is what makes it a fact rather than a reading:
+  - Reading the corpus: all six `map_keys` vectors are `kind=encode_equal` (*"text keys sort by
+    encoded length first"*, *"same-length text keys sort lexicographically"*, …). **There is no
+    duplicate-key REJECT vector anywhere in it.**
+  - Measuring a peer: `java`'s `CanonicalCbor.decode` — the `envelopeOfFrame` wire path — **accepts
+    a non-minimal integer head (`0x18 0x01`) and out-of-order map keys**, while its corpus run is
+    71/71 throughout.
+  - **And it is not one peer. `elixir` and `common-lisp` accept the same non-minimal head**
+    (`Cbor.decode(<<0x18, 0x01>>)` → `{:ok, 1}`; `(cbor-decode #(#x18 #x01))` → `1`), found
+    independently a day later by a different agent writing the *"non-canonical but NOT the tag arm"*
+    discriminator. `elixir`'s `arg/2` and `common-lisp`'s `%dec-arg` never compare the decoded value
+    against its minimal encoding. **Three peers, one shape, two independent discoveries, and all
+    three are 71/71 on the corpus** — while `ruby`, `python` and `go` refuse it. That split is the
+    measurement: the corpus cannot be what makes the difference, because all six pass it.
+  **DELIBERATELY NOT FIXED, and the reason is the rule rather than the timidity:** it is a CODEC
+  change, outside the sweep's rule set, with unmeasured blast radius on both S2 and S4 — and
+  smoothing it into a §4.11 sweep commit would bury a real finding inside an unrelated one. It is
+  recorded IN-TREE on each peer instead (a named skipped test on `elixir`, a printed-but-uncounted
+  note in `common-lisp`'s gate, so a pre-existing gap cannot hold the gate red) **so that changing
+  it is a decision and not a drift.**
+  **This corroborates `entity-system-conformance`'s X13** (*four peers accept a hello carrying a
+  CBOR tag, six accept duplicate map keys*) rather than competing with it: their probe measures a
+  surface our S2 axis is structurally blind to. It is also the other half of the `put-probe`
+  duplicate-key episode already recorded here, where `csharp` refused what 37 peers accepted.
+  **Enforcement: an `encode_equal` corpus is an ENCODER test. Before citing an S2 row as evidence a
+  peer's decoder is canonical, check the vector KINDS** — and treat any canonicalization rule with
+  no reject-direction vector as ungated, whatever the pass count says. The reject-direction
+  coverage is architecture's to author (`GUIDE-CONFORMANCE` §7.0 — we author none of it); ours is
+  to stop reading a green encoder axis as a decoder claim.
 - **Conformance-green can be vacuous.** A rejection-only oracle category lets a fail-closed
   peer pass without implementing the primitive — and a non-core category never gates. The
   keystone payoff is the *finding* (an untested, inconsistently-implemented core primitive)
@@ -3103,7 +3266,48 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   header and then PARSE the result; and **interpolating traced source text into a TOML string needs a
   real escaper**, because the values quote code containing quotes and seven profiles stopped parsing.
   Both are the postcondition rule: verify the property, never that the edit was written.)*
-  **CURRENT STATE 2026-09-09 — H1 IS MEASURED COHORT-WIDE: 26 of 46 peers can dispatch a
+  **CURRENT STATE 2026-09-12 — THE HEADLINE BELOW WAS MISLABELLED, AND THE LABEL HID A REAL GAP FOR A
+  WEEK. The 2026-09-09 census measured §6.13(a), NOT H1.** `tools/host-seam-probe` registers a body
+  over the WIRE and asserts a `compute/literal` evaluates; H1's Observation installs a LANGUAGE-NATIVE
+  body through the public surface and names that literal path as the one that cannot satisfy it. The
+  verdict was written into `h1_status`, so 26 profiles read `host` on H1 — **17 of them declaring no
+  in-process install path in the adjacent field**, `rust` among them — and the generator's rust
+  measurement closed on 2026-09-06 with nothing moving *because the gate said rust was already a
+  host*. Routed back as their K-10. **What makes it worth a numbered entry is that `docs/STATUS.md`
+  said so in the same paragraph** (*"read `host` precisely: the entity-native path works, not that a
+  language-native callable can be installed"*) and every reader trusted the field over the caveat.
+  **RATIFIED — A CAVEAT IN PROSE DOES NOT RENAME A FIELD**, the same class as the Makefiles that said
+  `if absent` over a staleness bug and the deferral comments that said `until X exists`: the
+  qualification was written down beside the defect, and the defect is the thing tools read.
+  **Enforcement: `tools/author-extension-host.py --check` refuses any `h1_status` other than `unknown`
+  whose `h1_verified_by` rests on the wire probe**; the probe verdict lives on as `entity_native_*`
+  (26/19/1, unchanged), and `h1_status` is `host` only with an executed H1 harness named — `rust`
+  (`tests/host_contract.rs`, landed the same day with plants), `typescript` (keystone's host-seam
+  test); `python` `not-yet` (dict reachable, H3 excludes a raw container); 43 `unknown`.
+  **Two gate defects fell out, both the standing classes:** (a) that `--check` **exited 1 on any
+  checkout without the gitignored probe reports** — `make lint` was red on this host and would be red
+  on every clean clone, fourth occurrence of *"a gate that only reads gitignored scratch"*; it now
+  validates the committed properties without them and says staleness was not compared. (b) the new
+  discriminator **first ran only after a write**, so the plant reported merely STALE — a control
+  exercised in the wrong mode. Planted in both modes before landing.
+  *(Sub-lesson from the rust plants the same day, the inert-control class again: the first H6 plant
+  cut the connection's budget and the test stayed green, because `frame_budget()` falls back to the
+  peer's value and the two were equal. **When a number has two sources, a plant must cut both** — or
+  choose a test input where they differ.)*
+  *(And a near-miss on the same surface, the harden-one-anchor rule pointed at a NEW surface rather
+  than a sibling: the first cut of `rust`'s in-process `register_handler` refused `system/*`, copied
+  from the wire op beside it — **a rule withdrawn at 0.8.2.13, in a copy `SDK-OPERATIONS` v1.12 names
+  as the thing that makes standard-extension installation impossible**, and which our own F61 finding
+  quotes. It passed every test, because no test installed at `system/compute`. Caught re-reading F61
+  while writing the reply. **When a new surface mirrors an old one, diff what each REFUSES against the
+  current text, not against each other** — the old one may be held on purpose for a reason that does
+  not transfer.)*
+  *(And for anyone extending a published Rust struct: a new `pub` field on an all-`pub` struct breaks
+  every downstream struct literal, and a private one breaks `..Default::default()` too. `CreateOptions`
+  was left untouched and the new knobs went into `PeerConfig` + `Peer::create_with`, verified by
+  building the downstream workspace against the branch before merging — 105 of their tests, 0 red.)*
+  **CURRENT STATE 2026-09-09 (headline SUPERSEDED above — read "H1" as "the entity-native path") — H1
+  IS MEASURED COHORT-WIDE: 26 of 46 peers can dispatch a
   third-party-installed body; 20 cannot, and nothing in the 778-check set says so.** Verified rather
   than assumed: `core_register_body_binding` asserts only that the §11.6.1 entities were BOUND,
   `unsupported_operation_on_registered_handler`'s `registeredURI` is **`system/tree`** (a BOOTSTRAP
@@ -4425,6 +4629,65 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   (conformance vectors never flag that gap); the proof covers the authority *logic interior*
   — crypto, the IO/concurrency shell, and the adversarial-input parser stay owned by KATs,
   race tests, and fuzzing. Ship the peer mathlib-free; proofs live in a `proofs/` target.
+- **RATIFIED — A CONTROL THAT CANNOT OBSERVE THE DEFECT IS FOUND BY DESIGNING ITS PLANT, AND NOT BY
+  RUNNING IT.** 2026-09-13, building the peer contract suite; the fourth member of the inert-control
+  class (after the `sed` plant that never applied, the variable that never crossed the container, and
+  the H6 plant whose two budget sources were equal). `install.evaluator/literal-floor-first` asserts the
+  built-in `compute/literal` floor answers before an installed evaluator — and the fixture evaluator
+  answered **only its own expression type**, so a peer that consulted it first would still have been
+  answered by the floor and passed. Nothing about any run could show that: the suite was 47/47 green on
+  its first execution. Writing the plant (*move the evaluator before the floor*) made it obvious the
+  plant could not redden the case; the fixture now claims `compute/literal` too, and the plant is
+  caught. **Enforcement: every driver requirement lists a control case (`report.py --check` refuses one
+  that does not), and every control has a plant in `contract/plants.json` naming it — a control with
+  no plant is a control nobody has shown can fail.** Corollary worth its own line: **a first run that is
+  all green is the moment to plant, not to publish** — this repo's "a batch in which every member passes
+  is a claim to distrust" rule, applied to a suite on its own first day.
+- **RATIFIED — A TOML KEY WRITTEN AFTER AN ARRAY-OF-TABLES BELONGS TO THE LAST TABLE.** Second
+  occurrence, different shape: the first was `author-extension-host.py` appending `key = value` lines to
+  profiles that ended in `[spec]`; this one was hand-authored. `requirements.toml`'s `controls = [...]`
+  sat at the end of the file after the last `[[requirement]]`, so it parsed as a field of
+  `authority.path_permission` and the top-level list was empty — valid TOML, silently wrong. It was
+  caught only because the verdict rule **fails closed**: with no controls every driver requirement read
+  "no control held", and `--check` refused all 20. **Enforcement: put top-level keys before the first
+  `[[table]]`, and have the reader assert the key exists at the top level** (`--check`'s "lists no
+  control" does). A reader that defaults a missing list to empty is the defect that lets this pass.
+- **A PUBLIC FIELD ON A TYPE HANDED TO THIRD-PARTY CODE IS A CAPABILITY, AND THE PEER'S PRIVATE KEY WAS
+  ONE.** RATIFIED 2026-09-13 — second occurrence the same day, and a different shape: that one
+  let a secret be READ, the second let an address be WRITTEN. `Entity.hash` is `pub`, and
+  `Store::put_entity`/`bind_with_context` trusted it. Extension code could therefore file an entity
+  under another entity's content hash, and the authority path resolves grantees from that store by
+  hash: 0.8.2.23's `K1` forgery, moved in-process. Wire decode had always recomputed the hash, so
+  every wire-side check passed. Only a fixture that DELIBERATELY constructs the forgery could see it
+  (`embed.data/forged-hash-not-filed`, plant `data-hash-trusted`). **When a field can't go private
+  because consumers read it (326 reads downstream), the check moves to where it is TRUSTED**: the
+  store verifies `content_hash_holds()` at write and returns `bool`. **Enforcement: for each `pub`
+  field on a type an extension receives, name the site that relies on it. A reliance with no check
+  there is the defect.** First occurrence (2026-09-13, `rust`; found by the gap audit, not by any test). `Identity.seed` was
+  `pub`, and `HandlerContext::peer()` hands every installed handler body the `Peer` — so any extension
+  could read the Ed25519 private seed, and `#[derive(Debug)]` would print it. Nothing measured it:
+  conformance cannot see an in-process field, and H1–H9 never asked what a body can *read*. Made
+  private with a redacting `Debug`; signing stays on `Identity::sign_entity`. **Enforcement: for every
+  type reachable from a handler context, list its `pub` fields and ask which are secrets** — and repeat
+  it for each language as it is brought up to the contract (python's `DispatchCtx` is a public
+  dataclass). An extension-host surface is an authority boundary, and a field is on it.
+- **RUN THE CONSUMER'S OWN SUITE, OLD PEER AGAINST NEW, BEFORE SHIPPING A SURFACE CHANGE — and read the test
+  that flips before deciding which side is wrong.** Candidate (2026-09-13, S3). Bringing typescript and
+  python up to the contract changed public return types, the readiness line and a CLI flag on peers that
+  `entity-system-generator` stages by copy. Their suites were run read-only against a scratch copy of their
+  staged build with our peer swapped in, **with an old-peer arm in the same run**. The first attempt showed
+  both arms red, which is what separated a broken reconstruction (stale `__pycache__`, node 24's non-TAP
+  reporter printing no counts) from a real break. The one real flip was a test they wrote to fire on exactly
+  this change. The tempting "fix", a read-back getter, would have turned their gate green over an evaluator
+  whose signature 500s at dispatch. **Enforcement: every arm prints a pass COUNT, and an old-peer arm exists
+  in the same run.** *(Sub-lesson: `shutil.copytree` follows symlinks by default, so `plant.py` turned
+  `node_modules/.bin/tsc` into a file whose relative require failed; plant copies keep links as links now.)*
+- **AN AUDIT'S SUMMARY CAN CONTRADICT ITS OWN TABLE, AND THE SUMMARY IS THE PART THAT GETS RELAYED.**
+  Candidate (2026-09-13). A delegated audit of the generator's findings a–j reported *"7 hold as written,
+  3 in part"* above a table with nine CONFIRMED rows and one PARTIAL; the 7/3 went into a user reply and
+  a routing packet before a re-read of the rows caught it. This is "a count inherits the shape of the
+  search that produced it" with the search being a summarizer. **Enforcement: recount a delegated
+  verdict from its rows before it leaves the session** — it is one pass over ten lines.
 - **Visual/dataflow paradigms: author the protocol IN the language, don't wrap it.** A peer whose
   §6.5 collapses to one delegated `dispatch(frame)` call with a few façade blocks is a *wrapper*,
   not a paradigm probe — the logic must be visible on the canvas/graph (FLOW-DESIGN's wrapper-guard).

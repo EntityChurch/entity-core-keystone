@@ -58,6 +58,15 @@ struct conn {
     int fd; int id;
     unsigned char *buf; long have; long drain;      /* inbound de-framing buffer */
     unsigned char *obuf; long olen, ocap, ohead;    /* outbound (socket-write) queue */
+    /* §4.11 (0.8.2.25): a connection whose stream ended MID-FRAME is owed a coded
+     * EXECUTE_RESPONSE before it goes away, and only the Rexx side can build one. So the
+     * peer's FIN does not drop the connection immediately: we stop reading it, emit
+     * PREADM, and let the drop happen once the refusal has actually been written. Without
+     * the deferral the close races the answer and §4.11's requirement is unobservable —
+     * which is exactly the "closed with no coded frame" behaviour the section names as
+     * non-conformant. */
+    int dying;
+    int reported;   /* a SEND has been queued on this dying connection */
 };
 
 static struct conn conns[EC_MAXCONN];
@@ -166,6 +175,7 @@ static struct conn *conn_new(int fd)
     c->fd = fd; c->id = next_id++; c->have = 0; c->drain = 0;
     c->buf = (unsigned char *)malloc(EC_CONNBUF);
     c->obuf = 0; c->olen = 0; c->ocap = 0; c->ohead = 0;
+    c->dying = 0; c->reported = 0;
     return c;
 }
 
@@ -225,6 +235,23 @@ static void drain_frames(struct conn *c)
         long flen = ((long)c->buf[0] << 24) | ((long)c->buf[1] << 16) |
                     ((long)c->buf[2] << 8) | c->buf[3];
         if (flen < 0 || flen > EC_FRAMECAP || flen > EC_CONNBUF - 4) {
+            /* §4.11 (0.8.2.25) + §4.10(a) N14: an over-limit length prefix is a REFUSAL
+             * OWED A CODED FRAME, and it used to be answered with nothing at all — the
+             * body was drained and the connection served on, which is §4.11's SILENT DROP
+             * ("the weaker of the two precisely because nothing surfaces it"). N14 raised
+             * §4.10(a) SHOULD -> MUST: the condition is detected AT THE PREFIX with the
+             * connection intact and nothing spent, so the permissive mood had nothing to
+             * license. The de-framer cannot build the response — it is a CBOR envelope and
+             * the Rexx side owns the codec — so it reports the cause and the peer answers.
+             *
+             * ONCE PER FRAME, not once per read: the report is emitted here, where the
+             * prefix is first classified, and the drain arm above returns early on
+             * subsequent reads without re-entering this branch.
+             *
+             * The connection is KEPT and the body drained, exactly as before. §4.11 leaves
+             * the close to the peer, and dropping a pooled connection over one oversize
+             * frame is the thing the original comment was right to avoid. */
+            { char pre[64]; snprintf(pre, sizeof(pre), "PREADM %d payload_too_large", c->id); emit(pre); }
             /* oversize / unbufferable: drain the body, keep the connection */
             long buffered = c->have - 4;
             if (buffered >= flen) {
@@ -295,6 +322,7 @@ static void do_send(int id, const char *hex)
     }
     conn_out(c, p, n);
     free(p);
+    if (c->dying) c->reported = 1;
     conn_flush(c);                         /* opportunistic; the rest drains on writable */
 }
 
@@ -387,13 +415,26 @@ int main(int argc, char **argv)
         int maxfd = cmd_fd;
         if (listen_fd >= 0) { FD_SET(listen_fd, &rf); if (listen_fd > maxfd) maxfd = listen_fd; }
         for (int i = 0; i < nconn; i++) {
-            FD_SET(conns[i].fd, &rf); if (conns[i].fd > maxfd) maxfd = conns[i].fd;
-            if (conns[i].ohead < conns[i].olen) FD_SET(conns[i].fd, &wf);
+            /* a dying connection is never read again — its peer has already sent FIN and
+             * anything further would be noise — but it IS still written, because the whole
+             * point of the deferral is to get the §4.11 refusal out. */
+            if (!conns[i].dying) { FD_SET(conns[i].fd, &rf); if (conns[i].fd > maxfd) maxfd = conns[i].fd; }
+            if (conns[i].ohead < conns[i].olen) { FD_SET(conns[i].fd, &wf); if (conns[i].fd > maxfd) maxfd = conns[i].fd; }
         }
         if (outq_head < outq_len) { FD_SET(evt_fd, &wf); if (evt_fd > maxfd) maxfd = evt_fd; }
         if (select(maxfd + 1, &rf, &wf, 0, 0) < 0) { if (errno == EINTR) continue; return 1; }
         if (FD_ISSET(evt_fd, &wf)) q_flush();
         for (int i = 0; i < nconn; i++) if (FD_ISSET(conns[i].fd, &wf)) conn_flush(&conns[i]);
+        /* reap a dying connection ONLY once its refusal has left the queue. A `dying`
+         * conn with nothing queued yet is one whose PREADM the Rexx side has not answered
+         * yet, so it is left alone until the SEND arrives — the pump is single-threaded
+         * and the answer is the very next thing it does. `reported` flips once a SEND has
+         * been queued, which is what distinguishes "not answered yet" from "answered and
+         * flushed". */
+        for (int i = 0; i < nconn; ) {
+            if (conns[i].dying && conns[i].reported && conns[i].ohead >= conns[i].olen) { conn_drop(i); continue; }
+            i++;
+        }
 
         /* commands from Rexx */
         if (FD_ISSET(cmd_fd, &rf)) {
@@ -430,7 +471,35 @@ int main(int argc, char **argv)
                 if (room <= 0) { c->have = 0; room = EC_CONNBUF; }   /* defensive */
                 long r = read(c->fd, c->buf + c->have, room);
                 if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { i++; continue; }
-                if (r <= 0) { conn_drop(i); continue; }
+                if (r <= 0) {
+                    /* §4.11's framing arm: a stream that ends MID-FRAME is a REFUSAL owed
+                     * a coded frame; a clean EOF at a FRAME BOUNDARY is an ordinary close
+                     * and is owed nothing. Both arrive here as the same read result, so
+                     * the distinction can only be made by asking whether any bytes of a
+                     * frame are still outstanding — and getting it wrong in the other
+                     * direction would answer 400 to every peer that simply hangs up.
+                     *
+                     * `have` covers a partial length PREFIX and a complete prefix with a
+                     * short BODY alike. A naive read-exact collapses the prefix case into
+                     * an ordinary hangup, which is an inert control — the §4.11 driver's
+                     * "truncated frame" arm stays green while "partial length prefix"
+                     * does not.
+                     *
+                     * `drain > 0` is DELIBERATELY NOT a truncation: that is an oversize
+                     * frame whose body never arrived, and it has ALREADY been answered
+                     * with its own 413 at the prefix. Reporting it again would put two
+                     * refusals on the wire for one frame, under two different codes.
+                     *
+                     * The drop is DEFERRED rather than taken here: see struct conn.dying. */
+                    if (c->have > 0 && !c->dying) {
+                        char pre[64];
+                        snprintf(pre, sizeof(pre), "PREADM %d truncated_frame", c->id);
+                        emit(pre);
+                        c->dying = 1; c->have = 0; c->drain = 0;
+                        i++; continue;
+                    }
+                    conn_drop(i); continue;
+                }
                 LG("[ecnet] read id=%d r=%ld have->%ld\n", c->id, r, c->have + r);
                 c->have += r;
                 drain_frames(c);

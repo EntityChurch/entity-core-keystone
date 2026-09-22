@@ -195,6 +195,82 @@ static void sqlfn_ed25519_verify(sqlite3_context *ctx, int argc, sqlite3_value *
     sqlite3_result_int(ctx, rc == EC_OK ? 1 : 0);
 }
 
+/* id_match(text value, text pattern) → int 1/0. The §5.4 / §3.6 ID-SCOPE matcher, for
+ * the `operations` and `peers` dimensions.
+ *
+ * WHY THIS IS NOT GLOB, WHICH IS WHAT THE ID DIMENSIONS USED TO USE. Section 3.6's
+ * id-scope grammar admits exactly two wildcard forms -- a bare star, and a segment prefix
+ * ending in slash-then-star -- and NOTHING ELSE: "an implementation on the canonicalizing
+ * reading is non-conformant and MUST adopt the literal matcher". SQLite GLOB treats star
+ * as a free wildcard ANYWHERE, so an operations pattern spelled star-slash-apply -- an
+ * ordinary namespaced operation name, a LITERAL under the id grammar that matches only
+ * itself -- GLOBs any value ending in slash-apply. That is the F50 divergence
+ * (entity-core-formalization K-7): lean's differential put it at 2 of 64 include pairs and
+ * 2 of 64 exclude pairs, with a 16-pair control alphabet reporting 0, which is why every
+ * hand-tried example missed it.
+ *
+ * NOTE THE SPELLING, AND DO NOT "TIDY" IT BACK. The witness is written in WORDS because
+ * star-slash-apply contains a C block-comment TERMINATOR: writing it literally ends this
+ * comment mid-sentence and the compiler then reads the rest as code. That is the fifth
+ * comment-delimiter format this cohort has hit (Pd records, Tcl switch bodies, Smalltalk
+ * chunk strings, PHP docblocks, and now C). The fix is to spell it out -- never to hide it
+ * behind an invisible character.
+ *
+ * ONE DEFINITION, CALLED BY NAME AT EVERY ID-SCOPE SITE. Inlining the CASE at each site
+ * would be a second copy of the grammar, and a second copy drifts.
+ */
+static void sqlfn_id_match(sqlite3_context *ctx, int argc, sqlite3_value **argv)
+{
+    if (argc != 2) { sqlite3_result_error(ctx, "id_match() takes 2 args", -1); return; }
+    const char *value = (const char *)sqlite3_value_text(argv[0]);
+    const char *pattern = (const char *)sqlite3_value_text(argv[1]);
+    if (!value || !pattern) { sqlite3_result_int(ctx, 0); return; }  /* fail-closed on NULL */
+    if (strcmp(pattern, "*") == 0) { sqlite3_result_int(ctx, 1); return; }   /* bare star */
+    size_t pl = strlen(pattern);
+    if (pl >= 2 && pattern[pl - 1] == '*' && pattern[pl - 2] == '/') {   /* segment prefix */
+        sqlite3_result_int(ctx, strncmp(value, pattern, pl - 1) == 0 ? 1 : 0);
+        return;
+    }
+    sqlite3_result_int(ctx, strcmp(value, pattern) == 0 ? 1 : 0);            /* literal */
+}
+
+/* path_match(text value, text pattern) → int 1/0. The section 5.4 PATH-SCOPE matcher,
+ * for the `handlers` and `resources` dimensions: GLOB against the canonicalized pattern,
+ * with section 5.4's UNMATCHABLE-SENTINEL arm FIRST and over BOTH operands.
+ *
+ * WHY THE GUARD IS HERE AND NOT AT THE CALL SITES. 0.8.2.22 names the class: "a sentinel
+ * arm is a control-flow obligation, not a line ... the guard MUST sit on every path that
+ * reaches the decision it protects." Written as a per-site `AND canon <> '/never-match'`
+ * it is a rule with eight copies, and the eighth is the one that gets forgotten -- which
+ * is exactly how lean's scopeSubset bypassed its own wrapper, permissively. Here there is
+ * no unguarded variant to call.
+ *
+ * AND THE GUARD IS LOAD-BEARING IN SQL IN A WAY IT IS NOT IN THE IMPERATIVE COHORT.
+ * There the sentinel is "unreachable as a canonical path by construction", so a bare GLOB
+ * usually refuses it anyway. SQLite GLOB's star is NOT segment-anchored: a grant pattern
+ * spelled slash-star -- already absolute, so it survives canonicalization unchanged --
+ * GLOBs ANY string beginning with a slash, INCLUDING '/never-match'. Without this arm a
+ * caller supplying a reserved-form path (dot-dot-slash-escape) under a slash-star grant
+ * would have the sentinel MATCH and be authorized. Measured: planting the arm away leaves
+ * a subtree-pattern fixture green and reddens a slash-star one.
+ *
+ * The witness is spelled in WORDS for the same reason star-slash-apply is above: a
+ * slash-star inside a C block comment is a nested comment opener, which -Wcomment flags
+ * and which a later editor will silently "tidy". Never make it invisible instead.
+ */
+static void sqlfn_path_match(sqlite3_context *ctx, int argc, sqlite3_value **argv)
+{
+    if (argc != 2) { sqlite3_result_error(ctx, "path_match() takes 2 args", -1); return; }
+    const char *value = (const char *)sqlite3_value_text(argv[0]);
+    const char *pattern = (const char *)sqlite3_value_text(argv[1]);
+    if (!value || !pattern) { sqlite3_result_int(ctx, 0); return; }  /* fail-closed on NULL */
+    if (strcmp(value, "/never-match") == 0 || strcmp(pattern, "/never-match") == 0) {
+        sqlite3_result_int(ctx, 0);   /* NEVER_MATCH never matches, in EITHER operand */
+        return;
+    }
+    sqlite3_result_int(ctx, sqlite3_strglob(pattern, value) == 0 ? 1 : 0);
+}
+
 int ec_seam_register_sql_functions(sqlite3 *db)
 {
     const int F = SQLITE_UTF8 | SQLITE_DETERMINISTIC;
@@ -204,5 +280,9 @@ int ec_seam_register_sql_functions(sqlite3 *db)
     rc = sqlite3_create_function(db, "content_hash", 2, F, NULL, sqlfn_content_hash, NULL, NULL);
     if (rc != SQLITE_OK) return rc;
     rc = sqlite3_create_function(db, "ed25519_verify", 3, F, NULL, sqlfn_ed25519_verify, NULL, NULL);
+    if (rc != SQLITE_OK) return rc;
+    rc = sqlite3_create_function(db, "id_match", 2, F, NULL, sqlfn_id_match, NULL, NULL);
+    if (rc != SQLITE_OK) return rc;
+    rc = sqlite3_create_function(db, "path_match", 2, F, NULL, sqlfn_path_match, NULL, NULL);
     return rc;
 }

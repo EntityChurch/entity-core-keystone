@@ -33,6 +33,12 @@
 --       :local_peer_id (the verifier frame for the handlers dimension).
 -- Returns 1 iff :value is matched by the (cap,grant,dim) scope.
 
+-- SCOPE TYPE (F40 / F50): `handlers` and `resources` are PATH-scope and match by GLOB
+-- against a canonicalized pattern; `operations` and `peers` are ID-scope and match by the
+-- `id_match` app-defined function (§3.6's literal matcher with exactly two wildcard forms
+-- -- bare `*` and a trailing `/*`). GLOB on an id dimension treats `*` as a free wildcard
+-- anywhere, so `*/apply` -- a literal under the id grammar -- would match any value ending
+-- in `/apply`. The kind is read off `:dim` and is never defaulted.
 WITH canon(kind, pattern) AS (
   SELECT kind,
          -- A-SQL-008, CORRECTED 2026-08-28: §5.5a's granter frame scopes the RESOURCE
@@ -53,6 +59,10 @@ WITH canon(kind, pattern) AS (
   WHERE cap_hash = :cap_hash AND grant_idx = :grant_idx AND dim = :dim
 )
 SELECT
-  ( EXISTS (SELECT 1 FROM canon WHERE kind='include' AND :value GLOB pattern)   -- covered by an include
-    AND NOT EXISTS (SELECT 1 FROM canon WHERE kind='exclude' AND :value GLOB pattern) ) -- and not excluded
+  ( EXISTS (SELECT 1 FROM canon WHERE kind='include'
+            AND (CASE WHEN :dim IN ('handlers','resources') THEN path_match(:value, pattern)=1
+                      ELSE id_match(:value, pattern)=1 END))                    -- covered by an include
+    AND NOT EXISTS (SELECT 1 FROM canon WHERE kind='exclude'
+            AND (CASE WHEN :dim IN ('handlers','resources') THEN path_match(:value, pattern)=1
+                      ELSE id_match(:value, pattern)=1 END)) )                  -- and not excluded
   AS matched;

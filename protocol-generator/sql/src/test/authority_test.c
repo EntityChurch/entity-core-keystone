@@ -371,6 +371,261 @@ int main(void) {
       check("multisig_1of3_REJECT", status, code, "403", "capability_denied");
     }
 
+    /* ═══════════════════════════════════════════════════════════════════════════════
+     * 0.8.2.25 — the §5.4 sentinel's SCOPE-TYPE scoping (RULE B), `check_path_permission`
+     * (§6.3), the §5.2 EFFECTIVE TARGET LIST, and the id-scope matcher (F50).
+     *
+     * Driven through the AUTHORED queries verbatim, like every case above — the point of
+     * this harness is that the authority logic under test is the .sql file and not a C
+     * restatement of it.
+     * ═══════════════════════════════════════════════════════════════════════════════ */
+    {
+        char *pathperm = slurp("src/sql/path_permission.sql");
+        /* RE-DERIVE `htree`. The multisig block above REWRITES it in place to s1's
+         * namespace, so inheriting it here pointed every request at a handler the local
+         * peer does not own and the whole block answered 404 handler_not_found — five
+         * assertions failing for a reason that had nothing to do with what they test.
+         * A block that inherits a mutated fixture measures the mutation. */
+        snprintf(htree, sizeof htree, "/%s/system/tree", P.peer_id);
+
+        /* ── id_match: §3.6's id-scope matcher, the one definition every id site calls ──
+         * THE `star-slash-apply` ROW IS THE WHOLE POINT (F50 / 0.8.2.16). Under GLOB it
+         * matches any value ending in slash-apply; under the id grammar it is a LITERAL
+         * that matches only itself. Every other row agrees between the two readings —
+         * which is why a 16-pair control alphabet reports 0 disagreements and every
+         * hand-tried example missed it. */
+        {
+            struct { const char *v, *p; int want; } idcases[] = {
+                { "get",            "*",            1 },   /* bare star covers anything */
+                { "compute/apply",  "compute/*",    1 },   /* segment prefix */
+                { "computeX/apply", "compute/*",    0 },   /* prefix must end at the slash */
+                { "get",            "get",          1 },   /* literal */
+                { "put",            "get",          0 },
+                { "compute/apply",  "*/apply",      0 },   /* THE DIVERGENCE: literal, not GLOB */
+                { "*/apply",        "*/apply",      1 },   /* ... and it matches ITSELF */
+            };
+            int ok = 1;
+            for (size_t i = 0; i < sizeof idcases/sizeof idcases[0]; i++) {
+                sqlite3_stmt *st;
+                sqlite3_prepare_v2(db, "SELECT id_match(?,?)", -1, &st, NULL);
+                sqlite3_bind_text(st, 1, idcases[i].v, -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, 2, idcases[i].p, -1, SQLITE_TRANSIENT);
+                int got = (sqlite3_step(st)==SQLITE_ROW) ? sqlite3_column_int(st,0) : -1;
+                sqlite3_finalize(st);
+                if (got != idcases[i].want) {
+                    printf("       id_match('%s','%s') = %d want %d\n",
+                           idcases[i].v, idcases[i].p, got, idcases[i].want);
+                    ok = 0;
+                }
+            }
+            printf("  [%s] %-42s %zu cases\n", ok?"PASS":"FAIL", "id_match_is_the_id_scope_grammar",
+                   sizeof idcases/sizeof idcases[0]);
+            if (ok) g_pass++; else g_fail++;
+        }
+
+        /* ── RULE B: the §5.4 sentinel is scoped to PATH-SCOPE (0.8.2.24 N2/N3) ──
+         * An `operations` exclude of star-slash-apply is an ordinary namespaced operation
+         * name. Under the OLD unconditional sentinel arm it path-canonicalized to
+         * '/never-match' and DENIED THE WHOLE GRANT — over-denial, invisible on any
+         * well-formed grant. §5.4: "It does NOT reach `operations` or `peers` [MUST]". */
+        reset_data(db); put_peer(db,&P); put_peer(db,&alice);
+        put_cap(db, root_hhex, alice.hhex, P.hhex, NULL, 1000,"NULL","NULL",0,0);
+        put_grant(db, root_hhex, 0);
+        put_scope(db, root_hhex,0,"handlers","include","system/tree",P.peer_id);
+        put_scope(db, root_hhex,0,"resources","include","system/type/*",P.peer_id);
+        put_scope(db, root_hhex,0,"operations","include","*",P.peer_id);
+        put_scope(db, root_hhex,0,"operations","exclude","*/apply",P.peer_id);
+        put_sig(db,&P,root_h,root_hhex); put_sig(db,&alice,exec_h,exec_hhex); put_handler(db,htree);
+        set_request(db, exec_hhex, exec_hhex, alice.hhex, root_hhex, uri_tree_get, "get", 5000, P.peer_id);
+        run_verdict(db, ladder, status, code);
+        check("sentinel_does_not_reach_id_scope", status, code, "200", "ok");
+
+        /* CONTROL, the other half of the same rule: an unmatchable PATH-scope exclude
+         * still DENIES (0.8.2.21, unchanged). Without this the row above is satisfied by a
+         * peer that simply stopped reading excludes. */
+        must(db, "DELETE FROM grant_scope WHERE dim='operations' AND kind='exclude';");
+        put_scope(db, root_hhex,0,"resources","exclude","../nope",P.peer_id);
+        run_verdict(db, ladder, status, code);
+        check("unmatchable_path_exclude_still_denies", status, code, "403", "capability_denied");
+
+        /* ── §5.2 EFFECTIVE TARGETS (0.8.2.20): the caller's own resource.exclude removes
+         * entries BEFORE the dispatch resource check looks at them. Both arms use the SAME
+         * grant, which covers system/type/* and NOT local/*, so the only variable is
+         * whether the excluded target was still checked. ── */
+        must(db, "DELETE FROM grant_scope WHERE dim='resources' AND kind='exclude';");
+        {
+            char in_grant[300], out_of_grant[300];
+            snprintf(in_grant,     sizeof in_grant,     "/%s/system/type/x", P.peer_id);
+            snprintf(out_of_grant, sizeof out_of_grant, "/%s/local/nope",    P.peer_id);
+            char sql[900];
+
+            /* (a) BOTH targets present, one outside the grant -> denied. The antecedent:
+             * without it, (b) passing proves nothing about the exclude. */
+            must(db, "DELETE FROM request_resource;");
+            snprintf(sql,sizeof sql,"INSERT INTO request_resource(kind,path,raw,ord,rawlen) VALUES"
+                     "('target','%s','%s',0,%zu),('target','%s','%s',1,%zu);",
+                     in_grant,in_grant,strlen(in_grant), out_of_grant,out_of_grant,strlen(out_of_grant));
+            must(db, sql);
+            run_verdict(db, ladder, status, code);
+            check("raw_targets_include_an_uncovered_path", status, code, "403", "capability_denied");
+
+            /* (b) the SAME pair with the uncovered one EXCLUDED BY THE CALLER -> the
+             * dispatch check no longer sees it and the request is admitted. THAT IS THE
+             * VACATING §6.3's check_path_permission exists to catch, and making it real
+             * here is what stops that layer being decorative. */
+            snprintf(sql,sizeof sql,"INSERT INTO request_resource(kind,path,raw,ord,rawlen) VALUES"
+                     "('exclude','%s','%s',0,%zu);", out_of_grant,out_of_grant,strlen(out_of_grant));
+            must(db, sql);
+            run_verdict(db, ladder, status, code);
+            check("caller_exclude_vacates_the_dispatch_check", status, code, "200", "ok");
+
+            /* (c) an UNMATCHABLE caller exclude carves out nothing — the fail-OPEN arm
+             * §5.4 rules separately from the grant arm. The uncovered target survives and
+             * the request is denied again. */
+            must(db, "DELETE FROM request_resource WHERE kind='exclude';");
+            snprintf(sql,sizeof sql,"INSERT INTO request_resource(kind,path,raw,ord,rawlen) VALUES"
+                     "('exclude','/never-match','../nope',0,8);");
+            must(db, sql);
+            run_verdict(db, ladder, status, code);
+            check("unmatchable_caller_exclude_carves_nothing", status, code, "403", "capability_denied");
+
+            /* ── §6.3 check_path_permission over the SAME facts. Three dimensions, LOCAL
+             * frame, one deny per dimension — a single deny cannot distinguish "the
+             * predicate checks the dimension I care about" from "the predicate denies". ── */
+            must(db, "DELETE FROM request_resource;");
+            /* NARROW THE OPERATIONS INCLUDE FIRST. The block above left it at `*` for the
+             * sentinel test, under which the operations DENY row below cannot fail — a
+             * control that cannot observe the defect it names. Measured: with `*` in
+             * place the `put` row reported allowed=1. */
+            must(db, "DELETE FROM grant_scope WHERE dim='operations';");
+            put_scope(db, root_hhex, 0, "operations", "include", "get", P.peer_id);
+            struct { const char *name, *value, *op, *pat; int want; } pp[] = {
+                /* ACCEPT FIRST, because it is what validates the FIXTURE: with a grant
+                 * that parsed empty every deny below would pass for free. */
+                { "path_permission_accepts_a_covering_grant", in_grant,     "get", htree, 1 },
+                { "path_permission_denies_on_resources",      out_of_grant, "get", htree, 0 },
+                { "path_permission_denies_on_operations",     in_grant,     "put", htree, 0 },
+                { "path_permission_denies_on_handlers",       in_grant,     "get",
+                  /* a handler the grant does not name */                   "/x/system/capability", 0 },
+                /* A malformed subject canonicalizes to the sentinel and must fall through
+                 * to DENY rather than being matched against anything. Under the grant in
+                 * force here (`system/type/*`) that is true of any non-matching string —
+                 * the DECISIVE fixture is the `/*` grant below, which GLOBs the sentinel. */
+                { "path_permission_denies_a_sentinel_subject","/never-match","get", htree, 0 },
+            };
+            for (size_t i=0;i<sizeof pp/sizeof pp[0];i++) {
+                sqlite3_stmt *st;
+                if (sqlite3_prepare_v2(db, pathperm, -1, &st, NULL)!=SQLITE_OK) {
+                    fprintf(stderr,"prepare path_permission: %s\n", sqlite3_errmsg(db)); exit(2); }
+                sqlite3_bind_blob(st, sqlite3_bind_parameter_index(st,":cap_hash"), root_h,33,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":value"), pp[i].value,-1,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":operation"), pp[i].op,-1,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":handler_pattern"), pp[i].pat,-1,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":local_peer_id"), P.peer_id,-1,SQLITE_TRANSIENT);
+                int got = (sqlite3_step(st)==SQLITE_ROW) ? sqlite3_column_int(st,0) : -1;
+                sqlite3_finalize(st);
+                printf("  [%s] %-42s allowed=%d want=%d\n", got==pp[i].want?"PASS":"FAIL",
+                       pp[i].name, got, pp[i].want);
+                if (got==pp[i].want) g_pass++; else g_fail++;
+            }
+
+            /* ── THE SENTINEL ARM, WITH A FIXTURE THAT CAN SEE IT (RULE F / 0.8.2.22) ──
+             * `system/type/*` refuses `/never-match` under a bare GLOB anyway, so the row
+             * above passes with the sentinel arm DELETED — measured: planting it away
+             * reddened nothing. `/*` is already absolute, so it survives canonicalization
+             * unchanged, and SQLite GLOB's star is NOT segment-anchored: `/never-match`
+             * GLOBs `/*`. Only `path_match`'s first arm refuses it, in EITHER operand. */
+            must(db, "DELETE FROM grant_scope WHERE dim='resources';");
+            put_scope(db, root_hhex, 0, "resources", "include", "/*", P.peer_id);
+            {
+                struct { const char *name, *value; int want; } sent[] = {
+                    /* CONTROL — an ordinary local path IS covered by `/*`, so the denial
+                     * below is about the sentinel and not about the grant being empty. */
+                    { "slashstar_grant_covers_an_ordinary_path", in_grant,      1 },
+                    { "slashstar_grant_does_not_cover_sentinel", "/never-match", 0 },
+                };
+                for (size_t i=0;i<sizeof sent/sizeof sent[0];i++) {
+                    sqlite3_stmt *st; sqlite3_prepare_v2(db, pathperm, -1, &st, NULL);
+                    sqlite3_bind_blob(st, sqlite3_bind_parameter_index(st,":cap_hash"), root_h,33,SQLITE_TRANSIENT);
+                    sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":value"), sent[i].value,-1,SQLITE_TRANSIENT);
+                    sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":operation"), "get",-1,SQLITE_TRANSIENT);
+                    sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":handler_pattern"), htree,-1,SQLITE_TRANSIENT);
+                    sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":local_peer_id"), P.peer_id,-1,SQLITE_TRANSIENT);
+                    int got = (sqlite3_step(st)==SQLITE_ROW) ? sqlite3_column_int(st,0) : -1;
+                    sqlite3_finalize(st);
+                    printf("  [%s] %-42s allowed=%d want=%d\n", got==sent[i].want?"PASS":"FAIL",
+                           sent[i].name, got, sent[i].want);
+                    if (got==sent[i].want) g_pass++; else g_fail++;
+                }
+                /* The PATTERN side, fail-CLOSED: an unmatchable INCLUDE covers nothing.
+                 *
+                 * NOT SEPARATELY OBSERVABLE FROM path_match's PATTERN OPERAND, and that is
+                 * recorded rather than papered over: '/never-match' carries no GLOB
+                 * metacharacter, so AS A PATTERN it already matches only itself, and the
+                 * only value equal to it is the sentinel — which the VALUE operand's arm
+                 * refuses first. Planting `path_match` to guard the value only reddens
+                 * nothing. The both-operands form is kept because it is the matcher rule
+                 * 0.8.2.20 states, not because a case here can tell the halves apart.
+                 * What this row DOES measure is the reserved-form canonicalization in
+                 * `sc`, one layer up. */
+                must(db, "DELETE FROM grant_scope WHERE dim='resources';");
+                put_scope(db, root_hhex, 0, "resources", "include", "../nope", P.peer_id);
+                sqlite3_stmt *st; sqlite3_prepare_v2(db, pathperm, -1, &st, NULL);
+                sqlite3_bind_blob(st, sqlite3_bind_parameter_index(st,":cap_hash"), root_h,33,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":value"), "/never-match",-1,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":operation"), "get",-1,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":handler_pattern"), htree,-1,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":local_peer_id"), P.peer_id,-1,SQLITE_TRANSIENT);
+                int got = (sqlite3_step(st)==SQLITE_ROW) ? sqlite3_column_int(st,0) : -1;
+                sqlite3_finalize(st);
+                printf("  [%s] %-42s allowed=%d want=0\n", got==0?"PASS":"FAIL",
+                       "unmatchable_include_covers_nothing", got);
+                if (got==0) g_pass++; else g_fail++;
+
+                /* AN UNMATCHABLE *EXCLUDE* EXCLUDES EVERYTHING (0.8.2.21), and THIS is the
+                 * row the reserved-form arm in `sc` decides. A wide include (`/*`) plus an
+                 * exclude of `../nope`: with the arm, the exclude canonicalizes to the
+                 * sentinel and the whole grant is refused; without it, the exclude becomes
+                 * the ordinary relative path `/{peer}/../nope`, GLOBs nothing, carves out
+                 * nothing, and the grant is SILENTLY WIDER than its author wrote. The
+                 * include-side row above passes either way — measured. */
+                must(db, "DELETE FROM grant_scope WHERE dim='resources';");
+                put_scope(db, root_hhex, 0, "resources", "include", "/*", P.peer_id);
+                put_scope(db, root_hhex, 0, "resources", "exclude", "../nope", P.peer_id);
+                sqlite3_prepare_v2(db, pathperm, -1, &st, NULL);
+                sqlite3_bind_blob(st, sqlite3_bind_parameter_index(st,":cap_hash"), root_h,33,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":value"), in_grant,-1,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":operation"), "get",-1,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":handler_pattern"), htree,-1,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":local_peer_id"), P.peer_id,-1,SQLITE_TRANSIENT);
+                got = (sqlite3_step(st)==SQLITE_ROW) ? sqlite3_column_int(st,0) : -1;
+                sqlite3_finalize(st);
+                printf("  [%s] %-42s allowed=%d want=0\n", got==0?"PASS":"FAIL",
+                       "unmatchable_exclude_denies_everything", got);
+                if (got==0) g_pass++; else g_fail++;
+            }
+
+            /* An EMPTY resources.include is a LEGAL grant shape (§5.2: handlers that touch
+             * no tree paths) and DENIES every path here — EXISTS over an empty include set
+             * is false, which is what that note says it should do. */
+            must(db, "DELETE FROM grant_scope WHERE dim='resources';");
+            {
+                sqlite3_stmt *st; sqlite3_prepare_v2(db, pathperm, -1, &st, NULL);
+                sqlite3_bind_blob(st, sqlite3_bind_parameter_index(st,":cap_hash"), root_h,33,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":value"), in_grant,-1,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":operation"), "get",-1,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":handler_pattern"), htree,-1,SQLITE_TRANSIENT);
+                sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":local_peer_id"), P.peer_id,-1,SQLITE_TRANSIENT);
+                int got = (sqlite3_step(st)==SQLITE_ROW) ? sqlite3_column_int(st,0) : -1;
+                sqlite3_finalize(st);
+                printf("  [%s] %-42s allowed=%d want=0\n", got==0?"PASS":"FAIL",
+                       "empty_resources_include_denies_every_path", got);
+                if (got==0) g_pass++; else g_fail++;
+            }
+        }
+        free(pathperm);
+    }
+
     printf("== authority-as-query: %d pass, %d fail ==\n", g_pass, g_fail);
     sqlite3_close(db);
     free(schema); free(ladder); free(resolve); free(konf);

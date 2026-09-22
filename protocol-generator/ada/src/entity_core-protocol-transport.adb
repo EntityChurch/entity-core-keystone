@@ -1,4 +1,5 @@
 with Ada.Calendar;
+with Ada.Exceptions;
 with Ada.Containers.Indefinite_Hashed_Maps;
 with Ada.Strings.Hash;
 with Ada.Unchecked_Deallocation;
@@ -201,27 +202,70 @@ package body Entity_Core.Protocol.Transport is
    end Start_Dispatch;
 
    ---------------------------------------------------------------------------
-   --  §6.3: answer a rejected frame with `400 non_canonical_ecf`, correlated by
-   --  the request_id salvaged from it. Best-effort -- a failure here degrades to
-   --  the silence this exists to remove, which is no worse than the old
-   --  behaviour.
+   --  §4.11 (0.8.2.25): put the coded EXECUTE_RESPONSE a pre-admission refusal
+   --  owes on the wire.
+   --
+   --  "A peer that refuses a frame pre-admission MUST put a coded
+   --  EXECUTE_RESPONSE on the wire [MUST] -- correlated by request_id where the
+   --  id is available, and otherwise as a best-effort coded frame carrying no
+   --  correlation." §4.9(c)'s deliver-or-signal rule is scoped to "every request
+   --  the peer ADMITS" and therefore reaches none of these, which is why §4.11
+   --  exists. Both of the non-conformant behaviours it names SEPARATELY were
+   --  present on this peer: DROPPING the frame (the un-salvageable decode arm,
+   --  and the non-EXECUTE root, "the weaker of the two precisely because nothing
+   --  surfaces it") and CLOSING with no coded frame (the oversize and truncated
+   --  arms, which fell straight out of the reader).
+   --
+   --  AN EMPTY Rid IS THE BEST-EFFORT FORM, not a bug: it is what the section
+   --  prescribes where no id can be recovered. This used to return early on an
+   --  empty Rid, which is exactly the silence §4.11 forbids.
    ---------------------------------------------------------------------------
-   procedure Reject_Frame (Conn : Connection_Access; Payload : Byte_Array) is
-      Rid : constant String := Wire.Salvage_Request_Id (Payload);
+   procedure Refuse_Pre_Admission
+     (Conn  : Connection_Access;
+      Rid   : String;
+      Cause : Wire.Pre_Admission_Cause) is
    begin
-      if Rid = "" or else Conn.Closed then
-         return;
+      if Conn.Closed then
+         return;   --  nobody left to answer
       end if;
       declare
          Resp : constant Env_Pkg.Protocol_Envelope :=
            Env_Pkg.Of_Root
-             (Wire.Make_Response (Rid, 400, Wire.Error_Result ("non_canonical_ecf")));
+             (Wire.Make_Response
+                (Rid, Wire.Refusal_Status (Cause),
+                 Wire.Error_Result (Wire.Refusal_Code (Cause),
+                                    Wire.Refusal_Message (Cause))));
       begin
          Conn.Writer.Write (Conn.Socket, Wire.Frame_Of_Envelope (Resp));
       end;
    exception
       when others =>
-         null;
+         null;   --  a write failure is a dead socket, not a protocol decision
+   end Refuse_Pre_Admission;
+
+   ---------------------------------------------------------------------------
+   --  A COMPLETE frame the decoder refused. The framing is intact, so we answer
+   --  and KEEP SERVING, and the refusal MUST be a status rather than silence
+   --  (§4.11; §4.9(c) says the same from the other direction).
+   --
+   --  THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered `non_canonical_ecf`
+   --  for every cause until 0.8.2.24/.25 pinned them apart: a mis-keyed `included`
+   --  entry is `400 hash_mismatch` (its encoding is canonical -- what is false is
+   --  the claim the key makes), a tag-policy violation keeps `non_canonical_ecf`,
+   --  and everything else that never becomes an Envelope is `400 invalid_request`.
+   --
+   --  The frame is still REJECTED -- only enough is salvaged to correlate the
+   --  response, and an unrecoverable id takes §4.11's uncorrelated best-effort
+   --  form rather than the silence it used to take.
+   ---------------------------------------------------------------------------
+   procedure Reject_Frame
+     (Conn    : Connection_Access;
+      Payload : Byte_Array;
+      X       : Ada.Exceptions.Exception_Occurrence) is
+   begin
+      Refuse_Pre_Admission
+        (Conn, Wire.Salvage_Request_Id (Payload),
+         Wire.Classify_Pre_Admission (X));
    end Reject_Frame;
 
    ---------------------------------------------------------------------------
@@ -281,7 +325,7 @@ package body Entity_Core.Protocol.Transport is
                   end if;
                end;
             exception
-               when others =>
+               when Rejected : others =>
                   --  §6.3: "Rejection returns 400 non_canonical_ecf" -- a
                   --  rejected frame is owed a STATUS, not silence. This used to
                   --  be a bare `null`, which rejected the frame (correct) and
@@ -296,11 +340,35 @@ package body Entity_Core.Protocol.Transport is
                   --  correlate the response. If even the request_id is
                   --  unrecoverable the frame is unattributable and silence is
                   --  the only option left.
-                  Reject_Frame (Conn, Payload);
+                  Reject_Frame (Conn, Payload, Rejected);
             end;
          exception
-            when others =>
-               exit Read_Loop;   --  framing fault / closed socket ends the reader
+            when Framing : others =>
+               --  §4.11: an OVERSIZE prefix and a TRUNCATED frame are REFUSALS
+               --  owed a coded frame, and both used to fall straight out here --
+               --  "closing with no coded frame", which is indistinguishable from
+               --  a network fault and, on a multiplexed connection, destroys
+               --  unrelated ADMITTED requests. §4.10(a)'s mood was raised
+               --  SHOULD -> MUST at 0.8.2.25 (N14): the over-size condition is
+               --  detected at the length prefix with the connection intact and
+               --  nothing spent, so the permissive mood had nothing to license.
+               --
+               --  The stream is desynchronized on both arms -- an oversize body
+               --  was never drained, a truncated one never arrived -- so the
+               --  frame goes out and THEN the reader ends. §4.11 makes the frame
+               --  mandatory and leaves the close to us.
+               --
+               --  §4.11's best-effort UNCORRELATED form: no request_id can be
+               --  recovered from a frame whose body never arrived, and guessing
+               --  one would correlate the refusal to somebody else's in-flight
+               --  request. Anything Is_Framing_Refusal does NOT name is an
+               --  ordinary hangup or a dead socket: not a refusal of anything,
+               --  and there is nobody left to answer.
+               if Wire.Is_Framing_Refusal (Framing) then
+                  Refuse_Pre_Admission
+                    (Conn, "", Wire.Classify_Pre_Admission (Framing));
+               end if;
+               exit Read_Loop;
          end;
       end loop Read_Loop;
       Conn.Closed := True;

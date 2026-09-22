@@ -74,8 +74,22 @@ proc matches*(s: Scope; value, localPeerId: string; kind: ScopeKind): bool =
   # in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an
   # exclude (carves out nothing -> the grant is SILENTLY WIDER than its author wrote):
   # same value, same matcher, opposite safety direction, so the reading is chosen where
-  # the POSITION is known and matchesPattern stays uniform over its operands. The guard
-  # sits outside the scope-type dispatch, transcribing §5.2's loop literally.
+  # the POSITION is known and matchesPattern stays uniform over its operands.
+  #
+  # PATH-SCOPE ONLY (0.8.2.24, N2/N3), AND THAT IS THIS CLAUSE'S POSITION RATHER THAN A
+  # TEST IT PERFORMS. §5.2's exclude loop tests the sentinel INSIDE
+  # `if dimension_type == "system/capability/path-scope"` and §5.4 scopes its own
+  # invalid-capability rule the same way -- "it does NOT reach `operations` or `peers`
+  # [MUST]". The skId arm above RETURNS, so everything from here down is already inside
+  # the path-scope arm and no extra term is needed; the structure is the scoping.
+  #
+  # An unscoped guard would run an id pattern through the §5.4 transforms purely to
+  # classify it and then DENY THE WHOLE DIMENSION on a property unrelated to whether the
+  # exclude carves anything out: an `operations` exclude of `*/apply` -- an ordinary
+  # namespaced operation name -- path-canonicalizes to the sentinel and would deny every
+  # operation. Over-denial, invisible on any well-formed grant. §5.4 does not leave the
+  # id dimensions unprotected either: under the id-scope grammar every non-`*` pattern is
+  # a literal, and a literal is never structurally unmatchable.
   if s.hasExclude:
     for pattern in s.excludes:
       let cpx = try: canonicalize(pattern, localPeerId) except PathError: continue
@@ -306,7 +320,39 @@ proc allowancesContained(child, parent: EcValue): bool =
     if not valuesEqual(c.val, pv): return false
   true
 
-proc scopeSubset(child, parent: Scope; childPeerId, parentPeerId: string): bool =
+proc scopeSubset(child, parent: Scope; childPeerId, parentPeerId: string;
+                 kind: ScopeKind): bool =
+  ## §5.5a/§5.6 subset: every child include covered by some parent include, and every
+  ## parent exclude inherited by some child exclude.
+  ##
+  ## TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16; `entity-core-formalization` K-7).
+  ## §3.6's id-scope grammar binds the scope TYPE, not one function -- "An
+  ## implementation on the canonicalizing reading is non-conformant and MUST adopt the
+  ## literal matcher" -- so the rule F40 landed on `matches` reaches here too, with
+  ## delegation-chain WIDENING named as the reason: on the canonicalizing reading a bare
+  ## id include reads as covered by a path-form parent pattern it does not literally
+  ## match, and a child grant comes out WIDER than its parent. `lean`'s differential put
+  ## it at 2 of 64 include pairs and 2 of 64 exclude pairs, fail-closed, with a 16-pair
+  ## control alphabet reporting 0 -- which is why every hand-tried example missed it.
+  ##
+  ## `kind` has NO DEFAULT and is named at every call site, because a default is how the
+  ## next dimension inherits the wrong matcher silently: the original F40 defect. The
+  ## per-link granter frames are meaningless on the id arm (an id pattern is never
+  ## canonicalized) and are simply unread there.
+  if kind == skId:
+    for childPat in child.includes:
+      var covered = false
+      for pp in parent.includes:
+        if matchesIdPattern(childPat, pp): covered = true; break
+      if not covered: return false
+    if parent.hasExclude:
+      for parentEx in parent.excludes:
+        var childHas = false
+        if child.hasExclude:
+          for ce in child.excludes:
+            if matchesIdPattern(parentEx, ce): childHas = true; break
+        if not childHas: return false
+    return true
   for childPat in child.includes:
     let cc = try: canonicalize(childPat, childPeerId) except PathError: return false
     var covered = false
@@ -326,11 +372,14 @@ proc scopeSubset(child, parent: Scope; childPeerId, parentPeerId: string): bool 
   true
 
 proc grantSubset(child, parent: GrantEntry; localPeerId, childPeerId, parentPeerId: string): bool =
-  if not scopeSubset(child.handlers, parent.handlers, localPeerId, localPeerId): return false
-  if not scopeSubset(child.operations, parent.operations, localPeerId, localPeerId): return false
-  if not scopeSubset(child.resources, parent.resources, childPeerId, parentPeerId): return false
+  # §5.5a: only the RESOURCE dimension uses the per-link granter frames; the others stay
+  # on the local frame. The scope KIND is a property of the DIMENSION and is named here,
+  # never defaulted (F50 / 0.8.2.16).
+  if not scopeSubset(child.handlers, parent.handlers, localPeerId, localPeerId, skPath): return false
+  if not scopeSubset(child.operations, parent.operations, localPeerId, localPeerId, skId): return false
+  if not scopeSubset(child.resources, parent.resources, childPeerId, parentPeerId, skPath): return false
   if not scopeSubset(child.effectivePeers(localPeerId), parent.effectivePeers(localPeerId),
-                     localPeerId, localPeerId): return false
+                     localPeerId, localPeerId, skId): return false
   if not constraintsRetained(parent.constraints, child.constraints): return false
   if not allowancesContained(child.allowances, parent.allowances): return false
   true
@@ -536,10 +585,83 @@ proc checkPermission*(exec: Entity; cap: CapabilityToken; handlerPattern, localP
     return true
   false
 
+proc effectiveTargets*(exec: Entity; localPeerId: string):
+    tuple[survivors: seq[string], hadResource: bool] =
+  ## §5.2's effective target list (0.8.2.20): the caller's OWN `resource.exclude`
+  ## removes entries from `resource.targets` BEFORE anything else looks at the request.
+  ##
+  ## Survivors come back in the caller's OWN SPELLING, not canonicalized -- 0.8.2.21 is
+  ## explicit that `effective_targets` yields raw survivors, and the distinction is
+  ## load-bearing here because the value flows on to `store.getAt`, which canonicalizes
+  ## for itself.
+  ##
+  ## `hadResource` says whether a `resource` carrying a `targets` key was present at
+  ## all. An ABSENT resource and a resource whose every target was excluded are
+  ## DIFFERENT REQUESTS for a resource-OPTIONAL operation (0.8.2.24, N7), not merely
+  ## different inputs to one disposition.
+  ##
+  ## THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES [MUST] (0.8.2.25, N11): "where
+  ## an implementation projects resource.targets onto the effective set ahead of the
+  ## handler, that projection MUST NOT be lossy about its own emptiness -- narrow when
+  ## narrowing leaves something, and retain the raw pair when narrowing would empty it."
+  ## A proc returning only a seq cannot satisfy that: collapsing `[qA] exclude [qA]` to
+  ## `@[]` deletes the two-empties discriminator before any handler can read it, and the
+  ## handler's refusal arm becomes dead code only a WIRE drive can detect.
+  ##
+  ## "Every seam that narrows is exempted alike." This peer has exactly ONE narrowing
+  ## seam -- this proc, called by the tree handler -- and §6.5's dispatch chain does not
+  ## project: `dispatchOutcome` passes `resource` through untouched and `checkPermission`
+  ## reads it for itself. There is no second door to keep in step.
+  ##
+  ## A PRESENT-BUT-ILL-TYPED `targets` IS **PRESENT**, with an empty survivor list:
+  ## reporting it absent would serve the WIDER absent-case answer to a request that named
+  ## a resource, which is N11's own defect one field over.
+  ##
+  ## The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4 rules it
+  ## separately from the grant arm) and that is INHERITED here rather than restated:
+  ## `canonicalize` answers the sentinel, `matchesPattern` then answers false, and the
+  ## target simply survives.
+  let v = exec.field("resource")
+  if v == nil or v.kind != ekMap: return (newSeq[string](), false)
+  if mapGet(v, "targets") == nil: return (newSeq[string](), false)
+  let rt = exec.resourceTarget()
+  if rt.isNone: return (newSeq[string](), false)
+  var survivors: seq[string]
+  for target in rt.get.targets:
+    let ct = try: canonicalize(target, localPeerId) except PathError: NeverMatch
+    var dropped = false
+    for x in rt.get.exclude:
+      let cx = try: canonicalize(x, localPeerId) except PathError: continue
+      if matchesPattern(ct, cx): dropped = true; break
+    if not dropped: survivors.add target
+  (survivors, true)
+
 proc checkPathPermission*(operation, path: string; cap: CapabilityToken;
                           handlerPattern, localPeerId: string): bool =
-  ## Defense-in-depth path check for the tree handler (§6.3); sole resource
-  ## enforcement when `resource` is absent.
+  ## §6.3's handler-level path check: may the caller touch `path` AS A TREE PATH, under
+  ## `handlerPattern`, with `cap`?
+  ##
+  ## IT IS NOT A SECONDARY CHECK (§6.3, 0.8.2.20). It is the enforcement wherever the
+  ## subject is derived after dispatch, and the dispatch-level check can be made VACUOUS
+  ## by caller-controlled input: a caller who excludes the one target its capability does
+  ## not cover removes that target from `checkPermission`'s view entirely, and a handler
+  ## that then acts on it has authorized nothing.
+  ##
+  ## THREE DIMENSIONS, NOT FOUR. `peers` is not consulted -- the path is local by
+  ## construction here (§1.4's inbound rule refuses a foreign namespace at §6.5 step 3,
+  ## before any handler runs), and §6.3's signature names only handlers, operations and
+  ## resources.
+  ##
+  ## THE FRAME IS THE LOCAL PEER, NOT THE GRANTER, and that is the spec's own signature
+  ## rather than a choice: §6.3's block reads `matches_scope(canonical_path,
+  ## grant.resources, "path-scope", local_peer_id)` -- there is no granter parameter to
+  ## pass. §5.5a governs chain ATTENUATION, where the subject is a PATTERN compared
+  ## against a parent's pattern; this call site compares a CONCRETE LOCAL PATH.
+  ##
+  ## An empty `resources.include` is a legal grant shape (§5.2: handlers that touch no
+  ## tree paths) and DENIES every path here. A malformed path canonicalizes to the §5.4
+  ## sentinel, which matches no grant, so it falls through to DENY rather than being
+  ## matched against anything.
   let cp = try: canonicalize(path, localPeerId) except PathError: return false
   for grant in cap.grants:
     if not grant.handlers.matches(handlerPattern, localPeerId, skPath): continue

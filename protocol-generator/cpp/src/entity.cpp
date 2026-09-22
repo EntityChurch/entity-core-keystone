@@ -51,7 +51,7 @@ Result<EntityPtr> Entity::from_cbor(const EcfValue& m) {
         if (cb) {
             if (cb->size() != kHashLen ||
                 std::memcmp(cb->data(), (*e)->hash().data(), kHashLen) != 0) {
-                return std::unexpected(EcfError::NonCanonicalEcf);
+                return std::unexpected(EcfError::HashMismatch);  // §5.2a, 0.8.2.24 N4/N5
             }
         }
     }
@@ -191,7 +191,7 @@ Result<Envelope> Envelope::from_wire(std::span<const std::byte> in) {
             if (!ent) return std::unexpected(ent.error());
             // §3.1 (N5): the included key MUST equal the entity's content_hash.
             if (std::memcmp(kb->data(), (*ent)->hash().data(), kHashLen) != 0) {
-                return std::unexpected(EcfError::NonCanonicalEcf);
+                return std::unexpected(EcfError::HashMismatch);  // §5.2a, 0.8.2.24 N4/N5
             }
             env.add(*ent);
         }

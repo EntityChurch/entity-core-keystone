@@ -71,7 +71,7 @@ internal sealed class CapabilityHandler : IHandler
             && !Attenuation.GrantsWithinAuthority(requested, ctx.CallerCapability.Grants, ctx.LocalPeerId))
         {
             return Errors.Error(Status.Forbidden, "scope_exceeds_authority",
-                "requested grant exceeds the caller's presented authority (§6.2 / §5.6)");
+                "requested grant exceeds the caller's presented authority (section 6.2 / section 5.6)");
         }
 
         // §6.2 CAP-5 / §5.6 MIN_DEFINED: the minted token is bounded by EVERY applicable
@@ -111,7 +111,7 @@ internal sealed class CapabilityHandler : IHandler
         if (!IsValidPolicyPattern(peerPattern))
         {
             return Errors.Error(Status.BadRequest, "invalid_params",
-                "peer_pattern MUST be \"default\", a 66/98-char hex content hash, or a Base58 peer_id; partial prefixes are rejected (v7.62 §4)");
+                "peer_pattern MUST be \"default\", a 66/98-char hex content hash, or a Base58 peer_id; partial prefixes are rejected (v7.62 section 4)");
         }
         // §6.2 CAP-2: an EMPTY grants array is valid and meaningful — `configure` MUST
         // accept `grants: []` and MUST write it. It is the WITHDRAWAL form: because an
@@ -136,7 +136,7 @@ internal sealed class CapabilityHandler : IHandler
         byte[]? token = Ecf.OptBytes(ctx.Params.Data, "token");
         if (token is null || Hashes.IsZero(token))
         {
-            return Errors.Error(Status.BadRequest, "invalid_params", "revoke-request.token must be non-zero (v7.62 §10)");
+            return Errors.Error(Status.BadRequest, "invalid_params", "revoke-request.token must be non-zero (v7.62 section 10)");
         }
         string? reason = Ecf.OptText(ctx.Params.Data, "reason");
 

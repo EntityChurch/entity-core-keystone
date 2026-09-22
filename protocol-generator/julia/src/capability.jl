@@ -20,6 +20,8 @@ using ..Base58: base58decode
 
 export verify_request, check_permission, granter_frame, resolve, find_signature
 export matches_pattern, canonicalize, extract_peer, grant_subset_local, grants_of_token
+export effective_targets, check_path_permission, matches_scope, matches_id_pattern
+export scope_subset, grant_subset, ScopeKind, ID_SCOPE, PATH_SCOPE, NEVER_MATCH, Scope, Grant
 export temporal_fields_representable, add_ttl
 
 const UINT64_CEILING = big(1) << 64
@@ -189,8 +191,18 @@ end
 """AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
 in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an exclude
 (carves out nothing), so the reading is chosen where the POSITION is known and
-`matches_pattern` stays uniform over its operands. The guard sits outside the
-scope-type dispatch, transcribing §5.2's loop literally."""
+`matches_pattern` stays uniform over its operands.
+
+EVERY CALL SITE MUST GUARD IT ON PATH-SCOPE (0.8.2.24, N2/N3). This used to be asked of
+every dimension, transcribing §5.2's loop before that loop grew its type dispatch.
+`NEVER_MATCH` is a §5.4 PATH-canonicalization sentinel and has no meaning on an id-scope
+dimension, whose patterns are literal identifiers that §5.2's own id-scope arm forbids
+putting through the §5.4 transforms. Asking it outside the type dispatch ran an id
+pattern through those transforms purely to classify it and then DENIED THE WHOLE
+DIMENSION on a property unrelated to whether the exclude carves anything out: an
+`operations` exclude naming an ordinary namespaced operation with a leading star-slash
+canonicalized to the sentinel and denied every operation. Over-denial, and invisible on
+any well-formed grant."""
 function exclude_unmatchable(frame::AbstractString, excl::Vector{String})::Bool
     for p in excl
         canonicalize(frame, p) == NEVER_MATCH && return true
@@ -255,10 +267,15 @@ function covered_id(pats::Vector{String}, value::AbstractString)::Bool
 end
 
 function matches_scope(local_peer::AbstractString, value::AbstractString, s::Scope, kind::ScopeKind)::Bool
-    exclude_unmatchable(local_peer, s.excl) && return false   # 0.8.2.21 — deny
     if kind == ID_SCOPE
+        # No sentinel guard here, and that is 0.8.2.24's ruling rather than an omission:
+        # §5.4 says "a capability carrying an unmatchable PATH-SCOPE pattern is INVALID
+        # ... It does NOT reach `operations` or `peers` [MUST]". Under the id-scope
+        # grammar every non-star pattern is a literal, and a literal is never
+        # structurally unmatchable, so there is nothing here for the sentinel to detect.
         return covered_id(s.incl, value) && !covered_id(s.excl, value)
     end
+    exclude_unmatchable(local_peer, s.excl) && return false   # 0.8.2.21 — deny
     cv = canonicalize(local_peer, value)
     covered(local_peer, s.incl, cv) || return false
     return !covered(local_peer, s.excl, cv)
@@ -335,7 +352,35 @@ function link_granter_peer(env::Envelope, st::ContentStore, local_peer::Abstract
     return peerid_of_pubkey(pk)
 end
 
-function scope_subset(child_peer::AbstractString, parent_peer::AbstractString, child::Scope, parent::Scope)::Bool
+"""
+§5.5a/§5.6 attenuation subset, TYPED BY SCOPE KIND (F50, ruled 0.8.2.16).
+
+§3.6's grammar binds the SCOPE TYPE, not one function: "An implementation on the
+canonicalizing reading is non-conformant and MUST adopt the literal matcher." F40 typed
+`matches_scope` and this sibling was left on the path matcher for all four dimensions, so
+`operations` and `peers` — both id-scope — were compared with §5.4 canonicalization and
+wildcard semantics they do not have. The divergence is narrow and FAIL-CLOSED (an include
+of a namespaced operation is not covered by a parent bare star under the path matcher,
+which widens nothing but refuses legitimate delegation), which is exactly why no
+hand-tried example found it.
+
+`kind` has NO DEFAULT and is named at every call site, because a default is how the next
+dimension inherits the wrong matcher silently — the original F40 defect.
+
+On the ID_SCOPE arm `child_peer`/`parent_peer` are unused BY CONSTRUCTION: no
+canonicalization frame applies to an identifier, so both operands are compared as written.
+"""
+function scope_subset(child_peer::AbstractString, parent_peer::AbstractString,
+                      child::Scope, parent::Scope, kind::ScopeKind)::Bool
+    if kind == ID_SCOPE
+        for cp in child.incl
+            any(pp -> matches_id_pattern(cp, pp), parent.incl) || return false
+        end
+        for pe in parent.excl
+            any(ce -> matches_id_pattern(pe, ce), child.excl) || return false
+        end
+        return true
+    end
     for cp in child.incl
         cc = canonicalize(child_peer, cp)
         found = false
@@ -357,17 +402,114 @@ end
 
 function grant_subset(local_peer::AbstractString, child_peer::AbstractString, parent_peer::AbstractString,
                       child::Grant, parent::Grant)::Bool
-    scope_subset(local_peer, local_peer, child.handlers, parent.handlers) || return false
-    scope_subset(local_peer, local_peer, child.operations, parent.operations) || return false
-    scope_subset(child_peer, parent_peer, child.resources, parent.resources) || return false
+    scope_subset(local_peer, local_peer, child.handlers, parent.handlers, PATH_SCOPE) || return false
+    scope_subset(local_peer, local_peer, child.operations, parent.operations, ID_SCOPE) || return false
+    scope_subset(child_peer, parent_peer, child.resources, parent.resources, PATH_SCOPE) || return false
     cp = child.peers === nothing ? Scope([String(local_peer)], String[]) : child.peers
     pp = parent.peers === nothing ? Scope([String(local_peer)], String[]) : parent.peers
-    return scope_subset(local_peer, local_peer, cp, pp)
+    return scope_subset(local_peer, local_peer, cp, pp, ID_SCOPE)
 end
 
 """§6.2 local-frame subset (child=parent=local) — the mint-time check."""
 grant_subset_local(local_peer::AbstractString, child::Grant, parent::Grant)::Bool =
     grant_subset(local_peer, local_peer, local_peer, child, parent)
+
+"""
+§5.2's effective target list (0.8.2.20): the caller's OWN `resource.exclude` removes
+entries from the request BEFORE anything else looks at it.
+
+Returns `(survivors, had_resource)`. The survivors come back in the caller's OWN
+SPELLING, not canonicalized — 0.8.2.21 is explicit that `effective_targets` yields raw
+survivors, and the distinction is load-bearing because the value flows on to the store
+lookup, which canonicalizes for itself.
+
+`had_resource` says whether a `resource` was present AT ALL. An ABSENT resource and a
+resource whose every target was excluded are different inputs to §3.3, and for a
+resource-OPTIONAL operation 0.8.2.24 (N7) makes them DIFFERENT REQUESTS with different
+answers.
+
+THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES [MUST] (0.8.2.25, N11): "that
+projection MUST NOT be lossy about its own emptiness — narrow when narrowing leaves
+something, and retain the raw pair when narrowing would empty it." A function returning
+only a list cannot satisfy that: collapsing a one-target self-excluded request to `[]`
+deletes the two-empties discriminator before any handler can read it, and the handler's
+refusal arm becomes dead code only a WIRE drive can detect.
+
+A TUPLE RATHER THAN `Union{Nothing,Vector}`, because the `nothing`/`[]` collapse N11
+forbids is exactly what a nullable return invites at the first `something(x, String[])`.
+"""
+function effective_targets(local_peer::AbstractString, exec::Entity)::Tuple{Vector{String},Bool}
+    r = efield(exec, "resource")
+    r isa CborMap || return (String[], false)
+    targets = mapget(r, "targets")
+    # A `resource` MAP carrying no `targets` key reads ABSENT here, which is what every
+    # 0.8.2.25 peer answers and is an OPEN question rather than a settled one: §3.2 says
+    # `targets` "MUST contain at least one entry", which makes the shape MALFORMED rather
+    # than absent. Nothing in the pinned check set drives it and no disposition is pinned,
+    # so the shipped behaviour is HELD rather than changed.
+    targets isa AbstractVector || return (String[], false)
+    caller_excl = let x = mapget(r, "exclude")
+        x isa AbstractVector ? String[String(v) for v in x if v isa AbstractString] : String[]
+    end
+    survivors = String[]
+    for t in targets
+        t isa AbstractString || continue
+        ct = canonicalize(local_peer, t)
+        # The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4's table
+        # rules it separately from the grant arm): canonicalize answers NEVER_MATCH and
+        # matches_pattern then answers false, so the target simply survives. That
+        # asymmetry is 0.8.2.21's whole point and it is INHERITED from the primitives
+        # here rather than restated.
+        any(x -> matches_pattern(ct, canonicalize(local_peer, x)), caller_excl) && continue
+        push!(survivors, String(t))   # RAW, not ct
+    end
+    return (survivors, true)
+end
+
+"""
+§6.3's handler-level path check.
+
+IT IS NOT A SECONDARY CHECK (§5.2, 0.8.2.20). It is the enforcement wherever the subject
+is derived after dispatch, and the dispatch-level check can be made VACUOUS by
+caller-controlled input: a caller who excludes the one target its capability does not
+cover removes that target from `check_permission`'s view entirely, and a handler that
+then acts on it has authorized nothing.
+
+THREE DIMENSIONS, NOT FOUR. `peers` is not consulted here — the path is local by
+construction at this point (§1.4's inbound rule refuses a foreign namespace at §6.5 step
+3, before any handler runs), and §6.3's signature names only handlers, operations and
+resources.
+
+THE FRAME IS `local_peer`, NOT THE GRANTER, AND THAT IS THE SPEC'S OWN SIGNATURE RATHER
+THAN A CHOICE. §6.3's block reads
+`matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id)` — there is
+no granter parameter to pass. §5.5a governs chain ATTENUATION, where the subject is a
+pattern compared against a parent's pattern; this call site compares a CONCRETE local
+path the handler is about to touch.
+
+There is no caller-exclude set at this call site: the subject is a single concrete path
+and the caller's exclusions have already been applied in deriving it, so every grant
+exclude covering the subject denies — which `matches_scope` already implements,
+including 0.8.2.21's sentinel rule.
+
+An empty `resources.include` is a legal grant shape (§5.2) and DENIES every path here,
+which is what that note says it should.
+"""
+function check_path_permission(local_peer::AbstractString, operation::AbstractString,
+                               path::AbstractString, token::Entity,
+                               handler_pattern::AbstractString)::Bool
+    # canonicalize is total and may answer NEVER_MATCH, which matches no grant (§5.4) —
+    # so a malformed path falls through to DENY rather than being matched against
+    # anything.
+    cp = canonicalize(local_peer, path)
+    for g in grants_of_token(token)
+        matches_scope(local_peer, handler_pattern, g.handlers, PATH_SCOPE) || continue
+        matches_scope(local_peer, operation, g.operations, ID_SCOPE) || continue
+        matches_scope(local_peer, cp, g.resources, PATH_SCOPE) || continue
+        return true
+    end
+    return false
+end
 
 function is_attenuated(local_peer, child_peer, parent_peer, child::Entity, parent::Entity)::Bool
     cg = grants_of_token(child)

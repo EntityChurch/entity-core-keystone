@@ -66,7 +66,7 @@ internal sealed class DispatchOutboundHandler : IHandler
         if (ctx.Outbound is null)
         {
             return Errors.Error(Status.ServiceUnavailable, "no_outbound_seam",
-                "dispatch-outbound requires a live §6.11 reentry connection (handler was not dispatched over a connection)");
+                "dispatch-outbound requires a live section 6.11 reentry connection (handler was not dispatched over a connection)");
         }
 
         EcfValue p = ctx.Params.Data;

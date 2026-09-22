@@ -68,9 +68,24 @@ internal sealed record Scope(IReadOnlyList<string> Include, IReadOnlyList<string
     /// </summary>
     public bool Matches(string value, string localPeerId, ScopeKind kind)
     {
-        // 0.8.2.21 — an unmatchable exclude DENIES rather than carving out nothing. The
-        // guard sits outside the scope-type dispatch, transcribing §5.2's loop literally.
-        if (Exclude is not null && Paths.ExcludeIsUnmatchable(Exclude, localPeerId))
+        // 0.8.2.21 — an unmatchable exclude DENIES rather than carving out nothing, and
+        // SCOPED TO PATH-SCOPE at 0.8.2.24 (N2/N3). §5.2's exclude loop tests the sentinel
+        // INSIDE `if dimension_type == "system/capability/path-scope"`, and §5.4's rule is
+        // likewise "a capability carrying an unmatchable PATH-SCOPE pattern is INVALID …
+        // It does NOT reach `operations` or `peers` [MUST]".
+        //
+        // This guard used to sit OUTSIDE the type dispatch, transcribing §5.2's loop
+        // before that loop grew its type test — which ran an id pattern through the §5.4
+        // transforms purely to classify it and then DENIED THE WHOLE DIMENSION on a
+        // property unrelated to whether the exclude carves anything out: an
+        // <c>operations</c> exclude of <c>*/apply</c>, an ordinary namespaced operation
+        // name, path-canonicalizes to the sentinel and denied every operation.
+        // Over-denial, invisible on any well-formed grant.
+        //
+        // The id arm reaches the literal matcher below unguarded, which is correct: under
+        // the id-scope grammar every non-`*` pattern is a literal, and a literal is never
+        // structurally unmatchable, so there is nothing here for the sentinel to detect.
+        if (kind == ScopeKind.Path && Exclude is not null && Paths.ExcludeIsUnmatchable(Exclude, localPeerId))
         {
             return false;
         }

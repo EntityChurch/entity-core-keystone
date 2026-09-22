@@ -128,7 +128,7 @@ proc hello_status {peer fields} {
     set exec [::entity::core::wire::make_execute rq system/protocol/connect hello $hello]
     set conn [::entity::core::conn::new]
     set out [::entity::core::handlers::connect $peer hello \
-        [dict create exec $exec conn $conn included {} caller_cap "" env ""]]
+        [dict create exec $exec conn $conn included {} caller_cap "" env "" handler_pattern ""]]
     return [dict get $out status]
 }
 # (a) absent hash_formats → accepted (200, nonce issued)

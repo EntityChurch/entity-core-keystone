@@ -138,7 +138,10 @@ public final class Entity {
         EcfValue carried = m.get("content_hash");
         if (carried instanceof EcfValue.Bytes b
                 && !Arrays.equals(b.octets(), e.hash)) {
-            throw new IllegalArgumentException("content_hash mismatch (§1.8 fidelity)");
+            // §1.8 item 1 resolution integrity, the same class as a mis-keyed `included`
+            // entry and the same §5.2a code — `400 hash_mismatch`, never the structural
+            // `invalid_request` beside it (0.8.2.24 N4/N5).
+            throw new HashMismatchException("content_hash mismatch (section 1.8 fidelity)");
         }
         return e;
     }

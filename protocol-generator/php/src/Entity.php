@@ -60,7 +60,10 @@ final class Entity
         $e = self::make($type, $data);
         $carried = $m->get('content_hash');
         if ($carried instanceof ByteString && !\hash_equals($e->hashOctets, $carried->bytes)) {
-            throw new ProtocolException('content_hash mismatch (§1.8 fidelity)');
+            // §1.8 item 1 — RESOLUTION INTEGRITY, not a structural fault. §5.2a pins the
+            // decode-boundary code for this cause to `400 hash_mismatch` and rules
+            // `400 non_canonical_ecf` non-conformant here (0.8.2.24 N4/N5).
+            throw new HashMismatchException('content_hash mismatch (§1.8 fidelity)');
         }
         return $e;
     }

@@ -524,6 +524,31 @@ resource_target :: proc(exec: Entity) -> (string, bool) {
 	return "", false
 }
 
+// A §5.4 PATTERN rather than a concrete path. A resource-requiring operation takes a
+// concrete path (0.8.2.20); a trailing "/" is a LISTING request, not a pattern -- only a
+// star makes it one.
+@(private = "file")
+pattern_path :: proc(target: string) -> bool {
+	return strings.index_byte(target, '*') >= 0
+}
+
+// The §6.3 authorization subject a handler carries for the duration of one dispatch:
+// the CALLER's capability and the OWNING handler's pattern.
+//
+// CARRIED, NEVER RECOMPUTED. §6.3's path check needs both, and the dispatch-level check
+// already computed both -- recomputing invites the two to drift, and §6.8 is explicit
+// that the authority is selected by who named the path. `pattern` is the OWNING
+// handler's pattern (§6.3, 0.8.2.23): for the tree handler owner and runner coincide, so
+// the distinction is not observable here, but the field is named for the owner.
+//
+// `has_cap` is false only on the unauthenticated bootstrap path, which has no resolved
+// handler entity and therefore no caller to narrow.
+Dispatch_Auth :: struct {
+	caller_cap: Entity,
+	has_cap:    bool,
+	pattern:    string,
+}
+
 // path_flex_ok (§1.4 / §5.4): reject null byte, non-peer-id leading slash, ./ ../
 // and interior empty segments. A single trailing "/" is the listing marker.
 @(private = "file")
@@ -558,8 +583,43 @@ path_flex_ok :: proc(target: string) -> bool {
 	return true
 }
 
+// §6.3's per-entry listing check for one child segment (0.8.2.21/.22).
+//
+// An unauthenticated context is the bootstrap/internal path and is NOT filtered: the
+// filter's subject is "the caller's verified capability", and where there is none there
+// is no caller to narrow.
 @(private = "file")
-build_listing :: proc(p: ^Peer, path: string) -> Outcome {
+entry_visible :: proc(p: ^Peer, auth: Dispatch_Auth, dir: string, segment: string) -> bool {
+	if !auth.has_cap {
+		return true
+	}
+	a := context.temp_allocator
+	child :=
+		strings.has_suffix(dir, "/") \
+		? strings.concatenate({dir, segment}, a) \
+		: strings.concatenate({dir, "/", segment}, a)
+	return check_path_permission(p.local_peer, "get", child, auth.caller_cap, auth.pattern)
+}
+
+// Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+//
+// "When any handler returns a multi-entry result whose entries are tree paths, each
+// entry MUST be individually checked using check_path_permission. Entries for which
+// check_path_permission returns DENY MUST be omitted. The result's `count` field MUST
+// reflect the filtered entry count, not the source tree's total count."
+//
+// This is the read path at its highest volume and it is the reason 0.8.2.21 refused to
+// carve reads out of the caller-specified-path rule: an unfiltered listing discloses the
+// EXISTENCE of every binding under a prefix to a caller whose capability covers none of
+// them. A `count` following the SOURCE total is that disclosure by itself, which is why
+// it is computed from the emitted entries -- this peer already counted `emitted` for the
+// tombstone filter, so the per-entry check simply joins it.
+//
+// The DIRECTORY itself is deliberately NOT checked -- §6.3 makes each ENTRY the subject,
+// and testing the prefix would deny a listing to a caller whose grant covers children
+// but not the node above them, which is the ordinary shape of a narrowed grant.
+@(private = "file")
+build_listing :: proc(p: ^Peer, path: string, auth: Dispatch_Auth) -> Outcome {
 	a := context.temp_allocator
 	entries := store_listing(&p.store, path, a)
 	entry_pairs := make([dynamic]Ec_Pair, a)
@@ -572,6 +632,9 @@ build_listing :: proc(p: ^Peer, path: string) -> Outcome {
 					continue
 				}
 			}
+		}
+		if !entry_visible(p, auth, path, le.seg) {
+			continue
 		}
 		fields := make([dynamic]Ec_Pair, a)
 		append(&fields, Ec_Pair{text_val("has_children", a), Ec_Bool(le.has_children)})
@@ -592,24 +655,71 @@ build_listing :: proc(p: ^Peer, path: string) -> Outcome {
 	return ok_out(listing)
 }
 
+// RULE: RESOLVE THE OPERATION FIRST, ONLY THEN RUN THE §3.3 RESOURCE LADDER.
+//
+// An unknown operation is an OPERATION fault and answers 501; a resource fault answers
+// 400. A handler that validates the resource first answers a RESOURCE error for every
+// unknown operation -- measured across the cohort as `system/tree:bogusop` WITHOUT a
+// resource answering `ambiguous_resource` while the same call WITH one correctly
+// answered 501, i.e. the fault the caller is told about depends on a field that has
+// nothing to do with it. This handler already dispatched on `op` before touching the
+// resource; the structure below keeps it that way by construction, with the whole ladder
+// living INSIDE the `get` and `put` arms.
 @(private = "file")
-tree_handler :: proc(p: ^Peer, exec: Entity) -> Outcome {
+tree_handler :: proc(p: ^Peer, exec: Entity, auth: Dispatch_Auth) -> Outcome {
 	a := context.temp_allocator
 	op, _ := entity_text(exec, "operation")
-	target, has_target := resource_target(exec)
-	if (op == "get" || op == "put") && has_target && !path_flex_ok(target) {
-		return err_out(400, "invalid_path", target)
-	}
 
 	if op == "get" {
-		if !has_target {
+		// §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+		// resource.targets: a handler that counts the effective list and then indexes
+		// targets[0] has implemented the arithmetic completely and is still reading a
+		// path no authorization covered.
+		eff, has_resource := effective_targets(p.local_peer, exec)
+		if !has_resource {
+			// THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION
+			// IS WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is
+			// scoped "for an operation that REQUIRES a resource" (0.8.2.24, N7); `get`
+			// does not. For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the
+			// present-but-empty case by whether the absent case is WIDER than the
+			// request -- BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty --
+			// and requires the operation to declare which it is.
+			//
+			// EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+			// resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root
+			// listing", self-excluded case "400 path_required". So both arms here are
+			// pinned by text and neither is this peer's choice.
 			root_path := strings.concatenate({"/", p.local_peer, "/"}, a)
-			return build_listing(p, root_path)
+			return build_listing(p, root_path, auth)
+		}
+		if len(eff) == 0 {
+			// `resource` PRESENT, every target carved out by the caller's own exclude.
+			// Serving it the absent case "answers a request for one excluded path with
+			// a listing of the tree" (EXTENSION-TREE §2.2a) -- the root listing is
+			// wider than what was asked for, which is what BROAD-RESULT means.
+			return err_out(400, "path_required", "tree: effective target list is empty")
+		}
+		if len(eff) > 1 {
+			return err_out(400, "ambiguous_resource", "tree: more than one effective target")
+		}
+		target := eff[0]
+		if !path_flex_ok(target) {
+			return err_out(400, "invalid_path", target)
 		}
 		if len(target) == 0 || target[len(target) - 1] == '/' {
-			return build_listing(p, canonicalize(p.local_peer, target))
+			return build_listing(p, canonicalize(p.local_peer, target), auth)
+		}
+		if pattern_path(target) {
+			return err_out(400, "malformed_resource", target)
 		}
 		path := canonicalize(p.local_peer, target)
+		// §6.3: the handler MUST verify the CALLER's capability covers the path it is
+		// about to read. Not a secondary check -- the dispatch-level check never saw
+		// this path if the caller excluded it.
+		if auth.has_cap &&
+		   !check_path_permission(p.local_peer, "get", path, auth.caller_cap, auth.pattern) {
+			return err_out(403, "capability_denied", path)
+		}
 		e, ok := store_get_at(&p.store, path)
 		if !ok {
 			return err_out(404, "not_found", path)
@@ -624,10 +734,40 @@ tree_handler :: proc(p: ^Peer, exec: Entity) -> Outcome {
 		clone, _ := entity_clone(e, a)
 		return ok_out(clone)
 	} else if op == "put" {
-		if !has_target {
-			return err_out(400, "ambiguous_resource", "tree: missing resource target")
+		// Same ladder as `get`, with the two empties COLLAPSED rather than split:
+		// EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an
+		// empty effective list IS the absent case" applies in its unscoped form and both
+		// empties answer `path_required`. That is the same table the `get` arm cites,
+		// read one row down -- the field is per-operation and neither answer is
+		// derivable from this handler's source.
+		//
+		// Note the code change 0.8.2.20 forced: this branch answered `ambiguous_resource`
+		// for a MISSING target, which 0.8.2.20 names as the exact inversion it forbids
+		// ("answering ambiguous_resource for an absent resource inverts them"). The
+		// remedies differ -- *supply a resource* is not *disambiguate your request* --
+		// and the code selects between them.
+		eff, has_resource := effective_targets(p.local_peer, exec)
+		if !has_resource || len(eff) == 0 {
+			return err_out(400, "path_required", "tree: put requires a resource target")
+		}
+		if len(eff) > 1 {
+			return err_out(400, "ambiguous_resource", "tree: more than one effective target")
+		}
+		target := eff[0]
+		if !path_flex_ok(target) {
+			return err_out(400, "invalid_path", target)
+		}
+		if pattern_path(target) {
+			return err_out(400, "malformed_resource", target)
 		}
 		path := canonicalize(p.local_peer, target)
+		// §6.3 (see the `get` arm): the CALLER's capability must cover the path this
+		// handler is about to write, because the caller's own exclude can vacate the
+		// dispatch-level check.
+		if auth.has_cap &&
+		   !check_path_permission(p.local_peer, "put", path, auth.caller_cap, auth.pattern) {
+			return err_out(403, "capability_denied", path)
+		}
 		params, has_params, _ := entity_field_entity(exec, "params", a)
 		raw_entity: Ec_Value
 		has_entity := false
@@ -1438,10 +1578,20 @@ dispatch_outcome :: proc(p: ^Peer, conn: ^Conn, env: Envelope) -> Outcome {
 		return err_out(403, "capability_denied", "")
 	}
 
+	// §6.3's authorization subject, CARRIED into the handler rather than recomputed:
+	// `pattern` is the resolved OWNING handler pattern and `caller_cap` the capability
+	// check_permission just ran against, which is exactly what check_path_permission
+	// needs. Recomputing either inside the handler invites the two to drift.
+	auth := Dispatch_Auth {
+		caller_cap = caller_cap,
+		has_cap    = has_caller_cap,
+		pattern    = pattern,
+	}
+
 	stripped := strip_local(p, pattern)
 	switch {
 	case stripped == "system/tree":
-		return tree_handler(p, exec)
+		return tree_handler(p, exec, auth)
 	case stripped == "system/capability":
 		return capability_handler(p, env, exec, caller_cap, has_caller_cap)
 	case stripped == "system/handler":
@@ -1468,7 +1618,38 @@ dispatch_outcome :: proc(p: ^Peer, conn: ^Conn, env: Envelope) -> Outcome {
 dispatch :: proc(p: ^Peer, conn: ^Conn, env: Envelope) -> (Envelope, bool) {
 	exec := env.root
 	if exec.typ != "system/protocol/execute" {
-		return Envelope{}, false // §3.3 server ignores non-EXECUTE
+		// §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+		// invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare close
+		// -- that is indistinguishable from a network fault."
+		//
+		// §3.3 read "the connection MUST be closed", assigning no code and requiring no
+		// frame, and §9.1's floor row that MANDATED the bare close was REPLACED at the
+		// same revision (N18). This peer did something weaker still: it returned false,
+		// the transport wrote NOTHING, and the connection stayed open -- which is
+		// §4.11's OTHER non-conformant behaviour, the silent drop, "the weaker of the two
+		// precisely because nothing surfaces it". This is a PRE-ADMISSION refusal: the
+		// root is not an EXECUTE, so nothing was ever admitted and §4.9(c) does not reach
+		// it.
+		//
+		// The request_id is read best-effort -- an arbitrary root type is under no
+		// obligation to carry one, and §4.11 licenses the uncorrelated frame exactly
+		// there. We do NOT close: on a multiplexed connection that would cost every
+		// ADMITTED in-flight request its response, and §4.11 leaves the close to us.
+		//
+		// EXECUTE_RESPONSE roots never reach here -- read_loop routes them to their
+		// awaiting §6.11 caller before dispatch is called.
+		gpa := context.allocator
+		rid, _ := entity_text(exec, "request_id")
+		er, eerr := error_result("invalid_request",
+			"root entity is neither EXECUTE nor EXECUTE_RESPONSE", gpa)
+		if eerr != .None {
+			return Envelope{}, false
+		}
+		root, rerr := make_response(rid, 400, er, gpa)
+		if rerr != .None {
+			return Envelope{}, false
+		}
+		return Envelope{root = root, included = make([]Included, 0, gpa)}, true
 	}
 	request_id, _ := entity_text(exec, "request_id")
 

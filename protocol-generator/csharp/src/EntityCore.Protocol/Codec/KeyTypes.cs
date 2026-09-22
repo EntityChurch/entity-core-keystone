@@ -75,7 +75,7 @@ internal static class KeyTypes
         Ed25519Code => Ed25519Impl,
         Ed448Code => Ed448Impl,
         ExperimentalTestCode => ExperimentalTestImpl,
-        Reserved => throw new EntityCodecException("reserved key_type 255 (§1.5)"),
+        Reserved => throw new EntityCodecException("reserved key_type 255 (section 1.5)"),
         _ => throw new EntityCodecException($"unsupported_key_type: 0x{code:x}"),
     };
 

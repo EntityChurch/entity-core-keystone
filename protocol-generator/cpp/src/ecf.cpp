@@ -22,6 +22,7 @@ std::string_view to_string(EcfError e) noexcept {
         case EcfError::NonTextByteKey:  return "non_text_byte_key";
         case EcfError::DepthExceeded:   return "depth_exceeded";
         case EcfError::BadInput:        return "bad_input";
+        case EcfError::HashMismatch:    return "hash_mismatch";
     }
     return "unknown";
 }

@@ -61,7 +61,15 @@ typedef enum ec_status {
     EC_ERR_PAYLOAD_TOO_LARGE = -12,        /* §4.10(a): frame > max (→ 413 / close) */
     EC_ERR_CHAIN_DEPTH_EXCEEDED = -13,     /* §4.10(b): chain > 64 (→ 400, NOT 403) */
     EC_ERR_AUTHN = -14,                    /* §5.2: authentication_failed (→ 401) */
-    EC_ERR_AUTHZ = -15                     /* §5.2: capability_denied (→ 403) */
+    EC_ERR_AUTHZ = -15,                    /* §5.2: capability_denied (→ 403) */
+    /* §1.8 / §5.2a resolution integrity — an entity addressed by a hash that does not
+     * bind to it: a mis-keyed `included` entry, or a carried `content_hash` that
+     * disagrees with the recompute. A SEPARATE code from EC_ERR_NON_CANONICAL_ECF
+     * because 0.8.2.24 (N4/N5) pins the wire answer to `400 hash_mismatch` and rules
+     * `400 non_canonical_ecf` NON-CONFORMANT there: such a frame carries no tag and its
+     * encoding IS canonical, so *re-encode* is not the caller's remedy. Both arms
+     * returned EC_ERR_NON_CANONICAL_ECF until 0.8.2.24 — right property, wrong code. */
+    EC_ERR_HASH_MISMATCH = -16
 } ec_status;
 
 /* ── ECF value model: a tagged union over the ECF major types ───────────── */

@@ -32,22 +32,51 @@ public final class Wire {
     /** Read one length-prefixed frame; return its CBOR payload bytes. Returns null on
      *  a clean EOF at a frame boundary (the connection closed). */
     public static byte[] readFrame(DataInputStream in) throws EntityTransportException {
-        int len;
+        // READ THE PREFIX BYTE BY BYTE, because §4.11 makes "no bytes" and "some bytes"
+        // DIFFERENT EVENTS and `DataInputStream.readInt` collapses them into one
+        // EOFException. A clean EOF at a FRAME BOUNDARY is an ordinary close and is owed
+        // nothing; a stream that ends inside the length prefix is a framing REFUSAL —
+        // §4.11 names "a length prefix that never completes" outright — and is owed a
+        // coded frame. The distinction can only be made here, where the boundary is known.
+        byte[] hdr = new byte[4];
+        int got = 0;
         try {
-            len = in.readInt();
-        } catch (EOFException eof) {
-            return null;
+            while (got < 4) {
+                int n = in.read(hdr, got, 4 - got);
+                if (n < 0) {
+                    break;
+                }
+                got += n;
+            }
         } catch (IOException e) {
-            return null;
+            return null;                        // the socket went away mid-read
         }
+        if (got == 0) {
+            return null;                        // clean EOF at a frame boundary
+        }
+        if (got < 4) {
+            throw new TruncatedFrameException("stream ended inside a frame length prefix", null);
+        }
+        int len = ((hdr[0] & 0xff) << 24) | ((hdr[1] & 0xff) << 16)
+                | ((hdr[2] & 0xff) << 8) | (hdr[3] & 0xff);
         if (len < 0 || len > MAX_FRAME) {
-            throw new EntityTransportException("frame length out of bounds: " + len);
+            // §4.10(a), mood raised to MUST at 0.8.2.25 (N14): the condition is detected
+            // at the length prefix with the connection intact and nothing spent, so the
+            // permissive mood had nothing to license. The read loop answers `413
+            // payload_too_large` and THEN closes.
+            throw new FrameTooLargeException("frame length out of bounds: " + len);
         }
         byte[] payload = new byte[len];
         try {
             in.readFully(payload);
         } catch (IOException e) {
-            throw new EntityTransportException("truncated frame", e);
+            // A prefix declaring `n` bytes followed by fewer. The CLEAN-EOF case is the
+            // `readInt` arm above and is owed nothing; this one is a §4.11 REFUSAL and is
+            // owed a coded frame. Both look like "the socket ended" to the stream, so the
+            // distinction can only be made here, where the frame boundary is known — and
+            // getting it wrong in the other direction would answer a 400 to every peer
+            // that simply hangs up.
+            throw new TruncatedFrameException("truncated frame", e);
         }
         return payload;
     }

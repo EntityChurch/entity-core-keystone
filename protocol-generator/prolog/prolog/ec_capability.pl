@@ -41,6 +41,8 @@
             canonicalize/3,             % +LocalPeer, +Path, -Abs
             matches_pattern/2,          % +Path, +Pattern (semidet)
             grant_subset/5,             % +LocalPeer,+ChildPeer,+ParentPeer,+ChildGrant,+ParentGrant
+            effective_targets/3,        % +LocalPeer, +Exec, -Survivors  (fails: no resource)
+            check_path_permission/5,    % +LocalPeer, +Operation, +Path, +Token, +HandlerPattern (semidet)
             extract_peer/3,             % +LocalPeer, +Uri, -TargetPeer
             is_peer_id/1,               % +Seg (semidet: looks like a peer_id)
             cap_resolve/4               % +Envelope, +StoreId, +Hash, -Entity (semidet)
@@ -372,8 +374,24 @@ canonicalize(LocalPeer, Path, Abs) :- atomics_to_string(["/", LocalPeer, "/", Pa
 % an include (covers nothing -> the grant grants nothing) and fail-OPEN in an exclude
 % (carves out nothing -> the grant is SILENTLY WIDER than its author wrote): same value,
 % same matcher, opposite safety direction, so the reading is chosen where the POSITION
-% is known and matches_pattern/2 stays uniform over its operands. The guard sits outside
-% the scope-type dispatch, transcribing 5.2s loop literally.
+% is known and matches_pattern/2 stays uniform over its operands.
+%
+% ASK THIS ONLY OF A PATH-SCOPE DIMENSION (0.8.2.24, N2/N3). NEVER_MATCH is a §5.4
+% PATH-canonicalization sentinel; an id-scope pattern is a literal identifier that §5.2's
+% own id-scope arm forbids putting through the §5.4 transforms. This guard used to sit
+% OUTSIDE the type dispatch -- as its own FIRST clause of matches_scope/4, with `_Kind`
+% in the head -- transcribing §5.2's loop as it read before that loop grew one. That ran
+% an id pattern through those transforms purely to classify it and then DENIED THE WHOLE
+% DIMENSION on a property unrelated to whether the exclude carves anything out: an
+% `operations` exclude of "*/apply", an ordinary namespaced operation name and a literal
+% that matches nothing under the id-scope grammar, canonicalized to the sentinel and
+% denied every operation. Over-denial, and invisible on any well-formed grant.
+%
+% §5.4 says outright that the rule "does NOT reach `operations` or `peers` [MUST]", and
+% it does NOT leave the id-scope dimensions unprotected by oversight: under the id-scope
+% grammar every non-"*" pattern is a literal and a literal is never structurally
+% unmatchable, so there is nothing here for this sentinel to detect. A scope boundary,
+% not an omission.
 exclude_unmatchable(Frame, Excl) :-
     never_match(NM),
     member(P, Excl), canonicalize(Frame, P, NM), !.
@@ -415,7 +433,13 @@ matches_id_pattern(Value, Pattern) :- Value == Pattern.
 % §5.2 typed scope match. Kind is `id` (operations, peers) or `path` (handlers,
 % resources) and is given at every call site — there is no default, so a new one cannot
 % inherit the wrong matcher silently, which is exactly the F40 defect.
-matches_scope(LocalPeer, _Value, Scope, _Kind) :-
+% THE SENTINEL GUARD IS SCOPED TO PATH-SCOPE (0.8.2.24) AND THE CLAUSE HEAD IS WHERE
+% THAT SCOPING LIVES. §5.2's exclude loop tests the sentinel INSIDE
+% `if dimension_type == "system/capability/path-scope"`, and §5.4 scopes its own
+% invalid-capability rule the same way. This guard's head used to carry `_Kind`, so it
+% ran ahead of BOTH arms; naming `path` in the head is the whole fix, and a new call site
+% cannot get it wrong because the Kind argument is mandatory at every one.
+matches_scope(LocalPeer, _Value, Scope, path) :-
     scope_excl(Scope, Excl0), exclude_unmatchable(LocalPeer, Excl0), !, fail.   % 0.8.2.21
 matches_scope(_LocalPeer, Value, Scope, id) :- !,
     scope_incl(Scope, Incl), scope_excl(Scope, Excl),
@@ -469,6 +493,13 @@ check_resource_scope(LocalPeer, GranterPeer, map(R), G) :-
     % An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
     % target: the coverage test below is correct in isolation and is simply never
     % reached on a sentinel, because matches_pattern/2 fails.
+    %
+    % UNGUARDED BY KIND ON PURPOSE, unlike matches_scope/4's (0.8.2.24): RScope here is
+    % ALWAYS the RESOURCES dimension, which §5.2 fixes as path-scope, so the type test
+    % that predicate performs would be a constant here. Naming the dimension in the body
+    % (grant_field(G, "resources", RScope), two lines up) is what makes that checkable --
+    % a granter frame reaching an id-scope call site is the defect, and this predicate
+    % cannot be one.
     \+ exclude_unmatchable(GranterPeer, Excl),
     forall(member(T, Targets),
            ( canonicalize(LocalPeer, T, CT),
@@ -478,35 +509,152 @@ check_resource_scope(LocalPeer, GranterPeer, map(R), G) :-
                 \+ ( member(E2, Excl), canonicalize(GranterPeer, E2, CE2), matches_pattern(CT, CE2) ) ) )).
 
 % ═══════════════════════════════════════════════════════════════════════════
+% §3.3 effective targets + §6.3 check_path_permission.
+% ═══════════════════════════════════════════════════════════════════════════
+
+% §5.2's effective target list (0.8.2.20): the caller's own `resource.exclude` removes
+% entries from `resource.targets` BEFORE anything else looks at the request.
+%
+% Survivors come back in the caller's OWN SPELLING, not canonicalized -- 0.8.2.21 is
+% explicit that effective_targets yields raw survivors, and the distinction is
+% load-bearing because the value flows on to the store lookup, which canonicalizes for
+% itself.
+%
+% FAILURE IS "NO `resource` AT ALL", AND THAT IS THE NON-LOSSY PROJECTION §3.3 REQUIRES
+% [MUST] (0.8.2.25, N11). "Where an implementation projects resource.targets onto the
+% effective set ahead of the handler, that projection MUST NOT be lossy about its own
+% emptiness -- narrow when narrowing leaves something, and retain the raw pair when
+% narrowing would empty it." A predicate that answered `[]` for both would delete the
+% two-empties discriminator before any handler could read it, and the handler's refusal
+% arm becomes dead code that only a WIRE drive can detect. Prolog carries the
+% discriminator as relational FAILURE rather than as a second argument -- the same
+% property, spelled the way this substrate spells "absent", and the same choice the §5.5
+% walk makes for "deny".
+%
+% An ABSENT resource and a resource whose every target was excluded are DIFFERENT
+% REQUESTS for a resource-OPTIONAL operation (0.8.2.24, N7), not merely different inputs
+% to one disposition.
+%
+% A PRESENT-BUT-ILL-TYPED `targets` IS **PRESENT**, with an empty survivor list --
+% `texts/2` filters non-strings and `[]` is a legal answer. Reporting it absent would
+% serve the WIDER absent-case answer to a request that named a resource, which is N11's
+% own defect one field over.
+%
+% The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4 rules it separately
+% from the grant arm) and that is INHERITED here rather than restated: canonicalize/3
+% answers the sentinel, matches_pattern/2 then fails, and the target simply survives.
+%
+% This peer has exactly ONE narrowing seam -- this predicate, called by the tree handler
+% -- and §6.5's dispatch chain does not project: run_chain/5 passes Exec through
+% untouched and check_permission/6 reads `resource` for itself. So there is no second
+% door to keep in step, and adding a projection at dispatch would create one.
+effective_targets(LocalPeer, Exec, Survivors) :-
+    ent_field(Exec, "resource", map(R)),
+    memberchk("targets"-Tgs0, R),
+    ( is_list(Tgs0) -> texts(Tgs0, Targets) ; Targets = [] ),
+    ( memberchk("exclude"-Ex, R), is_list(Ex) -> texts(Ex, CallerExcl) ; CallerExcl = [] ),
+    findall(T, ( member(T, Targets),
+                 canonicalize(LocalPeer, T, CT),
+                 \+ ( member(X, CallerExcl),
+                      canonicalize(LocalPeer, X, CX),
+                      matches_pattern(CT, CX) ) ),
+            Survivors).
+
+% §6.3's handler-level path check: may the caller access Path AS A TREE PATH, under
+% HandlerPattern, with Token? Semidet -- success is ALLOW, failure is DENY, which is the
+% same relational reading the rest of this module uses.
+%
+% IT IS NOT A SECONDARY CHECK (§6.3, 0.8.2.20). It is the enforcement wherever the
+% subject is derived after dispatch, and the dispatch-level check can be made VACUOUS by
+% caller-controlled input: a caller who excludes the one target its capability does not
+% cover removes that target from check_permission/6's view entirely, and a handler that
+% then acts on it has authorized nothing.
+%
+% THREE DIMENSIONS, NOT FOUR. `peers` is not consulted -- the path is local by
+% construction at this point (§1.4's inbound rule refuses a foreign namespace at §6.5
+% step 3, before any handler runs), and §6.3's signature names only handlers, operations
+% and resources.
+%
+% THE FRAME IS THE LOCAL PEER, NOT THE GRANTER, and that is the spec's own signature
+% rather than a choice: §6.3's block reads
+% `matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id)` -- there
+% is no granter parameter to pass. §5.5a governs chain ATTENUATION, where the subject is
+% a pattern compared against a parent's pattern; this call site compares a CONCRETE local
+% path the handler is about to touch.
+%
+% Scope types: handlers -> path-scope, operations -> id-scope, resources -> path-scope.
+% An empty `resources.include` is a legal grant shape (§5.2: handlers that touch no tree
+% paths) and DENIES every path here, which is what that note says it should -- the
+% once/1 over an empty include list fails. A malformed path canonicalizes to NEVER_MATCH,
+% which matches no grant, so it falls through to DENY rather than being matched against
+% anything.
+check_path_permission(LocalPeer, Operation, Path, Token, HandlerPattern) :-
+    grants_of(Token, Grants),
+    member(G, Grants),
+    grant_field(G, "handlers", HScope),
+    matches_scope(LocalPeer, HandlerPattern, HScope, path),
+    grant_field(G, "operations", OScope),
+    matches_scope(LocalPeer, Operation, OScope, id),
+    grant_field(G, "resources", RScope),
+    matches_scope(LocalPeer, Path, RScope, path),
+    !.
+
+% ═══════════════════════════════════════════════════════════════════════════
 % §5.6 grant_subset (attenuation predicate, used by mint-bounded + chain walk).
 % Resource dimension uses the §5.5a per-link granter frames; handlers/ops/peers
 % stay on LocalPeer.
 % ═══════════════════════════════════════════════════════════════════════════
+% §5.5a: only the RESOURCE dimension uses the per-link granter frames; the other
+% dimensions stay on the local frame. The scope KIND is a property of the DIMENSION and
+% is named at every call site, never defaulted (F50 / 0.8.2.16).
 grant_subset(LocalPeer, ChildPeer, ParentPeer, Child, Parent) :-
     grant_field(Child, "handlers", CH), grant_field(Parent, "handlers", PH),
-    scope_subset(LocalPeer, LocalPeer, CH, PH),
+    scope_subset(LocalPeer, LocalPeer, CH, PH, path),
     grant_field(Child, "operations", CO), grant_field(Parent, "operations", PO),
-    scope_subset(LocalPeer, LocalPeer, CO, PO),
+    scope_subset(LocalPeer, LocalPeer, CO, PO, id),
     grant_field(Child, "resources", CR), grant_field(Parent, "resources", PR),
-    scope_subset(ChildPeer, ParentPeer, CR, PR),
+    scope_subset(ChildPeer, ParentPeer, CR, PR, path),
     peers_subset(LocalPeer, Child, Parent).
 
 peers_subset(LocalPeer, Child, Parent) :-
     child_peers(LocalPeer, Child, CP),
     child_peers(LocalPeer, Parent, PP),
-    scope_subset(LocalPeer, LocalPeer, CP, PP).
+    scope_subset(LocalPeer, LocalPeer, CP, PP, id).
 child_peers(LocalPeer, G, Scope) :-
     ( ent_field_or_default(G, "peers", Scope) -> true ; Scope = map(["include"-[LocalPeer]]) ).
 
 % scope_subset: every child include is covered by some parent include (frames per
 % dimension), and every parent exclude is covered by some child exclude.
-scope_subset(ChildFrame, ParentFrame, ChildScope, ParentScope) :-
+%
+% TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16; entity-core-formalization K-7).
+% §3.6's id-scope grammar binds the scope TYPE, not one predicate -- "An implementation
+% on the canonicalizing reading is non-conformant and MUST adopt the literal matcher" --
+% so the rule F40 landed on matches_scope/4 reaches here too, with delegation-chain
+% WIDENING named as the reason: on the canonicalizing reading a bare id include reads as
+% covered by a path-form parent pattern it does not literally match, and a child grant
+% comes out wider than its parent. `lean`'s differential put it at 2 of 64 include pairs
+% and 2 of 64 exclude pairs, fail-closed, with a 16-pair control alphabet reporting 0 --
+% which is why every hand-tried example missed it.
+%
+% Kind has NO DEFAULT and is named at all four call sites above, because a default is how
+% the next dimension inherits the wrong matcher silently -- the original F40 defect. The
+% per-link granter frames are meaningless on the id arm (an id pattern is never
+% canonicalized) and are simply unread there, which is why frame_for/4 ignores them.
+scope_subset(ChildFrame, ParentFrame, ChildScope, ParentScope, Kind) :-
     scope_incl(ChildScope, CI), scope_excl(ChildScope, CE),
     scope_incl(ParentScope, PI), scope_excl(ParentScope, PE),
-    forall(member(C, CI), ( canonicalize(ChildFrame, C, CC),
-                            once(( member(P, PI), canonicalize(ParentFrame, P, CP), matches_pattern(CC, CP) )) )),
-    forall(member(Pe, PE), ( canonicalize(ParentFrame, Pe, CPe),
-                             once(( member(Ce, CE), canonicalize(ChildFrame, Ce, CCe), matches_pattern(CPe, CCe) )) )).
+    forall(member(C, CI), ( subset_frame(Kind, ChildFrame, C, CC),
+                            once(( member(P, PI), subset_frame(Kind, ParentFrame, P, CP),
+                                   subset_covers(Kind, CP, CC) )) )),
+    forall(member(Pe, PE), ( subset_frame(Kind, ParentFrame, Pe, CPe),
+                             once(( member(Ce, CE), subset_frame(Kind, ChildFrame, Ce, CCe),
+                                    subset_covers(Kind, CCe, CPe) )) )).
+
+subset_frame(path, Frame, Pattern, Canon) :- !, canonicalize(Frame, Pattern, Canon).
+subset_frame(id, _Frame, Pattern, Pattern).
+
+subset_covers(path, Pattern, Value) :- !, matches_pattern(Value, Pattern).
+subset_covers(id, Pattern, Value) :- matches_id_pattern(Value, Pattern).
 
 % ── helpers ──────────────────────────────────────────────────────────────────
 first_segment(Uri, Seg) :-

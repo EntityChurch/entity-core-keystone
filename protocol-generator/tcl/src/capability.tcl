@@ -33,7 +33,8 @@ namespace eval ::entity::core::capability {
     variable BASE58 "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
     namespace export now_ms verify_request check_permission grant \
         resolve_granter_peer_id cap_resolve find_signature grants_of_token \
-        grant_subset parse_grant is_peer_id normalize_uri canonicalize extract_peer
+        grant_subset parse_grant is_peer_id normalize_uri canonicalize extract_peer \
+        effective_targets check_path_permission
 }
 
 # §6.2 CAP-6a: 1 iff every temporal field on a RECEIVED token is either absent (legal)
@@ -213,8 +214,23 @@ proc ::entity::core::capability::_covered_id {pats value} {
 # in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an
 # exclude (carves out nothing -> the grant is SILENTLY WIDER than its author wrote):
 # same value, same matcher, opposite safety direction, so the reading is chosen where
-# the POSITION is known and matches_pattern stays uniform over its operands. The guard
-# sits outside the scope-type dispatch, transcribing 5.2s loop literally.
+# the POSITION is known and matches_pattern stays uniform over its operands.
+#
+# ASK THIS ONLY OF A PATH-SCOPE DIMENSION (0.8.2.24, N2/N3). NEVER_MATCH is a 5.4
+# PATH-canonicalization sentinel; an id-scope pattern is a literal identifier that
+# 5.2's own id-scope arm forbids putting through the 5.4 transforms. This guard used to
+# sit OUTSIDE the type dispatch, transcribing 5.2's loop as it read before that loop
+# grew one -- which ran an id pattern through those transforms purely to classify it and
+# then DENIED THE WHOLE DIMENSION on a property unrelated to whether the exclude carves
+# anything out: an `operations` exclude of a namespaced operation name such as the
+# apply-under-star form -- an ordinary literal that matches nothing under the id-scope
+# grammar -- canonicalized to the sentinel and denied every operation. Over-denial, and
+# invisible on any well-formed grant.
+#
+# 5.4 says outright that the rule "does NOT reach `operations` or `peers` [MUST]", and it
+# does not leave the id dimensions unprotected by oversight: under the id-scope grammar
+# every non-star pattern is a literal and a literal is never structurally unmatchable, so
+# there is nothing here for this sentinel to detect. A scope boundary, not an omission.
 proc ::entity::core::capability::_exclude_unmatchable {frame excl} {
     variable NEVER_MATCH
     foreach p $excl {
@@ -224,7 +240,11 @@ proc ::entity::core::capability::_exclude_unmatchable {frame excl} {
 }
 
 proc ::entity::core::capability::matches_scope {local_peer value s kind} {
-    if {[_exclude_unmatchable $local_peer [dict get $s excl]]} { return 0 }
+    # SCOPED TO PATH-SCOPE (0.8.2.24). 5.2's exclude loop tests the sentinel INSIDE
+    # `if dimension_type == "system/capability/path-scope"`, and 5.4 scopes its own
+    # invalid-capability rule the same way. `kind` already names the dimension here, so
+    # the scoping costs one term and cannot be got wrong by a new call site.
+    if {$kind eq "path" && [_exclude_unmatchable $local_peer [dict get $s excl]]} { return 0 }
     if {$kind eq "id"} {
         return [expr {[_covered_id [dict get $s incl] $value]
             && ![_covered_id [dict get $s excl] $value]}]
@@ -262,6 +282,12 @@ proc ::entity::core::capability::check_resource_scope {local_peer granter_peer r
     # An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
     # target: the coverage test below is correct in isolation and is simply never
     # reached on a sentinel, because matches_pattern answers 0.
+    #
+    # UNGUARDED ON PURPOSE, unlike matches_scope's (0.8.2.24): `s` here is ALWAYS the
+    # RESOURCES dimension, which 5.2 fixes as path-scope, so the type test that call site
+    # performs would be a constant here. The single-dimension signature is what makes
+    # that checkable -- a granter frame reaching an id-scope call site is the defect, and
+    # this proc cannot be one.
     if {[_exclude_unmatchable $granter_peer [dict get $s excl]]} { return 0 }
     foreach tgt $targets {
         set ct [canonicalize $local_peer $tgt]
@@ -270,6 +296,96 @@ proc ::entity::core::capability::check_resource_scope {local_peer granter_peer r
         if {[_covered $granter_peer [dict get $s excl] $ct]} { return 0 }
     }
     return 1
+}
+
+# ── §3.3 effective targets + §6.3 check_path_permission ──
+
+# §5.2's effective target list (0.8.2.20): the caller's own `resource.exclude` removes
+# entries from `resource.targets` BEFORE anything else looks at the request.
+#
+# Returns a TWO-ELEMENT list {had_resource survivors}. The survivors are in the caller's
+# OWN SPELLING, not canonicalized -- 0.8.2.21 is explicit that effective_targets yields
+# raw survivors, and the distinction is load-bearing because the value flows on to the
+# store lookup, which canonicalizes for itself.
+#
+# THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES [MUST] (0.8.2.25, N11): "where an
+# implementation projects resource.targets onto the effective set ahead of the handler,
+# that projection MUST NOT be lossy about its own emptiness -- narrow when narrowing
+# leaves something, and retain the raw pair when narrowing would empty it." A proc
+# returning only a list cannot satisfy that in Tcl, where an empty list and an absent
+# value are the SAME VALUE (the empty string): collapsing `[qA] exclude [qA]` to {} would
+# delete the two-empties discriminator before any handler can read it, and the handler's
+# refusal arm becomes dead code that only a WIRE drive can detect. The flag beside the
+# survivors keeps the discriminator by construction, and on this substrate it is not
+# merely tidier -- it is the only way to have one at all.
+#
+# "Every seam that narrows is exempted alike, inbound-wire and in-process sub-dispatch,
+# or one request receives two different answers according to which door it arrived
+# through." This peer has exactly ONE narrowing seam -- this proc, called by the tree
+# handler -- and §6.5's dispatch chain does not project: _dispatch_inner passes $exec
+# through untouched and check_permission reads `resource` for itself. So there is no
+# second door to keep in step, and adding a projection at dispatch would create one.
+#
+# A PRESENT-BUT-ILL-TYPED `targets` IS **PRESENT**, with an empty survivor list.
+# Reporting it absent would serve the WIDER absent-case answer to a request that named a
+# resource, which is N11's own defect one field over.
+#
+# The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4 rules it separately
+# from the grant arm) and that is INHERITED here rather than restated: canonicalize
+# answers the sentinel, matches_pattern then answers 0, and the target simply survives.
+proc ::entity::core::capability::effective_targets {local_peer exec} {
+    set r [::entity::core::entity::mapfield $exec resource]
+    if {$r eq ""} { return [list 0 {}] }
+    if {![::entity::core::ecf::has $r targets]} { return [list 0 {}] }
+    set targets [::entity::core::ecf::textlist $r targets]
+    set excl [::entity::core::ecf::textlist $r exclude]
+    set out {}
+    foreach t $targets {
+        set ct [canonicalize $local_peer $t]
+        set dropped 0
+        foreach x $excl {
+            if {[matches_pattern $ct [canonicalize $local_peer $x]]} { set dropped 1; break }
+        }
+        if {!$dropped} { lappend out $t }
+    }
+    return [list 1 $out]
+}
+
+# §6.3's handler-level path check: may the caller access $path AS A TREE PATH, under
+# $handler_pattern, with $token?  -> 1 ALLOW / 0 DENY.
+#
+# IT IS NOT A SECONDARY CHECK (§6.3, 0.8.2.20). It is the enforcement wherever the
+# subject is derived after dispatch, and the dispatch-level check can be made VACUOUS by
+# caller-controlled input: a caller who excludes the one target its capability does not
+# cover removes that target from check_permission's view entirely, and a handler that
+# then acts on it has authorized nothing.
+#
+# THREE DIMENSIONS, NOT FOUR. `peers` is not consulted -- the path is local by
+# construction at this point (§1.4's inbound rule refuses a foreign namespace at §6.5
+# step 3, before any handler runs), and §6.3's signature names only handlers, operations
+# and resources.
+#
+# THE FRAME IS THE LOCAL PEER, NOT THE GRANTER, and that is the spec's own signature
+# rather than a choice: §6.3's block reads
+# `matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id)` -- there
+# is no granter parameter to pass. §5.5a governs chain ATTENUATION, where the subject is
+# a pattern compared against a parent's pattern; this call site compares a CONCRETE local
+# path the handler is about to touch.
+#
+# Scope types: handlers -> path-scope, operations -> id-scope, resources -> path-scope.
+# An empty resources.include is a legal grant shape (§5.2: handlers that touch no tree
+# paths) and DENIES every path here, which is what that note says it should -- _covered
+# over an empty include list answers 0. A malformed path canonicalizes to NEVER_MATCH,
+# which matches no grant, so it falls through to DENY rather than being matched against
+# anything.
+proc ::entity::core::capability::check_path_permission {local_peer operation path token handler_pattern} {
+    foreach g [grants_of_token $token] {
+        if {![matches_scope $local_peer $handler_pattern [dict get $g handlers] path]} { continue }
+        if {![matches_scope $local_peer $operation [dict get $g operations] id]} { continue }
+        if {![matches_scope $local_peer $path [dict get $g resources] path]} { continue }
+        return 1
+    }
+    return 0
 }
 
 # §PR-8: the granter's peer_id frames a cap's resource patterns. Single-sig
@@ -428,20 +544,45 @@ proc ::entity::core::capability::_link_granter_peer {included store_h local_peer
     return [::entity::core::identity::peer_id_of_pubkey $pk]
 }
 
-proc ::entity::core::capability::_scope_subset {child_peer parent_peer child parent} {
+# 5.5a/5.6 subset check: every child include must be covered by some parent include, and
+# every parent exclude must be inherited by some child exclude.
+#
+# TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16; entity-core-formalization K-7). 3.6's
+# id-scope grammar binds the scope TYPE, not one function -- "An implementation on the
+# canonicalizing reading is non-conformant and MUST adopt the literal matcher" -- so the
+# rule F40 landed on matches_scope reaches here too, with delegation-chain WIDENING named
+# as the reason: on the canonicalizing reading a bare id include reads as covered by a
+# path-form parent pattern it does not literally match, and a child grant comes out wider
+# than its parent. `lean`'s differential put it at 2 of 64 include pairs and 2 of 64
+# exclude pairs, fail-closed, with a 16-pair control alphabet reporting 0 -- which is why
+# every hand-tried example missed it.
+#
+# `kind` has NO DEFAULT and is named at every call site, because a default is how the next
+# dimension inherits the wrong matcher silently -- the original F40 defect. The per-link
+# granter frames are meaningless on the id arm (an id pattern is never canonicalized) and
+# are simply unread there.
+proc ::entity::core::capability::_ss_frame {kind pattern peer} {
+    return [expr {$kind eq "path" ? [canonicalize $peer $pattern] : $pattern}]
+}
+proc ::entity::core::capability::_ss_covers {kind pattern value} {
+    return [expr {$kind eq "path" ? [matches_pattern $value $pattern]
+                                  : [matches_id_pattern $value $pattern]}]
+}
+
+proc ::entity::core::capability::_scope_subset {child_peer parent_peer child parent kind} {
     foreach cp [dict get $child incl] {
-        set cc [canonicalize $child_peer $cp]
+        set cc [_ss_frame $kind $cp $child_peer]
         set covered 0
         foreach pp [dict get $parent incl] {
-            if {[matches_pattern $cc [canonicalize $parent_peer $pp]]} { set covered 1; break }
+            if {[_ss_covers $kind [_ss_frame $kind $pp $parent_peer] $cc]} { set covered 1; break }
         }
         if {!$covered} { return 0 }
     }
     foreach pe [dict get $parent excl] {
-        set cpe [canonicalize $parent_peer $pe]
+        set cpe [_ss_frame $kind $pe $parent_peer]
         set covered 0
         foreach ce [dict get $child excl] {
-            if {[matches_pattern $cpe [canonicalize $child_peer $ce]]} { set covered 1; break }
+            if {[_ss_covers $kind [_ss_frame $kind $ce $child_peer] $cpe]} { set covered 1; break }
         }
         if {!$covered} { return 0 }
     }
@@ -449,12 +590,15 @@ proc ::entity::core::capability::_scope_subset {child_peer parent_peer child par
 }
 
 proc ::entity::core::capability::grant_subset {local_peer child_peer parent_peer child parent} {
-    if {![_scope_subset $local_peer $local_peer [dict get $child handlers] [dict get $parent handlers]]} { return 0 }
-    if {![_scope_subset $local_peer $local_peer [dict get $child operations] [dict get $parent operations]]} { return 0 }
-    if {![_scope_subset $child_peer $parent_peer [dict get $child resources] [dict get $parent resources]]} { return 0 }
+    # 5.5a: only the RESOURCE dimension uses the per-link granter frames; the other
+    # dimensions stay on the local frame. The scope KIND is a property of the DIMENSION
+    # and is named at every call site, never defaulted (F50 / 0.8.2.16).
+    if {![_scope_subset $local_peer $local_peer [dict get $child handlers] [dict get $parent handlers] path]} { return 0 }
+    if {![_scope_subset $local_peer $local_peer [dict get $child operations] [dict get $parent operations] id]} { return 0 }
+    if {![_scope_subset $child_peer $parent_peer [dict get $child resources] [dict get $parent resources] path]} { return 0 }
     set cp [dict get $child peers]; if {$cp eq ""} { set cp [dict create incl [list $local_peer] excl {}] }
     set pp [dict get $parent peers]; if {$pp eq ""} { set pp [dict create incl [list $local_peer] excl {}] }
-    return [_scope_subset $local_peer $local_peer $cp $pp]
+    return [_scope_subset $local_peer $local_peer $cp $pp id]
 }
 
 proc ::entity::core::capability::_is_attenuated {local_peer child_peer parent_peer child parent} {

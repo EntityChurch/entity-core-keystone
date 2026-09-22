@@ -46,13 +46,26 @@ abstract interface class Handler {
 /// the envelope.
 final class HandlerContext {
   const HandlerContext(
-      this.exec, this.conn, this.included, this.callerCap, this.env);
+      this.exec, this.conn, this.included, this.callerCap, this.env,
+      [this.pattern = '']);
 
   final Entity exec;
   final Conn conn;
   final List<Included> included;
   final Entity? callerCap;
   final Envelope env;
+
+  /// The handler pattern §6.3's `check_path_permission` needs, CARRIED from the
+  /// dispatch check that already computed it rather than recomputed — recomputing
+  /// invites the two to drift, and §6.8 is explicit that the authority is selected by
+  /// who named the path.
+  ///
+  /// It is the OWNING handler's pattern (§6.3, 0.8.2.23): for the tree handler the
+  /// owner and the runner coincide, so the distinction is not observable here, but the
+  /// field is named for the owner because that is what the parameter means. Empty on
+  /// the pre-authentication connect path, which has no resolved handler and no
+  /// capability to check against.
+  final String pattern;
 
   /// The EXECUTE's params entity, or null.
   Entity? params() => exec.entityField('params');

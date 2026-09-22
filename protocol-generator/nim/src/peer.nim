@@ -414,18 +414,47 @@ proc resolveHandler(p: Peer; path: string): Option[string] =
 
 # ── core handler bodies (§6.3 tree, §6.2 capability, §6.13 handler) ────────────
 
-proc treeGet(p: Peer; params: Entity; cap: CapabilityToken; rt: ResourceTarget; pattern: string): Outcome =
-  let target = rt.targets[0]
-  try: validateCallerTarget(target)
-  except PathError: return errOut(400, "invalid_path")
+proc isPatternPath(t: string): bool =
+  ## A §5.4 PATTERN rather than a concrete path. A resource-requiring operation takes a
+  ## concrete path (0.8.2.20); a trailing "/" is a LISTING request, not a pattern -- only
+  ## a `*` makes it one.
+  for c in t:
+    if c == '*': return true
+  false
+
+proc treeListing(p: Peer; cap: CapabilityToken; pattern: string; target: string): Outcome =
+  ## Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+  ##
+  ## "When any handler returns a multi-entry result whose entries are tree paths, each
+  ## entry MUST be individually checked using check_path_permission. Entries for which
+  ## check_path_permission returns DENY MUST be omitted. The result's `count` field MUST
+  ## reflect the filtered entry count, not the source tree's total count."
+  ##
+  ## An unfiltered listing discloses the EXISTENCE of every binding under a prefix to a
+  ## caller whose capability covers none of them, and a `count` following the SOURCE
+  ## total is that disclosure by itself -- which is why it is incremented per emitted
+  ## entry rather than taken from the store.
+  ##
+  ## The DIRECTORY itself is deliberately NOT checked: §6.3 makes each ENTRY the
+  ## subject, and testing the prefix would deny a listing to a caller whose grant covers
+  ## children but not the node above them -- the ordinary shape of a narrowed grant.
   if target.len == 0 or target[^1] == '/':
     var raw = target
     while raw.len > 0 and raw[^1] == '/': raw.setLen(raw.len - 1)
     let prefix = (try: canonicalize(raw, p.localPeer) except PathError: return errOut(400, "invalid_path"))
     var entries: seq[EcPair]
     var count = 0'u64
+    # THE PREFIX MAY ALREADY END IN `/` AND JOINING BLINDLY BUILDS AN EMPTY SEGMENT.
+    # `canonicalize("")` is `/{peer}/` -- the concatenation keeps the separator -- so the
+    # ROOT listing (the §3.3 absent-resource case, which 0.8.2.24/§2.2a made reachable on
+    # this peer for the first time) produced `/{peer}//system`. §1.4 forbids an empty
+    # segment, `canonicalize` raises on it, and the per-entry §6.3 check therefore DENIED
+    # EVERY ENTRY: a root listing that is empty under a grant covering `*`. It reads as a
+    # correctly-filtered listing, which is why only the positive control could find it.
+    var base = prefix
+    while base.len > 1 and base[^1] == '/': base.setLen(base.len - 1)
     for child in p.store.listChildren(prefix):
-      let entryPath = prefix & "/" & child.name
+      let entryPath = base & "/" & child.name
       if not checkPathPermission("get", entryPath, cap, pattern, p.localPeer): continue
       var hv = if child.hasHash: bytesV(child.hash) else: nullV()
       # §6.3 / v7.72 §9.5a CORE-TREE-DELETE-1: a child bound to a
@@ -448,7 +477,43 @@ proc treeGet(p: Peer; params: Entity; cap: CapabilityToken; rt: ResourceTarget; 
       EcPair(key: textV("offset"), val: uintV(0)),
     ]))
     return okOut(listing)
+
+proc treeGet(p: Peer; exec: Entity; params: Entity; cap: CapabilityToken; pattern: string): Outcome =
+  # §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on resource.targets: a
+  # handler that counts the effective list and then indexes targets[0] has implemented
+  # the arithmetic completely and is still reading a path no authorization covered.
+  let (eff, hadResource) = effectiveTargets(exec, p.localPeer)
+  if not hadResource:
+    # THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION IS WHAT
+    # SAYS SO. §3.3's "an empty effective list IS the absent case" is scoped "for an
+    # operation that REQUIRES a resource" (0.8.2.24, N7); `get` does not. For a
+    # resource-OPTIONAL operation 0.8.2.25 (N10) decides the present-but-empty case by
+    # whether the absent case is WIDER than the request -- BROAD-RESULT refuses it,
+    # OPTIONAL-FILTER answers it empty -- and requires the operation to declare which.
+    #
+    # EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is resource-OPTIONAL and
+    # BROAD-RESULT, absent-case answer "the root listing", self-excluded case
+    # "400 path_required". Both arms are pinned by text; neither is this peer's choice.
+    return treeListing(p, cap, pattern, "")
+  if eff.len == 0:
+    # `resource` PRESENT, every target carved out by the caller's own exclude. Serving
+    # it the absent case "answers a request for one excluded path with a listing of the
+    # tree" (EXTENSION-TREE §2.2a) -- wider than what was asked for, which is what
+    # BROAD-RESULT means.
+    return errOut(400, "path_required", some("tree: effective target list is empty"))
+  if eff.len > 1:
+    return errOut(400, "ambiguous_resource", some("tree: more than one effective target"))
+  let target = eff[0]
+  try: validateCallerTarget(target)
+  except PathError: return errOut(400, "invalid_path")
+  if target.len == 0 or target[^1] == '/':
+    return treeListing(p, cap, pattern, target)
+  if isPatternPath(target):
+    return errOut(400, "malformed_resource", some(target))
   let path = (try: canonicalize(target, p.localPeer) except PathError: return errOut(400, "invalid_path"))
+  # §6.3: the handler MUST verify the CALLER's capability covers the path it is about to
+  # read. Not a secondary check -- the dispatch-level check never saw this path if the
+  # caller excluded it.
   if not checkPathPermission("get", path, cap, pattern, p.localPeer):
     return errOut(403, "capability_denied")
   let mode = params.textField("mode").get("entity")
@@ -536,11 +601,30 @@ proc admitPut(v: EcValue): PutAdmission =
   # be the authoring arm §6.3 forbids.
   PutAdmission(refused: false, entity: Entity(typ: typV.t, data: dataV, hash: chV.b))
 
-proc treePut(p: Peer; params: Entity; cap: CapabilityToken; rt: ResourceTarget; pattern: string): Outcome =
-  let target = rt.targets[0]
+proc treePut(p: Peer; exec: Entity; params: Entity; cap: CapabilityToken; pattern: string): Outcome =
+  # Same ladder as treeGet, with the two empties COLLAPSED rather than split:
+  # EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an empty
+  # effective list IS the absent case" applies in its unscoped form and both empties
+  # answer `path_required`. Same table treeGet's branch cites, one row down -- the field
+  # is per-operation and neither answer is derivable from this handler's source.
+  #
+  # Note the code change 0.8.2.20 forced: the missing-target case answered
+  # `ambiguous_resource`, which 0.8.2.20 names as the exact inversion it forbids. The
+  # remedies differ -- *supply a resource* is not *disambiguate your request* -- and the
+  # code is what selects between them.
+  let (eff, hadResource) = effectiveTargets(exec, p.localPeer)
+  if not hadResource or eff.len == 0:
+    return errOut(400, "path_required", some("tree: put requires a resource target"))
+  if eff.len > 1:
+    return errOut(400, "ambiguous_resource", some("tree: more than one effective target"))
+  let target = eff[0]
   try: validateCallerTarget(target)
   except PathError: return errOut(400, "invalid_path")
+  if isPatternPath(target):
+    return errOut(400, "malformed_resource", some(target))
   let path = (try: canonicalize(target, p.localPeer) except PathError: return errOut(400, "invalid_path"))
+  # §6.3 (see treeGet): the CALLER's capability must cover the path this handler is
+  # about to write, because the caller's own exclude can vacate the dispatch-level check.
   if not checkPathPermission("put", path, cap, pattern, p.localPeer):
     return errOut(403, "capability_denied")
   let entityV = params.field("entity")
@@ -843,11 +927,15 @@ proc dispatchOutcome(p: Peer; conn: Conn; env: Envelope; sender: OutboundSender)
 
   case pattern
   of "system/tree":
-    if op == "get" or op == "put":
-      if resource.isNone or resource.get.targets.len != 1:
-        return errOut(400, "ambiguous_resource")
-      if op == "get": return treeGet(p, params, cap, resource.get, pattern)
-      else: return treePut(p, params, cap, resource.get, pattern)
+    # RESOLVE THE OPERATION FIRST; ONLY THEN RUN THE §3.3 LADDER. The raw arity check
+    # that used to sit here (`targets.len != 1 -> ambiguous_resource`) ran BEFORE the
+    # operation was known, so `system/tree:bogusop` with no resource answered a RESOURCE
+    # fault for an OPERATION fault -- and with a resource present the same call correctly
+    # answered 501, which is the differential that names it. It was also the raw-target
+    # arity check 0.8.2.20/F71 forbids: a two-target request whose exclude leaves ONE
+    # survivor has an effective set of size 1 and must PROCEED.
+    if op == "get": return treeGet(p, exec, params, cap, pattern)
+    if op == "put": return treePut(p, exec, params, cap, pattern)
     return errOut(501, "unsupported_operation", some(op))
   of "system/capability":
     case op
@@ -857,10 +945,16 @@ proc dispatchOutcome(p: Peer; conn: Conn; env: Envelope; sender: OutboundSender)
     of "delegate": return errOut(501, "unsupported_operation", some("delegate"))
     else: return errOut(501, "unsupported_operation", some(op))
   of "system/handler":
-    if resource.isNone: return errOut(400, "ambiguous_resource")
+    # RULE G again, and the same one-line inversion: the resource test used to precede
+    # the op case, so an unknown operation on this handler answered a resource fault.
+    # The resource is required by BOTH ops, so the check simply moves inside them.
     case op
-    of "register": return handlerRegister(p, params, resource.get)
-    of "unregister": return handlerUnregister(p, resource.get)
+    of "register":
+      if resource.isNone: return errOut(400, "path_required", some("handler: register requires a resource target"))
+      return handlerRegister(p, params, resource.get)
+    of "unregister":
+      if resource.isNone: return errOut(400, "path_required", some("handler: unregister requires a resource target"))
+      return handlerUnregister(p, resource.get)
     else: return errOut(501, "unsupported_operation", some(op))
   of "system/validate/echo":
     if op == "echo": return validateEcho(params)
@@ -873,10 +967,30 @@ proc dispatchOutcome(p: Peer; conn: Conn; env: Envelope; sender: OutboundSender)
     return errOut(501, "no_handler_body", some(pattern))
 
 proc dispatch*(p: Peer; conn: Conn; env: Envelope; sender: OutboundSender = nil): Future[Option[Envelope]] {.async.} =
-  ## Materialize a response Envelope for an inbound EXECUTE. A non-EXECUTE root is
-  ## ignored (§3.3). Any unexpected exception → 500, connection stays alive.
+  ## Materialize a response Envelope for an inbound EXECUTE. Any unexpected exception →
+  ## 500, connection stays alive.
   let exec = env.root
-  if exec.typ != ExecuteType: return none(Envelope)
+  if exec.typ != ExecuteType:
+    # §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+    # invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare close --
+    # that is indistinguishable from a network fault." §3.3 read "the connection MUST be
+    # closed", assigning no code and requiring no frame, and §9.1's floor row that
+    # MANDATED the bare close was REPLACED at the same revision (N18).
+    #
+    # This peer did something weaker still: it returned `none`, the transport wrote
+    # NOTHING and kept the connection open -- §4.11's OTHER non-conformant behaviour,
+    # the silent drop, "the weaker of the two precisely because nothing surfaces it".
+    # A PRE-ADMISSION refusal: the root is not an EXECUTE, so nothing was admitted and
+    # §4.9(c) does not reach it.
+    #
+    # The request_id is read best-effort -- an arbitrary root type is under no
+    # obligation to carry one, and §4.11 licenses the uncorrelated frame exactly there.
+    # We do NOT close: on a multiplexed connection that would cost every ADMITTED
+    # in-flight request its response, and §4.11 leaves the close to us.
+    let rid = exec.textField("request_id").get("")
+    let err = errorResult("invalid_request",
+                          some("root entity is neither EXECUTE nor EXECUTE_RESPONSE"))
+    return some(Envelope(root: makeResponse(rid, 400'u64, err), included: @[]))
   let requestId = exec.textField("request_id").get("")
   var outcome: Outcome
   try:

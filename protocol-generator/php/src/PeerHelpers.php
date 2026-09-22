@@ -22,6 +22,16 @@ final class PeerHelpers
         return $targets[0] ?? null;
     }
 
+    /**
+     * A §5.4 PATTERN rather than a concrete path. A resource-requiring operation takes a
+     * concrete path (0.8.2.20); a trailing `/` is a LISTING request, not a pattern — only
+     * a `*` makes it one.
+     */
+    public static function isPatternPath(string $target): bool
+    {
+        return \strpos($target, '*') !== false;
+    }
+
     /** §1.4 path validity (no NUL, no empty/`.`/`..` segments; abs paths peer-rooted). */
     public static function pathFlexOk(string $target): bool
     {

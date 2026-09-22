@@ -62,7 +62,34 @@ ecfv1-sha256 floor (format_code 0). DATA is a cbor-map."
 
 (define-condition bad-entity (error)
   ((detail :initarg :detail :reader bad-entity-detail))
+  (:documentation "A STRUCTURALLY malformed wire entity or envelope: a missing or
+ill-typed TYPE, an absent DATA, a non-map root, an INCLUDED key that is not a byte
+string at all.
+
+These are bytes that never become an Envelope, which is §4.11's framing arm:
+400 invalid_request. HASH-MISMATCH is the OTHER cause and takes a different code.")
   (:report (lambda (c s) (format s "bad entity: ~a" (bad-entity-detail c)))))
+
+(define-condition hash-mismatch (bad-entity) ()
+  (:documentation "A §1.8 / §3.1 RESOLUTION-INTEGRITY failure: an entity whose carried
+CONTENT_HASH is not content_hash({type, data}), or an INCLUDED entry whose MAP KEY does
+not bind to the entity filed under it.
+
+§5.2a pins this arm: \"A peer that refuses at the decode boundary MUST answer
+400 hash_mismatch [MUST]\" (mood corrected 0.8.2.24), and in the same breath
+\"400 non_canonical_ecf is NOT conformant here [MUST]\". That code is
+ENTITY-CBOR-ENCODING §6.3's, for a CBOR tag-policy violation, and a mis-keyed INCLUDED
+entry carries NO TAG: its encoding is canonical, what is false is the claim the KEY
+makes, and the remedy non_canonical_ecf selects (re-encode) sends an honest caller to
+the wrong layer. This peer answered non_canonical_ecf for every decode-boundary refusal
+until 0.8.2.24 — measured on the wire, arc-probe B1/B2.
+
+A SUBTYPE of BAD-ENTITY rather than a sibling, so every existing HANDLER-CASE on
+BAD-ENTITY keeps its behaviour; the classifier that maps a refusal to a code tests this
+type FIRST, which is the whole point of the split. The condition system makes that
+ordering a TYPECASE rather than a string match — a classifier that recognised the cause
+by its report text would be one edit away from silently re-collapsing them.")
+  (:report (lambda (c s) (format s "hash mismatch: ~a" (bad-entity-detail c)))))
 
 (defun octets-equal (a b)
   (and (= (length a) (length b))
@@ -80,7 +107,10 @@ recomputed hash, not the wire bytes (§5.2 validate-before-trust)."
           (carried (map-field m "content_hash")))
       (when (and (bytes-p carried)
                  (not (octets-equal (bytes-octets carried) (entity-hash e))))
-        (error 'bad-entity :detail "content_hash mismatch (§1.8 fidelity)"))
+        ;; §1.8 item 1 — RESOLUTION INTEGRITY, not a structural fault. §5.2a pins the
+        ;; decode-boundary code for this cause to 400 hash_mismatch and rules
+        ;; 400 non_canonical_ecf non-conformant here (0.8.2.24 N4/N5).
+        (error 'hash-mismatch :detail "content_hash mismatch (§1.8 fidelity)"))
       e)))
 
 ;; ── envelope (§3.1) ──────────────────────────────────────────────────────────
@@ -115,9 +145,14 @@ recomputed hash, not the wire bytes (§5.2 validate-before-trust)."
                    (unless (bytes-p k)
                      (error 'bad-entity :detail "envelope: included key not bytes"))
                    (let ((e (entity-of-cbor v)))
-                     ;; §3.1: included content_hash MUST equal the map key.
+                     ;; §3.1 key != content_hash — §1.8's resolution-integrity
+                     ;; obligation, mechanism (a) "bind the key": reject the entry whose
+                     ;; key is not content_hash({type, data}) of the entity under it,
+                     ;; which fails the envelope closed at ONE site. §5.2a's code for
+                     ;; this arm is hash_mismatch, not the structural invalid_request
+                     ;; beside it (0.8.2.24 N4/N5).
                      (unless (octets-equal (bytes-octets k) (entity-hash e))
-                       (error 'bad-entity :detail "included key != content_hash"))
+                       (error 'hash-mismatch :detail "included key != content_hash"))
                      (cons (bytes-octets k) e))))
                (cbor-map-pairs inc-c)))))
       (make-envelope root included))))

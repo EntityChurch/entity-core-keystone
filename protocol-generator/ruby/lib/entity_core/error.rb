@@ -17,6 +17,21 @@ module EntityCore
   # additional-info value, duplicate map keys, trailing bytes, or over-depth.
   class NonCanonicalError < CodecError; end
 
+  # A CBOR major-type-6 tag in a position ECF forbids (+ENTITY-CBOR-ENCODING+ §6.3).
+  #
+  # A SUBCLASS RATHER THAN A MESSAGE, because §4.11 makes this the one
+  # decode-boundary cause that KEEPS +400 non_canonical_ecf+ while every other one
+  # moves to a different code — and a classifier that recognises the cause by
+  # matching on +message+ is one string edit away from silently re-collapsing them.
+  #
+  # §6.3 disjoins the two cases by CAUSE rather than putting two MUSTs in conflict:
+  # a tag in a DATA-FIELD position is the policy violation with its own code, while
+  # "the envelope and entity-wrapper CBOR shapes are fixed maps and contain no
+  # positions where a tag could legally be placed; any tag encountered in those
+  # structures is a structurally invalid frame rejected by ordinary decoder
+  # validation" — i.e. §4.11's framing arm.
+  class TagRejectedError < NonCanonicalError; end
+
   # The input ended before a complete value could be read.
   class TruncatedError < CodecError; end
 
@@ -28,6 +43,25 @@ module EntityCore
   # handshake violation). The peer rescue-maps these at the dispatch boundary to
   # §5.2a / §6.12 status codes (mirrors the C#/TS/Java exception trees in SHAPE).
   class ProtocolError < Error; end
+
+  # A §1.8 / §3.1 RESOLUTION-INTEGRITY failure: an entity whose carried
+  # +content_hash+ is not +content_hash({type, data})+, or an +included+ entry whose
+  # MAP KEY does not bind to the entity filed under it.
+  #
+  # §5.2a pins this arm: "A peer that refuses at the decode boundary MUST answer
+  # +400 hash_mismatch+ [MUST]" (mood corrected 0.8.2.24), and in the same breath
+  # "+400 non_canonical_ecf+ is NOT conformant here [MUST]". That code is
+  # +ENTITY-CBOR-ENCODING+ §6.3's, for a CBOR tag-policy violation, and a mis-keyed
+  # +included+ entry carries NO TAG: its encoding is canonical, what is false is the
+  # claim the KEY makes, and the remedy +non_canonical_ecf+ selects (*re-encode*)
+  # sends an honest caller to the wrong layer. This peer answered
+  # +non_canonical_ecf+ for every decode-boundary refusal until 0.8.2.24 — measured
+  # on the wire, +arc-probe+ B1/B2.
+  #
+  # A SUBCLASS of ProtocolError rather than a sibling, so every existing
+  # +rescue ProtocolError+ site keeps its behaviour; the classifier that maps a
+  # refusal to a code tests this type FIRST, which is the whole point of the split.
+  class HashMismatchError < ProtocolError; end
 
   class HelloFailedError < ProtocolError; end
   class AuthenticationError < ProtocolError; end
@@ -41,6 +75,19 @@ module EntityCore
 
   class RecvTimeoutError < TransportError; end
   class ConnectionBrokenError < TransportError; end
+
+  # A frame that never completed: a prefix declaring +n+ bytes followed by fewer, or
+  # a partial length prefix. §4.11's framing arm names this input outright —
+  # "un-parseable, truncated or non-canonical CBOR, or a length prefix that never
+  # completes" -> +400 invalid_request+.
+  #
+  # A SEPARATE TYPE FROM A CLEAN EOF, because the two are different events and the
+  # read collapses them: a clean EOF at a FRAME BOUNDARY is an ordinary close and is
+  # owed nothing, while a stream that ends MID-FRAME is a REFUSAL and is owed a coded
+  # frame. Getting it wrong in the other direction would answer 400 to every peer
+  # that simply hangs up. Distinct from ConnectionBrokenError, which this peer also
+  # raises for a WRITE failure — there is nobody left to answer one of those.
+  class TruncatedFrameError < TransportError; end
   # The §6.12 protocol_error name (avoids the TS ProtocolErrorError stutter,
   # A-003 precedent).
   class WireProtocolError < TransportError; end

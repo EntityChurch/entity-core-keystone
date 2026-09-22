@@ -124,6 +124,8 @@ endfunction()
 ec_s3_target(smoke test/smoke.cpp)
 ec_s3_target(typereg test/typereg.cpp)
 ec_s3_target(multisig_accept test/multisig_accept.cpp)
+# The section 5 scope-algebra unit gate (0.8.2.24/.25).
+ec_s3_target(scope_algebra test/scope_algebra.cpp)
 
 # ── S4 conformance host: the standalone peer the Go validate-peer oracle drives ──
 # Built WITHOUT the sanitizers (a long-running, load-driven conformance host — the
@@ -139,7 +141,8 @@ add_test(NAME smoke COMMAND smoke)
 add_test(NAME typereg
          COMMAND typereg "${EC_VECTORS_DIR}/type-registry/type-registry-vectors.cbor")
 add_test(NAME multisig_accept COMMAND multisig_accept)
-set_tests_properties(smoke typereg multisig_accept PROPERTIES
+add_test(NAME scope_algebra COMMAND scope_algebra)
+set_tests_properties(smoke typereg multisig_accept scope_algebra PROPERTIES
     ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1;UBSAN_OPTIONS=halt_on_error=1")
 
 # ── optional: FFI cross-check against the sibling C-ABI libentitycore_codec ──

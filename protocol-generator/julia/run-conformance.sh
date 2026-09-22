@@ -17,12 +17,22 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 IMAGE="entity-core-keystone/julia-toolchain:latest"
 FIXTURE="/work/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor"
 
+run_one() {
+  podman run $PODMAN_RUN_CAPS --rm --network=none \
+    -v "$REPO_ROOT:/work:Z" -w /work/protocol-generator/julia \
+    "$IMAGE" julia --project=. "$1" ${2:-}
+}
+
 if [ "${1:-}" = "--tests" ]; then
-    ENTRY="test/runtests.jl"; ARG=""
-else
-    ENTRY="test/conformance.jl"; ARG="$FIXTURE"
+    # TWO ENTRY POINTS, BOTH GATED. `runtests.jl` is the CODEC suite; `spec_0_8_2_25.jl`
+    # is the PEER-machinery one (§3.3's ladder, §6.3's path check + listing filter,
+    # §5.4's scoped sentinel, §5.5a's typed subset, §4.11's refusal classification and
+    # its emission over a real socket). Neither reaches the other's surface, and a suite
+    # that is not in the axis entry point is a suite nobody runs.
+    run_one test/runtests.jl
+    echo "--- peer machinery (0.8.2.20..25) ---"
+    run_one test/spec_0_8_2_25.jl
+    exit 0
 fi
 
-exec podman run $PODMAN_RUN_CAPS --rm --network=none \
-    -v "$REPO_ROOT:/work:Z" -w /work/protocol-generator/julia \
-    "$IMAGE" julia --project=. "$ENTRY" $ARG
+run_one test/conformance.jl "$FIXTURE"

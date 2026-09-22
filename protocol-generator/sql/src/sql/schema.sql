@@ -146,5 +146,17 @@ CREATE TABLE request (
 --    carries a `resource` field; targets[]/exclude[] each a row. Absent → no dispatch resource check. ──
 CREATE TABLE request_resource (
   kind        TEXT,               -- 'target' | 'exclude'
-  path        TEXT
+  path        TEXT,               -- §5.4-canonicalized (reserved forms -> '/never-match')
+  -- THE CALLER'S OWN SPELLING, kept beside the canonical form because 0.8.2.21 is
+  -- explicit that `effective_targets` yields RAW survivors: the value flows on to the
+  -- store lookup, which canonicalizes for itself, and to the §3.3 ladder's
+  -- trailing-slash / pattern tests, which are about what the caller WROTE.
+  raw         TEXT,
+  ord         INTEGER,            -- position in `targets` — §3.3 selects targets[0]
+  -- The ON-WIRE text length. `raw` arrives here through SQLite TEXT, which is
+  -- NUL-terminated, so an embedded NUL in the caller's target would be invisible by the
+  -- time a handler reads it back — and §1.4's embedded-NUL refusal is exactly a test of
+  -- wire length against strlen. Carried per ROW because the §3.3 selection picks a
+  -- survivor of the caller's exclude, which is not necessarily targets[0].
+  rawlen      INTEGER
 );

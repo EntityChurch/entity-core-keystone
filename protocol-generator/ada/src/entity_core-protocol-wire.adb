@@ -177,6 +177,93 @@ package body Entity_Core.Protocol.Wire is
       return Entity_Core.Codec.Cbor.Encode (Entity_Core.Protocol.Envelope.To_Cbor (E));
    end Frame_Of_Envelope;
 
+   ---------------------------------------------------------------------------
+   --  §4.11 pre-admission refusal classification (0.8.2.25). See the spec file
+   --  for the table and for why the tag arm keeps its own code.
+   --
+   --  ORDER IS NOT LOAD-BEARING HERE, and that is a property of the SUBSTRATE
+   --  rather than of the rule. In a language with exception inheritance the
+   --  specific arm must be tested before its superclass or it can never be
+   --  reached; Ada's exceptions are a flat set, so each arm tests a DISTINCT
+   --  identity and they are mutually exclusive by construction. The trade is that
+   --  a NEW decode-side exception lands silently on the Cause_Framing default
+   --  instead of being a compile error -- which is why every raise site this
+   --  classifier is meant to separate is named here explicitly, never by
+   --  exclusion.
+   ---------------------------------------------------------------------------
+   function Classify_Pre_Admission
+     (X : Ada.Exceptions.Exception_Occurrence) return Pre_Admission_Cause
+   is
+      use type Ada.Exceptions.Exception_Id;
+      Id : constant Ada.Exceptions.Exception_Id :=
+        Ada.Exceptions.Exception_Identity (X);
+   begin
+      if Id = Entity_Core.Errors.Payload_Too_Large'Identity then
+         return Cause_Oversize;
+      elsif Id = Entity_Core.Errors.Hash_Mismatch'Identity then
+         return Cause_Hash_Mismatch;
+      elsif Id = Entity_Core.Errors.Tag_Rejected'Identity then
+         return Cause_Tag_Policy;
+      else
+         return Cause_Framing;
+      end if;
+   end Classify_Pre_Admission;
+
+   --------------------
+   -- Refusal_Status --
+   --------------------
+   function Refusal_Status (C : Pre_Admission_Cause) return Interfaces.Unsigned_64 is
+   begin
+      case C is
+         when Cause_Oversize => return 413;
+         when others         => return 400;
+      end case;
+   end Refusal_Status;
+
+   ------------------
+   -- Refusal_Code --
+   ------------------
+   function Refusal_Code (C : Pre_Admission_Cause) return String is
+   begin
+      case C is
+         when Cause_Oversize      => return "payload_too_large";
+         when Cause_Hash_Mismatch => return "hash_mismatch";
+         when Cause_Tag_Policy    => return "non_canonical_ecf";
+         when Cause_Framing       => return "invalid_request";
+      end case;
+   end Refusal_Code;
+
+   ---------------------
+   -- Refusal_Message --
+   ---------------------
+   function Refusal_Message (C : Pre_Admission_Cause) return String is
+   begin
+      case C is
+         when Cause_Oversize =>
+            return "frame exceeds the configured maximum";
+         when Cause_Hash_Mismatch =>
+            return "included entry does not bind to its key";
+         when Cause_Tag_Policy =>
+            return "CBOR tag in a data-field position";
+         when Cause_Framing =>
+            return "frame does not decode to an envelope";
+      end case;
+   end Refusal_Message;
+
+   ------------------------
+   -- Is_Framing_Refusal --
+   ------------------------
+   function Is_Framing_Refusal
+     (X : Ada.Exceptions.Exception_Occurrence) return Boolean
+   is
+      use type Ada.Exceptions.Exception_Id;
+      Id : constant Ada.Exceptions.Exception_Id :=
+        Ada.Exceptions.Exception_Identity (X);
+   begin
+      return Id = Entity_Core.Errors.Payload_Too_Large'Identity
+        or else Id = Entity_Core.Errors.Truncated_Input'Identity;
+   end Is_Framing_Refusal;
+
    ------------------
    -- Make_Execute --
    ------------------

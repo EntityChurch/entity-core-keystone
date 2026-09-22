@@ -125,17 +125,28 @@ void ec_io_free(ec_io *io)
 
 /* ── framed read/write ───────────────────────────────────────────────────────── */
 
-static bool read_n(int fd, uint8_t *buf, size_t n)
+/* Read exactly n bytes. `*partial` reports whether ANY byte arrived before the stream
+ * ended — the discriminator between an ordinary hangup and a §4.11 truncated frame.
+ * Both surface as recv() answering 0, so the distinction can only be made where the
+ * frame boundary is known, and getting it wrong in the other direction would answer a
+ * 400 to every peer that simply closes. */
+static bool read_n_p(int fd, uint8_t *buf, size_t n, bool *partial)
 {
     size_t got = 0;
     while (got < n) {
         ssize_t r = recv(fd, buf + got, n - got, 0);
         if (r <= 0) {
+            if (partial) { *partial = (got > 0); }
             return false;
         }
         got += (size_t)r;
     }
     return true;
+}
+
+static bool read_n(int fd, uint8_t *buf, size_t n)
+{
+    return read_n_p(fd, buf, n, NULL);
 }
 
 static bool write_n(int fd, const uint8_t *buf, size_t n)
@@ -156,7 +167,11 @@ static bool write_n(int fd, const uint8_t *buf, size_t n)
 static ec_status read_frame(ec_io *io, uint8_t **out, size_t *out_len)
 {
     uint8_t hdr[4];
-    if (!read_n(io->fd, hdr, 4)) {
+    bool partial = false;
+    if (!read_n_p(io->fd, hdr, 4, &partial)) {
+        if (partial) {
+            return EC_ERR_TRUNCATED;   /* a length prefix that never completed */
+        }
         *out = NULL;
         return EC_OK;            /* clean EOF at a frame boundary */
     }
@@ -170,6 +185,9 @@ static ec_status read_frame(ec_io *io, uint8_t **out, size_t *out_len)
     if (!buf) {
         return EC_ERR_OOM;
     }
+    /* A ZERO-LENGTH frame is COMPLETE, not truncated: the body read touches no bytes
+     * and the empty payload reaches the decoder, which refuses it as bytes that never
+     * become an Envelope. */
     if (len && !read_n(io->fd, buf, len)) {
         free(buf);
         return EC_ERR_TRUNCATED;
@@ -177,6 +195,64 @@ static ec_status read_frame(ec_io *io, uint8_t **out, size_t *out_len)
     *out = buf;
     *out_len = len;
     return EC_OK;
+}
+
+/* ── §4.11 pre-admission refusal classification (0.8.2.25) ──────────────────── */
+
+/* The (status, code, message) §4.11 assigns a pre-admission failure's CAUSE.
+ *
+ * "The frame obligation belongs to the class; the CODE belongs to the cause [MUST]" —
+ * a single code for the class would answer an honest caller under the wrong reason and
+ * send them to the wrong layer.
+ *
+ *   connect-auth proof-of-possession      -> 401 authentication_failed  (§4.6/§4.7, h_connect's)
+ *   envelope over the configured maximum  -> 413 payload_too_large      (§4.10(a), N14)
+ *   resolution integrity (mis-keyed)      -> 400 hash_mismatch          (§5.2a, §1.8)
+ *   framing / never becomes an Envelope   -> 400 invalid_request        (§4.7, §4.11)
+ *   root is neither EXECUTE nor RESPONSE  -> 400 invalid_request        (§3.3, §4.11 — in dispatch)
+ *
+ * THE TAG ARM KEEPS `non_canonical_ecf` AND THAT IS DELIBERATE. §4.11 rules that code
+ * non-conformant "on the framing arm" and gives its reason in the same sentence:
+ * ENTITY-CBOR-ENCODING "defines that code for CBOR tag-policy violations specifically",
+ * which that document still MUSTs at decode time (§6.3). The two rows are disjoint by
+ * CAUSE rather than in conflict: a tag in a DATA-FIELD position is the policy violation
+ * with its own code, while a tag in the envelope shape is a structurally invalid frame
+ * — the framing arm. Everything else this decoder calls non-canonical (a non-minimal
+ * head, an indefinite length, mis-ordered keys) is genuinely "non-canonical CBOR that
+ * never becomes an Envelope" and takes `invalid_request`.
+ *
+ * The messages are a FIXED TABLE, never a rendered internal error: a wire-visible
+ * string must stay ASCII (two peers in this cohort have been killed at runtime by a
+ * non-ASCII byte in an encoded string), and nothing here echoes attacker-supplied bytes. */
+static void pre_admission_refusal(ec_status st, uint64_t *status_out,
+                                  const char **code, const char **message)
+{
+    switch (st) {
+    case EC_ERR_PAYLOAD_TOO_LARGE:
+        *status_out = 413; *code = "payload_too_large";
+        *message = "inbound frame exceeds the configured maximum size";
+        return;
+    case EC_ERR_HASH_MISMATCH:
+        *status_out = 400; *code = "hash_mismatch";
+        *message = "an entity was addressed by a hash that does not bind to it";
+        return;
+    case EC_ERR_TAG_REJECTED:
+        *status_out = 400; *code = "non_canonical_ecf";
+        *message = "CBOR tags are forbidden anywhere in an entity data field";
+        return;
+    default:
+        *status_out = 400; *code = "invalid_request";
+        *message = "frame did not decode into an envelope";
+        return;
+    }
+}
+
+/* Whether a read_frame failure is a REFUSAL owed a coded frame (§4.11) rather than an
+ * ordinary end of connection. A closed or reset socket refuses nothing and there is
+ * nobody left to answer. OOM is ours, not the caller's, and is not a protocol event. */
+static bool framing_refusal(ec_status st)
+{
+    return st == EC_ERR_PAYLOAD_TOO_LARGE || st == EC_ERR_TRUNCATED;
 }
 
 static ec_status write_envelope(ec_io *io, const ec_envelope *env)
@@ -386,17 +462,39 @@ typedef struct reader_args {
     conn_inflight *busy;         /* the serve_state's counter; NULL for a client session */
 } reader_args;
 
-/* §6.3: answer a rejected frame with `400 non_canonical_ecf`, correlated by the
- * request_id salvaged from it. Best-effort — an OOM here degrades to the silence
- * this function exists to remove, which is no worse than the old behaviour. */
-static void reject_frame(ec_io *io, const char *request_id)
+/* Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+ * refused BEFORE it becomes an admitted request.
+ *
+ * "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on the
+ * wire [MUST] — correlated by `request_id` where the id is available, and otherwise as
+ * a best-effort coded frame carrying no correlation."
+ *
+ * §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS" and
+ * therefore reaches none of these, which is why §4.11 exists. The two non-conformant
+ * behaviours it names are SEPARATE failures and this peer had one of each: DROPPING the
+ * frame (the un-salvageable arm, which fell through to silence — "the weaker of the two
+ * precisely because nothing surfaces it"), and CLOSING with no coded frame (the
+ * oversize and truncated arms, which ended reader_loop outright). A bare close is
+ * indistinguishable from a network fault (§4.6), and on a multiplexed connection it
+ * destroys unrelated ADMITTED requests.
+ *
+ * AN EMPTY `request_id` IS THE BEST-EFFORT FORM, not a bug: it is what the section
+ * prescribes where no id can be recovered, and guessing one would correlate the refusal
+ * to somebody else's in-flight request.
+ *
+ * Best-effort throughout — an OOM here degrades to the silence this exists to remove,
+ * which is no worse than the behaviour it replaced. */
+static void refuse_pre_admission(ec_io *io, const char *request_id, ec_status cause)
 {
     ec_entity *err = NULL, *root = NULL;
     ec_envelope *env = NULL;
-    if (ec_error_result("non_canonical_ecf", NULL, &err) != EC_OK) {
+    uint64_t status = 400;
+    const char *code = NULL, *message = NULL;
+    pre_admission_refusal(cause, &status, &code, &message);
+    if (ec_error_result(code, message, &err) != EC_OK) {
         return;
     }
-    if (ec_make_response(request_id, 400, err, &root) == EC_OK) {
+    if (ec_make_response(request_id ? request_id : "", status, err, &root) == EC_OK) {
         if (ec_env_new(root, &env) == EC_OK) {
             write_envelope(io, env);
             ec_env_free(env);
@@ -414,7 +512,20 @@ static void *reader_loop(void *arg)
         size_t plen = 0;
         ec_status st = read_frame(ra->io, &payload, &plen);
         if (st != EC_OK) {
-            break;               /* §4.10(a) over-limit / truncated / OOM ends the conn */
+            /* §4.11 (0.8.2.25). The stream is desynchronized on both REFUSABLE arms —
+             * an oversize body was never drained, a truncated one never arrived — so
+             * the coded frame goes out and THEN the loop ends. §4.11 makes the frame
+             * mandatory and leaves the close to us; closing is the only sound choice
+             * once the framing is lost, and it is a CHOICE rather than an alternative
+             * to answering. An ordinary hangup is not a refusal and gets nothing.
+             *
+             * §4.10(a)'s 413 became a MUST at the same revision (N14): the over-size
+             * condition is detected at the length prefix with the connection intact and
+             * nothing spent, so close-without-frame is no longer licensed. */
+            if (framing_refusal(st)) {
+                refuse_pre_admission(ra->io, "", st);
+            }
+            break;
         }
         if (!payload) {
             break;               /* clean EOF */
@@ -422,24 +533,25 @@ static void *reader_loop(void *arg)
         ec_envelope *env = NULL;
         st = ec_env_of_wire(payload, plen, &env);
         if (st != EC_OK) {
-            /* §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is
-             * owed a STATUS, not silence. This used to `continue`, which rejected
-             * the frame (correct) and then dropped it on the floor (wrong): the
-             * sender saw no response at all and blocked until its own timeout,
-             * violating §6.3's second sentence and §4.9(c) deliver-or-signal. It
-             * also made a refusal indistinguishable from a dead peer, and on a
-             * single-connection oracle run it poisons every later request on the
-             * same connection.
+            /* A COMPLETE frame the decoder refused. The framing is intact, so we answer
+             * and KEEP SERVING — and the refusal MUST be a status rather than silence
+             * (§4.11; §4.9(c) says the same from the other direction). A silent skip
+             * leaves the sender blocked until its own §6.11(c) deadline and makes a
+             * refusal indistinguishable from a dead peer, and on a single-connection
+             * oracle run it poisons every later request on the same connection.
              *
              * The frame is still REJECTED — we salvage only enough to correlate the
-             * response. If even the request_id is unrecoverable the frame is
-             * unattributable and silence is the only option left. */
+             * response. Where even the request_id is unrecoverable §4.11 prescribes the
+             * UNCORRELATED best-effort frame, which is what the empty id produces; this
+             * used to fall through to silence, §4.11's other named non-conformance.
+             *
+             * THE CODE IS THE CAUSE'S (§4.11, §5.2a) — see pre_admission_refusal().
+             * This answered `non_canonical_ecf` for every cause until 0.8.2.24/.25
+             * pinned them apart (measured on the wire: arc-probe B1/B2). */
             char *rid = ec_salvage_request_id(payload, plen);
             free(payload);
-            if (rid) {
-                reject_frame(ra->io, rid);
-                free(rid);
-            }
+            refuse_pre_admission(ra->io, rid ? rid : "", st);
+            free(rid);
             continue;            /* keep reading (N6/§4.9) */
         }
         free(payload);

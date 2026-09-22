@@ -684,7 +684,36 @@ package body Entity_Core.Protocol.Handlers is
    ---------------------------------------------------------------------------
    --  §6.3 — the tree handler (get / put).
    ---------------------------------------------------------------------------
-   function Build_Listing (Peer : Peer_Access; Path : String) return Outcome is
+   --  Forward declaration: the §3.3 ladder in Handle_Tree_Get validates the
+   --  selected target BEFORE canonicalizing it, and Valid_Tree_Path is declared
+   --  below the handler it now serves.
+   function Valid_Tree_Path (P : String) return Boolean;
+
+   --  Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+   --
+   --  "When any handler returns a multi-entry result whose entries are tree
+   --  paths, each entry MUST be individually checked using
+   --  check_path_permission. Entries for which check_path_permission returns
+   --  DENY MUST be omitted. The result's `count` field MUST reflect the filtered
+   --  entry count, not the source tree's total count."
+   --
+   --  This is the read path at its highest volume and it is the reason 0.8.2.21
+   --  refused to carve reads out of the caller-specified-path rule: an unfiltered
+   --  listing discloses the EXISTENCE of every binding under a prefix to a caller
+   --  whose capability covers none of them.
+   --
+   --  The DIRECTORY itself is deliberately NOT checked -- §6.3 makes each ENTRY
+   --  the subject, and testing the prefix would deny a listing to a caller whose
+   --  grant covers children but not the node above them, which is the ordinary
+   --  shape of a narrowed grant.
+   --
+   --  Has_Cap False is the bootstrap/internal path and is NOT filtered: the
+   --  filter's subject is "the caller's verified capability", and where there is
+   --  none there is no caller to narrow.
+   function Build_Listing
+     (Peer : Peer_Access; Path : String;
+      Caller_Cap : Materialized_Entity; Has_Cap : Boolean;
+      Handler_Pattern : String) return Outcome is
       Rows : Entity_Core.Protocol.Store.List_Rows := Peer.St.Listing (Path);
    begin
       declare
@@ -705,6 +734,25 @@ package body Entity_Core.Protocol.Handlers is
                   begin
                      Is_Marker := Found
                        and then Type_Name (Leaf) = "system/deletion-marker";
+                  end;
+               end if;
+               --  §6.3's per-entry check. Idx is what `count` is built from
+               --  below, so an omitted entry is omitted from the COUNT by
+               --  construction -- a count that still reported the source total IS
+               --  the disclosure the rule exists to prevent.
+               if Has_Cap and then not Is_Marker then
+                  declare
+                     Child : constant String :=
+                       (if Path'Length > 0 and then Path (Path'Last) = '/'
+                        then Path & R.Segment.all
+                        else Path & "/" & R.Segment.all);
+                  begin
+                     if not Cap.Check_Path_Permission
+                              (Local_Peer (Peer), "get", Child, Caller_Cap,
+                               Handler_Pattern)
+                     then
+                        Is_Marker := True;   --  omit: same "skip this row" arm
+                     end if;
                   end;
                end if;
                if not Is_Marker then
@@ -744,25 +792,90 @@ package body Entity_Core.Protocol.Handlers is
       end;
    end Build_Listing;
 
+   --  §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+   --  resource.targets: a handler that counts the effective list and then indexes
+   --  targets(1) has implemented the arithmetic completely and is still reading a
+   --  path no authorization covered.
    function Handle_Tree_Get
-     (Peer : Peer_Access; Exec : Materialized_Entity) return Outcome is
-      Target : constant String := Exec_Resource_Target (Exec);
+     (Peer : Peer_Access; Exec : Materialized_Entity;
+      Caller_Cap : Materialized_Entity; Has_Cap : Boolean;
+      Handler_Pattern : String) return Outcome is
+      Has_Resource : Boolean;
+      Eff : constant Value_Vector :=
+        Cap.Effective_Targets (Local_Peer (Peer), Exec, Has_Resource);
    begin
-      if Target = "" then
-         return Build_Listing (Peer, "/" & Local_Peer (Peer) & "/");
+      if not Has_Resource then
+         --  THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN
+         --  SPECIFICATION IS WHAT SAYS SO. §3.3's "an empty effective list IS the
+         --  absent case" is scoped "for an operation that REQUIRES a resource"
+         --  (0.8.2.24, N7); `get` does not. For a resource-OPTIONAL operation
+         --  0.8.2.25 (N10) decides the present-but-empty case by whether the
+         --  absent case is WIDER than the request -- BROAD-RESULT refuses it,
+         --  OPTIONAL-FILTER answers it empty.
+         --
+         --  EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+         --  resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root
+         --  listing", self-excluded case "400 path_required". Both arms are pinned
+         --  by text and neither is this peer's choice.
+         return Build_Listing (Peer, "/" & Local_Peer (Peer) & "/",
+                               Caller_Cap, Has_Cap, Handler_Pattern);
       end if;
-      if Target (Target'Last) = '/' then
-         return Build_Listing (Peer, Cap.Canonicalize (Local_Peer (Peer), Target));
+      if Eff'Length = 0 then
+         --  The self-excluded request: `resource` PRESENT, every target carved out
+         --  by the caller's own exclude. Serving it the absent case "answers a
+         --  request for one excluded path with a listing of the tree"
+         --  (EXTENSION-TREE §2.2a) -- wider than what was asked for, which is what
+         --  BROAD-RESULT means.
+         return Err (400, "path_required", "tree: effective target list is empty");
+      end if;
+      if Eff'Length > 1 then
+         return Err (400, "ambiguous_resource", "tree: more than one effective target");
       end if;
       declare
-         Path : constant String := Cap.Canonicalize (Local_Peer (Peer), Target);
-         Found : Boolean;
-         E : constant Materialized_Entity := Peer.St.Get_At (Path, Found);
+         Target : constant String := As_Text (Eff (Eff'First));
       begin
-         if not Found then
-            return Err (404, "not_found", Path);
+         if Target = "" then
+            return Build_Listing (Peer, "/" & Local_Peer (Peer) & "/",
+                                  Caller_Cap, Has_Cap, Handler_Pattern);
          end if;
-         return Ok (E);
+         if not Valid_Tree_Path (Target) then
+            return Err (400, "invalid_path", "tree: malformed resource path");
+         end if;
+         if Target (Target'Last) = '/' then
+            return Build_Listing (Peer, Cap.Canonicalize (Local_Peer (Peer), Target),
+                                  Caller_Cap, Has_Cap, Handler_Pattern);
+         end if;
+         --  A resource-requiring operation takes a CONCRETE path (0.8.2.20); a
+         --  trailing slash is a listing request rather than a pattern, so only a
+         --  star makes the subject a §5.4 pattern.
+         for C of Target loop
+            if C = '*' then
+               return Err (400, "malformed_resource", Target);
+            end if;
+         end loop;
+         declare
+            Path : constant String := Cap.Canonicalize (Local_Peer (Peer), Target);
+            Found : Boolean;
+         begin
+            --  §6.3: the handler MUST verify the CALLER's capability covers the
+            --  path it is about to read. Not a secondary check -- the
+            --  dispatch-level check never saw this path if the caller excluded it.
+            if Has_Cap
+              and then not Cap.Check_Path_Permission
+                             (Local_Peer (Peer), "get", Path, Caller_Cap,
+                              Handler_Pattern)
+            then
+               return Err (403, "capability_denied", Path);
+            end if;
+            declare
+               E : constant Materialized_Entity := Peer.St.Get_At (Path, Found);
+            begin
+               if not Found then
+                  return Err (404, "not_found", Path);
+               end if;
+               return Ok (E);
+            end;
+         end;
       end;
    end Handle_Tree_Get;
 
@@ -950,16 +1063,43 @@ package body Entity_Core.Protocol.Handlers is
       end;
    end Admit_Put;
 
+   --  Same ladder as `get`, with the two empties COLLAPSED rather than split:
+   --  EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's
+   --  "an empty effective list IS the absent case" applies in its unscoped form
+   --  and both empties answer `path_required`. That is the same table `get`'s
+   --  branch cites, read one row down -- the field is per-operation and neither
+   --  answer is derivable from this handler's source.
+   --
+   --  Note the code change 0.8.2.20 forced: this branch answered
+   --  `ambiguous_resource` for a MISSING target, which 0.8.2.20 names as the exact
+   --  inversion it forbids ("answering ambiguous_resource for an absent resource
+   --  inverts them"). The remedies differ -- supply a resource is not disambiguate
+   --  your request -- and the code is what selects between them.
    function Handle_Tree_Put
-     (Peer : Peer_Access; Exec : Materialized_Entity) return Outcome is
-      Target : constant String := Exec_Resource_Target (Exec);
+     (Peer : Peer_Access; Exec : Materialized_Entity;
+      Caller_Cap : Materialized_Entity; Has_Cap : Boolean;
+      Handler_Pattern : String) return Outcome is
+      Has_Resource : Boolean;
+      Eff : constant Value_Vector :=
+        Cap.Effective_Targets (Local_Peer (Peer), Exec, Has_Resource);
    begin
-      if Target = "" then
-         return Err (400, "ambiguous_resource", "tree: missing resource target");
+      if not Has_Resource or else Eff'Length = 0 then
+         return Err (400, "path_required", "tree: put requires a resource target");
       end if;
+      if Eff'Length > 1 then
+         return Err (400, "ambiguous_resource", "tree: more than one effective target");
+      end if;
+      declare
+         Target : constant String := As_Text (Eff (Eff'First));
+      begin
       if not Valid_Tree_Path (Target) then
          return Err (400, "invalid_path", "tree: malformed resource path");
       end if;
+      for C of Target loop
+         if C = '*' then
+            return Err (400, "malformed_resource", Target);
+         end if;
+      end loop;
       declare
          Path : constant String := Cap.Canonicalize (Local_Peer (Peer), Target);
          --  §6.5: params is the put-request ENTITY ({type, data:{entity,...}});
@@ -974,6 +1114,17 @@ package body Entity_Core.Protocol.Handlers is
          Cur_Found : Boolean;
          Cur_E : constant Materialized_Entity := Peer.St.Get_At (Path, Cur_Found);
       begin
+         --  §6.3, as in `get`: the caller's own capability must cover the path
+         --  this handler is about to write. BEFORE the CAS arm and before any
+         --  store mutation -- a 403 whose refusal arrives after the write would
+         --  satisfy the status assertion and have already leaked the effect.
+         if Has_Cap
+           and then not Cap.Check_Path_Permission
+                          (Local_Peer (Peer), "put", Path, Caller_Cap,
+                           Handler_Pattern)
+         then
+            return Err (403, "capability_denied", Path);
+         end if;
          --  CAS precondition (§3.9 / v7.50 CAS-create).
          if Exp_Found and then Exp_H'Length > 0 then
             declare
@@ -1025,6 +1176,7 @@ package body Entity_Core.Protocol.Handlers is
             return Ok (Make ("system/hash",
               Map_Of ((1 => (Key => K ("hash"), Value => Make_Bytes (Hash (Ent)))))));
          end;
+      end;
       end;
    end Handle_Tree_Put;
 
@@ -1606,10 +1758,27 @@ package body Entity_Core.Protocol.Handlers is
                      Stripped : constant String := Strip_Local (Peer, Pattern);
                   begin
                      if Stripped = "system/tree" then
+                        --  RULE G: the operation is resolved FIRST and the §3.3
+                        --  resource ladder lives inside the two handlers below, so
+                        --  an unknown operation reaches the 501 arm without the
+                        --  resource ever being examined. A peer that validates the
+                        --  resource first answers a RESOURCE fault for an
+                        --  OPERATION fault on every unknown operation.
+                        --
+                        --  Pattern (not Stripped) is the OWNING handler's pattern
+                        --  §6.3 asks for (0.8.2.23): owner and runner coincide for
+                        --  the tree handler, so the distinction is not observable
+                        --  here, but the value passed is the owner's because that
+                        --  is what the parameter means. Carried from the dispatch
+                        --  check rather than recomputed -- recomputing invites the
+                        --  two to drift, and §6.8 is explicit that the authority is
+                        --  selected by who named the path.
                         if Operation = "get" then
-                           return Handle_Tree_Get (Peer, Exec);
+                           return Handle_Tree_Get
+                             (Peer, Exec, Caller_Cap, Caller_Cap_Found, Pattern);
                         elsif Operation = "put" then
-                           return Handle_Tree_Put (Peer, Exec);
+                           return Handle_Tree_Put
+                             (Peer, Exec, Caller_Cap, Caller_Cap_Found, Pattern);
                         else
                            return Err (501, "unsupported_operation", Operation);
                         end if;
@@ -1631,7 +1800,12 @@ package body Entity_Core.Protocol.Handlers is
                         elsif Operation = "unregister" then
                            return Handle_Handler_Unregister (Peer, Exec);
                         elsif Operation = "get" then
-                           return Handle_Tree_Get (Peer, Exec);
+                           --  The `system/handler` route reads the same tree, and
+                           --  here Pattern IS system/handler -- the owner of the
+                           --  paths being read. Passing the resolved pattern keeps
+                           --  "owner" true on both routes with one argument.
+                           return Handle_Tree_Get
+                             (Peer, Exec, Caller_Cap, Caller_Cap_Found, Pattern);
                         else
                            return Err (501, "unsupported_operation", Operation);
                         end if;
@@ -1671,8 +1845,30 @@ package body Entity_Core.Protocol.Handlers is
       Request_Id : constant String := Text (Exec, "request_id");
    begin
       if Type_Name (Exec) /= "system/protocol/execute" then
-         Is_Response := False;
-         return Env_Pkg.Of_Root (Exec);   --  unused
+         --  §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17):
+         --  "400 invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT
+         --  a bare close -- that is indistinguishable from a network fault."
+         --
+         --  §3.3 read "the connection MUST be closed", assigning no code and
+         --  requiring no frame, and this peer did something weaker still: it set
+         --  Is_Response := False and the reader wrote NOTHING while keeping the
+         --  connection open, which is §4.11's other non-conformant behaviour --
+         --  the silent drop, "the weaker of the two precisely because nothing
+         --  surfaces it". This is a PRE-ADMISSION refusal: the root is not an
+         --  EXECUTE, so nothing was ever admitted and §4.9(c) does not reach it.
+         --
+         --  Request_Id is read BEST-EFFORT. An arbitrary root type is under no
+         --  obligation to carry one, and §4.11 licenses the uncorrelated frame
+         --  exactly there. We do NOT close: on a multiplexed connection that
+         --  would cost every ADMITTED in-flight request its response, and §4.11
+         --  leaves the close to us.
+         Is_Response := True;
+         return Env_Pkg.Of_Root
+           (Wire.Make_Response
+              (Request_Id, 400,
+               Wire.Error_Result
+                 ("invalid_request",
+                  "root entity is neither EXECUTE nor EXECUTE_RESPONSE")));
       end if;
       Is_Response := True;
       declare

@@ -109,6 +109,28 @@ final class ChainDepthExceeded extends ProtocolError {
   const ChainDepthExceeded(super.message);
 }
 
+/// A §1.8 / §3.1 RESOLUTION-INTEGRITY failure: an entity whose carried
+/// `content_hash` is not `content_hash({type, data})`, or an `included` entry whose
+/// MAP KEY does not bind to the entity filed under it.
+///
+/// §5.2a pins this arm: "A peer that refuses at the decode boundary MUST answer
+/// `400 hash_mismatch` [MUST]" (mood corrected 0.8.2.24), and in the same breath
+/// "`400 non_canonical_ecf` is NOT conformant here [MUST]". That code is
+/// ENTITY-CBOR-ENCODING §6.3's, for a CBOR tag-policy violation, and a mis-keyed
+/// `included` entry carries NO TAG: its encoding is canonical, what is false is the
+/// claim the KEY makes, and the remedy `non_canonical_ecf` selects (re-encode) sends
+/// an honest caller to the wrong layer. This peer answered `non_canonical_ecf` for
+/// every decode-boundary refusal until 0.8.2.24 — measured on the wire, arc-probe
+/// B1/B2.
+///
+/// A MEMBER OF THE SEALED [ProtocolError] TREE rather than the `ArgumentError` these
+/// sites used to throw: §4.11's classifier dispatches on the TYPE, and an
+/// `ArgumentError` carrying a distinguishing MESSAGE would put the code one string
+/// edit away from silently re-collapsing two causes into one.
+final class HashMismatch extends ProtocolError {
+  const HashMismatch(super.message);
+}
+
 /// Transport-layer failures (S3).
 sealed class TransportError extends EntityError {
   const TransportError(super.message);
@@ -169,4 +191,17 @@ final class EcfException implements Exception {
   final EntityError error;
   @override
   String toString() => 'EcfException($error)';
+}
+
+/// A decode-boundary refusal, carrying the [EntityError] that CAUSED it.
+///
+/// §4.11 (0.8.2.25) assigns the status and code by CAUSE, so the cause has to
+/// survive the throw. The frame path used to collapse every codec failure into one
+/// untyped transport exception, which is exactly the erasure that made
+/// `non_canonical_ecf` the answer to five different questions.
+final class DecodeRefusal implements Exception {
+  const DecodeRefusal(this.cause);
+  final EntityError cause;
+  @override
+  String toString() => 'DecodeRefusal($cause)';
 }

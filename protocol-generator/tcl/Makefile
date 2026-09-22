@@ -19,7 +19,7 @@ STUB        := $(shell find /usr/lib64 /usr/lib -name 'libtclstub*.a' 2>/dev/nul
 SHIM        := src/ffi/libentitycorecrypto.so
 CORPUS      := ../shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 
-.PHONY: all test spike codec shim s3 smoke selftest clean
+.PHONY: all test sweep spike codec shim s3 smoke selftest clean
 all: test
 
 # Build the codec C-ABI (libentitycore_codec) if absent — its CMake, offline (libsodium
@@ -34,9 +34,17 @@ $(SHIM): src/ffi/entitycore_tcl.c | codec
 	gcc -fPIC -shared -DUSE_TCL_STUBS -I/usr/include -I$(SPEC) \
 	    -o $@ $< -L$(CODEC_BUILD) -lentitycore_codec $(STUB) -Wl,-rpath,$(CODEC_BUILD)
 
-# Full pinned-corpus conformance gate (69 vectors, byte-identical).
-test: shim
+# Full pinned-corpus conformance gate (69 vectors, byte-identical) + the 0.8.2.25
+# sweep unit gate (the 3.3 ladder, 6.3's path check + listing filter, 5.4's sentinel
+# scoping, 5.5a's scope typing, and 4.11's code-belongs-to-the-cause table).
+test: shim sweep
 	LD_LIBRARY_PATH=$(CODEC_BUILD) $(TCLSH) test/conformance.tcl $(CORPUS) $(SHIM)
+
+# The 0.8.2.25 sweep unit gate. A separate target so it can be driven alone while
+# diagnosing, and a PREREQUISITE of `test` so it cannot rot unrun -- an axis's per-peer
+# gates rot exactly where no cohort runner reaches.
+sweep: shim
+	LD_LIBRARY_PATH=$(CODEC_BUILD) $(TCLSH) test/sweep_0_8_2_25.tcl $(SHIM)
 
 # The high-risk-legs spike (pure Tcl, no crypto/shim needed).
 spike:

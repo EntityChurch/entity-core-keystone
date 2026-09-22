@@ -273,6 +273,93 @@ int scenario_reentry() {
     return 0;
 }
 
+// ── scenario 4: the §3.3 ladder + RULE G ordering (0.8.2.20/.24/.25) ──────────────
+// wire::resource_target only builds the single-target form, and the ladder is about the
+// arithmetic over the EFFECTIVE list, so this builds the general shape.
+EcfValue resource_v(std::vector<std::string> targets, std::vector<std::string> excl) {
+    auto m = EcfValue::map();
+    if (!excl.empty()) {
+        auto a = EcfValue::array();
+        for (const auto& x : excl) a.push(EcfValue::text(x));
+        m.put(EcfValue::text("exclude"), std::move(a));
+    }
+    auto t = EcfValue::array();
+    for (const auto& x : targets) t.push(EcfValue::text(x));
+    m.put(EcfValue::text("targets"), std::move(t));
+    return m;
+}
+
+void tree_case(Session& s, const std::string& remote, const char* op,
+               std::optional<EcfValue> resource, std::uint64_t want_status,
+               const char* want_code, const char* name) {
+    std::string uri = "/" + remote + "/system/tree";
+    auto params = wire::empty_params();
+    auto r = s.execute(uri, op, **params, std::move(resource));
+    std::uint64_t st = r ? response_status(*r) : 0;
+    std::string code;
+    auto rr = r ? response_result(*r) : nullptr;
+    if (rr) code = rr->text("code").value_or("");
+    bool ok = (st == want_status) && (want_code == nullptr || code == want_code);
+    if (!ok) std::printf("        (got %llu %s)\n", static_cast<unsigned long long>(st),
+                         code.empty() ? "(none)" : code.c_str());
+    check(name, ok);
+}
+
+int scenario_tree_ladder() {
+    // open-grants so the DISPATCH-level check always allows: this scenario is about the
+    // §3.3 ladder's own arithmetic and ordering, and a dispatch-level 403 would answer
+    // before the ladder ran. The §6.3 check_path_permission arm that needs a NARROWED
+    // capability is driven on the wire by tools/arc-probe (families A and G), which mints
+    // one; the unit half is test/scope_algebra.cpp.
+    auto responder = Peer::create(seed_fill(0x55), true, false);
+    auto initiator = Peer::create(seed_fill(0x66), false, false);
+    if (!responder || !initiator) { std::fprintf(stderr, "peer create failed\n"); return 1; }
+    auto listener = Listener::start(**responder, 0);
+    if (!listener) { std::fprintf(stderr, "listen failed\n"); return 1; }
+    auto sess = Session::dial(**initiator, "127.0.0.1", (*listener)->port());
+    if (!sess) { std::fprintf(stderr, "dial/handshake failed\n"); return 1; }
+    Session& s = **sess;
+    const std::string& remote = s.remote_peer();
+
+    std::printf("Tree ladder (section 3.3 on the EFFECTIVE list):\n");
+    // get, ABSENT resource -> the root listing. EXTENSION-TREE §2.2a (v4.11) declares
+    // `get` resource-OPTIONAL and BROAD-RESULT with that absent-case answer; this is the
+    // F86 arm, answered NO, and it is text rather than this peer's choice.
+    tree_case(s, remote, "get", std::nullopt, 200, nullptr,
+              "get with no resource -> 200 root listing");
+    // get, PRESENT and self-excluded -> 400 path_required. Serving this the absent case
+    // answers a request for one excluded path with a listing of the whole tree.
+    tree_case(s, remote, "get", resource_v({"app/qA"}, {"app/qA"}), 400, "path_required",
+              "get, every target self-excluded -> 400 path_required");
+    // get, two survivors -> 400 ambiguous_resource. A peer indexing targets[0] answers
+    // the first target instead.
+    tree_case(s, remote, "get", resource_v({"app/qA", "app/qB"}, {}), 400, "ambiguous_resource",
+              "get, two effective targets -> 400 ambiguous_resource");
+    // get, a PATTERN subject -> 400 malformed_resource (0.8.2.20).
+    tree_case(s, remote, "get", resource_v({"app/*"}, {}), 400, "malformed_resource",
+              "get, a pattern target -> 400 malformed_resource");
+    // put, ABSENT resource -> 400 path_required, NOT ambiguous_resource. 0.8.2.20 names
+    // that inversion outright: *supply a resource* is not *disambiguate your request*,
+    // and the code is what selects the remedy. This peer answered ambiguous_resource.
+    tree_case(s, remote, "put", std::nullopt, 400, "path_required",
+              "put with no resource -> 400 path_required (NOT ambiguous_resource)");
+    // put, PRESENT and self-excluded -> also path_required: §2.2a declares `put`
+    // resource-REQUIRED, so §3.3's "an empty effective list IS the absent case" applies in
+    // its unscoped form and the two empties COLLAPSE here.
+    tree_case(s, remote, "put", resource_v({"app/qA"}, {"app/qA"}), 400, "path_required",
+              "put, every target self-excluded -> 400 path_required");
+    // RULE G: resolve the OPERATION first; only then run the resource ladder. A handler
+    // that validates the resource first answers a RESOURCE fault for an unknown-OPERATION
+    // request (measured as X9/F52 elsewhere in the cohort). The DIFFERENTIAL — same
+    // unknown op with a resource present — is what says ORDERING rather than a missing
+    // 501 arm.
+    tree_case(s, remote, "bogusop", std::nullopt, 501, "unsupported_operation",
+              "unknown op with NO resource -> 501 (operation resolved first)");
+    tree_case(s, remote, "bogusop", resource_v({"app/qA"}, {}), 501, "unsupported_operation",
+              "unknown op WITH a resource -> 501 (the differential)");
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -280,6 +367,7 @@ int main() {
     if (scenario_core() != 0) { std::printf("\nSMOKE: FAIL (harness error in scenario 1)\n"); return 1; }
     if (scenario_extensibility() != 0) { std::printf("\nSMOKE: FAIL (harness error in scenario 2)\n"); return 1; }
     if (scenario_reentry() != 0) { std::printf("\nSMOKE: FAIL (harness error in scenario 3)\n"); return 1; }
+    if (scenario_tree_ladder() != 0) { std::printf("\nSMOKE: FAIL (harness error in scenario 4)\n"); return 1; }
     bool all_pass = (g_fail == 0);
     std::printf("\nSMOKE: %s (%d/%d)\n", all_pass ? "PASS" : "FAIL", g_pass, g_pass + g_fail);
     return all_pass ? 0 : 1;

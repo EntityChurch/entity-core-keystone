@@ -183,7 +183,7 @@ ec_status ec_entity_of_cbor(const ec_value *m, ec_entity **out)
     if (carried && carried->kind == EC_BYTES) {
         if (carried->as.bytes.len != 33 || memcmp(carried->as.bytes.p, e->hash, 33) != 0) {
             ec_entity_unref(e);
-            return EC_ERR_NON_CANONICAL_ECF;
+            return EC_ERR_HASH_MISMATCH;   /* §5.2a, 0.8.2.24 N4/N5 — not non_canonical_ecf */
         }
     }
     *out = e;
@@ -456,7 +456,7 @@ ec_status ec_env_of_wire(const uint8_t *in, size_t in_len, ec_envelope **out)
             /* §3.1: the included key MUST equal the entity's content_hash (N5). */
             if (memcmp(k->as.bytes.p, ent->hash, 33) != 0) {
                 ec_entity_unref(ent);
-                st = EC_ERR_NON_CANONICAL_ECF;
+                st = EC_ERR_HASH_MISMATCH;   /* §5.2a, 0.8.2.24 N4/N5 */
                 goto cleanup;
             }
             st = ec_env_add(env, ent);

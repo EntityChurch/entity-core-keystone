@@ -29,15 +29,22 @@ module EntityCore
       hdr = Bytes.new(4)
       n = read_full(io, hdr)
       return nil if n == 0
-      raise ConnectionBrokenError.new("truncated frame length") if n < 4
+      # A stream that ends MID-FRAME is a §4.11 framing REFUSAL owed a coded frame,
+      # not an ordinary close. Both surface here as a short read, so the
+      # distinction can only be made where the frame boundary is known — and
+      # getting it wrong in the other direction would answer 400 to every peer that
+      # simply hangs up. `n == 0` above is the ordinary-close arm and stays FIRST.
+      raise TruncatedFrameError.new("truncated frame length") if n < 4
 
       len = (hdr[0].to_u32 << 24) | (hdr[1].to_u32 << 16) | (hdr[2].to_u32 << 8) | hdr[3].to_u32
       raise PayloadTooLargeError.new("frame length #{len} exceeds #{MAX_FRAME}") if len > MAX_FRAME
 
+      # A ZERO-LENGTH frame is COMPLETE, not truncated: it reaches the decoder and
+      # is refused there as bytes that never become an Envelope.
       return Bytes.new(0) if len == 0
       body = Bytes.new(len)
       m = read_full(io, body)
-      raise ConnectionBrokenError.new("truncated frame body") if m < len
+      raise TruncatedFrameError.new("truncated frame body") if m < len
       body
     rescue IO::Error
       # socket closed while parked in a blocking read — a clean end, not a fault.
@@ -103,6 +110,51 @@ module EntityCore
 
     def frame_of_envelope(envelope : Envelope) : Bytes
       Cbor.encode(envelope.to_cbor)
+    end
+
+    # ── §4.11 pre-admission refusal classification (0.8.2.25) ────────────────────
+
+    # The `{status, code, message}` §4.11 assigns a pre-admission failure's CAUSE.
+    #
+    # "The frame obligation belongs to the class; the CODE belongs to the cause
+    # [MUST]" — a single code for the class would answer an honest caller under the
+    # wrong reason and send them to the wrong layer.
+    #
+    #   connect-auth proof-of-possession      401 authentication_failed  (§4.6/§4.7 —
+    #                                            the connect handler's, not here)
+    #   envelope over the configured maximum  413 payload_too_large      (§4.10(a), N14)
+    #   resolution integrity (mis-keyed inc.) 400 hash_mismatch          (§5.2a, §1.8)
+    #   framing / never becomes an Envelope   400 invalid_request        (§4.7, §4.11)
+    #   root is neither EXECUTE nor E_R       400 invalid_request        (§3.3, §4.11 —
+    #                                            in Peer#dispatch, not here)
+    #
+    # THE TAG ARM KEEPS `non_canonical_ecf` AND THAT IS DELIBERATE. §4.11 rules that
+    # code non-conformant "on the framing arm" and gives its reason in the same
+    # sentence: ENTITY-CBOR-ENCODING defines it for CBOR tag-policy violations
+    # specifically, which that document still MUSTs at decode time (§6.3). The two
+    # rows are disjoint by CAUSE rather than in conflict. Everything else this
+    # decoder calls non-canonical (a non-minimal head, an indefinite length,
+    # mis-ordered keys) is genuinely "non-canonical CBOR that never becomes an
+    # Envelope" and takes invalid_request.
+    #
+    # ORDER IS LOAD-BEARING: TagRejectedError < NonCanonicalError < CodecError and
+    # HashMismatchError < ProtocolError, so each specific arm must be tested before
+    # its superclass or it can never be reached. Crystal's `case ... when Type`
+    # tests in source order, so this is a property of the listing.
+    #
+    # The messages are a FIXED TABLE, never the internal exception text: an
+    # exception message is a developer diagnostic and can name internal state.
+    def pre_admission_refusal(e : Exception) : {Int32, String, String}
+      case e
+      when PayloadTooLargeError
+        {413, "payload_too_large", "frame exceeds the configured maximum"}
+      when HashMismatchError
+        {400, "hash_mismatch", "included entry does not bind to its key"}
+      when TagRejectedError
+        {400, "non_canonical_ecf", "CBOR tag in a data-field position"}
+      else
+        {400, "invalid_request", "frame does not decode to an envelope"}
+      end
     end
 
     # ── EXECUTE builder (§3.2) ────────────────────────────────────────────────────

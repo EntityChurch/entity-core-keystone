@@ -66,14 +66,25 @@ chain(hash, granter, grantee, parent, created_at, expires_at, not_before,
 -- §5.4's canonicalize is TOTAL (0.8.2.20): its return domain is "a canonical path OR
 -- NEVER_MATCH". The sentinel '/never-match' is unreachable as a canonical path by
 -- CONSTRUCTION -- its only segment cannot be a peer_id, which needs >= 46 Base58
--- characters, and '-' is outside the Base58 alphabet. The reserved arm is FIRST and
--- deliberately NOT conditioned on `dim`, transcribing §5.2's loop, whose NEVER_MATCH
--- guard sits outside the scope-type dispatch.
+-- characters, and '-' is outside the Base58 alphabet.
+--
+-- THE RESERVED ARM IS SCOPED TO THE PATH-SCOPE DIMENSIONS (0.8.2.24, N2/N3). It used to
+-- be unconditional, transcribing §5.2's loop before that loop grew its type dispatch --
+-- which is what the text then said. 0.8.2.24 scoped it: "a capability carrying an
+-- unmatchable PATH-SCOPE pattern is INVALID ... It does NOT reach `operations` or `peers`
+-- [MUST]". NEVER_MATCH is a §5.4 PATH-canonicalization sentinel and has no meaning on an
+-- id dimension, whose patterns are literal identifiers §5.2's own id arm forbids putting
+-- through the §5.4 transforms. Asking it outside the type dispatch ran an id pattern
+-- through those transforms purely to classify it and then DENIED THE WHOLE DIMENSION on a
+-- property unrelated to whether the exclude carves anything out: an `operations` exclude
+-- of `*/apply` -- an ordinary namespaced operation name -- canonicalized to the sentinel
+-- and denied every operation. Over-denial, invisible on any well-formed grant.
 sc AS (
   SELECT cap_hash, grant_idx, dim, kind,
-         CASE WHEN substr(pattern,1,2)='./' OR substr(pattern,1,3)='../'
-                OR substr(pattern,1,2)='*/'
-              THEN '/never-match'                              -- §5.4 reserved (0.8.2.20)
+         CASE WHEN dim IN ('handlers','resources')
+                   AND (substr(pattern,1,2)='./' OR substr(pattern,1,3)='../'
+                        OR substr(pattern,1,2)='*/')
+              THEN '/never-match'                              -- §5.4 reserved, PATH-scope only
               WHEN dim='resources' AND pattern NOT LIKE '/%'
               THEN '/' || granter_peer_id || '/' || pattern    -- §5.5a: GRANTER frame
               WHEN dim='handlers'  AND pattern NOT LIKE '/%'
@@ -82,56 +93,94 @@ sc AS (
   FROM grant_scope
 ),
 
+-- ── §5.2's EFFECTIVE TARGET LIST (0.8.2.20): the caller's own `resource.exclude` removes
+--    entries from `resource.targets` BEFORE anything else looks at the request. Every
+--    reader of the request's resource below reads THIS, never `request_resource` directly
+--    -- a check that counts the effective list and then reads the raw one has implemented
+--    the arithmetic completely and is still looking at a target the caller withdrew.
+--
+--    THE CALLER-EXCLUDE ARM IS FAIL-OPEN ON AN UNMATCHABLE PATTERN, and §5.4 rules it
+--    separately from the GRANT arm below: a caller exclude of '../nope' canonicalizes to
+--    the sentinel, `path_match` refuses the sentinel in EITHER operand, and the target
+--    simply SURVIVES. The grant arm reads the same value the other way (deny), which is
+--    why the reading is chosen where the POSITION is known rather than made a property of
+--    the string. ──
+eff AS (
+  SELECT t.ord, t.raw, t.path
+  FROM request_resource t
+  WHERE t.kind='target'
+    AND NOT EXISTS (SELECT 1 FROM request_resource x
+                    WHERE x.kind='exclude' AND path_match(t.path, x.path)=1)
+),
+
 -- ── §5.2 check_permission: does SOME single grant on the LEAF cap cover op+handler+peer(+res)? ──
 perm AS (
   SELECT g.grant_idx
   FROM cap_grant g, req
   WHERE g.cap_hash = req.capability
     -- AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
-    -- in an include (covers nothing -> the grant grants nothing, which GLOB already
-    -- gives) and fail-OPEN in an exclude (carves out nothing -> the grant is SILENTLY
-    -- WIDER than its author wrote). Same value, same matcher, opposite safety direction,
-    -- so the reading is chosen HERE, where the position is known. FIRST, because every
-    -- dimension test below is correct in isolation and is simply never reached on a
-    -- sentinel: '/never-match' is a GLOB with no metacharacter, so it matches only the
-    -- literal string, and no canonical path is that string.
+    -- in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an
+    -- exclude (carves out nothing -> the grant is SILENTLY WIDER than its author wrote).
+    -- Same value, same matcher, opposite safety direction, so the reading is chosen HERE,
+    -- where the POSITION is known, and `path_match` stays uniform over its operands.
+    --
+    -- THE "NO CANONICAL PATH IS THAT STRING" ARGUMENT IS NOT AVAILABLE IN SQL AND THIS
+    -- LINE USED TO REST ON IT. SQLite GLOB's star is not segment-anchored, so a grant
+    -- pattern of `/*` GLOBs '/never-match' like any other absolute path. The sentinel arm
+    -- lives inside `path_match`, over BOTH operands, which is why every path-scope test
+    -- below calls it rather than GLOB.
+    -- (PATH-SCOPE ONLY since 0.8.2.24 -- `sc` no longer emits the sentinel for an id
+    -- dimension at all, so this test can never see one there.)
     AND NOT EXISTS (SELECT 1 FROM sc WHERE sc.cap_hash=g.cap_hash AND sc.grant_idx=g.grant_idx
                     AND sc.kind='exclude' AND sc.canon='/never-match')
-    -- operation dimension (§5.4 id-scope)
+    -- operation dimension (§3.6 ID-SCOPE): id_match, NOT GLOB. GLOB treats `*` as a free
+    -- wildcard anywhere, so `*/apply` -- a LITERAL under the id grammar -- would match any
+    -- value ending in `/apply` (F50 / 0.8.2.16).
     AND     EXISTS (SELECT 1 FROM sc WHERE sc.cap_hash=g.cap_hash AND sc.grant_idx=g.grant_idx
-                    AND sc.dim='operations' AND sc.kind='include' AND req.operation GLOB sc.canon)
+                    AND sc.dim='operations' AND sc.kind='include' AND id_match(req.operation, sc.canon)=1)
     AND NOT EXISTS (SELECT 1 FROM sc WHERE sc.cap_hash=g.cap_hash AND sc.grant_idx=g.grant_idx
-                    AND sc.dim='operations' AND sc.kind='exclude' AND req.operation GLOB sc.canon)
+                    AND sc.dim='operations' AND sc.kind='exclude' AND id_match(req.operation, sc.canon)=1)
     -- handler dimension: match the §6.6-resolved handler pattern (longest-prefix)
     AND     EXISTS (SELECT 1 FROM sc WHERE sc.cap_hash=g.cap_hash AND sc.grant_idx=g.grant_idx
                     AND sc.dim='handlers' AND sc.kind='include'
-                    AND (SELECT path FROM handler h
+                    AND path_match((SELECT path FROM handler h
                          WHERE req.uri=h.path OR req.uri GLOB h.path||'/*'
-                         ORDER BY length(h.path) DESC LIMIT 1) GLOB sc.canon)
-    -- peer dimension: explicit peers scope, else default {local_peer_id} (§3.6)
+                         ORDER BY length(h.path) DESC LIMIT 1), sc.canon)=1)
+    -- peer dimension (§3.6 ID-SCOPE, same matcher as operations): explicit peers scope,
+    -- else default {local_peer_id}
     AND ( CASE
             WHEN EXISTS (SELECT 1 FROM sc WHERE sc.cap_hash=g.cap_hash AND sc.grant_idx=g.grant_idx
                          AND sc.dim='peers' AND sc.kind='include')
             THEN EXISTS (SELECT 1 FROM sc WHERE sc.cap_hash=g.cap_hash AND sc.grant_idx=g.grant_idx
                          AND sc.dim='peers' AND sc.kind='include'
-                         AND (CASE WHEN instr(substr(req.uri,2),'/')>0
+                         AND id_match((CASE WHEN instr(substr(req.uri,2),'/')>0
                                    THEN substr(req.uri,2,instr(substr(req.uri,2),'/')-1)
-                                   ELSE substr(req.uri,2) END) GLOB sc.canon)
+                                   ELSE substr(req.uri,2) END), sc.canon)=1)
             ELSE (CASE WHEN instr(substr(req.uri,2),'/')>0
                        THEN substr(req.uri,2,instr(substr(req.uri,2),'/')-1)
                        ELSE substr(req.uri,2) END) = req.local_peer_id
           END )
-    -- resource dimension: only when a resource-target is present (§3.2). Every concrete target
-    -- must be covered by resources.include and not in resources.exclude (§5.2 check_resource_scope,
-    -- concrete-target arm; the pattern-overlap arm is authored + tested in the harness — A-SQL-009).
-    AND ( NOT EXISTS (SELECT 1 FROM request_resource WHERE kind='target')
+    -- resource dimension: only when a resource-target is present (§3.2). Every concrete
+    -- target must be covered by resources.include and not in resources.exclude (§5.2
+    -- check_resource_scope, concrete-target arm; the pattern-overlap arm is authored +
+    -- tested in the harness — A-SQL-009).
+    --
+    -- OVER THE EFFECTIVE SET (0.8.2.20), NOT OVER `request_resource`. This read the raw
+    -- targets, so a caller who excluded the one target its capability does not cover was
+    -- still refused HERE — the right answer reached by a mechanism the spec does not name.
+    -- §5.2 says the caller's exclusions are applied FIRST and calls the consequence out:
+    -- this check can be made VACUOUS by caller-controlled input, which is why §6.3's
+    -- handler-level `check_path_permission` exists and is "the sole enforcement wherever
+    -- the subject is derived after dispatch". Reading the effective set here is what makes
+    -- that layer load-bearing rather than redundant.
+    AND ( NOT EXISTS (SELECT 1 FROM eff)
           OR NOT EXISTS (
-               SELECT 1 FROM request_resource rt WHERE rt.kind='target'
-               AND NOT (
+               SELECT 1 FROM eff rt
+               WHERE NOT (
                  EXISTS (SELECT 1 FROM sc WHERE sc.cap_hash=g.cap_hash AND sc.grant_idx=g.grant_idx
-                         AND sc.dim='resources' AND sc.kind='include' AND rt.path GLOB sc.canon)
+                         AND sc.dim='resources' AND sc.kind='include' AND path_match(rt.path, sc.canon)=1)
                  AND NOT EXISTS (SELECT 1 FROM sc WHERE sc.cap_hash=g.cap_hash AND sc.grant_idx=g.grant_idx
-                         AND sc.dim='resources' AND sc.kind='exclude' AND rt.path GLOB sc.canon)
+                         AND sc.dim='resources' AND sc.kind='exclude' AND path_match(rt.path, sc.canon)=1)
                )) )
 )
 
@@ -220,6 +269,11 @@ perm AS (
   --
   --       A child grant with NO resources include contributes no resource authority and
   --       is not an escalation, so it is skipped rather than denied.
+  --
+  --       SCOPE KIND: this rung is the RESOURCES dimension only, which is PATH-scope, so
+  --       GLOB against the canonicalized pattern is the right matcher and is named here
+  --       rather than assumed (F50 / 0.8.2.16). The two ID-scope dimensions are compared
+  --       by `id_match` at the mint-bound rung below; neither matcher is a default.
   WHEN EXISTS (
     SELECT 1
     FROM chain c
@@ -233,7 +287,7 @@ perm AS (
       JOIN sc ps ON ps.cap_hash = pc.hash AND ps.grant_idx = pg.grant_idx
                 AND ps.dim = 'resources' AND ps.kind = 'include'
       WHERE pg.cap_hash = pc.hash
-        AND cs.canon GLOB ps.canon))
+        AND path_match(cs.canon, ps.canon)=1))
        THEN 'capability_denied'
 
   -- §6.2 CAP-6a: a RECEIVED token carrying a temporal field that is present but not
@@ -306,13 +360,24 @@ perm AS (
         JOIN grant_scope ps ON ps.cap_hash = pg.cap_hash AND ps.grant_idx = pg.grant_idx
                            AND ps.dim = rs.dim AND ps.kind = 'include'
         WHERE pg.cap_hash = req.capability
-          AND (CASE WHEN rs.dim IN ('handlers','resources') AND rs.pattern NOT LIKE '/%'
-                    THEN '/' || req.local_peer_id || '/' || rs.pattern
-                    ELSE rs.pattern END)
-              GLOB
-              (CASE WHEN ps.dim IN ('handlers','resources') AND ps.pattern NOT LIKE '/%'
-                    THEN '/' || req.local_peer_id || '/' || ps.pattern
-                    ELSE ps.pattern END)))
+          -- THE SUBSET COMPARISON IS TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16;
+          -- `entity-core-formalization` K-7). §3.6's id-scope grammar binds the scope
+          -- TYPE, not one function, so the rule F40 landed on `matches_scope` reaches the
+          -- SUBSET check too, with delegation-chain WIDENING named as the reason: on the
+          -- GLOB reading `/tree/get` is covered by `*` in one direction and `*/apply` is
+          -- not, and a child grant can come out wider than its parent. The kind is read
+          -- off the DIMENSION at each side and never defaulted -- a default is how the
+          -- next dimension inherits the wrong matcher silently, the original F40 defect.
+          AND (CASE WHEN rs.dim IN ('handlers','resources')
+                    THEN path_match(
+                           (CASE WHEN rs.pattern NOT LIKE '/%'
+                                 THEN '/' || req.local_peer_id || '/' || rs.pattern
+                                 ELSE rs.pattern END),
+                           (CASE WHEN ps.pattern NOT LIKE '/%'
+                                 THEN '/' || req.local_peer_id || '/' || ps.pattern
+                                 ELSE ps.pattern END))=1
+                    ELSE id_match(rs.pattern, ps.pattern)=1     -- operations, peers
+               END)))
        THEN 'scope_exceeds_authority'
 
   ELSE 'ok'

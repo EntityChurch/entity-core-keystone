@@ -19,4 +19,10 @@ podman run $PODMAN_RUN_CAPS --rm --network=none \
     ./tests/tconformance_bin ../shared/test-vectors/ecf-conformance/conformance-vectors.cbor
     echo "── multisig accept-path ──"
     nim c -d:release --hints:off --path:src -o:tests/tmultisig_bin tests/tmultisig.nim
-    ./tests/tmultisig_bin'
+    ./tests/tmultisig_bin
+    echo "── spec 0.8.2.20 → .25 (ladder / path check / sentinel scope / §4.11) ──"
+    # Asserts its own executed COUNT against a floor: a gate whose success message
+    # carries no number cannot tell "all green" from "nothing ran".
+    nim c --mm:orc --overflowChecks:on -d:release --hints:off --path:src \
+      -o:tests/tspec0825_bin tests/tspec0825.nim
+    ./tests/tspec0825_bin'

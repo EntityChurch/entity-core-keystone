@@ -70,7 +70,7 @@ object Ed {
     fun rawPublicKeyFromSeed(seed: ByteArray, curve: Curve): ByteArray = when (curve) {
         Curve.ED25519 -> EdKeyDerivation.rawPublicKeyEd25519(seed)
         Curve.ED448 -> throw EcfException(EntityError.CryptoError.UnsupportedKeyType(
-            "Ed448 seed→pubkey derivation is a deferred agility higher-bar"))
+            "Ed448 seed-to-pubkey derivation is a deferred agility higher-bar"))
     }
 
     /** Verify a signature against a RAW public key. */

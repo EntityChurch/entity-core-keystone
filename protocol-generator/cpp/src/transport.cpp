@@ -29,15 +29,22 @@ namespace entity_core {
 
 namespace {
 
-bool read_n(int fd, std::byte* buf, std::size_t n) {
+// Read exactly n bytes. `*partial` reports whether ANY byte arrived before the stream
+// ended — the discriminator between an ordinary hangup and a §4.11 truncated frame.
+bool read_n_p(int fd, std::byte* buf, std::size_t n, bool* partial) {
     std::size_t got = 0;
     while (got < n) {
         ssize_t r = ::recv(fd, buf + got, n - got, 0);
-        if (r <= 0) return false;
+        if (r <= 0) {
+            if (partial) *partial = (got > 0);
+            return false;
+        }
         got += static_cast<std::size_t>(r);
     }
     return true;
 }
+
+bool read_n(int fd, std::byte* buf, std::size_t n) { return read_n_p(fd, buf, n, nullptr); }
 
 bool write_n(int fd, const std::byte* buf, std::size_t n) {
     std::size_t put = 0;
@@ -72,19 +79,39 @@ public:
         ::shutdown(fd_, SHUT_RDWR);
     }
 
-    // Read one frame's payload. Returns: data on success; empty optional on clean EOF;
-    // throws nothing — an over-limit/truncated frame returns nullopt too (ends the conn).
-    enum class FrameStatus { Ok, Eof, Error };
+    // Read one frame's payload.
+    //
+    // THE THREE OUTCOMES ARE NOT TWO (§4.11, 0.8.2.25). `Eof` is an ordinary hangup at a
+    // frame boundary and is owed NOTHING — there is nobody left to answer. `Truncated`
+    // and `TooLarge` are REFUSALS and are each owed a coded EXECUTE_RESPONSE with its own
+    // code. This used to collapse all three into one `Error` that ended the loop with no
+    // frame at all, which is §4.11's named "closed with no coded frame" non-conformance.
+    enum class FrameStatus { Ok, Eof, Truncated, TooLarge };
     FrameStatus read_frame(std::vector<std::byte>& out) {
         std::byte hdr[4];
-        if (!read_n(fd_, hdr, 4)) return FrameStatus::Eof;  // clean EOF at a frame boundary
+        bool partial = false;
+        if (!read_n_p(fd_, hdr, 4, &partial)) {
+            // A close having read ZERO bytes is an ordinary hangup; having read SOME, the
+            // length prefix never completed and the frame is truncated. Both surface as
+            // recv() answering 0, so the distinction can only be made here, where the
+            // frame boundary is known — and getting it wrong the other way answers 400 to
+            // every peer that simply closes.
+            return partial ? FrameStatus::Truncated : FrameStatus::Eof;
+        }
         std::uint32_t len = (static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(hdr[0])) << 24) |
                             (static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(hdr[1])) << 16) |
                             (static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(hdr[2])) << 8) |
                             static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(hdr[3]));
-        if (len > wire::kMaxFrame) return FrameStatus::Error;  // §4.10(a) over-limit → close
+        // §4.10(a): bound the payload BEFORE buffering the body. N14 raised the 413 from
+        // SHOULD to MUST at 0.8.2.25 — the condition is detected at the length prefix with
+        // the connection intact and nothing spent, so close-without-frame is no longer
+        // licensed.
+        if (len > wire::kMaxFrame) return FrameStatus::TooLarge;
+        // A ZERO-LENGTH frame is COMPLETE, not truncated: the body read touches no bytes
+        // and the empty payload reaches the decoder, which refuses it as bytes that never
+        // become an Envelope.
         out.resize(len);
-        if (len && !read_n(fd_, out.data(), len)) return FrameStatus::Error;
+        if (len && !read_n(fd_, out.data(), len)) return FrameStatus::Truncated;
         return FrameStatus::Ok;
     }
 
@@ -178,13 +205,75 @@ std::optional<std::string> salvage_request_id(std::span<const std::byte> payload
     return std::string(reinterpret_cast<const char*>(t->data()), t->size());
 }
 
-// §6.3: answer a rejected frame with `400 non_canonical_ecf`, correlated by the salvaged
-// request_id. Best-effort -- a failure here degrades to the silence this exists to
-// remove, which is no worse than the old behaviour.
-void reject_frame(Io& io, const std::string& request_id) {
-    auto e = wire::error_result("non_canonical_ecf", std::nullopt);
+// The (status, code, message) §4.11 assigns a pre-admission failure's CAUSE.
+//
+// "The frame obligation belongs to the class; the CODE belongs to the cause [MUST]" — a
+// single code for the class would answer an honest caller under the wrong reason and send
+// them to the wrong layer.
+//
+//   connect-auth proof-of-possession      -> 401 authentication_failed  (§4.6/§4.7, h_connect's)
+//   envelope over the configured maximum  -> 413 payload_too_large      (§4.10(a), N14)
+//   resolution integrity (mis-keyed)      -> 400 hash_mismatch          (§5.2a, §1.8)
+//   framing / never becomes an Envelope   -> 400 invalid_request        (§4.7, §4.11)
+//   root is neither EXECUTE nor RESPONSE  -> 400 invalid_request        (§3.3, §4.11 — in dispatch)
+//
+// THE TAG ARM KEEPS `non_canonical_ecf` AND THAT IS DELIBERATE. §4.11 rules that code
+// non-conformant "on the framing arm" and gives its reason in the same sentence:
+// ENTITY-CBOR-ENCODING "defines that code for CBOR tag-policy violations specifically",
+// which that document still MUSTs at decode time (§6.3). The two rows are disjoint by
+// CAUSE rather than in conflict: a tag in a DATA-FIELD position is the policy violation
+// with its own code, while a tag in the envelope shape is a structurally invalid frame —
+// the framing arm. Everything else this decoder calls non-canonical (a non-minimal head,
+// an indefinite length, mis-ordered keys) is genuinely "non-canonical CBOR that never
+// becomes an Envelope" and takes `invalid_request`.
+//
+// The messages are a FIXED TABLE, never a rendered internal error: a wire-visible string
+// must stay ASCII (two peers in this cohort have been killed at runtime by a non-ASCII
+// byte in an encoded string), and nothing here echoes attacker-supplied bytes back.
+struct Refusal {
+    std::uint64_t status;
+    const char* code;
+    const char* message;
+};
+
+Refusal decode_refusal(ecf::EcfError e) {
+    switch (e) {
+        case ecf::EcfError::HashMismatch:
+            return {400, "hash_mismatch",
+                    "an entity was addressed by a hash that does not bind to it"};
+        case ecf::EcfError::TagRejected:
+            return {400, "non_canonical_ecf",
+                    "CBOR tags are forbidden anywhere in an entity data field"};
+        default:
+            return {400, "invalid_request", "frame did not decode into an envelope"};
+    }
+}
+
+// Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+// refused BEFORE it becomes an admitted request.
+//
+// "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on the
+// wire [MUST] — correlated by `request_id` where the id is available, and otherwise as a
+// best-effort coded frame carrying no correlation."
+//
+// §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS" and
+// therefore reaches none of these, which is why §4.11 exists. The two non-conformant
+// behaviours it names are SEPARATE failures and this peer had one of each: DROPPING the
+// frame (the un-salvageable arm, which fell through to silence — "the weaker of the two
+// precisely because nothing surfaces it"), and CLOSING with no coded frame (the oversize
+// and truncated arms, which ended reader_loop outright). A bare close is
+// indistinguishable from a network fault (§4.6), and on a multiplexed connection it
+// destroys unrelated ADMITTED requests.
+//
+// AN EMPTY `request_id` IS THE BEST-EFFORT FORM, not a bug: it is what the section
+// prescribes where no id can be recovered, and guessing one would correlate the refusal
+// to somebody else's in-flight request.
+//
+// Best-effort throughout — a failure here degrades to the silence this exists to remove.
+void refuse_pre_admission(Io& io, const std::string& request_id, Refusal r) {
+    auto e = wire::error_result(r.code, std::string(r.message));
     if (!e) return;
-    auto resp = wire::make_response(request_id, 400, **e);
+    auto resp = wire::make_response(request_id, r.status, **e);
     if (!resp) return;
     io.write_envelope(Envelope(*resp));
 }
@@ -196,7 +285,22 @@ void reader_loop(Peer* peer, std::shared_ptr<Connection> conn, std::shared_ptr<I
     for (;;) {
         std::vector<std::byte> payload;
         auto st = io->read_frame(payload);
-        if (st != Io::FrameStatus::Ok) break;  // EOF / over-limit / truncated ends the conn
+        if (st != Io::FrameStatus::Ok) {
+            // §4.11 (0.8.2.25). The stream is desynchronized on both REFUSABLE arms — an
+            // oversize body was never drained, a truncated one never arrived — so the
+            // coded frame goes out and THEN the loop ends. §4.11 makes the frame mandatory
+            // and leaves the close to us; closing is the only sound choice once the
+            // framing is lost, and it is a CHOICE rather than an alternative to answering.
+            // An ordinary hangup is not a refusal and gets nothing.
+            if (st == Io::FrameStatus::TooLarge) {
+                refuse_pre_admission(*io, "", {413, "payload_too_large",
+                                               "inbound frame exceeds the configured maximum size"});
+            } else if (st == Io::FrameStatus::Truncated) {
+                refuse_pre_admission(*io, "", {400, "invalid_request",
+                                               "frame did not decode into an envelope"});
+            }
+            break;
+        }
         auto env = Envelope::from_wire(payload);
         if (!env) {
             // §6.3: "Rejection returns 400 non_canonical_ecf" -- a rejected frame is
@@ -208,9 +312,15 @@ void reader_loop(Peer* peer, std::shared_ptr<Connection> conn, std::shared_ptr<I
             // it poisons every later request on the same connection.
             //
             // The frame is still REJECTED -- only enough is salvaged to correlate the
-            // response. If even the request_id is unrecoverable the frame is
-            // unattributable and silence is the only option left.
-            if (auto rid = salvage_request_id(payload)) reject_frame(*io, *rid);
+            // response. Where even the request_id is unrecoverable §4.11 prescribes the
+            // UNCORRELATED best-effort frame, which is what the empty id produces; this
+            // used to fall through to silence, §4.11's other named non-conformance.
+            //
+            // THE CODE IS THE CAUSE'S (§4.11, §5.2a) — see decode_refusal(). This answered
+            // `non_canonical_ecf` for every cause until 0.8.2.24/.25 pinned them apart
+            // (measured on the wire: arc-probe B1/B2).
+            refuse_pre_admission(*io, salvage_request_id(payload).value_or(""),
+                                 decode_refusal(env.error()));
             continue;  // keep reading (N6/§4.9)
         }
         if (env->root()->type() == "system/protocol/execute/response") {

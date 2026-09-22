@@ -232,21 +232,61 @@ fn dispatchExecuteThread(ctx: *DispatchCtx) void {
 }
 
 
-/// §6.3: answer a rejected frame with `400 non_canonical_ecf`, correlated by the
-/// request_id salvaged from it. Best-effort — a failure here degrades to the silence
-/// this exists to remove, which is no worse than the old behaviour.
-fn rejectFrame(io: *Io, payload: []const u8) void {
+/// Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+/// refused BEFORE it becomes an admitted request.
+///
+/// "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on the
+/// wire [MUST] — correlated by `request_id` where the id is available, and otherwise as
+/// a best-effort coded frame carrying no correlation."
+///
+/// §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS" and
+/// therefore reaches none of these, which is why §4.11 exists. The two non-conformant
+/// behaviours it names are SEPARATE failures and this peer had one of each: DROPPING the
+/// frame (the un-salvageable arm, which fell through to silence — "the weaker of the two
+/// precisely because nothing surfaces it"), and CLOSING with no coded frame (the
+/// oversize and truncated arms, which ended the read loop's `catch break` outright). A
+/// bare close is indistinguishable from a network fault (§4.6), and on a multiplexed
+/// connection it destroys unrelated ADMITTED requests.
+///
+/// AN EMPTY `request_id` IS THE BEST-EFFORT FORM, not a bug: it is what the section
+/// prescribes where no id can be recovered, and guessing one would correlate the refusal
+/// to somebody else's in-flight request.
+///
+/// LIFETIME: `wire.makeResponse` CONSUMES `result` — on success it owns that tree, and
+/// on failure it frees its own allocations and leaves `result` to us. So the release for
+/// `result` is a `catch` on the call, never an `errdefer` above it (the `model.ofCbor`
+/// double free, b71b940f: an `errdefer` stays armed after ownership transfers).
+fn refusePreAdmission(io: *Io, request_id: []const u8, r: wire.Refusal) void {
     const gpa = io.gpa;
-    const rid = model.salvageRequestId(gpa, payload) orelse return;
-    defer gpa.free(rid);
-    // makeResponse CONSUMES `result` — no deinit here, or it is a double free.
-    const result = wire.errorResult(gpa, "non_canonical_ecf", null) catch return;
-    const root = wire.makeResponse(gpa, rid, 400, result) catch return;
+    // Best-effort throughout: a failure here degrades to the silence this exists to
+    // remove, which is no worse than the behaviour it replaced.
+    const result = wire.errorResult(gpa, r.code, r.message) catch return;
+    // makeResponse CONSUMES `result` on every path including its failing ones, so
+    // there is nothing left to release here — releasing would be the double free.
+    const root = wire.makeResponse(gpa, request_id, r.status, result) catch return;
     defer root.deinit(gpa);
     const included = gpa.alloc(model.Included, 0) catch return;
-    const env = Envelope{ .root = root, .included = included };
     defer gpa.free(included);
-    io.writeFramed(env) catch {};
+    io.writeFramed(Envelope{ .root = root, .included = included }) catch {};
+}
+
+/// Answer a COMPLETE frame the decoder refused, correlated by the request_id salvaged
+/// from it where one is recoverable.
+///
+/// The frame stays rejected: nothing is built from it, nothing is stored, and a tag is
+/// never interpreted — the salvage decode exists solely to read back the correlation
+/// key. The envelope and entity-wrapper shapes are fixed maps with no legal tag
+/// position, so a frame whose ONLY defect is a tag inside some entity's `data` still has
+/// a structurally sound root, which is exactly the case worth recovering (and the one
+/// CAP-6a's `>2^64` half arrives as — a bignum can only reach a peer as a tag).
+///
+/// THE CODE IS THE CAUSE'S (§4.11, §5.2a) — see `wire.decodeRefusalOf`. This answered
+/// `non_canonical_ecf` for every cause until 0.8.2.24/.25 pinned them apart.
+fn rejectFrame(io: *Io, payload: []const u8, err: anyerror) void {
+    const gpa = io.gpa;
+    const rid = model.salvageRequestId(gpa, payload);
+    defer if (rid) |r| gpa.free(r);
+    refusePreAdmission(io, rid orelse "", wire.decodeRefusalOf(err));
 }
 
 /// The reader loop: EXECUTE_RESPONSE → route; EXECUTE → dispatch on its own thread.
@@ -254,21 +294,33 @@ fn rejectFrame(io: *Io, payload: []const u8) void {
 pub fn readLoop(peer: *Peer, conn: *Conn, io: *Io) void {
     const gpa = io.gpa;
     while (true) {
-        const payload = wire.readFrame(gpa, io.stream) catch break;
+        const payload = wire.readFrame(gpa, io.stream) catch |e| {
+            // §4.11 (0.8.2.25). The stream is desynchronized on both REFUSABLE arms —
+            // an oversize body was never drained, a truncated one never arrived — so
+            // the coded frame goes out and THEN the loop ends. §4.11 makes the frame
+            // mandatory and leaves the close to us; closing is the only sound choice
+            // once the framing is lost, and it is a CHOICE rather than an alternative
+            // to answering. An ordinary hangup is not a refusal and gets nothing.
+            //
+            // §4.10(a)'s 413 became a MUST at the same revision (N14): the over-size
+            // condition is detected at the length prefix with the connection intact and
+            // nothing spent, so close-without-frame is no longer licensed.
+            if (wire.framingRefusal(e)) refusePreAdmission(io, "", wire.framingRefusalOf(e));
+            break;
+        };
         defer gpa.free(payload);
-        const env = model.envelopeOfFrame(gpa, payload) catch {
-            // §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is
-            // owed a STATUS, not silence. This used to `continue`, which rejected the
-            // frame (correct) and then dropped it on the floor (wrong): the sender saw
-            // no response at all and blocked until its own timeout, violating §6.3's
-            // second sentence and §4.9(c) deliver-or-signal. It also made a refusal
-            // indistinguishable from a dead peer, and on a single-connection oracle run
-            // it poisons every later request on the same connection.
+        const env = model.envelopeOfFrame(gpa, payload) catch |e| {
+            // A COMPLETE frame the decoder refused. The framing is intact, so we answer
+            // and KEEP SERVING — and the refusal MUST be a status rather than silence
+            // (§4.11; §4.9(c) says the same from the other direction). A silent skip
+            // leaves the sender blocked until its own §6.11(c) deadline and makes a
+            // refusal indistinguishable from a dead peer.
             //
             // The frame is still REJECTED — only enough is salvaged to correlate the
-            // response. If even the request_id is unrecoverable the frame is
-            // unattributable and silence is the only option left.
-            rejectFrame(io, payload);
+            // response. Where even the request_id is unrecoverable §4.11 prescribes the
+            // UNCORRELATED best-effort frame, which is what the empty id produces; this
+            // used to fall through to silence, §4.11's other named non-conformance.
+            rejectFrame(io, payload, e);
             continue; // keep reading
         };
         if (std.mem.eql(u8, env.root.typ, "system/protocol/execute/response")) {

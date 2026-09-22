@@ -69,26 +69,49 @@ Transport := Object clone do(
     // coded Outcome for every verdict — so a valid request never spawns a `try`
     // Coroutine (the concurrency-throughput leak). A genuinely-unexpected fault
     // is contained by the poll loop's one coarse guard, not a per-request try.
+    // Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+    // refused BEFORE it becomes an admitted request.
+    //
+    // "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on
+    // the wire [MUST] — correlated by `request_id` where the id is available, and
+    // otherwise as a best-effort coded frame carrying no correlation."
+    //
+    // §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS" and
+    // therefore reaches none of these, which is why §4.11 exists. Both of the
+    // non-conformant behaviours it names separately were present on this peer: DROPPING
+    // the frame (the un-salvageable decode arm and the non-EXECUTE root, "the weaker of
+    // the two precisely because nothing surfaces it") and CLOSING with no coded frame
+    // (the over-limit prefix, which went straight to `sock close`).
+    //
+    // AN EMPTY `request_id` IS THE BEST-EFFORT FORM, not a bug: it is what the section
+    // prescribes where no id can be recovered.
+    _refusePreAdmission := method(conn, rid, kind,
+        r := Wire preAdmissionRefusal(kind)
+        _sendFrame(conn, Envelope with(
+            Wire makeResponse(if(rid == nil, "", rid), r at(0), Wire errorResult(r at(1), r at(2)))))
+    )
+
     _serviceFrame := method(conn, payload,
         dlog("[conn] frame " .. payload size .. "B")
         env := Wire envelopeOfFrame(payload)
         if(env == nil,
-            // §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is owed
-            // a STATUS, not silence. This used to `return`, which rejected the frame
-            // (correct) and then dropped it on the floor (wrong): the sender saw no
-            // response at all and blocked until its own timeout, violating §6.3's second
-            // sentence and §4.9(c) deliver-or-signal. It also made a refusal
-            // indistinguishable from a dead peer, and on a single-connection oracle run
-            // it poisons every later request on the same connection.
+            // A COMPLETE frame the decoder refused. The framing is intact, so we answer
+            // and KEEP SERVING — and the refusal MUST be a status rather than silence
+            // (§4.11; §4.9(c) says the same from the other direction). This used to
+            // `return`, which rejected the frame (correct) and then dropped it on the
+            // floor (wrong): the sender saw no response at all and blocked until its own
+            // timeout, so a refusal was indistinguishable from a dead peer.
+            //
+            // THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered non_canonical_ecf
+            // for every cause until 0.8.2.24/.25 pinned them apart: a tag-policy
+            // violation keeps non_canonical_ecf, and everything else that never becomes
+            // an Envelope is `400 invalid_request`.
             //
             // The frame is still REJECTED — only enough is salvaged to correlate the
-            // response. If even the request_id is unrecoverable the frame is
-            // unattributable and silence is the only option left.
+            // response, and an unrecoverable id takes §4.11's uncorrelated best-effort
+            // form rather than the silence it used to take.
             dlog("[conn] undecodable frame")
-            rid := Wire salvageRequestId(payload)
-            if(rid != nil,
-                _sendFrame(conn, Envelope with(
-                    Wire makeResponse(rid, 400, Wire errorResult("non_canonical_ecf", nil)))))
+            _refusePreAdmission(conn, Wire salvageRequestId(payload), Wire refusalKind(payload))
             return)
         resp := peer dispatch(conn, env)
         if(resp != nil, _sendFrame(conn, resp))
@@ -118,6 +141,25 @@ Transport := Object clone do(
         if(wbuf size > maxWbuf, sock close; return false)
         sock asyncStreamWrite(wbuf, 0, wbuf size)   // removes written bytes from wbuf
         true
+    )
+
+    // Flush a connection's pending wbuf to completion, bounded.
+    //
+    // _sendFrame is deliberately NON-BLOCKING (A-IO-026): a partial write leaves the
+    // remainder buffered and it flushes at the top of the next poll pass. That is
+    // correct for every ordinary response and WRONG for a refusal we are about to close
+    // the connection over, because there is no next pass — the close discards the
+    // buffer and §4.11's frame never reaches the wire. This is the one place that has
+    // to wait, and it is bounded so a peer that has stopped reading cannot stall the
+    // single-threaded loop: the alternative to a bound is the cross-connection
+    // head-of-line stall A-IO-026 exists to prevent.
+    _flushUntilDrained := method(conn,
+        deadline := Date clone now asNumber + 1
+        while(conn at("wbuf") size > 0,
+            if(_flushWrites(conn) not, break)
+            if(Date clone now asNumber > deadline, break)
+            if(conn at("wbuf") size > 0, System sleep(0.0005))
+        )
     )
 
     // §6.11 reentry: write an outbound EXECUTE, then poll-read the SAME fd until
@@ -232,9 +274,55 @@ Transport := Object clone do(
             // whose peer stopped reading buffers here without stalling the loop
             if(_flushWrites(conn) not, continue)   // closed / over-cap → drop
             sock asyncStreamRead(conn at("rbuf"), 262144)
+            // §4.11's FRAMING-TRUNCATION ARM IS NOT REACHABLE ON THIS RUNTIME, and that
+            // is measured rather than assumed. A stream that ends MID-FRAME is a §4.11
+            // REFUSAL owed a coded frame; a clean EOF at a frame boundary is owed
+            // nothing. The distinction is knowable here -- `rbuf size > 0` is exactly a
+            // partial frame -- but there is no instant at which this peer both KNOWS the
+            // stream ended and CAN answer:
+            //
+            //   Io's Socket close(2)s the descriptor the moment a read returns zero.
+            //   Probed in this peer's own image (output/scratch/iohc/): on the poll pass
+            //   that observes the peer's FIN, `isOpen` is already false AND
+            //   `descriptorId` has been reset to -1. `Socket fromFd` on a saved
+            //   descriptor raises, and would in any case be a write to an fd the runtime
+            //   has closed and the kernel may have recycled onto another connection --
+            //   the use-after-close hazard this cohort has already paid for twice (`c`
+            //   and `zig`: a late write landing on a recycled descriptor is a
+            //   CROSS-CONNECTION write, not merely a lost response).
+            //
+            // So this is recorded as a substrate limit with its probe kept, NOT papered
+            // over with a timer on "a partial frame that has stopped growing" -- which
+            // would answer 400 to every slow sender and is a different bug. The OTHER
+            // framing arm (an over-limit length prefix) IS answerable, because it is
+            // detected with the connection fully intact, and it is answered below.
             if(sock isOpen not, continue)
             frames := drainFrames(conn)
-            if(conn at("overlimit") == true, sock close; continue)   // §4.10(a) over-limit
+            if(conn at("overlimit") == true,
+                // §4.11 (0.8.2.25) + §4.10(a) N14: an over-limit length prefix is a
+                // REFUSAL OWED A CODED FRAME, and this used to be a bare close —
+                // "closing with no coded frame", indistinguishable from a network fault
+                // and, on a multiplexed connection, destroying unrelated ADMITTED
+                // requests. N14 raised §4.10(a) SHOULD -> MUST: the condition is
+                // detected AT THE PREFIX with the connection intact and nothing spent,
+                // so the permissive mood had nothing to license.
+                //
+                // The stream is desynchronized — the declared body was never drained —
+                // so the frame goes out, is FLUSHED, and only then does the connection
+                // close. §4.11 makes the frame mandatory and leaves the close to us;
+                // closing is the only sound choice once the framing is lost, and it is a
+                // CHOICE rather than an alternative to answering. The explicit flush is
+                // load-bearing: _sendFrame is non-blocking by design (A-IO-026) and
+                // leaves any unaccepted bytes in wbuf, which a close on the next line
+                // would discard.
+                //
+                // §4.11's best-effort UNCORRELATED form: no request_id can be recovered
+                // from a frame whose body was never read, and guessing one would
+                // correlate the refusal to somebody else's in-flight request.
+                _refusePreAdmission(conn, nil, "payload_too_large")
+                _flushUntilDrained(conn)
+                sock close
+                continue)
             if(frames size > 0,
                 busy = true
                 conn atPut("idle", Date clone now asNumber)   // last-active wall-clock

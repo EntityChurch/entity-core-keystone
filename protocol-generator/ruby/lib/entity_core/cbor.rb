@@ -313,8 +313,14 @@ module EntityCore
         read_map(info, cur, depth + 1, keep_tags)
       when 6
         # Invariant N2 / ECF §6.3 — tags MUST be rejected anywhere in the input.
+        #
+        # TagRejectedError, not a bare NonCanonicalError: §4.11 (0.8.2.25) keeps
+        # `400 non_canonical_ecf` for THIS cause alone and rules it non-conformant on
+        # the framing arm, so the refusal classifier has to tell a tag from a
+        # non-minimal head. It is a NonCanonicalError subclass, so every existing
+        # rescue site is unchanged.
         unless keep_tags
-          raise NonCanonicalError, "CBOR tag (major type 6) is not permitted in ECF"
+          raise TagRejectedError, "CBOR tag (major type 6) is not permitted in ECF"
         end
 
         # Salvage path only (#decode_salvage): consume the tag head and yield the

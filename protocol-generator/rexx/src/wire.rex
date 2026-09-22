@@ -7,8 +7,11 @@
  * other root type is ignored server-side (the dispatcher returns '').
  */
 
-/* §1.6 / §4.10(a) 16-MiB frame bound is enforced in the ecnet C daemon (which owns
- * the de-framing), so the Rexx layer never sees an oversize frame — see ext/ecnet.c. */
+/* §1.6 / §4.10(a) 16-MiB frame bound is enforced in the ecnet C daemon (which owns the
+ * de-framing), so the Rexx layer never sees the BYTES of an oversize frame — but since
+ * 0.8.2.25 it does see the EVENT: §4.11 makes a pre-admission refusal owe a coded
+ * EXECUTE_RESPONSE, and only the Rexx side can build one, so ecnet emits `PREADM <id>
+ * <kind>` and Transport_HandleEvent answers it. See ext/ecnet.c. */
 
 Wire_NowMs: procedure expose EC.
   return Crypto_NowMs()
@@ -46,6 +49,58 @@ Wire_SalvageRequestId: procedure expose EC.
   if rid == '' then return ''
   if Tv_Tag(rid) \== 't' then return ''
   return Tv_Payload(rid)
+
+/* ── §4.11 pre-admission refusal classification (0.8.2.25) ──
+ *
+ * Wire_PreAdmissionRefusal <kind> -> "status code message", the triple §4.11 assigns a
+ * pre-admission failure's CAUSE. Parse it with `parse var r status code message`.
+ *
+ * "The frame obligation belongs to the class; the CODE belongs to the cause [MUST]" -- a
+ * single code for the class would answer an honest caller under the wrong reason and send
+ * them to the wrong layer.
+ *
+ *   connect-auth proof-of-possession      401 authentication_failed  (4.6/4.7 -- the
+ *                                            connect handler's, not here)
+ *   envelope over the configured maximum  413 payload_too_large      (4.10(a), N14)
+ *   resolution integrity (mis-keyed inc.) 400 hash_mismatch          (5.2a, 1.8)
+ *   framing / never becomes an Envelope   400 invalid_request        (4.7, 4.11)
+ *   root is neither EXECUTE nor E_R       400 invalid_request        (3.3, 4.11 -- in
+ *                                            Peer_Dispatch, not here)
+ *
+ * THE TAG ARM KEEPS non_canonical_ecf AND THAT IS DELIBERATE. 4.11 rules that code
+ * non-conformant "on the framing arm" and gives its reason in the same sentence:
+ * ENTITY-CBOR-ENCODING defines it for CBOR tag-policy violations specifically, which that
+ * document still MUSTs at decode time (6.3). The two rows are disjoint by CAUSE rather
+ * than in conflict. Everything else this decoder calls non-canonical (a non-minimal head,
+ * an indefinite length, mis-ordered keys) is genuinely "non-canonical CBOR that never
+ * becomes an Envelope".
+ *
+ * THE INPUT IS A STRUCTURED KIND, never the exception's prose. This peer has TWO unwind
+ * channels -- EC.!ERRKIND (the codec's Reject) and EC.!EXC (the peer layer's Throw) --
+ * and Wire_RefusalKind below reads them in that order, so a classifier can never be
+ * pointed at the wrong one. A classifier that recognised a cause by matching on a message
+ * would be one string edit away from silently re-collapsing the codes.
+ *
+ * The messages are a FIXED TABLE, never an internal detail string: a wire-visible string
+ * stays ASCII (two peers in this cohort have been killed at runtime by a non-ASCII byte in
+ * an encoded string, on two unrelated compilers), the internal details carry section
+ * signs, and nothing here echoes attacker-supplied bytes back. */
+Wire_PreAdmissionRefusal: procedure expose EC.
+  parse arg kind
+  if kind == 'payload_too_large' then return '413 payload_too_large inbound frame exceeds the configured maximum size'
+  if kind == 'included_key_mismatch' | kind == 'content_hash_mismatch' then ,
+    return '400 hash_mismatch an entity was addressed by a hash that does not bind to it'
+  if kind == 'TAG_REJECTED' then return '400 non_canonical_ecf CBOR tags are forbidden anywhere in an entity data field'
+  return '400 invalid_request frame did not decode into an envelope'
+
+/* Wire_RefusalKind -- the cause of the refusal that just unwound, read off whichever of
+ * the two unwind channels carries it. The codec's Reject (EC.!ERRKIND) is tested FIRST
+ * because the peer-layer Throw flag may still hold a kind from an earlier frame; both are
+ * cleared by their own entry points, and a decode that fails in the codec never reaches a
+ * Throw site. */
+Wire_RefusalKind: procedure expose EC.
+  if \EC.!OK then return EC.!ERRKIND
+  return EC.!EXC
 
 /* prefix `payload` with its 4-byte big-endian length (§1.6). */
 Wire_Frame: procedure

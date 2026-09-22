@@ -123,7 +123,24 @@ public final class Transport {
     static void readLoop(Peer peer, Conn conn, Io io) {
         try {
             while (true) {
-                byte[] payload = Wire.readFrame(io.in);
+                byte[] payload;
+                try {
+                    payload = Wire.readFrame(io.in);
+                } catch (FrameTooLargeException | TruncatedFrameException refusal) {
+                    // The stream is desynchronized on both REFUSABLE arms — an oversize
+                    // body was never drained, a truncated one never arrived — so the coded
+                    // frame goes out and THEN the connection closes. §4.11 makes the frame
+                    // mandatory and leaves the close to us; closing is the only sound
+                    // choice once the framing is lost, and it is a CHOICE rather than an
+                    // alternative to answering. An ordinary hangup is not a refusal and
+                    // gets nothing, which is what the `readInt` EOF arm separates.
+                    //
+                    // §4.11's best-effort UNCORRELATED form: no request_id can be
+                    // recovered from a frame whose body never arrived, and guessing one
+                    // would correlate the refusal to somebody else's in-flight request.
+                    refusePreAdmission(io, "", refusal);
+                    break;
+                }
                 if (payload == null) {
                     break;                                 // clean EOF
                 }
@@ -131,17 +148,42 @@ public final class Transport {
                 try {
                     env = Wire.envelopeOfFrame(payload);
                 } catch (RuntimeException | EntityCodecException bad) {
-                    // §6.3: "Rejection returns `400 non_canonical_ecf`" — the frame is
-                    // refused (correct), and that refusal MUST be a STATUS, not silence.
-                    // Skipping it satisfies only the first half of the sentence and leaves
-                    // the sender blocked until its own timeout, so a refusal is
-                    // indistinguishable from a dead peer. §4.9(c) deliver-or-signal says
-                    // the same from the other direction. Answer, then keep reading.
-                    rejectNonCanonical(io, payload);
+                    // A COMPLETE frame the decoder refused. The framing is intact, so we
+                    // answer and KEEP SERVING — and the refusal MUST be a STATUS, not
+                    // silence (§4.11). Skipping it satisfies only the first half of the
+                    // sentence and leaves the sender blocked until its own timeout, so a
+                    // refusal is indistinguishable from a dead peer. §4.9(c)
+                    // deliver-or-signal says the same from the other direction.
+                    //
+                    // THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered
+                    // `non_canonical_ecf` for every cause until 0.8.2.24/.25 pinned them
+                    // apart: a mis-keyed `included` entry is `400 hash_mismatch` (its
+                    // encoding is canonical — what is false is the claim the key makes), a
+                    // tag-policy violation keeps `non_canonical_ecf`, and everything else
+                    // that never becomes an Envelope is `400 invalid_request`.
+                    refusePreAdmission(io, salvageRequestId(payload), bad);
                     continue;
                 }
                 if (env.root().type().equals("system/protocol/execute/response")) {
                     io.routeResponse(env);
+                } else if (!env.root().type().equals("system/protocol/execute")) {
+                    // §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+                    // invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a
+                    // bare close — that is indistinguishable from a network fault."
+                    //
+                    // §3.3 read "the connection MUST be closed", assigning no code and
+                    // requiring no frame; this peer did something weaker still — `dispatch`
+                    // answers null for a non-EXECUTE root and the loop wrote NOTHING, which
+                    // is §4.11's silent-drop failure. §9.1's floor row that MANDATED the
+                    // bare close was REPLACED at the same revision (N18).
+                    //
+                    // The request_id is read best-effort: an arbitrary root type is under
+                    // no obligation to carry one, and §4.11 licenses the uncorrelated frame
+                    // exactly there. We do NOT close — on a multiplexed connection that
+                    // would cost every ADMITTED in-flight request its response.
+                    writeRefusal(io, orEmpty(env.root().text("request_id")), 400,
+                            "invalid_request",
+                            "root entity is neither EXECUTE nor EXECUTE_RESPONSE");
                 } else {
                     VTF.newThread(() -> {
                         Envelope resp;
@@ -173,37 +215,109 @@ public final class Transport {
 
     /** A running listener: the bound port plus a handle to stop it. */
     /**
-     * Answer a frame the strict decoder rejected with {@code 400 non_canonical_ecf}
-     * (§6.3), recovering ONLY the {@code request_id} so the sender can correlate it.
+     * §4.11's table (0.8.2.25): the {@code (status, code, message)} a pre-admission
+     * failure's CAUSE takes.
      *
-     * <p>The frame stays rejected: nothing is built from it, nothing is stored, and the
-     * tag is never interpreted — the salvage decode exists solely to read back the
-     * correlation key. The envelope and entity-wrapper shapes are fixed maps with no legal
-     * tag position, so a frame whose ONLY defect is a tag inside some entity's
-     * {@code data} still has a structurally sound root, which is exactly the case worth
-     * recovering (and the one CAP-6a's {@code >2^64} half arrives as — a bignum can only
-     * reach a peer as a major-type-6 tag). If even the request_id is unrecoverable there
-     * is nobody to answer, so the frame is dropped: the one case where silence is all that
-     * is available.
+     * <p><em>"The frame obligation belongs to the class; the CODE belongs to the cause
+     * {@code [MUST]}"</em> — a single code for the class would answer an honest caller
+     * under the wrong reason and send them to the wrong layer.
+     *
+     * <table>
+     * <caption>§4.11</caption>
+     * <tr><td>connect-auth proof-of-possession</td><td>401 authentication_failed (the
+     *     connect handler's, not this function's)</td></tr>
+     * <tr><td>envelope over the configured max</td><td>413 payload_too_large (§4.10(a), N14)</td></tr>
+     * <tr><td>resolution integrity (mis-keyed {@code included})</td><td>400 hash_mismatch (§5.2a, §1.8)</td></tr>
+     * <tr><td>framing / never becomes an Envelope</td><td>400 invalid_request (§4.7, §4.11)</td></tr>
+     * <tr><td>root is neither EXECUTE nor EXECUTE_RESPONSE</td><td>400 invalid_request (in the loop, not here)</td></tr>
+     * </table>
+     *
+     * <p>THE TAG ARM KEEPS {@code non_canonical_ecf} AND THAT IS DELIBERATE. §4.11 rules
+     * that code non-conformant <em>"on the framing arm"</em> and gives its reason in the
+     * same sentence: {@code ENTITY-CBOR-ENCODING} <em>"defines that code for CBOR
+     * tag-policy violations specifically"</em>, which that document still MUSTs at decode
+     * time (§6.3). The two rows are disjoint by CAUSE rather than in conflict: a tag in a
+     * DATA-FIELD position is the policy violation with its own code, while a tag in the
+     * fixed envelope or entity-wrapper maps is a structurally invalid frame — i.e. the
+     * framing arm. Everything else this decoder calls non-canonical (a non-minimal head, an
+     * indefinite length, mis-ordered keys) is genuinely "non-canonical CBOR that never
+     * becomes an Envelope" and takes {@code invalid_request}.
+     *
+     * <p>ORDER IS LOAD-BEARING: each pair below is subclass/superclass, so the specific arm
+     * must be tested first or it can never be reached.
+     *
+     * <p>The messages are a FIXED TABLE, never the internal exception text: a wire-visible
+     * string must stay ASCII (two peers in this cohort have been killed at runtime by a
+     * non-ASCII byte in an encoded string, on two unrelated compilers), and nothing here
+     * echoes attacker-supplied bytes back.
      */
-    private static void rejectNonCanonical(Io io, byte[] payload) {
-        String requestId;
+    static String[] preAdmissionRefusal(Throwable e) {
+        if (e instanceof FrameTooLargeException) {
+            return new String[] { "413", "payload_too_large",
+                    "inbound frame exceeds the configured maximum size" };
+        }
+        if (e instanceof HashMismatchException) {
+            return new String[] { "400", "hash_mismatch",
+                    "an entity was addressed by a hash that does not bind to it" };
+        }
+        if (e instanceof org.entitycore.protocol.codec.TagRejectedException) {
+            return new String[] { "400", "non_canonical_ecf",
+                    "CBOR tags are forbidden anywhere in an entity data field" };
+        }
+        return new String[] { "400", "invalid_request", "frame did not decode into an envelope" };
+    }
+
+    /**
+     * Recover ONLY the {@code request_id} from a frame the strict decoder rejected, so the
+     * refusal can be delivered CORRELATED rather than as §4.11's uncorrelated best-effort
+     * frame. {@code ""} when nothing is recoverable.
+     *
+     * <p>The frame stays rejected: nothing is built from it, nothing is stored, and a tag
+     * is never interpreted — the salvage decode exists solely to read back the correlation
+     * key. The envelope and entity-wrapper shapes are fixed maps with no legal tag
+     * position, so a frame whose ONLY defect is a tag inside some entity's {@code data}
+     * still has a structurally sound root, which is exactly the case worth recovering (and
+     * the one CAP-6a's {@code >2^64} half arrives as — a bignum can only reach a peer as a
+     * major-type-6 tag).
+     */
+    private static String salvageRequestId(byte[] payload) {
         try {
             EcfValue v = CanonicalCbor.decodeSalvage(payload);
             EcfValue.Map root = Cbor.asMap(Cbor.asMap(v).get("root"));
             EcfValue rid = Cbor.asMap(root.get("data")).get("request_id");
-            if (!(rid instanceof EcfValue.Text t)) {
-                return;
-            }
-            requestId = t.value();
+            return (rid instanceof EcfValue.Text t) ? t.value() : "";
         } catch (RuntimeException | EntityCodecException bad) {
-            return; // no correlatable request_id — nothing to answer
+            return "";
         }
+    }
+
+    /**
+     * Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+     * refused BEFORE it becomes an admitted request.
+     *
+     * <p><em>"A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE
+     * on the wire {@code [MUST]} — correlated by {@code request_id} where the id is
+     * available, and otherwise as a best-effort coded frame carrying no correlation."</em>
+     *
+     * <p>§4.9(c)'s deliver-or-signal rule is scoped to <em>"every request the peer
+     * ADMITS"</em> and therefore reaches none of these, which is why §4.11 exists. Both of
+     * the non-conformant behaviours it names separately were present on this peer:
+     * DROPPING the frame (the un-salvageable decode arm and the non-EXECUTE root, <em>"the
+     * weaker of the two precisely because nothing surfaces it"</em>) and CLOSING with no
+     * coded frame (the oversize and truncated arms).
+     *
+     * <p>AN EMPTY {@code requestId} IS THE BEST-EFFORT FORM, not a bug: it is what the
+     * section prescribes where no id can be recovered.
+     */
+    private static void refusePreAdmission(Io io, String requestId, Throwable cause) {
+        String[] r = preAdmissionRefusal(cause);
+        writeRefusal(io, requestId, Integer.parseInt(r[0]), r[1], r[2]);
+    }
+
+    private static void writeRefusal(Io io, String requestId, int status, String code, String message) {
         try {
-            io.writeFramed(new Envelope(Wire.makeResponse(requestId, 400,
-                    Wire.errorResult("non_canonical_ecf",
-                            "frame is not canonical ECF (section 6.3): CBOR tags are "
-                                    + "forbidden anywhere in an entity"))));
+            io.writeFramed(new Envelope(Wire.makeResponse(requestId, status,
+                    Wire.errorResult(code, message))));
         } catch (RuntimeException | EntityCodecException | EntityTransportException ignore) {
             // A write failure here is a dead socket, not a protocol decision; the read
             // loop's own error handling ends the connection on the next iteration.

@@ -153,8 +153,11 @@ static char *canon_match(const char *frame, const char *path)
 /* AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED in
  * an include (covers nothing -> the grant grants nothing) and fail-OPEN in an exclude
  * (carves out nothing), so the reading is chosen where the POSITION is known and
- * matches_pattern stays uniform over its operands. The guard sits outside the
- * scope-type dispatch, transcribing §5.2's loop literally. */
+ * matches_pattern stays uniform over its operands.
+ *
+ * PATH-SCOPE ONLY (0.8.2.24, N2/N3) — every caller must gate this on the dimension's
+ * scope type. The two live callers do: matches_scope tests `kind == SCOPE_PATH`, and
+ * check_resource_scope is the RESOURCES dimension, path-scope by definition. */
 static bool exclude_is_unmatchable(const char *frame, const ec_value *excl)
 {
     if (!excl || excl->kind != EC_ARRAY) {
@@ -290,7 +293,24 @@ typedef enum { SCOPE_ID, SCOPE_PATH } scope_kind;
 
 static bool matches_scope(const char *local_peer, const char *value, scope s, scope_kind kind)
 {
-    if (exclude_is_unmatchable(local_peer, s.excl)) {
+    /* SCOPED TO PATH-SCOPE (0.8.2.24, N2/N3). §5.2's exclude loop now tests the
+     * sentinel INSIDE `if dimension_type == "system/capability/path-scope"`, and §5.4
+     * says the same from the other side: "a capability carrying an unmatchable
+     * PATH-SCOPE pattern is INVALID ... It does NOT reach `operations` or `peers`
+     * [MUST]". This guard was UNCONDITIONAL until 0.8.2.24 — which was the text at the
+     * time (F82 was our own ask, and the grant created this work) — and under it an
+     * ordinary namespaced operation name (a bare star, a slash, then "apply")
+     * path-canonicalizes to the
+     * sentinel and DENIES THE WHOLE DIMENSION. Over-denial, invisible on well-formed
+     * grants.
+     *
+     * The two id-scope dimensions reach covered_id's literal arm below unguarded,
+     * which is correct: under §3.6's id-scope grammar every non-"*" pattern is a
+     * literal and a literal is never structurally unmatchable, so there is nothing
+     * here for the sentinel to detect. §5.4 says so outright and leaves the id-scope
+     * form of the carves-out-nothing hazard deliberately open rather than minting a
+     * second sentinel for it — a scope boundary, not an omission. */
+    if (kind == SCOPE_PATH && exclude_is_unmatchable(local_peer, s.excl)) {
         return false;                /* 0.8.2.21 — deny, do not carve out nothing */
     }
     if (kind == SCOPE_ID) {
@@ -357,6 +377,168 @@ bool ec_cap_check_resource_scope(const char *local_peer, const char *granter_pee
         }
     }
     return true;
+}
+
+/* ── §5.2 effective targets and §6.3 check_path_permission ──────────────────── */
+
+/* effective_targets derives §5.2's effective target list (0.8.2.20): the caller's own
+ * `resource.exclude` removes entries from the request BEFORE anything else looks at it.
+ *
+ * The survivors are BORROWED, in the caller's OWN SPELLING, not canonicalized —
+ * 0.8.2.21 is explicit that effective_targets yields raw survivors, and the distinction
+ * is load-bearing here because the value flows on to ec_store_get_at, which
+ * canonicalizes for itself. The `len` beside each pointer is the VALUE-NODE byte length,
+ * not strlen: a §1.4 R1 embedded NUL is invisible to the C-string view and path_flex_ok
+ * needs both to see it.
+ *
+ * `had_resource` says whether a `resource` carrying a `targets` key was present at all.
+ * An ABSENT resource and a resource whose every target was excluded are different inputs
+ * to §3.3, and for a resource-OPTIONAL operation 0.8.2.24 (N7) makes them DIFFERENT
+ * REQUESTS with different answers rather than merely different inputs to one.
+ *
+ * THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES [MUST] (0.8.2.25, N11): "where an
+ * implementation projects resource.targets onto the effective set ahead of the handler,
+ * that projection MUST NOT be lossy about its own emptiness — narrow when narrowing
+ * leaves something, and retain the raw pair when narrowing would empty it." A function
+ * returning only a list cannot satisfy that: collapsing [qA] exclude [qA] to [] deletes
+ * the two-empties discriminator before any handler can read it, and the handler's
+ * refusal arm becomes dead code only a WIRE drive can detect.
+ *
+ * This peer has exactly ONE narrowing seam — this function, called by the tree handler.
+ * §6.5's dispatch chain does not project: ec_cap_check_permission reads `resource` for
+ * itself. So there is no second door to keep in step, and adding a projection at
+ * dispatch would create one.
+ *
+ * A PRESENT-BUT-ILL-TYPED `targets` is PRESENT: a non-array yields an empty survivor
+ * list rather than "absent", so {"targets": 42} answers the present-but-empty
+ * disposition and never the WIDER absent-case one. That is N11's own defect one field
+ * over, and it is the cell the two vanguards initially disagreed on. */
+ec_status ec_cap_effective_targets(const char *local_peer, const ec_entity *exec,
+                                   ec_effective *out)
+{
+    out->items = NULL;
+    out->len = 0;
+    out->had_resource = false;
+    const ec_value *r = ec_ent_map_field(exec, "resource");
+    if (!r || r->kind != EC_MAP) {
+        return EC_OK;
+    }
+    const ec_value *targets = ec_v_get(r, "targets");
+    if (!targets) {
+        return EC_OK;                /* no `targets` key at all — the ABSENT case */
+    }
+    out->had_resource = true;
+    if (targets->kind != EC_ARRAY || targets->as.arr.len == 0) {
+        return EC_OK;                /* present-but-empty / ill-typed: NOT absent */
+    }
+    const ec_value *caller_excl = ec_v_get(r, "exclude");
+    ec_tgt *items = calloc(targets->as.arr.len, sizeof(*items));
+    if (!items) {
+        return EC_ERR_OOM;
+    }
+    size_t n = 0;
+    for (size_t i = 0; i < targets->as.arr.len; i++) {
+        const ec_value *t = targets->as.arr.items[i];
+        if (!t || t->kind != EC_TEXT) {
+            continue;
+        }
+        const char *raw = (const char *)t->as.bytes.p;
+        char *ct = NULL;
+        if (ec_canonicalize(local_peer, raw, &ct) != EC_OK) {
+            /* ec_canonicalize answers the sentinel rather than failing for the two
+             * reserved forms; a hard failure here is OOM, and dropping the target
+             * would be the lossy narrowing N11 forbids — keep it and let the ladder's
+             * own path validation refuse it. */
+            items[n].s = raw;
+            items[n].len = t->as.bytes.len;
+            n++;
+            continue;
+        }
+        /* The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4's table
+         * rules it separately from the grant arm): ec_canonicalize answers
+         * EC_NEVER_MATCH and matches_pattern then answers false, so the target simply
+         * SURVIVES. That asymmetry is 0.8.2.21's whole point and it is INHERITED from
+         * `covered` here, never restated. */
+        bool dropped = (caller_excl && caller_excl->kind == EC_ARRAY)
+                       && covered(local_peer, caller_excl, ct);
+        free(ct);
+        if (!dropped) {
+            items[n].s = raw;
+            items[n].len = t->as.bytes.len;
+            n++;
+        }
+    }
+    out->items = items;
+    out->len = n;
+    return EC_OK;
+}
+
+void ec_cap_effective_free(ec_effective *e)
+{
+    free(e->items);
+    e->items = NULL;
+    e->len = 0;
+}
+
+/* ec_cap_check_path_permission is §6.3's handler-level path check.
+ *
+ * IT IS NOT A SECONDARY CHECK (§6.3, 0.8.2.20). It is the enforcement wherever the
+ * subject is derived after dispatch, and the dispatch-level check can be made VACUOUS
+ * by caller-controlled input: a caller who excludes the one target its capability does
+ * not cover removes that target from check_permission's view entirely, and a handler
+ * that then acts on it has authorized nothing.
+ *
+ * THREE DIMENSIONS, NOT FOUR. `peers` is not consulted — the path is local by
+ * construction at this point (§1.4's inbound rule refuses a foreign namespace at §6.5
+ * step 3, before any handler runs), and §6.3's signature names only handlers,
+ * operations and resources.
+ *
+ * THE FRAME IS local_peer, NOT THE GRANTER, and that is the spec's own signature rather
+ * than a choice: §6.3's block reads `matches_scope(canonical_path, grant.resources,
+ * "path-scope", local_peer_id)` — there is no granter parameter to pass. §5.5a governs
+ * chain ATTENUATION, where the subject is a PATTERN compared against a parent's
+ * pattern; this call site compares a CONCRETE LOCAL PATH the handler is about to touch.
+ * Adding a frame here is the over-scoping defect this cohort has recorded three times.
+ *
+ * There is no caller-exclude set at this call site: the subject is a single concrete
+ * path and the caller's exclusions have already been applied in deriving it. Every
+ * grant exclude covering the subject therefore denies — which matches_scope already
+ * implements, including 0.8.2.21's sentinel rule, so this function is three calls to it
+ * and nothing else. An empty `resources.include` is a legal grant shape (§5.2: handlers
+ * that touch no tree paths) and DENIES every path here, which is what that note says it
+ * should: `covered` over a NULL/empty include list is false. */
+bool ec_cap_check_path_permission(const char *local_peer, const char *operation,
+                                  const char *path, const ec_entity *token,
+                                  const char *handler_pattern)
+{
+    const ec_value *grants = token ? token_grants(token) : NULL;
+    if (!grants) {
+        return false;
+    }
+    /* ec_canonicalize is TOTAL and may answer EC_NEVER_MATCH, which matches no grant
+     * (§5.4) — so a malformed path falls through to DENY rather than being matched
+     * against anything. matches_scope canonicalizes its `value` itself, and an already
+     * absolute path (including the sentinel) passes through unchanged. */
+    for (size_t i = 0; i < grants->as.arr.len; i++) {
+        const ec_value *g = grants->as.arr.items[i];
+        if (!g || g->kind != EC_MAP) {
+            continue;
+        }
+        if (!matches_scope(local_peer, handler_pattern,
+                           parse_scope(grant_dim(g, "handlers")), SCOPE_PATH)) {
+            continue;
+        }
+        if (!matches_scope(local_peer, operation,
+                           parse_scope(grant_dim(g, "operations")), SCOPE_ID)) {
+            continue;
+        }
+        if (!matches_scope(local_peer, path,
+                           parse_scope(grant_dim(g, "resources")), SCOPE_PATH)) {
+            continue;
+        }
+        return true;
+    }
+    return false;
 }
 
 /* ── §6.2 CAP-6a: unrepresentable temporal fields on INGEST ──────────────────── */
@@ -489,19 +671,46 @@ ec_verdict ec_cap_check_permission(const char *local_peer, const char *granter_p
 
 /* ── §5.6 attenuation (scope subset) ────────────────────────────────────────── */
 
+/* One side of a §5.5a subset comparison: does any pattern in `pats` (read under
+ * `frame`) cover `value`? Dispatches on the dimension's SCOPE KIND — see scope_subset. */
+static bool subset_covered(const char *frame, const ec_value *pats, const char *value,
+                           scope_kind kind)
+{
+    return kind == SCOPE_ID ? covered_id(pats, value) : covered(frame, pats, value);
+}
+
+/* §5.5a subset check: every child include must be covered by some parent include, and
+ * every parent exclude must be inherited by some child exclude.
+ *
+ * TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16; `entity-core-formalization` K-7).
+ * §3.6's id-scope grammar binds the scope TYPE, not one function — "An implementation
+ * on the canonicalizing reading is non-conformant and MUST adopt the literal matcher"
+ * — so the rule F40 landed on matches_scope reaches here too, with delegation-chain
+ * WIDENING named as the reason: on the canonicalizing reading "/tree/get" is covered by
+ * "*" in one direction and "*\/apply" is not, so a child grant can come out WIDER than
+ * its parent. `lean`'s differential put it at 2 of 64 include pairs and 2 of 64 exclude
+ * pairs, fail-closed, with a 16-pair control alphabet reporting 0 — which is why every
+ * hand-tried example missed it.
+ *
+ * `kind` has NO DEFAULT and is named at every call site, because a default is how the
+ * next dimension inherits the wrong matcher silently — the original F40 defect.
+ * handlers/resources -> SCOPE_PATH; operations/peers -> SCOPE_ID. The per-link granter
+ * frames are meaningless on the id arm (an id pattern is never canonicalized) and are
+ * simply unread there rather than being a second parameter to get wrong. */
 static bool scope_subset(const char *child_peer, const char *parent_peer,
-                         scope child, scope parent)
+                         scope child, scope parent, scope_kind kind)
 {
     /* every child include is covered by some parent include */
     if (child.incl) {
         for (size_t i = 0; i < child.incl->as.arr.len; i++) {
             const ec_value *cp = child.incl->as.arr.items[i];
             if (!cp || cp->kind != EC_TEXT) { continue; }
+            const char *raw = (const char *)cp->as.bytes.p;
             char *cc = NULL;
-            if (ec_canonicalize(child_peer, (const char *)cp->as.bytes.p, &cc) != EC_OK) {
+            if (kind == SCOPE_PATH && ec_canonicalize(child_peer, raw, &cc) != EC_OK) {
                 return false;
             }
-            bool some = covered(parent_peer, parent.incl, cc);
+            bool some = subset_covered(parent_peer, parent.incl, cc ? cc : raw, kind);
             free(cc);
             if (!some) {
                 return false;
@@ -513,11 +722,12 @@ static bool scope_subset(const char *child_peer, const char *parent_peer,
         for (size_t i = 0; i < parent.excl->as.arr.len; i++) {
             const ec_value *pe = parent.excl->as.arr.items[i];
             if (!pe || pe->kind != EC_TEXT) { continue; }
+            const char *raw = (const char *)pe->as.bytes.p;
             char *cpe = NULL;
-            if (ec_canonicalize(parent_peer, (const char *)pe->as.bytes.p, &cpe) != EC_OK) {
+            if (kind == SCOPE_PATH && ec_canonicalize(parent_peer, raw, &cpe) != EC_OK) {
                 return false;
             }
-            bool some = covered(child_peer, child.excl, cpe);
+            bool some = subset_covered(child_peer, child.excl, cpe ? cpe : raw, kind);
             free(cpe);
             if (!some) {
                 return false;
@@ -531,26 +741,29 @@ bool ec_cap_grant_subset(const char *local_peer, const char *child_peer,
                          const char *parent_peer,
                          const ec_value *child_grant, const ec_value *parent_grant)
 {
+    /* The scope KIND is a property of the DIMENSION, named here, never defaulted
+     * (F50 / 0.8.2.16). Only RESOURCES takes the §5.5a per-link granter frames;
+     * handlers stays local, and the two id dimensions do not canonicalize at all. */
     if (!scope_subset(local_peer, local_peer,
                       parse_scope(grant_dim(child_grant, "handlers")),
-                      parse_scope(grant_dim(parent_grant, "handlers")))) {
+                      parse_scope(grant_dim(parent_grant, "handlers")), SCOPE_PATH)) {
         return false;
     }
     if (!scope_subset(local_peer, local_peer,
                       parse_scope(grant_dim(child_grant, "operations")),
-                      parse_scope(grant_dim(parent_grant, "operations")))) {
+                      parse_scope(grant_dim(parent_grant, "operations")), SCOPE_ID)) {
         return false;
     }
     if (!scope_subset(child_peer, parent_peer,
                       parse_scope(grant_dim(child_grant, "resources")),
-                      parse_scope(grant_dim(parent_grant, "resources")))) {
+                      parse_scope(grant_dim(parent_grant, "resources")), SCOPE_PATH)) {
         return false;
     }
     /* peers default = [local] when absent */
     const ec_value *cp = grant_dim(child_grant, "peers");
     const ec_value *pp = grant_dim(parent_grant, "peers");
     if (cp && pp) {
-        return scope_subset(local_peer, local_peer, parse_scope(cp), parse_scope(pp));
+        return scope_subset(local_peer, local_peer, parse_scope(cp), parse_scope(pp), SCOPE_ID);
     }
     if (!cp && !pp) {
         return true;            /* both default [local] → subset */

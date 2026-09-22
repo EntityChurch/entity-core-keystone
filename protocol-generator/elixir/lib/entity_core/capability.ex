@@ -167,19 +167,39 @@ defmodule EntityCore.Capability do
   # §5.2 typed scope match. `kind` is `:id` (operations, peers) or `:path` (handlers,
   # resources) and has no default — every call site names its dimension, so a new one
   # cannot silently inherit the wrong matcher, which is exactly the F40 defect.
-  # AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
-  # fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
-  # fail-OPEN in an exclude (carves out nothing -> the grant is SILENTLY WIDER than
-  # its author wrote): same value, same matcher, opposite safety direction, so the
-  # reading is chosen where the POSITION is known and matches_pattern stays uniform
-  # over its operands. The guard sits outside the scope-type dispatch, transcribing
-  # §5.2's loop literally.
+  #
+  # AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
+  # in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an
+  # exclude (carves out nothing -> the grant is SILENTLY WIDER than its author wrote):
+  # same value, same matcher, opposite safety direction, so the reading is chosen where
+  # the POSITION is known and matches_pattern stays uniform over its operands.
+  #
+  # ASK THIS ONLY OF A PATH-SCOPE DIMENSION (0.8.2.24, N2/N3). `@never_match` is a §5.4
+  # PATH-canonicalization sentinel; an id-scope pattern is a literal identifier that
+  # §5.2's own id-scope arm forbids putting through the §5.4 transforms. This guard used
+  # to sit OUTSIDE the type dispatch, transcribing §5.2's loop as it read before that
+  # loop grew one — which ran an id pattern through those transforms purely to classify
+  # it and then DENIED THE WHOLE DIMENSION on a property unrelated to whether the exclude
+  # carves anything out. An `operations` exclude of `*/apply` — an ordinary namespaced
+  # operation name, and a literal that matches nothing under the id-scope grammar —
+  # canonicalized to the sentinel and denied every operation. Over-denial, and invisible
+  # on any well-formed grant.
+  #
+  # §5.4 says outright that the rule *"does NOT reach `operations` or `peers` `[MUST]`"*,
+  # and it does NOT leave the id-scope dimensions unprotected by oversight: under the
+  # id-scope grammar every non-`*` pattern is a literal and a literal is never
+  # structurally unmatchable, so there is nothing here for this sentinel to detect. A
+  # scope boundary, not an omission.
   defp exclude_unmatchable?(frame, excl) do
     Enum.any?(excl, fn p -> canonicalize(frame, p) == @never_match end)
   end
 
   defp matches_scope(local_peer, value, s, kind) do
-    if exclude_unmatchable?(local_peer, s.excl) do
+    # SCOPED TO PATH-SCOPE (0.8.2.24). §5.2's exclude loop tests the sentinel INSIDE
+    # `if dimension_type == "system/capability/path-scope"`, and §5.4 scopes its own
+    # invalid-capability rule the same way. `kind` already names the dimension here, so
+    # the scoping costs one term and cannot be got wrong by a new call site.
+    if kind == :path and exclude_unmatchable?(local_peer, s.excl) do
       false
     else
       do_matches_scope(local_peer, value, s, kind)
@@ -220,6 +240,11 @@ defmodule EntityCore.Capability do
   # check_resource_scope (§5.4 + §PR-8): the GRANT's resource patterns canonicalize
   # against the GRANTER frame; the request target + caller-supplied exclude stay
   # on the local/request frame.
+  # The grant-exclude sentinel here is UNGUARDED ON PURPOSE, unlike `matches_scope`'s
+  # (0.8.2.24): `s` is ALWAYS the RESOURCES dimension, which §5.2 fixes as path-scope,
+  # so the type test that call site performs would be a constant here. The
+  # single-dimension signature is what makes that checkable — a granter frame reaching
+  # an id-scope call site is the defect, and this function cannot be one.
   defp check_resource_scope(local_peer, granter_peer, resource, s) do
     targets = text_list(Model.map_get(resource, "targets"))
     caller_excl = text_list(Model.map_get(resource, "exclude"))
@@ -287,6 +312,105 @@ defmodule EntityCore.Capability do
     if Enum.any?(grants_of_token(token), grant_ok), do: :allow, else: :deny
   end
 
+  # ── §3.3 effective targets + §6.3 handler-level path check ────────────────
+
+  @doc """
+  §5.2's effective target list (0.8.2.20): the caller's own `resource.exclude` removes
+  entries from `resource.targets` BEFORE anything else looks at the request.
+
+  The survivors are returned in the caller's OWN SPELLING, not canonicalized —
+  0.8.2.21 is explicit that `effective_targets` yields raw survivors, and the
+  distinction is load-bearing because the value flows on to the tree lookup, which
+  canonicalizes for itself.
+
+  Returns `nil` when the EXECUTE carries no `resource` at all, which is a different
+  input from "a resource whose every target was excluded" — and for a resource-OPTIONAL
+  operation 0.8.2.24 (N7) makes them DIFFERENT REQUESTS with different answers, not
+  merely different inputs to one disposition.
+
+  `nil`-vs-`[]` IS THE NON-LOSSY PROJECTION §3.3 REQUIRES `[MUST]` (0.8.2.25, N11):
+  *"where an implementation projects `resource.targets` onto the effective set ahead of
+  the handler, that projection MUST NOT be lossy about its own emptiness — narrow when
+  narrowing leaves something, and retain the raw pair when narrowing would empty it."*
+  A function returning only a list cannot satisfy that: collapsing `[qA] exclude [qA]`
+  to `[]` would delete the two-empties discriminator before any handler could read it,
+  and the handler's refusal arm becomes dead code that only a WIRE drive can detect.
+  This peer carries the discriminator as the `nil` rather than as a second return
+  value — the same property, spelled the way this substrate spells "absent".
+
+  *"Every seam that narrows is exempted alike, inbound-wire and in-process
+  sub-dispatch, or one request receives two different answers according to which door
+  it arrived through."* This peer has exactly ONE narrowing seam — this function,
+  called by the tree handler — and §6.5's dispatch chain does not project:
+  `dispatch_request` passes `exec` through untouched and `check_permission` reads
+  `resource` for itself. So there is no second door to keep in step, and adding a
+  projection at dispatch would create one.
+
+  A PRESENT-BUT-ILL-TYPED `targets` IS **PRESENT**, with an empty survivor list.
+  Reporting it absent would serve the WIDER absent-case answer to a request that named
+  a resource, which is N11's own defect one field over.
+
+  The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4 rules it
+  separately from the grant arm) and that is INHERITED here rather than restated:
+  `canonicalize` answers the sentinel, `matches_pattern` then answers false, and the
+  target simply survives.
+  """
+  @spec effective_targets(String.t(), EntityCore.Entity.t()) :: [String.t()] | nil
+  def effective_targets(local_peer, exec) do
+    with r when is_map(r) <- Model.field(exec, "resource"),
+         true <- Map.has_key?(r, "targets") do
+      targets = if is_list(Map.get(r, "targets")), do: Map.get(r, "targets"), else: []
+      excl = text_list(Map.get(r, "exclude"))
+
+      Enum.filter(targets, fn t ->
+        is_binary(t) and
+          not Enum.any?(excl, fn x ->
+            matches_pattern(canonicalize(local_peer, t), canonicalize(local_peer, x))
+          end)
+      end)
+    else
+      _ -> nil
+    end
+  end
+
+  @doc """
+  §6.3's handler-level path check: may the caller access `path` AS A TREE PATH, under
+  `handler_pattern`, with `token`?
+
+  IT IS NOT A SECONDARY CHECK (§6.3, 0.8.2.20). It is the enforcement wherever the
+  subject is derived after dispatch, and the dispatch-level check can be made VACUOUS
+  by caller-controlled input: a caller who excludes the one target its capability does
+  not cover removes that target from `check_permission`'s view entirely, and a handler
+  that then acts on it has authorized nothing.
+
+  THREE DIMENSIONS, NOT FOUR. `peers` is not consulted — the path is local by
+  construction at this point (§1.4's inbound rule refuses a foreign namespace at §6.5
+  step 3, before any handler runs), and §6.3's signature names only handlers,
+  operations and resources.
+
+  THE FRAME IS THE LOCAL PEER, NOT THE GRANTER, and that is the spec's own signature
+  rather than a choice: §6.3's block reads
+  `matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id)` — there
+  is no granter parameter to pass. §5.5a governs chain ATTENUATION, where the subject
+  is a pattern compared against a parent's pattern; this call site compares a CONCRETE
+  local path the handler is about to touch.
+
+  Scope types: `handlers` -> path-scope, `operations` -> id-scope, `resources` ->
+  path-scope. An empty `resources.include` is a legal grant shape (§5.2: handlers that
+  touch no tree paths) and DENIES every path here, which is what that note says it
+  should. A malformed path canonicalizes to the sentinel, which matches no grant, so it
+  falls through to DENY rather than being matched against anything.
+  """
+  @spec check_path_permission(String.t(), String.t(), String.t(), EntityCore.Entity.t(), String.t()) ::
+          boolean()
+  def check_path_permission(local_peer, operation, path, token, handler_pattern) do
+    Enum.any?(grants_of_token(token), fn g ->
+      matches_scope(local_peer, handler_pattern, g.handlers, :path) and
+        matches_scope(local_peer, operation, g.operations, :id) and
+        matches_scope(local_peer, path, g.resources, :path)
+    end)
+  end
+
   # ── §5.5 / §5.6 chain verification + attenuation ──────────────────────────
 
   defp now_ms, do: System.system_time(:millisecond)
@@ -327,27 +451,53 @@ defmodule EntityCore.Capability do
     end
   end
 
-  # scope_subset (§5.6 + §5.5a): every child include covered by parent include;
-  # child inherits all parent excludes. Each side canonicalizes against its own
-  # per-link granter frame.
-  defp scope_subset(child_peer, parent_peer, child, parent) do
+  # scope_subset (§5.6 + §5.5a): every child include covered by parent include; child
+  # inherits all parent excludes. On a PATH dimension each side canonicalizes against
+  # its own per-link granter frame.
+  #
+  # TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16; `entity-core-formalization` K-7).
+  # §3.6's id-scope grammar binds the scope TYPE, not one function — *"An
+  # implementation on the canonicalizing reading is non-conformant and MUST adopt the
+  # literal matcher"* — so the rule F40 landed on `matches_scope` reaches here too,
+  # with delegation-chain WIDENING named as the reason: on the canonicalizing reading a
+  # bare id include reads as covered by a path-form parent pattern it does not literally
+  # match, and a child grant comes out wider than its parent. `lean`'s differential put
+  # it at 2 of 64 include pairs and 2 of 64 exclude pairs, fail-closed, with a 16-pair
+  # control alphabet reporting 0 — which is why every hand-tried example missed it.
+  #
+  # `kind` has NO DEFAULT and is named at every call site, because a default is how the
+  # next dimension inherits the wrong matcher silently — the original F40 defect. The
+  # per-link granter frames are meaningless on the id arm (an id pattern is never
+  # canonicalized) and are simply unread there.
+  defp scope_subset(child_peer, parent_peer, child, parent, kind) do
+    frame = fn pattern, peer -> if kind == :path, do: canonicalize(peer, pattern), else: pattern end
+
+    covers = fn pattern, value ->
+      if kind == :path,
+        do: matches_pattern(value, pattern),
+        else: matches_id_pattern(value, pattern)
+    end
+
     Enum.all?(child.incl, fn cp ->
-      cc = canonicalize(child_peer, cp)
-      Enum.any?(parent.incl, fn pp -> matches_pattern(cc, canonicalize(parent_peer, pp)) end)
+      cc = frame.(cp, child_peer)
+      Enum.any?(parent.incl, fn pp -> covers.(frame.(pp, parent_peer), cc) end)
     end) and
       Enum.all?(parent.excl, fn pe ->
-        cpe = canonicalize(parent_peer, pe)
-        Enum.any?(child.excl, fn ce -> matches_pattern(cpe, canonicalize(child_peer, ce)) end)
+        cpe = frame.(pe, parent_peer)
+        Enum.any?(child.excl, fn ce -> covers.(frame.(ce, child_peer), cpe) end)
       end)
   end
 
   defp grant_subset(local_peer, child_peer, parent_peer, child, parent) do
-    scope_subset(local_peer, local_peer, child.handlers, parent.handlers) and
-      scope_subset(local_peer, local_peer, child.operations, parent.operations) and
-      scope_subset(child_peer, parent_peer, child.resources, parent.resources) and
+    # §5.5a: only the RESOURCE dimension uses the per-link granter frames; the other
+    # dimensions stay on the local frame. The scope KIND is a property of the DIMENSION
+    # and is named at every call site, never defaulted (F50 / 0.8.2.16).
+    scope_subset(local_peer, local_peer, child.handlers, parent.handlers, :path) and
+      scope_subset(local_peer, local_peer, child.operations, parent.operations, :id) and
+      scope_subset(child_peer, parent_peer, child.resources, parent.resources, :path) and
       (cp = child.peers || %{incl: [local_peer], excl: []}
        pp = parent.peers || %{incl: [local_peer], excl: []}
-       scope_subset(local_peer, local_peer, cp, pp))
+       scope_subset(local_peer, local_peer, cp, pp, :id))
   end
 
   @doc "§6.2 mint-time subset check (capability-handler surface, local frame)."

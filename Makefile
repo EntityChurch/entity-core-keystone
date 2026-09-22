@@ -254,6 +254,15 @@ lint:
 	@python3 tools/fold-reference-peer.py --check
 	@echo "lint: gating skip provenance — every SKIP explained (read-only)…"
 	@python3 tools/skip-provenance-gate.py
+	@echo "lint: gating ASCII-only wire-visible strings (read-only)…"
+	@# AGENTS.md ratified this discipline on TWO crashes — Oz's compiled string constant
+	@# corrupted by a section sign, and Io's own UTF-8 validator rejecting byte-correct
+	@# UTF-8, which on a single-threaded peer killed the process and cascaded 104 FAILs
+	@# from ONE string — and then recorded that no enforcement point existed, writing out
+	@# the grep it would take. It stayed unwritten for four weeks. The first run found 20
+	@# live violations across 16 peers, INCLUDING io, one of the two peers whose crash
+	@# established the rule. Regression suite: `python3 tools/ascii-wire-gate.py --self-test`.
+	@python3 tools/ascii-wire-gate.py
 	@echo "lint: running every gate's OWN regression suite (read-only)…"
 	@# THE SUITES THAT PROVE THESE GATES WORK ARE NOW RUN, and until 2026-09-08 they were
 	@# not: `make lint` invoked each gate and never its `--self-test`, so a plant that
@@ -279,7 +288,8 @@ lint:
 	@python3 tools/kind-c-gate.py --self-test >/dev/null 2>&1
 	@python3 tools/skip-provenance-gate.py --self-test >/dev/null 2>&1
 	@python3 tools/keystone-spec-gate.py --self-test >/dev/null 2>&1
-	@echo "lint: 5 gate self-tests OK (harness, coherence, kind-c, skip-provenance, keystone-spec)"
+	@python3 tools/ascii-wire-gate.py --self-test >/dev/null 2>&1
+	@echo "lint: 6 gate self-tests OK (harness, coherence, kind-c, skip-provenance, keystone-spec, ascii-wire)"
 	@echo "lint: gating the Kind C publication boundary (read-only)…"
 	@# The tenth gate, and the newest kind of thing in the tree. Kind C is a check
 	@# THIS repo authors, from the spec, at the same normative target as the oracle

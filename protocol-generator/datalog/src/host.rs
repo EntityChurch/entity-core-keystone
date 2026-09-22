@@ -32,6 +32,17 @@ pub enum WireError {
     Closed,
     /// Length prefix exceeded [`MAX_FRAME`] → `413 payload_too_large`.
     PayloadTooLarge,
+    /// A frame that never completed: a PARTIAL length prefix, or a prefix declaring N
+    /// bytes followed by fewer. §4.11's framing arm names this input explicitly — "un-
+    /// parseable, truncated or non-canonical CBOR, or a length prefix that never
+    /// completes" — and answers `400 invalid_request`.
+    ///
+    /// IT IS A SEPARATE VALUE FROM [`WireError::Closed`] BECAUSE THE TWO ARE DIFFERENT
+    /// EVENTS AND A NAIVE read-exact COLLAPSES THEM. A clean EOF at a frame boundary is
+    /// an ordinary close and is owed nothing; a stream that ends MID-FRAME is a REFUSAL
+    /// and is owed a coded frame. The distinction can only be made here, where the frame
+    /// boundary is known.
+    Truncated,
     Io(std::io::Error),
 }
 impl From<std::io::Error> for WireError {
@@ -40,11 +51,14 @@ impl From<std::io::Error> for WireError {
     }
 }
 
+/// Fill `buf`. A zero-byte read at offset 0 is an ordinary close; at any later offset it
+/// is a TRUNCATION (§4.11).
 fn read_exact(stream: &mut impl Read, buf: &mut [u8]) -> Result<(), WireError> {
     let mut off = 0;
     while off < buf.len() {
         match stream.read(&mut buf[off..]) {
-            Ok(0) => return Err(WireError::Closed),
+            Ok(0) if off == 0 => return Err(WireError::Closed),
+            Ok(0) => return Err(WireError::Truncated),
             Ok(n) => off += n,
             Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(WireError::Io(e)),
@@ -63,8 +77,53 @@ pub fn read_frame(stream: &mut impl Read) -> Result<Vec<u8>, WireError> {
         return Err(WireError::PayloadTooLarge);
     }
     let mut payload = vec![0u8; len];
-    read_exact(stream, &mut payload)?;
-    Ok(payload)
+    // A body that starts at offset 0 and never arrives is still a TRUNCATION, not a
+    // close: the prefix already committed the sender to `len` bytes. read_exact cannot
+    // know that, so the mapping is made here, at the site that read the prefix.
+    match read_exact(stream, &mut payload) {
+        Ok(()) => Ok(payload),
+        Err(WireError::Closed) => Err(WireError::Truncated),
+        Err(e) => Err(e),
+    }
+}
+
+/// The (status, code) §4.11 (0.8.2.25) assigns a pre-admission refusal's CAUSE.
+///
+/// "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on the
+/// wire [MUST]" — and "the frame obligation belongs to the CLASS; the CODE belongs to the
+/// CAUSE [MUST]". A single code for the whole class answers an honest caller under the
+/// wrong reason and sends them to the wrong layer.
+///
+///   envelope over the configured max     413 payload_too_large   (§4.10(a), N14)
+///   resolution integrity (mis-keyed)     400 hash_mismatch       (§5.2a, §1.8)
+///   framing / never becomes an Envelope  400 invalid_request     (§4.7, §4.11)
+///   root is neither EXECUTE nor
+///     EXECUTE_RESPONSE                   400 invalid_request     (§3.3, §4.11 — raised
+///                                                                 in dispatch, not here)
+///
+/// THE CBOR TAG-POLICY ARM KEEPS `non_canonical_ecf` AND THAT IS DELIBERATE. §4.11 rules
+/// that code non-conformant "on the framing arm" and gives its reason in the same
+/// sentence: ENTITY-CBOR-ENCODING §5.4 "defines that code for CBOR tag-policy violations
+/// specifically", which that document still MUSTs at decode time. The two texts are only
+/// compatible if the tag case is not read as part of the framing arm, even though
+/// §4.11's row says "non-canonical CBOR" and a tagged frame is literally that. Taken as
+/// the reading that keeps BOTH MUSTs satisfiable and preserves the behaviour the
+/// `tag_reject` vectors were written against.
+fn refusal_of_model_error(e: &model::ModelError) -> (u64, &'static str) {
+    match e {
+        // §5.2a (0.8.2.24 N4/N5, 0.8.2.25 N16): "A peer that refuses at the decode
+        // boundary MUST answer `400 hash_mismatch` [MUST] … `400 non_canonical_ecf` is
+        // NOT conformant here [MUST]." A mis-keyed `included` entry carries no tag and
+        // its encoding IS canonical — what is false is the claim the KEY makes. This
+        // answered `non_canonical_ecf` for every cause until 0.8.2.24/.25 pinned them
+        // apart; the code selects the caller's remedy, so a code that is merely in the
+        // right family is still wrong.
+        model::ModelError::IncludedKeyMismatch | model::ModelError::ContentHashMismatch => {
+            (400, "hash_mismatch")
+        }
+        model::ModelError::Codec(cbor_host::DecodeError::TagRejected) => (400, "non_canonical_ecf"),
+        _ => (400, "invalid_request"),
+    }
 }
 
 pub fn write_frame(stream: &mut impl Write, payload: &[u8]) -> Result<(), WireError> {
@@ -211,17 +270,47 @@ pub fn listen(port: u16) -> std::io::Result<TcpListener> {
 // ── reader loop (§6.11 demux) ──────────────────────────────────────────────────
 
 pub fn read_loop(peer: Arc<Peer>, conn: Arc<Mutex<Conn>>, io: Arc<Io>, mut read_stream: TcpStream) {
-    while let Ok(payload) = read_frame(&mut read_stream) {
+    loop {
+        let payload = match read_frame(&mut read_stream) {
+            Ok(p) => p,
+            Err(e) => {
+                // §4.11: the two REFUSABLE framing arms are owed a coded frame; an
+                // ordinary close is not a refusal of anything and there is nobody left to
+                // answer. The stream is desynchronized on both refusable arms — an
+                // oversize body was never drained, a truncated one never arrived — so the
+                // frame goes out and THEN the loop ends. §4.11 makes the frame mandatory
+                // and leaves the close to us; closing is the only sound choice once the
+                // framing is lost, and it is a choice rather than an alternative to
+                // answering. Closing with NO coded frame is one of the two behaviours
+                // §4.11 names non-conformant, and this loop used to do exactly that.
+                match e {
+                    WireError::PayloadTooLarge => {
+                        refuse_pre_admission(&io, "", 413, "payload_too_large")
+                    }
+                    WireError::Truncated => refuse_pre_admission(&io, "", 400, "invalid_request"),
+                    WireError::Closed | WireError::Io(_) => {}
+                }
+                break;
+            }
+        };
         let env = match model::envelope_of_frame(&payload) {
             Ok(e) => e,
-            Err(_) => {
-                // §6.3: "Rejection returns `400 non_canonical_ecf`" — the frame is refused
-                // (correct) and that refusal MUST be a STATUS, not silence. Dropping it
-                // satisfies only the first half of the sentence and leaves the sender
-                // blocked until its own timeout, so a refusal is indistinguishable from a
-                // dead peer; §4.9(c) deliver-or-signal says the same from the other
-                // direction. Answer, then keep reading.
-                reject_non_canonical(&io, &payload);
+            Err(err) => {
+                // A COMPLETE frame the decoder refused. The framing is intact, so we
+                // answer and KEEP SERVING. Dropping it satisfies only the first half of
+                // §6.3's "Rejection returns `400 …`" sentence and leaves the sender
+                // blocked until its own §6.11(c) deadline, making a refusal
+                // indistinguishable from a dead peer; §4.9(c)'s deliver-or-signal says
+                // the same from the other direction, and §4.11 makes it explicit for the
+                // pre-admission class. THE CODE IS THE CAUSE'S.
+                let (status, code) = refusal_of_model_error(&err);
+                // An unrecoverable request_id yields the UNCORRELATED best-effort frame
+                // §4.11 prescribes, never silence: "correlated by request_id where
+                // available, otherwise a best-effort coded frame carrying no
+                // correlation." Returning here was the OTHER non-conformant behaviour —
+                // "the weaker of the two precisely because nothing surfaces it."
+                let rid = salvage_request_id(&payload).unwrap_or_default();
+                refuse_pre_admission(&io, &rid, status, code);
                 continue;
             }
         };
@@ -255,7 +344,20 @@ fn dispatch_one(peer: Arc<Peer>, conn: Arc<Mutex<Conn>>, io: Arc<Io>, env: Envel
         Ok(Some(r)) => {
             let _ = io.write_framed(&r);
         }
-        Ok(None) => {} // non-EXECUTE root → ignored (§3.3)
+        Ok(None) => {
+            // ROOT IS NEITHER EXECUTE NOR EXECUTE_RESPONSE. This used to be IGNORED —
+            // §4.11's silent-drop arm, "the weaker of the two precisely because nothing
+            // surfaces it". 0.8.2.25 (N12/N17) WITHDREW the old §3.3 rule "the connection
+            // MUST be closed" here and §6.5's dispatch-chain pseudocode changed
+            // `Other type? -> Invalid. Close connection.` to a coded refusal; §9.1's
+            // floor row that mandated the close was REPLACED (N18). Answer 400
+            // invalid_request and keep the connection: closing would cost every ADMITTED
+            // in-flight request its response, and §4.11 leaves the close to us.
+            //
+            // `request_id` is read from the root's data where it exists and is empty
+            // otherwise — §4.11's best-effort uncorrelated form.
+            refuse_pre_admission(&io, &request_id, 400, "invalid_request");
+        }
         Err(_) => {
             // deliver-or-signal: a 500 rather than a silent hang.
             let err = Entity::make(
@@ -268,40 +370,46 @@ fn dispatch_one(peer: Arc<Peer>, conn: Arc<Mutex<Conn>>, io: Arc<Io>, env: Envel
     }
 }
 
-/// Answer a frame the strict decoder rejected with `400 non_canonical_ecf` (§6.3),
-/// recovering ONLY the `request_id` so the sender can correlate the refusal.
+/// Recover ONLY the `request_id` from a frame the strict decoder rejected, so the
+/// rejection can be delivered as a CORRELATED response rather than as the uncorrelated
+/// best-effort frame §4.11 falls back to.
 ///
-/// The frame stays rejected: nothing is built from it, nothing is stored, and the tag is
-/// never interpreted — the salvage decode exists solely to read back the correlation key.
-/// The envelope and entity-wrapper shapes are fixed maps with no legal tag position, so a
-/// frame whose ONLY defect is a tag inside some entity's `data` still has a structurally
-/// sound root, which is exactly the case worth recovering. If even the request_id is
-/// unrecoverable there is nobody to answer, so the frame is dropped: the one case where
-/// silence is all that is available.
-fn reject_non_canonical(io: &Arc<Io>, payload: &[u8]) {
-    let Ok(v) = cbor_host::decode_salvage(payload) else {
-        return;
-    };
-    let request_id = match cbor_host::map_get(&v, "root")
+/// The frame stays rejected: nothing else is read out of it, no entity is built, nothing
+/// is stored, and an offending tag is never interpreted. The envelope and entity-wrapper
+/// shapes are fixed maps with no legal tag position (§6.3), so a frame whose ONLY defect
+/// is a tag inside some entity's `data` still has a structurally sound root — which is
+/// exactly the case this recovers.
+pub fn salvage_request_id(payload: &[u8]) -> Option<String> {
+    let v = cbor_host::decode_salvage(payload).ok()?;
+    match cbor_host::map_get(&v, "root")
         .and_then(|root| cbor_host::map_get(root, "data"))
         .and_then(|data| cbor_host::map_get(data, "request_id"))
     {
-        Some(Value::Text(s)) => s.clone(),
-        _ => return, // no correlatable request_id — nothing to answer
-    };
+        Some(Value::Text(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+/// refused BEFORE it becomes an admitted request.
+///
+/// §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS" and
+/// therefore reaches NONE of these, which is why §4.11 exists. The two non-conformant
+/// behaviours it names are SEPARATE failures and this peer had one of each: DROPPING the
+/// frame (every decode refusal whose request_id could not be salvaged, plus every framing
+/// fault), and CLOSING with no coded frame (the oversize and truncated arms, which
+/// returned straight out of the read loop). A bare close is indistinguishable from a
+/// network fault (§4.6), and on a multiplexed connection it destroys unrelated ADMITTED
+/// requests.
+///
+/// An empty `request_id` IS the best-effort form, not a bug: it is what the section
+/// prescribes where no id can be recovered.
+pub fn refuse_pre_admission(io: &Arc<Io>, request_id: &str, status: u64, code: &str) {
     let err = Entity::make(
         "system/protocol/error",
-        cbor_host::map(vec![
-            ("code", cbor_host::text("non_canonical_ecf")),
-            (
-                "message",
-                cbor_host::text(
-                    "frame is not canonical ECF (section 6.3): CBOR tags are forbidden anywhere in an entity",
-                ),
-            ),
-        ]),
+        cbor_host::map(vec![("code", cbor_host::text(code))]),
     );
-    let resp = Envelope::new(response_entity(&request_id, 400, &err));
+    let resp = Envelope::new(response_entity(request_id, status, &err));
     let _ = io.write_framed(&resp);
 }
 
@@ -501,4 +609,154 @@ fn send_connect(
 pub fn shutdown(stream: &TcpStream) {
     let _ = (&mut &*stream).flush();
     let _ = stream.shutdown(std::net::Shutdown::Both);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4.11 pre-admission refusals (0.8.2.25) and §5.2a's decode-boundary code.
+//
+// The RUNTIME half — that a refusal actually reaches the socket — is not testable
+// here and is driven over a real connection by the §4.11 wire driver; what IS
+// testable here is the MAPPING, which §4.11 states as its own [MUST] ("the frame
+// obligation belongs to the class; the CODE belongs to the cause"), and the
+// truncation/close discrimination that decides whether a frame is owed at all.
+// ─────────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod pre_admission {
+    use super::*;
+    use crate::cbor_host::DecodeError;
+    use crate::model::ModelError;
+
+    /// A clean EOF at a frame boundary is an ORDINARY CLOSE and is owed nothing.
+    #[test]
+    fn a_clean_eof_at_a_frame_boundary_is_not_a_refusal() {
+        let mut src: &[u8] = &[];
+        assert!(matches!(read_frame(&mut src), Err(WireError::Closed)));
+    }
+
+    /// A stream that ends MID-FRAME is a REFUSAL and is owed a coded frame. A naive
+    /// read-exact collapses this into the case above, and the collapse is invisible
+    /// in the body arm — which is why the PREFIX arm is asserted separately.
+    #[test]
+    fn a_partial_length_prefix_is_a_truncation_not_a_close() {
+        let mut src: &[u8] = &[0x00, 0x00];
+        assert!(matches!(read_frame(&mut src), Err(WireError::Truncated)));
+    }
+
+    #[test]
+    fn a_declared_body_that_never_arrives_is_a_truncation() {
+        // Prefix declares 0x1000 bytes; three arrive, then EOF. The body read starts at
+        // offset 0, so the mapping has to be made where the prefix was read.
+        let mut src: &[u8] = &[0x00, 0x00, 0x10, 0x00, 0xA1, 0x64, 0x72];
+        assert!(matches!(read_frame(&mut src), Err(WireError::Truncated)));
+        let mut src: &[u8] = &[0x00, 0x00, 0x10, 0x00];
+        assert!(matches!(read_frame(&mut src), Err(WireError::Truncated)));
+    }
+
+    #[test]
+    fn an_oversize_prefix_is_refused_before_the_body_is_buffered() {
+        // §4.10(a): the bound is checked on the PREFIX. The stream carries no body at
+        // all, so reaching PayloadTooLarge proves nothing was buffered.
+        let mut src: &[u8] = &[0xFF, 0xFF, 0xFF, 0xFF];
+        assert!(matches!(
+            read_frame(&mut src),
+            Err(WireError::PayloadTooLarge)
+        ));
+    }
+
+    #[test]
+    fn a_zero_length_frame_is_complete_and_reaches_the_decoder() {
+        // A COMPLETE frame, not a truncated one — so it is owed the DECODER's refusal
+        // (400 invalid_request), not the framing arm's.
+        let mut src: &[u8] = &[0x00, 0x00, 0x00, 0x00];
+        assert_eq!(read_frame(&mut src).unwrap(), Vec::<u8>::new());
+        let err = crate::model::envelope_of_frame(&[]).unwrap_err();
+        assert_eq!(refusal_of_model_error(&err), (400, "invalid_request"));
+    }
+
+    /// §5.2a (0.8.2.24 N4/N5, 0.8.2.25 N16): a mis-keyed `included` entry is
+    /// `400 hash_mismatch` [MUST], and `400 non_canonical_ecf` is NOT conformant here.
+    /// The mis-keyed entry carries no tag and its encoding IS canonical.
+    #[test]
+    fn the_code_belongs_to_the_cause() {
+        assert_eq!(
+            refusal_of_model_error(&ModelError::IncludedKeyMismatch),
+            (400, "hash_mismatch")
+        );
+        assert_eq!(
+            refusal_of_model_error(&ModelError::ContentHashMismatch),
+            (400, "hash_mismatch")
+        );
+        // THE DIFFERENTIAL: the tag arm must answer a DIFFERENT code, or the peer is
+        // not classifying, it is just refusing. ENTITY-CBOR-ENCODING §5.4 defines
+        // `non_canonical_ecf` for tag-policy violations SPECIFICALLY.
+        assert_eq!(
+            refusal_of_model_error(&ModelError::Codec(DecodeError::TagRejected)),
+            (400, "non_canonical_ecf")
+        );
+        for e in [
+            ModelError::BadEntity,
+            ModelError::Codec(DecodeError::Malformed),
+            ModelError::Codec(DecodeError::Truncated),
+            ModelError::Codec(DecodeError::TrailingData),
+            ModelError::Codec(DecodeError::IndefiniteLength),
+        ] {
+            assert_eq!(
+                refusal_of_model_error(&e),
+                (400, "invalid_request"),
+                "{e:?}"
+            );
+        }
+    }
+
+    /// A mis-keyed `included` entry really does reach that arm through the decoder,
+    /// rather than the mapping being asserted against a value nothing produces.
+    #[test]
+    fn a_miskeyed_included_entry_reaches_the_hash_mismatch_arm() {
+        let e = Entity::make("primitive/any", cbor_host::map(vec![]));
+        let env = Value::Map(vec![
+            (Key::Text("root".into()), e.to_cbor()),
+            (
+                Key::Text("included".into()),
+                Value::Map(vec![(Key::Bytes(vec![0u8; 33]), e.to_cbor())]),
+            ),
+        ]);
+        let err = crate::model::envelope_of_frame(&cbor_host::encode(&env)).unwrap_err();
+        assert!(matches!(err, ModelError::IncludedKeyMismatch));
+        assert_eq!(refusal_of_model_error(&err), (400, "hash_mismatch"));
+        // CONTROL — the SAME entity filed under its own hash decodes cleanly, which is
+        // what says the assertion above is about the KEY and not about the fixture.
+        let env = Value::Map(vec![
+            (Key::Text("root".into()), e.to_cbor()),
+            (
+                Key::Text("included".into()),
+                Value::Map(vec![(Key::Bytes(e.hash.clone()), e.to_cbor())]),
+            ),
+        ]);
+        assert!(crate::model::envelope_of_frame(&cbor_host::encode(&env)).is_ok());
+    }
+
+    /// The correlation key is recoverable from a frame the STRICT decoder refused —
+    /// that is what makes the refusal correlated rather than best-effort.
+    #[test]
+    fn the_request_id_is_salvageable_from_a_tagged_frame() {
+        // {"root": {"data": <tag(0) 0>, "type": "..."}} is refused strictly and the
+        // root is still structurally sound, so a request_id beside the tag survives.
+        let inner = Value::Map(vec![(
+            Key::Text("request_id".into()),
+            cbor_host::text("r9"),
+        )]);
+        let root = Value::Map(vec![
+            (Key::Text("data".into()), inner),
+            (
+                Key::Text("type".into()),
+                cbor_host::text("system/protocol/execute"),
+            ),
+        ]);
+        let env = Value::Map(vec![(Key::Text("root".into()), root)]);
+        let bytes = cbor_host::encode(&env);
+        assert_eq!(salvage_request_id(&bytes).as_deref(), Some("r9"));
+        // And an unrecoverable id yields None, which the read loop turns into §4.11's
+        // UNCORRELATED best-effort frame rather than into silence.
+        assert_eq!(salvage_request_id(&[0xFF, 0xFF, 0xFF]), None);
+    }
 }

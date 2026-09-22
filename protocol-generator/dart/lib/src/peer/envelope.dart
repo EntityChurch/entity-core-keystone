@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import '../codec/ecf_value.dart';
+import '../errors.dart';
 import 'cbor.dart';
 import 'entity.dart';
 
@@ -76,9 +77,16 @@ final class Envelope {
           throw ArgumentError('envelope: included value not a map');
         }
         final ent = Entity.ofCbor(vm);
-        // §3.1: the included content_hash MUST equal the map key.
+        // §3.1: the included content_hash MUST equal the map key — §1.8's
+        // resolution-integrity obligation, mechanism (a) "bind the key".
+        //
+        // HashMismatch, NOT the structural ArgumentError beside it: §5.2a pins this
+        // arm's code to `400 hash_mismatch` and rules `non_canonical_ecf`
+        // non-conformant here (0.8.2.24 N4/N5). The entry's ENCODING is canonical;
+        // what is false is the claim the key makes.
         if (!octetsEqual(kb.octets, ent.rawHash)) {
-          throw ArgumentError('included key != content_hash');
+          throw const DecodeRefusal(
+              HashMismatch('included entry does not bind to its key'));
         }
         if (seen.add(hexEncode(kb.octets))) {
           included.add(Included(kb.octets, ent));

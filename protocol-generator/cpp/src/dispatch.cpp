@@ -156,6 +156,11 @@ std::optional<std::string> exec_resource_target(const Entity& exec, std::size_t*
 }
 
 // §1.4 R1 path flex check (control-byte / embedded NUL / empty segment / . / .. rejection).
+// A §5.4 PATTERN rather than a concrete path. A resource-requiring operation takes a
+// CONCRETE path (0.8.2.20); a trailing '/' is a listing request rather than a pattern —
+// only a '*' makes it one.
+bool is_pattern_path(std::string_view t) { return t.find('*') != std::string_view::npos; }
+
 bool path_flex_ok(const std::string& target, std::size_t raw_len) {
     (void)raw_len;  // the wire target is length-prefixed text; embedded NUL survives into
                     // std::string, so scan the bytes directly rather than comparing lengths.
@@ -494,16 +499,46 @@ void Peer::h_connect(Connection& conn, const Envelope& env, const Entity& exec,
 }
 
 // ── tree handler (§6.3) ────────────────────────────────────────────────────────────
-void Peer::build_listing(const std::string& path, Outcome& o) {
+// Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+//
+// "When any handler returns a multi-entry result whose entries are tree paths, each entry
+// MUST be individually checked using check_path_permission. Entries for which
+// check_path_permission returns DENY MUST be omitted. The result's `count` field MUST
+// reflect the filtered entry count, not the source tree's total count."
+//
+// This is the read path at its highest volume and it is the reason 0.8.2.21 refused to
+// carve reads out of the caller-specified-path rule: an unfiltered listing discloses the
+// EXISTENCE of every binding under a prefix to a caller whose capability covers none of
+// them.
+//
+// The DIRECTORY itself is deliberately NOT checked — §6.3 makes each ENTRY the subject,
+// and testing the prefix would deny a listing to a caller whose grant covers children but
+// not the node above them, which is the ordinary shape of a narrowed grant.
+//
+// An UNAUTHENTICATED context (caller_cap == nullptr) is NOT filtered: the filter's subject
+// is "the caller's verified capability", and where there is none there is no caller to
+// narrow. That is the bootstrap/internal path.
+void Peer::build_listing(const std::string& path, const Entity* caller_cap,
+                         const std::string& pattern, Outcome& o) {
     auto rows = store_.listing(path);
     auto entries = EcfValue::map();
     std::size_t count = 0;
+    // `path` already carries the trailing '/' on every call site that reaches here, but
+    // the join is built defensively: a child path missing its separator would silently
+    // DENY every entry, and a filter that over-denies is as wrong as one that discloses
+    // while looking exactly like a working filter.
+    std::string dir = (!path.empty() && path.back() == '/') ? path : path + "/";
     auto is_deletion_marker = [&](const Hash& h) {
         auto e = store_.get_by_hash(h);
         return e && e->type() == "system/deletion-marker";
     };
     for (const auto& row : rows) {
         if (row.hash && !row.has_children && is_deletion_marker(*row.hash)) continue;
+        // §6.3's per-entry check (0.8.2.21/.22).
+        if (caller_cap &&
+            !cap::check_path_permission(local_, "get", dir + row.segment, *caller_cap, pattern)) {
+            continue;
+        }
         auto data = EcfValue::map();
         data.put(EcfValue::text("has_children"), EcfValue::boolean(row.has_children));
         if (row.hash) data.put(EcfValue::text("hash"), value::bytes_value(*row.hash));
@@ -617,21 +652,70 @@ bool admit_put(const EcfValue& v, std::shared_ptr<const Entity>& out,
 
 }  // namespace
 
-void Peer::h_tree(const Envelope& /*env*/, const Entity& exec, const std::string& op,
-                  Outcome& o) {
+// The `system/tree` handler (§6.3).
+//
+// RESOLVE THE OPERATION FIRST; only then run the §3.3 resource ladder. The `op`
+// comparisons below are what make that true: a handler that validates the resource first
+// answers a RESOURCE fault for an unknown-OPERATION request, so `system/tree:bogusop`
+// with no resource would report `ambiguous_resource` where §3.3 pins `501
+// unsupported_operation` (measured as X9/F52 on peers that had the arms the other way
+// round). Every resource branch here is INSIDE a known-operation arm, so the ladder is
+// unreachable for an unknown op.
+void Peer::h_tree(const Envelope& /*env*/, const Entity& exec, const Entity* caller_cap,
+                  const std::string& op, const std::string& pattern, Outcome& o) {
     if (op == "get") {
-        std::size_t raw = 0;
-        auto target = exec_resource_target(exec, &raw);
-        if (target && !path_flex_ok(*target, raw)) { err(o, 400, "invalid_path", *target); return; }
-        if (!target) { build_listing(abs_path(""), o); return; }
+        // §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+        // `resource.targets`: a handler that counts the effective list and then indexes
+        // targets[0] has implemented the arithmetic completely and is still reading a
+        // path no authorization covered.
+        auto eff = cap::effective_targets(local_, exec);
+        if (!eff.had_resource) {
+            // THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION IS
+            // WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is scoped
+            // "for an operation that REQUIRES a resource" (0.8.2.24, N7); `get` does not.
+            // For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the
+            // present-but-empty case by whether the absent case is WIDER than the request
+            // — BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty.
+            //
+            // EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+            // resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root listing",
+            // self-excluded case "400 path_required". Both arms are pinned by text and
+            // neither is this peer's choice.
+            build_listing(abs_path(""), caller_cap, pattern, o);
+            return;
+        }
+        if (eff.survivors.empty()) {
+            // The self-excluded request: `resource` PRESENT, every target carved out by
+            // the caller's own exclude. Serving it the absent case "answers a request for
+            // one excluded path with a listing of the tree" (EXTENSION-TREE §2.2a) — the
+            // root listing is WIDER than what was asked for, which is BROAD-RESULT.
+            err(o, 400, "path_required", "tree: effective target list is empty");
+            return;
+        }
+        if (eff.survivors.size() > 1) {
+            err(o, 400, "ambiguous_resource", "tree: more than one effective target");
+            return;
+        }
+        const std::string& tgt = eff.survivors.front();
+        if (!path_flex_ok(tgt, tgt.size())) { err(o, 400, "invalid_path", tgt); return; }
+        const std::string* target = &tgt;
         if (target->empty() || target->back() == '/') {
             auto path = cap::canonicalize(local_, *target);
             if (!path) { err(o, 400, "invalid_path", *target); return; }
-            build_listing(*path, o);
+            build_listing(*path, caller_cap, pattern, o);
             return;
         }
+        if (is_pattern_path(*target)) { err(o, 400, "malformed_resource", *target); return; }
         auto path = cap::canonicalize(local_, *target);
         if (!path) { err(o, 400, "invalid_path", *target); return; }
+        // §6.3: the handler MUST verify the CALLER's capability covers the path it is
+        // about to read. NOT a secondary check — the dispatch-level check never saw this
+        // path if the caller excluded it.
+        if (caller_cap &&
+            !cap::check_path_permission(local_, "get", *path, *caller_cap, pattern)) {
+            err(o, 403, "capability_denied", *path);
+            return;
+        }
         auto e = store_.get_at(*path);
         if (!e) { err(o, 404, "not_found", *target); return; }
         auto params = exec.entity_field("params");
@@ -647,12 +731,34 @@ void Peer::h_tree(const Envelope& /*env*/, const Entity& exec, const std::string
         return;
     }
     if (op == "put") {
-        std::size_t raw = 0;
-        auto target = exec_resource_target(exec, &raw);
-        if (!target) { err(o, 400, "ambiguous_resource", "tree: missing resource target"); return; }
-        if (!path_flex_ok(*target, raw)) { err(o, 400, "invalid_path", *target); return; }
+        // Same ladder as `get`, with the two empties COLLAPSED rather than split:
+        // EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an
+        // empty effective list IS the absent case" applies in its unscoped form and both
+        // empties answer `path_required`.
+        //
+        // Note the code change 0.8.2.20 forced: this branch answered `ambiguous_resource`
+        // for a MISSING target, which 0.8.2.20 names as the exact inversion it forbids.
+        // The remedies differ — *supply a resource* is not *disambiguate your request* —
+        // and the code is what selects between them.
+        auto eff = cap::effective_targets(local_, exec);
+        if (!eff.had_resource || eff.survivors.empty()) {
+            err(o, 400, "path_required", "tree: put requires a resource target");
+            return;
+        }
+        if (eff.survivors.size() > 1) {
+            err(o, 400, "ambiguous_resource", "tree: more than one effective target");
+            return;
+        }
+        const std::string* target = &eff.survivors.front();
+        if (!path_flex_ok(*target, target->size())) { err(o, 400, "invalid_path", *target); return; }
+        if (is_pattern_path(*target)) { err(o, 400, "malformed_resource", *target); return; }
         auto path = cap::canonicalize(local_, *target);
         if (!path) { err(o, 400, "invalid_path", *target); return; }
+        if (caller_cap &&
+            !cap::check_path_permission(local_, "put", *path, *caller_cap, pattern)) {
+            err(o, 403, "capability_denied", *path);
+            return;
+        }
         auto params = exec.entity_field("params");
         const EcfValue* raw_entity = params ? params->field("entity") : nullptr;
         auto expected = params ? params->bytes("expected_hash") : std::nullopt;
@@ -1052,8 +1158,6 @@ void Peer::h_validate_dispatch_outbound(Connection& conn, const Entity& exec,
 // ── §6.5 dispatch chain ─────────────────────────────────────────────────────────────
 std::optional<Envelope> Peer::dispatch(Connection& conn, const Envelope& env) {
     const Entity& exec = *env.root();
-    if (exec.type() != "system/protocol/execute") return std::nullopt;  // §3.3 ignore non-EXECUTE
-
     std::string request_id = exec.text("request_id").value_or("");
     std::string uri = exec.text("uri").value_or("");
     std::string operation = exec.text("operation").value_or("");
@@ -1074,10 +1178,31 @@ std::optional<Envelope> Peer::dispatch(Connection& conn, const Envelope& env) {
         return renv;
     };
 
+    if (exec.type() != "system/protocol/execute") {
+        // §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+        // invalid_request, coded frame; MAY then close. NOT a bare close — that is
+        // indistinguishable from a network fault."
+        //
+        // §3.3 read "the connection MUST be closed", assigning no code and requiring no
+        // frame, and this peer did something weaker still: it returned nullopt, the
+        // transport wrote NOTHING, and the connection stayed open — which is §4.11's OTHER
+        // non-conformant behaviour, the silent drop, "the weaker of the two precisely
+        // because nothing surfaces it". This is a PRE-ADMISSION refusal: the root is not an
+        // EXECUTE, so nothing was ever admitted and §4.9(c) does not reach it. §9.1's floor
+        // row that used to MANDATE the bare close was REPLACED at the same revision (N18).
+        //
+        // `request_id` is read best-effort — an arbitrary root type is under no obligation
+        // to carry one, and §4.11 licenses the uncorrelated frame exactly there. We do NOT
+        // close: on a multiplexed connection that would cost every ADMITTED in-flight
+        // request its response, and §4.11 leaves the close to us.
+        err(o, 400, "invalid_request", "root entity is neither EXECUTE nor EXECUTE_RESPONSE");
+        return respond();
+    }
+
     // connect path: unauthenticated
     if (uri == "system/protocol/connect") {
         if (const auto* fn = lookup_handler("system/protocol/connect")) {
-            (*fn)(*this, conn, env, exec, nullptr, operation, o);
+            (*fn)(*this, conn, env, exec, nullptr, operation, "system/protocol/connect", o);
         } else {
             err(o, 500, "internal_error");
         }
@@ -1133,7 +1258,7 @@ std::optional<Envelope> Peer::dispatch(Connection& conn, const Envelope& env) {
     if (cap::starts_with(lprefix, stripped)) stripped = stripped.substr(lprefix.size());
 
     if (const auto* fn = lookup_handler(stripped)) {
-        (*fn)(*this, conn, env, exec, caller_cap.get(), operation, o);
+        (*fn)(*this, conn, env, exec, caller_cap.get(), operation, stripped, o);
     } else {
         err(o, 501, "no_handler_body", *pattern);
     }
@@ -1223,20 +1348,21 @@ Result<void> Peer::init(bool open_grants, bool conformance) {
     static const std::array<V, 1> ops_type{"validate"};
 
     register_handler("system/tree",
-        [](Peer& p, Connection&, const Envelope& e, const Entity& x, const Entity*,
-           const std::string& op, Outcome& o) { p.h_tree(e, x, op, o); });
+        [](Peer& p, Connection&, const Envelope& e, const Entity& x, const Entity* cc,
+           const std::string& op, const std::string& pat, Outcome& o) {
+               p.h_tree(e, x, cc, op, pat, o); });
     register_handler("system/handler",
         [](Peer& p, Connection&, const Envelope&, const Entity& x, const Entity*,
-           const std::string& op, Outcome& o) { p.h_handlers(x, op, o); });
+           const std::string& op, const std::string&, Outcome& o) { p.h_handlers(x, op, o); });
     register_handler("system/capability",
         [](Peer& p, Connection&, const Envelope& e, const Entity& x, const Entity* cc,
-           const std::string& op, Outcome& o) { p.h_capability(e, x, cc, op, o); });
+           const std::string& op, const std::string&, Outcome& o) { p.h_capability(e, x, cc, op, o); });
     register_handler("system/protocol/connect",
         [](Peer& p, Connection& c, const Envelope& e, const Entity& x, const Entity* cc,
-           const std::string& op, Outcome& o) { p.h_connect(c, e, x, cc, op, o); });
+           const std::string& op, const std::string&, Outcome& o) { p.h_connect(c, e, x, cc, op, o); });
     register_handler("system/type",
         [](Peer& p, Connection&, const Envelope&, const Entity& x, const Entity*,
-           const std::string& op, Outcome& o) { p.h_type(x, op, o); });
+           const std::string& op, const std::string&, Outcome& o) { p.h_type(x, op, o); });
 
     struct Must { const char* pattern; const char* name; std::span<const V> ops; };
     const std::array<Must, 5> must{{
@@ -1259,10 +1385,10 @@ Result<void> Peer::init(bool open_grants, bool conformance) {
         static const std::array<V, 1> ops_dispatch{"dispatch"};
         register_handler("system/validate/echo",
             [](Peer& p, Connection&, const Envelope&, const Entity& x, const Entity*,
-               const std::string& op, Outcome& o) { p.h_validate_echo(x, op, o); });
+               const std::string& op, const std::string&, Outcome& o) { p.h_validate_echo(x, op, o); });
         register_handler("system/validate/dispatch-outbound",
             [](Peer& p, Connection& c, const Envelope&, const Entity& x, const Entity*,
-               const std::string& op, Outcome& o) {
+               const std::string& op, const std::string&, Outcome& o) {
                 p.h_validate_dispatch_outbound(c, x, op, o);
             });
         struct Conf { const char* pattern; const char* name; std::span<const V> ops; };

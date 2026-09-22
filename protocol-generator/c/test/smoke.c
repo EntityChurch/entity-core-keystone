@@ -309,6 +309,134 @@ static int scenario_extensibility(void)
     return 0;
 }
 
+/* ── scenario 3 — the §3.3 ladder + RULE G ordering (0.8.2.20/.24/.25) ───────── */
+
+/* A `resource` value carrying an explicit target list and (optionally) the caller's own
+ * exclude. ec_resource_target only builds the single-target form, and the ladder is
+ * about the arithmetic over the EFFECTIVE list, so this builds the general shape. */
+static ec_value *resource_v(const char *const *targets, size_t nt,
+                            const char *const *excl, size_t nx)
+{
+    ec_value *m = ec_map();
+    if (excl) {
+        ec_value *a = ec_array();
+        for (size_t i = 0; i < nx; i++) { ec_array_push(a, ec_text(excl[i])); }
+        ec_map_put(m, ec_text("exclude"), a);
+    }
+    ec_value *t = ec_array();
+    for (size_t i = 0; i < nt; i++) { ec_array_push(t, ec_text(targets[i])); }
+    ec_map_put(m, ec_text("targets"), t);
+    return m;
+}
+
+/* Drive one tree request and check (status, code). `resource` is consumed. */
+static void tree_case(ec_session *sess, const char *remote, const char *op,
+                      ec_value *resource, uint64_t want_status, const char *want_code,
+                      const char *name)
+{
+    char uri[256];
+    snprintf(uri, sizeof(uri), "/%s/system/tree", remote);
+    ec_entity *params = NULL;
+    ec_empty_params(&params);
+    ec_envelope *r = NULL;
+    ec_session_execute(sess, uri, op, params, resource, &r);
+    uint64_t st = r ? ec_response_status(r) : 0;
+    const char *code = "";
+    ec_entity *rr = r ? ec_response_result(r) : NULL;
+    if (rr) { const char *c = ec_ent_text(rr, "code"); if (c) { code = c; } }
+    bool ok = (st == want_status) && (!want_code || strcmp(code, want_code) == 0);
+    if (!ok) {
+        printf("        (got %llu %s)\n", (unsigned long long)st, code[0] ? code : "(none)");
+    }
+    check(name, ok);
+    ec_entity_unref(rr);
+    ec_env_free(r);
+    ec_entity_unref(params);
+}
+
+static int scenario_tree_ladder(void)
+{
+    uint8_t s_resp[32], s_init[32];
+    seed_fill(s_resp, 0x55);
+    seed_fill(s_init, 0x66);
+
+    ec_peer *responder = NULL, *initiator = NULL;
+    /* open-grants so the DISPATCH-level check always allows: this scenario is about the
+     * §3.3 ladder's own arithmetic and ordering, and a dispatch-level 403 would answer
+     * before the ladder ran. The §6.3 check_path_permission arm that needs a NARROWED
+     * capability is driven on the wire by tools/arc-probe (families A and G), which
+     * mints one; the unit half is test/scope_algebra.c. */
+    if (ec_peer_create(s_resp, true, false, &responder) != EC_OK ||
+        ec_peer_create(s_init, false, false, &initiator) != EC_OK) {
+        fprintf(stderr, "peer create failed\n");
+        return 1;
+    }
+    ec_listener *l = NULL;
+    int port = 0;
+    if (ec_listener_start(responder, 0, &l, &port) != EC_OK) { return 1; }
+    ec_session *sess = NULL;
+    if (ec_session_dial(initiator, "127.0.0.1", port, &sess) != EC_OK) {
+        ec_listener_stop(l);
+        ec_peer_free(responder);
+        ec_peer_free(initiator);
+        return 1;
+    }
+    const char *remote = ec_session_remote_peer(sess);
+
+    printf("Tree ladder (section 3.3 on the EFFECTIVE list):\n");
+    const char *qa[] = { "app/qA" };
+    const char *qab[] = { "app/qA", "app/qB" };
+    const char *star[] = { "app/*" };
+    const char *xqa[] = { "app/qA" };
+
+    /* get, ABSENT resource -> the root listing. EXTENSION-TREE §2.2a (v4.11) declares
+     * `get` resource-OPTIONAL and BROAD-RESULT with that absent-case answer; this is the
+     * F86 arm, answered NO, and it is text rather than this peer's choice. */
+    tree_case(sess, remote, "get", NULL, 200, NULL, "get with no resource -> 200 root listing");
+
+    /* get, PRESENT and self-excluded -> 400 path_required. Serving this the absent case
+     * answers a request for one excluded path with a listing of the whole tree. */
+    tree_case(sess, remote, "get", resource_v(qa, 1, xqa, 1), 400, "path_required",
+              "get, every target self-excluded -> 400 path_required");
+
+    /* get, two survivors -> 400 ambiguous_resource. A peer indexing targets[0] answers
+     * the first target instead. */
+    tree_case(sess, remote, "get", resource_v(qab, 2, NULL, 0), 400, "ambiguous_resource",
+              "get, two effective targets -> 400 ambiguous_resource");
+
+    /* get, a PATTERN subject -> 400 malformed_resource (0.8.2.20). */
+    tree_case(sess, remote, "get", resource_v(star, 1, NULL, 0), 400, "malformed_resource",
+              "get, a pattern target -> 400 malformed_resource");
+
+    /* put, ABSENT resource -> 400 path_required, NOT ambiguous_resource. 0.8.2.20 names
+     * that inversion outright: *supply a resource* is not *disambiguate your request*,
+     * and the code is what selects the remedy. This peer answered ambiguous_resource. */
+    tree_case(sess, remote, "put", NULL, 400, "path_required",
+              "put with no resource -> 400 path_required (NOT ambiguous_resource)");
+
+    /* put, PRESENT and self-excluded -> also path_required: §2.2a declares `put`
+     * resource-REQUIRED, so §3.3's "an empty effective list IS the absent case" applies
+     * in its unscoped form and the two empties COLLAPSE here. */
+    tree_case(sess, remote, "put", resource_v(qa, 1, xqa, 1), 400, "path_required",
+              "put, every target self-excluded -> 400 path_required");
+
+    /* RULE G: resolve the OPERATION first; only then run the resource ladder. A handler
+     * that validates the resource first answers a RESOURCE fault for an unknown-OPERATION
+     * request (measured as X9/F52 elsewhere in the cohort). The DIFFERENTIAL — same
+     * unknown op with a resource present — is what says ORDERING rather than a missing
+     * 501 arm. */
+    tree_case(sess, remote, "bogusop", NULL, 501, "unsupported_operation",
+              "unknown op with NO resource -> 501 (operation resolved first)");
+    tree_case(sess, remote, "bogusop", resource_v(qa, 1, NULL, 0), 501, "unsupported_operation",
+              "unknown op WITH a resource -> 501 (the differential)");
+
+    ec_session_close(sess);
+    ec_listener_stop(l);
+    ec_peer_free(responder);
+    ec_peer_free(initiator);
+    return 0;
+}
+
 int main(void)
 {
     if (ec_crypto_init() != EC_OK) {
@@ -321,6 +449,10 @@ int main(void)
     }
     if (scenario_extensibility() != 0) {
         printf("\nSMOKE: FAIL (harness error in scenario 2)\n");
+        return 1;
+    }
+    if (scenario_tree_ladder() != 0) {
+        printf("\nSMOKE: FAIL (harness error in scenario 3)\n");
         return 1;
     }
     bool all_pass = (g_fail == 0);

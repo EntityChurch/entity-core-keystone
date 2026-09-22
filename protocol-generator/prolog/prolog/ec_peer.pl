@@ -174,7 +174,7 @@ serve_goal(Peer, Env, Outbound, Resp) :- dispatch(Peer, Env, Outbound, Resp).
 
 dispatch(Peer, Env, Outbound, Resp) :-
     envelope_root(Env, Exec),
-    ( entity_type(Exec, "system/protocol/execute") -> true ; (Resp = (-), !, fail) ),
+    entity_type(Exec, "system/protocol/execute"), !,
     ( ent_text(Exec, "request_id", ReqId) -> true ; ReqId = "" ),
     catch(run_chain(Peer, Env, Exec, Outbound, Outcome),
           Err,
@@ -182,7 +182,32 @@ dispatch(Peer, Env, Outbound, Resp) :-
     Outcome = outcome(Status, Result, Included),
     make_response(ReqId, Status, Result, RespEntity),
     envelope(RespEntity, Included, Resp).
-dispatch(_, _, _, (-)).   % non-execute root
+% §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400 invalid_request,
+% coded frame; MAY then close (§3.3, §4.11). NOT a bare close -- that is
+% indistinguishable from a network fault."
+%
+% §3.3 read "the connection MUST be closed", assigning no code and requiring no frame,
+% and §9.1's floor row that MANDATED the bare close was REPLACED at the same revision
+% (N18). This peer did something weaker still: it answered (-), the transport wrote
+% NOTHING, and the connection stayed open -- which is §4.11's OTHER non-conformant
+% behaviour, the silent drop, "the weaker of the two precisely because nothing surfaces
+% it". This is a PRE-ADMISSION refusal: the root is not an EXECUTE, so nothing was ever
+% admitted and §4.9(c) does not reach it.
+%
+% The request_id is read best-effort -- an arbitrary root type is under no obligation to
+% carry one, and §4.11 licenses the uncorrelated frame exactly there. We do NOT close: on
+% a multiplexed connection that would cost every ADMITTED in-flight request its response,
+% and §4.11 leaves the close to us.
+%
+% EXECUTE_RESPONSE roots never reach here -- read_loop_step/4 routes them to their
+% awaiting §6.11 waiter before serve_on_execute calls this.
+dispatch(_Peer, Env, _Outbound, Resp) :-
+    envelope_root(Env, Root),
+    ( ent_text(Root, "request_id", ReqId) -> true ; ReqId = "" ),
+    error_result("invalid_request",
+                 "root entity is neither EXECUTE nor EXECUTE_RESPONSE", R),
+    make_response(ReqId, 400, R, RespEntity),
+    envelope(RespEntity, [], Resp).
 
 chain_error_outcome(ec_capability(unresolvable_grantee), outcome(401, R, [])) :- !,
     error_result("unresolvable_grantee", "", R).
@@ -259,7 +284,14 @@ permission_then_handle(Peer, Env, Exec, Pattern, Outbound, Outcome) :-
        ( PermVerdict == allow
        -> strip_local(Local, Pattern, Stripped),
           ( ent_text(Exec, "operation", Op) -> true ; Op = "" ),
-          handle_op(Stripped, Op, ctx(Peer, Env, Exec, CallerCap, Outbound), Outcome)
+          % §6.3's authorization subject, CARRIED into the handler rather than
+          % recomputed: Pattern is the resolved OWNING handler pattern and CallerCap the
+          % capability check_permission/6 just ran against, which is exactly what
+          % check_path_permission/5 needs. Recomputing either inside the handler invites
+          % the two to drift, and §6.8 is explicit that the authority is selected by who
+          % named the path. For the tree handler owner and runner coincide, so the
+          % distinction is not observable here, but the argument is named for the owner.
+          handle_op(Stripped, Op, ctx(Peer, Env, Exec, CallerCap, Outbound, Pattern), Outcome)
        ;  error_result("capability_denied", "", R), Outcome = outcome(403, R, []) )
     ;  error_result("capability_denied", "", R), Outcome = outcome(403, R, []) ).
 
@@ -577,42 +609,119 @@ ingest_one(StoreId, Env, Sig) :-
 
 % ═══════════════════════════════════════════════════════════════════════════
 % THE HANDLER CLAUSE TABLE — handle_op(HandlerPattern, Op, Ctx, Outcome).
-% ctx(Peer, Env, Exec, CallerCap, Outbound). Each (handler, op) is a clause head;
+% ctx(Peer, Env, Exec, CallerCap, Outbound, HandlerPattern). Each (handler, op) is a
+% clause head;
 % the final clause is the 501 catch-all (the §6.6 default arm).
 % ═══════════════════════════════════════════════════════════════════════════
 
 % ── tree handler (§6.3) ──
-handle_op("system/tree", "get", ctx(Peer, _, Exec, _, _), Outcome) :- !,
+% RESOLVE THE OPERATION FIRST, ONLY THEN RUN THE §3.3 RESOURCE LADDER -- and on this
+% substrate that is a property of the CLAUSE TABLE rather than of any statement. The
+% operation is a CLAUSE HEAD, so an unknown one cannot unify with either arm below and
+% falls through to the 501 catch-all at the end of the table, having read no `resource`
+% at all. A handler that validated the resource first would answer a RESOURCE error for
+% every unknown operation -- measured across the cohort as `system/tree:bogusop` WITHOUT
+% a resource answering `ambiguous_resource` while the same call WITH one correctly
+% answered 501, i.e. the fault the caller is told about depended on a field with nothing
+% to do with it. Keeping the whole ladder INSIDE these two heads keeps that true by
+% construction; driven as a differential in test/spec0825.pl.
+handle_op("system/tree", "get", ctx(Peer, _, Exec, CallerCap, _, Pattern), Outcome) :- !,
     peer_local_peer(Peer, Local), peer_store(Peer, StoreId),
-    ( exec_resource_target(Exec, Target)
-    -> ( \+ path_flex_ok(Target)
-       -> error_result("invalid_path", Target, R), Outcome = outcome(400, R, [])
-       ;  target_is_listing(Target)
-       -> canonicalize(Local, Target, P), build_listing(StoreId, P, Outcome)
-       ;  canonicalize(Local, Target, Path),
-          ( store_get_at(StoreId, Path, E)
-          -> Outcome = outcome(200, E, [])
-          ;  error_result("not_found", Path, R), Outcome = outcome(404, R, []) ) )
-    ;  atomics_to_string(["/", Local, "/"], Root), build_listing(StoreId, Root, Outcome) ).
+    % §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on resource.targets: a
+    % handler that counts the effective list and then indexes targets[0] has implemented
+    % the arithmetic completely and is still reading a path no authorization covered.
+    %
+    % effective_targets/3 FAILS when there is no `resource` at all, which is the other
+    % empty. THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION IS
+    % WHAT SAYS SO: §3.3's "an empty effective list IS the absent case" is scoped "for an
+    % operation that REQUIRES a resource" (0.8.2.24, N7), and `get` does not. For a
+    % resource-OPTIONAL operation 0.8.2.25 (N10) decides the present-but-empty case by
+    % whether the absent case is WIDER than the request -- BROAD-RESULT refuses it,
+    % OPTIONAL-FILTER answers it empty -- and requires the operation to declare which.
+    % EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is resource-OPTIONAL and
+    % BROAD-RESULT, absent-case answer "the root listing", self-excluded case "400
+    % path_required". Both arms are pinned by text and neither is this peer's choice.
+    (   effective_targets(Local, Exec, Eff)
+    ->  tree_get_ladder(Local, StoreId, Exec, CallerCap, Pattern, Eff, Outcome)
+    ;   atomics_to_string(["/", Local, "/"], Root),
+        build_listing(StoreId, Root, CallerCap, Pattern, Local, Outcome) ).
 
-handle_op("system/tree", "put", ctx(Peer, _, Exec, _, _), Outcome) :- !,
+% The self-excluded request: `resource` PRESENT, every target carved out by the caller's
+% own exclude. Serving it the absent case "answers a request for one excluded path with a
+% listing of the tree" (EXTENSION-TREE §2.2a) -- the root listing is wider than what was
+% asked for, which is what BROAD-RESULT means.
+tree_get_ladder(_, _, _, _, _, [], outcome(400, R, [])) :- !,
+    error_result("path_required", "tree: effective target list is empty", R).
+tree_get_ladder(_, _, _, _, _, [_, _|_], outcome(400, R, [])) :- !,
+    error_result("ambiguous_resource", "tree: more than one effective target", R).
+tree_get_ladder(Local, StoreId, _Exec, CallerCap, Pattern, [Target], Outcome) :-
+    (  \+ path_flex_ok(Target)
+    -> error_result("invalid_path", Target, R), Outcome = outcome(400, R, [])
+    ;  target_is_listing(Target)
+    -> canonicalize(Local, Target, P),
+       build_listing(StoreId, P, CallerCap, Pattern, Local, Outcome)
+    ;  is_pattern_path(Target)
+    -> error_result("malformed_resource", Target, R), Outcome = outcome(400, R, [])
+    ;  canonicalize(Local, Target, Path),
+       % §6.3: the handler MUST verify the CALLER's capability covers the path it is
+       % about to read. Not a secondary check -- the dispatch-level check never saw this
+       % path if the caller excluded it.
+       (  CallerCap \== (-),
+          \+ check_path_permission(Local, "get", Path, CallerCap, Pattern)
+       -> error_result("capability_denied", Path, R), Outcome = outcome(403, R, [])
+       ;  store_get_at(StoreId, Path, E)
+       -> Outcome = outcome(200, E, [])
+       ;  error_result("not_found", Path, R), Outcome = outcome(404, R, []) ) ).
+
+handle_op("system/tree", "put", ctx(Peer, _, Exec, CallerCap, _, Pattern), Outcome) :- !,
     peer_local_peer(Peer, Local), peer_store(Peer, StoreId),
-    ( exec_resource_target(Exec, Target)
-    -> ( \+ path_flex_ok(Target)
-       -> error_result("invalid_path", Target, R), Outcome = outcome(400, R, [])
-       ;  canonicalize(Local, Target, Path),
-          ( ent_entity(Exec, "params", Params), ent_field(Params, "entity", RawEntity)
-          -> ( cas_ok(StoreId, Path, Params)
-             -> admit_put(RawEntity, Admission),
-                ( Admission = admitted(Entity)
-                -> store_bind(StoreId, Path, Entity),
-                   entity_hash(Entity, H), string_codes(H, HC),
-                   make_entity("system/hash", map(["hash"-bytes(HC)]), HashE),
-                   Outcome = outcome(200, HashE, [])
-                ;  Admission = refused(Outcome) )
-             ;  error_result("hash_mismatch", Path, R), Outcome = outcome(409, R, []) )
-          ;  error_result("unexpected_params", "put: missing entity", R), Outcome = outcome(400, R, []) ) )
-    ;  error_result("ambiguous_resource", "tree: missing resource target", R), Outcome = outcome(400, R, []) ).
+    % Same ladder as `get`, with the two empties COLLAPSED rather than split:
+    % EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an empty
+    % effective list IS the absent case" applies in its unscoped form and both empties
+    % answer `path_required`. That is the same table the `get` arm cites, read one row
+    % down -- the field is per-operation and neither answer is derivable from this
+    % handler's source.
+    %
+    % Note the code change 0.8.2.20 forced: this branch answered `ambiguous_resource` for
+    % a MISSING target, which 0.8.2.20 names as the exact inversion it forbids ("answering
+    % ambiguous_resource for an absent resource inverts them"). The remedies differ --
+    % *supply a resource* is not *disambiguate your request* -- and the code selects.
+    (   effective_targets(Local, Exec, Eff), Eff \== []
+    ->  tree_put_ladder(Local, StoreId, Exec, CallerCap, Pattern, Eff, Outcome)
+    ;   error_result("path_required", "tree: put requires a resource target", R),
+        Outcome = outcome(400, R, []) ).
+
+tree_put_ladder(_, _, _, _, _, [_, _|_], outcome(400, R, [])) :- !,
+    error_result("ambiguous_resource", "tree: more than one effective target", R).
+tree_put_ladder(Local, StoreId, Exec, CallerCap, Pattern, [Target], Outcome) :-
+    (  \+ path_flex_ok(Target)
+    -> error_result("invalid_path", Target, R), Outcome = outcome(400, R, [])
+    ;  is_pattern_path(Target)
+    -> error_result("malformed_resource", Target, R), Outcome = outcome(400, R, [])
+    ;  canonicalize(Local, Target, Path),
+       % §6.3 (see the `get` arm): the CALLER's capability must cover the path this
+       % handler is about to write, because the caller's own exclude can vacate the
+       % dispatch-level check.
+       (  CallerCap \== (-),
+          \+ check_path_permission(Local, "put", Path, CallerCap, Pattern)
+       -> error_result("capability_denied", Path, R), Outcome = outcome(403, R, [])
+       ;  ent_entity(Exec, "params", Params), ent_field(Params, "entity", RawEntity)
+       -> ( cas_ok(StoreId, Path, Params)
+          -> admit_put(RawEntity, Admission),
+             ( Admission = admitted(Entity)
+             -> store_bind(StoreId, Path, Entity),
+                entity_hash(Entity, H), string_codes(H, HC),
+                make_entity("system/hash", map(["hash"-bytes(HC)]), HashE),
+                Outcome = outcome(200, HashE, [])
+             ;  Admission = refused(Outcome) )
+          ;  error_result("hash_mismatch", Path, R), Outcome = outcome(409, R, []) )
+       ;  error_result("unexpected_params", "put: missing entity", R),
+          Outcome = outcome(400, R, []) ) ).
+
+% A §5.4 PATTERN rather than a concrete path. A resource-requiring operation takes a
+% concrete path (0.8.2.20); a trailing "/" is a LISTING request, not a pattern -- only a
+% "*" makes it one.
+is_pattern_path(Target) :- sub_string(Target, _, _, _, "*"), !.
 
 % ── §6.3 put admission (normative, 0.8.2.11) ──
 %
@@ -731,7 +840,7 @@ path_flex_ok(Target) :-
     forall(member(S, Body), ( S \== "", S \== ".", S \== ".." )).
 
 % ── capability handler (§6.2) ──
-handle_op("system/capability", "request", ctx(Peer, Env, Exec, CallerCap, _), Outcome) :- !,
+handle_op("system/capability", "request", ctx(Peer, Env, Exec, CallerCap, _, _), Outcome) :- !,
     ( ent_bytes(Exec, "author", Author)
     -> % Bind Params to the (-) sentinel when absent rather than leaving it a fresh
        % variable: the §5.6 ceiling reads ttl_ms off it, and an unbound term would
@@ -746,7 +855,7 @@ handle_op("system/capability", "request", ctx(Peer, Env, Exec, CallerCap, _), Ou
 % parent MUST be present and non-zero (else 400, before the same-peer gate so a
 % malformed delegate is 400 not 501). delegate is same-peer-only in v1 (closeout
 % F1): a remote author (author != local identity hash) → 501, not 403.
-handle_op("system/capability", "delegate", ctx(Peer, Env, Exec, CallerCap, _), Outcome) :- !,
+handle_op("system/capability", "delegate", ctx(Peer, Env, Exec, CallerCap, _, _), Outcome) :- !,
     peer_identity(Peer, Identity), identity_hash(Identity, LocalHash),
     ( ent_entity(Exec, "params", Params), ent_bytes(Params, "parent", ParentH), \+ all_zero(ParentH)
     -> ( ent_bytes(Exec, "author", Author)
@@ -758,7 +867,7 @@ handle_op("system/capability", "delegate", ctx(Peer, Env, Exec, CallerCap, _), O
        ;  error_result("capability_denied", "", R), Outcome = outcome(403, R, []) )
     ;  error_result("unexpected_params", "delegate: parent required", R), Outcome = outcome(400, R, []) ).
 
-handle_op("system/capability", "revoke", ctx(Peer, _, Exec, _, _), Outcome) :- !,
+handle_op("system/capability", "revoke", ctx(Peer, _, Exec, _, _, _), Outcome) :- !,
     peer_local_peer(Peer, Local), peer_store(Peer, StoreId),
     ( ent_entity(Exec, "params", Params), ent_bytes(Params, "token", TokenH), \+ all_zero(TokenH)
     -> now_ms(Now), string_codes(TokenH, TC),
@@ -770,7 +879,7 @@ handle_op("system/capability", "revoke", ctx(Peer, _, Exec, _, _), Outcome) :- !
        empty_params(EP), Outcome = outcome(200, EP, [])
     ;  error_result("unexpected_params", "revoke: missing token", R), Outcome = outcome(400, R, []) ).
 
-handle_op("system/capability", "configure", ctx(Peer, _, Exec, _, _), Outcome) :- !,
+handle_op("system/capability", "configure", ctx(Peer, _, Exec, _, _, _), Outcome) :- !,
     peer_local_peer(Peer, Local), peer_store(Peer, StoreId),
     ( ent_entity(Exec, "params", Params), ent_text(Params, "peer_pattern", PP)
     -> ( peer_pattern_ok(PP)
@@ -792,13 +901,13 @@ is_full_hex_hash(PP) :-
     forall(member(C, Cs), ( (C >= 0'0, C =< 0'9) ; (C >= 0'a, C =< 0'f) )).
 
 % ── handlers handler (§6.2 / §6.13(a) register live-hook) ──
-handle_op("system/handler", "register", ctx(Peer, _, Exec, _, _), Outcome) :- !,
+handle_op("system/handler", "register", ctx(Peer, _, Exec, _, _, _), Outcome) :- !,
     handle_register(Peer, Exec, Outcome).
-handle_op("system/handler", "unregister", ctx(Peer, _, Exec, _, _), Outcome) :- !,
+handle_op("system/handler", "unregister", ctx(Peer, _, Exec, _, _, _), Outcome) :- !,
     handle_unregister(Peer, Exec, Outcome).
 
 % ── §7a conformance handlers (only reachable when bootstrapped under --validate) ──
-handle_op("system/validate/echo", "echo", ctx(_, _, Exec, _, _), Outcome) :- !,
+handle_op("system/validate/echo", "echo", ctx(_, _, Exec, _, _, _), Outcome) :- !,
     ( ent_entity(Exec, "params", P) -> Outcome = outcome(200, P, [])
     ; error_result("invalid_params", "echo requires a params entity", R), Outcome = outcome(400, R, []) ).
 
@@ -808,7 +917,7 @@ handle_op("system/validate/echo", "echo", ctx(_, _, Exec, _, _), Outcome) :- !,
 % reentry direction can only be authorized by the caller, who carries the cap it
 % minted for this peer in-band (reentry_capability + its granter peer + its sig).
 handle_op("system/validate/dispatch-outbound", "dispatch",
-          ctx(Peer, _, Exec, _, Outbound), Outcome) :- !,
+          ctx(Peer, _, Exec, _, Outbound, _), Outcome) :- !,
     ( ent_entity(Exec, "params", P),
       ent_text(P, "target", Target), ent_text(P, "operation", Op),
       ent_field(P, "value", Value),
@@ -967,17 +1076,48 @@ target_is_listing(Target) :- ( Target == "" -> true ; sub_atom_suffix(Target, "/
 sub_atom_suffix(S, Suf) :- string_length(Suf, SL), string_length(S, L), L >= SL,
                            Start is L - SL, sub_string(S, Start, SL, 0, Suf).
 
-build_listing(StoreId, Path, outcome(200, ListingE, [])) :-
+% Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+%
+% "When any handler returns a multi-entry result whose entries are tree paths, each entry
+% MUST be individually checked using check_path_permission. Entries for which
+% check_path_permission returns DENY MUST be omitted. The result's `count` field MUST
+% reflect the filtered entry count, not the source tree's total count."
+%
+% This is the read path at its highest volume and it is the reason 0.8.2.21 refused to
+% carve reads out of the caller-specified-path rule: an unfiltered listing discloses the
+% EXISTENCE of every binding under a prefix to a caller whose capability covers none of
+% them. A `count` following the SOURCE total is that disclosure by itself, which is why
+% it is the length of the FILTERED list -- the same list the entries are built from, so
+% the two cannot drift.
+%
+% The DIRECTORY itself is deliberately NOT checked -- §6.3 makes each ENTRY the subject,
+% and testing the prefix would deny a listing to a caller whose grant covers children but
+% not the node above them, which is the ordinary shape of a narrowed grant.
+build_listing(StoreId, Path, CallerCap, Pattern, Local, outcome(200, ListingE, [])) :-
     store_listing(StoreId, Path, Entries0),
     % CORE-TREE-DELETE-1 / §6.3: omit leaf entries bound to a system/deletion-marker
     % (a delete is a put of a deletion-marker; the listing must not show the path).
-    include(visible_entry(StoreId), Entries0, Entries),
+    include(visible_entry(StoreId), Entries0, Entries1),
+    include(entry_permitted(Local, CallerCap, Pattern, Path), Entries1, Entries),
     findall(Seg-EntryV, ( member(entry(Seg, Hash, Deeper), Entries),
                           listing_entry_value(Hash, Deeper, EntryV) ), Pairs),
     length(Entries, Count),
     make_entity("system/tree/listing",
                 map(["path"-Path, "entries"-map(Pairs), "count"-int(Count), "offset"-int(0)]),
                 ListingE).
+
+% §6.3's per-entry listing check for one child segment (0.8.2.21/.22).
+%
+% An unauthenticated context is the bootstrap/internal path and is NOT filtered: the
+% filter's subject is "the caller's verified capability", and where there is none there
+% is no caller to narrow. On this peer handle_op/4 is only ever reached with a resolved
+% capability, so the (-) arm is the internal-call path rather than a wire one -- stated
+% here so the next reader does not have to derive it from permission_then_handle/6.
+entry_permitted(_Local, (-), _Pattern, _Dir, _Entry) :- !.
+entry_permitted(Local, CallerCap, Pattern, Dir, entry(Seg, _, _)) :-
+    ( sub_atom_suffix(Dir, "/") -> DirSlash = Dir ; string_concat(Dir, "/", DirSlash) ),
+    string_concat(DirSlash, Seg, Child),
+    check_path_permission(Local, "get", Child, CallerCap, Pattern).
 
 % an entry is visible unless it is a bound leaf whose entity is a deletion-marker.
 visible_entry(_, entry(_, _, true)) :- !.            % has children → keep (prefix)

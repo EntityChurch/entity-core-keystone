@@ -79,6 +79,7 @@
   :pathname "test/"
   :serial t
   :components ((:file "conformance")
-               (:file "selftest"))
+               (:file "selftest")
+               (:file "spec-0825"))
   :perform (test-op (op c)
              (uiop:symbol-call :entity-core/test :run-all)))

@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import '../codec/ecf.dart';
+import '../errors.dart';
 import '../codec/ecf_value.dart';
 import '../crypto/content_hash.dart';
 import 'cbor.dart';
@@ -70,7 +71,10 @@ final class Entity {
     final e = Entity.makeRaw(typeV.value, dataV);
     final carried = m['content_hash'];
     if (carried is EcfBytes && !octetsEqual(carried.octets, e._hash)) {
-      throw ArgumentError('content_hash mismatch (§1.8 fidelity)');
+      // §5.2a (0.8.2.24 N4/N5): a decode-boundary refusal on RESOLUTION INTEGRITY
+      // answers `400 hash_mismatch`; `non_canonical_ecf` is declared non-conformant
+      // here. Same rejection, a type the §4.11 classifier can dispatch on.
+      throw const DecodeRefusal(HashMismatch('content_hash does not bind'));
     }
     return e;
   }

@@ -39,6 +39,16 @@ class Peer private constructor(
     private val conformance: Boolean,  // --validate: §7a system/validate/(star) handlers
 ) {
     private val handlers = HashMap<String, Handler>() // pattern → handler
+
+    /**
+     * The handler registered at a peer-relative pattern, or null.
+     *
+     * `internal`: it exists so a gate can drive ONE handler with a hand-built
+     * [HandlerContext], which is how §6.3's listing filter is measured — the narrow grant
+     * is the whole input there, and minting one over the wire would put three more moving
+     * parts between the assertion and the thing asserted.
+     */
+    internal fun handlerFor(pattern: String): Handler? = handlers[pattern]
     private val rng = SecureRandom()
 
     // ── randomness (nonce; §4.6 SHOULD ≥32-byte CSPRNG) ───────────────────────────
@@ -335,6 +345,13 @@ class Peer private constructor(
 
     /** §6.3 — the tree handler (get / put). */
     private inner class TreeHandler : Handler {
+        /**
+         * RESOLVE THE OPERATION FIRST; only then run the §3.3 resource ladder. This `when`
+         * is what makes that true: a handler that validates the resource first answers a
+         * RESOURCE fault for an unknown-OPERATION request, so `system/tree:bogusop` with no
+         * `resource` reports `ambiguous_resource` where §3.3 pins
+         * `501 unsupported_operation`.
+         */
         override suspend fun handle(operation: String, ctx: HandlerContext): Outcome = when (operation) {
             "get" -> get(ctx)
             "put" -> put(ctx)
@@ -343,13 +360,51 @@ class Peer private constructor(
 
         private fun get(ctx: HandlerContext): Outcome {
             val exec = ctx.exec
-            val target = execResourceTarget(exec)
-            if (target != null && !pathFlexOk(target)) return Outcome.err(400, "invalid_path", target)
-            if (target == null) return buildListing("/$localPeer/")
-            if (target.isEmpty() || target.last() == '/') {
-                return buildListing(Capability.canonicalize(localPeer, target))
+            // §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+            // `resource.targets`: a handler that counts the effective list and then indexes
+            // `targets[0]` has implemented the arithmetic completely and is still reading a
+            // path no authorization covered. This peer did not even count — it read
+            // `targets[0]` and answered 200 — so `targets:[a,b] exclude:[a]` served `a`.
+            val eff = Capability.effectiveTargets(localPeer, exec)
+            if (!eff.hasResource) {
+                // THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION
+                // IS WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is
+                // scoped "for an operation that REQUIRES a resource" (0.8.2.24, N7); `get`
+                // does not. For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the
+                // present-but-empty case by whether the absent case is WIDER than the
+                // request — BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty.
+                //
+                // EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+                // resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root
+                // listing", self-excluded case "400 path_required". Both arms are pinned by
+                // text and neither is this peer's choice.
+                return buildListing(ctx, "/$localPeer/")
             }
+            if (eff.survivors.isEmpty()) {
+                // `resource` PRESENT, every target carved out by the caller's own exclude.
+                // Serving it the absent case "answers a request for one excluded path with
+                // a listing of the tree" (EXTENSION-TREE §2.2a).
+                return Outcome.err(400, "path_required", "tree: effective target list is empty")
+            }
+            if (eff.survivors.size > 1) {
+                return Outcome.err(400, "ambiguous_resource", "tree: more than one effective target")
+            }
+            val target = eff.survivors[0]
+            if (!pathFlexOk(target)) return Outcome.err(400, "invalid_path", target)
+            if (target.isEmpty() || target.last() == '/') {
+                return buildListing(ctx, Capability.canonicalize(localPeer, target))
+            }
+            // A resource-requiring operation takes a CONCRETE path (0.8.2.20). Without this
+            // the pattern is looked up as a literal and answers `404 not_found`, which names
+            // the wrong fault: the request is malformed, the tree is fine.
+            if (isPatternPath(target)) return Outcome.err(400, "malformed_resource", target)
             val path = Capability.canonicalize(localPeer, target)
+            // §6.3: the handler MUST verify the CALLER's capability covers the path it is
+            // about to read. NOT a secondary check — the dispatch-level check never saw this
+            // path if the caller excluded it.
+            if (!authorizePath(ctx, "get", path)) {
+                return Outcome.err(403, "capability_denied", "capability does not cover path")
+            }
             val e = store.getAt(path) ?: return Outcome.err(404, "not_found", path)
             val mode = exec.entityField("params")?.text("mode")
             if (mode == "hash") {
@@ -357,6 +412,31 @@ class Peer private constructor(
             }
             return Outcome.ok(e)
         }
+
+        /**
+         * §6.3's per-path authorization, against the CALLER's verified capability and the
+         * OWNING handler's pattern — both carried on the context by the dispatcher, which
+         * already computed them.
+         *
+         * An UNAUTHENTICATED context (no capability) is NOT filtered: the filter's subject
+         * is "the caller's verified capability", and where there is none there is no caller
+         * to narrow. That is the bootstrap path, and it matches both vanguard peers. On this
+         * peer every reachable tree dispatch carries a capability — `dispatchInner` refuses
+         * a missing one with 403 before any handler runs, and the connect handler is the
+         * sole null case — so the branch is unreachable today and is written for the rule
+         * rather than for a caller.
+         */
+        private fun authorizePath(ctx: HandlerContext, operation: String, path: String): Boolean {
+            val cap = ctx.callerCap ?: return true
+            return Capability.checkPathPermission(localPeer, operation, path, cap, ctx.pattern)
+        }
+
+        /**
+         * A §5.4 PATTERN rather than a concrete path. A resource-requiring operation takes a
+         * CONCRETE path (0.8.2.20), and a trailing `/` is a listing request rather than a
+         * pattern — only a `*` makes it one.
+         */
+        private fun isPatternPath(target: String): Boolean = target.contains('*')
 
         /**
          * Digest byte length for a `content_hash_format` code per the §1.2 seed table,
@@ -438,10 +518,31 @@ class Peer private constructor(
 
         private fun put(ctx: HandlerContext): Outcome {
             val exec = ctx.exec
-            val target = execResourceTarget(exec)
-                ?: return Outcome.err(400, "ambiguous_resource", "tree: missing resource target")
+            // Same ladder as `get`, with the two empties COLLAPSED rather than split:
+            // EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an
+            // empty effective list IS the absent case" applies in its unscoped form and both
+            // empties answer `path_required`. That is the same table `get`'s branch cites,
+            // one row down.
+            //
+            // Note the code 0.8.2.20 forces: a MISSING target is `path_required`, never
+            // `ambiguous_resource` — 0.8.2.20 names that inversion outright, because *supply
+            // a resource* is not *disambiguate your request* and the code is what selects the
+            // remedy. This peer answered `ambiguous_resource` for both.
+            val eff = Capability.effectiveTargets(localPeer, exec)
+            if (!eff.hasResource || eff.survivors.isEmpty()) {
+                return Outcome.err(400, "path_required", "tree: put requires a resource target")
+            }
+            if (eff.survivors.size > 1) {
+                return Outcome.err(400, "ambiguous_resource", "tree: more than one effective target")
+            }
+            val target = eff.survivors[0]
             if (!pathFlexOk(target)) return Outcome.err(400, "invalid_path", target)
+            if (isPatternPath(target)) return Outcome.err(400, "malformed_resource", target)
             val path = Capability.canonicalize(localPeer, target)
+            // §6.3 / §6.8: the caller's capability MUST cover the path it names.
+            if (!authorizePath(ctx, "put", path)) {
+                return Outcome.err(403, "capability_denied", "capability does not cover path")
+            }
             val params = exec.entityField("params")
             val rawEntity = params?.field("entity")
             val expected = params?.bytes("expected_hash")
@@ -460,8 +561,30 @@ class Peer private constructor(
             return Outcome.ok(Entity.make("system/hash", Cbor.map("hash", Cbor.bytes(entity.hash()))))
         }
 
-        private fun buildListing(path: String): Outcome {
-            val entries = store.listing(path).filterNot { row ->
+        /**
+         * Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+         *
+         * *"When any handler returns a multi-entry result whose entries are tree paths, each
+         * entry MUST be individually checked using `check_path_permission`. Entries for
+         * which `check_path_permission` returns DENY MUST be omitted. The result's `count`
+         * field MUST reflect the filtered entry count, not the source tree's total count."*
+         *
+         * This is the read path at its highest volume and it is the reason 0.8.2.21 refused
+         * to carve reads out of the caller-specified-path rule: an unfiltered listing
+         * discloses the EXISTENCE of every binding under a prefix to a caller whose
+         * capability covers none of them.
+         *
+         * The DIRECTORY itself is deliberately NOT checked — §6.3 makes each ENTRY the
+         * subject, and testing the prefix would deny a listing to a caller whose grant covers
+         * children but not the node above them, which is the ordinary shape of a narrowed
+         * grant.
+         */
+        private fun buildListing(ctx: HandlerContext, path: String): Outcome {
+            val prefix = if (path.endsWith("/")) path else "$path/"
+            val entries = store.listing(path).filter { row ->
+                // §6.3's per-entry check (0.8.2.21/.22).
+                authorizePath(ctx, "get", prefix + row.segment)
+            }.filterNot { row ->
                 row.hashHex != null && !row.hasChildren && isDeletionMarker(Cbor.unhex(row.hashHex))
             }
             val entryPairs = entries.map { row ->
@@ -479,6 +602,8 @@ class Peer private constructor(
                     Cbor.map(
                         "path", path,
                         "entries", EcfValue.MapVal(entryPairs),
+                        // `count` follows the FILTERED total. A count that still reports
+                        // the source total is the disclosure the rule exists to prevent.
                         "count", EcfValue.IntVal.of(entries.size.toLong()),
                         "offset", EcfValue.IntVal.of(0L),
                     ),
@@ -654,7 +779,7 @@ class Peer private constructor(
             val pattern = registerPattern(exec) ?: return registerPatternError(exec)
             if (isReservedSystemPattern(pattern)) {
                 return Outcome.err(403, "forbidden_pattern",
-                    "§6.2: user-installed handlers MUST NOT register at system/* paths: $pattern")
+                    "section 6.2: user-installed handlers MUST NOT register at system/* paths: $pattern")
             }
             val req = exec.entityField("params") ?: return Outcome.err(400, "unexpected_params", "register: missing params")
             if (req.type != "system/handler/register-request") {
@@ -744,7 +869,7 @@ class Peer private constructor(
             val inner = Entity.make("primitive/any", innerData)
             val resource = Wire.resourceTarget("system/handler/$target")
             val env = outboundDispatch(ctx.conn, target, operationField, inner, capability, granterPeer, capSig, resource)
-                ?: return Outcome.err(503, "no_outbound_seam", "no live §6.11 reentry connection")
+                ?: return Outcome.err(503, "no_outbound_seam", "no live section 6.11 reentry connection")
             val status = env.root.uint("status") ?: BigInteger.ZERO
             val resultCbor = env.root.field("result") ?: Cbor.emptyMap()
             return Outcome.ok(Entity.make("primitive/any", Cbor.map("status", status, "result", resultCbor)))
@@ -856,7 +981,7 @@ class Peer private constructor(
         val operation = exec.text("operation") ?: ""
         if (uri == "system/protocol/connect") {
             return handlers.getValue("system/protocol/connect")
-                .handle(operation, HandlerContext(exec, conn, env.included, null, env))
+                .handle(operation, HandlerContext(exec, conn, env.included, null, env, "system/protocol/connect"))
         }
         ingestSignatures(env)
         // §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to
@@ -889,7 +1014,7 @@ class Peer private constructor(
         }
         val stripped = stripLocal(pattern)
         val inst = handlers[stripped]
-        return inst?.handle(operation, HandlerContext(exec, conn, env.included, callerCap, env))
+        return inst?.handle(operation, HandlerContext(exec, conn, env.included, callerCap, env, pattern))
             ?: entityNativeDispatch(pattern)
     }
 

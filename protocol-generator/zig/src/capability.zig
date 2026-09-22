@@ -134,8 +134,11 @@ pub fn canonicalize(arena: std.mem.Allocator, local_peer: []const u8, path: []co
 /// AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
 /// in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an
 /// exclude (carves out nothing), so the reading is chosen where the POSITION is known
-/// and matchesPattern stays uniform over its operands. The guard sits outside the
-/// scope-type dispatch, transcribing §5.2's loop literally.
+/// and matchesPattern stays uniform over its operands.
+///
+/// PATH-SCOPE ONLY (0.8.2.24, N2/N3) — every caller must gate this on the dimension's
+/// scope type. The two live callers do: `matchesScope` tests `kind == .path`, and
+/// `checkResourceScope` is the RESOURCES dimension, which is path-scope by definition.
 fn excludeIsUnmatchable(arena: std.mem.Allocator, frame: []const u8, excl: []const []const u8) Error!bool {
     for (excl) |p| {
         if (std.mem.eql(u8, try canonicalize(arena, frame, p), never_match)) return true;
@@ -191,7 +194,23 @@ fn coveredId(value: []const u8, pats: []const []const u8) bool {
 }
 
 fn matchesScope(arena: std.mem.Allocator, local_peer: []const u8, value: []const u8, s: Scope, kind: ScopeKind) Error!bool {
-    if (try excludeIsUnmatchable(arena, local_peer, s.excl)) return false; // 0.8.2.21 — deny
+    // SCOPED TO PATH-SCOPE (0.8.2.24, N2/N3). §5.2's exclude loop now tests the
+    // sentinel INSIDE `if dimension_type == "system/capability/path-scope"`, and
+    // §5.4 says the same from the other side: "a capability carrying an unmatchable
+    // PATH-SCOPE pattern is INVALID ... It does NOT reach `operations` or `peers`
+    // [MUST]". This guard was UNCONDITIONAL until 0.8.2.24 — which was the text at
+    // the time (F82 was our own ask, and the grant created this work) — and under it
+    // an ordinary namespaced operation name like "*/apply" path-canonicalizes to the
+    // sentinel and DENIES THE WHOLE DIMENSION. Over-denial, invisible on well-formed
+    // grants.
+    //
+    // The two id-scope dimensions reach `coveredId`'s literal arm below unguarded,
+    // which is correct: under §3.6's id-scope grammar every non-`*` pattern is a
+    // literal and a literal is never structurally unmatchable, so there is nothing
+    // here for the sentinel to detect. §5.4 says so outright and leaves the id-scope
+    // form of the carves-out-nothing hazard deliberately open rather than minting a
+    // second sentinel for it — a scope boundary, not an omission.
+    if (kind == .path and try excludeIsUnmatchable(arena, local_peer, s.excl)) return false; // 0.8.2.21 — deny
     if (kind == .id) {
         return coveredId(value, s.incl) and !coveredId(value, s.excl);
     }
@@ -276,6 +295,128 @@ pub fn checkPermission(arena: std.mem.Allocator, local_peer: []const u8, granter
     return .deny;
 }
 
+// ── §5.2 effective targets and §6.3 check_path_permission ────────────────────
+
+/// The result of §5.2's effective-target derivation. The PAIR is the point: see
+/// `effectiveTargets`.
+pub const Effective = struct {
+    /// Survivors in the CALLER'S OWN SPELLING, not canonicalized.
+    survivors: []const []const u8,
+    /// Was a `resource` carrying a `targets` key present at all?
+    had_resource: bool,
+};
+
+/// effectiveTargets derives §5.2's effective target list (0.8.2.20): the caller's own
+/// `resource.exclude` removes entries from the request BEFORE anything else looks at it.
+///
+/// The survivors come back in the caller's OWN SPELLING, not canonicalized — 0.8.2.21
+/// is explicit that `effective_targets` yields raw survivors, and the distinction is
+/// load-bearing here because the value flows on to `store.getAt`, which canonicalizes
+/// for itself.
+///
+/// `had_resource` says whether a `resource` was present at all. An ABSENT resource and
+/// a resource whose every target was excluded are different inputs to §3.3, and for a
+/// resource-OPTIONAL operation 0.8.2.24 (N7) makes them DIFFERENT REQUESTS with
+/// different answers rather than merely different inputs to one.
+///
+/// THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES [MUST] (0.8.2.25, N11): "where an
+/// implementation projects resource.targets onto the effective set ahead of the handler,
+/// that projection MUST NOT be lossy about its own emptiness — narrow when narrowing
+/// leaves something, and retain the raw pair when narrowing would empty it." A function
+/// returning only a list cannot satisfy that: collapsing `[qA] exclude [qA]` to `[]`
+/// deletes the two-empties discriminator before any handler can read it.
+///
+/// "Every seam that narrows is exempted alike, inbound-wire and in-process
+/// sub-dispatch." This peer has exactly ONE narrowing seam — this function, called by
+/// the tree handler — and §6.5's dispatch chain does not project: `dispatchOutcome`
+/// passes `exec` through untouched and `checkPermission` reads `resource` for itself.
+/// So there is no second door to keep in step, and adding a projection at dispatch
+/// would create one.
+///
+/// A PRESENT-BUT-ILL-TYPED `targets` IS **PRESENT**: `textList` of a non-array yields an
+/// empty survivor list rather than "absent", so `{"targets": 42}` answers the
+/// present-but-empty disposition and never the WIDER absent-case one. That is N11's own
+/// defect one field over, and it is the cell the two vanguards initially disagreed on.
+pub fn effectiveTargets(arena: std.mem.Allocator, local_peer: []const u8, exec: Entity) Error!Effective {
+    const absent = Effective{ .survivors = &.{}, .had_resource = false };
+    const r = exec.field("resource") orelse return absent;
+    switch (r) {
+        .map => {},
+        else => return absent,
+    }
+    if (model.mapGet(r, "targets") == null) return absent;
+    const targets = try textList(arena, model.mapGet(r, "targets"));
+    const caller_excl = try textList(arena, model.mapGet(r, "exclude"));
+    var out: std.ArrayList([]const u8) = .empty;
+    for (targets) |t| {
+        const ct = try canonicalize(arena, local_peer, t);
+        var dropped = false;
+        for (caller_excl) |x| {
+            // The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4's
+            // table rules it separately from the grant arm): canonicalize answers
+            // never_match and matchesPattern then answers false, so the target simply
+            // SURVIVES. That asymmetry is 0.8.2.21's whole point and it is INHERITED
+            // from the primitives here, never restated.
+            if (matchesPattern(ct, try canonicalize(arena, local_peer, x))) {
+                dropped = true;
+                break;
+            }
+        }
+        if (!dropped) try out.append(arena, t);
+    }
+    return .{ .survivors = try out.toOwnedSlice(arena), .had_resource = true };
+}
+
+/// checkPathPermission is §6.3's handler-level path check.
+///
+/// IT IS NOT A SECONDARY CHECK (§6.3, 0.8.2.20). It is the enforcement wherever the
+/// subject is derived after dispatch, and the dispatch-level check can be made VACUOUS
+/// by caller-controlled input: a caller who excludes the one target its capability does
+/// not cover removes that target from `checkPermission`'s view entirely, and a handler
+/// that then acts on it has authorized nothing.
+///
+/// THREE DIMENSIONS, NOT FOUR. `peers` is not consulted — the path is local by
+/// construction at this point (§1.4's inbound rule refuses a foreign namespace at §6.5
+/// step 3, before any handler runs), and §6.3's signature names only handlers,
+/// operations and resources.
+///
+/// THE FRAME IS `local_peer_id`, NOT THE GRANTER, and that is the spec's own signature
+/// rather than a choice: §6.3's block reads `matches_scope(canonical_path,
+/// grant.resources, "path-scope", local_peer_id)` — there is no granter parameter to
+/// pass. §5.5a governs chain ATTENUATION, where the subject is a PATTERN compared
+/// against a parent's pattern; this call site compares a CONCRETE LOCAL PATH the
+/// handler is about to touch. Adding a frame here is the over-scoping defect this
+/// cohort has recorded three times.
+///
+/// There is no caller-exclude set at this call site: the subject is a single concrete
+/// path and the caller's exclusions have already been applied in deriving it. Every
+/// grant exclude covering the subject therefore denies — which `matchesScope` already
+/// implements, including 0.8.2.21's sentinel rule, so this function is three calls to
+/// it and nothing else. An empty `resources.include` is a legal grant shape (§5.2:
+/// handlers that touch no tree paths) and DENIES every path here, which is what that
+/// note says it should: coverage over an empty include list is false.
+pub fn checkPathPermission(
+    arena: std.mem.Allocator,
+    local_peer: []const u8,
+    operation: []const u8,
+    path: []const u8,
+    token: Entity,
+    handler_pattern: []const u8,
+) Error!bool {
+    // canonicalize is TOTAL and may answer never_match, which matches no grant (§5.4)
+    // — so a malformed path falls through to DENY rather than being matched against
+    // anything.
+    const cp = try canonicalize(arena, local_peer, path);
+    const grants = try grantsOfToken(arena, token);
+    for (grants) |g| {
+        if (!try matchesScope(arena, local_peer, handler_pattern, g.handlers, .path)) continue;
+        if (!try matchesScope(arena, local_peer, operation, g.operations, .id)) continue;
+        if (!try matchesScope(arena, local_peer, cp, g.resources, .path)) continue;
+        return true;
+    }
+    return false;
+}
+
 // ── §5.5 / §5.6 chain verification + attenuation ─────────────────────────────
 
 pub fn resolve(env: model.Envelope, st: *Store, h: []const u8) ?Entity {
@@ -326,12 +467,51 @@ fn linkGranterPeer(arena: std.mem.Allocator, env: model.Envelope, st: *Store, lo
     return try identity.peerIdOfPubkey(arena, pk);
 }
 
-fn scopeSubset(arena: std.mem.Allocator, child_peer: []const u8, parent_peer: []const u8, child: Scope, parent: Scope) Error!bool {
+/// §5.5a subset check: every child include must be covered by some parent include,
+/// and every parent exclude must be inherited by some child exclude.
+///
+/// TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16; `entity-core-formalization` K-7).
+/// §3.6's id-scope grammar binds the scope TYPE, not one function — "An implementation
+/// on the canonicalizing reading is non-conformant and MUST adopt the literal matcher"
+/// — so the rule F40 landed on `matchesScope` reaches here too, with delegation-chain
+/// WIDENING named as the reason: on the canonicalizing reading `/tree/get` is covered
+/// by `*` in one direction and `*/apply` is not, so a child grant can come out WIDER
+/// than its parent. `lean`'s differential put it at 2 of 64 include pairs and 2 of 64
+/// exclude pairs, fail-closed, with a 16-pair control alphabet reporting 0 — which is
+/// why every hand-tried example missed it.
+///
+/// `kind` has NO DEFAULT and is named at every call site, because a default is how the
+/// next dimension inherits the wrong matcher silently — the original F40 defect.
+/// handlers/resources -> .path; operations/peers -> .id. The per-link granter frames
+/// are meaningless on the .id arm (an id pattern is never canonicalized) and are simply
+/// unread there rather than being a second parameter to get wrong.
+fn scopeSubset(arena: std.mem.Allocator, child_peer: []const u8, parent_peer: []const u8, child: Scope, parent: Scope, kind: ScopeKind) Error!bool {
+    const frame = struct {
+        fn f(a: std.mem.Allocator, peer: []const u8, p: []const u8, k: ScopeKind) Error![]const u8 {
+            return switch (k) {
+                .path => canonicalize(a, peer, p),
+                .id => p,
+            };
+        }
+    }.f;
+    // `covers(pattern, value)` — matchesPattern for path-scope, the §3.6 literal
+    // matcher for id-scope. matchesPattern already refuses the §5.4 sentinel in
+    // EITHER operand (RULE F: the guard is a property of the matcher here, so every
+    // path reaching a decision inherits it), and an id pattern never canonicalizes,
+    // so the sentinel cannot arise on that arm at all.
+    const covers = struct {
+        fn f(pattern_side: []const u8, value_side: []const u8, k: ScopeKind) bool {
+            return switch (k) {
+                .path => matchesPattern(value_side, pattern_side),
+                .id => matchesIdPattern(value_side, pattern_side),
+            };
+        }
+    }.f;
     for (child.incl) |cp| {
-        const cc = try canonicalize(arena, child_peer, cp);
+        const cc = try frame(arena, child_peer, cp, kind);
         var found = false;
         for (parent.incl) |pp| {
-            if (matchesPattern(cc, try canonicalize(arena, parent_peer, pp))) {
+            if (covers(try frame(arena, parent_peer, pp, kind), cc, kind)) {
                 found = true;
                 break;
             }
@@ -339,10 +519,10 @@ fn scopeSubset(arena: std.mem.Allocator, child_peer: []const u8, parent_peer: []
         if (!found) return false;
     }
     for (parent.excl) |pe| {
-        const cpe = try canonicalize(arena, parent_peer, pe);
+        const cpe = try frame(arena, parent_peer, pe, kind);
         var found = false;
         for (child.excl) |ce| {
-            if (matchesPattern(cpe, try canonicalize(arena, child_peer, ce))) {
+            if (covers(try frame(arena, child_peer, ce, kind), cpe, kind)) {
                 found = true;
                 break;
             }
@@ -353,12 +533,15 @@ fn scopeSubset(arena: std.mem.Allocator, child_peer: []const u8, parent_peer: []
 }
 
 fn grantSubset(arena: std.mem.Allocator, local_peer: []const u8, child_peer: []const u8, parent_peer: []const u8, child: Grant, parent: Grant) Error!bool {
-    if (!try scopeSubset(arena, local_peer, local_peer, child.handlers, parent.handlers)) return false;
-    if (!try scopeSubset(arena, local_peer, local_peer, child.operations, parent.operations)) return false;
-    if (!try scopeSubset(arena, child_peer, parent_peer, child.resources, parent.resources)) return false;
+    // The scope KIND is a property of the DIMENSION, named here, never defaulted
+    // (F50 / 0.8.2.16). Only RESOURCES takes the §5.5a per-link granter frames;
+    // handlers stays local, and the two id dimensions do not canonicalize at all.
+    if (!try scopeSubset(arena, local_peer, local_peer, child.handlers, parent.handlers, .path)) return false;
+    if (!try scopeSubset(arena, local_peer, local_peer, child.operations, parent.operations, .id)) return false;
+    if (!try scopeSubset(arena, child_peer, parent_peer, child.resources, parent.resources, .path)) return false;
     const cp = child.peers orelse Scope{ .incl = &.{local_peer}, .excl = &.{} };
     const pp = parent.peers orelse Scope{ .incl = &.{local_peer}, .excl = &.{} };
-    return scopeSubset(arena, local_peer, local_peer, cp, pp);
+    return scopeSubset(arena, local_peer, local_peer, cp, pp, .id);
 }
 
 fn isAttenuated(arena: std.mem.Allocator, local_peer: []const u8, child_peer: []const u8, parent_peer: []const u8, child: Entity, parent: Entity) Error!bool {
@@ -733,6 +916,207 @@ test "canonicalize peer-relative" {
     const a = arena_inst.allocator();
     try testing.expectEqualStrings("/peerX/system/tree", try canonicalize(a, "peerX", "system/tree"));
     try testing.expectEqualStrings("/peerX/system/tree", try canonicalize(a, "peerX", "/peerX/system/tree"));
+}
+
+// ── RULE B / RULE E / RULE A unit surface ────────────────────────────────────
+//
+// These drive the three §5 primitives directly rather than through the wire, which is
+// what lets each one carry its own ACCEPT case. arc-probe measures the same rules end
+// to end; a probe row and a unit assertion answer different questions and neither
+// substitutes for the other.
+
+test "§5.4 sentinel is scoped to PATH-SCOPE (0.8.2.24 N2/N3)" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+
+    // The DEFECT the scoping removes. `*/apply` is an ordinary namespaced OPERATION
+    // name; it path-canonicalizes to the sentinel, and under the unconditional guard
+    // this whole dimension denied — over-denial, invisible on well-formed grants.
+    const ops = Scope{ .incl = &.{"*"}, .excl = &.{"*/apply"} };
+    try testing.expect(try matchesScope(a, "peerX", "get", ops, .id));
+    // ... and the id-scope exclude still EXCLUDES its own literal, which is the control
+    // that says the dimension is being evaluated rather than waved through.
+    try testing.expect(!try matchesScope(a, "peerX", "*/apply", ops, .id));
+
+    // PATH-SCOPE keeps the guard: an unmatchable exclude there denies everything
+    // (0.8.2.21), because a path exclude that carves out nothing is a grant silently
+    // wider than its author wrote.
+    const res = Scope{ .incl = &.{"*"}, .excl = &.{"../nope"} };
+    try testing.expect(!try matchesScope(a, "peerX", "app/q", res, .path));
+    // Control: the same dimension with a MATCHABLE exclude still grants elsewhere.
+    const res_ok = Scope{ .incl = &.{"*"}, .excl = &.{"app/secret"} };
+    try testing.expect(try matchesScope(a, "peerX", "app/q", res_ok, .path));
+    try testing.expect(!try matchesScope(a, "peerX", "app/secret", res_ok, .path));
+}
+
+test "scope_subset is typed by scope kind (F50, 0.8.2.16)" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+
+    // THE INCLUDE PAIR THAT DISAGREES. Child operations include `*/apply`, parent `*`.
+    // Under §3.6's literal matcher `*` covers it and the child is a subset. Under the
+    // canonicalizing reading `*/apply` becomes the sentinel, matches nothing, and the
+    // pair is refused — fail-CLOSED, which is why no hand-tried example found it.
+    const child_ops = Scope{ .incl = &.{"*/apply"}, .excl = &.{} };
+    const parent_ops = Scope{ .incl = &.{"*"}, .excl = &.{} };
+    try testing.expect(try scopeSubset(a, "peerX", "peerX", child_ops, parent_ops, .id));
+
+    // THE EXCLUDE PAIR. A parent exclude must be INHERITED by some child exclude; under
+    // the canonicalizing reading an unmatchable exclude is not even inherited by an
+    // identical copy of itself, so a scope stops being a subset of ITSELF.
+    const both = Scope{ .incl = &.{"*"}, .excl = &.{"*/apply"} };
+    try testing.expect(try scopeSubset(a, "peerX", "peerX", both, both, .id));
+
+    // THE CONTROL, and it is what makes the two above measurements rather than a claim
+    // that the function says yes: a genuinely WIDER child is still refused on the id
+    // arm. `*` is not covered by the literal `get`.
+    const wider = Scope{ .incl = &.{"*"}, .excl = &.{} };
+    const narrow = Scope{ .incl = &.{"get"}, .excl = &.{} };
+    try testing.expect(!try scopeSubset(a, "peerX", "peerX", wider, narrow, .id));
+
+    // And the PATH arm is unchanged — it must still canonicalize, or §5.5a's per-link
+    // granter frames stop working.
+    const cpath = Scope{ .incl = &.{"app/q"}, .excl = &.{} };
+    const ppath = Scope{ .incl = &.{"app/*"}, .excl = &.{} };
+    try testing.expect(try scopeSubset(a, "peerX", "peerX", cpath, ppath, .path));
+    try testing.expect(!try scopeSubset(a, "peerX", "peerX", ppath, cpath, .path));
+}
+
+/// A capability token carrying exactly one grant, for the two tests below. Arena-owned.
+fn mkTokenOneGrant(
+    a: std.mem.Allocator,
+    handlers: []const u8,
+    operations: []const u8,
+    res_incl: []const []const u8,
+    res_excl: []const []const u8,
+) Error!Entity {
+    const lst = struct {
+        fn f(al: std.mem.Allocator, items: []const []const u8) Error!Value {
+            const arr = try al.alloc(Value, items.len);
+            for (items, 0..) |s, i| arr[i] = try model.textVal(al, s);
+            return .{ .array = arr };
+        }
+    }.f;
+    const sc = struct {
+        fn f(al: std.mem.Allocator, incl: []const []const u8, excl: []const []const u8) Error!Value {
+            var pr = try al.alloc(Value.Pair, 2);
+            pr[0] = .{ .key = try model.textVal(al, "exclude"), .value = try lst(al, excl) };
+            pr[1] = .{ .key = try model.textVal(al, "include"), .value = try lst(al, incl) };
+            return .{ .map = pr };
+        }
+    }.f;
+    var g = try a.alloc(Value.Pair, 3);
+    g[0] = .{ .key = try model.textVal(a, "handlers"), .value = try sc(a, &.{handlers}, &.{}) };
+    g[1] = .{ .key = try model.textVal(a, "operations"), .value = try sc(a, &.{operations}, &.{}) };
+    g[2] = .{ .key = try model.textVal(a, "resources"), .value = try sc(a, res_incl, res_excl) };
+    const grants = try a.alloc(Value, 1);
+    grants[0] = .{ .map = g };
+    var top = try a.alloc(Value.Pair, 1);
+    top[0] = .{ .key = try model.textVal(a, "grants"), .value = .{ .array = grants } };
+    return Entity.make(a, "system/capability/token", .{ .map = top });
+}
+
+test "§6.3 check_path_permission: three dimensions, local frame, empty include denies" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+    const lp = "peerX";
+
+    // THE ACCEPT CASE, AND IT IS THE ONE THAT VALIDATES THE FIXTURE. A predicate test
+    // built only from deny cases is indistinguishable from one asserting false == false
+    // — a fixture that parses to an empty scope denies everything and every deny case
+    // passes for free.
+    const tok = try mkTokenOneGrant(a, "system/tree", "*", &.{"app/*"}, &.{"app/secret"});
+    try testing.expect(try checkPathPermission(a, lp, "get", "/peerX/app/q", tok, "system/tree"));
+
+    // One deny per DIMENSION, because a single deny cannot distinguish "the predicate
+    // checks the dimension I care about" from "the predicate denies".
+    try testing.expect(!try checkPathPermission(a, lp, "get", "/peerX/app/secret", tok, "system/tree")); // resources exclude
+    try testing.expect(!try checkPathPermission(a, lp, "get", "/peerX/other/q", tok, "system/tree")); // resources include
+    try testing.expect(!try checkPathPermission(a, lp, "get", "/peerX/app/q", tok, "system/handler")); // handlers
+    const ops_only = try mkTokenOneGrant(a, "system/tree", "put", &.{"app/*"}, &.{});
+    try testing.expect(!try checkPathPermission(a, lp, "get", "/peerX/app/q", ops_only, "system/tree")); // operations
+
+    // An empty `resources.include` is a legal grant shape (§5.2) and DENIES every path.
+    const empty_res = try mkTokenOneGrant(a, "system/tree", "*", &.{}, &.{});
+    try testing.expect(!try checkPathPermission(a, lp, "get", "/peerX/app/q", empty_res, "system/tree"));
+
+    // A malformed path canonicalizes to the sentinel, which matches no grant — so it
+    // falls through to DENY rather than being matched against anything.
+    try testing.expect(!try checkPathPermission(a, lp, "get", "../escape", tok, "system/tree"));
+}
+
+test "§5.2 effective_targets: the two empties are distinguishable (0.8.2.25 N11)" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+    const lp = "peerX";
+
+    const mkexec = struct {
+        fn f(al: std.mem.Allocator, resource: ?Value) Error!Entity {
+            var pairs: std.ArrayList(Value.Pair) = .empty;
+            try pairs.append(al, .{ .key = try model.textVal(al, "operation"), .value = try model.textVal(al, "get") });
+            if (resource) |r| try pairs.append(al, .{ .key = try model.textVal(al, "resource"), .value = r });
+            return Entity.make(al, "system/protocol/execute", .{ .map = try pairs.toOwnedSlice(al) });
+        }
+    }.f;
+    const resmap = struct {
+        fn f(al: std.mem.Allocator, targets: ?[]const []const u8, excl: ?[]const []const u8) Error!Value {
+            var pairs: std.ArrayList(Value.Pair) = .empty;
+            if (excl) |xs| {
+                const arr = try al.alloc(Value, xs.len);
+                for (xs, 0..) |s, i| arr[i] = try model.textVal(al, s);
+                try pairs.append(al, .{ .key = try model.textVal(al, "exclude"), .value = .{ .array = arr } });
+            }
+            if (targets) |ts| {
+                const arr = try al.alloc(Value, ts.len);
+                for (ts, 0..) |s, i| arr[i] = try model.textVal(al, s);
+                try pairs.append(al, .{ .key = try model.textVal(al, "targets"), .value = .{ .array = arr } });
+            }
+            return .{ .map = try pairs.toOwnedSlice(al) };
+        }
+    }.f;
+
+    // ABSENT: no `resource` at all.
+    const e0 = try effectiveTargets(a, lp, try mkexec(a, null));
+    try testing.expect(!e0.had_resource);
+
+    // PRESENT with survivors — the accept case, and the only one that says the exclude
+    // loop is being run rather than short-circuited.
+    const e1 = try effectiveTargets(a, lp, try mkexec(a, try resmap(a, &.{ "app/qA", "app/qB" }, &.{"app/qA"})));
+    try testing.expect(e1.had_resource);
+    try testing.expectEqual(@as(usize, 1), e1.survivors.len);
+    // RAW survivor, not canonicalized (0.8.2.21).
+    try testing.expectEqualStrings("app/qB", e1.survivors[0]);
+
+    // PRESENT and SELF-EXCLUDED: every target carved out. This is the cell N11 is about
+    // — a projection returning only a list collapses it into the absent case above, and
+    // the handler's refusal arm becomes dead code.
+    const e2 = try effectiveTargets(a, lp, try mkexec(a, try resmap(a, &.{"app/qA"}, &.{"app/qA"})));
+    try testing.expect(e2.had_resource);
+    try testing.expectEqual(@as(usize, 0), e2.survivors.len);
+
+    // A `resource` map with NO `targets` key is ABSENT. (This case ran GREEN against
+    // the pre-change peer on both vanguards — an inert control — so it is asserted
+    // rather than assumed.)
+    const e3 = try effectiveTargets(a, lp, try mkexec(a, try resmap(a, null, &.{"app/qA"})));
+    try testing.expect(!e3.had_resource);
+
+    // A PRESENT-BUT-ILL-TYPED `targets` is PRESENT, never absent: answering the absent
+    // case here would be WIDER than the request, which §3.3 forbids.
+    var illpairs = try a.alloc(Value.Pair, 1);
+    illpairs[0] = .{ .key = try model.textVal(a, "targets"), .value = .{ .uint = 42 } };
+    const e4 = try effectiveTargets(a, lp, try mkexec(a, .{ .map = illpairs }));
+    try testing.expect(e4.had_resource);
+    try testing.expectEqual(@as(usize, 0), e4.survivors.len);
+
+    // The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4): the target
+    // SURVIVES. The opposite of the grant arm, deliberately.
+    const e5 = try effectiveTargets(a, lp, try mkexec(a, try resmap(a, &.{"app/qA"}, &.{"../nope"})));
+    try testing.expect(e5.had_resource);
+    try testing.expectEqual(@as(usize, 1), e5.survivors.len);
 }
 
 // ── §3.6 M3 multi-signature K-of-N — ACCEPT path ─────────────────────────────

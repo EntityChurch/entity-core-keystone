@@ -14,7 +14,23 @@ export 'src/peer/capability.dart'
         verifyCapabilityChain,
         verifyRequest,
         chainExceedsDepth,
-        UnresolvableGrantee;
+        UnresolvableGrantee,
+        // The 0.8.2.20..25 §5 surface. Exported because the peer-machinery units
+        // drive these directly: the §3.3 two-empties discriminator and the §6.3
+        // path check are decided inside pure functions a wire drive cannot reach.
+        ScopeKind,
+        Scope,
+        GrantRec,
+        canonicalize,
+        neverMatch,
+        matchesPattern,
+        matchesIdPattern,
+        matchesScope,
+        grantSubset,
+        grantsOfToken,
+        EffectiveTargets,
+        effectiveTargets,
+        checkPathPermission;
 export 'src/peer/cbor.dart';
 export 'src/peer/core_types.dart' show coreTypeModels, coreTypeEntities;
 export 'src/peer/dispatch.dart';

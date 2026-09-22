@@ -108,7 +108,11 @@ package body Entity_Core.Protocol.Entity is
          Carried : constant Byte_Array := Bytes_Field (M, "content_hash", Carried_Found);
       begin
          if Carried_Found and then not Octets_Equal (Carried, E.H) then
-            raise Entity_Core.Errors.Non_Canonical_Ecf
+            --  §5.2a (0.8.2.24 N4/N5): a decode-boundary refusal on RESOLUTION
+            --  INTEGRITY answers `400 hash_mismatch`; `non_canonical_ecf` is
+            --  declared non-conformant here. Same rejection, an identity the
+            --  §4.11 classifier can dispatch on.
+            raise Entity_Core.Errors.Hash_Mismatch
               with "content_hash mismatch (§1.8 fidelity)";
          end if;
          return E;

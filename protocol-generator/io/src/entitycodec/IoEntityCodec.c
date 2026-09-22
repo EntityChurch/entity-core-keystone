@@ -612,6 +612,36 @@ static IoObject *IoEntityCodec_tryDecode(IoObject *self, IoObject *locals, IoMes
     return v;
 }
 
+/* The KIND of the error tryDecode would hit on this input, or nil if it would succeed.
+ *
+ * §4.11 (0.8.2.25) makes the pre-admission refusal's CODE a function of its CAUSE, and
+ * tryDecode answers nil for every cause alike -- deliberately, because the peer's hot
+ * path wants a nil check and not an exception (A-IO-025: Io's `try` clones a Coroutine
+ * per call). So the cause has to be recoverable SEPARATELY.
+ *
+ * A SECOND DECODE PASS RATHER THAN A STATE SLOT, and that is the whole design decision.
+ * The obvious alternative -- have tryDecode stash its kind on the EntityCodec object --
+ * is safe only while one frame is fully decoded before the next is read, and this peer
+ * has a §6.11 reentry path that re-enters dispatch from inside a handler. A slot would
+ * be correct today and silently wrong the first time a decode happened between the
+ * failing decode and the read of its kind. This function has no state to race.
+ *
+ * The cost is one extra parse of a frame that is ALREADY BEING REFUSED -- a path that is
+ * rare by construction and already writing a response -- so the hot path is byte-
+ * unchanged, which is the property A-IO-025 actually protects.
+ *
+ * `keep_tags` is 0: this must see what the STRICT decoder sees, including the tag
+ * rejection that decodeSalvage exists to step over. */
+static IoObject *IoEntityCodec_decodeErrorKind(IoObject *self, IoObject *locals, IoMessage *m) {
+    Ctx cx = { IOSTATE, self, NULL, "" };
+    IoSeq *s = IoMessage_locals_seqArgAt_(m, locals, 0);
+    Cur c = { IoSeq_rawBytes(s), IoSeq_rawSizeInBytes(s), 0, 0 };
+    dec_value(&cx, &c, 0);
+    if (!cx.err && c.pos != c.len) ctx_err(&cx, "non_canonical_ecf", "trailing bytes after value");
+    if (!cx.err) return IONIL(self);
+    return IOSYMBOL((char *)cx.err);
+}
+
 /* Decode for the sole purpose of REPORTING a rejection, not of accepting one. Identical
  * to tryDecode except that a major-type-6 tag yields the item it wrapped instead of
  * erroring.
@@ -913,6 +943,7 @@ IoObject *IoEntityCodec_proto(void *state) {
         {"decode", IoEntityCodec_decode},
         {"tryDecode", IoEntityCodec_tryDecode},
         {"decodeSalvage", IoEntityCodec_decodeSalvage},
+        {"decodeErrorKind", IoEntityCodec_decodeErrorKind},
         {"contentHash", IoEntityCodec_contentHash},
         {"contentHashWithFormat", IoEntityCodec_contentHashWithFormat},
         {"sha256", IoEntityCodec_sha256},

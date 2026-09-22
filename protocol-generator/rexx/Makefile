@@ -27,7 +27,7 @@ S3LIB       := src/util.rex src/varint.rex src/base58.rex src/peerid.rex src/cbo
                src/envelope.rex src/wire.rex src/store.rex src/identity.rex src/coretypes.rex \
                src/capability.rex src/conn.rex src/peer.rex src/handlers.rex src/transport.rex
 
-.PHONY: all test spike ext net codec s3 selftest smoke s4peer dist clean
+.PHONY: sweep all test spike ext net codec s3 selftest smoke s4peer dist clean
 all: test
 
 # ── S5 packaging ──
@@ -89,10 +89,20 @@ net: $(NET)
 $(NET): src/ext/ecnet.c | codec
 	gcc -O2 -I$(SPEC) -o $@ $< -L$(CODEC_BUILD) -Wl,--no-as-needed -lentitycore_codec -Wl,-rpath,$(CODEC_BUILD)
 
-# Full pinned-corpus conformance gate (69 vectors, byte-identical).
-test: ext
+# Full pinned-corpus conformance gate (69 vectors, byte-identical) + the 0.8.2.25 sweep
+# unit gate (the 3.3 ladder, 6.3's path check + listing filter, 5.4's sentinel scoping,
+# 5.5a's scope typing, and 4.11's code-belongs-to-the-cause table).
+test: ext sweep
 	cat test/conformance.rex $(LIB) > /tmp/rexx-conf.rex
 	LD_LIBRARY_PATH=$(CODEC_BUILD) $(REXX) /tmp/rexx-conf.rex $(CORPUS) $(HELPER)
+
+# The 0.8.2.25 sweep unit gate. A separate target so it can be driven alone while
+# diagnosing, and a PREREQUISITE of `test` so it cannot rot unrun -- an axis's per-peer
+# gates rot exactly where no cohort runner reaches. It needs the S3 library (peer,
+# handlers, capability), not the codec-only LIB.
+sweep: ext
+	cat test/sweep_0_8_2_25.rex $(S3LIB) > /tmp/rexx-sweep.rex
+	LD_LIBRARY_PATH=$(CODEC_BUILD) $(REXX) /tmp/rexx-sweep.rex $(HELPER)
 
 # The pure-Rexx codec spike (no crypto / helper needed) — the decimal-float probe.
 spike:

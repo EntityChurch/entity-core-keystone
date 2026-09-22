@@ -193,12 +193,59 @@ module EntityCore
 
       private def op_get(ctx : HandlerContext) : Outcome
         exec = ctx.exec
-        target = Peer.exec_resource_target(exec)
-        return Outcome.err(400, "invalid_path", target) if target && !Peer.path_flex_ok?(target)
-        return @peer.build_listing("/#{@local_peer}/") if target.nil?
-        return @peer.build_listing(Capability.canonicalize(@local_peer, target)) if target.empty? || target.ends_with?("/")
+        # §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+        # resource.targets: a handler that counts the effective list and then
+        # indexes targets[0] has implemented the arithmetic completely and is still
+        # reading a path no authorization covered.
+        eff, has_resource = Capability.effective_targets(@local_peer, exec)
+        unless has_resource
+          # THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN
+          # SPECIFICATION IS WHAT SAYS SO. §3.3's "an empty effective list IS the
+          # absent case" is scoped "for an operation that REQUIRES a resource"
+          # (0.8.2.24, N7); `get` does not. For a resource-OPTIONAL operation
+          # 0.8.2.25 (N10) decides the present-but-empty case by whether the absent
+          # case is WIDER than the request — BROAD-RESULT refuses it,
+          # OPTIONAL-FILTER answers it empty — and requires the operation to
+          # declare which it is.
+          #
+          # EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+          # resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root
+          # listing", self-excluded case "400 path_required". Both arms below are
+          # pinned by text and neither is this peer's choice.
+          return @peer.build_listing("/#{@local_peer}/", ctx)
+        end
+        if eff.empty?
+          # The self-excluded request: `resource` PRESENT, every target carved out
+          # by the caller's own exclude. Serving it the absent case "answers a
+          # request for one excluded path with a listing of the tree"
+          # (EXTENSION-TREE §2.2a) — wider than what was asked for, which is what
+          # BROAD-RESULT means.
+          return Outcome.err(400, "path_required", "tree: effective target list is empty")
+        end
+        if eff.size > 1
+          return Outcome.err(400, "ambiguous_resource", "tree: more than one effective target")
+        end
+        target = eff.first
+        return Outcome.err(400, "invalid_path", target) unless Peer.path_flex_ok?(target)
+        if target.empty? || target.ends_with?("/")
+          return @peer.build_listing(Capability.canonicalize(@local_peer, target), ctx)
+        end
+        # A resource-requiring operation takes a CONCRETE path (0.8.2.20); a
+        # trailing slash is a listing request rather than a pattern, so only a star
+        # makes the subject a §5.4 pattern.
+        if target.includes?('*')
+          return Outcome.err(400, "malformed_resource", target)
+        end
 
         path = Capability.canonicalize(@local_peer, target)
+        # §6.3: the handler MUST verify the CALLER's capability covers the path it
+        # is about to read. Not a secondary check — the dispatch-level check never
+        # saw this path if the caller excluded it.
+        if (cap = ctx.caller_cap)
+          unless Capability.check_path_permission(@local_peer, "get", path, cap, ctx.pattern)
+            return Outcome.err(403, "capability_denied", path)
+          end
+        end
         e = @store.get_at(path)
         return Outcome.err(404, "not_found", path) if e.nil?
 
@@ -289,11 +336,37 @@ module EntityCore
 
       private def op_put(ctx : HandlerContext) : Outcome
         exec = ctx.exec
-        target = Peer.exec_resource_target(exec)
-        return Outcome.err(400, "ambiguous_resource", "tree: missing resource target") if target.nil?
+        # Same ladder as `get`, with the two empties COLLAPSED rather than split:
+        # EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's
+        # "an empty effective list IS the absent case" applies in its unscoped form
+        # and both empties answer `path_required`. That is the same table `get`'s
+        # branch cites, read one row down — the field is per-operation and neither
+        # answer is derivable from this handler's source.
+        #
+        # Note the code change 0.8.2.20 forced: this branch answered
+        # `ambiguous_resource` for a MISSING target, which 0.8.2.20 names as the
+        # exact inversion it forbids ("answering ambiguous_resource for an absent
+        # resource inverts them"). The remedies differ — supply a resource is not
+        # disambiguate your request — and the code is what selects between them.
+        eff, has_resource = Capability.effective_targets(@local_peer, exec)
+        if !has_resource || eff.empty?
+          return Outcome.err(400, "path_required", "tree: put requires a resource target")
+        end
+        if eff.size > 1
+          return Outcome.err(400, "ambiguous_resource", "tree: more than one effective target")
+        end
+        target = eff.first
         return Outcome.err(400, "invalid_path", target) unless Peer.path_flex_ok?(target)
+        return Outcome.err(400, "malformed_resource", target) if target.includes?('*')
 
         path = Capability.canonicalize(@local_peer, target)
+        # §6.3, as in `get`: the caller's own capability must cover the path this
+        # handler is about to write.
+        if (cap = ctx.caller_cap)
+          unless Capability.check_path_permission(@local_peer, "put", path, cap, ctx.pattern)
+            return Outcome.err(403, "capability_denied", path)
+          end
+        end
         params = exec.entity_field("params")
         raw_entity = params.try &.field("entity")
         expected = params.try &.bytes("expected_hash")

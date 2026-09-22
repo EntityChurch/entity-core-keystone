@@ -64,6 +64,25 @@ bool ec_cap_grant_subset(const char *local_peer, const char *child_peer,
 bool ec_cap_check_resource_scope(const char *local_peer, const char *granter_peer,
                                  const ec_value *resource_map, const ec_value *res_scope);
 
+/* §5.2 effective targets (0.8.2.20/.21/.25 N11). `s` BORROWS into the exec's value
+ * tree and `len` is the value-node byte length (not strlen — an embedded NUL is
+ * invisible to the C-string view and §1.4 R1 forbids it). */
+typedef struct ec_tgt { const char *s; size_t len; } ec_tgt;
+typedef struct ec_effective {
+    ec_tgt *items;       /* malloc'd array of borrowed targets; free with the helper */
+    size_t len;          /* survivors after the CALLER's own resource.exclude */
+    bool had_resource;   /* was a `resource` carrying a `targets` key present at all? */
+} ec_effective;
+ec_status ec_cap_effective_targets(const char *local_peer, const ec_entity *exec,
+                                   ec_effective *out);
+void ec_cap_effective_free(ec_effective *e);
+
+/* §6.3's handler-level path check. THREE dimensions (handlers/operations/resources),
+ * framed on the LOCAL peer — never the granter. See the definition. */
+bool ec_cap_check_path_permission(const char *local_peer, const char *operation,
+                                  const char *path, const ec_entity *token,
+                                  const char *handler_pattern);
+
 uint64_t ec_now_ms(void);
 
 #endif /* EC_CAPABILITY_H */

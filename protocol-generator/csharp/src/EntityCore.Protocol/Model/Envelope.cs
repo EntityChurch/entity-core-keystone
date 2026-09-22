@@ -74,12 +74,18 @@ internal sealed class Envelope
             {
                 if (pair.Key is not EcfValue.Bytes keyBytes)
                 {
-                    throw new EntityProtocolException("envelope included map key must be a byte string (§3.1)");
+                    throw new EntityProtocolException("envelope included map key must be a byte string (section 3.1)");
                 }
                 Entity entity = Entity.FromDecoded(pair.Value);
                 if (!Hashes.Equal(keyBytes.Value.Span, entity.ContentHash))
                 {
-                    throw new EntityProtocolException("included entity content_hash does not match its map key (§3.1)");
+                    // §3.1 key != content_hash — §1.8's resolution-integrity obligation,
+                    // mechanism (a) "bind the key": reject the entry whose key is not
+                    // content_hash({type, data}) of the entity under it, which fails the
+                    // envelope closed at ONE site. §5.2a's code for this arm is
+                    // `hash_mismatch`, not the structural `invalid_request` beside it
+                    // (0.8.2.24 N4/N5).
+                    throw new HashMismatchException("included entity content_hash does not match its map key (section 3.1)");
                 }
                 included.Add(entity);
             }

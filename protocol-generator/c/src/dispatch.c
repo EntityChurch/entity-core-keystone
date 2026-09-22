@@ -91,9 +91,15 @@ static ec_status outcome_add_included(ec_outcome *o, ec_entity *e)
 
 struct ec_peer;
 
+/* `pattern` is the OWNING handler's pattern (§6.3, 0.8.2.23) — §6.3's
+ * check_path_permission needs it and the caller's capability, and the dispatch-level
+ * check has already computed both. They are CARRIED rather than recomputed:
+ * recomputing invites the two to drift, and §6.8 is explicit that the authority is
+ * selected by who named the path. For the tree handler owner and runner coincide, so
+ * the distinction is not observable, but the argument means the owner. */
 typedef void (*ec_handler_fn)(struct ec_peer *p, ec_conn *conn, const ec_envelope *env,
                               const ec_entity *exec, const ec_entity *caller_cap,
-                              const char *op, ec_outcome *out);
+                              const char *op, const char *handler_pattern, ec_outcome *out);
 
 typedef struct handler_row {
     char *pattern;              /* relative pattern e.g. "system/tree" */
@@ -706,8 +712,9 @@ static bool protocols_accept(const ec_entity *params)
 
 static void h_connect(ec_peer *p, ec_conn *conn, const ec_envelope *env,
                       const ec_entity *exec, const ec_entity *caller_cap,
-                      const char *op, ec_outcome *out)
+                      const char *op, const char *handler_pattern, ec_outcome *out)
 {
+    (void)handler_pattern;   /* §6.3's path check is the tree handler's; carried for the interface */
     (void)caller_cap;
     if (strcmp(op, "hello") == 0) {
         if (conn->established) {
@@ -962,7 +969,16 @@ static void h_connect(ec_peer *p, ec_conn *conn, const ec_envelope *env,
 
 /* ── tree handler (§6.3) ─────────────────────────────────────────────────────── */
 
-static void build_listing(ec_peer *p, const char *path, ec_outcome *out);
+static void build_listing(ec_peer *p, const char *path, const ec_entity *caller_cap,
+                          const char *pattern, ec_outcome *out);
+
+/* A §5.4 PATTERN rather than a concrete path. A resource-requiring operation takes a
+ * CONCRETE path (0.8.2.20); a trailing '/' is a listing request rather than a pattern —
+ * only a '*' makes it one. */
+static bool is_pattern_path(const char *t)
+{
+    return strchr(t, '*') != NULL;
+}
 
 /* Digest byte length for a content_hash_format code per the §1.2 seed table, or 0
  * when this peer cannot VERIFY that code. The total wire length is this plus the
@@ -1060,27 +1076,73 @@ static bool admit_put(const ec_value *v, ec_entity **out,
     return true;
 }
 
+/* The `system/tree` handler (§6.3).
+ *
+ * RESOLVE THE OPERATION FIRST; only then run the §3.3 resource ladder. The `op`
+ * comparisons below are what make that true: a handler that validates the resource
+ * first answers a RESOURCE fault for an unknown-OPERATION request, so
+ * `system/tree:bogusop` with no resource would report `ambiguous_resource` where §3.3
+ * pins `501 unsupported_operation` (measured as X9/F52 on peers that had the arms the
+ * other way round). Every resource branch here is INSIDE a known-operation arm, so the
+ * ladder is unreachable for an unknown op. */
 static void h_tree(ec_peer *p, ec_conn *conn, const ec_envelope *env,
                    const ec_entity *exec, const ec_entity *caller_cap,
-                   const char *op, ec_outcome *out)
+                   const char *op, const char *handler_pattern, ec_outcome *out)
 {
-    (void)conn; (void)env; (void)caller_cap;
+    (void)conn; (void)env;
     if (strcmp(op, "get") == 0) {
-        size_t target_len = 0;
-        const char *target = exec_resource_target_n(exec, &target_len);
-        if (target && !path_flex_ok_n(target, target_len)) {
-            outcome_err(out, 400, "invalid_path", target);
+        /* §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+         * `resource.targets`: a handler that counts the effective list and then indexes
+         * targets[0] has implemented the arithmetic completely and is still reading a
+         * path no authorization covered. */
+        ec_effective eff;
+        if (ec_cap_effective_targets(p->local, exec, &eff) != EC_OK) {
+            outcome_err(out, 500, "internal_error", NULL);
             return;
         }
-        if (!target) {
+        if (!eff.had_resource) {
+            /* THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION
+             * IS WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is
+             * scoped "for an operation that REQUIRES a resource" (0.8.2.24, N7); `get`
+             * does not. For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the
+             * present-but-empty case by whether the absent case is WIDER than the
+             * request — BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty.
+             *
+             * EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+             * resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root
+             * listing", self-excluded case "400 path_required". Both arms are pinned by
+             * text and neither is this peer's choice. */
+            ec_cap_effective_free(&eff);
             char *root = abs_path(p, "");
             if (root) {
                 /* abs_path("") gives "/{local}/" */
-                build_listing(p, root, out);
+                build_listing(p, root, caller_cap, handler_pattern, out);
                 free(root);
             } else {
                 outcome_err(out, 500, "internal_error", NULL);
             }
+            return;
+        }
+        if (eff.len == 0) {
+            /* The self-excluded request: `resource` PRESENT, every target carved out by
+             * the caller's own exclude. Serving it the absent case "answers a request
+             * for one excluded path with a listing of the tree" (EXTENSION-TREE §2.2a)
+             * — the root listing is WIDER than what was asked for, which is what
+             * BROAD-RESULT means. */
+            ec_cap_effective_free(&eff);
+            outcome_err(out, 400, "path_required", "tree: effective target list is empty");
+            return;
+        }
+        if (eff.len > 1) {
+            ec_cap_effective_free(&eff);
+            outcome_err(out, 400, "ambiguous_resource", "tree: more than one effective target");
+            return;
+        }
+        const char *target = eff.items[0].s;
+        size_t target_len = eff.items[0].len;
+        ec_cap_effective_free(&eff);   /* `target` BORROWS the exec tree, not this array */
+        if (!path_flex_ok_n(target, target_len)) {
+            outcome_err(out, 400, "invalid_path", target);
             return;
         }
         size_t tlen = strlen(target);
@@ -1090,13 +1152,26 @@ static void h_tree(ec_peer *p, ec_conn *conn, const ec_envelope *env,
                 outcome_err(out, 400, "invalid_path", target);
                 return;
             }
-            build_listing(p, path, out);
+            build_listing(p, path, caller_cap, handler_pattern, out);
             free(path);
+            return;
+        }
+        if (is_pattern_path(target)) {
+            outcome_err(out, 400, "malformed_resource", target);
             return;
         }
         char *path = NULL;
         if (ec_canonicalize(p->local, target, &path) != EC_OK) {
             outcome_err(out, 400, "invalid_path", target);
+            return;
+        }
+        /* §6.3: the handler MUST verify the CALLER's capability covers the path it is
+         * about to read. NOT a secondary check — the dispatch-level check never saw
+         * this path if the caller excluded it. */
+        if (caller_cap &&
+            !ec_cap_check_path_permission(p->local, "get", path, caller_cap, handler_pattern)) {
+            outcome_err(out, 403, "capability_denied", path);
+            free(path);
             return;
         }
         ec_entity *e = ec_store_get_at(p->store, path);
@@ -1126,20 +1201,52 @@ static void h_tree(ec_peer *p, ec_conn *conn, const ec_envelope *env,
         return;
     }
     if (strcmp(op, "put") == 0) {
-        /* §6.3 put admission — see admit_put() below. */
-        size_t target_len = 0;
-        const char *target = exec_resource_target_n(exec, &target_len);
-        if (!target) {
-            outcome_err(out, 400, "ambiguous_resource", "tree: missing resource target");
+        /* §6.3 put admission — see admit_put() below.
+         *
+         * Same ladder as `get`, with the two empties COLLAPSED rather than split:
+         * EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an
+         * empty effective list IS the absent case" applies in its unscoped form and
+         * both empties answer `path_required`.
+         *
+         * Note the code change 0.8.2.20 forced: this branch answered
+         * `ambiguous_resource` for a MISSING target, which 0.8.2.20 names as the exact
+         * inversion it forbids. The remedies differ — *supply a resource* is not
+         * *disambiguate your request* — and the code is what selects between them. */
+        ec_effective eff;
+        if (ec_cap_effective_targets(p->local, exec, &eff) != EC_OK) {
+            outcome_err(out, 500, "internal_error", NULL);
             return;
         }
+        if (!eff.had_resource || eff.len == 0) {
+            ec_cap_effective_free(&eff);
+            outcome_err(out, 400, "path_required", "tree: put requires a resource target");
+            return;
+        }
+        if (eff.len > 1) {
+            ec_cap_effective_free(&eff);
+            outcome_err(out, 400, "ambiguous_resource", "tree: more than one effective target");
+            return;
+        }
+        const char *target = eff.items[0].s;
+        size_t target_len = eff.items[0].len;
+        ec_cap_effective_free(&eff);   /* `target` BORROWS the exec tree, not this array */
         if (!path_flex_ok_n(target, target_len)) {
             outcome_err(out, 400, "invalid_path", target);
+            return;
+        }
+        if (is_pattern_path(target)) {
+            outcome_err(out, 400, "malformed_resource", target);
             return;
         }
         char *path = NULL;
         if (ec_canonicalize(p->local, target, &path) != EC_OK) {
             outcome_err(out, 400, "invalid_path", target);
+            return;
+        }
+        if (caller_cap &&
+            !ec_cap_check_path_permission(p->local, "put", path, caller_cap, handler_pattern)) {
+            outcome_err(out, 403, "capability_denied", path);
+            free(path);
             return;
         }
         ec_entity *params = ec_ent_entity_field(exec, "params");
@@ -1212,7 +1319,27 @@ static bool is_deletion_marker(ec_peer *p, const char *hex)
     return dm;
 }
 
-static void build_listing(ec_peer *p, const char *path, ec_outcome *out)
+/* Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+ *
+ * "When any handler returns a multi-entry result whose entries are tree paths, each
+ * entry MUST be individually checked using check_path_permission. Entries for which
+ * check_path_permission returns DENY MUST be omitted. The result's `count` field MUST
+ * reflect the filtered entry count, not the source tree's total count."
+ *
+ * This is the read path at its highest volume and it is the reason 0.8.2.21 refused to
+ * carve reads out of the caller-specified-path rule: an unfiltered listing discloses the
+ * EXISTENCE of every binding under a prefix to a caller whose capability covers none of
+ * them.
+ *
+ * The DIRECTORY itself is deliberately NOT checked — §6.3 makes each ENTRY the subject,
+ * and testing the prefix would deny a listing to a caller whose grant covers children
+ * but not the node above them, which is the ordinary shape of a narrowed grant.
+ *
+ * An UNAUTHENTICATED context (caller_cap == NULL) is NOT filtered: the filter's subject
+ * is "the caller's verified capability", and where there is none there is no caller to
+ * narrow. That is the bootstrap/internal path. */
+static void build_listing(ec_peer *p, const char *path, const ec_entity *caller_cap,
+                          const char *pattern, ec_outcome *out)
 {
     ec_list_entry *rows = NULL;
     size_t nrows = 0;
@@ -1233,6 +1360,28 @@ static void build_listing(ec_peer *p, const char *path, ec_outcome *out)
         if (rows[i].hash_hex[0] && !rows[i].has_children &&
             is_deletion_marker(p, rows[i].hash_hex)) {
             continue;
+        }
+        /* §6.3's per-entry check (0.8.2.21/.22). `path` already carries the trailing
+         * '/' on every call site that reaches here (abs_path("") and a listing target
+         * both end in one), but the join is built defensively because a child path
+         * missing its separator would silently DENY every entry — a filter that
+         * over-denies is as wrong as one that discloses, and it would look like a
+         * working filter. */
+        if (caller_cap) {
+            size_t pl = strlen(path);
+            bool has_slash = pl > 0 && path[pl - 1] == '/';
+            size_t need = pl + (has_slash ? 0 : 1) + strlen(rows[i].segment) + 1;
+            char *child = malloc(need);
+            if (!child) {
+                continue;
+            }
+            snprintf(child, need, "%s%s%s", path, has_slash ? "" : "/", rows[i].segment);
+            bool allowed = ec_cap_check_path_permission(p->local, "get", child,
+                                                        caller_cap, pattern);
+            free(child);
+            if (!allowed) {
+                continue;
+            }
         }
         /* listing-entry {has_children[, hash]} */
         ec_value *data = ec_map();
@@ -1384,8 +1533,9 @@ static void mint_bounded(ec_peer *p, const ec_envelope *env, const ec_entity *ca
 
 static void h_capability(ec_peer *p, ec_conn *conn, const ec_envelope *env,
                          const ec_entity *exec, const ec_entity *caller_cap,
-                         const char *op, ec_outcome *out)
+                         const char *op, const char *handler_pattern, ec_outcome *out)
 {
+    (void)handler_pattern;   /* §6.3's path check is the tree handler's; carried for the interface */
     (void)conn;
     ec_entity *params = ec_ent_entity_field(exec, "params");
     if (strcmp(op, "request") == 0) {
@@ -1527,8 +1677,9 @@ static bool is_reserved_system_pattern(const char *pattern)
 
 static void h_handlers(ec_peer *p, ec_conn *conn, const ec_envelope *env,
                        const ec_entity *exec, const ec_entity *caller_cap,
-                       const char *op, ec_outcome *out)
+                       const char *op, const char *handler_pattern, ec_outcome *out)
 {
+    (void)handler_pattern;   /* §6.3's path check is the tree handler's; carried for the interface */
     (void)conn; (void)env; (void)caller_cap;
     bool is_register = strcmp(op, "register") == 0;
     bool is_unregister = strcmp(op, "unregister") == 0;
@@ -1760,8 +1911,9 @@ static ec_status publish_core_types(ec_peer *p)
  */
 static void h_type(ec_peer *p, ec_conn *conn, const ec_envelope *env,
                    const ec_entity *exec, const ec_entity *caller_cap,
-                   const char *op, ec_outcome *out)
+                   const char *op, const char *handler_pattern, ec_outcome *out)
 {
+    (void)handler_pattern;   /* §6.3's path check is the tree handler's; carried for the interface */
     (void)conn; (void)env; (void)caller_cap;
     if (strcmp(op, "validate") != 0) {
         outcome_err(out, 501, "unsupported_operation", op);
@@ -1921,8 +2073,9 @@ static void h_type(ec_peer *p, ec_conn *conn, const ec_envelope *env,
 
 static void h_validate_echo(ec_peer *p, ec_conn *conn, const ec_envelope *env,
                             const ec_entity *exec, const ec_entity *caller_cap,
-                            const char *op, ec_outcome *out)
+                            const char *op, const char *handler_pattern, ec_outcome *out)
 {
+    (void)handler_pattern;   /* §6.3's path check is the tree handler's; carried for the interface */
     (void)p; (void)conn; (void)env; (void)caller_cap;
     if (strcmp(op, "echo") != 0) {
         outcome_err(out, 501, "unsupported_operation", op);
@@ -2004,8 +2157,9 @@ static ec_status outbound_dispatch(ec_peer *p, ec_conn *conn, const char *uri,
  */
 static void h_validate_dispatch_outbound(ec_peer *p, ec_conn *conn, const ec_envelope *env,
                                          const ec_entity *exec, const ec_entity *caller_cap,
-                                         const char *op, ec_outcome *out)
+                                         const char *op, const char *handler_pattern, ec_outcome *out)
 {
+    (void)handler_pattern;   /* §6.3's path check is the tree handler's; carried for the interface */
     (void)env; (void)caller_cap;
     if (strcmp(op, "dispatch") != 0) {
         outcome_err(out, 501, "unsupported_operation", op);
@@ -2132,12 +2286,34 @@ ec_status ec_peer_dispatch(ec_peer *p, ec_conn *conn, const ec_envelope *env,
                            ec_envelope **out)
 {
     ec_entity *exec = env->root;
-    if (strcmp(exec->type, "system/protocol/execute") != 0) {
-        *out = NULL;             /* §3.3 server side ignores non-EXECUTE roots */
-        return EC_OK;
-    }
     const char *request_id = ec_ent_text(exec, "request_id");
     if (!request_id) { request_id = ""; }
+    if (strcmp(exec->type, "system/protocol/execute") != 0) {
+        /* §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+         * invalid_request, coded frame; MAY then close. NOT a bare close — that is
+         * indistinguishable from a network fault."
+         *
+         * §3.3 read "the connection MUST be closed", assigning no code and requiring no
+         * frame, and this peer did something weaker still: it returned *out = NULL, the
+         * transport wrote NOTHING, and the connection stayed open — which is §4.11's
+         * OTHER non-conformant behaviour, the silent drop, "the weaker of the two
+         * precisely because nothing surfaces it". This is a PRE-ADMISSION refusal: the
+         * root is not an EXECUTE, so nothing was ever admitted and §4.9(c) does not
+         * reach it. §9.1's floor row that used to MANDATE the bare close was REPLACED
+         * at the same revision (N18).
+         *
+         * `request_id` is read best-effort — an arbitrary root type is under no
+         * obligation to carry one, and §4.11 licenses the uncorrelated frame exactly
+         * there. We do NOT close: on a multiplexed connection that would cost every
+         * ADMITTED in-flight request its response, and §4.11 leaves the close to us. */
+        ec_outcome no;
+        outcome_init(&no);
+        outcome_err(&no, 400, "invalid_request",
+                    "root entity is neither EXECUTE nor EXECUTE_RESPONSE");
+        ec_status st = build_response_envelope(request_id, &no, out);
+        outcome_clear(&no);
+        return st;
+    }
     const char *uri = ec_ent_text(exec, "uri");
     const char *operation = ec_ent_text(exec, "operation");
     if (!uri) { uri = ""; }
@@ -2150,7 +2326,7 @@ ec_status ec_peer_dispatch(ec_peer *p, ec_conn *conn, const ec_envelope *env,
     if (strcmp(uri, "system/protocol/connect") == 0) {
         ec_handler_fn fn = lookup_handler(p, "system/protocol/connect");
         if (fn) {
-            fn(p, conn, env, exec, NULL, operation, &o);
+            fn(p, conn, env, exec, NULL, operation, "system/protocol/connect", &o);
         } else {
             outcome_err(&o, 500, "internal_error", NULL);
         }
@@ -2244,7 +2420,7 @@ ec_status ec_peer_dispatch(ec_peer *p, ec_conn *conn, const ec_envelope *env,
         const char *stripped = strip_local(p, pattern);
         ec_handler_fn fn = lookup_handler(p, stripped);
         if (fn) {
-            fn(p, conn, env, exec, caller_cap, operation, &o);
+            fn(p, conn, env, exec, caller_cap, operation, stripped, &o);
         } else {
             outcome_err(&o, 501, "no_handler_body", pattern);
         }

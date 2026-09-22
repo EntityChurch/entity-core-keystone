@@ -4,6 +4,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import '../codec/ecf_value.dart';
+import '../errors.dart';
 import 'cbor.dart';
 import 'dispatch.dart';
 import 'entity.dart';
@@ -105,9 +106,58 @@ final class _Io {
         _drainFrames(onExecute);
       },
       onError: (_) => close(),
-      onDone: close,
+      onDone: () {
+        // A STREAM THAT ENDS MID-FRAME IS A §4.11 FRAMING REFUSAL, NOT AN ORDINARY
+        // CLOSE, and on a byte-stream reassembler this is the ONLY place the two can
+        // be told apart: bytes still sitting in the window at end-of-stream are a
+        // frame that never completed (a partial length prefix, or a prefix declaring
+        // n followed by fewer). A clean EOF at a FRAME BOUNDARY leaves the window
+        // empty and is owed nothing — getting that backwards would answer 400 to
+        // every peer that simply hangs up.
+        //
+        // DART'S SOCKET IS WHAT MAKES THIS ANSWERABLE AT ALL, and it is worth saying
+        // because two managed runtimes in this cohort defeat it silently: `onDone`
+        // here means the READ side ended, and a `Socket` from `ServerSocket` keeps
+        // its WRITE side open until we destroy it, so the mandatory coded response
+        // can still go out after the client's FIN. Node needed `allowHalfOpen: true`
+        // and the BEAM needed `exit_on_close: false` for the same property; Dart has
+        // it by default, which is exactly why this needed checking rather than
+        // assuming. The refusal is therefore written BEFORE `close()`, which
+        // destroys the socket.
+        if (_hi > _lo) {
+          _refusePreAdmission(
+              '', wire.classifyPreAdmission(const TruncatedInput('frame')));
+        }
+        close();
+      },
       cancelOnError: true,
     );
+  }
+
+  /// Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+  /// refused BEFORE it becomes an admitted request.
+  ///
+  /// "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on
+  /// the wire [MUST] — correlated by request_id where the id is available, and
+  /// otherwise as a best-effort coded frame carrying no correlation."
+  ///
+  /// §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS" and
+  /// therefore reaches none of these, which is why §4.11 exists. Both of the
+  /// non-conformant behaviours it names SEPARATELY were present on this peer: DROPPING
+  /// the frame (the un-salvageable decode arm and the non-EXECUTE root, "the weaker of
+  /// the two precisely because nothing surfaces it") and CLOSING with no coded frame
+  /// (the oversize arm's bare `close()` and the truncated arm's `onDone: close`).
+  ///
+  /// AN EMPTY [requestId] IS THE BEST-EFFORT FORM, not a bug: it is what the section
+  /// prescribes where no id can be recovered.
+  void _refusePreAdmission(String requestId, wire.PreAdmissionRefusal r) {
+    if (_closed) return; // nobody left to answer
+    try {
+      writeFramed(Envelope(wire.makeResponse(
+          requestId, r.status, wire.errorResult(r.code, r.message))));
+    } catch (_) {
+      // A write failure here is a dead socket, not a protocol decision.
+    }
   }
 
   /// Append a freshly-read chunk to the tail of the accumulator. Compacts (drops
@@ -147,7 +197,21 @@ final class _Io {
           (_acc[p + 2] << 8) |
           _acc[p + 3];
       if (len < 0 || len > wire.maxFrame) {
-        // §4.10(a): a length prefix over the bound ends the connection.
+        // §4.11 + §4.10(a) N14 (SHOULD -> MUST): the over-size condition is detected
+        // at the length prefix with the connection intact and nothing spent, so the
+        // permissive mood had nothing to license. This was a bare `close()` —
+        // "closing with no coded frame", which is indistinguishable from a network
+        // fault and, on a multiplexed connection, destroys unrelated ADMITTED
+        // requests.
+        //
+        // The stream is desynchronized (the declared body was never read), so the
+        // frame goes out and THEN the connection closes. §4.11 makes the frame
+        // mandatory and leaves the close to us. No request_id can be recovered from a
+        // frame whose body never arrived, and guessing one would correlate the
+        // refusal to somebody else's in-flight request — so this takes §4.11's
+        // uncorrelated best-effort form.
+        _refusePreAdmission(
+            '', wire.classifyPreAdmission(const PayloadTooLarge('frame')));
         close();
         return;
       }
@@ -159,28 +223,25 @@ final class _Io {
       Envelope env;
       try {
         env = wire.envelopeOfFrame(payload);
-      } catch (_) {
-        // §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is
-        // owed a STATUS, not silence. This used to be a bare `continue`, which
-        // rejected the frame (correct) and then dropped it on the floor (wrong):
-        // the sender saw no response at all and blocked until its own timeout,
-        // violating §6.3's second sentence and §4.9(c) deliver-or-signal. It also
-        // made a refusal indistinguishable from a dead peer, and on a
-        // single-connection oracle run it poisons every later request on the same
-        // connection.
+      } catch (e) {
+        // A COMPLETE frame the decoder refused. The framing is intact, so we answer
+        // and KEEP SERVING — and the refusal MUST be a status rather than silence
+        // (§4.11; §4.9(c) says the same from the other direction). This used to be a
+        // bare `continue`, which rejected the frame (correct) and then dropped it on
+        // the floor (wrong): the sender saw no response at all and blocked until its
+        // own timeout, so a refusal was indistinguishable from a dead peer.
+        //
+        // THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered `non_canonical_ecf`
+        // for every cause until 0.8.2.24/.25 pinned them apart: a mis-keyed `included`
+        // entry is `400 hash_mismatch` (its encoding is canonical — what is false is
+        // the claim the key makes), a tag-policy violation keeps `non_canonical_ecf`,
+        // and everything else that never becomes an Envelope is `400 invalid_request`.
         //
         // The frame is still REJECTED — only enough is salvaged to correlate the
-        // response. If even the request_id is unrecoverable the frame is
-        // unattributable and silence is the only option left.
-        final rid = wire.salvageRequestId(payload);
-        if (rid != null) {
-          try {
-            writeFramed(Envelope(wire.makeResponse(
-                rid, 400, wire.errorResult('non_canonical_ecf', null))));
-          } catch (_) {
-            // write failure ends this exchange; the reader keeps going
-          }
-        }
+        // response, and an unrecoverable id takes §4.11's uncorrelated best-effort
+        // form rather than the silence it used to take.
+        _refusePreAdmission(
+            wire.salvageRequestId(payload) ?? '', wire.classifyPreAdmission(e));
         continue; // §4.9: keep serving
       }
       if (env.root.type == 'system/protocol/execute/response') {
@@ -210,6 +271,9 @@ final class _Io {
       resp = Envelope(wire.makeResponse(env.root.text('request_id') ?? '', 500,
           wire.errorResult('internal_error', null)));
     }
+    // `resp` is now non-null for EVERY inbound root: the null return `dispatch` used
+    // to give a non-EXECUTE root is gone (0.8.2.25, N12/N17). The guard stays because
+    // the type still admits null and a silent drop is the failure it would be.
     if (resp != null && !_closed) {
       try {
         writeFramed(resp);

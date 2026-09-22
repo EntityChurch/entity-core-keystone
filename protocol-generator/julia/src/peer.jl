@@ -322,7 +322,30 @@ function path_flex_ok(target::AbstractString)::Bool
     return true
 end
 
-function build_listing(p::Peer_t, path::AbstractString)::HandlerResult
+"""
+Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+
+"When any handler returns a multi-entry result whose entries are tree paths, each entry
+MUST be individually checked using check_path_permission. Entries for which
+check_path_permission returns DENY MUST be omitted. The result's `count` field MUST
+reflect the filtered entry count, not the source tree's total count."
+
+This is the read path at its highest volume and it is the reason 0.8.2.21 refused to
+carve reads out of the caller-specified-path rule: an unfiltered listing discloses the
+EXISTENCE of every binding under a prefix to a caller whose capability covers none of
+them.
+
+The DIRECTORY itself is deliberately NOT checked — §6.3 makes each ENTRY the subject,
+and testing the prefix would deny a listing to a caller whose grant covers children but
+not the node above them, which is the ordinary shape of a narrowed grant.
+
+`caller_cap === nothing` is the bootstrap/internal path and is NOT filtered: the
+filter's subject is "the caller's verified capability", and where there is none there is
+no caller to narrow.
+"""
+function build_listing(p::Peer_t, path::AbstractString;
+                       caller_cap::Union{Nothing,Entity}=nothing,
+                       handler_pattern::AbstractString="")::HandlerResult
     entries = store_listing(p.store, path)
     entry_pairs = Pair[]
     emitted = 0
@@ -331,6 +354,14 @@ function build_listing(p::Peer_t, path::AbstractString)::HandlerResult
         if le.hash !== nothing
             bound = store_get(p.store, le.hash)
             bound !== nothing && bound.typ == "system/deletion-marker" && continue
+        end
+        # §6.3's per-entry check. `emitted` is what `count` is built from below, so an
+        # omitted entry is omitted from the COUNT by construction — a count that still
+        # reported the source total IS the disclosure the rule exists to prevent.
+        if caller_cap !== nothing
+            child = endswith(path, "/") ? "$(path)$(le.seg)" : "$(path)/$(le.seg)"
+            Capability.check_path_permission(p.peer_id, "get", child, caller_cap,
+                                             handler_pattern) || continue
         end
         fields = Pair[("has_children" => le.has_children)]
         le.hash === nothing || push!(fields, "hash" => le.hash)
@@ -346,20 +377,60 @@ function build_listing(p::Peer_t, path::AbstractString)::HandlerResult
     return okr(listing)
 end
 
-function tree_handler(p::Peer_t, exec::Entity)::HandlerResult
+function tree_handler(p::Peer_t, exec::Entity;
+                      caller_cap::Union{Nothing,Entity}=nothing,
+                      handler_pattern::AbstractString="")::HandlerResult
     op = textfield(exec, "operation"); op = op === nothing ? "" : op
-    target = resource_target(exec)
-    if (op == "get" || op == "put") && target !== nothing && !path_flex_ok(target)
-        return err(400, "invalid_path")
-    end
+    # RULE G: the OPERATION is resolved first. Both ladders below sit inside their own
+    # `op ==` arm and the function's last statement is the 501, so an unknown operation
+    # cannot reach the §3.3 resource ladder at all — a peer that validates the resource
+    # first answers a RESOURCE fault for an OPERATION fault on every unknown operation
+    # (entity-system-conformance X9 / F52).
+    (op == "get" || op == "put") || return err(501, "unsupported_operation")
+
+    # §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on resource.targets: a
+    # handler that counts the effective list and then indexes targets[1] has implemented
+    # the arithmetic completely and is still reading a path no authorization covered.
+    eff, had_resource = Capability.effective_targets(p.peer_id, exec)
     if op == "get"
-        if target === nothing
-            return build_listing(p, "/$(p.peer_id)/")
+        if !had_resource
+            # THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION
+            # IS WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is
+            # scoped "for an operation that REQUIRES a resource" (0.8.2.24, N7); `get`
+            # does not. For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the
+            # present-but-empty case by whether the absent case is WIDER than the request
+            # — BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty.
+            #
+            # EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+            # resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root listing",
+            # self-excluded case "400 path_required". Both arms are pinned by text and
+            # neither is this peer's choice.
+            return build_listing(p, "/$(p.peer_id)/"; caller_cap, handler_pattern)
         end
+        # The self-excluded request: `resource` PRESENT, every target carved out by the
+        # caller's own exclude. Serving it the absent case "answers a request for one
+        # excluded path with a listing of the tree" (EXTENSION-TREE §2.2a) — wider than
+        # what was asked for, which is what BROAD-RESULT means.
+        isempty(eff) && return err(400, "path_required")
+        length(eff) > 1 && return err(400, "ambiguous_resource")
+        target = eff[1]
+        path_flex_ok(target) || return err(400, "invalid_path")
         if isempty(target) || endswith(target, "/")
-            return build_listing(p, canonicalize(p.peer_id, target))
+            return build_listing(p, canonicalize(p.peer_id, target); caller_cap, handler_pattern)
         end
+        # A resource-requiring operation takes a CONCRETE path (0.8.2.20); a trailing
+        # slash is a listing request rather than a pattern, so only a star makes the
+        # subject a §5.4 pattern.
+        occursin('*', target) && return err(400, "malformed_resource")
         path = canonicalize(p.peer_id, target)
+        # §6.3: the handler MUST verify the CALLER's capability covers the path it is
+        # about to read. Not a secondary check — the dispatch-level check never saw this
+        # path if the caller excluded it.
+        if caller_cap !== nothing
+            Capability.check_path_permission(p.peer_id, "get", path, caller_cap,
+                                             handler_pattern) ||
+                return err(403, "capability_denied")
+        end
         e = store_at(p.store, path)
         e === nothing && return err(404, "not_found")
         params = entityfield(exec, "params")
@@ -368,9 +439,31 @@ function tree_handler(p::Peer_t, exec::Entity)::HandlerResult
             m == "hash" && return okr(make_entity("system/hash", e.hash))
         end
         return okr(e)
-    elseif op == "put"
-        target === nothing && return err(400, "ambiguous_resource")
+    else
+        # Same ladder, with the two empties COLLAPSED rather than split: EXTENSION-TREE
+        # §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an empty effective
+        # list IS the absent case" applies in its unscoped form and both empties answer
+        # `path_required`. That is the same table `get`'s branch cites, read one row down.
+        #
+        # Note the code change 0.8.2.20 forced: this branch answered `ambiguous_resource`
+        # for a MISSING target, which 0.8.2.20 names as the exact inversion it forbids —
+        # supply a resource is not disambiguate your request, and the code is what selects
+        # between them.
+        (had_resource && !isempty(eff)) || return err(400, "path_required")
+        length(eff) > 1 && return err(400, "ambiguous_resource")
+        target = eff[1]
+        path_flex_ok(target) || return err(400, "invalid_path")
+        occursin('*', target) && return err(400, "malformed_resource")
         path = canonicalize(p.peer_id, target)
+        # §6.3, as in `get`: the caller's own capability must cover the path this handler
+        # is about to write. BEFORE the CAS arm and before any store mutation — a 403
+        # whose refusal arrives after the write would satisfy the status assertion and
+        # have already leaked the effect.
+        if caller_cap !== nothing
+            Capability.check_path_permission(p.peer_id, "put", path, caller_cap,
+                                             handler_pattern) ||
+                return err(403, "capability_denied")
+        end
         params = entityfield(exec, "params")
         raw_entity = params === nothing ? nothing : efield(params, "entity")
         expected = params === nothing ? nothing : bytesfield(params, "expected_hash")
@@ -387,7 +480,6 @@ function tree_handler(p::Peer_t, exec::Entity)::HandlerResult
         store_bind!(p.store, path, entity)
         return okr(make_entity("system/hash", entity.hash))
     end
-    return err(501, "unsupported_operation")
 end
 
 # Digest byte length for a `content_hash_format` code per the §1.2 seed table, or
@@ -818,7 +910,14 @@ function dispatch_outcome(p::Peer_t, conn::Conn, env::Envelope)::HandlerResult
     check_permission(p.peer_id, gframe, exec, caller_cap, pattern) == :allow || return err(403, "capability_denied")
 
     stripped = strip_local(p, pattern)
-    stripped == "system/tree" && return tree_handler(p, exec)
+    # `pattern` (not `stripped`) is the OWNING handler's pattern §6.3 asks for
+    # (0.8.2.23): owner and runner coincide for the tree handler, so the distinction is
+    # not observable here, but the value passed is the owner's because that is what the
+    # parameter means. CARRIED from the dispatch check that already computed it and the
+    # capability it already resolved, never recomputed — recomputing invites the two to
+    # drift, and §6.8 is explicit that the authority is selected by who named the path.
+    stripped == "system/tree" &&
+        return tree_handler(p, exec; caller_cap, handler_pattern = pattern)
     stripped == "system/capability" && return capability_handler(p, env, exec, caller_cap)
     stripped == "system/handler" && return handlers_handler(p, exec)
     stripped == "system/type" && return type_handler(exec)
@@ -863,11 +962,35 @@ function dispatch_outcome(p::Peer_t, conn::Conn, env::Envelope)::HandlerResult
     return err(501, "no_handler_body")
 end
 
-"""Dispatch one inbound EXECUTE → an owned response Envelope; a non-EXECUTE root is
-ignored (`nothing`, §3.3). Any handler fault is caught → 500 (connection stays up)."""
+"""Dispatch one inbound EXECUTE → an owned response Envelope.
+
+EVERY inbound root reaching here is ANSWERED — the `nothing` this used to return for a
+non-EXECUTE root is gone (0.8.2.25, N12/N17). The return type stays nullable so the
+transport's write guard keeps its shape. Any handler fault is caught → 500 (connection
+stays up)."""
 function dispatch(p::Peer_t, conn::Conn, env::Envelope)::Union{Nothing,Envelope}
     exec = env.root
-    exec.typ == "system/protocol/execute" || return nothing
+    if exec.typ != "system/protocol/execute"
+        # §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17):
+        # "400 invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare
+        # close — that is indistinguishable from a network fault."
+        #
+        # §3.3 read "the connection MUST be closed", assigning no code and requiring no
+        # frame, and this peer did something weaker still: it returned `nothing` and the
+        # reader wrote NOTHING while keeping the connection open, which is §4.11's other
+        # non-conformant behaviour — the silent drop, "the weaker of the two precisely
+        # because nothing surfaces it". This is a PRE-ADMISSION refusal: the root is not
+        # an EXECUTE, so nothing was ever admitted and §4.9(c) does not reach it.
+        #
+        # request_id is read BEST-EFFORT. An arbitrary root type is under no obligation
+        # to carry one, and §4.11 licenses the uncorrelated frame exactly there. We do
+        # NOT close: on a multiplexed connection that would cost every ADMITTED in-flight
+        # request its response, and §4.11 leaves the close to us.
+        rid = let r = textfield(exec, "request_id"); r === nothing ? "" : r end
+        st, res, inc = err(400, "invalid_request",
+                           "root entity is neither EXECUTE nor EXECUTE_RESPONSE")
+        return Envelope(make_response(request_id=rid, status=st, result=res), inc)
+    end
     rid = textfield(exec, "request_id"); rid = rid === nothing ? "" : rid
     status, result, included = try
         dispatch_outcome(p, conn, env)

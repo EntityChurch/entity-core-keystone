@@ -65,8 +65,14 @@ module EntityCore
           raise ProtocolError.new("envelope: included key not bytes") unless k.is_a?(Bytes)
           raise ProtocolError.new("envelope: included value not a map") unless v.is_a?(::Hash(Cbor::EcValue, Cbor::EcValue))
           ent = Entity.from_cbor(v)
-          # §3.1: the included content_hash MUST equal the map key.
-          raise ProtocolError.new("included key != content_hash") unless k == ent.content_hash
+          # §3.1: the included content_hash MUST equal the map key — §1.8's
+          # resolution-integrity obligation, mechanism (a) "bind the key".
+          #
+          # HashMismatchError, NOT the structural ProtocolError beside it: §5.2a
+          # pins this arm's code to `400 hash_mismatch` and rules
+          # `non_canonical_ecf` non-conformant here (0.8.2.24 N4/N5). The entry's
+          # ENCODING is canonical; what is false is the claim the key makes.
+          raise HashMismatchError.new("included key != content_hash") unless k == ent.content_hash
           key_str = k.hexstring
           unless seen.includes?(key_str)
             seen << key_str

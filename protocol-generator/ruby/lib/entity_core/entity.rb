@@ -96,7 +96,10 @@ module EntityCore
       e = make(type, data)
       carried = map["content_hash"]
       if carried.is_a?(::String) && carried.b != e.content_hash
-        raise ProtocolError, "content_hash mismatch (§1.8 fidelity)"
+        # §1.8 item 1 — RESOLUTION INTEGRITY, not a structural fault. §5.2a pins the
+        # decode-boundary code for this cause to `400 hash_mismatch` and rules
+        # `400 non_canonical_ecf` non-conformant here (0.8.2.24 N4/N5).
+        raise HashMismatchError, "content_hash mismatch (§1.8 fidelity)"
       end
 
       e

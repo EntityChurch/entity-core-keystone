@@ -21,6 +21,7 @@ using Sockets
 using ..Cbor: CborMap
 using ..Model: Entity, Envelope, make_entity, textfield, bytesfield, uintfield, entityfield, included_get, envelope_offrame, salvage_request_id
 using ..Wire: read_envelope, write_envelope, read_frame, make_execute, make_response, error_result, empty_params, FrameTooLarge
+using ..Wire: TruncatedFrame, classify_pre_admission, is_framing_refusal
 using ..Identity: PeerIdentity, sign_entity
 using ..Peer: Peer_t, Conn, dispatch
 
@@ -86,6 +87,9 @@ end
 # Dispatch one inbound EXECUTE on its own Task; write the response (§4.8).
 function dispatch_and_reply(peer::Peer_t, io::Io, env::Envelope)
     resp = dispatch(peer, io.conn, env)
+    # `dispatch` now answers EVERY inbound root, including the non-EXECUTE one that used
+    # to come back `nothing` and be dropped (§4.11, N12/N17). The guard stays because the
+    # return type still admits `nothing` and a silent drop is the failure it would be.
     resp === nothing && return
     try
         send_framed(io, resp)
@@ -94,19 +98,63 @@ function dispatch_and_reply(peer::Peer_t, io::Io, env::Envelope)
     return nothing
 end
 
-"""§6.3: answer a rejected frame with `400 non_canonical_ecf`, correlated by the
-request_id salvaged from it. Best-effort — a failure here degrades to the silence this
-exists to remove, which is no worse than the old behaviour."""
-function reject_frame(io::Io, payload::AbstractVector{UInt8})
-    rid = salvage_request_id(payload)
-    rid === nothing && return nothing
+"""
+Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame refused
+BEFORE it becomes an admitted request.
+
+"A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on the wire
+[MUST] — correlated by request_id where the id is available, and otherwise as a
+best-effort coded frame carrying no correlation."
+
+§4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS" and therefore
+reaches none of these, which is why §4.11 exists. Both of the non-conformant behaviours it
+names SEPARATELY were present on this peer: DROPPING the frame (the un-salvageable decode
+arm and the non-EXECUTE root, "the weaker of the two precisely because nothing surfaces
+it") and CLOSING with no coded frame (the oversize arm's bare `break`).
+
+AN EMPTY `rid` IS THE BEST-EFFORT FORM, not a bug: it is what the section prescribes where
+no id can be recovered. This used to return early on a `nothing` salvage, which is exactly
+the silence §4.11 forbids.
+"""
+function refuse_pre_admission(io::Io, rid::AbstractString, refusal)
+    io.closed && return nothing           # nobody left to answer
+    status, code, message = refusal
     try
-        resp = make_response(request_id=rid, status=400,
-                             result=error_result("non_canonical_ecf"))
-        write_envelope(io.sock, Envelope(resp))
+        resp = make_response(request_id=String(rid), status=status,
+                             result=error_result(code, message))
+        # THROUGH `send_framed`, WHICH TAKES THE PER-CONNECTION WRITE LOCK. The previous
+        # reject path wrote `write_envelope(io.sock, ...)` directly and so bypassed it —
+        # a latent stream-corruption bypass that only became REACHABLE with this change,
+        # because it used to fire solely when a request_id could be salvaged and now
+        # fires on every pre-admission refusal. A frame is `[4-byte len][body]` and each
+        # `write` yields the Task, so an unlocked refusal interleaving with an @async
+        # dispatch reply produces a spliced frame the CALLER decodes as "trailing bytes
+        # after top-level item" — which reads as a codec bug in the READER. Measured: it
+        # showed up on the first four-refusal connection this file drove.
+        send_framed(io, Envelope(resp))
     catch
-        # write failure ends this exchange; the reader keeps going
+        # A write failure here is a dead socket, not a protocol decision.
     end
+    return nothing
+end
+
+"""
+A COMPLETE frame the decoder refused. The framing is intact, so we answer and KEEP SERVING,
+and the refusal MUST be a status rather than silence (§4.11; §4.9(c) says the same from the
+other direction).
+
+THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered `non_canonical_ecf` for every cause
+until 0.8.2.24/.25 pinned them apart: a mis-keyed `included` entry is `400 hash_mismatch`
+(its encoding is canonical — what is false is the claim the key makes), a tag-policy
+violation keeps `non_canonical_ecf`, and everything else that never becomes an Envelope is
+`400 invalid_request`.
+
+The frame is still REJECTED — only enough is salvaged to correlate the response, and an
+unrecoverable id takes §4.11's uncorrelated best-effort form.
+"""
+function reject_frame(io::Io, payload::AbstractVector{UInt8}, e)
+    rid = salvage_request_id(payload)
+    refuse_pre_admission(io, rid === nothing ? "" : rid, classify_pre_admission(e))
     return nothing
 end
 
@@ -117,13 +165,29 @@ function read_loop(peer::Peer_t, io::Io)
         payload = try
             read_frame(io.sock)
         catch e
-            e isa EOFError && break              # peer closed → clean teardown
-            e isa FrameTooLarge && break         # §4.10: cannot resync a length-prefixed stream
+            # §4.11: an OVERSIZE prefix and a TRUNCATED frame are REFUSALS owed a coded
+            # frame, and both used to be a bare `break` — "closing with no coded frame",
+            # which is indistinguishable from a network fault and, on a multiplexed
+            # connection, destroys unrelated ADMITTED requests. §4.10(a)'s mood was raised
+            # SHOULD -> MUST at 0.8.2.25 (N14): the over-size condition is detected at the
+            # length prefix with the connection intact and nothing spent, so the permissive
+            # mood had nothing to license.
+            #
+            # The stream is desynchronized on both arms — an oversize body was never
+            # drained, a truncated one never arrived — so the frame goes out and THEN the
+            # reader ends. §4.11 makes the frame mandatory and leaves the close to us.
+            #
+            # §4.11's best-effort UNCORRELATED form: no request_id can be recovered from a
+            # frame whose body never arrived, and guessing one would correlate the refusal
+            # to somebody else's in-flight request. Anything `is_framing_refusal` does NOT
+            # name — an EOFError at a frame boundary, a reset socket — is not a refusal of
+            # anything and there is nobody left to answer.
+            is_framing_refusal(e) && refuse_pre_admission(io, "", classify_pre_admission(e))
             break
         end
         env = try
             envelope_offrame(payload)
-        catch
+        catch e
             # §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is
             # owed a STATUS, not silence. This used to `continue`, which rejected the
             # frame (correct) and then dropped it on the floor (wrong): the sender saw
@@ -135,7 +199,7 @@ function read_loop(peer::Peer_t, io::Io)
             # The frame is still REJECTED — only enough is salvaged to correlate the
             # response. If even the request_id is unrecoverable the frame is
             # unattributable and silence is the only option left.
-            reject_frame(io, payload)
+            reject_frame(io, payload, e)
             continue                             # frame boundary known → keep reading
         end
         if env.root.typ == "system/protocol/execute/response"

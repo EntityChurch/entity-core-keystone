@@ -473,6 +473,13 @@ fn resourceTarget(exec: Entity) ?[]const u8 {
     };
 }
 
+/// A §5.4 PATTERN rather than a concrete path. A resource-requiring operation takes a
+/// CONCRETE path (0.8.2.20); a trailing "/" is a listing request rather than a pattern
+/// — only a "*" makes it one.
+fn isPatternPath(t: []const u8) bool {
+    return std.mem.indexOfScalar(u8, t, '*') != null;
+}
+
 /// §1.4 / §5.4 path-flex validation: reject null byte, non-peer-id leading slash,
 /// ./ ../ and interior empty segments. A single trailing "/" is the listing marker.
 fn pathFlexOk(target: []const u8) bool {
@@ -497,10 +504,34 @@ fn pathFlexOk(target: []const u8) bool {
     return true;
 }
 
-fn buildListing(p: *Peer, a: std.mem.Allocator, path: []const u8) Error!Outcome {
+/// Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+///
+/// "When any handler returns a multi-entry result whose entries are tree paths, each
+/// entry MUST be individually checked using `check_path_permission`. Entries for which
+/// `check_path_permission` returns DENY MUST be omitted. The result's `count` field
+/// MUST reflect the filtered entry count, not the source tree's total count."
+///
+/// This is the read path at its highest volume and it is the reason 0.8.2.21 refused to
+/// carve reads out of the caller-specified-path rule: an unfiltered listing discloses
+/// the EXISTENCE of every binding under a prefix to a caller whose capability covers
+/// none of them.
+///
+/// The DIRECTORY itself is deliberately NOT checked — §6.3 makes each ENTRY the
+/// subject, and testing the prefix would deny a listing to a caller whose grant covers
+/// children but not the node above them, which is the ordinary shape of a narrowed
+/// grant.
+///
+/// An UNAUTHENTICATED context (`caller_cap == null`) is NOT filtered: the filter's
+/// subject is "the caller's verified capability", and where there is none there is no
+/// caller to narrow. That is the bootstrap/internal path.
+fn buildListing(p: *Peer, a: std.mem.Allocator, path: []const u8, caller_cap: ?Entity, pattern: []const u8) Error!Outcome {
     const entries = try p.store.listing(a, path);
     var entry_pairs: std.ArrayList(Value.Pair) = .empty;
     var emitted: u64 = 0;
+    const dir = if (path.len > 0 and path[path.len - 1] == '/')
+        path
+    else
+        try std.fmt.allocPrint(a, "{s}/", .{path});
     for (entries) |le| {
         // §6.3 / v7.72 §9.5a CORE-TREE-DELETE-1: a leaf bound to a
         // system/deletion-marker is a tombstone — omit it from the listing
@@ -510,6 +541,11 @@ fn buildListing(p: *Peer, a: std.mem.Allocator, path: []const u8) Error!Outcome 
             if (p.store.getByHash(h)) |bound| {
                 if (std.mem.eql(u8, bound.typ, "system/deletion-marker")) continue;
             }
+        }
+        // §6.3's per-entry check (0.8.2.21/.22).
+        if (caller_cap) |cc| {
+            const child = try std.fmt.allocPrint(a, "{s}{s}", .{ dir, le.seg });
+            if (!try cap.checkPathPermission(a, p.local_peer, "get", child, cc, pattern)) continue;
         }
         var fields: std.ArrayList(Value.Pair) = .empty;
         try fields.append(a, .{ .key = try model.textVal(a, "has_children"), .value = .{ .boolean = le.has_children } });
@@ -526,22 +562,63 @@ fn buildListing(p: *Peer, a: std.mem.Allocator, path: []const u8) Error!Outcome 
     return ok(try Entity.make(a, "system/tree/listing", .{ .map = try top.toOwnedSlice(a) }));
 }
 
-fn treeHandler(p: *Peer, a: std.mem.Allocator, exec: Entity) Error!Outcome {
+/// The `system/tree` handler (§6.3).
+///
+/// RESOLVE THE OPERATION FIRST; only then run the §3.3 resource ladder. The `op`
+/// dispatch below is what makes that true: a handler that validates the resource first
+/// answers a RESOURCE fault for an unknown-OPERATION request, so `system/tree:bogusop`
+/// with no resource would report `ambiguous_resource` where §3.3 pins `501
+/// unsupported_operation` (measured as X9/F52 on peers that had the arms the other way
+/// round). Here every resource branch is INSIDE a known-operation arm, so the ladder is
+/// unreachable for an unknown op.
+fn treeHandler(p: *Peer, a: std.mem.Allocator, exec: Entity, caller_cap: ?Entity, pattern: []const u8) Error!Outcome {
     const op = exec.textField("operation") orelse "";
-    const target = resourceTarget(exec);
-    if ((std.mem.eql(u8, op, "get") or std.mem.eql(u8, op, "put")) and target != null and !pathFlexOk(target.?))
-        return errOut(a, 400, "invalid_path", target.?);
 
     if (std.mem.eql(u8, op, "get")) {
-        if (target == null) {
+        // §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+        // `resource.targets`: a handler that counts the effective list and then indexes
+        // `targets[0]` has implemented the arithmetic completely and is still reading a
+        // path no authorization covered.
+        const eff = try cap.effectiveTargets(a, p.local_peer, exec);
+        if (!eff.had_resource) {
+            // THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION
+            // IS WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is
+            // scoped "for an operation that REQUIRES a resource" (0.8.2.24, N7); `get`
+            // does not. For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the
+            // present-but-empty case by whether the absent case is WIDER than the
+            // request — BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty.
+            //
+            // EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+            // resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root
+            // listing", self-excluded case "400 path_required". Both arms are pinned by
+            // text and neither is this peer's choice.
             const root_path = try std.fmt.allocPrint(a, "/{s}/", .{p.local_peer});
-            return buildListing(p, a, root_path);
+            return buildListing(p, a, root_path, caller_cap, pattern);
         }
-        const tgt = target.?;
+        if (eff.survivors.len == 0) {
+            // The self-excluded request: `resource` PRESENT, every target carved out by
+            // the caller's own exclude. Serving it the absent case "answers a request
+            // for one excluded path with a listing of the tree" (EXTENSION-TREE §2.2a)
+            // — the root listing is WIDER than what was asked for, which is what
+            // BROAD-RESULT means.
+            return errOut(a, 400, "path_required", "tree: effective target list is empty");
+        }
+        if (eff.survivors.len > 1)
+            return errOut(a, 400, "ambiguous_resource", "tree: more than one effective target");
+        const tgt = eff.survivors[0];
+        if (!pathFlexOk(tgt)) return errOut(a, 400, "invalid_path", tgt);
         if (tgt.len == 0 or tgt[tgt.len - 1] == '/') {
-            return buildListing(p, a, try cap.canonicalize(a, p.local_peer, tgt));
+            return buildListing(p, a, try cap.canonicalize(a, p.local_peer, tgt), caller_cap, pattern);
         }
+        if (isPatternPath(tgt)) return errOut(a, 400, "malformed_resource", tgt);
         const path = try cap.canonicalize(a, p.local_peer, tgt);
+        // §6.3: the handler MUST verify the CALLER's capability covers the path it is
+        // about to read. NOT a secondary check — the dispatch-level check never saw
+        // this path if the caller excluded it.
+        if (caller_cap) |cc| {
+            if (!try cap.checkPathPermission(a, p.local_peer, "get", path, cc, pattern))
+                return errOut(a, 403, "capability_denied", path);
+        }
         const e = p.store.getAt(path) orelse return errOut(a, 404, "not_found", path);
         // mode=hash → return system/hash
         if (try exec.entityField(a, "params")) |pe| {
@@ -551,8 +628,28 @@ fn treeHandler(p: *Peer, a: std.mem.Allocator, exec: Entity) Error!Outcome {
         }
         return ok(try e.clone(a));
     } else if (std.mem.eql(u8, op, "put")) {
-        if (target == null) return errOut(a, 400, "ambiguous_resource", "tree: missing resource target");
-        const path = try cap.canonicalize(a, p.local_peer, target.?);
+        // Same ladder as `get`, with the two empties COLLAPSED rather than split:
+        // EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an
+        // empty effective list IS the absent case" applies in its unscoped form and
+        // both empties answer `path_required`.
+        //
+        // Note the code change 0.8.2.20 forced: this branch answered
+        // `ambiguous_resource` for a MISSING target, which 0.8.2.20 names as the exact
+        // inversion it forbids. The remedies differ — *supply a resource* is not
+        // *disambiguate your request* — and the code is what selects between them.
+        const eff = try cap.effectiveTargets(a, p.local_peer, exec);
+        if (!eff.had_resource or eff.survivors.len == 0)
+            return errOut(a, 400, "path_required", "tree: put requires a resource target");
+        if (eff.survivors.len > 1)
+            return errOut(a, 400, "ambiguous_resource", "tree: more than one effective target");
+        const tgt = eff.survivors[0];
+        if (!pathFlexOk(tgt)) return errOut(a, 400, "invalid_path", tgt);
+        if (isPatternPath(tgt)) return errOut(a, 400, "malformed_resource", tgt);
+        const path = try cap.canonicalize(a, p.local_peer, tgt);
+        if (caller_cap) |cc| {
+            if (!try cap.checkPathPermission(a, p.local_peer, "put", path, cc, pattern))
+                return errOut(a, 403, "capability_denied", path);
+        }
         const params = try exec.entityField(a, "params");
         const raw_entity = if (params) |pe| pe.field("entity") else null;
         const expected = if (params) |pe| pe.bytesField("expected_hash") else null;
@@ -1146,7 +1243,13 @@ fn dispatchOutcome(p: *Peer, a: std.mem.Allocator, conn: *Conn, env: Envelope) E
     if (verdict == .deny) return errOut(a, 403, "capability_denied", null);
 
     const stripped = stripLocal(p, pattern);
-    if (std.mem.eql(u8, stripped, "system/tree")) return treeHandler(p, a, exec);
+    // §6.3's checkPathPermission needs the caller's capability and the OWNING handler's
+    // pattern, and the dispatch-level check above already computed both. They are
+    // CARRIED rather than recomputed: recomputing invites the two to drift, and §6.8 is
+    // explicit that the authority is selected by who named the path. `stripped` here is
+    // the OWNER's pattern (§6.3, 0.8.2.23) — for the tree handler owner and runner
+    // coincide, so the distinction is not observable, but the argument means the owner.
+    if (std.mem.eql(u8, stripped, "system/tree")) return treeHandler(p, a, exec, caller_cap, stripped);
     if (std.mem.eql(u8, stripped, "system/capability")) return capabilityHandler(p, a, env, exec, caller_cap);
     if (std.mem.eql(u8, stripped, "system/handler")) return handlersHandler(p, a, exec);
     if (std.mem.eql(u8, stripped, "system/type")) return typesHandler(a, exec);
@@ -1164,15 +1267,40 @@ fn dispatchOutcome(p: *Peer, a: std.mem.Allocator, conn: *Conn, env: Envelope) E
 }
 
 /// Materialize the arena-owned Outcome into a gpa-owned response Envelope that
-/// survives the arena reset. Returns null only for a non-EXECUTE root (ignored).
+/// survives the arena reset. Always answers: every inbound root reaching here gets a
+/// frame (§4.11), so the transport's write decision has one shape.
 pub fn dispatch(p: *Peer, conn: *Conn, env: Envelope) Error!?Envelope {
     const exec = env.root;
-    if (!std.mem.eql(u8, exec.typ, "system/protocol/execute")) return null; // §3.3 server ignores non-EXECUTE
     const request_id = exec.textField("request_id") orelse "";
 
     var arena_inst = std.heap.ArenaAllocator.init(p.gpa);
     defer arena_inst.deinit();
     const a = arena_inst.allocator();
+
+    if (!std.mem.eql(u8, exec.typ, "system/protocol/execute")) {
+        // §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+        // invalid_request, coded frame; MAY then close. NOT a bare close — that is
+        // indistinguishable from a network fault."
+        //
+        // §3.3 read "the connection MUST be closed", assigning no code and requiring no
+        // frame, and this peer did something weaker still: it returned null, the
+        // transport wrote NOTHING, and the connection stayed open — which is §4.11's
+        // OTHER non-conformant behaviour, the silent drop, "the weaker of the two
+        // precisely because nothing surfaces it". This is a PRE-ADMISSION refusal: the
+        // root is not an EXECUTE, so nothing was ever admitted and §4.9(c) does not
+        // reach it. §9.1's floor row that used to MANDATE the bare close was REPLACED
+        // at the same revision (N18).
+        //
+        // `request_id` is read best-effort — an arbitrary root type is under no
+        // obligation to carry one, and §4.11 licenses the uncorrelated frame exactly
+        // there. We do NOT close: on a multiplexed connection that would cost every
+        // ADMITTED in-flight request its response, and §4.11 leaves the close to us.
+        const er = try wire.errorResult(a, "invalid_request", "root entity is neither EXECUTE nor EXECUTE_RESPONSE");
+        const gpa_er = try er.clone(p.gpa);
+        const root = try wire.makeResponse(p.gpa, request_id, 400, gpa_er);
+        errdefer root.deinit(p.gpa);
+        return Envelope{ .root = root, .included = try p.gpa.alloc(model.Included, 0) };
+    }
 
     const outcome = dispatchOutcome(p, a, conn, env) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -1425,7 +1553,7 @@ test "§4.7 row 10: unknown connect op is 400, unknown op elsewhere stays 501" {
     defer arena_inst.deinit();
     const a = arena_inst.allocator();
     const exec = try wire.makeExecute(a, .{ .request_id = "r2", .uri = "system/tree", .operation = "no_such_operation", .params = try wire.emptyParams(a) });
-    const out = try treeHandler(&p, a, exec);
+    const out = try treeHandler(&p, a, exec, null, "system/tree");
     try testing.expectEqual(@as(u64, 501), out.status);
     try testing.expectEqualStrings("unsupported_operation", out.result.textField("code").?);
 }
@@ -1444,13 +1572,236 @@ test "deletion-marker is omitted from listings (CORE-TREE-DELETE-1)" {
     const sib = try Entity.make(a, "system/test2", .{ .map = &.{} });
     try p.store.bind(try std.fmt.allocPrint(a, "{s}/keep", .{base}), sib);
     // before deletion: both listed
-    var out1 = try buildListing(&p, a, try std.fmt.allocPrint(a, "{s}/", .{base}));
+    var out1 = try buildListing(&p, a, try std.fmt.allocPrint(a, "{s}/", .{base}), null, "system/tree");
     try testing.expectEqual(@as(u64, 2), out1.result.uintField("count").?);
     // put a deletion-marker over target
     const marker = try Entity.make(a, "system/deletion-marker", .{ .map = &.{} });
     try p.store.bind(try std.fmt.allocPrint(a, "{s}/target", .{base}), marker);
-    var out2 = try buildListing(&p, a, try std.fmt.allocPrint(a, "{s}/", .{base}));
+    var out2 = try buildListing(&p, a, try std.fmt.allocPrint(a, "{s}/", .{base}), null, "system/tree");
     try testing.expectEqual(@as(u64, 1), out2.result.uintField("count").?); // only the sibling
+}
+
+// ── §3.3 ladder + §6.3 listing filter (0.8.2.20/.21/.22/.24/.25) ─────────────
+
+/// An arena-owned `resource` value. `targets == null` omits the key entirely (the
+/// ABSENT case), which is a different input from an empty array.
+fn testResource(a: std.mem.Allocator, targets: ?[]const []const u8, excl: ?[]const []const u8) !Value {
+    var pairs: std.ArrayList(Value.Pair) = .empty;
+    if (excl) |xs| {
+        const arr = try a.alloc(Value, xs.len);
+        for (xs, 0..) |s, i| arr[i] = try model.textVal(a, s);
+        try pairs.append(a, .{ .key = try model.textVal(a, "exclude"), .value = .{ .array = arr } });
+    }
+    if (targets) |ts| {
+        const arr = try a.alloc(Value, ts.len);
+        for (ts, 0..) |s, i| arr[i] = try model.textVal(a, s);
+        try pairs.append(a, .{ .key = try model.textVal(a, "targets"), .value = .{ .array = arr } });
+    }
+    return .{ .map = try pairs.toOwnedSlice(a) };
+}
+
+/// A capability token with one grant over `system/tree`, all operations, and the given
+/// resource scope. Arena-owned.
+fn testCapToken(a: std.mem.Allocator, res_incl: []const []const u8, res_excl: []const []const u8) !Entity {
+    const lst = struct {
+        fn f(al: std.mem.Allocator, items: []const []const u8) !Value {
+            const arr = try al.alloc(Value, items.len);
+            for (items, 0..) |s, i| arr[i] = try model.textVal(al, s);
+            return .{ .array = arr };
+        }
+    }.f;
+    const sc = struct {
+        fn f(al: std.mem.Allocator, incl: []const []const u8, excl: []const []const u8) !Value {
+            var pr = try al.alloc(Value.Pair, 2);
+            pr[0] = .{ .key = try model.textVal(al, "exclude"), .value = try lst(al, excl) };
+            pr[1] = .{ .key = try model.textVal(al, "include"), .value = try lst(al, incl) };
+            return .{ .map = pr };
+        }
+    }.f;
+    var g = try a.alloc(Value.Pair, 3);
+    g[0] = .{ .key = try model.textVal(a, "handlers"), .value = try sc(a, &.{"system/tree"}, &.{}) };
+    g[1] = .{ .key = try model.textVal(a, "operations"), .value = try sc(a, &.{"*"}, &.{}) };
+    g[2] = .{ .key = try model.textVal(a, "resources"), .value = try sc(a, res_incl, res_excl) };
+    const grants = try a.alloc(Value, 1);
+    grants[0] = .{ .map = g };
+    var top = try a.alloc(Value.Pair, 1);
+    top[0] = .{ .key = try model.textVal(a, "grants"), .value = .{ .array = grants } };
+    return Entity.make(a, "system/capability/token", .{ .map = top });
+}
+
+fn testTreeExec(a: std.mem.Allocator, op: []const u8, resource: ?Value) !Entity {
+    return wire.makeExecute(a, .{
+        .request_id = "rT",
+        .uri = "system/tree",
+        .operation = op,
+        .params = try wire.emptyParams(a),
+        .resource = resource,
+    });
+}
+
+fn outCode(o: Outcome) []const u8 {
+    return o.result.textField("code") orelse "";
+}
+
+test "§3.3 ladder dispositions on the EFFECTIVE list (0.8.2.20/.24/.25)" {
+    const gpa = testing.allocator;
+    var p = try create(gpa, .{ .seed = [_]u8{11} ** 32 });
+    defer p.deinit();
+    var arena_inst = std.heap.ArenaAllocator.init(gpa);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+
+    // get, ABSENT resource -> the root listing. EXTENSION-TREE §2.2a (v4.11) declares
+    // `get` resource-OPTIONAL and BROAD-RESULT with that absent-case answer; this is
+    // the F86 arm, answered NO, and it is text rather than this peer's choice.
+    var out = try treeHandler(&p, a, try testTreeExec(a, "get", null), null, "system/tree");
+    try testing.expectEqual(@as(u64, 200), out.status);
+    try testing.expectEqualStrings("system/tree/listing", out.result.typ);
+
+    // get, PRESENT and self-excluded -> 400 path_required. Serving this the absent case
+    // answers a request for one excluded path with a listing of the whole tree.
+    out = try treeHandler(&p, a, try testTreeExec(a, "get", try testResource(a, &.{"app/qA"}, &.{"app/qA"})), null, "system/tree");
+    try testing.expectEqual(@as(u64, 400), out.status);
+    try testing.expectEqualStrings("path_required", outCode(out));
+
+    // get, two survivors -> 400 ambiguous_resource. A peer indexing targets[0] answers
+    // the first target instead.
+    out = try treeHandler(&p, a, try testTreeExec(a, "get", try testResource(a, &.{ "app/qA", "app/qB" }, null)), null, "system/tree");
+    try testing.expectEqual(@as(u64, 400), out.status);
+    try testing.expectEqualStrings("ambiguous_resource", outCode(out));
+
+    // get, a PATTERN subject -> 400 malformed_resource. A resource-requiring operation
+    // takes a CONCRETE path (0.8.2.20).
+    out = try treeHandler(&p, a, try testTreeExec(a, "get", try testResource(a, &.{"app/*"}, null)), null, "system/tree");
+    try testing.expectEqual(@as(u64, 400), out.status);
+    try testing.expectEqualStrings("malformed_resource", outCode(out));
+
+    // put, ABSENT resource -> 400 path_required, NOT ambiguous_resource. 0.8.2.20 names
+    // that inversion outright: *supply a resource* is not *disambiguate your request*,
+    // and the code is what selects the remedy. This peer answered ambiguous_resource.
+    out = try treeHandler(&p, a, try testTreeExec(a, "put", null), null, "system/tree");
+    try testing.expectEqual(@as(u64, 400), out.status);
+    try testing.expectEqualStrings("path_required", outCode(out));
+
+    // put, PRESENT and self-excluded -> also path_required: §2.2a declares `put`
+    // resource-REQUIRED, so §3.3's "an empty effective list IS the absent case" applies
+    // in its unscoped form and the two empties COLLAPSE here.
+    out = try treeHandler(&p, a, try testTreeExec(a, "put", try testResource(a, &.{"app/qA"}, &.{"app/qA"})), null, "system/tree");
+    try testing.expectEqual(@as(u64, 400), out.status);
+    try testing.expectEqualStrings("path_required", outCode(out));
+
+    // RULE G control: an UNKNOWN operation with no resource is an OPERATION fault, not
+    // a resource one. Resolve the operation first; only then run the ladder.
+    out = try treeHandler(&p, a, try testTreeExec(a, "bogusop", null), null, "system/tree");
+    try testing.expectEqual(@as(u64, 501), out.status);
+    try testing.expectEqualStrings("unsupported_operation", outCode(out));
+    // ... and with a resource present it must answer the same thing. That differential
+    // is what says ORDERING rather than a missing 501 arm.
+    out = try treeHandler(&p, a, try testTreeExec(a, "bogusop", try testResource(a, &.{"app/qA"}, null)), null, "system/tree");
+    try testing.expectEqual(@as(u64, 501), out.status);
+    try testing.expectEqualStrings("unsupported_operation", outCode(out));
+}
+
+test "§6.3 check_path_permission catches the vacated dispatch check (0.8.2.20)" {
+    const gpa = testing.allocator;
+    var p = try create(gpa, .{ .seed = [_]u8{12} ** 32 });
+    defer p.deinit();
+    var arena_inst = std.heap.ArenaAllocator.init(gpa);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+
+    const qa = try std.fmt.allocPrint(a, "/{s}/app/qA", .{p.local_peer});
+    const qb = try std.fmt.allocPrint(a, "/{s}/app/qB", .{p.local_peer});
+    try p.store.bind(qa, try Entity.make(a, "system/test", .{ .map = &.{} }));
+    try p.store.bind(qb, try Entity.make(a, "system/test", .{ .map = &.{} }));
+
+    // A capability covering app/* EXCEPT qB. The caller then excludes qB from its own
+    // request, which removes it from the dispatch-level check's view entirely — and a
+    // handler that acts on it regardless has authorized nothing (F84: this was `no` on
+    // 33 of 43 peers).
+    const tok = try testCapToken(a, &.{"app/*"}, &.{"app/qB"});
+    var out = try treeHandler(
+        &p,
+        a,
+        try testTreeExec(a, "get", try testResource(a, &.{ "app/qA", "app/qB" }, &.{"app/qA"})),
+        tok,
+        "system/tree",
+    );
+    try testing.expectEqual(@as(u64, 403), out.status);
+    try testing.expectEqualStrings("capability_denied", outCode(out));
+
+    // THE ACCEPT CONTROL. Without it a permanently-denying check passes this test, and
+    // the deny above says nothing.
+    out = try treeHandler(
+        &p,
+        a,
+        try testTreeExec(a, "get", try testResource(a, &.{ "app/qA", "app/qB" }, &.{"app/qB"})),
+        tok,
+        "system/tree",
+    );
+    try testing.expectEqual(@as(u64, 200), out.status);
+    try testing.expectEqualStrings("system/test", out.result.typ);
+}
+
+test "§6.3 listing filter omits denied entries and count follows (0.8.2.21/.22)" {
+    const gpa = testing.allocator;
+    var p = try create(gpa, .{ .seed = [_]u8{13} ** 32 });
+    defer p.deinit();
+    var arena_inst = std.heap.ArenaAllocator.init(gpa);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+
+    const dir = try std.fmt.allocPrint(a, "/{s}/app/", .{p.local_peer});
+    try p.store.bind(try std.fmt.allocPrint(a, "{s}qA", .{dir}), try Entity.make(a, "system/test", .{ .map = &.{} }));
+    try p.store.bind(try std.fmt.allocPrint(a, "{s}qB", .{dir}), try Entity.make(a, "system/test", .{ .map = &.{} }));
+
+    // UNAUTHENTICATED: not filtered. The filter's subject is "the caller's verified
+    // capability", and where there is none there is no caller to narrow (bootstrap).
+    var out = try buildListing(&p, a, dir, null, "system/tree");
+    try testing.expectEqual(@as(u64, 2), out.result.uintField("count").?);
+
+    // Under a capability EXCLUDING qB: one entry, and `count` follows the FILTERED
+    // total. A count still reporting the source total is the disclosure the rule exists
+    // to prevent, so it is asserted separately from the entry map.
+    const tok = try testCapToken(a, &.{"app/*"}, &.{"app/qB"});
+    out = try buildListing(&p, a, dir, tok, "system/tree");
+    try testing.expectEqual(@as(u64, 1), out.result.uintField("count").?);
+    const entries = model.mapGet(out.result.data, "entries").?;
+    try testing.expectEqual(@as(usize, 1), entries.map.len);
+    try testing.expectEqualStrings("qA", entries.map[0].key.text);
+
+    // ACCEPT CONTROL: a capability covering BOTH still lists both — otherwise a filter
+    // that denies everything passes the assertion above.
+    const wide = try testCapToken(a, &.{"app/*"}, &.{});
+    out = try buildListing(&p, a, dir, wide, "system/tree");
+    try testing.expectEqual(@as(u64, 2), out.result.uintField("count").?);
+}
+
+test "§4.11 pre-admission: a non-EXECUTE root is answered, not dropped (N12/N17)" {
+    const gpa = testing.allocator;
+    var p = try create(gpa, .{ .seed = [_]u8{14} ** 32 });
+    defer p.deinit();
+    var conn = Conn{};
+    defer conn.deinit(gpa);
+
+    // §3.3 used to read "the connection MUST be closed" and this peer did something
+    // weaker still: it returned null, the transport wrote NOTHING, and the connection
+    // stayed open — §4.11's silent-drop non-conformance, "the weaker of the two
+    // precisely because nothing surfaces it".
+    var pairs = try gpa.alloc(Value.Pair, 1);
+    pairs[0] = .{ .key = try model.textVal(gpa, "request_id"), .value = try model.textVal(gpa, "rX") };
+    const root = try Entity.make(gpa, "system/some-other-thing", .{ .map = pairs });
+    const env = Envelope{ .root = root, .included = try gpa.alloc(model.Included, 0) };
+    defer env.deinit(gpa);
+
+    const resp = (try dispatch(&p, &conn, env)) orelse return error.TestExpectedFrame;
+    defer resp.deinit(gpa);
+    try testing.expectEqual(@as(u64, 400), resp.root.uintField("status").?);
+    // Correlated where the id is available (§4.11).
+    try testing.expectEqualStrings("rX", resp.root.textField("request_id").?);
+    const result = (try resp.root.entityField(gpa, "result")).?;
+    defer result.deinit(gpa);
+    try testing.expectEqualStrings("invalid_request", result.textField("code").?);
 }
 
 test "§7a echo handler round-trips params verbatim (conformance build)" {

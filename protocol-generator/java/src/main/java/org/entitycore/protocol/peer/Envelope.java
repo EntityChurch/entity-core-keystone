@@ -84,7 +84,10 @@ public final class Envelope {
                 Entity ent = Entity.ofCbor(vm);
                 // §3.1: the included content_hash MUST equal the map key.
                 if (!Arrays.equals(kb.octets(), ent.rawHash())) {
-                    throw new IllegalArgumentException("included key != content_hash");
+                    // §3.1 key != content_hash — §1.8's resolution-integrity obligation,
+                    // mechanism (a) "bind the key". §5.2a's code for this arm is
+                    // `hash_mismatch`, not the structural `invalid_request` beside it.
+                    throw new HashMismatchException("included key != content_hash");
                 }
                 if (seen.putIfAbsent(Cbor.hex(kb.octets()), Boolean.TRUE) == null) {
                     included.add(new Included(kb.octets(), ent));

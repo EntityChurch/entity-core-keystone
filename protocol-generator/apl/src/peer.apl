@@ -231,7 +231,7 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  uri←exec EntText'uri'
  op←exec EntText'operation'
  →(~uri≡'system/protocol/connect')/authz
- Z←fd CallHandler(R_CONNECT)(op)(env)(EntAbsent)('')('')
+ Z←fd CallHandler(R_CONNECT)(op)(env)(EntAbsent)('')('')('')
  →0
 ⍝ section 4.7 (0.8.2.6) - THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate
 ⍝ used to sit below the verdict branches, so a pre-establishment EXECUTE naming a
@@ -267,7 +267,7 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  gp:→(~CapCheckPermission gLocal granterPeer exec callerCap stripped)/eDeny
  routine←HandlerRoutine stripped
  →(routine=0)/eNoHandler
- Z←fd CallHandler(routine)(op)(env)(callerCap)(granterPeer)(pattern) ⋄ →0
+ Z←fd CallHandler(routine)(op)(env)(callerCap)(granterPeer)(pattern)(stripped) ⋄ →0
  eUnres:Z←OutErr(401)('unresolvable_grantee')('') ⋄ →0
  eAuthn:Z←OutErr(401)('authentication_failed')('') ⋄ →0
  eDeny:Z←OutErr(403)('capability_denied')('') ⋄ →0
@@ -277,9 +277,18 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  eNoHandler:Z←OutErr(404)('handler_not_found')(path)
 ∇
 
-⍝ ⍵=(routine op env callerCap granterPeer pattern); ⍺=fd.
-∇Z←fd CallHandler a;routine;op;env;callerCap;granterPeer;pattern
- routine←1⊃a ⋄ op←2⊃a ⋄ env←3⊃a ⋄ callerCap←4⊃a ⋄ granterPeer←5⊃a ⋄ pattern←6⊃a
+⍝ ⍵=(routine op env callerCap granterPeer pattern handlerId); ⍺=fd.
+⍝
+⍝ `callerCap` and `handlerId` are the two values §6.3's check_path_permission needs and
+⍝ the dispatch check ALREADY COMPUTED. They are CARRIED rather than recomputed: the
+⍝ handler-level check MUST run against the same authority the dispatch check resolved, and
+⍝ recomputing invites the two to drift (§6.8: the authority is selected by who named the
+⍝ path). `handlerId` is the OWNING handler's pattern in the BARE form this peer's handlers
+⍝ dimension matches literally — the same value CapCheckPermission received. For the tree
+⍝ handler owner and runner coincide, so the distinction is not observable here, but the
+⍝ parameter means the OWNER.
+∇Z←fd CallHandler a;routine;op;env;callerCap;granterPeer;pattern;hid
+ routine←1⊃a ⋄ op←2⊃a ⋄ env←3⊃a ⋄ callerCap←4⊃a ⋄ granterPeer←5⊃a ⋄ pattern←6⊃a ⋄ hid←7⊃a
  →(routine=R_CONNECT)/c
  →(routine=R_TREE)/t
  →(routine=R_HANDLERS)/h
@@ -289,7 +298,7 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  →(routine=R_DISPATCH)/d
  Z←OutErr(501)('unsupported_operation')('') ⋄ →0
  c:Z←fd HndConnect(op)(env) ⋄ →0
- t:Z←HndTree(op)(env) ⋄ →0
+ t:Z←HndTree(op)(env)(callerCap)(hid) ⋄ →0
  h:Z←HndHandlers(op)(env) ⋄ →0
  ty:Z←HndType(op)(env) ⋄ →0
  cap:Z←HndCapability(op)(env)(callerCap) ⋄ →0
@@ -484,13 +493,21 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
 ∇
 
 ⍝ ── §6.3 tree ──
-∇Z←HndTree a;op;env
- op←1⊃a ⋄ env←2⊃a
+⍝ ⍵=(op env callerCap handlerId).
+⍝
+⍝ RULE G — THE OPERATION IS RESOLVED FIRST AND THE §3.3 RESOURCE LADDER IS REACHED ONLY
+⍝ FOR A KNOWN OPERATION. The op branch selects before either arm reads `resource`, so
+⍝ system/tree with an unknown operation answers 501 unsupported_operation whether or not a
+⍝ resource is present. A handler that validates the resource first answers a RESOURCE
+⍝ fault for an OPERATION fault, for every unknown operation (entity-system-conformance
+⍝ X9/F52; ocaml carried exactly that shape).
+∇Z←HndTree a;op;env;cc;hid
+ op←1⊃a ⋄ env←2⊃a ⋄ cc←3⊃a ⋄ hid←4⊃a
  →(op≡'get')/g
  →(op≡'put')/p
  Z←OutErr(501)('unsupported_operation')(op) ⋄ →0
- g:Z←TreeGet env ⋄ →0
- p:Z←TreePut env
+ g:Z←TreeGet env cc hid ⋄ →0
+ p:Z←TreePut env cc hid
 ∇
 
 ∇Z←ExecResourceTarget exec;r;targets
@@ -502,25 +519,62 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  Z←1⊃targets
 ∇
 
-∇Z←TreeGet env;exec;target;path;cn;e;params;mode;hm
+⍝ ⍵=(env callerCap handlerId).
+∇Z←TreeGet a;env;cc;hid;exec;target;path;cn;e;params;mode;hm;et;eff;had
+ env←1⊃a ⋄ cc←2⊃a ⋄ hid←3⊃a
  exec←EnvRoot env
- target←ExecResourceTarget exec
- →(0=≢target)/rootlist
+ ⍝ §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on `resource.targets`: a
+ ⍝ handler that counts the effective list and then reads targets[0] has implemented the
+ ⍝ arithmetic completely and is still reading a path no authorization covered.
+ et←gLocal CapEffectiveTargets exec ⋄ eff←1⊃et ⋄ had←2⊃et
+ →(~had)/rootlist
+ ⍝ `resource` PRESENT, every target carved out by the caller's own exclude. THE TWO
+ ⍝ EMPTIES ARE DISTINCT HERE AND THE OPERATION'S OWN SPECIFICATION IS WHAT SAYS SO.
+ ⍝ §3.3's "an empty effective list IS the absent case" is scoped "for an operation that
+ ⍝ REQUIRES a resource" (0.8.2.24, N7); `get` does not. For a resource-OPTIONAL operation
+ ⍝ 0.8.2.25 (N10) decides the present-but-empty case by whether the absent case is WIDER
+ ⍝ than the request -- BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty -- and
+ ⍝ requires the operation to declare which it is. EXTENSION-TREE section 2.2a (v4.11) is
+ ⍝ that declaration: `get` is resource-OPTIONAL and BROAD-RESULT, absent-case answer "the
+ ⍝ root listing", self-excluded case "400 path_required". Both arms are pinned by text.
+ →(0=≢eff)/eempty
+ →(1<≢eff)/eamb
+ target←1⊃eff
  cn←gLocal CapCanonicalize target ⋄ path←1⊃cn
  →(2⊃cn)/einval           ⍝ §1.4: null byte / empty segment / reserved-relative → 400
- →(target EndsWith'/')/dirlist   ⍝ trailing-slash ⇒ listing (monadic ⊃ is DISCLOSE in GNU APL, not first)
- e←StoreGetAt path
+ ⍝ AN EMPTY TARGET IS A LISTING, exactly as a trailing slash is -- and dropping that half
+ ⍝ took `tree_operations/path_root_listing` from PASS to FAIL: the oracle asks for the
+ ⍝ root with `targets: [""]`, which the old ExecResourceTarget folded into the
+ ⍝ absent-resource branch because it answered '' for both. The effective-targets pair
+ ⍝ separates those two inputs (that is what it is FOR), so the empty-string case has to be
+ ⍝ handled here, on its own, rather than inherited from a conflation.
+ →((0=≢target)∨(target EndsWith'/'))/dirlist   ⍝ trailing-slash or empty ⇒ listing
+ ⍝ 0.8.2.20: a resource-requiring operation takes a CONCRETE path. A trailing "/" is a
+ ⍝ LISTING request rather than a pattern -- only a star makes it one, which is why this
+ ⍝ arm sits BELOW the trailing-slash arm.
+ →(CapIsPatternPath target)/epat
+ ⍝ §6.3: the handler MUST verify the CALLER's capability covers the path it is about to
+ ⍝ read. NOT a secondary check -- the dispatch-level check never saw this path if the
+ ⍝ caller excluded it. An absent caller capability is the bootstrap path and is not
+ ⍝ narrowed: the filter's subject is "the caller's VERIFIED capability".
+ →(~EntPresent cc)/nocap
+ →(CapCheckPathPermission gLocal('get')(path)(cc)(hid))/nocap
+ Z←OutErr(403)('capability_denied')(path) ⋄ →0
+ nocap:e←StoreGetAt path
  →(EntPresent e)/found
  Z←OutErr(404)('not_found')(path) ⋄ →0
  einval:Z←OutErr(400)('invalid_path')(target) ⋄ →0
+ epat:Z←OutErr(400)('malformed_resource')(target) ⋄ →0
+ eempty:Z←OutErr(400)('path_required')('tree: effective target list is empty') ⋄ →0
+ eamb:Z←OutErr(400)('ambiguous_resource')('tree: more than one effective target') ⋄ →0
  found:params←exec EntEntityField'params'
  mode←(1+EntPresent params)⊃('')(params EntText'mode')
  →(~mode≡'hash')/plain
  hm←VMapEmpty VmPut('hash')(VBytes EntHash e)
  Z←OutOk0('system/hash'EntMake hm) ⋄ →0
  plain:Z←OutOk0 e ⋄ →0
- rootlist:Z←TreeListing'/',gLocal,'/' ⋄ →0
- dirlist:cn←gLocal CapCanonicalize target ⋄ Z←TreeListing 1⊃cn
+ rootlist:Z←TreeListing('/',gLocal,'/')(cc)(hid) ⋄ →0
+ dirlist:cn←gLocal CapCanonicalize target ⋄ Z←TreeListing(1⊃cn)(cc)(hid)
 ∇
 
 ⍝ Digest byte length for a content_hash_format code per the §1.2 seed table, or ¯1
@@ -583,14 +637,34 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  match:Z←1(1(,type)(data)(carried))
 ∇
 
-∇Z←TreePut env;exec;target;cn;path;params;entity;rawEnt;hasEnt;adm;expected;current;casOk;hm
+⍝ ⍵=(env callerCap handlerId).
+⍝
+⍝ The same §3.3 ladder as TreeGet with the two empties COLLAPSED rather than split:
+⍝ EXTENSION-TREE section 2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an
+⍝ empty effective list IS the absent case" applies in its unscoped form and BOTH empties
+⍝ answer path_required.
+⍝
+⍝ NOTE THE CODE CHANGE 0.8.2.20 FORCED: this arm answered `ambiguous_resource` for a
+⍝ MISSING target, which 0.8.2.20 names as the exact inversion it forbids. The remedies
+⍝ differ -- supply a resource is not disambiguate your request -- and the code is what
+⍝ selects between them.
+∇Z←TreePut a;env;cc;hid;exec;target;cn;path;params;entity;rawEnt;hasEnt;adm;expected;current;casOk;hm;et;eff;had
+ env←1⊃a ⋄ cc←2⊃a ⋄ hid←3⊃a
  exec←EnvRoot env
- target←ExecResourceTarget exec
- →(0<≢target)/ht
- Z←OutErr(400)('ambiguous_resource')('tree: missing resource target') ⋄ →0
- ht:cn←gLocal CapCanonicalize target ⋄ path←1⊃cn
+ et←gLocal CapEffectiveTargets exec ⋄ eff←1⊃et ⋄ had←2⊃et
+ →((~had)∨(0=≢eff))/ereq
+ →(1<≢eff)/eamb
+ target←1⊃eff
+ cn←gLocal CapCanonicalize target ⋄ path←1⊃cn
  →(2⊃cn)/einval           ⍝ §1.4: null byte / empty segment / reserved-relative → 400
- params←exec EntEntityField'params'
+ →(CapIsPatternPath target)/epat
+ ⍝ §6.3: the handler MUST verify the CALLER's capability covers the path it is about to
+ ⍝ WRITE, for the same reason `get` must -- the dispatch-level check never saw this path
+ ⍝ if the caller excluded it.
+ →(~EntPresent cc)/nocap
+ →(CapCheckPathPermission gLocal('put')(path)(cc)(hid))/nocap
+ Z←OutErr(403)('capability_denied')(path) ⋄ →0
+ nocap:params←exec EntEntityField'params'
  hasEnt←0 ⋄ rawEnt←⍬ ⋄ expected←⍬
  →(~EntPresent params)/nocas
  hasEnt←(EntDataMap params)MHas'entity'
@@ -612,15 +686,41 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  bind:entity←2⊃adm ⋄ path StoreBind entity
  hm←VMapEmpty VmPut('hash')(VBytes EntHash entity)
  Z←OutOk0('system/hash'EntMake hm) ⋄ →0
- einval:Z←OutErr(400)('invalid_path')(target)
+ einval:Z←OutErr(400)('invalid_path')(target) ⋄ →0
+ epat:Z←OutErr(400)('malformed_resource')(target) ⋄ →0
+ ereq:Z←OutErr(400)('path_required')('tree: put requires a resource target') ⋄ →0
+ eamb:Z←OutErr(400)('ambiguous_resource')('tree: more than one effective target')
 ∇
 
-∇Z←TreeListing path;lst;segs;hexes;kids;em;i;led;lm;count;me;hb
- lst←StoreListing path ⋄ segs←1⊃lst ⋄ hexes←2⊃lst ⋄ kids←3⊃lst
+⍝ ⍵=(path callerCap handlerId).
+⍝
+⍝ §6.3 (0.8.2.21/.22) PER-ENTRY LISTING FILTER: "When any handler returns a multi-entry
+⍝ result whose entries are tree paths, each entry MUST be individually checked using
+⍝ check_path_permission. Entries for which it returns DENY MUST be omitted. The result's
+⍝ `count` field MUST reflect the FILTERED entry count, not the source tree's total count."
+⍝ `count` below is incremented only per SURVIVING entry, which is what makes the second
+⍝ sentence hold -- a count that still reports the source total is exactly the disclosure
+⍝ the rule exists to prevent.
+⍝
+⍝ AN UNAUTHENTICATED CONTEXT IS NOT FILTERED: the filter's subject is "the caller's
+⍝ VERIFIED capability", and where there is none there is no caller to narrow. Bootstrap.
+⍝
+⍝ THE DIRECTORY ITSELF IS DELIBERATELY NOT CHECKED -- §6.3 makes each ENTRY the subject,
+⍝ and testing the prefix would deny a listing to a caller whose grant covers children but
+⍝ not the node above them, which is the ordinary shape of a narrowed grant.
+∇Z←TreeListing a;path;cc;hid;lst;segs;hexes;kids;em;i;led;lm;count;me;hb;pfx;child
+ path←1⊃a ⋄ cc←2⊃a ⋄ hid←3⊃a
+ pfx←path
+ →(pfx EndsWith'/')/hadsl
+ pfx←pfx,'/'
+ hadsl:lst←StoreListing path ⋄ segs←1⊃lst ⋄ hexes←2⊃lst ⋄ kids←3⊃lst
  em←VMapEmpty ⋄ count←0 ⋄ i←0
  lp:→(i≥≢segs)/done
  i←i+1
- →((0=≢i⊃hexes)∨(i⊃kids))/emit
+ →(~EntPresent cc)/vis
+ child←pfx,(i⊃segs)
+ →(~CapCheckPathPermission gLocal('get')(child)(cc)(hid))/lp
+ vis:→((0=≢i⊃hexes)∨(i⊃kids))/emit
  hb←HexToBytes i⊃hexes
  me←StoreGetByHash hb
  →(~EntPresent me)/emit
@@ -950,13 +1050,46 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  zz←NetClose fd
 ∇
 
-∇fd OnFrame payload;pk;rt;rid;isResp;ok;dr;env;resp;frame;rframe
+⍝ §4.11 (0.8.2.25) — put a CODED EXECUTE_RESPONSE on the wire for a frame refused BEFORE
+⍝ it becomes an admitted request. "A peer that refuses a frame pre-admission MUST put a
+⍝ coded EXECUTE_RESPONSE on the wire [MUST] -- correlated by request_id where the id is
+⍝ available, and otherwise as a best-effort coded frame carrying no correlation."
+⍝
+⍝ §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS" and
+⍝ therefore reaches NONE of these, which is why §4.11 exists. The two non-conformant
+⍝ behaviours it names are SEPARATE failures and this peer had one of each: DROPPING the
+⍝ frame (every arm below that used to fall off the end of OnFrame with no response), and
+⍝ CLOSING with no coded frame (the truncated-stream arm in ServeReadable). A bare close is
+⍝ indistinguishable from a network fault (§4.6).
+⍝
+⍝ An EMPTY `rid` IS the best-effort form, not a bug: it is what the section prescribes
+⍝ where no id can be recovered.
+⍝ ⍺=fd ; ⍵=(rid status code).
+∇fd SendRefusal a;rid;st;code;rframe
+ rid←1⊃a ⋄ st←2⊃a ⋄ code←3⊃a
+ rframe←FrameOf WireFrameOfEnvelope((WireMakeResponse rid(st)(WireErrorResult(code)('')))EnvMake ⍬)
+ zz←fd NetSend rframe
+∇
+
+∇fd OnFrame payload;pk;rt;rid;isResp;ok;dr;env;resp;frame;ref
  pk←WirePeek payload ⋄ rt←1⊃pk ⋄ rid←2⊃pk ⋄ isResp←3⊃pk ⋄ ok←4⊃pk
- →(~ok)/0
- →(~isResp)/inbound
+ ⍝ THE FRAMING ARM (§4.11): bytes that never become an Envelope at all -- not CBOR,
+ ⍝ zero-length, trailing data. `ok=0` from the SALVAGE peek means even the lenient decode
+ ⍝ could not find a root, so no request_id exists and the answer is the uncorrelated
+ ⍝ best-effort frame. This used to `→0`: a silent drop, which §4.11 calls "the weaker of
+ ⍝ the two precisely because nothing surfaces it".
+ →(ok)/peeked
+ fd SendRefusal('')(400)('invalid_request') ⋄ →0
+ peeked:→(~isResp)/inbound
  rid TrPendDeliver payload ⋄ →0
+ ⍝ ROOT IS NEITHER EXECUTE NOR EXECUTE_RESPONSE. 0.8.2.25 (N12/N17) WITHDREW the old §3.3
+ ⍝ "the connection MUST be closed" here and §6.5's dispatch-chain pseudocode changed
+ ⍝ "Other type? -> Invalid. Close connection." to a CODED REFUSAL; §9.1's floor row that
+ ⍝ mandated the close was REPLACED (N18). Answer 400 invalid_request and keep serving --
+ ⍝ closing would cost every ADMITTED in-flight request its response, and §4.11 leaves the
+ ⍝ close to us. This arm used to be a bare "ignore other root types".
  inbound:→(rt≡'system/protocol/execute')/exec
- →0                                    ⍝ §3.3: ignore other root types
+ fd SendRefusal(rid)(400)('invalid_request') ⋄ →0
  ⍝ §6.11: while a handler reentry (HndDispatchOutbound) is pendent awaiting its outbound
  ⍝ reply, a SECOND inbound EXECUTE must NOT be dispatched here — that would recursively
  ⍝ re-enter the pendent HndDispatchOutbound and corrupt GNU APL's interpreter (A-APL-017).
@@ -965,9 +1098,19 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  ConnOpen fd
  dr←WireEnvelopeOfFrame payload
  →(2⊃dr)/good
- →(0=≢rid)/0
- rframe←FrameOf WireFrameOfEnvelope((WireMakeResponse rid(400)(WireErrorResult('non_canonical_ecf')('')))EnvMake ⍬)
- zz←fd NetSend rframe ⋄ →0
+ ⍝ A COMPLETE frame the STRICT decoder refused. THE CODE IS THE CAUSE'S (§4.11, §5.2a):
+ ⍝ a mis-keyed `included` entry is `400 hash_mismatch` -- its encoding is canonical, what
+ ⍝ is false is the claim the KEY makes -- a tag-policy violation keeps `non_canonical_ecf`,
+ ⍝ and everything else that never becomes an Envelope is `400 invalid_request`. This arm
+ ⍝ answered non_canonical_ecf for every cause; the distinction already existed one layer
+ ⍝ down and was being collapsed into a boolean.
+ ⍝
+ ⍝ AN UNRECOVERABLE request_id NO LONGER MEANS SILENCE. This arm was guarded on
+ ⍝ `0=≢rid` and dropped the frame when the salvage peek found no id -- which is exactly
+ ⍝ the tagged-data shape, since a tag in `data` makes `data` a non-map and the id
+ ⍝ unreadable. The refusal existed and was unreachable for the one input it was for.
+ ref←WireRefusalOfRc 3⊃dr
+ fd SendRefusal(rid)(1⊃ref)(2⊃ref) ⋄ →0
  good:env←1⊃dr
  resp←fd PeerDispatch env
  →(~2⊃resp)/0
@@ -977,11 +1120,12 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  defer:gDefer←gDefer,⊂(fd)(payload)   ⍝ processed by DrainDeferred at reentry depth 0
 ∇
 
-∇Send413 fd;rframe
+∇Send413 fd
  ⍝ §4.10(a): oversize length prefix caught BEFORE buffering the body; answer 413, keep
- ⍝ serving. request_id is unknown (body never read) -> empty.
- rframe←FrameOf WireFrameOfEnvelope((WireMakeResponse('')(413)(WireErrorResult('payload_too_large')('')))EnvMake ⍬)
- zz←fd NetSend rframe
+ ⍝ serving. request_id is unknown (body never read) -> empty. 0.8.2.25 (N14) raised this
+ ⍝ from SHOULD to MUST: the over-size condition is detected at the length prefix with the
+ ⍝ connection intact and nothing spent.
+ fd SendRefusal('')(413)('payload_too_large')
 ∇
 
 ⍝ process one readable fd (accept / recv+frames / EOF). Returns nothing.
@@ -992,7 +1136,16 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  ConnOpen conn ⋄ →0
  data:chunk←NetRecv fd
  →(0<≢chunk)/have
- ConnClose fd ⋄ →0
+ ⍝ EOF. §4.11's framing arm: a stream that ends MID-FRAME is a REFUSAL and is owed a
+ ⍝ coded frame, while a clean close at a frame boundary is an ordinary hangup and is owed
+ ⍝ NOTHING. The two are told apart by whether this fd's receive buffer still holds bytes
+ ⍝ -- a partial length prefix or a prefix whose declared body never arrived both leave a
+ ⍝ non-empty remainder, and a clean close leaves it empty. Without the distinction both
+ ⍝ closed in silence, which §4.11 names non-conformant and which reads to the sender as a
+ ⍝ network fault.
+ →(~TrRxPending fd)/eof
+ fd SendRefusal('')(400)('invalid_request')
+ eof:ConnClose fd ⋄ →0
  have:fd TrRxAppend chunk
  ex←TrRxExtract fd ⋄ frames←1⊃ex
  →(2⊃ex)/oversize
@@ -1085,10 +1238,10 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  zz←gSessFd NetSend frame
  ok←gSessFd PumpUntil rid
  →(ok)/took
- Z←(EntAbsent(⍬))0 ⋄ →0
+ Z←(EntAbsent(⍬))0 EC_DECODE_ERROR ⋄ →0
  took:taken←TrPendTake rid
  →(2⊃taken)/have
- Z←(EntAbsent(⍬))0 ⋄ →0
+ Z←(EntAbsent(⍬))0 EC_DECODE_ERROR ⋄ →0
  have:Z←WireEnvelopeOfFrame 1⊃taken
 ∇
 
@@ -1168,7 +1321,7 @@ AuthIncluded←{(gSessCap)(gSessGranter)(IdPeerEntity gIdent)(gSessCapSig)(⍵)}
 
 SessAwait←{gSessFd PumpUntil ⍵}
 ∇Z←SessResponse rid;taken
- Z←(EntAbsent(⍬))0
+ Z←(EntAbsent(⍬))0 EC_DECODE_ERROR
  taken←TrPendTake rid
  →(~2⊃taken)/0
  Z←WireEnvelopeOfFrame 1⊃taken

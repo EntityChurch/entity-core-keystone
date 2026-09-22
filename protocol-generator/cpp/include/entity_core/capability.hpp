@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "entity_core/entity.hpp"
 #include "entity_core/store.hpp"
@@ -83,6 +84,23 @@ bool chain_exceeds_depth(const Store& store, const Entity& cap, const Envelope& 
 bool grant_subset(const std::string& local_peer, const std::string& child_peer,
                   const std::string& parent_peer, const EcfValue& child_grant,
                   const EcfValue& parent_grant);
+
+// §5.2 effective targets (0.8.2.20/.21/.25 N11). `survivors` are the caller's OWN
+// SPELLING, NOT canonicalized, and are COPIES rather than views into the exec: the
+// tree handler holds them across the branch that frees nothing but is easier to reason
+// about when the lifetime is its own. `had_resource` is the second half of the pair —
+// see the definition for why a list alone cannot satisfy N11.
+struct Effective {
+    std::vector<std::string> survivors;
+    bool had_resource = false;
+};
+Effective effective_targets(std::string_view local_peer, const Entity& exec);
+
+// §6.3's handler-level path check. THREE dimensions (handlers/operations/resources),
+// framed on the LOCAL peer — never the granter. See the definition.
+bool check_path_permission(std::string_view local_peer, std::string_view operation,
+                           std::string_view path, const Entity& token,
+                           std::string_view handler_pattern);
 
 }  // namespace entity_core::cap
 

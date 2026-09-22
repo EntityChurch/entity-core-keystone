@@ -321,7 +321,7 @@ internal sealed class Dispatcher
         if (ChainVerifier.ExceedsMaxDepth(capability, envelope))
         {
             return VerifyResult.Deny(Status.BadRequest, "chain_depth_exceeded",
-                "capability chain exceeds max depth (§4.10b)");
+                "capability chain exceeds max depth (section 4.10b)");
         }
         if (!ChainVerifier.VerifyCapabilityChain(capability, envelope, _peer.LocalPeerId, _peer.NowMs))
         {
@@ -338,7 +338,7 @@ internal sealed class Dispatcher
         // resolves in included.
         if (IsChainRevoked(capability, envelope))
         {
-            return VerifyResult.Deny(Status.Forbidden, "capability_revoked", "capability is revoked (§5.1)");
+            return VerifyResult.Deny(Status.Forbidden, "capability_revoked", "capability is revoked (section 5.1)");
         }
 
         return VerifyResult.Ok(capability);

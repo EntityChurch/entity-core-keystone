@@ -46,7 +46,7 @@ swipl --version
 echo
 
 # ── 1. Build the C-ABI codec library + foreign shim ─────────────────────────
-echo "── [1/3] building libentitycore_codec + SWI foreign shim ──"
+echo "── [1/4] building libentitycore_codec + SWI foreign shim ──"
 CODEC_BUILD="$BUILD/cabi"
 mkdir -p "$CODEC_BUILD"
 cmake -S "$CABI" -B "$CODEC_BUILD" -DCMAKE_BUILD_TYPE=Release >/dev/null
@@ -60,15 +60,28 @@ echo "    codec + shim built; LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
 echo
 
 # ── 2. Type-registry gate (53/53) ────────────────────────────────────────────
-echo "── [2/3] type-registry (53 core types, §9.5) ──"
+echo "── [2/4] type-registry (53 core types, §9.5) ──"
 set +e
 swipl -q -g run_type_registry_main -t 'halt(2)' "$PEER/test/type_registry.pl" -- "$DIAG"
 TR_RC=$?
 set -e
 echo
 
-# ── 3. Two-peer loopback smoke gate (11/11) ──────────────────────────────────
-echo "── [3/3] two-peer loopback smoke (11 checks) ──"
+# ── 3. The 0.8.2.20 -> 0.8.2.25 scope-algebra units ──────────────────────────
+# A SEPARATE STEP WITH ITS OWN EXIT CODE, not a section of the smoke: these are pure
+# relations and need no socket, so folding them into a run that opens listeners would
+# make a unit failure indistinguishable from a transport one. The COUNT is printed by
+# the runner and asserted by it -- a gate whose success message carries no number cannot
+# distinguish "all green" from "nothing ran".
+echo "── [3/4] scope-algebra units (section 3.3 / 5.2 / 5.5a / 6.3) ──"
+set +e
+swipl -q -g run_spec0825_main -t 'halt(2)' "$PEER/test/spec0825.pl"
+SPEC_RC=$?
+set -e
+echo
+
+# ── 4. Two-peer loopback smoke gate ──────────────────────────────────────────
+echo "── [4/4] two-peer loopback smoke ──"
 set +e
 swipl -q -g run_smoke_main -t 'halt(2)' "$PEER/test/smoke.pl"
 SMOKE_RC=$?
@@ -76,8 +89,8 @@ set -e
 echo
 
 echo "=============================================================="
-echo " type-registry rc=$TR_RC   smoke rc=$SMOKE_RC"
-if [ "$TR_RC" -eq 0 ] && [ "$SMOKE_RC" -eq 0 ]; then
+echo " type-registry rc=$TR_RC   spec-0825 rc=$SPEC_RC   smoke rc=$SMOKE_RC"
+if [ "$TR_RC" -eq 0 ] && [ "$SPEC_RC" -eq 0 ] && [ "$SMOKE_RC" -eq 0 ]; then
     echo " S3 GATE: GREEN"
     exit 0
 else

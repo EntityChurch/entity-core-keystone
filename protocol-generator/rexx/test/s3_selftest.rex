@@ -130,6 +130,6 @@ Hello_Status: procedure expose EC.
   hello = Ent_Make('system/protocol/connect/hello', fields)
   exec = Wire_MakeExecute('rq', 'system/protocol/connect', 'hello', hello, '', '', '')
   conn = Conn_New()
-  ctx = Ctx_Make(conn, '', Env_Make(exec, ''))
+  ctx = Ctx_Make(conn, '', Env_Make(exec, ''), '')
   out = Hnd_Connect(peer, 'hello', ctx)
   return Out_Status(out)

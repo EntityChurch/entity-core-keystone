@@ -189,17 +189,34 @@ module EntityCore
     # fail-OPEN in an exclude (carves out nothing -> the grant is SILENTLY WIDER than
     # its author wrote): same value, same matcher, opposite safety direction, so the
     # reading is chosen where the POSITION is known and matches_pattern stays uniform
-    # over its operands. The guard sits outside the scope-type dispatch, transcribing
-    # §5.2's loop literally.
+    # over its operands.
+    #
+    # EVERY CALL SITE MUST GUARD IT ON PATH-SCOPE (0.8.2.24, N2/N3). This used to be
+    # asked of every dimension, transcribing §5.2's loop before that loop grew its
+    # type dispatch. NEVER_MATCH is a §5.4 PATH-canonicalization sentinel and has no
+    # meaning on an id-scope dimension, whose patterns are literal identifiers that
+    # §5.2's own id-scope arm forbids putting through the §5.4 transforms. Asking it
+    # outside the type dispatch ran an id pattern through those transforms purely to
+    # classify it and then DENIED THE WHOLE DIMENSION on a property unrelated to
+    # whether the exclude carves anything out: an `operations` exclude naming an
+    # ordinary namespaced operation with a leading star-slash — a literal matching
+    # nothing under the id-scope grammar — canonicalized to the sentinel and denied
+    # every operation. Over-denial, and invisible on any well-formed grant.
     private def exclude_unmatchable?(frame : String, excl : Array(String)) : Bool
       excl.any? { |p| canonicalize(frame, p) == NEVER_MATCH }
     end
 
     def matches_scope(local_peer : String, value : String, scope : Scope, kind : ScopeKind) : Bool
-      return false if exclude_unmatchable?(local_peer, scope.excl)   # 0.8.2.21 — deny
       if kind.id?
+        # No sentinel guard here, and that is 0.8.2.24's ruling rather than an
+        # omission: §5.4 says "a capability carrying an unmatchable PATH-SCOPE
+        # pattern is INVALID ... It does NOT reach `operations` or `peers` [MUST]".
+        # Under the id-scope grammar every non-star pattern is a literal, and a
+        # literal is never structurally unmatchable, so there is nothing here for
+        # the sentinel to detect.
         return covered_id(scope.incl, value) && !covered_id(scope.excl, value)
       end
+      return false if exclude_unmatchable?(local_peer, scope.excl)   # 0.8.2.21 — deny
       cv = canonicalize(local_peer, value)
       covered(local_peer, scope.incl, cv) && !covered(local_peer, scope.excl, cv)
     end
@@ -283,6 +300,92 @@ module EntityCore
       false
     end
 
+    # ── §5.2 effective targets and §6.3 check_path_permission ─────────────────────
+
+    # §5.2's effective target list (0.8.2.20): the caller's OWN `resource.exclude`
+    # removes entries from the request BEFORE anything else looks at it.
+    #
+    # The survivors are returned in the caller's OWN SPELLING, not canonicalized —
+    # 0.8.2.21 is explicit that `effective_targets` yields raw survivors, and the
+    # distinction is load-bearing because the value flows on to the store lookup,
+    # which canonicalizes for itself.
+    #
+    # The second element says whether a `resource` was present AT ALL. An ABSENT
+    # resource and a resource whose every target was excluded are different inputs
+    # to §3.3, and for a resource-OPTIONAL operation 0.8.2.24 (N7) makes them
+    # DIFFERENT REQUESTS with different answers.
+    #
+    # THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES [MUST] (0.8.2.25, N11):
+    # "that projection MUST NOT be lossy about its own emptiness — narrow when
+    # narrowing leaves something, and retain the raw pair when narrowing would
+    # empty it." A function returning only a list cannot satisfy that: collapsing
+    # `[qA] exclude [qA]` to `[]` deletes the two-empties discriminator before any
+    # handler can read it, and the handler's refusal arm becomes dead code that
+    # only a WIRE drive can detect. This peer has exactly ONE narrowing seam — this
+    # function, called by the tree handler — and §6.5's dispatch chain does not
+    # project, so there is no second door to keep in step.
+    def effective_targets(local_peer : String, exec : Entity) : {Array(String), Bool}
+      r = exec.map_field("resource")
+      return {[] of String, false} if r.nil?
+      targets = text_list(r, "targets")
+      return {[] of String, false} if targets.nil?
+      caller_excl = text_list(r, "exclude") || [] of String
+      survivors = targets.reject do |t|
+        ct = canonicalize(local_peer, t)
+        # The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4's
+        # table rules it separately from the grant arm): canonicalize answers
+        # NEVER_MATCH and matches_pattern then answers false, so the target simply
+        # survives. That asymmetry is 0.8.2.21's whole point and it is INHERITED
+        # from the primitives here rather than restated.
+        caller_excl.any? { |x| matches_pattern(ct, canonicalize(local_peer, x)) }
+      end
+      {survivors, true}
+    end
+
+    # §6.3's handler-level path check.
+    #
+    # IT IS NOT A SECONDARY CHECK (§5.2, 0.8.2.20). It is the enforcement wherever
+    # the subject is derived after dispatch, and the dispatch-level check can be
+    # made VACUOUS by caller-controlled input: a caller who excludes the one target
+    # its capability does not cover removes that target from `check_permission`'s
+    # view entirely, and a handler that then acts on it has authorized nothing.
+    #
+    # THREE DIMENSIONS, NOT FOUR. `peers` is not consulted here — the path is local
+    # by construction at this point (§1.4's inbound rule refuses a foreign namespace
+    # at §6.5 step 3, before any handler runs), and §6.3's signature names only
+    # handlers, operations and resources.
+    #
+    # THE FRAME IS local_peer, NOT THE GRANTER, AND THAT IS THE SPEC'S OWN SIGNATURE
+    # RATHER THAN A CHOICE. §6.3's block reads
+    # `matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id)`
+    # — there is no granter parameter to pass. §5.5a governs chain ATTENUATION,
+    # where the subject is a pattern compared against a parent's pattern; this call
+    # site compares a CONCRETE local path the handler is about to touch.
+    #
+    # There is no caller-exclude set at this call site: the subject is a single
+    # concrete path, and the caller's exclusions have already been applied in
+    # deriving it. Every grant exclude covering the subject therefore denies —
+    # which `matches_scope` already implements, including 0.8.2.21's sentinel rule,
+    # so this function is three calls to it and nothing else.
+    #
+    # An empty `resources.include` is a legal grant shape (§5.2: handlers that touch
+    # no tree paths) and DENIES every path here, which is what that note says it
+    # should — `covered` over an empty include list is false.
+    def check_path_permission(local_peer : String, operation : String, path : String,
+                              token : Entity, handler_pattern : String) : Bool
+      # canonicalize is total and may answer NEVER_MATCH, which matches no grant
+      # (§5.4) — so a malformed path falls through to DENY rather than being matched
+      # against anything.
+      cp = canonicalize(local_peer, path)
+      grants_of_token(token).each do |g|
+        next unless matches_scope(local_peer, handler_pattern, g.handlers, ScopeKind::Path)
+        next unless matches_scope(local_peer, operation, g.operations, ScopeKind::Id)
+        next unless matches_scope(local_peer, cp, g.resources, ScopeKind::Path)
+        return true
+      end
+      false
+    end
+
     # ── signature / resolution helpers ────────────────────────────────────────────
 
     def find_signature(target : Bytes, included : Array(Envelope::Included)) : Entity?
@@ -352,7 +455,35 @@ module EntityCore
 
     # ── §5.6 attenuation ───────────────────────────────────────────────────────────
 
-    private def scope_subset(child_peer : String, parent_peer : String, child : Scope, parent : Scope) : Bool
+    # §5.5a/§5.6 attenuation subset, TYPED BY SCOPE KIND (F50, ruled 0.8.2.16).
+    #
+    # §3.6's grammar binds the SCOPE TYPE, not one function: "An implementation on
+    # the canonicalizing reading is non-conformant and MUST adopt the literal
+    # matcher." F40 typed `matches_scope` and this sibling was left on the path
+    # matcher for all four dimensions, so `operations` and `peers` — both id-scope
+    # — were compared with §5.4 canonicalization and wildcard semantics they do not
+    # have. The divergence is narrow and FAIL-CLOSED (an include of a namespaced
+    # operation is not covered by a parent bare star under the path matcher, which
+    # widens nothing but refuses legitimate delegation), which is exactly why no
+    # hand-tried example found it.
+    #
+    # `kind` has NO DEFAULT and is named at every call site, because a default is
+    # how the next dimension inherits the wrong matcher silently — the original F40
+    # defect.
+    private def scope_subset(child_peer : String, parent_peer : String,
+                             child : Scope, parent : Scope, kind : ScopeKind) : Bool
+      if kind.id?
+        # Literal-with-two-wildcards, both operands as written: no canonicalization
+        # frame applies to an identifier, so `child_peer`/`parent_peer` are unused
+        # on this arm by construction rather than by omission.
+        child.incl.each do |cp|
+          return false unless parent.incl.any? { |pp| matches_id_pattern(cp, pp) }
+        end
+        parent.excl.each do |pe|
+          return false unless child.excl.any? { |ce| matches_id_pattern(pe, ce) }
+        end
+        return true
+      end
       child.incl.each do |cp|
         cc = canonicalize(child_peer, cp)
         return false unless parent.incl.any? { |pp| matches_pattern(cc, canonicalize(parent_peer, pp)) }
@@ -366,12 +497,12 @@ module EntityCore
 
     def grant_subset(local_peer : String, child_peer : String, parent_peer : String,
                      child : GrantRec, parent : GrantRec) : Bool
-      return false unless scope_subset(local_peer, local_peer, child.handlers, parent.handlers)
-      return false unless scope_subset(local_peer, local_peer, child.operations, parent.operations)
-      return false unless scope_subset(child_peer, parent_peer, child.resources, parent.resources)
+      return false unless scope_subset(local_peer, local_peer, child.handlers, parent.handlers, ScopeKind::Path)
+      return false unless scope_subset(local_peer, local_peer, child.operations, parent.operations, ScopeKind::Id)
+      return false unless scope_subset(child_peer, parent_peer, child.resources, parent.resources, ScopeKind::Path)
       cp = child.peers || Scope.new([local_peer], [] of String)
       pp = parent.peers || Scope.new([local_peer], [] of String)
-      scope_subset(local_peer, local_peer, cp, pp)
+      scope_subset(local_peer, local_peer, cp, pp, ScopeKind::Id)
     end
 
     private def attenuated?(local_peer : String, child_peer : String, parent_peer : String,

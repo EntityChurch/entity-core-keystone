@@ -21,6 +21,13 @@ Hnd_ExecResourceTarget: procedure expose EC.
   if Lst_Count(targets) == 0 then return ''
   return Lst_Item(targets, 1)
 
+/* Hnd_PatternPath -- a §5.4 PATTERN rather than a concrete path. A resource-requiring
+   operation takes a concrete path (0.8.2.20); a trailing '/' is a LISTING request, not a
+   pattern -- only a star makes it one. */
+Hnd_PatternPath: procedure expose EC.
+  parse arg target
+  return (pos('*', target) > 0)
+
 /* §1.4 path validity (no NUL, no empty/./.. segments; abs paths peer-rooted). */
 Hnd_PathFlexOk: procedure expose EC.
   parse arg target
@@ -248,11 +255,41 @@ _tree_get: procedure expose EC.
   exec = Ctx_Exec(ctx)
   local = Peer_LocalPeer(peer_h)
   store_h = Peer_Store(peer_h)
-  target = Hnd_ExecResourceTarget(exec)
-  if target \== '' & \Hnd_PathFlexOk(target) then return Out_Err(400, 'invalid_path', target)
-  if target == '' then return _tree_listing(peer_h, '/' || local || '/')
-  if right(target, 1) == '/' then return _tree_listing(peer_h, Cap_Canonicalize(local, target))
+  /* §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on resource.targets: a
+     handler that counts the effective list and then indexes targets[0] has implemented
+     the arithmetic completely and is still reading a path no authorization covered. */
+  eff = Cap_EffectiveTargets(local, exec)
+  if \Eff_Had(eff) then do
+    /* THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION IS WHAT
+       SAYS SO. §3.3's "an empty effective list IS the absent case" is scoped "for an
+       operation that REQUIRES a resource" (0.8.2.24, N7); `get` does not. For a
+       resource-OPTIONAL operation 0.8.2.25 (N10) decides the present-but-empty case by
+       whether the absent case is WIDER than the request -- BROAD-RESULT refuses it,
+       OPTIONAL-FILTER answers it empty -- and requires the operation to declare which.
+
+       EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is resource-OPTIONAL and
+       BROAD-RESULT, absent-case answer "the root listing", self-excluded case "400
+       path_required". Both arms here are pinned by text; neither is this peer's choice. */
+    return _tree_listing(peer_h, '/' || local || '/', ctx)
+  end
+  lst = Eff_List(eff)
+  /* `resource` PRESENT, every target carved out by the caller's own exclude. Serving it
+     the absent case "answers a request for one excluded path with a listing of the tree"
+     (EXTENSION-TREE §2.2a) -- the root listing is wider than what was asked for, which is
+     what BROAD-RESULT means. */
+  if Lst_Count(lst) == 0 then return Out_Err(400, 'path_required', 'tree: effective target list is empty')
+  if Lst_Count(lst) > 1 then return Out_Err(400, 'ambiguous_resource', 'tree: more than one effective target')
+  target = Lst_Item(lst, 1)
+  if \Hnd_PathFlexOk(target) then return Out_Err(400, 'invalid_path', target)
+  if target == '' | right(target, 1) == '/' then return _tree_listing(peer_h, Cap_Canonicalize(local, target), ctx)
+  if Hnd_PatternPath(target) then return Out_Err(400, 'malformed_resource', target)
   path = Cap_Canonicalize(local, target)
+  /* §6.3: the handler MUST verify the CALLER's capability covers the path it is about to
+     read. Not a secondary check -- the dispatch-level check never saw this path if the
+     caller excluded it. */
+  caller_cap = Ctx_CallerCap(ctx)
+  if caller_cap \== '' then
+    if \Cap_CheckPathPermission(local, 'get', path, caller_cap, Ctx_HandlerPattern(ctx)) then return Out_Err(403, 'capability_denied', path)
   e = Store_GetAt(store_h, path)
   if e == '' then return Out_Err(404, 'not_found', path)
   params = Ent_EntityField(exec, 'params')
@@ -323,10 +360,30 @@ _tree_put: procedure expose EC.
   exec = Ctx_Exec(ctx)
   local = Peer_LocalPeer(peer_h)
   store_h = Peer_Store(peer_h)
-  target = Hnd_ExecResourceTarget(exec)
-  if target == '' then return Out_Err(400, 'ambiguous_resource', 'tree: missing resource target')
+  /* Same ladder as _tree_get, with the two empties COLLAPSED rather than split:
+     EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an empty
+     effective list IS the absent case" applies in its unscoped form and both empties
+     answer path_required. That is the same table _tree_get's branch cites, read one row
+     down -- the field is per-operation and neither answer is derivable from this
+     handler's source.
+
+     Note the code change 0.8.2.20 forced: this branch answered ambiguous_resource for a
+     MISSING target, which 0.8.2.20 names as the exact inversion it forbids ("answering
+     ambiguous_resource for an absent resource inverts them"). The remedies differ --
+     *supply a resource* is not *disambiguate your request* -- and the code selects. */
+  eff = Cap_EffectiveTargets(local, exec)
+  lst = Eff_List(eff)
+  if \Eff_Had(eff) | Lst_Count(lst) == 0 then return Out_Err(400, 'path_required', 'tree: put requires a resource target')
+  if Lst_Count(lst) > 1 then return Out_Err(400, 'ambiguous_resource', 'tree: more than one effective target')
+  target = Lst_Item(lst, 1)
   if \Hnd_PathFlexOk(target) then return Out_Err(400, 'invalid_path', target)
+  if Hnd_PatternPath(target) then return Out_Err(400, 'malformed_resource', target)
   path = Cap_Canonicalize(local, target)
+  /* §6.3 (see _tree_get): the CALLER's capability must cover the path this handler is
+     about to write, because the caller's own exclude can vacate the dispatch-level check. */
+  caller_cap = Ctx_CallerCap(ctx)
+  if caller_cap \== '' then
+    if \Cap_CheckPathPermission(local, 'put', path, caller_cap, Ctx_HandlerPattern(ctx)) then return Out_Err(403, 'capability_denied', path)
   params = Ent_EntityField(exec, 'params')
   raw_entity = ''
   expected = ''
@@ -347,8 +404,38 @@ _tree_put: procedure expose EC.
   call Store_Bind store_h, path, entity
   return Out_Ok(Ent_Make('system/hash', Ecf_Map('hash', Ecf_Bytes(Ent_Hash(entity)))), '')
 
+/* _entry_visible -- §6.3's per-entry listing check for one child segment (0.8.2.21/.22).
+ *
+ * An unauthenticated context is the bootstrap/internal path and is NOT filtered: the
+ * filter's subject is "the caller's verified capability", and where there is none there
+ * is no caller to narrow. `ctx` is '' on the internal call paths with no caller at all. */
+_entry_visible: procedure expose EC.
+  parse arg peer_h, ctx, dir, seg
+  if ctx == '' then return 1
+  caller_cap = Ctx_CallerCap(ctx)
+  if caller_cap == '' then return 1
+  if right(dir, 1) == '/' then child = dir
+  else child = dir || '/'
+  return Cap_CheckPathPermission(Peer_LocalPeer(peer_h), 'get', child || seg, caller_cap, Ctx_HandlerPattern(ctx))
+
+/* _tree_listing -- render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+ *
+ * "When any handler returns a multi-entry result whose entries are tree paths, each entry
+ * MUST be individually checked using check_path_permission. Entries for which
+ * check_path_permission returns DENY MUST be omitted. The result's `count` field MUST
+ * reflect the filtered entry count, not the source tree's total count."
+ *
+ * This is the read path at its highest volume and it is the reason 0.8.2.21 refused to
+ * carve reads out of the caller-specified-path rule: an unfiltered listing discloses the
+ * EXISTENCE of every binding under a prefix to a caller whose capability covers none of
+ * them. `count` following the SOURCE total is that disclosure by itself, which is why it
+ * is incremented per EMITTED entry rather than taken from Lst_Count(rows).
+ *
+ * The DIRECTORY itself is deliberately NOT checked -- §6.3 makes each ENTRY the subject,
+ * and testing the prefix would deny a listing to a caller whose grant covers children but
+ * not the node above them, which is the ordinary shape of a narrowed grant. */
 _tree_listing: procedure expose EC.
-  parse arg peer_h, path
+  parse arg peer_h, path, ctx
   store_h = Peer_Store(peer_h)
   rows = Store_Listing(store_h, path)
   em = ''
@@ -360,6 +447,7 @@ _tree_listing: procedure expose EC.
       me = Store_GetByHash(store_h, x2c(translate(hashhex)))
       if me \== '' & Ent_Type(me) == 'system/deletion-marker' then iterate
     end
+    if \_entry_visible(peer_h, ctx, path, seg) then iterate
     if hashhex \== '' then led = Ent_Make('system/tree/listing-entry', Ecf_Map('has_children', Ecf_Bool(haschild), 'hash', Ecf_Bytes(x2c(translate(hashhex)))))
     else led = Ent_Make('system/tree/listing-entry', Ecf_Map('has_children', Ecf_Bool(haschild)))
     em = Ecf_MapPut(em, seg, Ent_ToCbor(led))

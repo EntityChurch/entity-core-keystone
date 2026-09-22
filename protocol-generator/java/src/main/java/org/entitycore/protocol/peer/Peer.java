@@ -52,6 +52,18 @@ public final class Peer {
         return localPeer;
     }
 
+    /**
+     * The handler registered at a peer-relative pattern, or null.
+     *
+     * <p>Package-private: it exists so a gate can drive ONE handler with a hand-built
+     * {@link HandlerContext}, which is how §6.3's listing filter is measured — the narrow
+     * grant is the whole input there, and minting one over the wire would put three more
+     * moving parts between the assertion and the thing asserted.
+     */
+    Handler handlerFor(String pattern) {
+        return handlers.get(pattern);
+    }
+
     public Identity identity() {
         return identity;
     }
@@ -473,6 +485,13 @@ public final class Peer {
 
     /** §6.3 — the tree handler (get / put). */
     private final class TreeHandler implements Handler {
+        /**
+         * RESOLVE THE OPERATION FIRST; only then run the §3.3 resource ladder. This switch
+         * is what makes that true: a handler that validates the resource first answers a
+         * RESOURCE fault for an unknown-OPERATION request, so {@code system/tree:bogusop}
+         * with no {@code resource} reports {@code ambiguous_resource} where §3.3 pins
+         * {@code 501 unsupported_operation}.
+         */
         @Override
         public Outcome handle(String op, HandlerContext ctx) {
             return switch (op) {
@@ -484,17 +503,55 @@ public final class Peer {
 
         private Outcome get(HandlerContext ctx) {
             Entity exec = ctx.exec();
-            String target = execResourceTarget(exec);
-            if (target != null && !pathFlexOk(target)) {
+            // §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+            // `resource.targets`: a handler that counts the effective list and then
+            // indexes `targets[0]` has implemented the arithmetic completely and is still
+            // reading a path no authorization covered. This peer read `targets.get(0)`
+            // with no count at all, so `targets:[a,b] exclude:[a]` served `a`.
+            Capability.EffectiveTargets eff = Capability.effectiveTargets(localPeer, exec);
+            if (!eff.hasResource()) {
+                // THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION
+                // IS WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is
+                // scoped "for an operation that REQUIRES a resource" (0.8.2.24, N7); `get`
+                // does not. For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the
+                // present-but-empty case by whether the absent case is WIDER than the
+                // request — BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty.
+                //
+                // EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+                // resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root
+                // listing", self-excluded case "400 path_required". Both arms are pinned
+                // by text and neither is this peer's choice.
+                return buildListing(ctx, "/" + localPeer + "/");
+            }
+            if (eff.survivors().isEmpty()) {
+                // `resource` PRESENT, every target carved out by the caller's own exclude.
+                // Serving it the absent case "answers a request for one excluded path with
+                // a listing of the tree" (EXTENSION-TREE §2.2a).
+                return Outcome.err(400, "path_required", "tree: effective target list is empty");
+            }
+            if (eff.survivors().size() > 1) {
+                return Outcome.err(400, "ambiguous_resource", "tree: more than one effective target");
+            }
+            String target = eff.survivors().get(0);
+            if (!pathFlexOk(target)) {
                 return Outcome.err(400, "invalid_path", target);
             }
-            if (target == null) {
-                return buildListing("/" + localPeer + "/");
-            }
             if (target.isEmpty() || target.charAt(target.length() - 1) == '/') {
-                return buildListing(Capability.canonicalize(localPeer, target));
+                return buildListing(ctx, Capability.canonicalize(localPeer, target));
+            }
+            // A resource-requiring operation takes a CONCRETE path (0.8.2.20). Without
+            // this the pattern is looked up as a literal and answers `404 not_found`,
+            // which names the wrong fault: the request is malformed, the tree is fine.
+            if (isPatternPath(target)) {
+                return Outcome.err(400, "malformed_resource", target);
             }
             String path = Capability.canonicalize(localPeer, target);
+            // §6.3: the handler MUST verify the CALLER's capability covers the path it is
+            // about to read. NOT a secondary check — the dispatch-level check never saw
+            // this path if the caller excluded it.
+            if (!authorizePath(ctx, "get", path)) {
+                return Outcome.err(403, "capability_denied", "capability does not cover path");
+            }
             Entity e = store.getAt(path);
             if (e == null) {
                 return Outcome.err(404, "not_found", path);
@@ -505,6 +562,35 @@ public final class Peer {
                 return Outcome.ok(Entity.make("system/hash", Cbor.map("hash", Cbor.bytes(e.hash()))));
             }
             return Outcome.ok(e);
+        }
+
+        /**
+         * §6.3's per-path authorization, against the CALLER's verified capability and the
+         * OWNING handler's pattern — both carried on the context by the dispatcher, which
+         * already computed them.
+         *
+         * <p>An UNAUTHENTICATED context (no capability) is NOT filtered: the filter's
+         * subject is "the caller's verified capability", and where there is none there is
+         * no caller to narrow. That is the bootstrap path, and it matches both vanguard
+         * peers. On this peer every reachable tree dispatch carries a capability —
+         * {@code dispatchInner} refuses a missing one with 403 before any handler runs, and
+         * the connect handler is the sole null case — so the branch is unreachable today
+         * and is written for the rule rather than for a caller.
+         */
+        private boolean authorizePath(HandlerContext ctx, String operation, String path) {
+            if (ctx.callerCap() == null) {
+                return true;
+            }
+            return Capability.checkPathPermission(localPeer, operation, path, ctx.callerCap(), ctx.pattern());
+        }
+
+        /**
+         * A §5.4 PATTERN rather than a concrete path. A resource-requiring operation takes
+         * a CONCRETE path (0.8.2.20), and a trailing {@code /} is a listing request rather
+         * than a pattern — only a {@code *} makes it one.
+         */
+        private boolean isPatternPath(String target) {
+            return target.indexOf('*') >= 0;
         }
 
         /**
@@ -613,14 +699,35 @@ public final class Peer {
 
         private Outcome put(HandlerContext ctx) {
             Entity exec = ctx.exec();
-            String target = execResourceTarget(exec);
-            if (target == null) {
-                return Outcome.err(400, "ambiguous_resource", "tree: missing resource target");
+            // Same ladder as `get`, with the two empties COLLAPSED rather than split:
+            // EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an
+            // empty effective list IS the absent case" applies in its unscoped form and
+            // both empties answer `path_required`. That is the same table `get`'s branch
+            // cites, one row down.
+            //
+            // Note the code 0.8.2.20 forces: a MISSING target is `path_required`, never
+            // `ambiguous_resource` — 0.8.2.20 names that inversion outright, because
+            // *supply a resource* is not *disambiguate your request* and the code is what
+            // selects the remedy. This peer answered `ambiguous_resource` for both.
+            Capability.EffectiveTargets eff = Capability.effectiveTargets(localPeer, exec);
+            if (!eff.hasResource() || eff.survivors().isEmpty()) {
+                return Outcome.err(400, "path_required", "tree: put requires a resource target");
             }
+            if (eff.survivors().size() > 1) {
+                return Outcome.err(400, "ambiguous_resource", "tree: more than one effective target");
+            }
+            String target = eff.survivors().get(0);
             if (!pathFlexOk(target)) {
                 return Outcome.err(400, "invalid_path", target);
             }
+            if (isPatternPath(target)) {
+                return Outcome.err(400, "malformed_resource", target);
+            }
             String path = Capability.canonicalize(localPeer, target);
+            // §6.3 / §6.8: the caller's capability MUST cover the path it names.
+            if (!authorizePath(ctx, "put", path)) {
+                return Outcome.err(403, "capability_denied", "capability does not cover path");
+            }
             Entity params = exec.entityField("params");
             EcfValue rawEntity = (params != null) ? params.field("entity") : null;
             byte[] expected = (params != null) ? params.bytes("expected_hash") : null;
@@ -648,9 +755,34 @@ public final class Peer {
             return Outcome.ok(Entity.make("system/hash", Cbor.map("hash", Cbor.bytes(entity.hash()))));
         }
 
-        private Outcome buildListing(String path) {
+        /**
+         * Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+         *
+         * <p><em>"When any handler returns a multi-entry result whose entries are tree
+         * paths, each entry MUST be individually checked using
+         * {@code check_path_permission}. Entries for which {@code check_path_permission}
+         * returns DENY MUST be omitted. The result's {@code count} field MUST reflect the
+         * filtered entry count, not the source tree's total count."</em>
+         *
+         * <p>This is the read path at its highest volume and it is the reason 0.8.2.21
+         * refused to carve reads out of the caller-specified-path rule: an unfiltered
+         * listing discloses the EXISTENCE of every binding under a prefix to a caller whose
+         * capability covers none of them.
+         *
+         * <p>The DIRECTORY itself is deliberately NOT checked — §6.3 makes each ENTRY the
+         * subject, and testing the prefix would deny a listing to a caller whose grant
+         * covers children but not the node above them, which is the ordinary shape of a
+         * narrowed grant.
+         */
+        private Outcome buildListing(HandlerContext ctx, String path) {
             List<Store.ListEntry> entries = new ArrayList<>();
             for (Store.ListEntry row : store.listing(path)) {
+                // §6.3's per-entry check (0.8.2.21/.22). The peer-root prefix ends in "/";
+                // guard against an empty segment when joining the entry name.
+                String entryPath = (path.endsWith("/") ? path : path + "/") + row.segment();
+                if (!authorizePath(ctx, "get", entryPath)) {
+                    continue;
+                }
                 if (row.hashHex() != null && !row.hasChildren()
                         && isDeletionMarker(Cbor.unhex(row.hashHex()))) {
                     continue;
@@ -670,6 +802,9 @@ public final class Peer {
                     Cbor.map(
                             "path", path,
                             "entries", new EcfValue.Map(entryPairs),
+                            // `count` follows the FILTERED total. A count that still
+                            // reports the source total is the disclosure the rule exists
+                            // to prevent.
                             "count", EcfValue.Int.of(entries.size()),
                             "offset", EcfValue.Int.of(0))));
         }
@@ -910,7 +1045,7 @@ public final class Peer {
             }
             if (isReservedSystemPattern(pattern)) {
                 return Outcome.err(403, "forbidden_pattern",
-                        "§6.2: user-installed handlers MUST NOT register at system/* paths: " + pattern);
+                        "section 6.2: user-installed handlers MUST NOT register at system/* paths: " + pattern);
             }
             Entity req = exec.entityField("params");
             if (req == null) {
@@ -1041,7 +1176,7 @@ public final class Peer {
             Envelope env = outboundDispatch(ctx.conn(), target, operation, inner,
                     capability, granterPeer, capSig, resource);
             if (env == null) {
-                return Outcome.err(503, "no_outbound_seam", "no live §6.11 reentry connection");
+                return Outcome.err(503, "no_outbound_seam", "no live section 6.11 reentry connection");
             }
             BigInteger status = env.root().uint("status");
             EcfValue resultCbor = env.root().field("result");
@@ -1185,7 +1320,7 @@ public final class Peer {
         String operation = orEmpty(exec.text("operation"));
         if (uri.equals("system/protocol/connect")) {
             return handlers.get("system/protocol/connect").handle(operation,
-                    new HandlerContext(exec, conn, env.included(), null, env));
+                    new HandlerContext(exec, conn, env.included(), null, env, "system/protocol/connect"));
         }
         ingestSignatures(env);
         // §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to
@@ -1234,7 +1369,7 @@ public final class Peer {
         Handler inst = handlers.get(stripped);
         if (inst != null) {
             return inst.handle(operation,
-                    new HandlerContext(exec, conn, env.included(), callerCap, env));
+                    new HandlerContext(exec, conn, env.included(), callerCap, env, pattern));
         }
         return entityNativeDispatch(pattern);
     }

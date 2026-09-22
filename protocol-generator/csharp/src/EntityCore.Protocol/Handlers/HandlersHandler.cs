@@ -51,7 +51,7 @@ internal sealed class HandlersHandler : IHandler
         if (IsReservedSystemPattern(pattern))
         {
             return Errors.Error(Status.Forbidden, "forbidden_pattern",
-                $"§6.2: user-installed handlers MUST NOT register at system/* paths: {pattern}");
+                $"section 6.2: user-installed handlers MUST NOT register at system/* paths: {pattern}");
         }
         if (ctx.Params.Type != TypeNames.HandlerRegisterRequest)
         {
@@ -165,7 +165,7 @@ internal sealed class HandlersHandler : IHandler
         if (resource is null || resource.Targets.Count != 1)
         {
             error = Errors.Error(Status.BadRequest, "ambiguous_resource",
-                "register/unregister require exactly one resource target (system/handler/{pattern}) (§6.2)");
+                "register/unregister require exactly one resource target (system/handler/{pattern}) (section 6.2)");
             return false;
         }
 
@@ -174,7 +174,7 @@ internal sealed class HandlersHandler : IHandler
         if (!target.StartsWith(prefix, StringComparison.Ordinal) || target.Length == prefix.Length)
         {
             error = Errors.Error(Status.BadRequest, "invalid_resource",
-                "register/unregister resource target MUST be system/handler/{pattern} (§6.2)");
+                "register/unregister resource target MUST be system/handler/{pattern} (section 6.2)");
             return false;
         }
         pattern = target[prefix.Length..];

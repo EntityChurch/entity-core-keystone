@@ -11,6 +11,18 @@ final class TreeHandler implements Handler
     {
     }
 
+    /**
+     * RULE: RESOLVE THE OPERATION FIRST, ONLY THEN RUN THE §3.3 RESOURCE LADDER.
+     *
+     * An unknown operation is an OPERATION fault (501); a resource fault is 400. A
+     * handler that validates the resource first answers a RESOURCE error for every
+     * unknown operation — measured across the cohort as `system/tree:bogusop` WITHOUT a
+     * resource answering `ambiguous_resource` while the same call WITH one correctly
+     * answered 501, i.e. the fault the caller is told about depended on a field with
+     * nothing to do with it. This `match` resolves the operation before anything reads
+     * `resource`, and the whole ladder lives INSIDE the two arms, which keeps it that way
+     * by construction.
+     */
     public function handle(string $operation, HandlerContext $ctx): Outcome
     {
         return match ($operation) {
@@ -24,17 +36,54 @@ final class TreeHandler implements Handler
     {
         $exec = $ctx->exec;
         $local = $this->peer->localPeer;
-        $target = PeerHelpers::execResourceTarget($exec);
-        if ($target !== null && !PeerHelpers::pathFlexOk($target)) {
+        // §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+        // resource.targets: a handler that counts the effective list and then indexes
+        // targets[0] has implemented the arithmetic completely and is still reading a
+        // path no authorization covered.
+        $eff = Capability::effectiveTargets($local, $exec);
+        if ($eff === null) {
+            // THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION IS
+            // WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is scoped
+            // "for an operation that REQUIRES a resource" (0.8.2.24, N7); `get` does not.
+            // For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the
+            // present-but-empty case by whether the absent case is WIDER than the request
+            // — BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty — and requires
+            // the operation to declare which it is.
+            //
+            // EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+            // resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root listing",
+            // self-excluded case "400 path_required". So both arms here are pinned by
+            // text and neither is this peer's choice.
+            return $this->buildListing("/{$local}/", $ctx);
+        }
+        if ($eff === []) {
+            // `resource` PRESENT, every target carved out by the caller's own exclude.
+            // Serving it the absent case "answers a request for one excluded path with a
+            // listing of the tree" (EXTENSION-TREE §2.2a) — the root listing is wider
+            // than what was asked for, which is what BROAD-RESULT means.
+            return Outcome::err(400, 'path_required', 'tree: effective target list is empty');
+        }
+        if (\count($eff) > 1) {
+            return Outcome::err(400, 'ambiguous_resource', 'tree: more than one effective target');
+        }
+        $target = $eff[0];
+        if (!PeerHelpers::pathFlexOk($target)) {
             return Outcome::err(400, 'invalid_path', $target);
         }
-        if ($target === null) {
-            return $this->buildListing("/{$local}/");
-        }
         if ($target === '' || \str_ends_with($target, '/')) {
-            return $this->buildListing(Capability::canonicalize($local, $target));
+            return $this->buildListing(Capability::canonicalize($local, $target), $ctx);
+        }
+        if (PeerHelpers::isPatternPath($target)) {
+            return Outcome::err(400, 'malformed_resource', $target);
         }
         $path = Capability::canonicalize($local, $target);
+        // §6.3: the handler MUST verify the CALLER's capability covers the path it is
+        // about to read. Not a secondary check — the dispatch-level check never saw this
+        // path if the caller excluded it.
+        if ($ctx->callerCap !== null
+            && !Capability::checkPathPermission($local, 'get', $path, $ctx->callerCap, $ctx->handlerPattern ?? '')) {
+            return Outcome::err(403, 'capability_denied', $path);
+        }
         $e = $this->peer->store->getAt($path);
         if ($e === null) {
             return Outcome::err(404, 'not_found', $path);
@@ -50,14 +99,40 @@ final class TreeHandler implements Handler
     {
         $exec = $ctx->exec;
         $local = $this->peer->localPeer;
-        $target = PeerHelpers::execResourceTarget($exec);
-        if ($target === null) {
-            return Outcome::err(400, 'ambiguous_resource', 'tree: missing resource target');
+        // Same ladder as {@see get}, with the two empties COLLAPSED rather than split:
+        // EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an
+        // empty effective list IS the absent case" applies in its unscoped form and both
+        // empties answer `path_required`. That is the same table `get`'s branch cites,
+        // read one row down — the field is per-operation and neither answer is derivable
+        // from this handler's source.
+        //
+        // Note the code change 0.8.2.20 forced: this branch answered `ambiguous_resource`
+        // for a MISSING target, which 0.8.2.20 names as the exact inversion it forbids
+        // ("answering ambiguous_resource for an absent resource inverts them"). The
+        // remedies differ — *supply a resource* is not *disambiguate your request* — and
+        // the code is what selects between them.
+        $eff = Capability::effectiveTargets($local, $exec);
+        if ($eff === null || $eff === []) {
+            return Outcome::err(400, 'path_required', 'tree: put requires a resource target');
         }
+        if (\count($eff) > 1) {
+            return Outcome::err(400, 'ambiguous_resource', 'tree: more than one effective target');
+        }
+        $target = $eff[0];
         if (!PeerHelpers::pathFlexOk($target)) {
             return Outcome::err(400, 'invalid_path', $target);
         }
+        if (PeerHelpers::isPatternPath($target)) {
+            return Outcome::err(400, 'malformed_resource', $target);
+        }
         $path = Capability::canonicalize($local, $target);
+        // §6.3 (see get): the CALLER's capability must cover the path this handler is
+        // about to write, because the caller's own exclude can vacate the dispatch-level
+        // check.
+        if ($ctx->callerCap !== null
+            && !Capability::checkPathPermission($local, 'put', $path, $ctx->callerCap, $ctx->handlerPattern ?? '')) {
+            return Outcome::err(403, 'capability_denied', $path);
+        }
         $params = $exec->entityField('params');
         $rawEntity = $params?->field('entity');
         $expected = $params?->bytes('expected_hash');
@@ -162,13 +237,57 @@ final class TreeHandler implements Handler
         return Entity::admitted($type, $data, $carried);
     }
 
-    private function buildListing(string $path): Outcome
+    /**
+     * §6.3's per-entry listing check for one child segment (0.8.2.21/.22).
+     *
+     * An unauthenticated context is the bootstrap/internal path and is NOT filtered: the
+     * filter's subject is "the caller's verified capability", and where there is none
+     * there is no caller to narrow.
+     */
+    private function entryVisible(?HandlerContext $ctx, string $dir, string $segment): bool
+    {
+        if ($ctx === null || $ctx->callerCap === null) {
+            return true;
+        }
+        $child = (\str_ends_with($dir, '/') ? $dir : $dir . '/') . $segment;
+        return Capability::checkPathPermission(
+            $this->peer->localPeer,
+            'get',
+            $child,
+            $ctx->callerCap,
+            $ctx->handlerPattern ?? '',
+        );
+    }
+
+    /**
+     * Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+     *
+     * "When any handler returns a multi-entry result whose entries are tree paths, each
+     * entry MUST be individually checked using `check_path_permission`. Entries for which
+     * `check_path_permission` returns DENY MUST be omitted. The result's `count` field
+     * MUST reflect the filtered entry count, not the source tree's total count."
+     *
+     * This is the read path at its highest volume and it is the reason 0.8.2.21 refused
+     * to carve reads out of the caller-specified-path rule: an unfiltered listing
+     * discloses the EXISTENCE of every binding under a prefix to a caller whose
+     * capability covers none of them. A `count` following the SOURCE total is that
+     * disclosure by itself, which is why it is computed from the emitted entries.
+     *
+     * The DIRECTORY itself is deliberately NOT checked — §6.3 makes each ENTRY the
+     * subject, and testing the prefix would deny a listing to a caller whose grant covers
+     * children but not the node above them, which is the ordinary shape of a narrowed
+     * grant.
+     */
+    private function buildListing(string $path, ?HandlerContext $ctx = null): Outcome
     {
         $store = $this->peer->store;
         $entries = [];
         foreach ($store->listing($path) as $row) {
             if ($row['hash_hex'] !== null && !$row['has_children']
                 && $this->isDeletionMarker(\hex2bin($row['hash_hex']))) {
+                continue;
+            }
+            if (!$this->entryVisible($ctx, $path, $row['segment'])) {
                 continue;
             }
             $entries[] = $row;

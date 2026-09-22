@@ -109,45 +109,87 @@ module EntityCore
     # The reader loop (§6.11 demux): EXECUTE_RESPONSE → route; EXECUTE → dispatch on
     # its own fiber (§4.8) + write the response. Returns when the connection closes /
     # a malformed frame ends it.
+    # Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a
+    # frame refused BEFORE it becomes an admitted request.
+    #
+    # "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE
+    # on the wire [MUST] — correlated by request_id where the id is available, and
+    # otherwise as a best-effort coded frame carrying no correlation."
+    #
+    # §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS"
+    # and therefore reaches none of these, which is why §4.11 exists. Both of the
+    # non-conformant behaviours it names SEPARATELY were present on this peer:
+    # DROPPING the frame (the un-salvageable decode arm, "the weaker of the two
+    # precisely because nothing surfaces it") and CLOSING with no coded frame (the
+    # oversize and truncated arms' bare `break`).
+    #
+    # AN EMPTY request_id IS THE BEST-EFFORT FORM, not a bug: it is what the section
+    # prescribes where no id can be recovered.
+    def refuse_pre_admission(io : Io, request_id : String, refusal : {Int32, String, String}) : Nil
+      status, code, message = refusal
+      io.write_framed(
+        Envelope.of(Wire.make_response(request_id, status, Wire.error_result(code, message)))
+      )
+    rescue TransportError
+      # A write failure here is a dead socket, not a protocol decision.
+    end
+
     def read_loop(peer : Peer, conn : Conn, io : Io) : Nil
       loop do
         payload =
           begin
             io.read_frame
-          rescue PayloadTooLargeError
-            # §4.10(a): an over-limit frame prefix; the body boundary is untrusted,
-            # so close the connection (the prefix was already consumed).
+          rescue e : PayloadTooLargeError | TruncatedFrameError
+            # §4.11: BOTH of these are REFUSALS owed a coded frame, and both used
+            # to be a bare `break` — "closing with no coded frame", which is
+            # indistinguishable from a network fault and, on a multiplexed
+            # connection, destroys unrelated ADMITTED requests. §4.10(a)'s mood was
+            # raised SHOULD -> MUST at 0.8.2.25 (N14): the over-size condition is
+            # detected at the length prefix with the connection intact and nothing
+            # spent, so the permissive mood had nothing to license.
+            #
+            # The stream is desynchronized on both arms — an oversize body was
+            # never drained, a truncated one never arrived — so the frame goes out
+            # and THEN the connection closes. §4.11 makes the frame mandatory and
+            # leaves the close to us; closing is the only sound choice once the
+            # framing is lost, and it is a CHOICE rather than an alternative to
+            # answering.
+            #
+            # §4.11's best-effort UNCORRELATED form: no request_id can be recovered
+            # from a frame whose body never arrived, and guessing one would
+            # correlate the refusal to somebody else's in-flight request.
+            Transport.refuse_pre_admission(io, "", Wire.pre_admission_refusal(e))
             break
           rescue TransportError
-            break
+            break # an ordinary hangup or a dead socket: not a refusal of anything
           end
-        break if payload.nil? # clean EOF
+        break if payload.nil? # clean EOF at a frame boundary — owed nothing
 
         env =
           begin
             Wire.envelope_of_frame(payload)
-          rescue CodecError | ProtocolError
-            # §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is
-            # owed a STATUS, not silence. This used to be a bare `next`, which
-            # rejected the frame (correct) and then dropped it on the floor (wrong):
-            # the sender saw no response at all and blocked until its own timeout,
-            # violating §6.3's second sentence and §4.9(c) deliver-or-signal. It also
-            # made a refusal indistinguishable from a dead peer, and on a
-            # single-connection oracle run it poisons every later request on the same
-            # connection.
+          rescue e : CodecError | ProtocolError
+            # A COMPLETE frame the decoder refused. The framing is intact, so we
+            # answer and KEEP SERVING — and the refusal MUST be a status rather than
+            # silence (§4.11; §4.9(c) says the same from the other direction). This
+            # used to be a bare `next`, which rejected the frame (correct) and then
+            # dropped it on the floor (wrong): the sender saw no response at all and
+            # blocked until its own timeout, so a refusal was indistinguishable from
+            # a dead peer.
+            #
+            # THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered
+            # `non_canonical_ecf` for every cause until 0.8.2.24/.25 pinned them
+            # apart: a mis-keyed `included` entry is `400 hash_mismatch` (its
+            # encoding is canonical — what is false is the claim the key makes), a
+            # tag-policy violation keeps `non_canonical_ecf`, and everything else
+            # that never becomes an Envelope is `400 invalid_request`.
             #
             # The frame is still REJECTED — only enough is salvaged to correlate the
-            # response. If even the request_id is unrecoverable the frame is
-            # unattributable and silence is the only option left.
-            if rid = Wire.salvage_request_id(payload)
-              begin
-                io.write_framed(
-                  Envelope.of(Wire.make_response(rid, 400, Wire.error_result("non_canonical_ecf")))
-                )
-              rescue TransportError
-                # write failure ends this exchange; reader keeps going
-              end
-            end
+            # response, and an unrecoverable id takes §4.11's uncorrelated
+            # best-effort form rather than the silence it used to take.
+            Transport.refuse_pre_admission(
+              io, Wire.salvage_request_id(payload) || "", Wire.pre_admission_refusal(e)
+            )
             next # keep reading
           end
 
@@ -162,12 +204,13 @@ module EntityCore
                 request_id = env.root.text("request_id") || ""
                 Envelope.of(Wire.make_response(request_id, 500, Wire.error_result("internal_error")))
               end
-            if resp
-              begin
-                io.write_framed(resp)
-              rescue TransportError
-                # write failure ends this exchange; reader keeps going
-              end
+            # Unconditional: `dispatch` now answers EVERY inbound root, including
+            # the non-EXECUTE one that used to come back nil and be dropped
+            # (§4.11, N12/N17).
+            begin
+              io.write_framed(resp)
+            rescue TransportError
+              # write failure ends this exchange; reader keeps going
             end
           end
         end

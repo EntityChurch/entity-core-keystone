@@ -67,48 +67,103 @@
 (defun read-loop (io on-execute)
   (handler-case
       (loop
-        (let ((payload (handler-case (read-frame (io-stream io))
-                         ((or transport-closed end-of-file) () (return)))))
-          (let ((env (ignore-errors (envelope-of-frame payload))))
-            ;; §6.3: "Rejection returns `400 non_canonical_ecf`" — the frame is refused
-            ;; (correct), and that refusal MUST be a STATUS, not silence. Dropping it
-            ;; satisfies only the first half of the sentence and leaves the sender blocked
-            ;; until its own timeout, so a refusal is indistinguishable from a dead peer.
-            ;; §4.9(c) deliver-or-signal says the same from the other direction.
-            (unless env (reject-non-canonical io payload))
-            (when env
-              (if (string= (entity-typ (envelope-root env)) "system/protocol/execute/response")
-                  (route-response io env)
-                  (sb-thread:make-thread (lambda () (funcall on-execute env))
-                                         :name "exec-dispatch"))))))
+        (let ((payload
+                (handler-case (read-frame (io-stream io))
+                  ;; A clean EOF at a FRAME BOUNDARY is an ordinary close and is owed
+                  ;; nothing.
+                  ((or transport-closed end-of-file) () (return))
+                  ;; §4.11: BOTH of these are REFUSALS owed a coded frame, and both used
+                  ;; to end the loop in silence — "closing with no coded frame", which is
+                  ;; indistinguishable from a network fault and, on a multiplexed
+                  ;; connection, destroys unrelated ADMITTED requests. §4.10(a)'s mood was
+                  ;; raised SHOULD -> MUST at 0.8.2.25 (N14).
+                  ;;
+                  ;; The stream is desynchronized on both arms — an oversize body was
+                  ;; never drained, a truncated one never arrived — so the coded frame
+                  ;; goes out and THEN the loop ends. §4.11 makes the frame mandatory and
+                  ;; leaves the close to us; closing is the only sound choice once the
+                  ;; framing is lost, and it is a CHOICE rather than an alternative to
+                  ;; answering.
+                  ;;
+                  ;; §4.11's best-effort UNCORRELATED form: no request_id can be recovered
+                  ;; from a frame whose body never arrived, and guessing one would
+                  ;; correlate the refusal to somebody else's in-flight request.
+                  ((or truncated-frame frame-too-large) (c)
+                    (refuse-pre-admission io "" (pre-admission-refusal c))
+                    (return)))))
+          (multiple-value-bind (env cond)
+              (handler-case (values (envelope-of-frame payload) nil)
+                (error (c) (values nil c)))
+            (if (null env)
+                ;; A COMPLETE frame the decoder refused. The framing is intact, so we
+                ;; answer and KEEP SERVING — and the refusal MUST be a status rather than
+                ;; silence (§4.11; §4.9(c) says the same from the other direction).
+                ;;
+                ;; THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered
+                ;; non_canonical_ecf for every cause until 0.8.2.24/.25 pinned them
+                ;; apart: a mis-keyed included entry is 400 hash_mismatch (its encoding
+                ;; is canonical — what is false is the claim the key makes), a tag-policy
+                ;; violation keeps non_canonical_ecf, and everything else that never
+                ;; becomes an Envelope is 400 invalid_request.
+                ;;
+                ;; The frame is still REJECTED — only enough is salvaged to correlate the
+                ;; response, and an unrecoverable id takes §4.11's uncorrelated
+                ;; best-effort form rather than the silence it used to take.
+                (refuse-pre-admission io (salvage-request-id payload)
+                                      (pre-admission-refusal cond))
+                ;; EVERY OTHER ROOT GOES TO DISPATCH, including one that is neither
+                ;; EXECUTE nor EXECUTE_RESPONSE. That used to be dropped by DISPATCH
+                ;; returning NIL; §6.5's "Other type?" arm now answers 400 invalid_request
+                ;; (0.8.2.25 N12/N17) and it does so in ONE place rather than in a second
+                ;; copy here where the two could drift.
+                (if (string= (entity-typ (envelope-root env)) "system/protocol/execute/response")
+                    (route-response io env)
+                    (sb-thread:make-thread (lambda () (funcall on-execute env))
+                                           :name "exec-dispatch"))))))
     (error () nil)))
 
-(defun reject-non-canonical (io payload)
-  "Answer a frame the strict decoder rejected with 400 non_canonical_ecf (§6.3),
-recovering ONLY the request_id so the sender can correlate the refusal.
+(defun salvage-request-id (payload)
+  "Recover ONLY the request_id from a frame the strict decoder rejected, so the refusal
+can be delivered CORRELATED rather than as §4.11's uncorrelated best-effort frame.
+Answers \"\" when nothing is recoverable.
 
-The frame stays rejected: nothing is built from it, nothing is stored, and the tag is
-never interpreted — the salvage decode exists solely to read back the correlation key.
-The envelope and entity-wrapper shapes are fixed maps with no legal tag position, so a
-frame whose ONLY defect is a tag inside some entity's data still has a structurally
-sound root, which is exactly the case worth recovering (and the one CAP-6a's >2^64 half
-arrives as — a bignum can only reach a peer as a major-type-6 tag). If even the
-request_id is unrecoverable there is nobody to answer, so the frame is dropped: the one
-case where silence is all that is available."
-  (ignore-errors
-   (let* ((v (cbor-decode-salvage payload))
-          (root (map-field v "root"))
-          (data (map-field root "data"))
-          (rid (map-field data "request_id")))
-     (when (stringp rid)
-       (write-framed
-        io
-        (make-envelope
-         (make-response rid 400
-                        (error-result
-                         "non_canonical_ecf"
-                         "frame is not canonical ECF (section 6.3): CBOR tags are forbidden anywhere in an entity"))
-         nil))))))
+The frame stays rejected: nothing is built from it, nothing is stored, and a tag is never
+interpreted — the salvage decode exists solely to read back the correlation key. The
+envelope and entity-wrapper shapes are fixed maps with no legal tag position, so a frame
+whose ONLY defect is a tag inside some entity's data still has a structurally sound root,
+which is exactly the case worth recovering (and the one CAP-6a's >2^64 half arrives as —
+a bignum can only reach a peer as a major-type-6 tag)."
+  (or (ignore-errors
+       (let* ((v (cbor-decode-salvage payload))
+              (root (map-field v "root"))
+              (data (map-field root "data"))
+              (rid (map-field data "request_id")))
+         (and (stringp rid) rid)))
+      ""))
+
+(defun refuse-pre-admission (io request-id refusal)
+  "Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+refused BEFORE it becomes an admitted request.
+
+\"A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on the
+wire [MUST] — correlated by request_id where the id is available, and otherwise as a
+best-effort coded frame carrying no correlation.\"
+
+§4.9(c)'s deliver-or-signal rule is scoped to \"every request the peer ADMITS\" and
+therefore reaches none of these, which is why §4.11 exists. Both of the non-conformant
+behaviours it names separately were present on this peer: DROPPING the frame (the
+un-salvageable decode arm and the non-EXECUTE root, \"the weaker of the two precisely
+because nothing surfaces it\") and CLOSING with no coded frame (the oversize and
+truncated arms' silent RETURN).
+
+AN EMPTY REQUEST-ID IS THE BEST-EFFORT FORM, not a bug: it is what the section
+prescribes where no id can be recovered."
+  (destructuring-bind (status code message) refusal
+    ;; A write failure here is a dead socket, not a protocol decision.
+    (ignore-errors
+     (write-framed io (make-envelope (make-response request-id status
+                                                    (error-result code message))
+                                     nil)))))
 
 ;; ── server: serve one accepted connection ───────────────────────────────────────
 

@@ -53,6 +53,15 @@ data class HandlerContext(
     val included: List<Envelope.Included>,
     val callerCap: Entity?,
     val env: Envelope,
+    /**
+     * The OWNING handler's peer-relative pattern, CARRIED rather than recomputed (§6.3,
+     * 0.8.2.23). §6.3's `check_path_permission` needs the handler pattern and the caller's
+     * capability, and the dispatch-level check has already computed both; recomputing
+     * invites the two to drift, and §6.8 is explicit that the authority is selected by who
+     * named the path. For the tree handler owner and runner coincide, so the distinction is
+     * not observable on a core peer, but the field is named for the owner.
+     */
+    val pattern: String,
 ) {
     /** The EXECUTE's params entity, or null. */
     fun params(): Entity? = exec.entityField("params")

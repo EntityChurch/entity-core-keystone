@@ -108,6 +108,23 @@ internal sealed class PeerConnection : IReentrantSender, IAsyncDisposable
                 {
                     break;
                 }
+                catch (Exception e) when (FrameCodec.FramingRefusal(e))
+                {
+                    // The stream is desynchronized on both REFUSABLE arms — an oversize
+                    // body was never drained, a truncated one never arrived — so the coded
+                    // frame goes out and THEN the connection closes. §4.11 makes the frame
+                    // mandatory and leaves the close to us; closing is the only sound
+                    // choice once the framing is lost, and it is a CHOICE rather than an
+                    // alternative to answering. An ordinary hangup is not a refusal and
+                    // gets nothing, which is what `FramingRefusal` separates.
+                    //
+                    // §4.11's best-effort UNCORRELATED form: no request_id can be recovered
+                    // from a frame whose body never arrived, and guessing one would
+                    // correlate the refusal to somebody else's in-flight request.
+                    await RefusePreAdmissionAsync(string.Empty, FrameCodec.PreAdmissionRefusal(e), ct)
+                        .ConfigureAwait(false);
+                    break;
+                }
 
                 if (frame is null)
                 {
@@ -119,17 +136,25 @@ internal sealed class PeerConnection : IReentrantSender, IAsyncDisposable
                 {
                     envelope = Envelope.Decode(frame);
                 }
-                catch (EntityCoreException)
+                catch (EntityCoreException e)
                 {
-                    // §6.3: "Rejection returns `400 non_canonical_ecf`" — the frame is
-                    // refused (above), and that refusal MUST be a STATUS, not silence.
+                    // A COMPLETE frame the decoder refused. The framing is intact, so we
+                    // answer and KEEP SERVING — and the refusal MUST be a status rather
+                    // than silence (§4.11; §4.9(c) says the same from the other direction).
                     // This used to `break`, which left the read loop AND left the socket
                     // open: the oracle's every later request then went to a socket nobody
                     // was reading, so each one waited out its own timeout instead of
                     // failing fast. That is where this peer's 18-minute run and its nine
-                    // starved categories came from. §4.9(c) deliver-or-signal says the
-                    // same from the other direction. Answer, then keep serving.
-                    await RejectNonCanonicalAsync(frame, ct).ConfigureAwait(false);
+                    // starved categories came from.
+                    //
+                    // THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered
+                    // `non_canonical_ecf` for every cause until 0.8.2.24/.25 pinned them
+                    // apart: a mis-keyed `included` entry is `400 hash_mismatch` (its
+                    // encoding is canonical — what is false is the claim the key makes), a
+                    // tag-policy violation keeps `non_canonical_ecf`, and everything else
+                    // that never becomes an Envelope is `400 invalid_request`.
+                    await RefusePreAdmissionAsync(
+                        SalvageRequestId(frame), FrameCodec.PreAdmissionRefusal(e), ct).ConfigureAwait(false);
                     continue;
                 }
 
@@ -145,7 +170,33 @@ internal sealed class PeerConnection : IReentrantSender, IAsyncDisposable
                 }
                 else
                 {
-                    break; // neither EXECUTE nor EXECUTE_RESPONSE → invalid, close (§3.3)
+                    // §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+                    // invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a
+                    // bare close — that is indistinguishable from a network fault."
+                    //
+                    // §3.3 read "the connection MUST be closed", assigning no code and
+                    // requiring no frame, and this loop did exactly that: a bare `break`.
+                    // This is a PRE-ADMISSION refusal — the root is not an EXECUTE, so
+                    // nothing was ever admitted and §4.9(c) does not reach it. §9.1's floor
+                    // row that MANDATED the bare close was REPLACED at the same revision
+                    // (N18).
+                    //
+                    // The request_id is read best-effort: an arbitrary root type is under
+                    // no obligation to carry one, and §4.11 licenses the uncorrelated frame
+                    // exactly there. We do NOT close — on a multiplexed connection that
+                    // would cost every ADMITTED in-flight request its response, and §4.11
+                    // leaves the close to us.
+                    string rid;
+                    try
+                    {
+                        rid = Ecf.OptText(envelope.Root.Data, "request_id") ?? string.Empty;
+                    }
+                    catch (EntityCoreException)
+                    {
+                        rid = string.Empty;
+                    }
+                    await RefusePreAdmissionAsync(rid, (Status.BadRequest, "invalid_request",
+                        "root entity is neither EXECUTE nor EXECUTE_RESPONSE"), ct).ConfigureAwait(false);
                 }
             }
         }
@@ -203,39 +254,61 @@ internal sealed class PeerConnection : IReentrantSender, IAsyncDisposable
     }
 
     /// <summary>
-    /// Answer a frame the strict decoder rejected with <c>400 non_canonical_ecf</c> (§6.3),
-    /// recovering ONLY the <c>request_id</c> so the sender can correlate the refusal.
+    /// Recover ONLY the <c>request_id</c> from a frame the strict decoder rejected, so the
+    /// refusal can be delivered CORRELATED rather than as §4.11's uncorrelated best-effort
+    /// frame. Empty when nothing is recoverable.
     /// <para>
-    /// The frame stays rejected: nothing is built from it, nothing is stored, and the tag
-    /// is never interpreted — the salvage decode exists solely to read back the
-    /// correlation key. The envelope and entity-wrapper shapes are fixed maps with no
-    /// legal tag position, so a frame whose ONLY defect is a tag inside some entity's
-    /// <c>data</c> still has a structurally sound root, which is exactly the case this
-    /// recovers (and the one CAP-6a's &gt;2^64 half arrives as). If even the request_id is
-    /// unrecoverable there is nobody to answer, so the frame is dropped — the one case
-    /// where silence is all that is available.
+    /// The frame stays rejected: nothing is built from it, nothing is stored, and a tag is
+    /// never interpreted — the salvage decode exists solely to read back the correlation
+    /// key. The envelope and entity-wrapper shapes are fixed maps with no legal tag
+    /// position, so a frame whose ONLY defect is a tag inside some entity's <c>data</c>
+    /// still has a structurally sound root, which is exactly the case worth recovering (and
+    /// the one CAP-6a's &gt;2^64 half arrives as).
     /// </para>
     /// </summary>
-    private async Task RejectNonCanonicalAsync(ReadOnlyMemory<byte> frame, CancellationToken ct)
+    private static string SalvageRequestId(ReadOnlyMemory<byte> frame)
     {
-        string requestId;
         try
         {
             EcfValue salvaged = CanonicalCbor.DecodeSalvage(frame);
             EcfValue root = Ecf.Require(salvaged, "root");
-            requestId = Ecf.RequireText(Ecf.Require(root, "data"), "request_id");
+            return Ecf.RequireText(Ecf.Require(root, "data"), "request_id");
         }
         catch (Exception ex) when (ex is EntityCoreException or CborContentException
                                       or InvalidOperationException or ArgumentException)
         {
-            return; // no correlatable request_id — nothing to answer
+            return string.Empty;
         }
+    }
 
+    /// <summary>
+    /// Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+    /// refused BEFORE it becomes an admitted request.
+    /// <para>
+    /// <em>"A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on
+    /// the wire <c>[MUST]</c> — correlated by <c>request_id</c> where the id is available,
+    /// and otherwise as a best-effort coded frame carrying no correlation."</em>
+    /// </para>
+    /// <para>
+    /// §4.9(c)'s deliver-or-signal rule is scoped to <em>"every request the peer
+    /// ADMITS"</em> and therefore reaches none of these, which is why §4.11 exists. Both of
+    /// the non-conformant behaviours it names separately were present on this peer:
+    /// DROPPING the frame (the un-salvageable decode arm, <em>"the weaker of the two
+    /// precisely because nothing surfaces it"</em>) and CLOSING with no coded frame (the
+    /// oversize and truncated arms, and the non-EXECUTE root's bare <c>break</c>).
+    /// </para>
+    /// <para>
+    /// AN EMPTY <paramref name="requestId"/> IS THE BEST-EFFORT FORM, not a bug: it is what
+    /// the section prescribes where no id can be recovered.
+    /// </para>
+    /// </summary>
+    private async Task RefusePreAdmissionAsync(
+        string requestId, (int Status, string Code, string Message) refusal, CancellationToken ct)
+    {
         try
         {
             ExecuteResponse response = ExecuteResponse.Error(
-                requestId, Status.BadRequest, "non_canonical_ecf",
-                "frame is not canonical ECF (§6.3): CBOR tags are forbidden anywhere in an entity");
+                requestId, refusal.Status, refusal.Code, refusal.Message);
             await WriteAsync(new Envelope(response.Entity, System.Array.Empty<Entity>()), ct).ConfigureAwait(false);
         }
         catch (Exception)

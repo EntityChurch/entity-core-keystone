@@ -18,9 +18,31 @@ using ..ContentHash: content_hash
 export Entity, Envelope
 export make_entity, entity_tocbor, entity_ofcbor
 export envelope_tocbor, envelope_ofcbor, frame_ofenvelope, envelope_offrame, salvage_request_id
+export BadEntity, HashMismatch
 export efield, textfield, bytesfield, uintfield, entityfield, included_get, mapget
 
 struct BadEntity <: Exception; msg::String; end
+
+"""
+A §1.8 / §3.1 RESOLUTION-INTEGRITY failure: an entity whose carried `content_hash` is not
+`content_hash({type, data})`, or an `included` entry whose MAP KEY does not bind to the
+entity filed under it.
+
+§5.2a pins this arm: "A peer that refuses at the decode boundary MUST answer
+`400 hash_mismatch` [MUST]" (mood corrected 0.8.2.24), and in the same breath
+"`400 non_canonical_ecf` is NOT conformant here [MUST]". That code is
+ENTITY-CBOR-ENCODING §6.3's, for a CBOR tag-policy violation, and a mis-keyed `included`
+entry carries NO TAG: its encoding is canonical, what is false is the claim the KEY makes,
+and the remedy `non_canonical_ecf` selects (re-encode) sends an honest caller to the wrong
+layer. This peer answered `non_canonical_ecf` for every decode-boundary refusal until
+0.8.2.24 — measured on the wire, arc-probe B1/B2.
+
+A DISTINCT TYPE rather than a `BadEntity` with a different message, because §4.11's
+classifier dispatches on the TYPE: Julia's multiple dispatch makes that a compile-time
+selection, while a message match would be one string edit away from silently re-collapsing
+two causes into one code.
+"""
+struct HashMismatch <: Exception; msg::String; end
 
 # A materialised entity: type name, an arbitrary ECF `data` value, and the 33-byte
 # content_hash (format byte 0x00 ‖ 32-byte SHA-256).
@@ -72,7 +94,10 @@ function entity_ofcbor(c::CborMap)::Entity
     e = make_entity(typ, data)
     carried = mapget(c, "content_hash")
     if carried isa AbstractVector{UInt8} && carried != e.hash
-        throw(BadEntity("entity: content_hash mismatch"))
+        # §5.2a (0.8.2.24 N4/N5): a decode-boundary refusal on RESOLUTION INTEGRITY
+        # answers `400 hash_mismatch`; `non_canonical_ecf` is declared non-conformant
+        # here. Same rejection, a type the §4.11 classifier can dispatch on.
+        throw(HashMismatch("entity: content_hash does not bind"))
     end
     return e
 end
@@ -110,7 +135,12 @@ function envelope_ofcbor(c::CborMap)::Envelope
             key = p.first
             key isa AbstractVector{UInt8} || throw(BadEntity("envelope: non-bytes included key"))
             ent = entity_ofcbor(p.second)
-            key == ent.hash || throw(BadEntity("envelope: included key ≠ entity hash"))
+            # §3.1's key binding is §1.8's resolution-integrity obligation, mechanism
+            # (a) "bind the key". HashMismatch, NOT the structural BadEntity beside it:
+            # §5.2a pins this arm's code to `400 hash_mismatch` (0.8.2.24 N4/N5). The
+            # entry's ENCODING is canonical; what is false is the claim the key makes.
+            key == ent.hash ||
+                throw(HashMismatch("envelope: included entry does not bind to its key"))
             push!(included, Vector{UInt8}(key) => ent)
         end
     end

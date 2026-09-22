@@ -169,16 +169,31 @@ bool _coveredId(List<String> pats, String value) =>
 /// fail-OPEN in an exclude (carves out nothing -> the grant is SILENTLY WIDER than
 /// its author wrote): same value, same matcher, opposite safety direction, so the
 /// reading is chosen where the POSITION is known and [matchesPattern] stays uniform
-/// over its operands. The guard sits outside the scope-type dispatch, transcribing
-/// §5.2's loop literally.
+/// over its operands.
+///
+/// EVERY CALL SITE MUST GUARD IT ON PATH-SCOPE (0.8.2.24, N2/N3). This used to be
+/// asked of every dimension, transcribing §5.2's loop before that loop grew its type
+/// dispatch. [neverMatch] is a §5.4 PATH-canonicalization sentinel and has no meaning
+/// on an id-scope dimension, whose patterns are literal identifiers that §5.2's own
+/// id-scope arm forbids putting through the §5.4 transforms. Asking it outside the
+/// type dispatch ran an id pattern through those transforms purely to classify it and
+/// then DENIED THE WHOLE DIMENSION on a property unrelated to whether the exclude
+/// carves anything out: an `operations` exclude naming an ordinary namespaced
+/// operation with a leading star-slash canonicalized to the sentinel and denied every
+/// operation. Over-denial, and invisible on any well-formed grant.
 bool _excludeIsUnmatchable(String frame, List<String> excl) =>
     excl.any((p) => canonicalize(frame, p) == neverMatch);
 
 bool matchesScope(String localPeer, String value, Scope s, ScopeKind kind) {
-  if (_excludeIsUnmatchable(localPeer, s.excl)) return false; // 0.8.2.21 — deny
   if (kind == ScopeKind.id) {
+    // No sentinel guard here, and that is 0.8.2.24's ruling rather than an
+    // omission: §5.4 says "a capability carrying an unmatchable PATH-SCOPE pattern
+    // is INVALID ... It does NOT reach `operations` or `peers` [MUST]". Under the
+    // id-scope grammar every non-star pattern is a literal, and a literal is never
+    // structurally unmatchable, so there is nothing here for the sentinel to detect.
     return _coveredId(s.incl, value) && !_coveredId(s.excl, value);
   }
+  if (_excludeIsUnmatchable(localPeer, s.excl)) return false; // 0.8.2.21 — deny
   final cv = canonicalize(localPeer, value);
   return _covered(localPeer, s.incl, cv) && !_covered(localPeer, s.excl, cv);
 }
@@ -466,8 +481,34 @@ String? _linkGranterPeer(Resolve resolve, String localPeer, Entity cap) {
   return Identity.peerIdOfPublicKey(pk);
 }
 
-bool _scopeSubset(
-    String childPeer, String parentPeer, Scope child, Scope parent) {
+/// §5.5a/§5.6 attenuation subset, TYPED BY SCOPE KIND (F50, ruled 0.8.2.16).
+///
+/// §3.6's grammar binds the SCOPE TYPE, not one function: "An implementation on the
+/// canonicalizing reading is non-conformant and MUST adopt the literal matcher." F40
+/// typed [matchesScope] and this sibling was left on the path matcher for all four
+/// dimensions, so `operations` and `peers` — both id-scope — were compared with §5.4
+/// canonicalization and wildcard semantics they do not have. The divergence is narrow
+/// and FAIL-CLOSED (an include of a namespaced operation is not covered by a parent
+/// bare star under the path matcher, which widens nothing but refuses legitimate
+/// delegation), which is exactly why no hand-tried example found it.
+///
+/// [kind] has NO DEFAULT and is named at every call site, because a default is how the
+/// next dimension inherits the wrong matcher silently — the original F40 defect.
+///
+/// On the id arm [childPeer]/[parentPeer] are unused BY CONSTRUCTION: no
+/// canonicalization frame applies to an identifier, so both operands are compared as
+/// written.
+bool _scopeSubset(String childPeer, String parentPeer, Scope child, Scope parent,
+    ScopeKind kind) {
+  if (kind == ScopeKind.id) {
+    for (final cp in child.incl) {
+      if (!parent.incl.any((p) => matchesIdPattern(cp, p))) return false;
+    }
+    for (final pe in parent.excl) {
+      if (!child.excl.any((c) => matchesIdPattern(pe, c))) return false;
+    }
+    return true;
+  }
   for (final cp in child.incl) {
     final cc = canonicalize(childPeer, cp);
     if (!parent.incl.any((p) => matchesPattern(cc, canonicalize(parentPeer, p)))) {
@@ -485,18 +526,120 @@ bool _scopeSubset(
 
 bool grantSubset(String localPeer, String childPeer, String parentPeer,
     GrantRec child, GrantRec parent) {
-  if (!_scopeSubset(localPeer, localPeer, child.handlers, parent.handlers)) {
+  if (!_scopeSubset(
+      localPeer, localPeer, child.handlers, parent.handlers, ScopeKind.path)) {
     return false;
   }
-  if (!_scopeSubset(localPeer, localPeer, child.operations, parent.operations)) {
+  if (!_scopeSubset(localPeer, localPeer, child.operations, parent.operations,
+      ScopeKind.id)) {
     return false;
   }
-  if (!_scopeSubset(childPeer, parentPeer, child.resources, parent.resources)) {
+  if (!_scopeSubset(
+      childPeer, parentPeer, child.resources, parent.resources, ScopeKind.path)) {
     return false;
   }
   final cp = child.peers ?? Scope([localPeer], const []);
   final pp = parent.peers ?? Scope([localPeer], const []);
-  return _scopeSubset(localPeer, localPeer, cp, pp);
+  return _scopeSubset(localPeer, localPeer, cp, pp, ScopeKind.id);
+}
+
+/// §5.2's effective target list (0.8.2.20): the caller's OWN `resource.exclude`
+/// removes entries from the request BEFORE anything else looks at it.
+///
+/// The survivors come back in the caller's OWN SPELLING, not canonicalized —
+/// 0.8.2.21 is explicit that `effective_targets` yields raw survivors, and the
+/// distinction is load-bearing because the value flows on to the store lookup, which
+/// canonicalizes for itself.
+///
+/// [hadResource] says whether a `resource` was present AT ALL. An ABSENT resource and
+/// a resource whose every target was excluded are different inputs to §3.3, and for a
+/// resource-OPTIONAL operation 0.8.2.24 (N7) makes them DIFFERENT REQUESTS with
+/// different answers.
+///
+/// THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES [MUST] (0.8.2.25, N11): "that
+/// projection MUST NOT be lossy about its own emptiness — narrow when narrowing leaves
+/// something, and retain the raw pair when narrowing would empty it." A function
+/// returning only a list cannot satisfy that: collapsing a one-target self-excluded
+/// request to `[]` deletes the two-empties discriminator before any handler can read
+/// it, and the handler's refusal arm becomes dead code only a WIRE drive can detect.
+///
+/// A SEALED RECORD RATHER THAN A NULLABLE LIST, because `null` and `[]` on one return
+/// is exactly the collapse N11 forbids being one careless `?? const []` away.
+final class EffectiveTargets {
+  const EffectiveTargets(this.survivors, this.hadResource);
+
+  /// The caller's surviving targets, in the caller's own spelling.
+  final List<String> survivors;
+
+  /// Whether the request carried a `resource` at all.
+  final bool hadResource;
+}
+
+EffectiveTargets effectiveTargets(String localPeer, Entity exec) {
+  final r = exec.mapField('resource');
+  if (r == null) return const EffectiveTargets([], false);
+  final targets = textList(r, 'targets');
+  // A `resource` MAP carrying no `targets` key reads ABSENT here, which is what every
+  // 0.8.2.25 peer answers and is an OPEN question rather than a settled one: §3.2 says
+  // `targets` "MUST contain at least one entry", which makes the shape MALFORMED
+  // rather than absent. Nothing in the pinned check set drives it and no disposition
+  // is pinned, so the shipped behaviour is HELD rather than changed.
+  if (targets == null) return const EffectiveTargets([], false);
+  final callerExcl = textList(r, 'exclude') ?? const <String>[];
+  final survivors = <String>[];
+  for (final t in targets) {
+    final ct = canonicalize(localPeer, t);
+    // The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4's table
+    // rules it separately from the grant arm): canonicalize answers neverMatch and
+    // matchesPattern then answers false, so the target simply survives. That asymmetry
+    // is 0.8.2.21's whole point and it is INHERITED here rather than restated.
+    final dropped =
+        callerExcl.any((x) => matchesPattern(ct, canonicalize(localPeer, x)));
+    if (!dropped) survivors.add(t); // RAW, not ct
+  }
+  return EffectiveTargets(survivors, true);
+}
+
+/// §6.3's handler-level path check.
+///
+/// IT IS NOT A SECONDARY CHECK (§5.2, 0.8.2.20). It is the enforcement wherever the
+/// subject is derived after dispatch, and the dispatch-level check can be made VACUOUS
+/// by caller-controlled input: a caller who excludes the one target its capability
+/// does not cover removes that target from `check_permission`'s view entirely, and a
+/// handler that then acts on it has authorized nothing.
+///
+/// THREE DIMENSIONS, NOT FOUR. `peers` is not consulted here — the path is local by
+/// construction at this point (§1.4's inbound rule refuses a foreign namespace at §6.5
+/// step 3, before any handler runs), and §6.3's signature names only handlers,
+/// operations and resources.
+///
+/// THE FRAME IS [localPeer], NOT THE GRANTER, AND THAT IS THE SPEC'S OWN SIGNATURE
+/// RATHER THAN A CHOICE. §6.3's block reads
+/// `matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id)` —
+/// there is no granter parameter to pass. §5.5a governs chain ATTENUATION, where the
+/// subject is a pattern compared against a parent's pattern; this call site compares a
+/// CONCRETE local path the handler is about to touch.
+///
+/// There is no caller-exclude set at this call site: the subject is a single concrete
+/// path and the caller's exclusions have already been applied in deriving it, so every
+/// grant exclude covering the subject denies — which [matchesScope] already
+/// implements, including 0.8.2.21's sentinel rule.
+///
+/// An empty `resources.include` is a legal grant shape (§5.2) and DENIES every path
+/// here, which is what that note says it should.
+bool checkPathPermission(String localPeer, String operation, String path,
+    Entity token, String handlerPattern) {
+  // canonicalize is total and may answer neverMatch, which matches no grant (§5.4) —
+  // so a malformed path falls through to DENY rather than being matched against
+  // anything.
+  final cp = canonicalize(localPeer, path);
+  for (final g in grantsOfToken(token)) {
+    if (!matchesScope(localPeer, handlerPattern, g.handlers, ScopeKind.path)) continue;
+    if (!matchesScope(localPeer, operation, g.operations, ScopeKind.id)) continue;
+    if (!matchesScope(localPeer, cp, g.resources, ScopeKind.path)) continue;
+    return true;
+  }
+  return false;
 }
 
 bool _isAttenuated(String localPeer, String childPeer, String parentPeer,

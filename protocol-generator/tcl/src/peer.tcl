@@ -251,18 +251,49 @@ proc ::entity::core::peer::_entity_native_dispatch {h handler_path} {
 # returns an EXECUTE_RESPONSE envelope, or "" for a non-EXECUTE root (§3.3).
 proc ::entity::core::peer::dispatch {h conn_h env} {
     set exec [::entity::core::envelope::root $env]
-    if {[::entity::core::entity::type $exec] ne "system/protocol/execute"} { return "" }
+    if {[::entity::core::entity::type $exec] ne "system/protocol/execute"} {
+        # §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+        # invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare close —
+        # that is indistinguishable from a network fault."
+        #
+        # §3.3 read "the connection MUST be closed", assigning no code and requiring no
+        # frame, and §9.1's floor row that MANDATED the bare close was REPLACED at the
+        # same revision (N18). This peer did something weaker still: it returned "", the
+        # transport wrote NOTHING, and the connection stayed open — which is §4.11's OTHER
+        # non-conformant behaviour, the silent drop, "the weaker of the two precisely
+        # because nothing surfaces it". This is a PRE-ADMISSION refusal: the root is not
+        # an EXECUTE, so nothing was ever admitted and §4.9(c) does not reach it.
+        #
+        # The request_id is read best-effort — an arbitrary root type is under no
+        # obligation to carry one, and §4.11 licenses the uncorrelated frame exactly
+        # there. We do NOT close: on a multiplexed connection that would cost every
+        # ADMITTED in-flight request its response, and §4.11 leaves the close to us.
+        return [::entity::core::envelope::make [::entity::core::wire::make_response \
+            [::entity::core::entity::text $exec request_id] 400 \
+            [::entity::core::wire::error_result invalid_request \
+                "root entity is neither EXECUTE nor EXECUTE_RESPONSE"]]]
+    }
     set request_id [::entity::core::entity::text $exec request_id]
     set outcome ""
     set rc [catch {_dispatch_inner $h $conn_h $env $exec} result opts]
     if {$rc == 0} {
         set outcome $result
     } else {
-        set code [lindex [dict get $opts -errorcode] 1]
+        set ec [dict get $opts -errorcode]
+        set code [lindex $ec 1]
         if {$code eq "UNRESOLVABLE_GRANTEE"} {
             set outcome [outcome_err 401 unresolvable_grantee]
-        } elseif {$code in {NON_CANONICAL_ECF TRUNCATED_INPUT TAG_REJECTED}} {
-            set outcome [outcome_err 400 non_canonical_ecf]
+        } elseif {$code in {NON_CANONICAL_ECF TRUNCATED_INPUT TAG_REJECTED}
+                  || ($code eq "PROTOCOL"
+                      && [lindex $ec 2] in {included_key_mismatch content_hash_mismatch})} {
+            # THE CODE BELONGS TO THE CAUSE (§4.11, §5.2a; 0.8.2.24 N4/N5). A nested
+            # entity decoded here can fail for either reason and this arm used to answer
+            # non_canonical_ecf for both: that code is ENTITY-CBOR-ENCODING's, for a CBOR
+            # tag-policy violation, and §5.2a rules it "NOT conformant" for a
+            # resolution-integrity failure whose encoding is perfectly canonical. Shared
+            # with the transport's pre-admission classifier so the two cannot drift.
+            lassign [::entity::core::wire::pre_admission_refusal $ec] st cd msg
+            set outcome [outcome_err $st $cd $msg]
         } else {
             if {[info exists ::env(PEER_DEBUG_500)]} { puts stderr "500: $result\n[dict get $opts -errorinfo]" }
             set outcome [outcome_err 500 internal_error]
@@ -281,7 +312,11 @@ proc ::entity::core::peer::_dispatch_inner {h conn_h env exec} {
     set included [::entity::core::envelope::included $env]
     if {$uri eq "system/protocol/connect"} {
         set proc [dict get [dict get $P($h) handlers] system/protocol/connect]
-        return [$proc $h $operation [dict create exec $exec conn $conn_h included $included caller_cap "" env $env]]
+        # handler_pattern is "" on the unauthenticated connect path, which has no
+        # resolved handler entity (§6.3's check is fail-closed there by construction --
+        # there is no caller capability either).
+        return [$proc $h $operation [dict create exec $exec conn $conn_h included $included \
+            caller_cap "" env $env handler_pattern ""]]
     }
     _ingest_signatures $h $env
     # §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to
@@ -317,7 +352,15 @@ proc ::entity::core::peer::_dispatch_inner {h conn_h env exec} {
     set hs [dict get $P($h) handlers]
     if {[dict exists $hs $stripped]} {
         set proc [dict get $hs $stripped]
-        return [$proc $h $operation [dict create exec $exec conn $conn_h included $included caller_cap $caller_cap env $env]]
+        # handler_pattern is CARRIED, never recomputed: §6.3's path check needs the
+        # handler pattern and the caller's capability, and this dispatch-level check has
+        # already computed both. Recomputing invites the two to drift, and §6.8 is
+        # explicit that the authority is selected by who named the path. It is the OWNING
+        # handler's pattern (§6.3, 0.8.2.23) -- for the tree handler owner and runner
+        # coincide, so the distinction is not observable here, but the field is named for
+        # the owner.
+        return [$proc $h $operation [dict create exec $exec conn $conn_h included $included \
+            caller_cap $caller_cap env $env handler_pattern $pattern]]
     }
     return [_entity_native_dispatch $h $pattern]
 }

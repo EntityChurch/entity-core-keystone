@@ -197,7 +197,30 @@ Peer := Object clone do(
     // request never spawns a `try` Coroutine (the concurrency-throughput leak).
     dispatch := method(conn, env,
         exec := env root
-        if(exec entityType != "system/protocol/execute", return nil)
+        if(exec entityType != "system/protocol/execute",
+            // §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+            // invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare
+            // close -- that is indistinguishable from a network fault."
+            //
+            // §3.3 read "the connection MUST be closed", assigning no code and
+            // requiring no frame, and §9.1's floor row that MANDATED the bare close
+            // was REPLACED at the same revision (N18). This peer did something weaker
+            // still: it returned nil, the transport wrote NOTHING, and the connection
+            // stayed open -- which is §4.11's OTHER non-conformant behaviour, the
+            // silent drop, "the weaker of the two precisely because nothing surfaces
+            // it". This is a PRE-ADMISSION refusal: the root is not an EXECUTE, so
+            // nothing was ever admitted and §4.9(c) does not reach it.
+            //
+            // The request_id is read best-effort -- an arbitrary root type is under no
+            // obligation to carry one, and §4.11 licenses the uncorrelated frame
+            // exactly there. We do NOT close: on a multiplexed connection that would
+            // cost every ADMITTED in-flight request its response, and §4.11 leaves the
+            // close to us.
+            r := Wire preAdmissionRefusal("non_execute_root")
+            rid := exec text("request_id")
+            return Envelope with(Wire makeResponse(if(rid == nil, "", rid), r at(0),
+                Wire errorResult(r at(1), "root entity is neither EXECUTE nor EXECUTE_RESPONSE")))
+        )
         requestId := exec text("request_id")
         outcome := _dispatchInner(conn, env, exec)
         Envelope with(Wire makeResponse(requestId, outcome status, outcome result), outcome included)
@@ -209,9 +232,12 @@ Peer := Object clone do(
         included := env included
         if(uri == "system/protocol/connect",
             h := runtimeHandlers at("system/protocol/connect")
+            // handlerPattern is nil on the unauthenticated connect path, which has
+            // no resolved handler entity (§6.3's check is fail-closed there by
+            // construction -- there is no caller capability either).
             return h dispatch(operation, Map clone \
                 atPut("exec", exec) atPut("conn", conn) atPut("included", included) \
-                atPut("callerCap", nil) atPut("env", env))
+                atPut("callerCap", nil) atPut("env", env) atPut("handlerPattern", nil))
         )
         // §1.4 a reserved (./ ../ */) or empty request path is a malformed request
         if(uri == nil or(Capability isReservedPath(Capability normalizeUri(uri))),
@@ -245,9 +271,16 @@ Peer := Object clone do(
         stripped := _stripLocal(pattern)
         h := runtimeHandlers at(stripped)
         if(h == nil, return Outcome err(404, "handler_not_found", pattern))
+        // handlerPattern is CARRIED, never recomputed: §6.3's path check needs the
+        // handler pattern and the caller's capability, and this dispatch-level check
+        // has already computed both. Recomputing invites the two to drift, and §6.8 is
+        // explicit that the authority is selected by who named the path. It is the
+        // OWNING handler's pattern (§6.3, 0.8.2.23) -- for the tree handler owner and
+        // runner coincide, so the distinction is not observable here, but the field is
+        // named for the owner.
         h dispatch(operation, Map clone \
             atPut("exec", exec) atPut("conn", conn) atPut("included", included) \
-            atPut("callerCap", callerCap) atPut("env", env))
+            atPut("callerCap", callerCap) atPut("env", env) atPut("handlerPattern", pattern))
     )
 
     // ── bootstrap (§6.9) ──

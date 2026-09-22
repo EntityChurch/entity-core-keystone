@@ -322,17 +322,53 @@ CapGrantsOfToken←{(EntDataMap ⍵)MArray'grants'}
  empty:Z←''
 ∇
 
-⍝ ⍵=(childPeer parentPeer childScope parentScope) -> scope-subset boolean.
-∇Z←ScopeSubset a;cp;pp;child;parent;ci;pin;pex;cex;i;j;cc;cov;cpe
- cp←1⊃a ⋄ pp←2⊃a ⋄ child←3⊃a ⋄ parent←4⊃a
+⍝ ⍵=(childPeer parentPeer childScope parentScope kind) -> scope-subset boolean.
+⍝ `kind` is SK_PATH or SK_ID.
+⍝
+⍝ TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16; entity-core-formalization K-7).
+⍝ section 3.6's id-scope grammar binds the scope TYPE, not one function -- "an
+⍝ implementation on the canonicalizing reading is non-conformant and MUST adopt the
+⍝ literal matcher" -- so the rule F40 landed on the MATCHES side reaches the SUBSET side
+⍝ too, with delegation-chain WIDENING named as the reason: on the canonicalizing reading
+⍝ a concrete id is covered by a bare star in one direction and a namespaced operation
+⍝ name is not, and a child grant can come out wider than its parent. lean's differential
+⍝ put it at 2 of 64 include pairs and 2 of 64 exclude pairs, fail-closed, with a 16-pair
+⍝ control alphabet reporting 0 -- which is why every hand-tried example missed it.
+⍝
+⍝ `kind` has NO DEFAULT and is named at every call site: a default is how the next
+⍝ dimension inherits the wrong matcher silently, which is the original F40 defect. The
+⍝ per-link granter frames are meaningless on the ID arm (an id pattern is never
+⍝ canonicalized) and are simply UNREAD there rather than being a second thing to get
+⍝ wrong.
+SK_PATH←1
+SK_ID←0
+⍝ Frame one pattern for the comparison: PATH-scope canonicalizes against the frame,
+⍝ ID-scope compares the literal. ⍺=frame ; ⍵=(pattern kind).
+⍝
+⍝ WRITTEN AS A BRANCH RATHER THAN AS AN INDEX INTO A TWO-ELEMENT VECTOR, because the
+⍝ index form was wrong in a way that COMPILED AND RAN: `(1+kind)⊃(,⊂raw)(⊂canon)` picks a
+⍝ one-element vector CONTAINING the string, not the string, so every comparison was
+⍝ against a nested value and no include ever matched. Measured on the wire: the §6.2
+⍝ mint-bound subset refused the probe's narrow capability with 403 scope_exceeds_authority
+⍝ and family G went from four green rows to a failed control. A branch cannot express that
+⍝ mistake.
+∇Z←frame FramePattern pk;pat;kind
+ pat←1⊃pk ⋄ kind←2⊃pk
+ Z←pat
+ →(kind=SK_ID)/0
+ Z←frame Canon pat
+∇
+
+∇Z←ScopeSubset a;cp;pp;child;parent;kind;ci;pin;pex;cex;i;j;cc;cov;cpe
+ cp←1⊃a ⋄ pp←2⊃a ⋄ child←3⊃a ⋄ parent←4⊃a ⋄ kind←5⊃a
  Z←0
  ci←TextList child MArray'include'
  pin←TextList parent MArray'include'
  i←0
  il:→(i≥≢ci)/idone
- i←i+1 ⋄ cc←cp Canon(i⊃ci) ⋄ cov←0 ⋄ j←0
+ i←i+1 ⋄ cc←cp FramePattern(i⊃ci)kind ⋄ cov←0 ⋄ j←0
  ij:→(j≥≢pin)/ichk
- j←j+1 ⋄ →(~cc CapMatchesPattern pp Canon(j⊃pin))/ij
+ j←j+1 ⋄ →(~cc CapMatchesPattern pp FramePattern(j⊃pin)kind)/ij
  cov←1
  ichk:→(~cov)/0
  →il
@@ -340,9 +376,9 @@ CapGrantsOfToken←{(EntDataMap ⍵)MArray'grants'}
  cex←TextList child MArray'exclude'
  i←0
  el:→(i≥≢pex)/ok
- i←i+1 ⋄ cpe←pp Canon(i⊃pex) ⋄ cov←0 ⋄ j←0
+ i←i+1 ⋄ cpe←pp FramePattern(i⊃pex)kind ⋄ cov←0 ⋄ j←0
  ej:→(j≥≢cex)/echk
- j←j+1 ⋄ →(~cpe CapMatchesPattern cp Canon(j⊃cex))/ej
+ j←j+1 ⋄ →(~cpe CapMatchesPattern cp FramePattern(j⊃cex)kind)/ej
  cov←1
  echk:→(~cov)/0
  →el
@@ -350,15 +386,111 @@ CapGrantsOfToken←{(EntDataMap ⍵)MArray'grants'}
 ∇
 
 ⍝ ⍵=(local childPeer parentPeer childGrant parentGrant) -> grant-subset boolean.
+⍝ The scope KIND is a property of the DIMENSION, named here and never defaulted
+⍝ (F50 / 0.8.2.16). Only RESOURCES takes the section 5.5a per-link granter frames;
+⍝ handlers stays local, and the two id dimensions do not canonicalize at all.
 ∇Z←GrantSubset a;local;cpe;ppe;child;parent;cp;pp
  local←1⊃a ⋄ cpe←2⊃a ⋄ ppe←3⊃a ⋄ child←4⊃a ⋄ parent←5⊃a
  Z←0
- →(~ScopeSubset local local(child MSubmap'handlers')(parent MSubmap'handlers'))/0
- →(~ScopeSubset local local(child MSubmap'operations')(parent MSubmap'operations'))/0
- →(~ScopeSubset cpe ppe(child MSubmap'resources')(parent MSubmap'resources'))/0
+ →(~ScopeSubset local local(child MSubmap'handlers')(parent MSubmap'handlers')SK_PATH)/0
+ →(~ScopeSubset local local(child MSubmap'operations')(parent MSubmap'operations')SK_ID)/0
+ →(~ScopeSubset cpe ppe(child MSubmap'resources')(parent MSubmap'resources')SK_PATH)/0
  cp←child MSubmap'peers' ⋄ →(EV_MAP=1⊃cp)/hc ⋄ cp←VScope local
  hc:pp←parent MSubmap'peers' ⋄ →(EV_MAP=1⊃pp)/hp ⋄ pp←VScope local
- hp:Z←ScopeSubset local local cp pp
+ hp:Z←ScopeSubset local local cp pp SK_ID
+∇
+
+⍝ ── section 5.2 EFFECTIVE TARGETS + section 6.3 check_path_permission ──────────────
+
+⍝ ⍺=local ; ⍵=exec -> (survivors hadResource).
+⍝
+⍝ section 5.2's effective target list (0.8.2.20): the caller's own `resource.exclude`
+⍝ removes entries from `resource.targets` BEFORE anything else looks at the request.
+⍝
+⍝ The survivors are returned in the caller's OWN SPELLING, not canonicalized -- 0.8.2.21
+⍝ is explicit that effective_targets yields RAW survivors, and the distinction is
+⍝ load-bearing because the value flows on to the store lookup, which canonicalizes for
+⍝ itself, and to the trailing-slash test, which is about what the caller WROTE.
+⍝
+⍝ THE SECOND RESULT IS THE NON-LOSSY PROJECTION section 3.3 REQUIRES [MUST] (0.8.2.25,
+⍝ N11): an ABSENT resource and a resource whose every target the caller excluded are
+⍝ DIFFERENT REQUESTS for a resource-OPTIONAL operation (0.8.2.24, N7), not merely
+⍝ different inputs to one answer. A function returning only a list collapses them and
+⍝ deletes the discriminator before any handler can read it.
+⍝
+⍝ THE CALLER-EXCLUDE ARM IS FAIL-OPEN ON AN UNMATCHABLE PATTERN, and section 5.4 rules it
+⍝ separately from the GRANT arm: Canon answers NeverMatch, CapMatchesPattern then answers
+⍝ 0, and the target simply SURVIVES. That asymmetry is inherited from the primitives here
+⍝ rather than restated.
+∇Z←local CapEffectiveTargets exec;r;targets;cexcl;out;i;j;t;ct;dropped
+ r←exec EntSubmap'resource'
+ →(EV_MAP=1⊃r)/hasr
+ Z←(⍬)0 ⋄ →0
+ hasr:→(r MHas'targets')/hast
+ Z←(⍬)0 ⋄ →0
+ hast:targets←TextList r MArray'targets'
+ cexcl←TextList r MArray'exclude'
+ out←⍬ ⋄ i←0
+ lp:→(i≥≢targets)/done
+ i←i+1 ⋄ t←i⊃targets ⋄ ct←local Canon t
+ dropped←0 ⋄ j←0
+ xl:→(j≥≢cexcl)/keep
+ j←j+1 ⋄ →(~ct CapMatchesPattern local Canon(j⊃cexcl))/xl
+ dropped←1
+ keep:→(dropped)/lp
+ out←out,⊂t
+ →lp
+ done:Z←out 1
+∇
+
+⍝ ⍵=(local operation path token handlerPattern) -> section 6.3's handler-level check.
+⍝
+⍝ IT IS NOT A SECONDARY CHECK (section 5.2, 0.8.2.20). It is the SOLE enforcement wherever
+⍝ the subject is derived after dispatch, because the dispatch-level check can be made
+⍝ VACUOUS by caller-controlled input: a caller who excludes the one target its capability
+⍝ does not cover removes that target from CheckResourceScope's view entirely, and a
+⍝ handler that then acts on it has authorized nothing.
+⍝
+⍝ THREE DIMENSIONS, NOT FOUR. `peers` is not consulted -- the path is local by
+⍝ construction at this point (section 1.4's inbound rule refuses a foreign namespace at
+⍝ section 6.5 step 3, before any handler runs), and section 6.3's signature names only
+⍝ handlers, operations and resources.
+⍝
+⍝ THE FRAME IS THE LOCAL PEER, NOT THE GRANTER, and that is the spec's own signature
+⍝ rather than a choice: section 6.3's block passes local_peer_id and has no granter
+⍝ parameter to pass. Section 5.5a governs chain ATTENUATION, where the subject is a
+⍝ PATTERN compared against a parent's pattern; this call site compares a CONCRETE LOCAL
+⍝ PATH the handler is about to touch. CapMatchesScope takes the local frame, so the
+⍝ correct frame here is the one it already uses.
+⍝
+⍝ `hp` is the BARE handler id, exactly as CapCheckPermission receives it -- this peer's
+⍝ handlers dimension is matched literally against the relative form, and handing the
+⍝ absolute resolved pattern to a literal matcher denies everything (the two defects that
+⍝ were holding each other up; see CapCheckPermission).
+⍝
+⍝ There is no caller-exclude set at this call site: the subject is a single concrete path
+⍝ and the caller's own exclusions were already applied in deriving it. An empty
+⍝ resources.include is a LEGAL grant shape (section 5.2) and DENIES every path here, which
+⍝ is what that note says it should -- Covered over an empty include list is 0. A malformed
+⍝ path Canons to NeverMatch, which matches no grant, so it falls through to DENY rather
+⍝ than being matched against anything.
+∇Z←CapCheckPathPermission a;local;op;path;token;hp;garr;n;i;g;ok
+ local←1⊃a ⋄ op←2⊃a ⋄ path←3⊃a ⋄ token←4⊃a ⋄ hp←5⊃a
+ Z←0
+ garr←CapGrantsOfToken token ⋄ n←ArrCount garr ⋄ i←0
+ lp:→(i≥n)/0
+ i←i+1 ⋄ g←garr ArrItem i
+ ok←(CapMatchesIdScope hp(g MSubmap'handlers'))∧(CapMatchesIdScope op(g MSubmap'operations'))
+ →(~ok)/lp
+ →(~local CapMatchesScope path(g MSubmap'resources'))/lp
+ Z←1 ⋄ →0
+∇
+
+⍝ ⍵=target -> 1 iff the target is a section 5.4 PATTERN rather than a concrete path.
+⍝ A resource-requiring operation takes a concrete path (0.8.2.20); a trailing "/" is a
+⍝ LISTING request rather than a pattern -- only a star makes it one.
+∇Z←CapIsPatternPath t
+ Z←∨/t='*'
 ∇
 
 ⍝ public: is grant child a subset of grant parent in the local frame (bounded-mint check).

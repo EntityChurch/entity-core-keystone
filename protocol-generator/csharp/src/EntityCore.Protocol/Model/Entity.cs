@@ -82,7 +82,7 @@ internal sealed class Entity
         if (type == PeerIdentityType && contentHashFormat != HashFormats.Sha256)
         {
             throw new EntityCodecException(
-                $"'{PeerIdentityType}' is pinned to the ECFv1-SHA-256 floor (V7 §4.5a item 1a); " +
+                $"'{PeerIdentityType}' is pinned to the ECFv1-SHA-256 floor (V7 section 4.5a item 1a); " +
                 $"refusing to author it under content_hash_format 0x{contentHashFormat:x2}");
         }
 
@@ -116,7 +116,10 @@ internal sealed class Entity
         byte[] expected = HashFormats.ContentHash(format, hashable);
         if (!Hashes.Equal(expected, declared))
         {
-            throw new EntityProtocolException(
+            // §1.8 item 1 resolution integrity, the same class as a mis-keyed `included`
+            // entry and the same §5.2a code — `400 hash_mismatch`, never the structural
+            // `invalid_request` beside it (0.8.2.24 N4/N5).
+            throw new HashMismatchException(
                 $"content_hash mismatch on '{type}': computed {Hashes.Hex(expected)}, declared {Hashes.Hex(declared)}");
         }
 

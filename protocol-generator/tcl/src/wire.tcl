@@ -17,7 +17,7 @@ namespace eval ::entity::core::wire {
     variable MAX_FRAME [expr {16 * 1024 * 1024}]   ;# §1.6 / §4.10(a) — 16 MiB
     namespace export now_ms frame_of_envelope envelope_of_frame frame \
         make_execute make_response error_result empty_params resource_target \
-        response_status response_result
+        response_status response_result pre_admission_refusal
 }
 
 proc ::entity::core::wire::now_ms {} { return [clock milliseconds] }
@@ -50,6 +50,63 @@ proc ::entity::core::wire::envelope_of_frame {payload} {
     set v [::entity::core::cbor::decode $payload]
     if {[lindex $v 0] ne "map"} { throw {ENTITY_CORE WIRE not_a_map} "frame: not a map" }
     return [::entity::core::envelope::of_cbor $v]
+}
+
+# ── §4.11 pre-admission refusal classification (0.8.2.25) ──
+#
+# The {status code message} §4.11 assigns a pre-admission failure's CAUSE.
+#
+# "The frame obligation belongs to the class; the CODE belongs to the cause [MUST]" --
+# a single code for the class would answer an honest caller under the wrong reason and
+# send them to the wrong layer.
+#
+#   connect-auth proof-of-possession      401 authentication_failed  (4.6/4.7 -- the
+#                                            connect handler's, not here)
+#   envelope over the configured maximum  413 payload_too_large      (4.10(a), N14)
+#   resolution integrity (mis-keyed inc.) 400 hash_mismatch          (5.2a, 1.8)
+#   framing / never becomes an Envelope   400 invalid_request        (4.7, 4.11)
+#   root is neither EXECUTE nor E_R       400 invalid_request        (3.3, 4.11 -- in
+#                                            peer::dispatch, not here)
+#
+# THE TAG ARM KEEPS non_canonical_ecf AND THAT IS DELIBERATE. 4.11 rules that code
+# non-conformant "on the framing arm" and gives its reason in the same sentence:
+# ENTITY-CBOR-ENCODING defines it for CBOR tag-policy violations specifically, which that
+# document still MUSTs at decode time (6.3). The two rows are disjoint by CAUSE rather
+# than in conflict. Everything else this decoder calls non-canonical (a non-minimal head,
+# an indefinite length, mis-ordered keys) is genuinely "non-canonical CBOR that never
+# becomes an Envelope".
+#
+# The classifier reads the STRUCTURED -errorcode, never the message text: a classifier
+# that recognises a cause by matching on prose is one string edit away from silently
+# re-collapsing the codes. tcl's error model gives {ENTITY_CORE <KIND> <detail>}, so the
+# kind IS the cause.
+#
+# The messages are a FIXED TABLE, never the internal exception text: a wire-visible string
+# stays ASCII (two peers in this cohort have been killed at runtime by a non-ASCII byte in
+# an encoded string, on two unrelated compilers), the internal texts carry section signs,
+# and nothing here echoes attacker-supplied bytes back.
+proc ::entity::core::wire::pre_admission_refusal {errorcode} {
+    set kind [lindex $errorcode 1]
+    set detail [lindex $errorcode 2]
+    if {$kind eq "WIRE" && $detail eq "payload_too_large"} {
+        return [list 413 payload_too_large "inbound frame exceeds the configured maximum size"]
+    }
+    if {$kind eq "WIRE" && $detail eq "truncated_frame"} {
+        return [list 400 invalid_request "frame did not decode into an envelope"]
+    }
+    if {$kind eq "PROTOCOL" && $detail in {included_key_mismatch content_hash_mismatch}} {
+        # 1.8 item 1 -- RESOLUTION INTEGRITY, not a structural fault. 5.2a pins the
+        # decode-boundary code for this cause to `400 hash_mismatch` and rules
+        # `400 non_canonical_ecf` non-conformant here (0.8.2.24 N4/N5). A mis-keyed
+        # `included` entry carries no tag and its encoding is canonical -- what is false
+        # is the claim the KEY makes, and the remedy non_canonical_ecf selects
+        # (*re-encode*) sends an honest caller to the wrong layer.
+        return [list 400 hash_mismatch "an entity was addressed by a hash that does not bind to it"]
+    }
+    if {$kind eq "TAG_REJECTED"} {
+        return [list 400 non_canonical_ecf "CBOR tags are forbidden anywhere in an entity data field"]
+    }
+    return [list 400 invalid_request "frame did not decode into an envelope"]
 }
 
 # prefix $payload with its 4-byte big-endian length (§1.6).

@@ -322,14 +322,39 @@ final class Peer
     // ── dispatch chain (§6.5) ───────────────────────────────────────────────────────
 
     /**
-     * The §6.5 dispatch chain: returns an EXECUTE_RESPONSE envelope, or null for a
-     * non-EXECUTE root (§3.3 server side ignores non-EXECUTE).
+     * The §6.5 dispatch chain: returns an EXECUTE_RESPONSE envelope. Never null — a root
+     * that is neither EXECUTE nor EXECUTE_RESPONSE is a §4.11 PRE-ADMISSION REFUSAL and
+     * is owed a coded frame (see below).
      */
     public function dispatch(Conn $conn, Envelope $env): ?Envelope
     {
         $exec = $env->root;
         if ($exec->type !== 'system/protocol/execute') {
-            return null;
+            // §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+            // invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare
+            // close — that is indistinguishable from a network fault."
+            //
+            // §3.3 read "the connection MUST be closed", assigning no code and requiring
+            // no frame, and §9.1's floor row that MANDATED the bare close was REPLACED at
+            // the same revision (N18). This peer did something weaker still: it returned
+            // null, the transport wrote NOTHING, and the connection stayed open — which is
+            // §4.11's OTHER non-conformant behaviour, the silent drop, "the weaker of the
+            // two precisely because nothing surfaces it". This is a PRE-ADMISSION refusal:
+            // the root is not an EXECUTE, so nothing was ever admitted and §4.9(c) does
+            // not reach it.
+            //
+            // The request_id is read best-effort — an arbitrary root type is under no
+            // obligation to carry one, and §4.11 licenses the uncorrelated frame exactly
+            // there. We do NOT close: on a multiplexed connection that would cost every
+            // ADMITTED in-flight request its response, and §4.11 leaves the close to us.
+            //
+            // EXECUTE_RESPONSE roots never reach here — Io::dispatchFrame routes them to
+            // their awaiting §6.11 waiter before this is called.
+            return new Envelope(Wire::makeResponse(
+                $exec->text('request_id') ?? '',
+                400,
+                Wire::errorResult('invalid_request', 'root entity is neither EXECUTE nor EXECUTE_RESPONSE'),
+            ));
         }
         $requestId = $exec->text('request_id') ?? '';
         try {
@@ -397,7 +422,12 @@ final class Peer
         $stripped = $this->stripLocal($pattern);
         $inst = $this->handlers[$stripped] ?? null;
         if ($inst !== null) {
-            return $inst->handle($operation, new HandlerContext($exec, $conn, $env->included, $callerCap, $env));
+            // §6.3's authorization subject, CARRIED into the handler rather than
+            // recomputed: $pattern is the resolved OWNING handler pattern and $callerCap
+            // the capability checkPermission just ran against, which is exactly what
+            // checkPathPermission needs. Recomputing either inside the handler invites
+            // the two to drift.
+            return $inst->handle($operation, new HandlerContext($exec, $conn, $env->included, $callerCap, $env, $pattern));
         }
         return $this->entityNativeDispatch($pattern);
     }

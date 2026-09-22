@@ -101,7 +101,9 @@ class Entity private constructor(
             val e = makeRaw(typeV.value, dataV)
             val carried = m["content_hash"]
             if (carried is EcfValue.Bytes && !carried.octets().contentEquals(e.hashOctets)) {
-                throw IllegalArgumentException("content_hash mismatch (§1.8 fidelity)")
+                // §1.8 item 1 resolution integrity, the same class as a mis-keyed
+            // `included` entry and the same §5.2a code (0.8.2.24 N4/N5).
+            throw HashMismatchException("content_hash mismatch (section 1.8 fidelity)")
             }
             return e
         }

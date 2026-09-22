@@ -393,6 +393,54 @@ done
 # existed to catch a missing probe passed vacuously on the emptiest possible name.
 export DEST PROBE
 
+# PREFLIGHT — IS ANOTHER CONTAINER ALREADY HOLDING THIS REPO? (added 2026-09-15)
+#
+# The `:Z` race is documented at the top of this file and was measured in July,
+# and CONCURRENCY=1 is the defence. But that default only protects this script
+# FROM ITSELF. Nothing protected it from a SWEEP AGENT whose peer harness mounts
+# the same repo `:Z` -- 44 of 46 run-s4.sh do -- and during the 0.8.2.25 sweep
+# that cost three separate re-runs of `ada`, `rexx` and `io`.
+#
+# THE FAILURE MODE IS THE WHOLE REASON THIS IS A HARD STOP. Every check RUNS and
+# PASSES; only the final report write loses the relabel race:
+#
+#     Error creating /work/output/scratch/census/<peer>.json: permission denied
+#
+# ...and the oracle still exits 0. The check-set gate then counts the STALE file
+# on disk as conforming -- it happily reported "7 / 7" over a report 20 hours
+# old. Only the stale-JSON guard downstream catches it, and only because it
+# compares mtimes. A guard that fires after a multi-hour run is not a defence,
+# it is a receipt.
+#
+# Matching is on the podman MOUNT LIST rather than the command line: a wrapper
+# whose argv merely CONTAINS the repo path is not a holder, which is the standing
+# `pgrep -f` trap (the pattern is in the watcher's own command line) in a second
+# form. This process's own containers do not exist yet, so there is nothing to
+# exclude.
+if command -v podman >/dev/null 2>&1; then
+  # `podman ps --format {{.Mounts}}` prints the CONTAINER-side paths (/work, /target),
+  # NOT the host source -- so matching the repo root against it can never fire, which
+  # is exactly what the first cut of this guard did: it reported "no holders" with
+  # fifteen containers running and then lost the report write anyway. `inspect` is
+  # the only place the host SOURCE appears. Measured, not assumed.
+  HOLDERS="$(podman ps -q 2>/dev/null | xargs -r podman inspect \
+               --format '{{.Id}} {{.Config.Image}} {{range .Mounts}}{{.Source}} {{end}}' 2>/dev/null \
+             | awk -v r="$REPO_ROOT" 'index($0, r) { printf "    %.12s  %s\n", $1, $2 }')"
+  if [ -n "$HOLDERS" ]; then
+    echo "census: REFUSING TO START — another container already holds this repo:" >&2
+    echo "$HOLDERS" >&2
+    echo "" >&2
+    echo "  Two containers relabeling the same host path with ':Z' race. Every check" >&2
+    echo "  will still pass and the REPORT WRITE will fail with 'permission denied'," >&2
+    echo "  while the oracle exits 0 and the stale file on disk reads as a result." >&2
+    echo "  Wait for the other run, or set CENSUS_IGNORE_HOLDERS=1 to override." >&2
+    [ "${CENSUS_IGNORE_HOLDERS:-0}" = "1" ] || exit 4
+    echo "census: CENSUS_IGNORE_HOLDERS=1 — proceeding anyway; treat any" >&2
+    echo "        permission-denied failure below as contention, not a peer defect." >&2
+  fi
+fi
+
+RUN_T0=$(date +%s)   # the roster stamp and the staleness tests key off this
 CUR_REF="$(awk -F= '/^ref[ \t]*=/{gsub(/[ \t]/,"",$2); print $2; exit}' "$REPO_ROOT/tools/oracle-pin.env")"
 
 # PREFLIGHT — is the INSTALLED oracle the pinned one? (added 2026-08-23)
@@ -512,8 +560,18 @@ fi
 #
 # Only the pin column moves. Tier and note are hand-maintained and never touched.
 # ---------------------------------------------------------------------------
+# ⛔ FRESHNESS, NOT EXISTENCE. This tested `[ -f ]`, so a peer whose run wrote NO
+# report was stamped anyway off the STALE file already on disk -- recording
+# "measured at pin X" for a measurement that did not happen. Seen for real during
+# the 0.8.2.25 sweep: `rexx` lost its report write to the `:Z` relabel race, the
+# stale-JSON guard said so ON THE SAME RUN, and the roster was stamped three lines
+# later. Same defect as the check-set gate counting that file as conforming. The
+# test is the one the stale-JSON guard already uses: mtime against the run's start.
 STAMPED=$(printf '%s\n' "${PEERS[@]}" | while read -r peer; do
-  [ -f "$(hostout_for "$peer")" ] && echo "$peer"
+  f="$(hostout_for "$peer")"
+  [ -f "$f" ] || continue
+  mt=$(stat -c %Y "$f" 2>/dev/null || echo 0)
+  [ "$mt" -ge "$RUN_T0" ] && echo "$peer"
 done | tr '\n' ' ')
 if [ -n "$STAMPED" ]; then
   TSV="$REPO_ROOT/tools/peer-tiers.tsv"

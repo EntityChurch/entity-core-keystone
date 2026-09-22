@@ -43,6 +43,10 @@ internal static class Status
     public const int Forbidden = 403;
     public const int NotFound = 404;
     public const int Conflict = 409;
+
+    /// <summary>§4.10(a) — an envelope over the configured maximum. MUST since 0.8.2.25 (N14).</summary>
+    public const int PayloadTooLarge = 413;
+
     public const int RateLimited = 429;
     public const int InternalError = 500;
     public const int NotSupported = 501;

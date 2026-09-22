@@ -92,9 +92,17 @@ package body Entity_Core.Protocol.Envelope is
                   declare
                      Ent : constant Materialized_Entity := Of_Cbor (P.Value);
                   begin
-                     --  §3.1: the included content_hash MUST equal the map key (N5).
+                     --  §3.1: the included content_hash MUST equal the map key
+                     --  (N5) — §1.8's resolution-integrity obligation, mechanism
+                     --  (a) "bind the key".
+                     --
+                     --  Hash_Mismatch, NOT the structural Non_Canonical_Ecf beside
+                     --  it: §5.2a pins this arm's code to `400 hash_mismatch` and
+                     --  rules `non_canonical_ecf` non-conformant here (0.8.2.24
+                     --  N4/N5). The entry's ENCODING is canonical; what is false is
+                     --  the claim the key makes.
                      if not Octets_Equal (As_Bytes (P.Key), Hash (Ent)) then
-                        raise Entity_Core.Errors.Non_Canonical_Ecf
+                        raise Entity_Core.Errors.Hash_Mismatch
                           with "included key != content_hash";
                      end if;
                      Add (E, Ent);

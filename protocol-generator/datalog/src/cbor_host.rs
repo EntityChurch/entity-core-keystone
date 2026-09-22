@@ -147,7 +147,11 @@ pub enum DecodeError {
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Value, DecodeError> {
-    let mut d = Dec { buf: bytes, pos: 0, salvage: false };
+    let mut d = Dec {
+        buf: bytes,
+        pos: 0,
+        salvage: false,
+    };
     let v = d.value()?;
     if d.pos != d.buf.len() {
         return Err(DecodeError::TrailingData);
@@ -167,7 +171,11 @@ pub fn decode(bytes: &[u8]) -> Result<Value, DecodeError> {
 /// everything else it read, so the tag is never interpreted and nothing is stored — §6.3's
 /// MUST NOT strip / preserve / interpret rules all still hold.
 pub fn decode_salvage(bytes: &[u8]) -> Result<Value, DecodeError> {
-    let mut d = Dec { buf: bytes, pos: 0, salvage: true };
+    let mut d = Dec {
+        buf: bytes,
+        pos: 0,
+        salvage: true,
+    };
     let v = d.value()?;
     if d.pos != d.buf.len() {
         return Err(DecodeError::TrailingData);

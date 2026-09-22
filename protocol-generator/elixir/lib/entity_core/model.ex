@@ -14,7 +14,38 @@ defmodule EntityCore.Model do
   alias EntityCore.{Entity, Hash}
 
   defmodule BadEntity do
-    @moduledoc "Raised on a malformed or fidelity-violating entity/envelope (§1.8)."
+    @moduledoc """
+    Raised on a STRUCTURALLY malformed wire entity or envelope: a missing or ill-typed
+    `type`, an absent `data`, a non-map root, an `included` key that is not a byte
+    string at all.
+
+    These are bytes that never become an Envelope, which is §4.11's framing arm:
+    `400 invalid_request`. `EntityCore.Model.HashMismatch` is the OTHER cause and
+    takes a different code — see there.
+    """
+    defexception [:message]
+  end
+
+  defmodule HashMismatch do
+    @moduledoc """
+    A §1.8 / §3.1 RESOLUTION-INTEGRITY failure: an entity whose carried `content_hash`
+    is not `content_hash({type, data})`, or an `included` entry whose MAP KEY does not
+    bind to the entity filed under it.
+
+    §5.2a pins this arm: *"A peer that refuses at the decode boundary MUST answer
+    `400 hash_mismatch` `[MUST]`"* (mood corrected 0.8.2.24), and in the same breath
+    *"`400 non_canonical_ecf` is NOT conformant here `[MUST]`"*. That code is
+    `ENTITY-CBOR-ENCODING` §6.3's, for a CBOR tag-policy violation, and a mis-keyed
+    `included` entry carries NO TAG: its encoding is canonical, what is false is the
+    claim the KEY makes, and the remedy `non_canonical_ecf` selects (*re-encode*)
+    sends an honest caller to the wrong layer. This peer answered `non_canonical_ecf`
+    for every decode-boundary refusal until 0.8.2.24 — measured on the wire,
+    `arc-probe` B1/B2.
+
+    A SEPARATE EXCEPTION rather than a `BadEntity` carrying a distinguishing message,
+    because a classifier that has to recognise the cause by matching on `message` is
+    one string edit away from silently re-collapsing them.
+    """
     defexception [:message]
   end
 
@@ -97,7 +128,10 @@ defmodule EntityCore.Model do
 
     case map_get(c, "content_hash") do
       {:bytes, h} when h != e.hash ->
-        raise BadEntity, message: "entity: content_hash mismatch (§1.8 fidelity)"
+        # §1.8 item 1 — RESOLUTION INTEGRITY, not a structural fault. §5.2a pins the
+        # decode-boundary code for this cause to `400 hash_mismatch` and rules
+        # `400 non_canonical_ecf` non-conformant here (0.8.2.24 N4/N5).
+        raise HashMismatch, message: "entity: content_hash mismatch (§1.8 fidelity)"
 
       _ ->
         e
@@ -148,7 +182,12 @@ defmodule EntityCore.Model do
                 e = of_cbor(v)
 
                 if h != e.hash do
-                  raise BadEntity, message: "envelope: included key != entity content_hash"
+                  # §3.1 key != content_hash — §1.8's resolution-integrity obligation,
+                  # mechanism (a) "bind the key": reject the entry whose key is not
+                  # content_hash({type, data}) of the entity under it, which fails the
+                  # envelope closed at ONE site. §5.2a's code for this arm is
+                  # `hash_mismatch`, not the structural `invalid_request` beside it.
+                  raise HashMismatch, message: "envelope: included key != entity content_hash"
                 end
 
                 {h, e}

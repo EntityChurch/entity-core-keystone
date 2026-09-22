@@ -52,8 +52,14 @@ module EntityCore
           raise ProtocolError, "envelope: included value not a map" unless v.is_a?(::Hash)
 
           ent = Entity.from_cbor(v)
-          # §3.1: the included content_hash MUST equal the map key.
-          raise ProtocolError, "included key != content_hash" unless k == ent.content_hash
+          # §3.1 key != content_hash — §1.8's resolution-integrity obligation,
+          # mechanism (a) "bind the key": reject the entry whose key is not
+          # content_hash({type, data}) of the entity under it, which fails the
+          # envelope closed at ONE site. §5.2a's code for this arm is
+          # `hash_mismatch`, not the structural `invalid_request` beside it
+          # (0.8.2.24 N4/N5) — the entry's encoding is canonical; what is false is
+          # the claim the KEY makes.
+          raise HashMismatchError, "included key != content_hash" unless k == ent.content_hash
 
           unless seen[k]
             seen[k] = true

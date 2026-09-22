@@ -179,7 +179,11 @@ internal static class CanonicalCbor
                         reader.ReadTag();
                         return ReadValue(reader, salvage);
                     }
-                    throw new EntityCodecException("CBOR tag forbidden in ECF");
+                    // MARKED, because §4.11 makes this the one decode-boundary cause that
+                    // keeps `400 non_canonical_ecf` while every other one moves to a
+                    // different code — and the transport must tell them apart by CAUSE,
+                    // never by matching this message.
+                    throw new EntityCodecException("CBOR tag forbidden in ECF") { TagRejected = true };
 
                 case CborReaderState.UnsignedInteger:
                     return new EcfValue.Integer(false, reader.ReadUInt64());

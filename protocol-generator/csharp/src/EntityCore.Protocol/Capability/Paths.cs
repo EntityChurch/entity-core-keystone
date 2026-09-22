@@ -46,7 +46,7 @@ internal static class Paths
         // before canonicalizing, so an interior "//" is always an empty segment.)
         if (path.Contains("//", StringComparison.Ordinal))
         {
-            throw new EntityProtocolException("empty path segment (§1.4)");
+            throw new EntityProtocolException("empty path segment (section 1.4)");
         }
         if (path.StartsWith("./", StringComparison.Ordinal) || path.StartsWith("../", StringComparison.Ordinal))
         {
@@ -61,6 +61,30 @@ internal static class Paths
             return path;
         }
         return "/" + localPeerId + "/" + path;
+    }
+
+    /// <summary>
+    /// Canonicalize for a MATCHER position, where there is no error channel to consume a
+    /// throw.
+    /// <para>
+    /// <see cref="Canonicalize"/> refuses an empty path segment (<c>a//b</c>) by throwing,
+    /// and that refusal is correct where it is an ADMISSION check — §1.4 forbids the
+    /// segment and <see cref="ValidateCallerTarget"/> is the site that answers the caller.
+    /// In a matcher it is the error return 0.8.2.20 removed: a pattern nobody can
+    /// canonicalize simply does not match, and <see cref="NeverMatch"/> is the value that
+    /// says so in either operand.
+    /// </para>
+    /// </summary>
+    public static string CanonForMatch(string path, string frame)
+    {
+        try
+        {
+            return Canonicalize(path, frame);
+        }
+        catch (EntityProtocolException)
+        {
+            return NeverMatch;
+        }
     }
 
     /// <summary>
@@ -96,7 +120,7 @@ internal static class Paths
         {
             if (ch < 0x20 || ch == 0x7f)
             {
-                throw new EntityProtocolException("control byte in path segment (§1.4)");
+                throw new EntityProtocolException("control byte in path segment (section 1.4)");
             }
         }
         if (target.StartsWith('/'))
@@ -106,7 +130,7 @@ internal static class Paths
             string first = slash < 0 ? rest : rest[..slash];
             if (!IsPeerId(first))
             {
-                throw new EntityProtocolException("leading / on caller-supplied path must name a peer_id (§1.4)");
+                throw new EntityProtocolException("leading / on caller-supplied path must name a peer_id (section 1.4)");
             }
         }
     }

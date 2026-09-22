@@ -94,8 +94,25 @@ Capability := Object clone do(
     // AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
     // fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
     // fail-OPEN in an exclude (carves out nothing), so the reading is chosen where
-    // the POSITION is known and matchesPattern stays uniform over its operands. The
-    // guard sits outside the scope-type dispatch, transcribing 5.2s loop literally.
+    // the POSITION is known and matchesPattern stays uniform over its operands.
+    //
+    // ASK THIS ONLY OF A PATH-SCOPE DIMENSION (0.8.2.24, N2/N3). NEVER_MATCH is a
+    // 5.4 PATH-canonicalization sentinel; an id-scope pattern is a literal
+    // identifier that 5.2's own id-scope arm forbids putting through the 5.4
+    // transforms. This guard used to sit OUTSIDE the type dispatch, transcribing
+    // 5.2's loop as it read before that loop grew one -- which ran an id pattern
+    // through those transforms purely to classify it and then DENIED THE WHOLE
+    // DIMENSION on a property unrelated to whether the exclude carves anything out:
+    // an `operations` exclude of a namespaced operation name such as the
+    // apply-under-star form -- an ordinary literal that matches nothing under the
+    // id-scope grammar -- canonicalized to the sentinel and denied every operation.
+    // Over-denial, and invisible on any well-formed grant.
+    //
+    // 5.4 says outright that the rule "does NOT reach `operations` or `peers`
+    // [MUST]", and it does not leave the id dimensions unprotected by oversight:
+    // under the id-scope grammar every non-star pattern is a literal and a literal
+    // is never structurally unmatchable, so there is nothing here for this sentinel
+    // to detect. A scope boundary, not an omission.
     _excludeUnmatchable := method(frame, excl,
         r := false
         if(excl != nil, excl foreach(p, if(canonicalize(frame, p) == NEVER_MATCH, r = true; break)))
@@ -150,7 +167,12 @@ Capability := Object clone do(
     // resources) and is given at every call site — there is no default, so a new one
     // cannot inherit the wrong matcher silently, which is exactly the F40 defect.
     matchesScope := method(localPeer, value, scope, kind,
-        if(_excludeUnmatchable(localPeer, scope at("excl")), return false)  // 0.8.2.21
+        // SCOPED TO PATH-SCOPE (0.8.2.24). 5.2's exclude loop tests the sentinel
+        // INSIDE `if dimension_type == "system/capability/path-scope"`, and 5.4
+        // scopes its own invalid-capability rule the same way. `kind` already names
+        // the dimension here, so the scoping costs one term and cannot be got wrong
+        // by a new call site.
+        if(kind == "path" and(_excludeUnmatchable(localPeer, scope at("excl"))), return false)  // 0.8.2.21
         if(kind == "id",
             return _coveredId(scope at("incl"), value) and(_coveredId(scope at("excl"), value) not)
         )
@@ -233,6 +255,12 @@ Capability := Object clone do(
         // An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before
         // any target: the coverage test below is correct in isolation and is simply
         // never reached on a sentinel, because matchesPattern answers false.
+        //
+        // UNGUARDED ON PURPOSE, unlike matchesScope's (0.8.2.24): `scope` here is
+        // ALWAYS the RESOURCES dimension, which 5.2 fixes as path-scope, so the type
+        // test that call site performs would be a constant here. The single-dimension
+        // signature is what makes that checkable -- a granter frame reaching an
+        // id-scope call site is the defect, and this method cannot be one.
         if(_excludeUnmatchable(granterPeer, scope at("excl")), return false)
         good := true
         targets foreach(tgt,
@@ -245,6 +273,101 @@ Capability := Object clone do(
             )
         )
         good
+    )
+
+    // ── §3.3 effective targets + §6.3 check_path_permission ──
+
+    // §5.2's effective target list (0.8.2.20): the caller's own `resource.exclude`
+    // removes entries from `resource.targets` BEFORE anything else looks at the
+    // request.
+    //
+    // Returns a Map with "had" (was a `resource` present at all) and "list" (the
+    // survivors). THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES [MUST]
+    // (0.8.2.25, N11): "where an implementation projects resource.targets onto the
+    // effective set ahead of the handler, that projection MUST NOT be lossy about
+    // its own emptiness -- narrow when narrowing leaves something, and retain the
+    // raw pair when narrowing would empty it." A method returning only the List
+    // cannot satisfy that: collapsing `[qA] exclude [qA]` to an empty List deletes
+    // the two-empties discriminator before any handler can read it, and the
+    // handler's refusal arm becomes dead code that only a WIRE drive can detect.
+    //
+    // The survivors are in the caller's OWN SPELLING, not canonicalized -- 0.8.2.21
+    // is explicit that effective_targets yields raw survivors, and the distinction
+    // is load-bearing because the value flows on to the store lookup, which
+    // canonicalizes for itself.
+    //
+    // "Every seam that narrows is exempted alike, inbound-wire and in-process
+    // sub-dispatch, or one request receives two different answers according to which
+    // door it arrived through." This peer has exactly ONE narrowing seam -- this
+    // method, called by the tree handler -- and §6.5's dispatch chain does not
+    // project: _dispatchInner passes `exec` through untouched and checkPermission
+    // reads `resource` for itself. So there is no second door to keep in step, and
+    // adding a projection at dispatch would create one.
+    //
+    // A PRESENT-BUT-ILL-TYPED `targets` IS **PRESENT**, with an empty survivor list.
+    // Reporting it absent would serve the WIDER absent-case answer to a request that
+    // named a resource, which is N11's own defect one field over.
+    //
+    // The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4 rules it
+    // separately from the grant arm) and that is INHERITED here rather than
+    // restated: canonicalize answers the sentinel, matchesPattern then answers
+    // false, and the target simply survives.
+    effectiveTargets := method(localPeer, exec,
+        out := List clone
+        r := exec mapField("resource")
+        if(r == nil, return Map clone atPut("had", false) atPut("list", out))
+        tv := r at("targets")
+        if(tv == nil, return Map clone atPut("had", false) atPut("list", out))
+        targets := List clone
+        if(tv isKindOf(List), tv foreach(x, if(x isKindOf(Sequence), targets append(x))))
+        excl := List clone
+        ev := r at("exclude")
+        if(ev != nil and(ev isKindOf(List)), ev foreach(x, if(x isKindOf(Sequence), excl append(x))))
+        targets foreach(t,
+            ct := canonicalize(localPeer, t)
+            dropped := false
+            excl foreach(x, if(matchesPattern(ct, canonicalize(localPeer, x)), dropped = true; break))
+            if(dropped not, out append(t))
+        )
+        Map clone atPut("had", true) atPut("list", out)
+    )
+
+    // §6.3's handler-level path check: may the caller access `path` AS A TREE PATH,
+    // under `handlerPattern`, with `token`?
+    //
+    // IT IS NOT A SECONDARY CHECK (§6.3, 0.8.2.20). It is the enforcement wherever
+    // the subject is derived after dispatch, and the dispatch-level check can be
+    // made VACUOUS by caller-controlled input: a caller who excludes the one target
+    // its capability does not cover removes that target from checkPermission's view
+    // entirely, and a handler that then acts on it has authorized nothing.
+    //
+    // THREE DIMENSIONS, NOT FOUR. `peers` is not consulted -- the path is local by
+    // construction at this point (§1.4's inbound rule refuses a foreign namespace at
+    // §6.5 step 3, before any handler runs), and §6.3's signature names only
+    // handlers, operations and resources.
+    //
+    // THE FRAME IS THE LOCAL PEER, NOT THE GRANTER, and that is the spec's own
+    // signature rather than a choice: §6.3's block reads
+    // `matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id)`
+    // -- there is no granter parameter to pass. §5.5a governs chain ATTENUATION,
+    // where the subject is a pattern compared against a parent's pattern; this call
+    // site compares a CONCRETE local path the handler is about to touch.
+    //
+    // Scope types: handlers -> path-scope, operations -> id-scope, resources ->
+    // path-scope. An empty resources.include is a legal grant shape (§5.2: handlers
+    // that touch no tree paths) and DENIES every path here, which is what that note
+    // says it should. A malformed path canonicalizes to NEVER_MATCH, which matches
+    // no grant, so it falls through to DENY rather than being matched against
+    // anything.
+    checkPathPermission := method(localPeer, operation, path, token, handlerPattern,
+        allowed := false
+        grantsOfToken(token) foreach(g,
+            if(matchesScope(localPeer, handlerPattern, g at("handlers"), "path") not, continue)
+            if(matchesScope(localPeer, operation, g at("operations"), "id") not, continue)
+            if(matchesScope(localPeer, path, g at("resources"), "path") not, continue)
+            allowed = true; break
+        )
+        allowed
     )
 
     // §PR-8: resolve the granter's peer_id (its resource frame), or nil.
@@ -377,20 +500,53 @@ Capability := Object clone do(
         valid size >= threshold
     )
 
-    // §5.6 scope subset (per-frame canonicalization, §5.5a)
-    _scopeSubset := method(childPeer, parentPeer, child, parent,
+    // The two halves of the scope typing, split so each can be mutated
+    // independently. Measured on the sibling `tcl` peer by planting: mutating the
+    // MATCHER alone is INERT for the published K-7 witnesses, because for the
+    // star-slash-apply form against a bare star the two matchers AGREE (both take
+    // the bare-star arm) and the whole divergence comes from CANONICALIZATION
+    // manufacturing the sentinel. The frame is the half that bites; the matcher half
+    // needs a pair such as /a/get against the peer-wildcard form, which
+    // canonicalizes to itself and is a PATTERN to one matcher and a literal to the
+    // other.
+    _ssFrame := method(kind, pattern, peerFrame,
+        if(kind == "path", canonicalize(peerFrame, pattern), pattern)
+    )
+    _ssCovers := method(kind, pattern, value,
+        if(kind == "path", matchesPattern(value, pattern), matchesIdPattern(value, pattern))
+    )
+
+    // §5.5a/§5.6 subset check: every child include must be covered by some parent
+    // include, and every parent exclude must be inherited by some child exclude.
+    //
+    // TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16; entity-core-formalization
+    // K-7). §3.6's id-scope grammar binds the scope TYPE, not one function -- "An
+    // implementation on the canonicalizing reading is non-conformant and MUST adopt
+    // the literal matcher" -- so the rule F40 landed on matchesScope reaches here
+    // too, with delegation-chain WIDENING named as the reason: on the canonicalizing
+    // reading a bare id include reads as covered by a path-form parent pattern it
+    // does not literally match, and a child grant comes out wider than its parent.
+    // `lean`'s differential put it at 2 of 64 include pairs and 2 of 64 exclude
+    // pairs, fail-closed, with a 16-pair control alphabet reporting 0 -- which is why
+    // every hand-tried example missed it.
+    //
+    // `kind` has NO DEFAULT and is named at every call site, because a default is how
+    // the next dimension inherits the wrong matcher silently -- the original F40
+    // defect. The per-link granter frames are meaningless on the id arm (an id
+    // pattern is never canonicalized) and are simply unread there.
+    _scopeSubset := method(childPeer, parentPeer, child, parent, kind,
         ok := true
         child at("incl") foreach(cp,
-            cc := canonicalize(childPeer, cp)
+            cc := _ssFrame(kind, cp, childPeer)
             covered := false
-            parent at("incl") foreach(pp, if(matchesPattern(cc, canonicalize(parentPeer, pp)), covered = true; break))
+            parent at("incl") foreach(pp, if(_ssCovers(kind, _ssFrame(kind, pp, parentPeer), cc), covered = true; break))
             if(covered not, ok = false; break)
         )
         if(ok,
             parent at("excl") foreach(pe,
-                cpe := canonicalize(parentPeer, pe)
+                cpe := _ssFrame(kind, pe, parentPeer)
                 covered := false
-                child at("excl") foreach(ce, if(matchesPattern(cpe, canonicalize(childPeer, ce)), covered = true; break))
+                child at("excl") foreach(ce, if(_ssCovers(kind, _ssFrame(kind, ce, childPeer), cpe), covered = true; break))
                 if(covered not, ok = false; break)
             )
         )
@@ -398,12 +554,16 @@ Capability := Object clone do(
     )
 
     grantSubset := method(localPeer, childPeer, parentPeer, child, parent,
-        if(_scopeSubset(localPeer, localPeer, child at("handlers"), parent at("handlers")) not, return false)
-        if(_scopeSubset(localPeer, localPeer, child at("operations"), parent at("operations")) not, return false)
-        if(_scopeSubset(childPeer, parentPeer, child at("resources"), parent at("resources")) not, return false)
+        // §5.5a: only the RESOURCE dimension uses the per-link granter frames; the
+        // other dimensions stay on the local frame. The scope KIND is a property of
+        // the DIMENSION and is named at every call site, never defaulted (F50 /
+        // 0.8.2.16).
+        if(_scopeSubset(localPeer, localPeer, child at("handlers"), parent at("handlers"), "path") not, return false)
+        if(_scopeSubset(localPeer, localPeer, child at("operations"), parent at("operations"), "id") not, return false)
+        if(_scopeSubset(childPeer, parentPeer, child at("resources"), parent at("resources"), "path") not, return false)
         cp := child at("peers"); if(cp == nil, cp = Map clone atPut("incl", list(localPeer)) atPut("excl", List clone))
         pp := parent at("peers"); if(pp == nil, pp = Map clone atPut("incl", list(localPeer)) atPut("excl", List clone))
-        _scopeSubset(localPeer, localPeer, cp, pp)
+        _scopeSubset(localPeer, localPeer, cp, pp, "id")
     )
 
     _isAttenuated := method(localPeer, childPeer, parentPeer, childTok, parentTok,

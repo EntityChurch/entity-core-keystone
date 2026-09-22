@@ -372,12 +372,54 @@ module EntityCore
 
       def op_get(ctx)
         exec = ctx.exec
-        target = Peer.exec_resource_target(exec)
-        return Outcome.err(400, "invalid_path", target) if target && !Peer.path_flex_ok?(target)
-        return @peer.build_listing("/#{@local_peer}/") if target.nil?
-        return @peer.build_listing(Capability.canonicalize(@local_peer, target)) if target.empty? || target.end_with?("/")
+        # §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+        # resource.targets: a handler that counts the effective list and then indexes
+        # targets[0] has implemented the arithmetic completely and is still reading a
+        # path no authorization covered.
+        eff = Capability.effective_targets(@local_peer, exec)
+        if eff.nil?
+          # THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION
+          # IS WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is
+          # scoped "for an operation that REQUIRES a resource" (0.8.2.24, N7); +get+
+          # does not. For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the
+          # present-but-empty case by whether the absent case is WIDER than the
+          # request — BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty — and
+          # requires the operation to declare which it is.
+          #
+          # EXTENSION-TREE §2.2a (v4.11) is that declaration: +get+ is
+          # resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root listing",
+          # self-excluded case "400 path_required". So both arms here are pinned by
+          # text and neither is this peer's choice.
+          return @peer.build_listing("/#{@local_peer}/", ctx)
+        end
+        if eff.empty?
+          # +resource+ PRESENT, every target carved out by the caller's own exclude.
+          # Serving it the absent case "answers a request for one excluded path with a
+          # listing of the tree" (EXTENSION-TREE §2.2a) — the root listing is wider
+          # than what was asked for, which is what BROAD-RESULT means.
+          return Outcome.err(400, "path_required", "tree: effective target list is empty")
+        end
+        if eff.length > 1
+          return Outcome.err(400, "ambiguous_resource", "tree: more than one effective target")
+        end
+
+        target = eff[0]
+        return Outcome.err(400, "invalid_path", target) unless Peer.path_flex_ok?(target)
+        if target.empty? || target.end_with?("/")
+          return @peer.build_listing(Capability.canonicalize(@local_peer, target), ctx)
+        end
+        return Outcome.err(400, "malformed_resource", target) if Peer.pattern_path?(target)
 
         path = Capability.canonicalize(@local_peer, target)
+        # §6.3: the handler MUST verify the CALLER's capability covers the path it is
+        # about to read. Not a secondary check — the dispatch-level check never saw
+        # this path if the caller excluded it.
+        if ctx.caller_cap && !Capability.check_path_permission(
+          @local_peer, "get", path, ctx.caller_cap, ctx.handler_pattern
+        )
+          return Outcome.err(403, "capability_denied", path)
+        end
+
         e = @store.get_at(path)
         return Outcome.err(404, "not_found", path) if e.nil?
 
@@ -462,11 +504,40 @@ module EntityCore
 
       def op_put(ctx)
         exec = ctx.exec
-        target = Peer.exec_resource_target(exec)
-        return Outcome.err(400, "ambiguous_resource", "tree: missing resource target") if target.nil?
+        # Same ladder as +op_get+, with the two empties COLLAPSED rather than split:
+        # EXTENSION-TREE §2.2a (v4.11) declares +put+ resource-REQUIRED, so §3.3's "an
+        # empty effective list IS the absent case" applies in its unscoped form and
+        # both empties answer +path_required+. That is the same table +op_get+'s
+        # branch cites, read one row down — the field is per-operation and neither
+        # answer is derivable from this handler's source.
+        #
+        # Note the code change 0.8.2.20 forced: this branch answered
+        # +ambiguous_resource+ for a MISSING target, which 0.8.2.20 names as the exact
+        # inversion it forbids ("answering ambiguous_resource for an absent resource
+        # inverts them"). The remedies differ — *supply a resource* is not
+        # *disambiguate your request* — and the code selects.
+        eff = Capability.effective_targets(@local_peer, exec)
+        if eff.nil? || eff.empty?
+          return Outcome.err(400, "path_required", "tree: put requires a resource target")
+        end
+        if eff.length > 1
+          return Outcome.err(400, "ambiguous_resource", "tree: more than one effective target")
+        end
+
+        target = eff[0]
         return Outcome.err(400, "invalid_path", target) unless Peer.path_flex_ok?(target)
+        return Outcome.err(400, "malformed_resource", target) if Peer.pattern_path?(target)
 
         path = Capability.canonicalize(@local_peer, target)
+        # §6.3 (see op_get): the CALLER's capability must cover the path this handler
+        # is about to write, because the caller's own exclude can vacate the
+        # dispatch-level check.
+        if ctx.caller_cap && !Capability.check_path_permission(
+          @local_peer, "put", path, ctx.caller_cap, ctx.handler_pattern
+        )
+          return Outcome.err(403, "capability_denied", path)
+        end
+
         params = exec.entity_field("params")
         raw_entity = params&.field("entity")
         expected = params&.bytes("expected_hash")
@@ -758,12 +829,45 @@ module EntityCore
 
     # ── tree listing (§3.9) ────────────────────────────────────────────────────
 
-    def build_listing(path)
+    # §6.3's per-entry listing check for one child segment (0.8.2.21/.22).
+    #
+    # An unauthenticated context is the bootstrap/internal path and is NOT filtered:
+    # the filter's subject is "the caller's verified capability", and where there is
+    # none there is no caller to narrow.
+    def entry_visible?(ctx, dir_path, segment)
+      return true if ctx.nil? || ctx.caller_cap.nil?
+
+      child = dir_path.end_with?("/") ? dir_path : "#{dir_path}/"
+      Capability.check_path_permission(@local_peer, "get", child + segment,
+                                       ctx.caller_cap, ctx.handler_pattern)
+    end
+
+    # Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+    #
+    # "When any handler returns a multi-entry result whose entries are tree paths,
+    # each entry MUST be individually checked using check_path_permission. Entries for
+    # which check_path_permission returns DENY MUST be omitted. The result's +count+
+    # field MUST reflect the filtered entry count, not the source tree's total count."
+    #
+    # This is the read path at its highest volume and it is the reason 0.8.2.21
+    # refused to carve reads out of the caller-specified-path rule: an unfiltered
+    # listing discloses the EXISTENCE of every binding under a prefix to a caller
+    # whose capability covers none of them. +count+ following the SOURCE total is that
+    # disclosure by itself, which is why it is computed from the emitted entries.
+    #
+    # The DIRECTORY itself is deliberately NOT checked — §6.3 makes each ENTRY the
+    # subject, and testing the prefix would deny a listing to a caller whose grant
+    # covers children but not the node above them, which is the ordinary shape of a
+    # narrowed grant.
+    def build_listing(path, ctx = nil)
       rows = @store.listing(path).reject do |row|
         row.hash_hex && !row.has_children && deletion_marker?(unhex(row.hash_hex))
       end
       entries = {}
+      count = 0
       rows.each do |row|
+        next unless entry_visible?(ctx, path, row.segment)
+
         data =
           if row.hash_hex
             { "has_children" => row.has_children, "hash" => unhex(row.hash_hex) }
@@ -771,9 +875,10 @@ module EntityCore
             { "has_children" => row.has_children }
           end
         entries[row.segment] = Entity.make("system/tree/listing-entry", data).to_cbor
+        count += 1
       end
       Outcome.ok(Entity.make("system/tree/listing",
-                             { "path" => path, "entries" => entries, "count" => rows.length, "offset" => 0 }))
+                             { "path" => path, "entries" => entries, "count" => count, "offset" => 0 }))
     end
 
     def deletion_marker?(hash)
@@ -852,7 +957,30 @@ module EntityCore
     # non-EXECUTE root (§3.3 server side ignores non-EXECUTE).
     def dispatch(conn, env)
       exec = env.root
-      return nil unless exec.type == "system/protocol/execute"
+      unless exec.type == "system/protocol/execute"
+        # §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+        # invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare
+        # close — that is indistinguishable from a network fault."
+        #
+        # §3.3 read "the connection MUST be closed", assigning no code and requiring
+        # no frame, and §9.1's floor row that MANDATED the bare close was REPLACED at
+        # the same revision (N18). This peer did something weaker still: it returned
+        # nil, the transport wrote NOTHING, and the connection stayed open — which is
+        # §4.11's OTHER non-conformant behaviour, the silent drop, "the weaker of the
+        # two precisely because nothing surfaces it". This is a PRE-ADMISSION refusal:
+        # the root is not an EXECUTE, so nothing was ever admitted and §4.9(c) does
+        # not reach it.
+        #
+        # The request_id is read best-effort — an arbitrary root type is under no
+        # obligation to carry one, and §4.11 licenses the uncorrelated frame exactly
+        # there. We do NOT close: on a multiplexed connection that would cost every
+        # ADMITTED in-flight request its response, and §4.11 leaves the close to us.
+        return Envelope.new(Wire.make_response(
+          exec.text("request_id") || "", 400,
+          Wire.error_result("invalid_request",
+                            "root entity is neither EXECUTE nor EXECUTE_RESPONSE")
+        ))
+      end
 
       request_id = exec.text("request_id") || ""
       outcome =
@@ -874,7 +1002,8 @@ module EntityCore
       operation = exec.text("operation") || ""
       if uri == "system/protocol/connect"
         return @handlers["system/protocol/connect"].handle(
-          operation, HandlerContext.new(exec: exec, conn: conn, included: env.included, caller_cap: nil, env: env)
+          operation, HandlerContext.new(exec: exec, conn: conn, included: env.included, caller_cap: nil, env: env,
+                        handler_pattern: nil)
         )
       end
 
@@ -913,7 +1042,9 @@ module EntityCore
       stripped = strip_local(pattern)
       inst = @handlers[stripped]
       if inst
-        inst.handle(operation, HandlerContext.new(exec: exec, conn: conn, included: env.included, caller_cap: caller_cap, env: env))
+        inst.handle(operation, HandlerContext.new(exec: exec, conn: conn, included: env.included,
+                                                  caller_cap: caller_cap, env: env,
+                                                  handler_pattern: pattern))
       else
         entity_native_dispatch(pattern)
       end
@@ -1001,6 +1132,13 @@ module EntityCore
 
       targets = Capability.text_list(r, "targets")
       targets && !targets.empty? ? targets.first : nil
+    end
+
+    # A §5.4 PATTERN rather than a concrete path. A resource-requiring operation
+    # takes a concrete path (0.8.2.20); a trailing "/" is a LISTING request, not a
+    # pattern — only a +*+ makes it one.
+    def self.pattern_path?(target)
+      target.include?("*")
     end
 
     def self.path_flex_ok?(target)

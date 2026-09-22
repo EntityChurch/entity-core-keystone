@@ -416,7 +416,11 @@ module EntityCore
       when 6_u8
         # Invariant N2 / ECF §6.3 — tags MUST be rejected anywhere in the input.
         unless keep_tags
-          raise NonCanonicalError.new("CBOR tag (major type 6) is not permitted in ECF")
+          # TagRejectedError < NonCanonicalError: the value is the same rejection
+          # it has always been, and the TYPE is what lets section 4.11's
+          # classifier keep `400 non_canonical_ecf` on this cause alone while
+          # every other decode-boundary refusal moves to its own code (0.8.2.25).
+          raise TagRejectedError.new("CBOR tag (major type 6) is not permitted in ECF")
         end
         # Salvage path only (`decode_salvage`): consume the tag head and yield the
         # item it wrapped, so the caller can locate the request_id and SIGNAL the

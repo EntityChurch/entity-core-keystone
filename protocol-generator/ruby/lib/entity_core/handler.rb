@@ -21,7 +21,14 @@ module EntityCore
   # — the EXECUTE entity, the per-connection state, the envelope's +included+,
   # the resolved caller capability (nil for the unauthenticated connect path),
   # and the full envelope.
-  HandlerContext = Data.define(:exec, :conn, :included, :caller_cap, :env) do
+  # +handler_pattern+ is CARRIED, never recomputed: §6.3's path check needs the
+  # handler pattern and the caller's capability, and the dispatch-level check already
+  # computed both. Recomputing invites the two to drift, and §6.8 is explicit that the
+  # authority is selected by who named the path. It is the OWNING handler's pattern
+  # (§6.3, 0.8.2.23) — for the tree handler owner and runner coincide, so the
+  # distinction is not observable here, but the field is named for the owner. It is
+  # +nil+ on the unauthenticated connect path, which has no resolved handler entity.
+  HandlerContext = Data.define(:exec, :conn, :included, :caller_cap, :env, :handler_pattern) do
     # The EXECUTE's params entity, or nil.
     def params
       exec.entity_field("params")

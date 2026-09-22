@@ -10,7 +10,7 @@
 #   ./run-s2.sh           # full gate: mvn -o test (conformance + selftest)
 #   ./run-s2.sh package   # mvn -o package (also produces the jar)
 #
-# THE COUNT IS ASSERTED, not just printed. Surefire prints `Tests run: 16` and Maven
+# THE COUNT IS ASSERTED, not just printed. Surefire prints `Tests run: 33` and Maven
 # exits 0; it ALSO exits 0 when it finds no tests at all (failIfNoTests is not on by
 # default), so a dropped test class or a mis-declared testSourceDirectory leaves this
 # green. That is the class already fixed in swift, smalltalk and kotlin: if a gate's
@@ -24,7 +24,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$REPO_ROOT/tools/podman-caps.sh"
 IMAGE="entity-core-keystone/java-toolchain:latest"
 WORKDIR="/work/protocol-generator/java"
-FLOOR="${JAVA_TEST_FLOOR:-16}"
+FLOOR="${JAVA_TEST_FLOOR:-33}"
 
 run() {
   podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WORKDIR" "$IMAGE" \

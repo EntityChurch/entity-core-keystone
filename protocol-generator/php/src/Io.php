@@ -69,14 +69,43 @@ final class Io
         }
         $chunk = @\fread($this->socket, 65536);
         if ($chunk === false || ($chunk === '' && \feof($this->socket))) {
+            // THE DISCRIMINATOR BETWEEN AN ORDINARY HANGUP AND A §4.11 TRUNCATION IS THE
+            // READ BUFFER, and this is the only place it exists. A clean EOF at a FRAME
+            // BOUNDARY (buffer empty) is an ordinary close and is owed nothing; a stream
+            // that ends MID-FRAME — a partial length prefix, or a prefix declaring more
+            // than arrived — is a REFUSAL owed a coded frame. Getting it wrong in the
+            // other direction would answer 400 to every peer that simply hangs up.
+            //
+            // PHP's non-blocking fread cannot tell the two apart by itself: both surface
+            // as an empty read at EOF. The leftover bytes are the evidence.
+            if ($this->rbuf !== '') {
+                $this->refusePreAdmission('', new TruncatedFrameException('frame ended mid-stream'));
+            }
             $this->close();
             return false;
         }
         $this->rbuf .= $chunk;
         try {
             $this->drainFrames();
-        } catch (PayloadTooLargeException) {
-            // §4.10(a): over-limit prefix — body boundary unknown, end the conn.
+        } catch (PayloadTooLargeException $e) {
+            // §4.11: BOTH the oversize and truncated arms are REFUSALS owed a coded
+            // frame, and both used to be a bare close — "closing with no coded frame",
+            // which is indistinguishable from a network fault and, on a multiplexed
+            // connection, destroys unrelated ADMITTED requests. §4.10(a)'s mood was
+            // raised SHOULD -> MUST at 0.8.2.25 (N14): the over-size condition is
+            // detected at the length prefix with the connection intact and nothing
+            // spent, so the permissive mood had nothing to license.
+            //
+            // The stream is desynchronized — the oversize body was never drained — so the
+            // frame goes out and THEN the connection closes. §4.11 makes the frame
+            // mandatory and leaves the close to us; closing is the only sound choice once
+            // the framing is lost, and it is a CHOICE rather than an alternative to
+            // answering.
+            //
+            // §4.11's best-effort UNCORRELATED form: no request_id can be recovered from
+            // a frame whose body never arrived, and guessing one would correlate the
+            // refusal to somebody else's in-flight request.
+            $this->refusePreAdmission('', $e);
             $this->close();
             return false;
         } catch (TransportException) {
@@ -84,6 +113,36 @@ final class Io
             return false;
         }
         return !$this->closed;
+    }
+
+    /**
+     * Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+     * refused BEFORE it becomes an admitted request.
+     *
+     * "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on the
+     * wire [MUST] — correlated by `request_id` where the id is available, and otherwise as
+     * a best-effort coded frame carrying no correlation."
+     *
+     * §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS" and
+     * therefore reaches none of these, which is why §4.11 exists. Both of the
+     * non-conformant behaviours it scores separately were present on this peer: DROPPING
+     * the frame (the unsalvageable-request_id arm, "the weaker of the two precisely
+     * because nothing surfaces it") and CLOSING with no coded frame (the oversize and
+     * truncated arms' bare close).
+     *
+     * AN EMPTY `$requestId` IS THE BEST-EFFORT FORM, not a bug: it is what the section
+     * prescribes where no id can be recovered.
+     */
+    private function refusePreAdmission(string $requestId, \Throwable $cause): void
+    {
+        [$status, $code, $message] = Wire::preAdmissionRefusal($cause);
+        try {
+            $this->writeFramed(new Envelope(
+                Wire::makeResponse($requestId, $status, Wire::errorResult($code, $message)),
+            ));
+        } catch (\Throwable) {
+            // A write failure here is a dead socket, not a protocol decision.
+        }
     }
 
     private function drainFrames(): void
@@ -106,29 +165,25 @@ final class Io
     {
         try {
             $env = Wire::envelopeOfFrame($payload);
-        } catch (\Throwable) {
-            // §6.3: "Rejection returns 400 non_canonical_ecf" -- a rejected frame is
-            // owed a STATUS, not silence. This used to be a bare `return`, which
-            // rejected the frame (correct) and then dropped it on the floor (wrong):
-            // the sender saw no response at all and blocked until its own timeout,
-            // violating §6.3's second sentence and §4.9(c) deliver-or-signal. It also
-            // made a refusal indistinguishable from a dead peer, and on a
-            // single-connection oracle run it poisons every later request on the same
-            // connection.
+        } catch (\Throwable $e) {
+            // A COMPLETE frame the decoder refused. The framing is intact, so we answer
+            // and KEEP SERVING — and the refusal MUST be a status rather than silence
+            // (§4.11; §4.9(c) says the same from the other direction). This used to be a
+            // bare `return`, which rejected the frame (correct) and then dropped it on the
+            // floor (wrong): the sender saw no response at all and blocked until its own
+            // timeout, so a refusal was indistinguishable from a dead peer.
             //
-            // The frame is still REJECTED -- only enough is salvaged to correlate the
-            // response. If even the request_id is unrecoverable the frame is
-            // unattributable and silence is the only option left.
-            $rid = Wire::salvageRequestId($payload);
-            if ($rid !== null) {
-                try {
-                    $this->writeFramed(new Envelope(
-                        Wire::makeResponse($rid, 400, Wire::errorResult('non_canonical_ecf', null)),
-                    ));
-                } catch (\Throwable) {
-                    // write failure ends this exchange; the loop keeps serving
-                }
-            }
+            // THE CODE IS THE CAUSE'S (§4.11, §5.2a) — see Wire::preAdmissionRefusal.
+            // This answered `non_canonical_ecf` for every cause until 0.8.2.24/.25 pinned
+            // them apart: a mis-keyed `included` entry is `400 hash_mismatch` (its
+            // encoding is canonical — what is false is the claim the key makes), a
+            // tag-policy violation keeps `non_canonical_ecf`, and everything else that
+            // never becomes an Envelope is `400 invalid_request`.
+            //
+            // The frame is still REJECTED — only enough is salvaged to correlate the
+            // response, and an unrecoverable id takes §4.11's uncorrelated best-effort
+            // form rather than the silence it used to take.
+            $this->refusePreAdmission(Wire::salvageRequestId($payload) ?? '', $e);
             return; // keep serving (§4.9)
         }
         if ($env->root->type === 'system/protocol/execute/response') {

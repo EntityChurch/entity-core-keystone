@@ -124,7 +124,10 @@ module EntityCore
       e = make(type, data)
       carried = map["content_hash"]?
       if carried.is_a?(Bytes) && carried != e.content_hash
-        raise ProtocolError.new("content_hash mismatch (§1.8 fidelity)")
+        # §5.2a (0.8.2.24 N4/N5): a decode-boundary refusal on RESOLUTION
+        # INTEGRITY answers `400 hash_mismatch`; `non_canonical_ecf` is declared
+        # non-conformant here. Same rejection, a type the classifier can read.
+        raise HashMismatchError.new("content_hash mismatch (§1.8 fidelity)")
       end
       e
     end

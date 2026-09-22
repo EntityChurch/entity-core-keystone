@@ -47,14 +47,76 @@ proc ::entity::core::transport::_io_new {sock peer_h conn_h} {
     return $io
 }
 
+# Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+# refused BEFORE it becomes an admitted request.
+#
+# "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on the
+# wire [MUST] — correlated by `request_id` where the id is available, and otherwise as a
+# best-effort coded frame carrying no correlation."
+#
+# §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS" and
+# therefore reaches none of these, which is why §4.11 exists. Both of the non-conformant
+# behaviours it names separately were present on this peer: DROPPING the frame (the
+# un-salvageable decode arm, "the weaker of the two precisely because nothing surfaces
+# it") and CLOSING with no coded frame (the over-limit prefix, which threw straight past
+# _on_readable into _close).
+#
+# AN EMPTY `request_id` IS THE BEST-EFFORT FORM, not a bug: it is what the section
+# prescribes where no id can be recovered.
+proc ::entity::core::transport::_refuse_pre_admission {io rid refusal} {
+    lassign $refusal status code message
+    catch {
+        _write_framed $io [::entity::core::envelope::make \
+            [::entity::core::wire::make_response $rid $status \
+                [::entity::core::wire::error_result $code $message]]]
+    }
+}
+
 proc ::entity::core::transport::_on_readable {io} {
     variable IO
     if {[dict get $IO($io) closed]} return
     set sock [dict get $IO($io) sock]
     if {[catch {read $sock} chunk]} { _close $io; return }
     if {$chunk ne ""} { dict append IO($io) rbuf $chunk }
-    if {[catch {_drain $io}]} { _close $io; return }   ;# §4.10(a) over-limit / bad frame
-    if {[eof $sock]} { _close $io }
+    if {[catch {_drain $io} _ opts]} {
+        # §4.11: an over-limit length prefix is a REFUSAL owed a coded frame, and this
+        # used to be a bare close — "closing with no coded frame", indistinguishable from
+        # a network fault and, on a multiplexed connection, destroying unrelated ADMITTED
+        # requests. §4.10(a)'s mood was raised SHOULD -> MUST at 0.8.2.25 (N14): the
+        # condition is detected at the length prefix with the connection intact and
+        # nothing spent, so the permissive mood had nothing to license.
+        #
+        # The stream is desynchronized — the declared body was never drained — so the
+        # frame goes out and THEN the connection closes. §4.11 makes the frame mandatory
+        # and leaves the close to us; closing is the only sound choice once the framing is
+        # lost, and it is a CHOICE rather than an alternative to answering.
+        #
+        # §4.11's best-effort UNCORRELATED form: no request_id can be recovered from a
+        # frame whose body was never read, and guessing one would correlate the refusal to
+        # somebody else's in-flight request.
+        _refuse_pre_admission $io "" \
+            [::entity::core::wire::pre_admission_refusal [dict get $opts -errorcode]]
+        _close $io
+        return
+    }
+    if {[eof $sock]} {
+        # A stream that ends MID-FRAME is a §4.11 framing REFUSAL owed a coded frame; a
+        # clean EOF at a FRAME BOUNDARY is an ordinary close and is owed nothing. Both
+        # surface as `eof` here, so the distinction can only be made by asking whether any
+        # bytes of a frame are still buffered — and getting it wrong in the other
+        # direction would answer 400 to every peer that simply hangs up.
+        #
+        # This covers BOTH truncation shapes: a partial length PREFIX (rbuf shorter than
+        # 4) and a complete prefix with a short BODY (_drain broke out waiting for bytes
+        # that never came). A naive read-exact collapses the first into an ordinary
+        # hangup, which is an inert control — arm 4 of the §4.11 driver stays green while
+        # arm 4b does not.
+        if {[string length [dict get $IO($io) rbuf]] > 0} {
+            _refuse_pre_admission $io "" [::entity::core::wire::pre_admission_refusal \
+                {ENTITY_CORE WIRE truncated_frame}]
+        }
+        _close $io
+    }
 }
 
 proc ::entity::core::transport::_drain {io} {
@@ -77,26 +139,25 @@ proc ::entity::core::transport::_drain {io} {
 proc ::entity::core::transport::_dispatch_frame {io payload} {
     variable IO
     variable DONE
-    if {[catch {::entity::core::wire::envelope_of_frame $payload} env]} {
-        # §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is owed a
-        # STATUS, not silence. This used to be a bare `return`, which rejected the frame
-        # (correct) and then dropped it on the floor (wrong): the sender saw no response
-        # at all and blocked until its own timeout, violating §6.3's second sentence and
-        # §4.9(c) deliver-or-signal. It also made a refusal indistinguishable from a dead
-        # peer, and on a single-connection oracle run it poisons every later request on
-        # the same connection.
+    if {[catch {::entity::core::wire::envelope_of_frame $payload} env opts]} {
+        # A COMPLETE frame the decoder refused. The framing is intact, so we answer and
+        # KEEP SERVING — and the refusal MUST be a status rather than silence (§4.11;
+        # §4.9(c) says the same from the other direction). This used to be a bare
+        # `return`, which rejected the frame (correct) and then dropped it on the floor
+        # (wrong): the sender saw no response at all and blocked until its own timeout, so
+        # a refusal was indistinguishable from a dead peer.
         #
-        # The frame is still REJECTED — only enough is salvaged to correlate the
-        # response. If even the request_id is unrecoverable the frame is unattributable
-        # and silence is the only option left.
-        set rid [::entity::core::wire::salvage_request_id $payload]
-        if {$rid ne ""} {
-            catch {
-                _write_framed $io [::entity::core::envelope::make \
-                    [::entity::core::wire::make_response $rid 400 \
-                        [::entity::core::wire::error_result non_canonical_ecf]]]
-            }
-        }
+        # THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered non_canonical_ecf for
+        # every cause until 0.8.2.24/.25 pinned them apart: a mis-keyed `included` entry
+        # is `400 hash_mismatch` (its encoding is canonical — what is false is the claim
+        # the key makes), a tag-policy violation keeps non_canonical_ecf, and everything
+        # else that never becomes an Envelope is `400 invalid_request`.
+        #
+        # The frame is still REJECTED — only enough is salvaged to correlate the response,
+        # and an unrecoverable id takes §4.11's uncorrelated best-effort form rather than
+        # the silence it used to take.
+        _refuse_pre_admission $io [::entity::core::wire::salvage_request_id $payload] \
+            [::entity::core::wire::pre_admission_refusal [dict get $opts -errorcode]]
         return
     }
     set root [::entity::core::envelope::root $env]

@@ -572,14 +572,43 @@ defmodule EntityCore.Peer do
     end
   end
 
+  # §6.3's per-entry listing check for one child segment (0.8.2.21/.22).
+  #
+  # An unauthenticated context is the bootstrap/internal path and is NOT filtered: the
+  # filter's subject is *"the caller's verified capability"*, and where there is none
+  # there is no caller to narrow.
+  defp entry_visible?(_t, nil, _dir_path, _segment), do: true
+
+  defp entry_visible?(t, {caller_cap, handler_pattern}, dir_path, segment) do
+    child = if String.ends_with?(dir_path, "/"), do: dir_path, else: dir_path <> "/"
+    Capability.check_path_permission(t.local_peer, "get", child <> segment, caller_cap, handler_pattern)
+  end
+
   # Build a system/tree/listing (§3.9), omitting deletion-marker-bound leaves
-  # (CORE-TREE-DELETE-1 / §6.3 filter).
-  defp build_listing(t, path) do
+  # (CORE-TREE-DELETE-1) and FILTERING per §6.3 (0.8.2.21/.22).
+  #
+  # *"When any handler returns a multi-entry result whose entries are tree paths, each
+  # entry MUST be individually checked using `check_path_permission`. Entries for which
+  # `check_path_permission` returns DENY MUST be omitted. The result's `count` field
+  # MUST reflect the filtered entry count, not the source tree's total count."*
+  #
+  # This is the read path at its highest volume and it is the reason 0.8.2.21 refused to
+  # carve reads out of the caller-specified-path rule: an unfiltered listing discloses
+  # the EXISTENCE of every binding under a prefix to a caller whose capability covers
+  # none of them. A `count` that still reports the SOURCE total is that disclosure by
+  # itself, which is why it is computed from the emitted entries.
+  #
+  # The DIRECTORY itself is deliberately NOT checked — §6.3 makes each ENTRY the
+  # subject, and testing the prefix would deny a listing to a caller whose grant covers
+  # children but not the node above them, which is the ordinary shape of a narrowed
+  # grant.
+  defp build_listing(t, path, auth) do
     entries =
       Store.listing(t.store, path)
       |> Enum.reject(fn {_seg, hash, has_children} ->
         hash != nil and not has_children and deletion_marker?(t, hash)
       end)
+      |> Enum.filter(fn {seg, _hash, _has_children} -> entry_visible?(t, auth, path, seg) end)
 
     entry_map =
       for {seg, hash, has_children} <- entries, into: %{} do
@@ -598,38 +627,98 @@ defmodule EntityCore.Peer do
     )
   end
 
-  defp tree_handler(t, exec) do
-    op = Model.text_field(exec, "operation") || ""
-    target = resource_target(exec)
-
-    cond do
-      op in ["get", "put"] and target != nil and not path_flex_ok?(target) ->
-        err(400, "invalid_path", target)
-
-      op == "get" and target == nil ->
-        # §6.3: empty resource → list the local peer root.
-        build_listing(t, "/" <> t.local_peer <> "/")
-
-      op == "get" and (target == "" or String.ends_with?(target, "/")) ->
-        build_listing(t, Capability.canonicalize(t.local_peer, target))
-
-      op == "get" ->
-        tree_get(t, exec, target)
-
-      op == "put" and target != nil ->
-        tree_put(t, exec, target)
-
-      target == nil ->
-        err(400, "ambiguous_resource", "tree: missing resource target")
-
-      true ->
-        err(501, "unsupported_operation", "tree: " <> op)
+  # RESOLVE THE OPERATION FIRST; ONLY THEN RUN THE §3.3 RESOURCE LADDER.
+  #
+  # This `cond` used to put an `target == nil -> err(400, "ambiguous_resource", ...)`
+  # arm ABOVE the unknown-operation arm, so `system/tree:bogusop` with NO resource
+  # answered a RESOURCE error for an OPERATION fault — while the same call WITH a
+  # resource correctly answered 501. `entity-system-conformance` measured that
+  # independently across variants (X9 / F52), and the control is what makes it an
+  # ORDERING defect rather than a missing 501 arm. A peer that validates the resource
+  # first answers the wrong fault for every unknown operation.
+  # PUBLIC so the §3.3-ladder unit gate can drive the real handler, the same reason
+  # `handlers_handler/2` and `entity_native_dispatch/2` are: the defect this ladder
+  # closes is a handler that implements §3.3's ARITHMETIC completely and then indexes
+  # `targets[0]` anyway, and `Capability.effective_targets/2` alone cannot show that.
+  @doc false
+  def tree_handler(t, exec, auth) do
+    case Model.text_field(exec, "operation") || "" do
+      "get" -> tree_get(t, exec, auth)
+      "put" -> tree_put(t, exec, auth)
+      other -> err(501, "unsupported_operation", "tree: " <> other)
     end
   end
 
-  defp tree_get(t, exec, target) do
-    path = Capability.canonicalize(t.local_peer, target)
+  # §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on `resource.targets`: a
+  # handler that counts the effective list and then indexes `targets[0]` has implemented
+  # the arithmetic completely and is still reading a path no authorization covered.
+  defp tree_get(t, exec, auth) do
+    case Capability.effective_targets(t.local_peer, exec) do
+      nil ->
+        # THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION IS
+        # WHAT SAYS SO. §3.3's *"an empty effective list IS the absent case"* is scoped
+        # *"for an operation that REQUIRES a resource"* (0.8.2.24, N7); `get` does not.
+        # For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the present-but-empty
+        # case by whether the absent case is WIDER than the request — BROAD-RESULT
+        # refuses it, OPTIONAL-FILTER answers it empty — and requires the operation to
+        # declare which it is.
+        #
+        # EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is resource-OPTIONAL
+        # and BROAD-RESULT, absent-case answer *"the root listing"*, self-excluded case
+        # *"400 path_required"*. So both arms here are pinned by text and neither is
+        # this peer's choice.
+        build_listing(t, "/" <> t.local_peer <> "/", auth)
 
+      [] ->
+        # `resource` PRESENT, every target carved out by the caller's own exclude.
+        # Serving it the absent case *"answers a request for one excluded path with a
+        # listing of the tree"* (EXTENSION-TREE §2.2a) — the root listing is wider than
+        # what was asked for, which is what BROAD-RESULT means.
+        err(400, "path_required", "tree: effective target list is empty")
+
+      [_, _ | _] ->
+        err(400, "ambiguous_resource", "tree: more than one effective target")
+
+      [target] ->
+        tree_get_one(t, exec, target, auth)
+    end
+  end
+
+  defp tree_get_one(t, exec, target, auth) do
+    cond do
+      not path_flex_ok?(target) ->
+        err(400, "invalid_path", target)
+
+      target == "" or String.ends_with?(target, "/") ->
+        build_listing(t, Capability.canonicalize(t.local_peer, target), auth)
+
+      pattern_path?(target) ->
+        err(400, "malformed_resource", target)
+
+      true ->
+        path = Capability.canonicalize(t.local_peer, target)
+
+        # §6.3: the handler MUST verify the CALLER's capability covers the path it is
+        # about to read. Not a secondary check — the dispatch-level check never saw this
+        # path if the caller excluded it.
+        if path_authorized?(t, auth, "get", path),
+          do: tree_read(t, exec, path),
+          else: err(403, "capability_denied", path)
+    end
+  end
+
+  defp path_authorized?(_t, nil, _operation, _path), do: true
+
+  defp path_authorized?(t, {caller_cap, handler_pattern}, operation, path) do
+    Capability.check_path_permission(t.local_peer, operation, path, caller_cap, handler_pattern)
+  end
+
+  # A §5.4 PATTERN rather than a concrete path. A resource-requiring operation takes a
+  # concrete path (0.8.2.20); a trailing "/" is a LISTING request, not a pattern — only
+  # a `*` makes it one.
+  defp pattern_path?(target), do: String.contains?(target, "*")
+
+  defp tree_read(t, exec, path) do
     case Store.get_at(t.store, path) do
       %{} = e ->
         mode = with p when p != nil <- entity_field(exec, "params"), do: Model.text_field(p, "mode")
@@ -734,8 +823,48 @@ defmodule EntityCore.Peer do
     end
   end
 
-  defp tree_put(t, exec, target) do
-    path = Capability.canonicalize(t.local_peer, target)
+  # Same ladder as `tree_get`, with the two empties COLLAPSED rather than split:
+  # EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's *"an empty
+  # effective list IS the absent case"* applies in its unscoped form and both empties
+  # answer `path_required`. That is the same table `tree_get`'s branch cites, read one
+  # row down — the field is per-operation and neither answer is derivable from this
+  # handler's source.
+  #
+  # Note the code change 0.8.2.20 forced: this handler answered `ambiguous_resource` for
+  # a MISSING target, which 0.8.2.20 names as the exact inversion it forbids
+  # (*"answering ambiguous_resource for an absent resource inverts them"*). The remedies
+  # differ — *supply a resource* is not *disambiguate your request* — and the code
+  # selects.
+  defp tree_put(t, exec, auth) do
+    case Capability.effective_targets(t.local_peer, exec) do
+      empty when empty == nil or empty == [] ->
+        err(400, "path_required", "tree: put requires a resource target")
+
+      [_, _ | _] ->
+        err(400, "ambiguous_resource", "tree: more than one effective target")
+
+      [target] ->
+        cond do
+          not path_flex_ok?(target) ->
+            err(400, "invalid_path", target)
+
+          pattern_path?(target) ->
+            err(400, "malformed_resource", target)
+
+          true ->
+            path = Capability.canonicalize(t.local_peer, target)
+
+            # §6.3 (see `tree_get_one`): the CALLER's capability must cover the path
+            # this handler is about to write, because the caller's own exclude can
+            # vacate the dispatch-level check.
+            if path_authorized?(t, auth, "put", path),
+              do: tree_put_at(t, exec, path),
+              else: err(403, "capability_denied", path)
+        end
+    end
+  end
+
+  defp tree_put_at(t, exec, path) do
     params = entity_field(exec, "params")
     raw_entity = with p when p != nil <- params, do: Model.field(p, "entity")
     expected = with p when p != nil <- params, do: Model.bytes_field(p, "expected_hash")
@@ -1258,7 +1387,42 @@ defmodule EntityCore.Peer do
     exec = env.root
 
     if exec.type != "system/protocol/execute" do
-      {nil, conn}
+      # §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+      # invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare close —
+      # that is indistinguishable from a network fault."
+      #
+      # §3.3 read "the connection MUST be closed", assigning no code and requiring no
+      # frame, and §9.1's floor row that MANDATED the bare close was REPLACED at the
+      # same revision (N18). This peer did something weaker still: it returned `nil`,
+      # the connection process wrote NOTHING, and the connection stayed open — which is
+      # §4.11's OTHER non-conformant behaviour, the silent drop, "the weaker of the two
+      # precisely because nothing surfaces it". This is a PRE-ADMISSION refusal: the
+      # root is not an EXECUTE, so nothing was ever admitted and §4.9(c) does not reach
+      # it.
+      #
+      # ONE SITE, not two: `Connection.process_frame` routes every non-response root
+      # here rather than answering beside it, so the refusal cannot drift between the
+      # transport's copy and this one.
+      #
+      # The request_id is read best-effort — an arbitrary root type is under no
+      # obligation to carry one, and §4.11 licenses the uncorrelated frame exactly
+      # there. We do NOT close: on a multiplexed connection that would cost every
+      # ADMITTED in-flight request its response, and §4.11 leaves the close to us.
+      response =
+        %Envelope{
+          root:
+            Wire.make_response(
+              Model.text_field(exec, "request_id") || "",
+              400,
+              Wire.error_result(
+                "invalid_request",
+                "root entity is neither EXECUTE nor EXECUTE_RESPONSE"
+              )
+            ),
+          included: %{}
+        }
+
+      {response, conn}
     else
       request_id = Model.text_field(exec, "request_id") || ""
       uri = Model.text_field(exec, "uri") || ""
@@ -1346,8 +1510,16 @@ defmodule EntityCore.Peer do
   end
 
   defp route_to_handler(t, conn, exec, pattern, caller_cap) do
+    # §6.3's path check needs the handler pattern AND the caller's capability, and the
+    # dispatch-level check above already computed both. They are CARRIED, never
+    # recomputed: recomputing invites the two to drift, and §6.8 is explicit that the
+    # authority is selected by who named the path. `pattern` is the OWNING handler's
+    # (§6.3, 0.8.2.23) — for the tree handler owner and runner coincide, so the
+    # distinction is not observable here, but the pair is named for the owner.
+    auth = {caller_cap, pattern}
+
     case strip_local(t, pattern) do
-      "system/tree" -> tree_handler(t, exec)
+      "system/tree" -> tree_handler(t, exec, auth)
       "system/capability" -> capability_handler(t, exec, caller_cap)
       "system/handler" -> handlers_handler(t, exec)
       "system/type" -> types_handler(t, exec)

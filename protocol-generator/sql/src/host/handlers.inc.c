@@ -138,6 +138,29 @@ static void build_listing(int fd, const char *rid, const char *path) {
     sqlite3_finalize(st);
     /* §6.3 CORE-TREE-DELETE-1: a deletion-markered leaf (no children) is omitted from the listing. */
     { int w=0; for(int i=0;i<nrows;i++){ if(rows[i].del && !rows[i].has_children) continue; rows[w++]=rows[i]; } nrows=w; }
+    /* §6.3 (0.8.2.21/.22) PER-ENTRY LISTING FILTER: "When any handler returns a
+     * multi-entry result whose entries are tree paths, each entry MUST be individually
+     * checked using check_path_permission. Entries for which it returns DENY MUST be
+     * omitted. The result's `count` field MUST reflect the FILTERED entry count, not the
+     * source tree's total count." `count` below is incremented only per surviving entry,
+     * which is what makes the second sentence hold — a count that still reports the
+     * source total is exactly the disclosure the rule exists to prevent.
+     *
+     * AN UNAUTHENTICATED CONTEXT IS NOT FILTERED — check_path_permission answers 1 when
+     * no caller capability was carried, because the filter's subject is "the caller's
+     * VERIFIED capability" and where there is none there is no caller to narrow. That is
+     * the bootstrap path.
+     *
+     * THE DIRECTORY ITSELF IS DELIBERATELY NOT CHECKED: §6.3 makes each ENTRY the
+     * subject, and testing the prefix would deny a listing to a caller whose grant covers
+     * children but not the node above them — the ordinary shape of a narrowed grant. */
+    { int w=0; for(int i=0;i<nrows;i++){
+        /* Explicit field widths: `prefix` is char[640] and `seg` char[128], but gcc cannot
+         * prove the concatenation fits and warns -Wformat-truncation on the plain "%s%s".
+         * Bounding each field states the property instead of widening the buffer past it. */
+        char child[800]; snprintf(child,sizeof child,"%.640s%.128s",prefix,rows[i].seg);
+        if (!check_path_permission("get",child)) continue;
+        rows[w++]=rows[i]; } nrows=w; }
     /* canonical map-key order for `entries` = length-then-lex on the segment names */
     for (int i=0;i<nrows;i++) for (int j=i+1;j<nrows;j++) {
         size_t li=strlen(rows[i].seg), lj=strlen(rows[j].seg);
@@ -460,17 +483,75 @@ static void dispatch_body(int fd, conn_state *cs, const char *rid, const char *p
     (void)cs;
     const char *rel = rel_pattern(pattern);
 
-    /* system/tree + system/type get/put/list share the store-backed tree. */
+    /* system/tree + system/type get/put/list share the store-backed tree.
+     *
+     * RULE G — THE OPERATION IS RESOLVED FIRST AND THE §3.3 RESOURCE LADDER IS REACHED
+     * ONLY FOR A KNOWN OPERATION. Each `op` arm below selects before reading `resource`,
+     * and the final arm of dispatch_body answers 501 unsupported_operation, so
+     * `system/tree:bogusop` answers an OPERATION fault whether or not a resource is
+     * present. A handler that validates the resource first answers a RESOURCE fault for
+     * an OPERATION fault, for every unknown operation
+     * (`entity-system-conformance` X9/F52; `ocaml` carried exactly that shape). */
     if (!strcmp(rel,"system/tree") || !strncmp(rel,"system/type",11)) {
         if (!strcmp(op,"validate")) { h_type_validate(fd,rid,buf,len,rdata_pos); return; }
         if (!strcmp(op,"get") || !strcmp(op,"list")) {
+            /* §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+             * `resource.targets`: a handler that counts the effective list and then reads
+             * targets[0] has implemented the arithmetic completely and is still reading a
+             * path no authorization covered. */
+            char eff[16][600]; size_t effraw[16]; int had_resource=0;
+            int n = effective_targets(eff, effraw, 16, &had_resource);
             char tgt[600]="", path[640];
-            if (exec_target(buf,len,rdata_pos,tgt,sizeof tgt)) canon_path(tgt,path,sizeof path);
-            else canon_path(uri,path,sizeof path);
+            if (!had_resource) {
+                /* THE TWO EMPTIES ARE DISTINCT HERE AND THE OPERATION'S OWN SPECIFICATION
+                 * IS WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is
+                 * scoped "for an operation that REQUIRES a resource" (0.8.2.24, N7); `get`
+                 * does not. For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the
+                 * present-but-empty case by whether the absent case is WIDER than the
+                 * request — BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty.
+                 * EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+                 * resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root
+                 * listing", self-excluded case "400 path_required". Both arms are pinned
+                 * by text and neither is this peer's choice. */
+                canon_path(uri,path,sizeof path);
+            } else if (n == 0) {
+                /* `resource` PRESENT, every target carved out by the caller's own exclude.
+                 * Serving it the absent case "answers a request for one excluded path with
+                 * a listing of the tree" (EXTENSION-TREE §2.2a). */
+                (void)emit_error(fd,rid,400,"path_required"); return;
+            } else if (n > 1) {
+                (void)emit_error(fd,rid,400,"ambiguous_resource"); return;
+            } else {
+                snprintf(tgt,sizeof tgt,"%s",eff[0]);
+                /* 0.8.2.20: a resource-requiring operation takes a CONCRETE path. A
+                 * trailing "/" is a LISTING request rather than a pattern — only a `*`
+                 * makes it one. Tested on the caller's own spelling, which is why
+                 * effective_targets yields RAW survivors. */
+                if (strchr(tgt,'*')) { (void)emit_error(fd,rid,400,"malformed_resource"); return; }
+                canon_path(tgt,path,sizeof path);
+            }
             size_t plen=strlen(path);
-            int container = (!strcmp(op,"list")) || (plen && path[plen-1]=='/');
+            /* AN EMPTY TARGET IS A LISTING, exactly as a trailing slash is (the vanguard's
+             * `target == "" || endswith "/"`), and leaving that half out took
+             * `tree_operations/path_root_listing` from PASS to FAIL: the oracle asks for
+             * the root with `targets: [""]`, `canon_path("")` yields `/{peer}` with no
+             * trailing slash, and the request then took the LEAF arm -- where §6.3's
+             * per-path check refused the directory itself under the discovery floor
+             * (403). §6.3 makes each ENTRY the subject of a listing and deliberately does
+             * NOT check the directory, so routing an empty target to the leaf arm asks
+             * the wrong question of the wrong subject.
+             *
+             * It used to work by accident: the leaf arm missed, probed for a child prefix,
+             * found one and fell through to build_listing. Adding the path check ahead of
+             * that probe is what surfaced the mis-routing. */
+            int container = (!strcmp(op,"list")) || (plen && path[plen-1]=='/')
+                            || !had_resource || tgt[0]==0;
             if (plen && path[plen-1]=='/') path[plen-1]=0;
             if (!container) {
+                /* §6.3: the handler MUST verify the CALLER's capability covers the path it
+                 * is about to read. NOT a secondary check — the dispatch-level check never
+                 * saw this path if the caller excluded it. */
+                if (!check_path_permission("get",path)) { (void)emit_error(fd,rid,403,"capability_denied"); return; }
                 char nt[80]; unsigned char *nd=NULL; size_t ndl=0;
                 if (store_get(path,nt,sizeof nt,&nd,&ndl)) { static const unsigned char empty=0xa0; (void)emit_response(fd,rid,200,nt,nd,ndl,&empty,1); free(nd); return; }
                 /* no exact node → maybe a container prefix → listing; else 404 */
@@ -482,10 +563,30 @@ static void dispatch_body(int fd, conn_state *cs, const char *rid, const char *p
             build_listing(fd,rid,path); return;
         }
         if (!strcmp(op,"put")) {
-            char tgt[600]="", path[640]; size_t rawlen=0;
-            if (!exec_target_n(buf,len,rdata_pos,tgt,sizeof tgt,&rawlen)) { (void)emit_error(fd,rid,400,"ambiguous_resource"); return; }
-            if (!path_valid(tgt,rawlen)) { (void)emit_error(fd,rid,400,"invalid_path"); return; }
+            /* The same ladder with the two empties COLLAPSED rather than split:
+             * EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's
+             * "an empty effective list IS the absent case" applies in its unscoped form
+             * and both empties answer `path_required`.
+             *
+             * NOTE THE CODE CHANGE 0.8.2.20 FORCED: this arm answered `ambiguous_resource`
+             * for a MISSING target, which 0.8.2.20 names as the exact inversion it
+             * forbids. The remedies differ — *supply a resource* is not *disambiguate your
+             * request* — and the code is what selects between them. */
+            char eff[16][600]; size_t effraw[16]; int had_resource=0;
+            int n = effective_targets(eff, effraw, 16, &had_resource);
+            if (!had_resource || n == 0) { (void)emit_error(fd,rid,400,"path_required"); return; }
+            if (n > 1) { (void)emit_error(fd,rid,400,"ambiguous_resource"); return; }
+            char tgt[600]="", path[640];
+            snprintf(tgt,sizeof tgt,"%s",eff[0]);
+            /* The SURVIVOR's on-wire text length, for path_valid's embedded-NUL test. It
+             * is carried per row rather than re-read as targets[0]: the §3.3 selection
+             * picks a survivor of the caller's exclude, which is not necessarily the
+             * first target, and `raw` came back through SQLite TEXT, which would have
+             * truncated at an embedded NUL and hidden the very thing under test. */
+            if (!path_valid(tgt,effraw[0])) { (void)emit_error(fd,rid,400,"invalid_path"); return; }
+            if (strchr(tgt,'*')) { (void)emit_error(fd,rid,400,"malformed_resource"); return; }
             canon_path(tgt,path,sizeof path);
+            if (!check_path_permission("put",path)) { (void)emit_error(fd,rid,403,"capability_denied"); return; }
             const unsigned char *pd; size_t pl;
             if (!exec_params_data(buf,len,rdata_pos,&pd,&pl)) { (void)emit_error(fd,rid,400,"unexpected_params"); return; }
             /* §6.3 CAS: expected_hash present → gate the write. zero-hash = create-if-absent. */

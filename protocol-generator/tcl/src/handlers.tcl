@@ -35,6 +35,13 @@ proc ::entity::core::handlers::exec_resource_target {exec} {
     return [lindex $targets 0]
 }
 
+# A §5.4 PATTERN rather than a concrete path. A resource-requiring operation takes a
+# concrete path (0.8.2.20); a trailing "/" is a LISTING request, not a pattern -- only a
+# star makes it one.
+proc ::entity::core::handlers::pattern_path {target} {
+    return [expr {[string first "*" $target] >= 0}]
+}
+
 # §1.4 path validity (no NUL, no empty/./.. segments; abs paths peer-rooted).
 proc ::entity::core::handlers::path_flex_ok {target} {
     if {[string first "\x00" $target] >= 0} { return 0 }
@@ -279,13 +286,50 @@ proc ::entity::core::handlers::_tree_get {peer_h ctx} {
     set exec [dict get $ctx exec]
     set local [::entity::core::peer::local_peer $peer_h]
     set store_h [::entity::core::peer::store $peer_h]
-    set target [exec_resource_target $exec]
-    if {$target ne "" && ![path_flex_ok $target]} { return [err 400 invalid_path $target] }
-    if {$target eq ""} { return [_tree_listing $peer_h "/$local/"] }
-    if {[string index $target end] eq "/"} {
-        return [_tree_listing $peer_h [::entity::core::capability::canonicalize $local $target]]
+    # §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on resource.targets: a
+    # handler that counts the effective list and then indexes targets[0] has implemented
+    # the arithmetic completely and is still reading a path no authorization covered.
+    lassign [::entity::core::capability::effective_targets $local $exec] had_resource eff
+    if {!$had_resource} {
+        # THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION IS
+        # WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is scoped
+        # "for an operation that REQUIRES a resource" (0.8.2.24, N7); `get` does not.
+        # For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the present-but-empty
+        # case by whether the absent case is WIDER than the request -- BROAD-RESULT
+        # refuses it, OPTIONAL-FILTER answers it empty -- and requires the operation to
+        # declare which it is.
+        #
+        # EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is resource-OPTIONAL
+        # and BROAD-RESULT, absent-case answer "the root listing", self-excluded case
+        # "400 path_required". So both arms here are pinned by text and neither is this
+        # peer's choice.
+        return [_tree_listing $peer_h "/$local/" $ctx]
     }
+    if {[llength $eff] == 0} {
+        # `resource` PRESENT, every target carved out by the caller's own exclude.
+        # Serving it the absent case "answers a request for one excluded path with a
+        # listing of the tree" (EXTENSION-TREE §2.2a) -- the root listing is wider than
+        # what was asked for, which is what BROAD-RESULT means.
+        return [err 400 path_required "tree: effective target list is empty"]
+    }
+    if {[llength $eff] > 1} {
+        return [err 400 ambiguous_resource "tree: more than one effective target"]
+    }
+    set target [lindex $eff 0]
+    if {![path_flex_ok $target]} { return [err 400 invalid_path $target] }
+    if {$target eq "" || [string index $target end] eq "/"} {
+        return [_tree_listing $peer_h [::entity::core::capability::canonicalize $local $target] $ctx]
+    }
+    if {[pattern_path $target]} { return [err 400 malformed_resource $target] }
     set path [::entity::core::capability::canonicalize $local $target]
+    # §6.3: the handler MUST verify the CALLER's capability covers the path it is about
+    # to read. Not a secondary check -- the dispatch-level check never saw this path if
+    # the caller excluded it.
+    set caller_cap [dict get $ctx caller_cap]
+    if {$caller_cap ne "" && ![::entity::core::capability::check_path_permission \
+            $local get $path $caller_cap [dict get $ctx handler_pattern]]} {
+        return [err 403 capability_denied $path]
+    }
     set e [::entity::core::store::get_at $store_h $path]
     if {$e eq ""} { return [err 404 not_found $path] }
     set params [::entity::core::entity::entity_field $exec params]
@@ -379,10 +423,36 @@ proc ::entity::core::handlers::_tree_put {peer_h ctx} {
     set exec [dict get $ctx exec]
     set local [::entity::core::peer::local_peer $peer_h]
     set store_h [::entity::core::peer::store $peer_h]
-    set target [exec_resource_target $exec]
-    if {$target eq ""} { return [err 400 ambiguous_resource "tree: missing resource target"] }
+    # Same ladder as _tree_get, with the two empties COLLAPSED rather than split:
+    # EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an empty
+    # effective list IS the absent case" applies in its unscoped form and both empties
+    # answer path_required. That is the same table _tree_get's branch cites, read one row
+    # down -- the field is per-operation and neither answer is derivable from this
+    # handler's source.
+    #
+    # Note the code change 0.8.2.20 forced: this branch answered ambiguous_resource for a
+    # MISSING target, which 0.8.2.20 names as the exact inversion it forbids ("answering
+    # ambiguous_resource for an absent resource inverts them"). The remedies differ --
+    # *supply a resource* is not *disambiguate your request* -- and the code selects.
+    lassign [::entity::core::capability::effective_targets $local $exec] had_resource eff
+    if {!$had_resource || [llength $eff] == 0} {
+        return [err 400 path_required "tree: put requires a resource target"]
+    }
+    if {[llength $eff] > 1} {
+        return [err 400 ambiguous_resource "tree: more than one effective target"]
+    }
+    set target [lindex $eff 0]
     if {![path_flex_ok $target]} { return [err 400 invalid_path $target] }
+    if {[pattern_path $target]} { return [err 400 malformed_resource $target] }
     set path [::entity::core::capability::canonicalize $local $target]
+    # §6.3 (see _tree_get): the CALLER's capability must cover the path this handler is
+    # about to write, because the caller's own exclude can vacate the dispatch-level
+    # check.
+    set caller_cap [dict get $ctx caller_cap]
+    if {$caller_cap ne "" && ![::entity::core::capability::check_path_permission \
+            $local put $path $caller_cap [dict get $ctx handler_pattern]]} {
+        return [err 403 capability_denied $path]
+    }
     set params [::entity::core::entity::entity_field $exec params]
     set raw_entity [expr {$params ne "" ? [::entity::core::entity::field $params entity] : ""}]
     set expected [expr {$params ne "" ? [::entity::core::entity::bytes $params expected_hash] : ""}]
@@ -404,12 +474,46 @@ proc ::entity::core::handlers::_tree_put {peer_h ctx} {
         hash [::entity::core::ecf::bstr [::entity::core::entity::hash $entity]]]]]
 }
 
-proc ::entity::core::handlers::_tree_listing {peer_h path} {
+# §6.3's per-entry listing check for one child segment (0.8.2.21/.22).
+#
+# An unauthenticated context is the bootstrap/internal path and is NOT filtered: the
+# filter's subject is "the caller's verified capability", and where there is none there
+# is no caller to narrow.
+proc ::entity::core::handlers::_entry_visible {peer_h ctx dir seg} {
+    if {$ctx eq ""} { return 1 }
+    set caller_cap [dict get $ctx caller_cap]
+    if {$caller_cap eq ""} { return 1 }
+    set child [expr {[string index $dir end] eq "/" ? $dir : "$dir/"}]
+    return [::entity::core::capability::check_path_permission \
+        [::entity::core::peer::local_peer $peer_h] get "$child$seg" \
+        $caller_cap [dict get $ctx handler_pattern]]
+}
+
+# Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+#
+# "When any handler returns a multi-entry result whose entries are tree paths, each entry
+# MUST be individually checked using check_path_permission. Entries for which
+# check_path_permission returns DENY MUST be omitted. The result's `count` field MUST
+# reflect the filtered entry count, not the source tree's total count."
+#
+# This is the read path at its highest volume and it is the reason 0.8.2.21 refused to
+# carve reads out of the caller-specified-path rule: an unfiltered listing discloses the
+# EXISTENCE of every binding under a prefix to a caller whose capability covers none of
+# them. `count` following the SOURCE total is that disclosure by itself, which is why it
+# is computed from the emitted entries -- this proc used to report [llength $rows].
+#
+# The DIRECTORY itself is deliberately NOT checked -- §6.3 makes each ENTRY the subject,
+# and testing the prefix would deny a listing to a caller whose grant covers children but
+# not the node above them, which is the ordinary shape of a narrowed grant.
+#
+# $ctx is "" on the internal/bootstrap call paths that have no caller at all.
+proc ::entity::core::handlers::_tree_listing {peer_h path {ctx ""}} {
     set store_h [::entity::core::peer::store $peer_h]
     set rows {}
     foreach row [::entity::core::store::listing $store_h $path] {
         lassign $row seg hash_hex has_children
         if {$hash_hex ne "" && !$has_children && [_is_deletion_marker $peer_h [binary decode hex $hash_hex]]} { continue }
+        if {![_entry_visible $peer_h $ctx $path $seg]} { continue }
         lappend rows $row
     }
     set entry_kv {}

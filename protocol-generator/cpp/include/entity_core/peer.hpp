@@ -73,9 +73,15 @@ public:
     std::optional<Envelope> dispatch(Connection& conn, const Envelope& env);
 
 private:
+    // `pattern` is the OWNING handler's pattern (§6.3, 0.8.2.23) — §6.3's
+    // check_path_permission needs it and the caller's capability, and the dispatch-level
+    // check has already computed both. They are CARRIED rather than recomputed:
+    // recomputing invites the two to drift, and §6.8 is explicit that the authority is
+    // selected by who named the path. For the tree handler owner and runner coincide, so
+    // the distinction is not observable, but the argument means the owner.
     using Handler = std::function<void(Peer&, Connection&, const Envelope&, const Entity& exec,
                                        const Entity* caller_cap, const std::string& op,
-                                       Outcome&)>;
+                                       const std::string& pattern, Outcome&)>;
 
     Peer() = default;
 
@@ -98,7 +104,8 @@ private:
     // handlers
     void h_connect(Connection&, const Envelope&, const Entity&, const Entity*,
                    const std::string&, Outcome&);
-    void h_tree(const Envelope&, const Entity&, const std::string&, Outcome&);
+    void h_tree(const Envelope&, const Entity&, const Entity* caller_cap,
+                const std::string& op, const std::string& pattern, Outcome&);
     void h_handlers(const Entity&, const std::string&, Outcome&);
     void h_capability(const Envelope&, const Entity&, const Entity*, const std::string&, Outcome&);
     void h_type(const Entity&, const std::string&, Outcome&);
@@ -121,7 +128,8 @@ private:
     EcfValue derive_seed_grants(const Entity& remote_peer, const std::string& remote_peer_id);
     void ingest_signatures(const Envelope& env);
     std::optional<std::string> resolve_handler_path(const std::string& path) const;
-    void build_listing(const std::string& path, Outcome&);
+    void build_listing(const std::string& path, const Entity* caller_cap,
+                       const std::string& pattern, Outcome&);
     void mint_bounded(const Envelope& env, const Entity* caller_cap, const Entity* params,
                       const EcfValue* requested, std::span<const std::byte> grantee,
                       std::optional<std::span<const std::byte>> parent, Outcome&);

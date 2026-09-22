@@ -51,6 +51,14 @@ enum class EcfError {
     NonTextByteKey,    // map key not text/bytes (canonical keys only)
     DepthExceeded,     // nesting beyond the §10.2 limit
     BadInput,          // malformed caller arguments
+    // §1.8 / §5.2a resolution integrity — an entity addressed by a hash that does not
+    // bind to it: a mis-keyed `included` entry, or a carried content_hash that disagrees
+    // with the recompute. A SEPARATE variant from NonCanonicalEcf because 0.8.2.24
+    // (N4/N5) pins the wire answer to `400 hash_mismatch` and rules `400
+    // non_canonical_ecf` NON-CONFORMANT there: such a frame carries no tag and its
+    // encoding IS canonical, so *re-encode* is not the caller's remedy. Both arms
+    // returned NonCanonicalEcf until 0.8.2.24 — right property, wrong code.
+    HashMismatch,
 };
 
 std::string_view to_string(EcfError e) noexcept;

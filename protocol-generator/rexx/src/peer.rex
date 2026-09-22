@@ -42,10 +42,21 @@ Out_Included: procedure
   rl = c2d(substr(o, 3, 4))
   return substr(o, 7 + rl)
 
-/* ── ctx helpers ── */
+/* ── ctx helpers ──
+ * The ctx is a length-prefixed packing (classic Rexx has no record type):
+ *   conn(2) | caller_cap(4) | handler_pattern(2) | env(rest)
+ *
+ * handler_pattern is CARRIED, never recomputed: §6.3's path check needs the handler
+ * pattern and the caller's capability, and the dispatch-level check has already computed
+ * both. Recomputing invites the two to drift, and §6.8 is explicit that the authority is
+ * selected by who named the path. It is the OWNING handler's pattern (§6.3, 0.8.2.23) --
+ * for the tree handler owner and runner coincide, so the distinction is not observable
+ * here, but the field is named for the owner. It is '' on the unauthenticated connect
+ * path, which has no resolved handler entity. */
 Ctx_Make: procedure
-  parse arg conn, caller_cap, env
-  return d2c(length(conn), 2) || conn || d2c(length(caller_cap), 4) || caller_cap || env
+  parse arg conn, caller_cap, env, handler_pattern
+  return d2c(length(conn), 2) || conn || d2c(length(caller_cap), 4) || caller_cap || ,
+         d2c(length(handler_pattern), 2) || handler_pattern || env
 Ctx_Conn: procedure
   parse arg ctx
   numeric digits 20
@@ -58,13 +69,24 @@ Ctx_CallerCap: procedure
   p = 3 + cl
   kl = c2d(substr(ctx, p, 4))
   return substr(ctx, p + 4, kl)
+Ctx_HandlerPattern: procedure
+  parse arg ctx
+  numeric digits 40
+  cl = c2d(substr(ctx, 1, 2))
+  p = 3 + cl
+  kl = c2d(substr(ctx, p, 4))
+  q = p + 4 + kl
+  hl = c2d(substr(ctx, q, 2))
+  return substr(ctx, q + 2, hl)
 Ctx_Env: procedure
   parse arg ctx
   numeric digits 40
   cl = c2d(substr(ctx, 1, 2))
   p = 3 + cl
   kl = c2d(substr(ctx, p, 4))
-  return substr(ctx, p + 4 + kl)
+  q = p + 4 + kl
+  hl = c2d(substr(ctx, q, 2))
+  return substr(ctx, q + 2 + hl)
 Ctx_Exec: procedure expose EC.
   parse arg ctx
   return Env_Root(Ctx_Env(ctx))
@@ -330,13 +352,42 @@ _entity_native_dispatch: procedure expose EC.
 Peer_Dispatch: procedure expose EC.
   parse arg h, conn_h, env
   exec = Env_Root(env)
-  if Ent_Type(exec) \== 'system/protocol/execute' then return ''
+  if Ent_Type(exec) \== 'system/protocol/execute' then do
+    /* §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400 invalid_request,
+     * coded frame; MAY then close (§3.3, §4.11). NOT a bare close -- that is
+     * indistinguishable from a network fault."
+     *
+     * §3.3 read "the connection MUST be closed", assigning no code and requiring no frame,
+     * and §9.1's floor row that MANDATED the bare close was REPLACED at the same revision
+     * (N18). This peer did something weaker still: it returned '', the transport wrote
+     * NOTHING, and the connection stayed open -- which is §4.11's OTHER non-conformant
+     * behaviour, the silent drop, "the weaker of the two precisely because nothing
+     * surfaces it". This is a PRE-ADMISSION refusal: the root is not an EXECUTE, so
+     * nothing was ever admitted and §4.9(c) does not reach it.
+     *
+     * The request_id is read best-effort -- an arbitrary root type is under no obligation
+     * to carry one, and §4.11 licenses the uncorrelated frame exactly there. We do NOT
+     * close: on a multiplexed connection that would cost every ADMITTED in-flight request
+     * its response, and §4.11 leaves the close to us. */
+    parse value Wire_PreAdmissionRefusal('non_execute_root') with pa_status pa_code pa_msg
+    pa_msg = 'root entity is neither EXECUTE nor EXECUTE_RESPONSE'
+    return Env_Make(Wire_MakeResponse(Ent_Text(exec, 'request_id'), pa_status, Wire_ErrorResult(pa_code, pa_msg)), '')
+  end
   request_id = Ent_Text(exec, 'request_id')
   call Throw_Clear
   outcome = _dispatch_inner(h, conn_h, env, exec)
   if EC.!EXC == 'UNRESOLVABLE_GRANTEE' then outcome = Out_Err(401, 'unresolvable_grantee', '')
   else if EC.!EXC == 'reserved_relative' | EC.!EXC == 'ambiguous_wildcard' then outcome = Out_Err(400, 'invalid_path', '')
-  else if _is_codec_exc(EC.!EXC) then outcome = Out_Err(400, 'non_canonical_ecf', '')
+  else if _is_codec_exc(EC.!EXC) then do
+    /* THE CODE BELONGS TO THE CAUSE (§4.11, §5.2a; 0.8.2.24 N4/N5). A nested entity
+     * decoded here can fail for either reason and this arm used to answer
+     * non_canonical_ecf for both: that code is ENTITY-CBOR-ENCODING's, for a CBOR
+     * tag-policy violation, and §5.2a rules it "NOT conformant" for a resolution-integrity
+     * failure whose encoding is perfectly canonical. Shared with the transport's
+     * pre-admission classifier so the two cannot drift. */
+    parse value Wire_PreAdmissionRefusal(EC.!EXC) with dx_status dx_code dx_msg
+    outcome = Out_Err(dx_status, dx_code, dx_msg)
+  end
   resp = Wire_MakeResponse(request_id, Out_Status(outcome), Out_Result(outcome))
   return Env_Make(resp, Out_Included(outcome))
 
@@ -352,7 +403,7 @@ _dispatch_inner: procedure expose EC.
   uri = Ent_Text(exec, 'uri')
   operation = Ent_Text(exec, 'operation')
   if uri == 'system/protocol/connect' then do
-    ctx = Ctx_Make(conn_h, '', env)
+    ctx = Ctx_Make(conn_h, '', env, '')
     return Peer_CallHandler('connect', h, operation, ctx)
   end
   call _ingest_signatures h, env
@@ -384,7 +435,7 @@ _dispatch_inner: procedure expose EC.
   if Cap_CheckPermission(Peer_LocalPeer(h), granter_peer, exec, caller_cap, pattern) == 'DENY' then return Out_Err(403, 'capability_denied', '')
   stripped = _strip_local(h, pattern)
   if Peer_HasHandler(h, stripped) then do
-    ctx = Ctx_Make(conn_h, caller_cap, env)
+    ctx = Ctx_Make(conn_h, caller_cap, env, pattern)
     return Peer_CallHandler(Peer_HandlerRoutine(h, stripped), h, operation, ctx)
   end
   return _entity_native_dispatch(h, pattern)

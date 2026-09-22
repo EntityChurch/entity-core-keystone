@@ -63,7 +63,10 @@ class Envelope(val root: Entity, included: List<Included> = emptyList()) {
                     val ent = Entity.ofCbor(vm)
                     // §3.1: the included content_hash MUST equal the map key.
                     if (!kb.octets().contentEquals(ent.rawHash())) {
-                        throw IllegalArgumentException("included key != content_hash")
+                        // §3.1 key != content_hash — §1.8's resolution-integrity obligation,
+                        // mechanism (a) "bind the key". §5.2a's code for this arm is
+                        // `hash_mismatch`, not the structural `invalid_request` beside it.
+                        throw HashMismatchException("included key != content_hash")
                     }
                     if (seen.add(Cbor.hex(kb.octets()))) {
                         included.add(Included(kb.octets(), ent))

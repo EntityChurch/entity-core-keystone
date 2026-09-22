@@ -241,11 +241,33 @@ module EntityCore
 
     # ── tree listing (§3.9) ────────────────────────────────────────────────────────
 
-    def build_listing(path : String) : Outcome
+    # Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+    #
+    # "When any handler returns a multi-entry result whose entries are tree paths,
+    # each entry MUST be individually checked using check_path_permission. Entries
+    # for which check_path_permission returns DENY MUST be omitted. The result's
+    # `count` field MUST reflect the filtered entry count, not the source tree's
+    # total count."
+    #
+    # This is the read path at its highest volume and it is the reason 0.8.2.21
+    # refused to carve reads out of the caller-specified-path rule: an unfiltered
+    # listing discloses the EXISTENCE of every binding under a prefix to a caller
+    # whose capability covers none of them.
+    #
+    # The DIRECTORY itself is deliberately not checked — §6.3 makes each ENTRY the
+    # subject, and testing the prefix would deny a listing to a caller whose grant
+    # covers children but not the node above them, which is the ordinary shape of a
+    # narrowed grant.
+    #
+    # `ctx` is nil on the bootstrap/internal callers. An unauthenticated context is
+    # NOT filtered: the filter's subject is "the caller's verified capability", and
+    # where there is none there is no caller to narrow.
+    def build_listing(path : String, ctx : HandlerContext? = nil) : Outcome
       rows = @store.listing(path).reject do |row|
         hh = row.hash_hex
         hh && !row.has_children && deletion_marker?(hh.hexbytes)
       end
+      rows = rows.select { |row| entry_visible?(ctx, path, row.segment) }
       entries = EcMap.new
       rows.each do |row|
         data = EcMap.new
@@ -264,6 +286,18 @@ module EntityCore
       ldata["count"] = Cbor::EcInt.from(rows.size)
       ldata["offset"] = Cbor::EcInt.from(0)
       Outcome.ok(Entity.make("system/tree/listing", ldata))
+    end
+
+    # §6.3's per-entry listing check for one child segment. `count` follows the
+    # FILTERED rows above, which is the disclosure the rule exists to prevent: a
+    # count that still reports the source total names how many bindings the caller
+    # was not allowed to see.
+    private def entry_visible?(ctx : HandlerContext?, dir : String, segment : String) : Bool
+      return true if ctx.nil?
+      cap = ctx.caller_cap
+      return true if cap.nil?
+      child = dir.ends_with?("/") ? "#{dir}#{segment}" : "#{dir}/#{segment}"
+      Capability.check_path_permission(@local_peer, "get", child, cap, ctx.pattern)
     end
 
     def deletion_marker?(hash : Bytes) : Bool
@@ -295,12 +329,33 @@ module EntityCore
 
     # ── dispatch chain (§6.5) ──────────────────────────────────────────────────────
 
-    # The §6.5 dispatch chain: returns an EXECUTE_RESPONSE envelope, or nil for a
-    # non-EXECUTE root (§3.3 server side ignores non-EXECUTE).
-    def dispatch(conn : Conn, env : Envelope) : Envelope?
+    # The §6.5 dispatch chain: returns the EXECUTE_RESPONSE envelope. EVERY inbound
+    # root reaching here is answered — the nil return this used to have for a
+    # non-EXECUTE root is gone (0.8.2.25, N12/N17).
+    def dispatch(conn : Conn, env : Envelope) : Envelope
       exec = env.root
-      return nil unless exec.type == "system/protocol/execute"
       request_id = exec.text("request_id") || ""
+      unless exec.type == "system/protocol/execute"
+        # §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17):
+        # "400 invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a
+        # bare close — that is indistinguishable from a network fault."
+        #
+        # §3.3 read "the connection MUST be closed", assigning no code and
+        # requiring no frame, and this peer did something weaker still: it returned
+        # nil and the transport wrote NOTHING while keeping the connection open,
+        # which is §4.11's other non-conformant behaviour — the silent drop, "the
+        # weaker of the two precisely because nothing surfaces it". This is a
+        # PRE-ADMISSION refusal: the root is not an EXECUTE, so nothing was ever
+        # admitted and §4.9(c) does not reach it.
+        #
+        # request_id is read BEST-EFFORT. An arbitrary root type is under no
+        # obligation to carry one, and §4.11 licenses the uncorrelated frame
+        # exactly there. We do NOT close: on a multiplexed connection that would
+        # cost every ADMITTED in-flight request its response, and §4.11 leaves the
+        # close to us.
+        return Envelope.of(Wire.make_response(request_id, 400,
+          Wire.error_result("invalid_request", "root entity is neither EXECUTE nor EXECUTE_RESPONSE")))
+      end
       outcome =
         begin
           dispatch_inner(conn, env, exec)
@@ -364,7 +419,7 @@ module EntityCore
       stripped = strip_local(pattern)
       inst = @handlers[stripped]?
       if inst
-        inst.handle(operation, HandlerContext.new(exec, conn, env.included, caller_cap, env))
+        inst.handle(operation, HandlerContext.new(exec, conn, env.included, caller_cap, env, pattern))
       else
         entity_native_dispatch(pattern)
       end

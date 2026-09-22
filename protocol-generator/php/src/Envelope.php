@@ -89,9 +89,15 @@ final class Envelope
                     throw new ProtocolException('envelope: included value not a map');
                 }
                 $ent = Entity::ofCbor($v);
-                // §3.1: the included content_hash MUST equal the map key.
+                // §3.1 key != content_hash — §1.8's resolution-integrity obligation,
+                // mechanism (a) "bind the key": reject the entry whose key is not
+                // content_hash({type, data}) of the entity under it, which fails the
+                // envelope closed at ONE site. §5.2a's code for this arm is
+                // `hash_mismatch`, not the structural `invalid_request` beside it
+                // (0.8.2.24 N4/N5) — the entry's encoding is canonical; what is false is
+                // the claim the KEY makes.
                 if (!\hash_equals($k->bytes, $ent->hash())) {
-                    throw new ProtocolException('included key != content_hash');
+                    throw new HashMismatchException('included key != content_hash');
                 }
                 $hex = \bin2hex($k->bytes);
                 if (isset($seen[$hex])) {

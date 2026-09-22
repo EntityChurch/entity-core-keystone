@@ -129,8 +129,12 @@
   "Run conformance + selftest; exit non-zero on any failure (CI entry point)."
   (multiple-value-bind (pass fail total) (run-conformance)
     (declare (ignore pass total))
-    (let ((self-fail (run-selftest)))
-      (let ((bad (+ fail self-fail)))
+    (let ((self-fail (run-selftest))
+          ;; The 0.8.2.20..25 surface gate (RULES A/B/C/D/E/F/G). Its count is SUMMED,
+          ;; not merely printed: a gate whose result nothing reads cannot go red, which
+          ;; is the class this repo has caught seven times.
+          (spec-fail (run-spec-0825)))
+      (let ((bad (+ fail self-fail spec-fail)))
         (when (find-package :uiop)
           (uiop:quit (if (zerop bad) 0 1)))
         (zerop bad)))))

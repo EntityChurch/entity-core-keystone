@@ -189,27 +189,100 @@ dispatch_execute_thread :: proc(ctx: rawptr) {
 	io_write_framed(io, resp)
 }
 
-// reject_frame answers a rejected frame with `400 non_canonical_ecf` (§6.3),
-// correlated by the request_id salvaged from it. Best-effort -- a failure here
-// degrades to the silence this exists to remove, which is no worse than the old
-// behaviour.
-@(private = "file")
-reject_frame :: proc(io: ^Io, payload: []u8) {
-	rid, ok := salvage_request_id(payload, io.allocator)
-	if !ok {
-		return
+// The (status, code, message) §4.11 assigns a pre-admission failure's CAUSE.
+//
+// "The frame obligation belongs to the class; the CODE belongs to the cause [MUST]" --
+// a single code for the class would answer an honest caller under the wrong reason and
+// send them to the wrong layer.
+//
+//	connect-auth proof-of-possession       401 authentication_failed  (the connect
+//	                                          handler's, not here)
+//	envelope over the configured maximum   413 payload_too_large      (§4.10(a), N14)
+//	resolution integrity (mis-keyed incl.) 400 hash_mismatch          (§5.2a, §1.8)
+//	framing / never becomes an Envelope    400 invalid_request        (§4.7, §4.11)
+//	root is neither EXECUTE nor E_R        400 invalid_request        (§3.3, §4.11 --
+//	                                          in dispatch, not here)
+//
+// THE TAG ARM KEEPS `non_canonical_ecf` AND THAT IS DELIBERATE. §4.11 rules that code
+// non-conformant "on the framing arm" and gives its reason in the same sentence:
+// ENTITY-CBOR-ENCODING defines it for CBOR tag-policy violations specifically, which that
+// document still MUSTs at decode time (§6.3). The two rows are disjoint by CAUSE rather
+// than in conflict. Everything else this decoder calls non-canonical -- a non-minimal
+// head, an indefinite length, mis-ordered or duplicate keys, over-depth -- is genuinely
+// "non-canonical CBOR that never becomes an Envelope" and takes invalid_request.
+//
+// This peer answered `non_canonical_ecf` for EVERY decode-boundary refusal until
+// 0.8.2.24/.25 pinned them apart (measured on the wire, arc-probe B1/B2). A mis-keyed
+// `included` entry carries no tag at all: its encoding is canonical, what is false is the
+// claim the KEY makes, and the remedy `non_canonical_ecf` selects -- *re-encode* -- sends
+// an honest caller to the wrong layer.
+//
+// The messages are a FIXED TABLE, never an internal diagnostic: a wire-visible string
+// stays ASCII (two peers in this cohort have been killed at runtime by a non-ASCII byte
+// in an encoded string, on two unrelated compilers) and nothing here echoes
+// attacker-supplied bytes back.
+// Package-visible (not file-private) so the unit suite can pin the MAPPING directly:
+// §4.11's frame obligation is a RUNTIME property only a socket can measure, but the
+// code-by-cause table is a pure function and belongs in a test that names each cause.
+pre_admission_refusal :: proc(e: Codec_Error) -> (status: u64, code: string, message: string) {
+	#partial switch e {
+	case .Content_Hash_Mismatch, .Included_Key_Mismatch:
+		return 400, "hash_mismatch", "an entity was addressed by a hash that does not bind to it"
+	case .Tag_Rejected:
+		return 400, "non_canonical_ecf", "CBOR tags are forbidden anywhere in an entity data field"
 	}
-	defer delete(rid, io.allocator)
-	errv, eerr := error_result("non_canonical_ecf", "", io.allocator)
+	return 400, "invalid_request", "frame did not decode into an envelope"
+}
+
+// Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+// refused BEFORE it becomes an admitted request.
+//
+// "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on the
+// wire [MUST] -- correlated by `request_id` where the id is available, and otherwise as a
+// best-effort coded frame carrying no correlation."
+//
+// §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS" and
+// therefore reaches none of these, which is why §4.11 exists. Both of the non-conformant
+// behaviours it scores separately were present on this peer: DROPPING the frame (the
+// unsalvageable-request_id arm, "the weaker of the two precisely because nothing surfaces
+// it") and CLOSING with no coded frame (the oversize and truncated arms' bare `break`).
+//
+// AN EMPTY `request_id` IS THE BEST-EFFORT FORM, not a bug: it is what the section
+// prescribes where no id can be recovered, and guessing one would correlate the refusal
+// to somebody else's in-flight request. The old code RETURNED here instead, which is the
+// silent drop.
+@(private = "file")
+refuse_pre_admission :: proc(io: ^Io, request_id: string, status: u64, code: string, message: string) {
+	errv, eerr := error_result(code, message, io.allocator)
 	if eerr != .None {
 		return
 	}
-	root, rerr := make_response(rid, 400, errv, io.allocator)
+	// make_response CONSUMES `result` UNCONDITIONALLY -- it encodes and destroys before
+	// it can fail -- so `errv` must not be released on either branch here. A
+	// conditional ownership contract cannot be reasoned about at the call site at all,
+	// which is why the unconditional form is the one to depend on.
+	root, rerr := make_response(request_id, status, errv, io.allocator)
 	if rerr != .None {
 		return
 	}
+	// io_write_framed does NOT take ownership: it encodes into its own buffer and frees
+	// that. The response entity is ours to release and the refusal path that preceded
+	// this never did -- a leak of one response entity per rejected frame, on a path any
+	// unauthenticated caller can drive as fast as it can open sockets.
+	defer entity_destroy(root, io.allocator)
 	env := Envelope{root = root, included = nil}
 	io_write_framed(io, env)
+}
+
+// reject_frame answers a COMPLETE frame the decoder refused, correlated by the
+// request_id salvaged from it where one can be recovered and uncorrelated where it
+// cannot. Best-effort on the WRITE only -- a dead socket is not a protocol decision.
+@(private = "file")
+reject_frame :: proc(io: ^Io, payload: []u8, e: Codec_Error) {
+	rid, ok := salvage_request_id(payload, io.allocator)
+	defer if ok {delete(rid, io.allocator)}
+	status, code, message := pre_admission_refusal(e)
+	refuse_pre_admission(io, ok ? rid : "", status, code, message)
 }
 
 // read_loop: EXECUTE_RESPONSE → route; EXECUTE → dispatch on its own thread.
@@ -220,22 +293,47 @@ read_loop :: proc(peer: ^Peer, conn: ^Conn, io: ^Io) {
 	for {
 		payload, perr := read_frame(io.sock, io.allocator)
 		if perr != .None {
-			break
+			// §4.11: a FRAMING failure is a REFUSAL owed a coded frame, and both of
+			// these used to be a bare `break` -- "closing with no coded frame", which is
+			// indistinguishable from a network fault and, on a multiplexed connection,
+			// destroys unrelated ADMITTED requests. §4.10(a)'s mood was raised SHOULD ->
+			// MUST at 0.8.2.25 (N14): the over-size condition is detected at the length
+			// prefix with the connection intact and nothing spent, so the permissive
+			// mood had nothing to license.
+			//
+			// The stream is desynchronized on both arms -- an oversize body was never
+			// drained, a truncated one never arrived -- so the frame goes out and THEN
+			// the connection closes. §4.11 makes the frame mandatory and leaves the
+			// close to us; closing is the only sound choice once the framing is lost,
+			// and it is a CHOICE rather than an alternative to answering.
+			//
+			// §4.11's best-effort UNCORRELATED form: no request_id can be recovered from
+			// a frame whose body never arrived.
+			#partial switch perr {
+			case .Frame_Too_Large:
+				refuse_pre_admission(io, "", 413, "payload_too_large",
+					"inbound frame exceeds the configured maximum size")
+			case .Truncated:
+				refuse_pre_admission(io, "", 400, "invalid_request",
+					"frame did not decode into an envelope")
+			}
+			break // .Closed is an ordinary hangup at a frame boundary -- owed nothing
 		}
 		env, eerr := envelope_of_frame(payload, io.allocator)
 		if eerr != .None {
-			// §6.3: "Rejection returns 400 non_canonical_ecf" -- a rejected frame is
-			// owed a STATUS, not silence. This used to `continue`, which rejected the
-			// frame (correct) and then dropped it on the floor (wrong): the sender saw
-			// no response at all and blocked until its own timeout, violating §6.3's
-			// second sentence and §4.9(c) deliver-or-signal. It also made a refusal
-			// indistinguishable from a dead peer, and on a single-connection oracle run
-			// it poisons every later request on the same connection.
+			// A COMPLETE frame the decoder refused. The framing is intact, so we answer
+			// and KEEP SERVING -- and the refusal MUST be a status rather than silence
+			// (§4.11; §4.9(c) says the same from the other direction). This used to
+			// `continue`, which rejected the frame (correct) and then dropped it on the
+			// floor (wrong): the sender saw no response at all and blocked until its own
+			// timeout, so a refusal was indistinguishable from a dead peer.
 			//
-			// The frame is still REJECTED -- only enough is salvaged to correlate the
-			// response. If even the request_id is unrecoverable the frame is
-			// unattributable and silence is the only option left.
-			reject_frame(io, payload)
+			// THE CODE IS THE CAUSE'S (§4.11, §5.2a) -- see pre_admission_refusal. And
+			// an unrecoverable request_id now takes §4.11's uncorrelated best-effort
+			// form rather than the silence it used to take: the salvage recovers only
+			// enough to correlate, and failing to correlate is not a reason to say
+			// nothing.
+			reject_frame(io, payload, eerr)
 			delete(payload, io.allocator)
 			continue // keep reading (§4.9)
 		}

@@ -316,15 +316,59 @@ final class Peer {
 
   Future<Outcome> _treeGet(HandlerContext ctx) async {
     final exec = ctx.exec;
-    final target = _execResourceTarget(exec);
-    if (target != null && !_pathFlexOk(target)) {
+    // §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+    // resource.targets: a handler that counts the effective list and then indexes
+    // targets[0] has implemented the arithmetic completely and is still reading a
+    // path no authorization covered.
+    final eff = cap.effectiveTargets(localPeer, exec);
+    if (!eff.hadResource) {
+      // THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION IS
+      // WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is scoped
+      // "for an operation that REQUIRES a resource" (0.8.2.24, N7); `get` does not.
+      // For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the
+      // present-but-empty case by whether the absent case is WIDER than the request —
+      // BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty.
+      //
+      // EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is resource-OPTIONAL
+      // and BROAD-RESULT, absent-case answer "the root listing", self-excluded case
+      // "400 path_required". Both arms are pinned by text and neither is this peer's
+      // choice.
+      return _buildListing('/$localPeer/', ctx);
+    }
+    if (eff.survivors.isEmpty) {
+      // The self-excluded request: `resource` PRESENT, every target carved out by the
+      // caller's own exclude. Serving it the absent case "answers a request for one
+      // excluded path with a listing of the tree" (EXTENSION-TREE §2.2a) — wider than
+      // what was asked for, which is what BROAD-RESULT means.
+      return Outcome.err(
+          400, 'path_required', 'tree: effective target list is empty');
+    }
+    if (eff.survivors.length > 1) {
+      return Outcome.err(
+          400, 'ambiguous_resource', 'tree: more than one effective target');
+    }
+    final target = eff.survivors.first;
+    if (!_pathFlexOk(target)) {
       return Outcome.err(400, 'invalid_path', target);
     }
-    if (target == null) return _buildListing('/$localPeer/');
     if (target.isEmpty || target.endsWith('/')) {
-      return _buildListing(cap.canonicalize(localPeer, target));
+      return _buildListing(cap.canonicalize(localPeer, target), ctx);
+    }
+    // A resource-requiring operation takes a CONCRETE path (0.8.2.20); a trailing
+    // slash is a listing request rather than a pattern, so only a star makes the
+    // subject a §5.4 pattern.
+    if (target.contains('*')) {
+      return Outcome.err(400, 'malformed_resource', target);
     }
     final path = cap.canonicalize(localPeer, target);
+    // §6.3: the handler MUST verify the CALLER's capability covers the path it is
+    // about to read. Not a secondary check — the dispatch-level check never saw this
+    // path if the caller excluded it.
+    final cc = ctx.callerCap;
+    if (cc != null &&
+        !cap.checkPathPermission(localPeer, 'get', path, cc, ctx.pattern)) {
+      return Outcome.err(403, 'capability_denied', path);
+    }
     final e = store.getAt(path);
     if (e == null) return Outcome.err(404, 'not_found', path);
     final mode = exec.entityField('params')?.text('mode');
@@ -337,12 +381,42 @@ final class Peer {
 
   Future<Outcome> _treePut(HandlerContext ctx) async {
     final exec = ctx.exec;
-    final target = _execResourceTarget(exec);
-    if (target == null) {
-      return Outcome.err(400, 'ambiguous_resource', 'tree: missing resource target');
+    // Same ladder as `get`, with the two empties COLLAPSED rather than split:
+    // EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an
+    // empty effective list IS the absent case" applies in its unscoped form and both
+    // empties answer `path_required`. That is the same table `get`'s branch cites,
+    // read one row down — the field is per-operation and neither answer is derivable
+    // from this handler's source.
+    //
+    // Note the code change 0.8.2.20 forced: this branch answered `ambiguous_resource`
+    // for a MISSING target, which 0.8.2.20 names as the exact inversion it forbids
+    // ("answering ambiguous_resource for an absent resource inverts them"). The
+    // remedies differ — supply a resource is not disambiguate your request — and the
+    // code is what selects between them.
+    final eff = cap.effectiveTargets(localPeer, exec);
+    if (!eff.hadResource || eff.survivors.isEmpty) {
+      return Outcome.err(
+          400, 'path_required', 'tree: put requires a resource target');
     }
+    if (eff.survivors.length > 1) {
+      return Outcome.err(
+          400, 'ambiguous_resource', 'tree: more than one effective target');
+    }
+    final target = eff.survivors.first;
     if (!_pathFlexOk(target)) return Outcome.err(400, 'invalid_path', target);
+    if (target.contains('*')) {
+      return Outcome.err(400, 'malformed_resource', target);
+    }
     final path = cap.canonicalize(localPeer, target);
+    // §6.3, as in `get`: the caller's own capability must cover the path this handler
+    // is about to write. BEFORE the CAS arm and before any store mutation — a 403
+    // whose refusal arrives after the write would satisfy the status assertion and
+    // have already leaked the effect.
+    final cc = ctx.callerCap;
+    if (cc != null &&
+        !cap.checkPathPermission(localPeer, 'put', path, cc, ctx.pattern)) {
+      return Outcome.err(403, 'capability_denied', path);
+    }
     final params = exec.entityField('params');
     final rawEntity = params?.field('entity');
     final expected = params?.bytes('expected_hash');
@@ -454,11 +528,34 @@ final class Peer {
     return Entity.admitted(typeV.value, dataV, carried);
   }
 
-  Outcome _buildListing(String path) {
+  /// Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+  ///
+  /// "When any handler returns a multi-entry result whose entries are tree paths, each
+  /// entry MUST be individually checked using check_path_permission. Entries for which
+  /// check_path_permission returns DENY MUST be omitted. The result's `count` field
+  /// MUST reflect the filtered entry count, not the source tree's total count."
+  ///
+  /// This is the read path at its highest volume and it is the reason 0.8.2.21 refused
+  /// to carve reads out of the caller-specified-path rule: an unfiltered listing
+  /// discloses the EXISTENCE of every binding under a prefix to a caller whose
+  /// capability covers none of them.
+  ///
+  /// The DIRECTORY itself is deliberately NOT checked — §6.3 makes each ENTRY the
+  /// subject, and testing the prefix would deny a listing to a caller whose grant
+  /// covers children but not the node above them, which is the ordinary shape of a
+  /// narrowed grant.
+  ///
+  /// [ctx] is null on the bootstrap/internal callers. An unauthenticated context is
+  /// NOT filtered: the filter's subject is "the caller's verified capability", and
+  /// where there is none there is no caller to narrow.
+  Outcome _buildListing(String path, [HandlerContext? ctx]) {
     final entries = store.listing(path).where((row) {
-      return !(row.hashHex != null &&
+      if (row.hashHex != null &&
           !row.hasChildren &&
-          _isDeletionMarker(hexDecode(row.hashHex!)));
+          _isDeletionMarker(hexDecode(row.hashHex!))) {
+        return false;
+      }
+      return _entryVisible(ctx, path, row.segment);
     }).toList();
     final entryPairs = <EcfEntry>[];
     for (final row in entries) {
@@ -477,6 +574,17 @@ final class Peer {
         'offset', EcfInt.of(0),
       ]),
     ));
+  }
+
+  /// §6.3's per-entry listing check for one child segment. `count` is built from the
+  /// filtered list above, so an omitted entry is omitted from the COUNT by
+  /// construction — a count that still reported the source total IS the disclosure the
+  /// rule exists to prevent.
+  bool _entryVisible(HandlerContext? ctx, String dir, String segment) {
+    final cc = ctx?.callerCap;
+    if (cc == null) return true;
+    final child = dir.endsWith('/') ? '$dir$segment' : '$dir/$segment';
+    return cap.checkPathPermission(localPeer, 'get', child, cc, ctx!.pattern);
   }
 
   bool _isDeletionMarker(Uint8List h) =>
@@ -883,12 +991,37 @@ final class Peer {
 
   // ── dispatch chain (§6.5) ──────────────────────────────────────────────────────────
 
-  /// The §6.5 dispatch chain: returns an EXECUTE_RESPONSE envelope, or null for a
-  /// non-EXECUTE root (§3.3 server side ignores non-EXECUTE).
+  /// The §6.5 dispatch chain: returns the EXECUTE_RESPONSE envelope.
+  ///
+  /// EVERY inbound root reaching here is answered — the `null` this used to return for
+  /// a non-EXECUTE root is gone (0.8.2.25, N12/N17). The return type stays nullable so
+  /// the transport's write guard keeps its shape.
   Future<Envelope?> dispatch(Conn conn, Envelope env) async {
     final exec = env.root;
-    if (exec.type != 'system/protocol/execute') return null;
     final requestId = exec.text('request_id') ?? '';
+    if (exec.type != 'system/protocol/execute') {
+      // §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17):
+      // "400 invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare
+      // close — that is indistinguishable from a network fault."
+      //
+      // §3.3 read "the connection MUST be closed", assigning no code and requiring no
+      // frame, and this peer did something weaker still: it returned null and the
+      // transport wrote NOTHING while keeping the connection open, which is §4.11's
+      // other non-conformant behaviour — the silent drop, "the weaker of the two
+      // precisely because nothing surfaces it". This is a PRE-ADMISSION refusal: the
+      // root is not an EXECUTE, so nothing was ever admitted and §4.9(c) does not
+      // reach it.
+      //
+      // requestId is read BEST-EFFORT. An arbitrary root type is under no obligation
+      // to carry one, and §4.11 licenses the uncorrelated frame exactly there. We do
+      // NOT close: on a multiplexed connection that would cost every ADMITTED
+      // in-flight request its response, and §4.11 leaves the close to us.
+      return Envelope(wire.makeResponse(
+          requestId,
+          400,
+          wire.errorResult('invalid_request',
+              'root entity is neither EXECUTE nor EXECUTE_RESPONSE')));
+    }
     Outcome outcome;
     try {
       outcome = await _dispatchInner(conn, env, exec);
@@ -949,7 +1082,8 @@ final class Peer {
     final inst = _handlers[stripped];
     if (inst != null) {
       return inst.handle(
-          operation, HandlerContext(exec, conn, env.included, callerCap, env));
+          operation,
+          HandlerContext(exec, conn, env.included, callerCap, env, pattern));
     }
     return _entityNativeDispatch(pattern);
   }

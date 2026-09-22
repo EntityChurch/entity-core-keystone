@@ -137,13 +137,29 @@ internal object Capability {
      * exclude (carves out nothing -> the grant is SILENTLY WIDER than its author wrote):
      * same value, same matcher, opposite safety direction, so the reading is chosen where
      * the POSITION is known and [matchesPattern] stays uniform over its operands. The
-     * guard sits outside the scope-type dispatch, transcribing §5.2's loop literally.
+     * guard is SCOPED TO PATH-SCOPE by its caller (0.8.2.24 N2/N3); see [matchesScope].
      */
     private fun excludeIsUnmatchable(frame: String, excl: List<String>): Boolean =
         excl.any { canonicalize(frame, it) == NEVER_MATCH }
 
     fun matchesScope(localPeer: String, value: String, s: Scope, kind: ScopeKind): Boolean {
-        if (excludeIsUnmatchable(localPeer, s.excl)) return false   // 0.8.2.21 — deny
+        // SCOPED TO PATH-SCOPE (0.8.2.24, N2/N3). §5.2's exclude loop tests the sentinel
+        // INSIDE `if dimension_type == "system/capability/path-scope"`, and §5.4's rule is
+        // likewise "a capability carrying an unmatchable PATH-SCOPE pattern is INVALID …
+        // It does NOT reach `operations` or `peers` [MUST]".
+        //
+        // This guard used to sit OUTSIDE the type dispatch, transcribing §5.2's loop
+        // before that loop grew its type test — which ran an id pattern through the §5.4
+        // transforms purely to classify it and then DENIED THE WHOLE DIMENSION on a
+        // property unrelated to whether the exclude carves anything out: an `operations`
+        // exclude of `*/apply`, an ordinary namespaced operation name, path-canonicalizes
+        // to the sentinel and denied every operation. Over-denial, invisible on any
+        // well-formed grant.
+        //
+        // The id arm below reaches the literal matcher unguarded, which is correct: under
+        // the id-scope grammar every non-`*` pattern is a literal, and a literal is never
+        // structurally unmatchable, so there is nothing here for the sentinel to detect.
+        if (kind == ScopeKind.PATH && excludeIsUnmatchable(localPeer, s.excl)) return false
         if (kind == ScopeKind.ID) {
             return coveredId(s.incl, value) && !coveredId(s.excl, value)
         }
@@ -239,6 +255,102 @@ internal object Capability {
             if (ok) return Verdict.ALLOW
         }
         return Verdict.DENY
+    }
+
+    // ── §5.2 effective targets and §6.3 check_path_permission ───────────────────────
+
+    /**
+     * The result of [effectiveTargets]: the surviving targets and whether the EXECUTE
+     * carried a `resource` AT ALL.
+     *
+     * THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES `[MUST]` (0.8.2.25, N11):
+     * *"where an implementation projects `resource.targets` onto the effective set ahead
+     * of the handler, that projection MUST NOT be lossy about its own emptiness — narrow
+     * when narrowing leaves something, and retain the raw pair when narrowing would empty
+     * it."* A function returning only a list cannot satisfy that: collapsing
+     * `[qA] exclude [qA]` to `[]` deletes the two-empties discriminator before any handler
+     * can read it, and the handler's refusal arm becomes dead code that only a WIRE drive
+     * can detect.
+     */
+    data class EffectiveTargets(val survivors: List<String>, val hasResource: Boolean)
+
+    /**
+     * §5.2's effective target list (0.8.2.20): the caller's own `resource.exclude` removes
+     * entries from `resource.targets` BEFORE anything else looks at the request.
+     *
+     * The survivors are returned in the caller's OWN SPELLING, not canonicalized —
+     * 0.8.2.21 is explicit that `effective_targets` yields raw survivors, and the
+     * distinction is load-bearing because the value flows on to `store.getAt`, which
+     * canonicalizes for itself.
+     *
+     * A PRESENT-BUT-ILL-TYPED `targets` IS **PRESENT**, with an empty survivor list.
+     * Reporting it absent would serve the WIDER absent-case answer to a request that named
+     * a resource, which is N11's own defect one field over.
+     *
+     * The caller-exclude arm is fail-OPEN on an unmatchable pattern — §5.4 rules it
+     * separately from the grant arm — and that is INHERITED here rather than restated: the
+     * pattern canonicalizes to [NEVER_MATCH], [matchesPattern] then answers false, and the
+     * target simply survives.
+     *
+     * *"Every seam that narrows is exempted alike."* This peer has exactly ONE narrowing
+     * seam — this function, called by the tree handler — and §6.5's dispatch chain does not
+     * project: `dispatchInner` passes the EXECUTE through untouched and [checkPermission]
+     * reads `resource` for itself. There is no second door to keep in step, and adding a
+     * projection at dispatch would create one.
+     */
+    fun effectiveTargets(localPeer: String, exec: Entity): EffectiveTargets {
+        val r = exec.mapField("resource")
+        if (r == null || r.get("targets") == null) return EffectiveTargets(emptyList(), false)
+        val targets = Cbor.textList(r, "targets") ?: emptyList()
+        val callerExcl = Cbor.textList(r, "exclude") ?: emptyList()
+        val survivors = targets.filter { t ->
+            val ct = canonicalize(localPeer, t)
+            callerExcl.none { matchesPattern(ct, canonicalize(localPeer, it)) }
+        }
+        return EffectiveTargets(survivors, true)
+    }
+
+    /**
+     * §6.3's handler-level path check.
+     *
+     * IT IS NOT A SECONDARY CHECK (§6.3, 0.8.2.20). It is the enforcement wherever the
+     * subject is derived after dispatch, and the dispatch-level check can be made VACUOUS
+     * by caller-controlled input: a caller who excludes the one target its capability does
+     * not cover removes that target from [checkPermission]'s view entirely, and a handler
+     * that then acts on it has authorized nothing.
+     *
+     * THREE DIMENSIONS, NOT FOUR. `peers` is not consulted — the path is local by
+     * construction at this point (§1.4's inbound rule refuses a foreign namespace at §6.5
+     * step 3, before any handler runs), and §6.3's signature names only handlers,
+     * operations and resources.
+     *
+     * THE FRAME IS THE LOCAL PEER, NOT THE GRANTER, and that is the spec's own signature
+     * rather than a choice: §6.3's block reads
+     * `matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id)` — there
+     * is no granter parameter to pass. §5.5a governs chain ATTENUATION, where the subject
+     * is a pattern compared against a parent's pattern; this call site compares a CONCRETE
+     * local path the handler is about to touch.
+     *
+     * Canonicalization is total (0.8.2.20), so a malformed path answers the sentinel, which
+     * matches no grant (§5.4) and falls through to DENY rather than being matched against
+     * anything.
+     *
+     * An empty `resources.include` is a legal grant shape (§5.2: handlers that touch no
+     * tree paths) and DENIES every path here, which is what that note says it should.
+     */
+    fun checkPathPermission(
+        localPeer: String,
+        operation: String,
+        path: String,
+        token: Entity,
+        handlerPattern: String,
+    ): Boolean {
+        val cp = canonicalize(localPeer, path)
+        return grantsOfToken(token).any { g ->
+            matchesScope(localPeer, handlerPattern, g.handlers, ScopeKind.PATH) &&
+                matchesScope(localPeer, operation, g.operations, ScopeKind.ID) &&
+                matchesScope(localPeer, cp, g.resources, ScopeKind.PATH)
+        }
     }
 
     // ── §5.5 / §5.6 chain verification + attenuation ─────────────────────────────────
@@ -394,25 +506,60 @@ internal object Capability {
         return Identity.peerIdOfPublicKey(pk)
     }
 
-    private fun scopeSubset(childPeer: String, parentPeer: String, child: Scope, parent: Scope): Boolean {
+    /**
+     * §5.5a subset check: every child include must be covered by some parent include, and
+     * every parent exclude must be inherited by some child exclude.
+     *
+     * TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16; `entity-core-formalization` K-7).
+     * §3.6's id-scope grammar binds the scope TYPE, not one function — *"An implementation
+     * on the canonicalizing reading is non-conformant and MUST adopt the literal matcher"*
+     * — so the rule F40 landed on [matchesScope] reaches here too, with delegation-chain
+     * WIDENING named as the reason: on the canonicalizing reading a bare id include reads
+     * as covered by a path-form parent pattern it does not literally match, and a child
+     * grant comes out wider than its parent. `lean`'s differential put it at 2 of 64
+     * include pairs and 2 of 64 exclude pairs, fail-closed, with a 16-pair control alphabet
+     * reporting 0 — which is why every hand-tried example missed it.
+     *
+     * [kind] has NO DEFAULT and is named at every call site, because a default is how the
+     * next dimension inherits the wrong matcher silently — the original F40 defect. The
+     * per-link granter frames are meaningless on the id arm (an id pattern is never
+     * canonicalized) and are simply unread there.
+     */
+    private fun scopeSubset(
+        childPeer: String,
+        parentPeer: String,
+        child: Scope,
+        parent: Scope,
+        kind: ScopeKind,
+    ): Boolean {
+        // An id pattern is never canonicalized; a path pattern always is (§3.6 / §5.4).
+        fun frame(peer: String, pattern: String): String =
+            if (kind == ScopeKind.PATH) canonicalize(peer, pattern) else pattern
+        // The matcher §3.6 binds to the scope TYPE — literal for id, §5.4 for path.
+        fun covers(pattern: String, value: String): Boolean =
+            if (kind == ScopeKind.PATH) matchesPattern(value, pattern) else matchesIdPattern(value, pattern)
+
         for (cp in child.incl) {
-            val cc = canonicalize(childPeer, cp)
-            if (parent.incl.none { matchesPattern(cc, canonicalize(parentPeer, it)) }) return false
+            val cc = frame(childPeer, cp)
+            if (parent.incl.none { covers(frame(parentPeer, it), cc) }) return false
         }
         for (pe in parent.excl) {
-            val cpe = canonicalize(parentPeer, pe)
-            if (child.excl.none { matchesPattern(cpe, canonicalize(childPeer, it)) }) return false
+            val cpe = frame(parentPeer, pe)
+            if (child.excl.none { covers(frame(childPeer, it), cpe) }) return false
         }
         return true
     }
 
     fun grantSubset(localPeer: String, childPeer: String, parentPeer: String, child: GrantRec, parent: GrantRec): Boolean {
-        if (!scopeSubset(localPeer, localPeer, child.handlers, parent.handlers)) return false
-        if (!scopeSubset(localPeer, localPeer, child.operations, parent.operations)) return false
-        if (!scopeSubset(childPeer, parentPeer, child.resources, parent.resources)) return false
+        // §5.5a: only the RESOURCE dimension uses the per-link granter frames; the other
+        // dimensions stay on the local frame. The scope KIND is a property of the
+        // DIMENSION and is named at every call site, never defaulted (F50 / 0.8.2.16).
+        if (!scopeSubset(localPeer, localPeer, child.handlers, parent.handlers, ScopeKind.PATH)) return false
+        if (!scopeSubset(localPeer, localPeer, child.operations, parent.operations, ScopeKind.ID)) return false
+        if (!scopeSubset(childPeer, parentPeer, child.resources, parent.resources, ScopeKind.PATH)) return false
         val cp = child.peers ?: Scope(listOf(localPeer), emptyList())
         val pp = parent.peers ?: Scope(listOf(localPeer), emptyList())
-        return scopeSubset(localPeer, localPeer, cp, pp)
+        return scopeSubset(localPeer, localPeer, cp, pp, ScopeKind.ID)
     }
 
     private fun isAttenuated(localPeer: String, childPeer: String, parentPeer: String, child: Entity, parent: Entity): Boolean {

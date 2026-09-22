@@ -116,30 +116,114 @@ read_loop(IO, OnExecute) :-
     IO = io(_, In, _, _, _),
     catch(read_loop_(IO, OnExecute, In), _, true).
 read_loop_(IO, OnExecute, Stream) :-
-    ( catch(read_frame(Stream, Payload), _, fail)
-    -> ( catch(envelope_of_bytes(Payload, Env), _, fail)
-       -> ( is_response(Env)
-          -> route_response(IO, Env)
-          ;  thread_create(ignore(call(OnExecute, IO, Env)), _, [detached(true)]) )
-       ;  reject_frame(IO, Payload) ),
-       read_loop_(IO, OnExecute, Stream)
-    ;  true ).   % stream closed / framing ended
+    ( catch(read_frame_result(Stream, R), _, R = closed)
+    -> true
+    ;  R = closed ),
+    read_loop_step(R, IO, OnExecute, Stream).
 
-% §6.3: "Rejection returns 400 non_canonical_ecf" -- a rejected frame is owed a STATUS,
-% not silence. The `true` this replaces rejected the frame (correct) and then dropped it
-% on the floor (wrong): the sender saw no response at all and blocked until its own
-% timeout, violating §6.3's second sentence and §4.9(c) deliver-or-signal. It also made
-% a refusal indistinguishable from a dead peer, and on a single-connection oracle run it
-% poisons every later request on the same connection.
+% A clean EOF AT A FRAME BOUNDARY is an ordinary hangup and is owed NOTHING. Answering it
+% is as wrong as dropping a refusal, in the other direction.
+read_loop_step(closed, _, _, _) :- !.
+% §4.11 (0.8.2.25): A FRAMING FAILURE IS A REFUSAL OWED A CODED FRAME, and both arms that
+% reach here -- the oversize prefix and the truncation -- used to be a bare loop exit,
+% i.e. "closing with no coded frame", which is indistinguishable from a network fault
+% and, on a multiplexed connection, destroys unrelated ADMITTED requests.
 %
-% The frame is still REJECTED -- only enough is salvaged to correlate the response. If
-% even the request_id is unrecoverable the frame is unattributable and silence is the
-% only option left, which is what the `ignore/1` leaves in place.
-reject_frame(IO, Payload) :-
-    ignore(( salvage_request_id(Payload, ReqId),
-             error_result("non_canonical_ecf", "", ErrE),
-             make_response(ReqId, 400, ErrE, Resp),
+% The stream is desynchronized on both arms -- an oversize body was never drained, a
+% truncated one never arrived -- so the frame goes out and THEN the loop ends. §4.11 makes
+% the frame mandatory and leaves the close to us; closing is the only sound choice once
+% the framing is lost, and it is a CHOICE rather than an alternative to answering.
+%
+% §4.11's best-effort UNCORRELATED form: no request_id can be recovered from a frame whose
+% body never arrived, and guessing one would correlate the refusal to somebody else's
+% in-flight request.
+read_loop_step(refuse(Status, Code, Message), IO, _, _) :- !,
+    refuse_pre_admission(IO, "", Status, Code, Message).
+% A BINDING MADE IN A catch/3 RECOVERY GOAL THAT THEN FAILS IS UNDONE, so the thrown
+% term cannot be carried out of a `catch(G, E, fail)` -- the obvious spelling loses
+% exactly the value the classifier needs and leaves E unbound in the else branch, which
+% would silently collapse every cause onto the catch-all. Recover with `true` and
+% discriminate on var/1 instead; a decode that FAILS without throwing takes the same
+% catch-all arm, named here rather than left to the unbound variable.
+read_loop_step(frame(Payload), IO, OnExecute, Stream) :-
+    (   catch(envelope_of_bytes(Payload, Env), Err, true)
+    ->  (   var(Err)
+        ->  (   is_response(Env)
+            ->  route_response(IO, Env)
+            ;   thread_create(ignore(call(OnExecute, IO, Env)), _, [detached(true)]) )
+        ;   reject_frame(IO, Payload, Err) )
+    ;   reject_frame(IO, Payload, decode_failed) ),
+    read_loop_(IO, OnExecute, Stream).
+
+% THE CODE BELONGS TO THE CAUSE (§4.11, §5.2a; 0.8.2.24 N4/N5).
+%
+% "The frame obligation belongs to the class; the CODE belongs to the cause [MUST]" -- a
+% single code for the class would answer an honest caller under the wrong reason and send
+% them to the wrong layer.
+%
+%   resolution integrity (mis-keyed included, carried-hash mismatch)  400 hash_mismatch
+%   CBOR tag-policy violation                                         400 non_canonical_ecf
+%   anything else that never becomes an Envelope                      400 invalid_request
+%
+% THE TAG ARM KEEPS non_canonical_ecf AND THAT IS DELIBERATE. §4.11 rules that code
+% non-conformant "on the framing arm" and gives its reason in the same sentence:
+% ENTITY-CBOR-ENCODING defines it for CBOR tag-policy violations specifically, which that
+% document still MUSTs at decode time (§6.3). The two rows are disjoint by CAUSE rather
+% than in conflict. Everything else this decoder calls non-canonical -- a non-minimal
+% head, a bad simple value, a duplicate key -- is genuinely "non-canonical CBOR that never
+% becomes an Envelope".
+%
+% This peer answered non_canonical_ecf for EVERY decode-boundary refusal until
+% 0.8.2.24/.25 pinned them apart (measured on the wire, arc-probe B1/B2). A mis-keyed
+% `included` entry carries no tag at all: its encoding is canonical, what is false is the
+% claim the KEY makes, and the remedy non_canonical_ecf selects -- *re-encode* -- sends an
+% honest caller to the wrong layer.
+%
+% The messages are a FIXED TABLE, never the thrown term: a wire-visible string stays ASCII
+% and nothing here echoes attacker-supplied bytes back.
+%
+% Clause order is NOT load-bearing here -- the heads are distinct ground terms and the
+% catch-all is last -- but the ORDER OF THE FIRST TWO IS the reason this is three clauses
+% rather than a chain of ->: a defect that collapsed them would have to delete a head,
+% which is visible, rather than reorder a guard, which is not.
+pre_admission_refusal(error(ec_entity(included_key_mismatch), _), 400, "hash_mismatch",
+                      "an entity was addressed by a hash that does not bind to it") :- !.
+pre_admission_refusal(error(ec_entity(content_hash_mismatch), _), 400, "hash_mismatch",
+                      "an entity was addressed by a hash that does not bind to it") :- !.
+pre_admission_refusal(error(ec_cbor(tag_rejected_major6), _), 400, "non_canonical_ecf",
+                      "CBOR tags are forbidden anywhere in an entity data field") :- !.
+pre_admission_refusal(_, 400, "invalid_request", "frame did not decode into an envelope").
+
+% Put the coded EXECUTE_RESPONSE §4.11 requires on the wire for a frame refused BEFORE it
+% becomes an admitted request.
+%
+% "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on the wire
+% [MUST] -- correlated by `request_id` where the id is available, and otherwise as a
+% best-effort coded frame carrying no correlation."
+%
+% §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS" and
+% therefore reaches none of these, which is why §4.11 exists. AN EMPTY ReqId IS THE
+% BEST-EFFORT FORM, not a bug: it is what the section prescribes where no id can be
+% recovered. Best-effort on the WRITE only -- a dead socket is not a protocol decision.
+refuse_pre_admission(IO, ReqId, Status, Code, Message) :-
+    ignore(( error_result(Code, Message, ErrE),
+             make_response(ReqId, Status, ErrE, Resp),
              catch(io_write(IO, envelope(Resp, [])), _, true) )).
+
+% A COMPLETE frame the decoder refused. The framing is intact, so we answer and KEEP
+% SERVING -- and the refusal MUST be a status rather than silence (§4.11; §4.9(c) says the
+% same from the other direction). The `true` this replaced rejected the frame (correct)
+% and then dropped it on the floor (wrong): the sender saw no response at all and blocked
+% until its own timeout, so a refusal was indistinguishable from a dead peer.
+%
+% The frame is still REJECTED -- only enough is salvaged to correlate the response, and an
+% UNRECOVERABLE id now takes §4.11's uncorrelated best-effort form rather than the silence
+% it used to take. That silence was the OTHER non-conformant behaviour §4.11 scores, "the
+% weaker of the two precisely because nothing surfaces it".
+reject_frame(IO, Payload, Err) :-
+    ( salvage_request_id(Payload, ReqId0) -> ReqId = ReqId0 ; ReqId = "" ),
+    pre_admission_refusal(Err, Status, Code, Message),
+    refuse_pre_admission(IO, ReqId, Status, Code, Message).
 
 is_response(Env) :- envelope_root(Env, R), entity_type(R, "system/protocol/execute/response").
 

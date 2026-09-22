@@ -74,7 +74,7 @@ else
 endif
 SODIUM_SO_LINK = -lsodium
 
-.PHONY: all test smoke spike clean dist install uninstall pc typereg
+.PHONY: all test smoke spike scope clean dist install uninstall pc typereg
 
 all: lib$(LIB_NAME).a lib$(LIB_NAME).so conformance entity-peer-c
 
@@ -113,12 +113,23 @@ typereg-bin: $(CODEC_SRC) src/entity.c src/core_typedefs.c test/typereg.c
 typereg: typereg-bin
 	ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ./typereg-bin
 
+# The section 5 scope-algebra unit gate (0.8.2.24/.25), sanitized: effective_targets
+# hands back BORROWED pointers into the exec's value tree, which is exactly the shape a
+# sanitizer is needed to police.
+scope-bin: $(SRC) test/scope_algebra.c
+	$(CC) $(STD) $(WARN) $(SAN) $(PEER_INC) $(SRC) test/scope_algebra.c \
+	    -o scope-bin $(SODIUM_LINK) $(PTHREAD) -lm
+
+scope: scope-bin
+	ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ./scope-bin
+
 spike: $(CODEC_SRC) test/spike.c include/entity_core/protocol.h
 	$(CC) $(STD) $(WARN) $(SAN) $(INC) $(CODEC_SRC) test/spike.c -o spike $(SODIUM_LINK) -lm
 	ASAN_OPTIONS=detect_leaks=1 ./spike
 
-test: conformance
+test: conformance scope-bin
 	ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ./conformance
+	ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ./scope-bin
 
 smoke: smoke-bin
 	ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ./smoke-bin
@@ -160,5 +171,5 @@ dist:
 
 clean:
 	rm -f $(OBJ) lib$(LIB_NAME).a lib$(LIB_NAME).so conformance smoke-bin \
-	    entity-peer-c typereg-bin spike *.o $(PC_NAME).pc
+	    entity-peer-c typereg-bin spike scope-bin *.o $(PC_NAME).pc
 	rm -rf $(DISTNAME) $(DISTNAME).tar.gz

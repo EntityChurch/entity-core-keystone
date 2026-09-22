@@ -124,6 +124,22 @@ Transport_HandleEvent: procedure expose EC.
       id = rest
       EC.!IO2CONN.id = ''
     end
+    when tag == 'PREADM' then do
+      /* §4.11's FRAMING arms, reported by the de-framer because only it sees them: an
+       * over-limit length prefix, and a stream that ends MID-FRAME. Both used to be
+       * silent -- the first drained the declared body and emitted nothing, the second
+       * closed the connection with no coded frame, which is indistinguishable from a
+       * network fault and, on a multiplexed connection, destroys unrelated ADMITTED
+       * requests. §4.10(a)'s mood was raised SHOULD -> MUST at 0.8.2.25 (N14): the
+       * over-size condition is detected at the length prefix with the connection intact
+       * and nothing spent, so the permissive mood had nothing to license.
+       *
+       * §4.11's best-effort UNCORRELATED form: no request_id can be recovered from a frame
+       * whose body was never read, and guessing one would correlate the refusal to
+       * somebody else's in-flight request. */
+      parse var rest id kind
+      call Transport_RefusePreAdmission id, '', kind
+    end
     when tag == 'FRAME' then do
       parse var rest id hex
       call Transport_OnFrame peer_h, id, x2c(hex)
@@ -132,29 +148,61 @@ Transport_HandleEvent: procedure expose EC.
   end
   return
 
+/* Transport_RefusePreAdmission -- put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25)
+ * requires on the wire for a frame refused BEFORE it becomes an admitted request.
+ *
+ * "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on the
+ * wire [MUST] -- correlated by `request_id` where the id is available, and otherwise as a
+ * best-effort coded frame carrying no correlation."
+ *
+ * §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS" and
+ * therefore reaches none of these, which is why §4.11 exists. Both of the non-conformant
+ * behaviours it names separately were present on this peer: DROPPING the frame (the
+ * un-salvageable decode arm, and the non-EXECUTE root, "the weaker of the two precisely
+ * because nothing surfaces it") and answering NOTHING AT ALL on the framing arms, where
+ * ecnet silently drained an oversize body and silently dropped a connection that ended
+ * mid-frame.
+ *
+ * AN EMPTY `request_id` IS THE BEST-EFFORT FORM, not a bug: it is what the section
+ * prescribes where no id can be recovered. */
+Transport_RefusePreAdmission: procedure expose EC.
+  parse arg io, rid, kind
+  parse value Wire_PreAdmissionRefusal(kind) with status code message
+  rej = Env_Make(Wire_MakeResponse(rid, status, Wire_ErrorResult(code, message)))
+  call Transport_SendRaw io, rej
+  return
+
 Transport_OnFrame: procedure expose EC.
   parse arg peer_h, id, payload
   call Throw_Clear
+  EC.!OK = 1
   env = Wire_EnvelopeOfFrame(payload)
   if env == '' then do
-    /* §6.3: "Rejection returns 400 non_canonical_ecf" -- a rejected frame is owed a
-     * STATUS, not silence. This used to be a bare `return`, which rejected the frame
-     * (correct) and then dropped it on the floor (wrong): the sender saw no response at
-     * all and blocked until its own timeout, violating §6.3's second sentence and
-     * §4.9(c) deliver-or-signal. It also made a refusal indistinguishable from a dead
-     * peer, and on a single-connection oracle run it poisons every later request on the
-     * same connection.
+    /* A COMPLETE frame the decoder refused. The framing is intact, so we answer and KEEP
+     * SERVING -- and the refusal MUST be a status rather than silence (§4.11; §4.9(c)
+     * says the same from the other direction). This used to be a bare `return`, which
+     * rejected the frame (correct) and then dropped it on the floor (wrong): the sender
+     * saw no response at all and blocked until its own timeout, so a refusal was
+     * indistinguishable from a dead peer.
      *
-     * The frame is still REJECTED -- only enough is salvaged to correlate the response.
-     * If even the request_id is unrecoverable the frame is unattributable and silence is
-     * the only option left. */
+     * THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered non_canonical_ecf for every
+     * cause until 0.8.2.24/.25 pinned them apart: a mis-keyed `included` entry is
+     * `400 hash_mismatch` (its encoding is canonical -- what is false is the claim the key
+     * makes), a tag-policy violation keeps non_canonical_ecf, and everything else that
+     * never becomes an Envelope is `400 invalid_request`.
+     *
+     * The kind is read BEFORE the salvage decode, which resets both unwind flags.
+     *
+     * The frame is still REJECTED -- only enough is salvaged to correlate the response,
+     * and an unrecoverable id takes §4.11's uncorrelated best-effort form rather than the
+     * silence it used to take. */
+    kind = Wire_RefusalKind()
     call Throw_Clear
+    EC.!OK = 1
     rid = Wire_SalvageRequestId(payload)
     call Throw_Clear
-    if rid \== '' then do
-      rej = Env_Make(Wire_MakeResponse(rid, 400, Wire_ErrorResult('non_canonical_ecf', '')))
-      call Transport_SendRaw id, rej
-    end
+    EC.!OK = 1
+    call Transport_RefusePreAdmission id, rid, kind
     return
   end
   root = Env_Root(env)

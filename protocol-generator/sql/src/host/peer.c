@@ -102,6 +102,48 @@ static int cbor_value_slice(const unsigned char *buf, size_t len, size_t pos, co
     if (cbor_skip(&r) != 0) return -1;
     *sp = buf + start; *sl = r.pos - start; return 0;
 }
+/* A whole-frame walk that answers §4.11's two framing questions at once:
+ *   0  = one well-formed CBOR item spanning exactly the frame, no tag anywhere
+ *   -1 = un-parseable / truncated / trailing data  -> 400 invalid_request (framing arm)
+ *   -6 = a major-type-6 TAG at some depth          -> 400 non_canonical_ecf
+ *
+ * The two answers are DIFFERENT CODES ON PURPOSE (§4.11: "the frame obligation belongs to
+ * the class; the CODE belongs to the cause"). `non_canonical_ecf` is defined by
+ * ENTITY-CBOR-ENCODING §5.4 for CBOR TAG-POLICY violations SPECIFICALLY, which that
+ * document still MUSTs at decode time; §4.11 rules the same code non-conformant "on the
+ * framing arm". The two texts are only compatible if the tag case is not read as part of
+ * the framing arm, even though §4.11's row says "non-canonical CBOR" and a tagged frame is
+ * literally that. Taken as the reading that keeps BOTH MUSTs satisfiable.
+ *
+ * This peer navigates the envelope LAZILY (cbor_map_find walks to the key it wants), so
+ * before this existed a frame could be structurally broken anywhere the navigation did not
+ * happen to look and still reach the authority ladder — which is where the tag arm went:
+ * it answered 401 authentication_failed, an auth-class code for a codec fault. */
+static int cbor_scan_item(cbor_rd *r, int *saw_tag) {
+    int major; uint64_t arg;
+    if (cbor_head(r, &major, &arg) != 0) return -1;
+    switch (major) {
+        case 0: case 1: return 0;
+        case 7: return (arg >= 24 && arg <= 31) ? -1 : 0;   /* no indefinite/reserved */
+        case 2: case 3: if (r->pos + arg > r->len) return -1; r->pos += (size_t)arg; return 0;
+        case 4: for (uint64_t i=0;i<arg;i++) if (cbor_scan_item(r,saw_tag)) return -1; return 0;
+        case 5: for (uint64_t i=0;i<arg;i++) { if (cbor_scan_item(r,saw_tag)) return -1;
+                                              if (cbor_scan_item(r,saw_tag)) return -1; } return 0;
+        /* §6.3 / ENTITY-CBOR-ENCODING §5.4: a major-type-6 tag is forbidden anywhere in an
+         * entity. Recorded rather than refused here, so the walk still establishes whether
+         * the REST of the frame is well-formed — a frame that is both tagged and truncated
+         * is the framing arm's, and only a complete walk can tell. */
+        case 6: *saw_tag = 1; return cbor_scan_item(r,saw_tag);
+        default: return -1;
+    }
+}
+static int cbor_scan_frame(const unsigned char *buf, size_t len) {
+    cbor_rd r = { buf, len, 0 };
+    int saw_tag = 0;
+    if (cbor_scan_item(&r, &saw_tag) != 0) return -1;
+    if (r.pos != len) return -1;                 /* trailing data is not one frame */
+    return saw_tag ? -6 : 0;
+}
 
 /* ══════════════════════════ minimal canonical-CBOR writer (response build) ══════════════════ */
 typedef struct { unsigned char *p; size_t len, cap; } wbuf;
@@ -193,19 +235,42 @@ static void init_identity(const char *name) {
 }
 
 /* ══════════════════════════ framing (§1.6) + resilience ══════════════════════════ */
+/* Fill `buf`. Returns the number of bytes obtained; a SHORT return is the caller's signal
+ * that the stream ended mid-read. A negative return is an IO error.
+ *
+ * IT USED TO RETURN read(2)'s 0 DIRECTLY, WHICH COLLAPSED TWO DIFFERENT EVENTS. A clean
+ * EOF at a frame boundary is an ordinary close and is owed nothing; a stream that ends
+ * MID-FRAME is a REFUSAL and §4.11 owes it a coded frame. With the collapse a partial
+ * length prefix read as an ordinary hangup and the connection closed in silence. */
 static ssize_t read_all(int fd, unsigned char *buf, size_t n) {
-    size_t got=0; while (got<n) { ssize_t r=read(fd,buf+got,n-got); if (r<=0) return r; got+=(size_t)r; } return (ssize_t)got;
+    size_t got=0;
+    while (got<n) {
+        ssize_t r=read(fd,buf+got,n-got);
+        if (r<0) return -1;
+        if (r==0) break;                 /* EOF: report the PARTIAL count, not the zero */
+        got+=(size_t)r;
+    }
+    return (ssize_t)got;
 }
 static int write_all(int fd, const unsigned char *buf, size_t n) {
     size_t put=0; while (put<n) { ssize_t w=write(fd,buf+put,n-put); if (w<=0) return -1; put+=(size_t)w; } return 0;
 }
-/* read one §1.6 frame. Returns: 1 ok, 0 eof, -1 error, -413 oversize (cap BEFORE buffering). */
+/* read one §1.6 frame. Returns: 1 ok, 0 clean eof (owed nothing), -1 io error,
+ * -400 TRUNCATED (§4.11 framing arm — owed 400 invalid_request),
+ * -413 oversize (§4.10(a) cap checked BEFORE buffering — owed 413 payload_too_large). */
 static int read_frame(int fd, unsigned char **out, uint32_t *outlen) {
-    unsigned char lp[4]; ssize_t r = read_all(fd, lp, 4); if (r==0) return 0; if (r<0) return -1;
+    unsigned char lp[4]; ssize_t r = read_all(fd, lp, 4);
+    if (r<0) return -1;
+    if (r==0) return 0;                             /* nothing read: an ordinary close */
+    if (r<4)  return -400;                          /* PARTIAL length prefix: a truncation */
     uint32_t n = ((uint32_t)lp[0]<<24)|((uint32_t)lp[1]<<16)|((uint32_t)lp[2]<<8)|lp[3];
     if (n > FRAME_CAP) return -413;                 /* §4.10(a): reject BEFORE allocating the body */
     unsigned char *b = malloc(n?n:1); if (!b) return -1;
-    if (read_all(fd,b,n) <= 0 && n>0) { free(b); return -1; }
+    if (n) {
+        ssize_t got = read_all(fd,b,n);
+        if (got<0)        { free(b); return -1; }
+        if ((uint32_t)got != n) { free(b); return -400; }  /* declared n, delivered fewer */
+    }
     *out=b; *outlen=n; return 1;
 }
 static int send_envelope(int fd, const unsigned char *env, size_t n) {
@@ -653,7 +718,7 @@ static void seed_store_file(void) {
 
 /* ── per-child DB init: open the shared store (WAL) + a fresh :memory: authority db with the
  *    crypto seam fns + schema.sql + the (static + registered) handler table. ── */
-static char *g_schema=NULL, *g_ladder=NULL, *g_resolve=NULL, *g_konf=NULL;
+static char *g_schema=NULL, *g_ladder=NULL, *g_resolve=NULL, *g_konf=NULL, *g_pathperm=NULL;
 static void seed_auth_handlers(void) {
     sqlite3_exec(g_db,"DELETE FROM handler;",NULL,NULL,NULL);
     /* static MUST handlers */
@@ -680,6 +745,7 @@ static int init_child_dbs(void) {
     if (!g_ladder)  g_ladder =slurp("src/sql/verify_ladder.sql",NULL);
     if (!g_resolve) g_resolve=slurp("src/sql/resolve.sql",NULL);
     if (!g_konf)    g_konf   =slurp("src/sql/k_of_n.sql",NULL);
+    if (!g_pathperm) g_pathperm=slurp("src/sql/path_permission.sql",NULL);
     if (g_schema) sqlite3_exec(g_db,g_schema,NULL,NULL,NULL);
     seed_auth_handlers();
     return 0;
@@ -693,6 +759,91 @@ static int resolve_handler(const char *uri, char *out, size_t cap) {
     int found=0;
     if (sqlite3_step(st)==SQLITE_ROW) { const char *p=(const char*)sqlite3_column_text(st,0); if(p){ snprintf(out,cap,"%s",p); found=1; } }
     sqlite3_finalize(st); return found;
+}
+
+/* ── §5.2 EFFECTIVE TARGETS (0.8.2.20) + §6.3 check_path_permission, read out of the facts
+ *    `project_and_verify` already projected. Both DECISIONS are authored in src/sql
+ *    (verify_ladder.sql's `eff` CTE and path_permission.sql); the host only reads the rows
+ *    out and renders the §3.3 response, which is the wrapper-guard this peer is FOR. ── */
+
+/* The caller-hash of the capability whose authority the CURRENT frame is being dispatched
+ * under, and the §6.6-resolved OWNING handler pattern. Both were computed by the dispatch
+ * check (project_and_verify / resolve_handler) and are CARRIED here rather than recomputed
+ * — §6.8 is explicit that the authority is selected by who named the path, and recomputing
+ * invites the handler-level check and the dispatch-level check to drift.
+ *
+ * Globals rather than parameters because this peer forks per connection and serves one
+ * frame to completion per child (see `serve`), so exactly one dispatch is live at a time.
+ * `g_ctx_cap_hex` empty = no verified caller capability, i.e. the bootstrap path, which
+ * §6.3's filter does not narrow. */
+static char g_ctx_cap_hex[80];
+static char g_ctx_pattern[512];
+
+/* §5.2's effective target list. Writes up to `cap` survivors (the caller's OWN SPELLING,
+ * 0.8.2.21) into `out`, returns the count, and sets *had_resource to whether a `resource`
+ * with a `targets` array was present AT ALL.
+ *
+ * THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES [MUST] (0.8.2.25, N11). An ABSENT
+ * resource and a resource whose every target the caller excluded are DIFFERENT REQUESTS
+ * for a resource-OPTIONAL operation (0.8.2.24 N7) — returning only a count collapses them
+ * and deletes the discriminator before any handler can read it. */
+static int effective_targets(char out[][600], size_t *rawlen_out, int cap, int *had_resource) {
+    *had_resource = 0;
+    int n = 0;
+    sqlite3_stmt *st;
+    if (sqlite3_prepare_v2(g_db,"SELECT 1 FROM request_resource WHERE kind='target' LIMIT 1",
+                           -1,&st,NULL)==SQLITE_OK) {
+        if (sqlite3_step(st)==SQLITE_ROW) *had_resource = 1;
+        sqlite3_finalize(st);
+    }
+    if (!*had_resource) return 0;
+    /* The SAME `eff` predicate verify_ladder.sql's resource dimension reads, so the two
+     * cannot disagree about which targets the request actually carries. */
+    if (sqlite3_prepare_v2(g_db,
+            "SELECT t.raw, t.rawlen FROM request_resource t WHERE t.kind='target' "
+            "AND NOT EXISTS (SELECT 1 FROM request_resource x WHERE x.kind='exclude' "
+            "                AND t.path GLOB x.path) ORDER BY t.ord",
+            -1,&st,NULL)!=SQLITE_OK) return 0;
+    while (sqlite3_step(st)==SQLITE_ROW && n<cap) {
+        const char *r=(const char*)sqlite3_column_text(st,0);
+        snprintf(out[n],600,"%s",r?r:"");
+        if (rawlen_out) rawlen_out[n] = (size_t)sqlite3_column_int64(st,1);
+        n++;
+    }
+    sqlite3_finalize(st);
+    return n;
+}
+
+/* §6.3 check_path_permission — run path_permission.sql against the CARRIED caller cap.
+ * Answers 1 (allow) / 0 (deny). An absent caller capability is the bootstrap path and is
+ * not narrowed; the caller tests g_ctx_cap_hex before reaching here. */
+static int check_path_permission(const char *operation, const char *path) {
+    if (!g_pathperm || !g_ctx_cap_hex[0]) return 1;
+    /* §5.4's canonicalize is TOTAL: a reserved form answers the sentinel, which is a GLOB
+     * with no metacharacter and therefore matches no grant pattern — so a malformed
+     * subject falls through to DENY rather than being matched against anything. */
+    char subject[700];
+    if (strncmp(path,"./",2)==0 || strncmp(path,"../",3)==0 || strncmp(path,"*/",2)==0)
+        snprintf(subject,sizeof subject,"/never-match");
+    else if (path[0]=='/') snprintf(subject,sizeof subject,"%s",path);
+    else snprintf(subject,sizeof subject,"/%s/%s",g_peer_id,path);
+
+    sqlite3_stmt *st;
+    if (sqlite3_prepare_v2(g_db,g_pathperm,-1,&st,NULL)!=SQLITE_OK) return 0;  /* fail-closed */
+    unsigned char caph[33]; size_t chl=0;
+    for (size_t i=0;i<33 && g_ctx_cap_hex[i*2] && g_ctx_cap_hex[i*2+1];i++) {
+        char b[3]={g_ctx_cap_hex[i*2],g_ctx_cap_hex[i*2+1],0};
+        caph[i]=(unsigned char)strtoul(b,NULL,16); chl=i+1;
+    }
+    sqlite3_bind_blob(st, sqlite3_bind_parameter_index(st,":cap_hash"), caph,(int)chl, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":value"), subject,-1,SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":operation"), operation,-1,SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":handler_pattern"), g_ctx_pattern,-1,SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, sqlite3_bind_parameter_index(st,":local_peer_id"), g_peer_id,-1,SQLITE_TRANSIENT);
+    int allowed=0;
+    if (sqlite3_step(st)==SQLITE_ROW) allowed = sqlite3_column_int(st,0);
+    sqlite3_finalize(st);
+    return allowed;
 }
 
 /* ══════════════════════════ §5.8 authority-chain projection (host → SQL tables) ══════════════ */
@@ -907,10 +1058,50 @@ static void project_and_verify(const unsigned char *buf, size_t len, size_t root
                 }
         }
     }
-    /* resource-target(s) → request_resource. `resource` is a bare map {targets:[...],exclude?:[...]}. */
+    /* resource targets AND EXCLUDES → request_resource. `resource` is a bare map
+     * {targets:[...], exclude?:[...]}.
+     *
+     * THE EXCLUDE HALF USED TO BE DROPPED ON THE FLOOR. The table has carried a `kind`
+     * column reading 'target' | 'exclude' since it was written and nothing ever inserted
+     * an exclude row, so §5.2's effective-target list did not exist in this peer and the
+     * ladder's resource dimension matched the RAW targets. That is 0.8.2.20's exact
+     * inversion: the caller's own `resource.exclude` removes entries from the request
+     * BEFORE anything else looks at it. */
     { cbor_rd rf; if (cbor_map_find(buf,len,rdata_pos,"resource",&rf)) {
-            cbor_rd tf; if (cbor_map_find(buf,len,rf.pos,"targets",&tf)) {
-                cbor_rd a=tf; int am; uint64_t ac; if(cbor_head(&a,&am,&ac)==0&&am==4) for(uint64_t j=0;j<ac;j++){ char t[512]={0}; cbor_rd tv=a; if(cbor_get_text(&tv,t,sizeof t)==0){ char pth[640]; if(strncmp(t,"entity://",9)==0)snprintf(pth,sizeof pth,"/%s",t+9); else if(t[0]=='/')snprintf(pth,sizeof pth,"%s",t); else snprintf(pth,sizeof pth,"/%s/%s",g_peer_id,t); char e[700];size_t k=0; for(char*c=pth;*c&&k<sizeof e-2;c++){if(*c=='\''){e[k++]='\'';}e[k++]=*c;}e[k]=0; execf(g_db,"INSERT INTO request_resource(kind,path) VALUES('target','%s');",e);} if(cbor_skip(&a))break; }
+            static const char *KINDS[2] = { "targets", "exclude" };
+            static const char *ROWK[2]  = { "target",  "exclude" };
+            for (int ki=0; ki<2; ki++) {
+                cbor_rd tf; if (!cbor_map_find(buf,len,rf.pos,KINDS[ki],&tf)) continue;
+                cbor_rd a=tf; int am; uint64_t ac;
+                if (cbor_head(&a,&am,&ac)!=0 || am!=4) continue;
+                for (uint64_t j=0;j<ac;j++) {
+                    char t[512]={0}; cbor_rd tv=a;
+                    unsigned long long wirelen=0;
+                    { cbor_rd h=a; int m; uint64_t arg;
+                      if (cbor_head(&h,&m,&arg)==0 && m==3) wirelen=(unsigned long long)arg; }
+                    if (cbor_get_text(&tv,t,sizeof t)==0) {
+                        char pth[640];
+                        /* §5.4's canonicalize is TOTAL (0.8.2.20): its return domain is
+                         * "a canonical path OR NEVER_MATCH". The reserved forms were
+                         * previously canonicalized as ordinary relative paths, so
+                         * `../nope` came back as `/{peer}/../nope` — which matches
+                         * nothing, the desired outcome in a grant INCLUDE and the
+                         * opposite of it in a grant EXCLUDE. The sentinel is what lets
+                         * the two positions be told apart. */
+                        if (strncmp(t,"./",2)==0 || strncmp(t,"../",3)==0 || strncmp(t,"*/",2)==0)
+                            snprintf(pth,sizeof pth,"/never-match");
+                        else if (strncmp(t,"entity://",9)==0) snprintf(pth,sizeof pth,"/%s",t+9);
+                        else if (t[0]=='/') snprintf(pth,sizeof pth,"%s",t);
+                        else snprintf(pth,sizeof pth,"/%s/%s",g_peer_id,t);
+                        char e[700]; size_t q=0;
+                        for (char*c=pth;*c&&q<sizeof e-2;c++){ if(*c=='\''){e[q++]='\'';} e[q++]=*c; } e[q]=0;
+                        char er[700]; q=0;
+                        for (char*c=t;*c&&q<sizeof er-2;c++){ if(*c=='\''){er[q++]='\'';} er[q++]=*c; } er[q]=0;
+                        execf(g_db,"INSERT INTO request_resource(kind,path,raw,ord,rawlen) VALUES('%s','%s','%s',%llu,%llu);",
+                              ROWK[ki], e, er, (unsigned long long)j, wirelen);
+                    }
+                    if (cbor_skip(&a)) break;
+                }
             }
     } }
     char esc_uri[600]; size_t k=0; for (const char*c=uri;*c&&k<sizeof esc_uri-2;c++){if(*c=='\''){esc_uri[k++]='\'';}esc_uri[k++]=*c;} esc_uri[k]=0;
@@ -944,16 +1135,47 @@ static void dispatch_frame(int fd, conn_state *cs, const unsigned char *buf, siz
 static void dispatch_frame(int fd, conn_state *cs, const unsigned char *buf, size_t len) {
     cbor_rd root, rdata, f;
     char rtype[80]={0}, rid[128]={0}, uri[512]={0}, op[128]={0};
-    if (!cbor_map_find(buf,len,0,"root",&root)) { (void)emit_error(fd,"",400,"protocol_error"); return; }
+
+    /* §4.11 (0.8.2.25) — CLASSIFY THE FRAME BEFORE NAVIGATING IT, and answer the CAUSE's
+     * code. This peer reads the envelope lazily, so a structurally broken frame used to
+     * reach whichever key the navigation asked for next and be refused for whatever that
+     * arm happened to say: a CBOR tag in a data field reached the AUTHORITY LADDER and
+     * came back `401 authentication_failed` — an auth-class code, naming a remedy that
+     * does not exist, for a codec fault. §4.11's "the CODE belongs to the cause [MUST]" is
+     * what this scan exists to satisfy.
+     *
+     * The request_id is salvaged BELOW, from the same lazy navigation, so a refusal is
+     * CORRELATED where the id survives and is the uncorrelated best-effort frame where it
+     * does not — never silence. */
+    {
+        int scan = cbor_scan_frame(buf,len);
+        if (scan != 0) {
+            char srid[128]={0};
+            cbor_rd sroot,sdata,sf;
+            if (cbor_map_find(buf,len,0,"root",&sroot)
+                && cbor_map_find(buf,len,sroot.pos,"data",&sdata)
+                && cbor_map_find(buf,len,sdata.pos,"request_id",&sf))
+                cbor_get_text(&sf,srid,sizeof srid);
+            (void)emit_error(fd, srid, 400, scan==-6 ? "non_canonical_ecf" : "invalid_request");
+            return;
+        }
+    }
+
+    /* `protocol_error` is not a §3.3 code. §4.11's framing arm pins `invalid_request` for
+     * every input that never becomes an Envelope, and 0.8.2.25 (N12/N17) pins the same for
+     * a root that is neither EXECUTE nor EXECUTE_RESPONSE — while WITHDRAWING the old
+     * §3.3 "the connection MUST be closed" for that case (§9.1's floor row was REPLACED,
+     * N18). A code that is merely in the right family still selects the wrong remedy. */
+    if (!cbor_map_find(buf,len,0,"root",&root)) { (void)emit_error(fd,"",400,"invalid_request"); return; }
     { cbor_rd tf; if (cbor_map_find(buf,len,root.pos,"type",&tf)) cbor_get_text(&tf,rtype,sizeof rtype); }
-    if (!cbor_map_find(buf,len,root.pos,"data",&rdata)) { (void)emit_error(fd,"",400,"protocol_error"); return; }
+    if (!cbor_map_find(buf,len,root.pos,"data",&rdata)) { (void)emit_error(fd,"",400,"invalid_request"); return; }
     if (cbor_map_find(buf,len,rdata.pos,"request_id",&f)) cbor_get_text(&f,rid,sizeof rid);
     if (cbor_map_find(buf,len,rdata.pos,"uri",&f)) cbor_get_text(&f,uri,sizeof uri);
     if (cbor_map_find(buf,len,rdata.pos,"operation",&f)) cbor_get_text(&f,op,sizeof op);
 
     if (strcmp(rtype,"system/protocol/execute")!=0) {
         if (strcmp(rtype,"system/protocol/execute/response")==0) { (void)reentry_route(fd, cs, buf, len); return; }  /* §6.11 reentry demux */
-        (void)emit_error(fd, rid, 400, "protocol_error"); return;
+        (void)emit_error(fd, rid, 400, "invalid_request"); return;
     }
 
     /* §4.2: system/protocol/connect is the sole pre-authorized path. */
@@ -1044,6 +1266,15 @@ static void dispatch_frame(int fd, conn_state *cs, const unsigned char *buf, siz
      * ladder's handler table and this query could disagree; the SPELLING must stay in
      * step with the ladder's, and changing only this one is measurably a no-op. */
     if (!resolve_handler(nuri,pattern,sizeof pattern)) { (void)emit_error(fd, rid, 404, "handler_not_found"); return; }
+    /* §6.3's handler-level check needs the CALLER's capability and the OWNING handler's
+     * pattern, and the dispatch check just computed both. Carried, not recomputed
+     * (§6.8: the authority is selected by who named the path). `pattern` is the owner's;
+     * for the tree handler owner and runner coincide, so the distinction is not
+     * observable here, but the field means the OWNER. */
+    g_ctx_cap_hex[0]=0; snprintf(g_ctx_pattern,sizeof g_ctx_pattern,"%s",pattern);
+    { cbor_rd cf; unsigned char b[33]; size_t bl=0;
+      if (cbor_map_find(buf,len,rdata.pos,"capability",&cf)
+          && cbor_get_bytes(&cf,b,sizeof b,&bl)==0 && bl==33) hexof(b,33,g_ctx_cap_hex); }
     dispatch_body(fd, cs, rid, pattern, nuri, op, buf, len, rdata.pos);
 }
 
@@ -1071,8 +1302,19 @@ static int serve(int port) {
             conn_state cs; memset(&cs,0,sizeof cs);
             for (;;) {
                 unsigned char *fb; uint32_t fl; int r = read_frame(cfd,&fb,&fl);
-                if (r==0 || r==-1) break;
-                if (r==-413) { (void)emit_error(cfd,"",413,"payload_too_large"); break; }  /* §4.10(a) */
+                if (r==0 || r==-1) break;   /* a clean close is not a refusal (§4.11) */
+                /* §4.11 (0.8.2.25): a peer that refuses a frame PRE-ADMISSION MUST put a
+                 * coded EXECUTE_RESPONSE on the wire [MUST]. §4.9(c)'s deliver-or-signal
+                 * rule is scoped to "every request the peer ADMITS" and reaches none of
+                 * these, which is why §4.11 exists. Closing with NO coded frame is one of
+                 * the two behaviours it names non-conformant — indistinguishable from a
+                 * network fault — and the TRUNCATED arm below used to do exactly that.
+                 * The empty request_id IS the best-effort form: no id is recoverable from
+                 * a frame that never arrived. The stream is desynchronized on both arms,
+                 * so the frame goes out and THEN the loop ends; §4.11 leaves the close to
+                 * us, and it is a choice rather than an alternative to answering. */
+                if (r==-400) { (void)emit_error(cfd,"",400,"invalid_request"); break; }    /* §4.11 framing */
+                if (r==-413) { (void)emit_error(cfd,"",413,"payload_too_large"); break; }  /* §4.10(a) N14 */
                 dispatch_frame(cfd, &cs, fb, fl);                   /* §4.9(c): dispatch never drops silently */
                 free(fb);
             }
@@ -1141,21 +1383,31 @@ static int send_execute(int fd, const char *rid, const char *uri, const char *op
  * The capability cannot be reconstructed client-side -- its `created_at` is the peer's wall
  * clock, so its hash is unpredictable -- so leg 2's grant is lifted VERBATIM out of the
  * response envelope's `included` and re-presented here. */
-static int send_execute_signed(int fd, const char *rid, const char *uri, const char *op,
+/* `res_target`: NULL for no `resource` at all, else a single-target resource map. The
+ * DISTINCTION IS THE POINT and not a convenience -- §3.3's ladder answers an absent
+ * resource and a present one differently, and RULE G's differential needs the SAME
+ * unknown operation sent both ways. */
+static int send_execute_signed_res(int fd, const char *rid, const char *uri, const char *op,
                                const unsigned char *author33, const unsigned char *cap33,
                                const unsigned char *ipriv,
                                const unsigned char *ipeer_ent, size_t ipeer_len,
-                               inc_ent *grant_ents, int n_grant) {
+                               inc_ent *grant_ents, int n_grant, const char *res_target) {
     static const unsigned char empty = 0xa0;
     unsigned char ph[33]; ec_entity_hash("primitive/any", &empty, 1, ph);
     wbuf par = {0}; if (wb_entity(&par, "primitive/any", &empty, 1, ph)) { free(par.p); return -1; }
-    /* canonical key order is length-then-lex: uri(3) author(6) params(6) operation(9)
-     * capability(10) request_id(10). */
+    wbuf res = {0};
+    if (res_target && (wb_head(&res,5,1) || wb_text(&res,"targets")
+                       || wb_head(&res,4,1) || wb_text(&res,res_target))) {
+        free(par.p); free(res.p); return -1; }
+    /* canonical key order is length-then-lex: uri(3) author(6) params(6) resource(8)
+     * operation(9) capability(10) request_id(10). */
     wbuf ed = {0};
-    int bad = wb_head(&ed, 5, 6)
+    int bad = wb_head(&ed, 5, res_target ? 7 : 6)
         || wb_text(&ed, "uri")        || wb_text(&ed, uri)
         || wb_text(&ed, "author")     || wb_bytes(&ed, author33, 33)
-        || wb_text(&ed, "params")     || wb_raw(&ed, par.p, par.len)
+        || wb_text(&ed, "params")     || wb_raw(&ed, par.p, par.len);
+    if (!bad && res_target) bad = wb_text(&ed, "resource") || wb_raw(&ed, res.p, res.len);
+    bad = bad
         || wb_text(&ed, "operation")  || wb_text(&ed, op)
         || wb_text(&ed, "capability") || wb_bytes(&ed, cap33, 33)
         || wb_text(&ed, "request_id") || wb_text(&ed, rid);
@@ -1187,8 +1439,16 @@ static int send_execute_signed(int fd, const char *rid, const char *uri, const c
         || wb_head(&env, 5, 2) || wb_text(&env, "root") || wb_raw(&env, ee.p, ee.len)
         || wb_text(&env, "included") || wb_raw(&env, inc.p, inc.len);
     int rc = bad ? -1 : send_envelope(fd, env.p, env.len);
-    free(par.p); free(ed.p); free(xsd.p); free(xse.p); free(inc.p); free(ee.p); free(env.p);
+    free(par.p); free(res.p); free(ed.p); free(xsd.p); free(xse.p); free(inc.p); free(ee.p); free(env.p);
     return rc;
+}
+static int send_execute_signed(int fd, const char *rid, const char *uri, const char *op,
+                               const unsigned char *author33, const unsigned char *cap33,
+                               const unsigned char *ipriv,
+                               const unsigned char *ipeer_ent, size_t ipeer_len,
+                               inc_ent *grant_ents, int n_grant) {
+    return send_execute_signed_res(fd, rid, uri, op, author33, cap33, ipriv,
+                                   ipeer_ent, ipeer_len, grant_ents, n_grant, NULL);
 }
 
 static int selftest_client(int port) {
@@ -1318,6 +1578,55 @@ static int selftest_client(int port) {
     int ok4 = (strcmp(ridA,"rid-A")==0 && strcmp(ridB,"rid-B")==0 && stA==200 && stB==404);
     printf("  [%s] request_id demux        → (%s:%u)(%s:%u)\n", ok4?"PASS":"FAIL", ridA,stA, ridB,stB); fails += !ok4;
 
+    /* RULE G — OPERATION RESOLUTION PRECEDES RESOURCE VALIDATION, AS A DIFFERENTIAL.
+     *
+     * The tree handler's op ladder selects before either arm reads `resource`, so an
+     * unknown operation answers an OPERATION fault (501 unsupported_operation) WHETHER OR
+     * NOT a resource is present. `ocaml` put the any-operation-no-resource arm ABOVE the
+     * unknown-operation arm, so the same call answered a RESOURCE fault with no resource
+     * and 501 with one -- which is why only the PAIR can see it
+     * (entity-system-conformance X9/F52).
+     *
+     * THE THIRD ROW IS WHAT STOPS "501 TO EVERYTHING" SATISFYING THE FIRST TWO VACUOUSLY:
+     * a KNOWN operation must still reach the §3.3 ladder, and here it reaches the
+     * malformed_resource arm rather than 501. */
+    int okG = 1;
+    /* THE ANTECEDENT, AND IT DECIDES WHAT THE TWO ROWS BELOW CAN MEAN. Under the §6.9a
+     * DISCOVERY FLOOR the caller's grant names `operations: [get]`, so an unknown
+     * operation is refused by §5.2's operations dimension at DISPATCH -- correctly, and
+     * two layers above the handler's op ladder. A 403 here is therefore the expected
+     * shipped-configuration answer and says NOTHING about RULE G: the handler is never
+     * reached. Measured before this row existed, and it is what turned a "FAIL" into a
+     * statement about which layer answered.
+     *
+     * The peer under --selftest is launched with --debug-open-grants for exactly this
+     * reason (see main), which widens `operations` to `*` and lets the request REACH the
+     * handler. That is the one launch difference and it is stated here rather than
+     * remembered. */
+    int expect_op_fault = g_open_grants;
+    if (send_execute_signed_res(fd,"g-nores",reg,"bogusop",iph,cap33,ipriv,ipe.p,ipe.len,grant_ents,n_grant,NULL)) return 2;
+    if (recv_response(fd,rid,&st,rt)) return 2;
+    int g1 = expect_op_fault ? (st==501 && strcmp(g_last_code,"unsupported_operation")==0)
+                             : (st==403 && strcmp(g_last_code,"capability_denied")==0);
+    printf("  [%s] RULE G unknown op, NO resource  → status=%u code=%s\n", g1?"PASS":"FAIL", st, g_last_code);
+    okG &= g1;
+    if (send_execute_signed_res(fd,"g-res",reg,"bogusop",iph,cap33,ipriv,ipe.p,ipe.len,grant_ents,n_grant,"system/type/x")) return 2;
+    if (recv_response(fd,rid,&st,rt)) return 2;
+    int g2 = expect_op_fault ? (st==501 && strcmp(g_last_code,"unsupported_operation")==0)
+                             : (st==403 && strcmp(g_last_code,"capability_denied")==0);
+    printf("  [%s] RULE G unknown op, WITH resource → status=%u code=%s\n", g2?"PASS":"FAIL", st, g_last_code);
+    okG &= g2;
+    /* THE THIRD ROW IS WHAT STOPS "501 (or 403) TO EVERYTHING" SATISFYING THE FIRST TWO
+     * VACUOUSLY: a KNOWN operation must still REACH the §3.3 ladder, and here it reaches
+     * the malformed_resource arm rather than an operation fault. It holds under BOTH
+     * launches, which is why it is not gated on the flag. */
+    if (send_execute_signed_res(fd,"g-known",reg,"get",iph,cap33,ipriv,ipe.p,ipe.len,grant_ents,n_grant,"system/type/*")) return 2;
+    if (recv_response(fd,rid,&st,rt)) return 2;
+    int g3 = (st==400 && strcmp(g_last_code,"malformed_resource")==0);
+    printf("  [%s] RULE G known op still routes     → status=%u code=%s\n", g3?"PASS":"FAIL", st, g_last_code);
+    okG &= g3;
+    fails += !okG;
+
     close(fd);
     free(ipe.p); for (int i=0;i<n_own;i++) free(grant_own[i]);
     printf("== smoke: %d checks failed ==\n", fails);
@@ -1344,6 +1653,13 @@ int main(int argc, char **argv) {
     seed_store_file();
 
     if (selftest) {
+        /* RULE G's differential needs a caller grant that COVERS an unknown operation, or
+         * §5.2's operations dimension refuses it two layers above the handler's op ladder
+         * and the rows measure the dispatch check instead. The seed is widened here rather
+         * than at the call site so the reason travels with the flag; every other smoke row
+         * answers identically under both seeds (handshake, the §6.6 404 -- which the ladder
+         * decides BEFORE check_permission -- and the demux). */
+        g_open_grants = 1;
         printf("== ec-sql-peer --selftest (self-driven §4.1 handshake + §6.6 404 + §6.11 demux) ==\n");
         printf("   seam: %s\n", ec_seam_impl_info());
         pid_t pid = fork();

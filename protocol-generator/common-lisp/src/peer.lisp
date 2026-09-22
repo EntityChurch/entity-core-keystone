@@ -205,6 +205,15 @@ method table IS the operation router; unknown pairs fall to the default → 501.
 (defun ctx-caller-cap (ctx) (getf ctx :caller-cap))
 (defun ctx-env (ctx) (getf ctx :env))
 
+;; The OWNING handler's §6.6 pattern. CARRIED, never recomputed: §6.3's path check needs
+;; the handler pattern AND the caller's capability, and the dispatch-level check already
+;; computed both. Recomputing invites the two to drift, and §6.8 is explicit that the
+;; authority is selected by who named the path. It is the OWNING handler's pattern
+;; (§6.3, 0.8.2.23) — for the tree handler owner and runner coincide, so the distinction
+;; is not observable here, but the field is named for the owner. NIL on the
+;; unauthenticated connect path, which has no resolved handler entity.
+(defun ctx-handler-pattern (ctx) (getf ctx :handler-pattern))
+
 ;; ── connect handler (§4.1, §4.6) ───────────────────────────────────────────────
 
 (defun str-array (exec key)
@@ -402,14 +411,51 @@ caller leading slash whose first seg is not a peer_id, ./ ../ interior empty."
   (let ((e (store-get-by-hash (peer-store peer) h)))
     (and e (string= (entity-typ e) "system/deletion-marker"))))
 
-(defun build-listing (peer path)
+(defun entry-visible-p (peer ctx dir-path segment)
+  "§6.3's per-entry listing check for one child segment (0.8.2.21/.22).
+
+An unauthenticated context is the bootstrap/internal path and is NOT filtered: the
+filter's subject is \"the caller's verified capability\", and where there is none there
+is no caller to narrow."
+  (let ((cap (and ctx (ctx-caller-cap ctx))))
+    (if (null cap)
+        t
+        (let ((child (if (char= (char dir-path (1- (length dir-path))) #\/)
+                         dir-path
+                         (concatenate 'string dir-path "/"))))
+          (check-path-permission (peer-local-peer peer) "get"
+                                 (concatenate 'string child segment)
+                                 cap (ctx-handler-pattern ctx))))))
+
+(defun build-listing (peer path &optional ctx)
+  "Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+
+\"When any handler returns a multi-entry result whose entries are tree paths, each entry
+MUST be individually checked using check_path_permission. Entries for which
+check_path_permission returns DENY MUST be omitted. The result's COUNT field MUST reflect
+the filtered entry count, not the source tree's total count.\"
+
+This is the read path at its highest volume and it is the reason 0.8.2.21 refused to
+carve reads out of the caller-specified-path rule: an unfiltered listing discloses the
+EXISTENCE of every binding under a prefix to a caller whose capability covers none of
+them. A COUNT that still reports the SOURCE total is that disclosure by itself, which is
+why it is taken from the filtered list.
+
+The DIRECTORY itself is deliberately NOT checked — §6.3 makes each ENTRY the subject, and
+testing the prefix would deny a listing to a caller whose grant covers children but not
+the node above them, which is the ordinary shape of a narrowed grant."
   (let* ((store (peer-store peer))
-         (entries (remove-if (lambda (row)
-                               (destructuring-bind (seg hash deeper) row
-                                 (declare (ignore seg))
-                                 (and hash (not deeper)
-                                      (is-deletion-marker peer (unhex hash)))))
-                             (store-listing store path)))
+         (entries (remove-if-not
+                   (lambda (row)
+                     (destructuring-bind (seg hash deeper) row
+                       (declare (ignore hash deeper))
+                       (entry-visible-p peer ctx path seg)))
+                   (remove-if (lambda (row)
+                                (destructuring-bind (seg hash deeper) row
+                                  (declare (ignore seg))
+                                  (and hash (not deeper)
+                                       (is-deletion-marker peer (unhex hash)))))
+                              (store-listing store path))))
          (entry-map
            (mapcar (lambda (row)
                      (destructuring-bind (seg hash deeper) row
@@ -427,23 +473,70 @@ caller leading slash whose first seg is not a peer_id, ./ ../ interior empty."
                              "count" (length entries)
                              "offset" 0)))))
 
+(defun pattern-path-p (target)
+  "A §5.4 PATTERN rather than a concrete path. A resource-requiring operation takes a
+concrete path (0.8.2.20); a trailing \"/\" is a LISTING request, not a pattern — only a
+* makes it one."
+  (find #\* target))
+
+(defun path-authorized-p (peer ctx operation path)
+  "§6.3: the handler MUST verify the CALLER's capability covers the path it is about to
+touch. Not a secondary check — the dispatch-level check never saw this path if the
+caller excluded it. An unauthenticated context is the bootstrap path and is not checked."
+  (let ((cap (and ctx (ctx-caller-cap ctx))))
+    (or (null cap)
+        (check-path-permission (peer-local-peer peer) operation path cap
+                               (ctx-handler-pattern ctx)))))
+
 (defmethod handle-op ((h tree-handler) (op (eql :get)) ctx)
-  (let* ((peer (handler-peer h)) (exec (ctx-exec ctx))
-         (target (exec-resource-target exec)))
-    (cond
-      ((and target (not (path-flex-ok target))) (err 400 "invalid_path" target))
-      ((null target) (build-listing peer (concatenate 'string "/" (peer-local-peer peer) "/")))
-      ((or (string= target "") (char= (char target (1- (length target))) #\/))
-       (build-listing peer (canonicalize (peer-local-peer peer) target)))
-      (t
-       (let* ((path (canonicalize (peer-local-peer peer) target))
-              (e (store-get-at (peer-store peer) path)))
-         (if e
-             (let ((mode (let ((p (entity-entity exec "params"))) (and p (entity-text p "mode")))))
-               (if (string= (or mode "") "hash")
-                   (ok (make-entity "system/hash" (map-of "hash" (make-bytes (entity-hash e)))))
-                   (ok e)))
-             (err 404 "not_found" path)))))))
+  ;; §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on RESOURCE.TARGETS: a
+  ;; handler that counts the effective list and then indexes targets[0] has implemented
+  ;; the arithmetic completely and is still reading a path no authorization covered.
+  (let ((peer (handler-peer h)) (exec (ctx-exec ctx)))
+    (multiple-value-bind (eff had-resource) (effective-targets (peer-local-peer peer) exec)
+      (cond
+        ((not had-resource)
+         ;; THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION IS
+         ;; WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is scoped
+         ;; "for an operation that REQUIRES a resource" (0.8.2.24, N7); GET does not. For
+         ;; a resource-OPTIONAL operation 0.8.2.25 (N10) decides the present-but-empty
+         ;; case by whether the absent case is WIDER than the request — BROAD-RESULT
+         ;; refuses it, OPTIONAL-FILTER answers it empty — and requires the operation to
+         ;; declare which it is.
+         ;;
+         ;; EXTENSION-TREE §2.2a (v4.11) is that declaration: GET is resource-OPTIONAL and
+         ;; BROAD-RESULT, absent-case answer "the root listing", self-excluded case
+         ;; "400 path_required". So both arms here are pinned by text and neither is this
+         ;; peer's choice.
+         (build-listing peer (concatenate 'string "/" (peer-local-peer peer) "/") ctx))
+        ((null eff)
+         ;; RESOURCE PRESENT, every target carved out by the caller's own exclude.
+         ;; Serving it the absent case "answers a request for one excluded path with a
+         ;; listing of the tree" (EXTENSION-TREE §2.2a) — the root listing is wider than
+         ;; what was asked for, which is what BROAD-RESULT means.
+         (err 400 "path_required" "tree: effective target list is empty"))
+        ((cdr eff)
+         (err 400 "ambiguous_resource" "tree: more than one effective target"))
+        (t
+         (let ((target (first eff)))
+           (cond
+             ((not (path-flex-ok target)) (err 400 "invalid_path" target))
+             ((or (string= target "") (char= (char target (1- (length target))) #\/))
+              (build-listing peer (canonicalize (peer-local-peer peer) target) ctx))
+             ((pattern-path-p target) (err 400 "malformed_resource" target))
+             (t
+              (let ((path (canonicalize (peer-local-peer peer) target)))
+                (if (not (path-authorized-p peer ctx "get" path))
+                    (err 403 "capability_denied" path)
+                    (let ((e (store-get-at (peer-store peer) path)))
+                      (if e
+                          (let ((mode (let ((p (entity-entity exec "params")))
+                                        (and p (entity-text p "mode")))))
+                            (if (string= (or mode "") "hash")
+                                (ok (make-entity "system/hash"
+                                                 (map-of "hash" (make-bytes (entity-hash e)))))
+                                (ok e)))
+                          (err 404 "not_found" path)))))))))))))
 
 (defun hash-digest-len (format-code)
   "Digest byte length for a content_hash_format code per the §1.2 seed table, or
@@ -525,11 +618,29 @@ Returns (values ENTITY NIL) when admitted, or (values NIL OUTCOME) when refused.
                     (values (%make-entity typ data carried) nil)))))))))))
 
 (defmethod handle-op ((h tree-handler) (op (eql :put)) ctx)
+  ;; Same ladder as :GET, with the two empties COLLAPSED rather than split:
+  ;; EXTENSION-TREE §2.2a (v4.11) declares PUT resource-REQUIRED, so §3.3's "an empty
+  ;; effective list IS the absent case" applies in its unscoped form and both empties
+  ;; answer path_required. That is the same table :GET's branch cites, read one row down
+  ;; — the field is per-operation and neither answer is derivable from this handler.
+  ;;
+  ;; Note the code change 0.8.2.20 forced: this branch answered ambiguous_resource for a
+  ;; MISSING target, which 0.8.2.20 names as the exact inversion it forbids ("answering
+  ;; ambiguous_resource for an absent resource inverts them"). The remedies differ —
+  ;; supply a resource is not disambiguate your request — and the code selects.
   (let* ((peer (handler-peer h)) (store (peer-store peer)) (exec (ctx-exec ctx))
-         (target (exec-resource-target exec)))
+         (eff (effective-targets (peer-local-peer peer) exec))
+         (target (first eff)))
     (cond
-      ((null target) (err 400 "ambiguous_resource" "tree: missing resource target"))
+      ((null eff) (err 400 "path_required" "tree: put requires a resource target"))
+      ((cdr eff) (err 400 "ambiguous_resource" "tree: more than one effective target"))
       ((not (path-flex-ok target)) (err 400 "invalid_path" target))
+      ((pattern-path-p target) (err 400 "malformed_resource" target))
+      ((not (path-authorized-p peer ctx "put" (canonicalize (peer-local-peer peer) target)))
+       ;; §6.3 (see :GET): the CALLER's capability must cover the path this handler is
+       ;; about to write, because the caller's own exclude can vacate the dispatch-level
+       ;; check.
+       (err 403 "capability_denied" (canonicalize (peer-local-peer peer) target)))
       (t
        (let* ((path (canonicalize (peer-local-peer peer) target))
               (params (entity-entity exec "params"))
@@ -869,11 +980,34 @@ system/handler entity, or NIL."
     (make-envelope (make-response request-id 500 (error-result "internal_error")))))
 
 (defun dispatch (peer conn env)
-  "The §6.5 dispatch chain: returns an EXECUTE_RESPONSE envelope, or NIL for a
-non-EXECUTE root (§3.3 server side ignores non-EXECUTE)."
+  "The §6.5 dispatch chain: returns an EXECUTE_RESPONSE envelope.
+
+A root that is neither EXECUTE nor EXECUTE_RESPONSE is answered 400 invalid_request —
+§6.5's \"Other type?\" arm as rewritten at 0.8.2.25 (N12/N17): \"400 invalid_request,
+coded frame; MAY then close (§3.3, §4.11). NOT a bare close — that is indistinguishable
+from a network fault.\"
+
+§3.3 read \"the connection MUST be closed\", assigning no code and requiring no frame,
+and §9.1's floor row that MANDATED the bare close was REPLACED at the same revision
+(N18). This peer did something weaker still: it returned NIL, the reader wrote NOTHING,
+and the connection stayed open — which is §4.11's OTHER non-conformant behaviour, the
+silent drop, \"the weaker of the two precisely because nothing surfaces it\". This is a
+PRE-ADMISSION refusal: the root is not an EXECUTE, so nothing was ever admitted and
+§4.9(c) does not reach it.
+
+ONE SITE, not two: READ-LOOP routes every non-response root here rather than answering
+beside it, so the refusal cannot drift between the transport's copy and this one.
+
+The request_id is read best-effort — an arbitrary root type is under no obligation to
+carry one, and §4.11 licenses the uncorrelated frame exactly there. We do NOT close: on a
+multiplexed connection that would cost every ADMITTED in-flight request its response, and
+§4.11 leaves the close to us."
   (let ((exec (envelope-root env)))
     (if (not (string= (entity-typ exec) "system/protocol/execute"))
-        nil
+        (make-envelope
+         (make-response (or (entity-text exec "request_id") "") 400
+                        (error-result "invalid_request"
+                                      "root entity is neither EXECUTE nor EXECUTE_RESPONSE")))
         (let* ((request-id (or (entity-text exec "request_id") ""))
                (uri (or (entity-text exec "uri") ""))
                (outcome
@@ -925,7 +1059,8 @@ non-EXECUTE root (§3.3 server side ignores non-EXECUTE)."
                                                          (handle-op inst (op-keyword (or (entity-text exec "operation") ""))
                                                                     (list :exec exec :conn conn
                                                                           :included (envelope-included env)
-                                                                          :caller-cap caller-cap :env env))
+                                                                          :caller-cap caller-cap :env env
+                                                                          :handler-pattern pattern))
                                                          (entity-native-dispatch peer pattern)))))))))))))))))
                    (unresolvable-grantee () (err 401 "unresolvable_grantee"))
                    (error () (err 500 "internal_error")))))

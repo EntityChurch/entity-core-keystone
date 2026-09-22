@@ -82,9 +82,13 @@ package Entity_Core.Protocol.Handlers is
    function Store (Peer : Peer_Access)
                    return access Entity_Core.Protocol.Store.Safe_Store;
 
-   --  The §6.5 dispatch chain. Returns the EXECUTE_RESPONSE envelope for an
-   --  inbound EXECUTE, or sets Is_Response False for a non-EXECUTE root (§3.3
-   --  server side ignores non-EXECUTE — the transport closes such a connection).
+   --  The §6.5 dispatch chain. Returns the EXECUTE_RESPONSE envelope.
+   --
+   --  Is_Response is now True for EVERY inbound root (0.8.2.25, N12/N17): §6.5's
+   --  "Other type?" arm was rewritten from "Invalid. Close connection." to a coded
+   --  400 invalid_request, so a non-EXECUTE root is ANSWERED rather than dropped.
+   --  The out-parameter is kept so the reader's write decision stays explicit at
+   --  the call site.
    function Dispatch
      (Peer : Peer_Access;
       Conn : in out Conn_State;

@@ -28,6 +28,7 @@ import ./ecf
 import ./model
 import ./wire
 import ./identity
+import ./errors      # TagRejected — §4.11's one arm that KEEPS non_canonical_ecf
 import ./peer
 
 const MaxFrame* = 16 * 1024 * 1024   ## §4.10(a) recommended default (16 MiB)
@@ -84,42 +85,48 @@ proc setNoDelay*(sock: AsyncSocket) =
 # ── framing ────────────────────────────────────────────────────────────────────
 
 proc recvExactly(sock: AsyncSocket; n: int): Future[string] {.async.} =
-  ## Read exactly `n` bytes; empty string signals a closed connection.
+  ## Read up to `n` bytes, looping until `n` are in hand or the peer closes. A SHORT
+  ## result is returned as-is rather than collapsed to "": the caller needs to tell a
+  ## close at a frame boundary (0 bytes read) from one MID-FRAME (1..n-1 read), because
+  ## §4.11 owes a coded frame for the second and nothing at all for the first.
   var buf = newStringOfCap(n)
   while buf.len < n:
     let chunk = await sock.recv(n - buf.len)
-    if chunk.len == 0: return ""   # peer closed
+    if chunk.len == 0: break        # peer closed
     buf.add chunk
   buf
 
 type Frame = object
-  closed: bool       ## clean connection close
-  oversize: int      ## >0 → §4.10(a) over-limit; drain this many bytes then 413
+  closed: bool       ## clean connection close AT A FRAME BOUNDARY — owed nothing
+  truncated: bool    ## §4.11 framing arm: the stream ended MID-FRAME — owed 400
+  oversize: int      ## >0 → §4.10(a) over-limit; the DECLARED length, never read
   payload: seq[byte]
 
 proc readFrame(sock: AsyncSocket): Future[Frame] {.async.} =
-  ## Read one length-prefixed frame. §4.10(a): an over-limit frame is signalled
-  ## (not read into memory) so the reader can drain + reply 413 and KEEP serving.
+  ## Read one length-prefixed frame. §4.10(a): an over-limit frame is signalled at its
+  ## LENGTH PREFIX and its body is never read -- "reject BEFORE fully buffering".
+  ##
+  ## THE TRUNCATED ARM IS SEPARATE FROM THE CLEAN CLOSE and that is §4.11's framing row:
+  ## "un-parseable, truncated or non-canonical CBOR, or a length prefix that never
+  ## completes" is a REFUSAL owed a coded frame, while a clean EOF at a frame boundary is
+  ## an ordinary hangup owed nothing. Both surface as a short read, so the distinction
+  ## can only be made where the frame boundary is known -- and getting it wrong the other
+  ## way would answer 400 to every peer that simply hangs up. This peer collapsed both
+  ## into `closed` and broke the loop silently.
   let hdr = await recvExactly(sock, 4)
   if hdr.len == 0: return Frame(closed: true)
+  if hdr.len < 4: return Frame(truncated: true)     # a partial length prefix
   let n = (uint32(byte hdr[0]) shl 24) or (uint32(byte hdr[1]) shl 16) or
           (uint32(byte hdr[2]) shl 8) or uint32(byte hdr[3])
   if int(n) > MaxFrame:
     return Frame(oversize: int(n))
+  # A ZERO-LENGTH frame is COMPLETE, not truncated: it reaches the decoder and is
+  # refused there as bytes that never become an Envelope.
   let body = await recvExactly(sock, int(n))
-  if body.len < int(n): return Frame(closed: true)
+  if body.len < int(n): return Frame(truncated: true)
   var payload = newSeq[byte](body.len)
   for i in 0 ..< body.len: payload[i] = byte(body[i])
   Frame(payload: payload)
-
-proc drainBytes(sock: AsyncSocket; total: int) {.async.} =
-  ## Consume + discard `total` bytes from the socket (§4.10(a) oversize drain), so
-  ## the stream stays framed and the connection keeps serving after the 413.
-  var remaining = total
-  while remaining > 0:
-    let chunk = await sock.recv(min(remaining, 65536))
-    if chunk.len == 0: break         # peer closed mid-drain
-    remaining -= chunk.len
 
 proc writeFramed(io: Io; env: Envelope): Future[void] {.async.} =
   ## Serialized framed write (responses + outbound requests share the socket).
@@ -178,46 +185,136 @@ proc dispatchAndRespond(p: Peer; conn: Conn; io: Io; env: Envelope) {.async.} =
     except CatchableError:
       discard   # peer went away mid-write; reader loop will observe the close
 
+proc preAdmissionRefusal*(e: ref Exception): tuple[status: uint64, code, message: string] =
+  ## The `(status, code, message)` §4.11 assigns a pre-admission failure's CAUSE.
+  ##
+  ## "The frame obligation belongs to the class; the CODE belongs to the cause [MUST]" --
+  ## a single code for the class would answer an honest caller under the wrong reason and
+  ## send them to the wrong layer.
+  ##
+  ##   envelope over the configured maximum  413 payload_too_large  (§4.10(a), N14)
+  ##   resolution integrity (mis-keyed inc.) 400 hash_mismatch      (§5.2a, §1.8)
+  ##   framing / never becomes an Envelope   400 invalid_request    (§4.7, §4.11)
+  ##   root is neither EXECUTE nor E_R       400 invalid_request    (§3.3, §4.11 -- in
+  ##                                           peer.dispatch, not here)
+  ##   connect-auth proof-of-possession      401 authentication_failed (the connect
+  ##                                           handler's, not here)
+  ##
+  ## THE TAG ARM KEEPS `non_canonical_ecf` AND THAT IS DELIBERATE. §4.11 rules that code
+  ## non-conformant "on the framing arm" and gives its reason in the same sentence:
+  ## ENTITY-CBOR-ENCODING defines it for CBOR TAG-POLICY violations specifically, which
+  ## that document still MUSTs at decode time (§6.3). The two rows are disjoint by CAUSE
+  ## rather than in conflict. Everything else this decoder calls non-canonical (a
+  ## non-minimal head, an indefinite length, mis-ordered keys) is genuinely
+  ## "non-canonical CBOR that never becomes an Envelope".
+  ##
+  ## This peer answered `non_canonical_ecf` for EVERY decode-boundary cause until
+  ## 0.8.2.24/.25 pinned them apart -- measured on the wire, arc-probe B1/B2. A mis-keyed
+  ## `included` entry carries NO TAG: its encoding is canonical, what is false is the
+  ## claim the KEY makes, and the remedy `non_canonical_ecf` selects (*re-encode*) sends
+  ## an honest caller to the wrong layer.
+  ##
+  ## ORDER IS LOAD-BEARING: `TagRejected` is an `EcCodecError` and the model errors are
+  ## `ModelError`s, so each specific arm is tested before anything that could subsume it.
+  ##
+  ## The messages are a FIXED TABLE, never the exception's own text: a wire-visible
+  ## string stays ASCII (two peers in this cohort have been killed at runtime by a
+  ## non-ASCII byte in an encoded string, on two unrelated compilers), and nothing here
+  ## echoes attacker-supplied bytes back.
+  if e of IncludedKeyMismatch or e of ContentHashMismatch:
+    (400'u64, "hash_mismatch", "an entity was addressed by a hash that does not bind to it")
+  elif e of TagRejected:
+    (400'u64, "non_canonical_ecf", "CBOR tags are forbidden anywhere in an entity data field")
+  else:
+    (400'u64, "invalid_request", "frame did not decode into an envelope")
+
+proc refusePreAdmission(io: Io; requestId: string;
+                        refusal: tuple[status: uint64, code, message: string]) {.async.} =
+  ## Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+  ## refused BEFORE it becomes an admitted request.
+  ##
+  ## "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on the
+  ## wire [MUST] -- correlated by `request_id` where the id is available, and otherwise
+  ## as a best-effort coded frame carrying no correlation."
+  ##
+  ## §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS" and
+  ## therefore reaches none of these, which is why §4.11 exists. BOTH of the
+  ## non-conformant behaviours it names separately were present on this peer: DROPPING
+  ## the frame (the un-salvageable decode arm and the non-EXECUTE root) and CLOSING with
+  ## no coded frame (the truncated arm's bare `break`).
+  ##
+  ## AN EMPTY `request_id` IS THE BEST-EFFORT FORM, not a bug: it is what the section
+  ## prescribes where no id can be recovered, and guessing one would correlate the
+  ## refusal to somebody else's in-flight request.
+  let err = errorResult(refusal.code, some(refusal.message))
+  try:
+    await io.writeFramed(Envelope(root: makeResponse(requestId, refusal.status, err),
+                                  included: @[]))
+  except CatchableError:
+    discard   # a write failure here is a dead socket, not a protocol decision
+
 proc readLoop*(p: Peer; conn: Conn; io: Io) {.async.} =
   ## Read frames until the connection closes. EXECUTE_RESPONSE → route to its
-  ## awaiting caller; EXECUTE → dispatch on its own task (reader keeps reading).
+  ## awaiting caller; EXECUTE → dispatch on its own task (reader keeps reading);
+  ## anything else → §4.11/§6.5 coded refusal, which peer.dispatch supplies.
   try:
     while true:
       let frame = await readFrame(io.sock)
-      if frame.closed: break                         # clean close
+      if frame.closed: break                         # clean close at a frame boundary
+      if frame.truncated:
+        # §4.11's framing arm. This used to arrive as `closed` and take a bare `break` --
+        # "closing with no coded frame", indistinguishable from a network fault and, on a
+        # multiplexed connection, fatal to unrelated ADMITTED requests. The stream is
+        # desynchronized (the declared bytes never arrived), so the frame goes out and
+        # THEN the connection closes: §4.11 makes the FRAME mandatory and leaves the close
+        # to us, and closing is the only sound choice once the framing is lost.
+        await refusePreAdmission(io, "", (400'u64, "invalid_request",
+                                          "frame did not decode into an envelope"))
+        break
       if frame.oversize > 0:
-        # §4.10(a): drain the over-limit body, reply 413, KEEP serving.
-        await drainBytes(io.sock, frame.oversize)
-        let err = makeResponse("", 413'u64, errorResult("payload_too_large"))
-        try: await io.writeFramed(Envelope(root: err, included: @[]))
-        except CatchableError: break
-        continue
+        # §4.10(a), mood raised SHOULD -> MUST at 0.8.2.25 (N14). The over-size condition
+        # is detected at the length prefix with the connection intact and nothing spent,
+        # so the permissive mood had nothing to license.
+        #
+        # THE DRAIN IS GONE, AND ITS REMOVAL IS THE FIX RATHER THAN A SIMPLIFICATION.
+        # This arm used to consume `oversize` bytes before answering, to keep the stream
+        # framed and carry on serving -- which reads as the more polite behaviour and is
+        # exactly the "fully buffering" §4.10(a) forbids, one buffer at a time. A sender
+        # that DECLARES 16 MiB + 1 and then sends nothing parked the reader forever and
+        # NO 413 WAS EVER EMITTED: measured here, the oversize case answered nothing at
+        # all until the client gave up. The frame goes out first and the connection then
+        # closes, because the framing is unrecoverable once a body of unknown length is
+        # outstanding -- §4.11 makes the frame mandatory and leaves the close to us.
+        await refusePreAdmission(io, "", (413'u64, "payload_too_large",
+                                          "inbound frame exceeds the configured maximum size"))
+        break
       var env: Envelope
+      var refusal = (status: 0'u64, code: "", message: "")
       try:
         env = envelopeOfFrame(frame.payload)
       except CatchableError:
-        # §6.3: "Rejection returns 400 non_canonical_ecf" -- a rejected frame is owed
-        # a STATUS, not silence. This used to `continue`, which rejected the frame
-        # (correct) and then dropped it on the floor (wrong): the sender saw no
-        # response at all and blocked until its own timeout, violating §6.3's second
-        # sentence and §4.9(c) deliver-or-signal. It also made a refusal
-        # indistinguishable from a dead peer, and on a single-connection oracle run it
-        # poisons every later request on the same connection.
+        # A COMPLETE frame the decoder refused. The framing is intact, so we answer and
+        # KEEP SERVING -- and the refusal MUST be a status rather than silence (§4.11;
+        # §4.9(c) says the same from the other direction). This used to `continue`, which
+        # rejected the frame (correct) and then dropped it on the floor (wrong): the
+        # sender saw no response at all and blocked until its own timeout, so a refusal
+        # was indistinguishable from a dead peer.
         #
         # The frame is still REJECTED -- only enough is salvaged to correlate the
-        # response. If even the request_id is unrecoverable the frame is unattributable
-        # and silence is the only option left.
-        let rid = salvageRequestId(frame.payload)
-        if rid.isSome:
-          let rej = makeResponse(rid.get, 400'u64, errorResult("non_canonical_ecf"))
-          try: await io.writeFramed(Envelope(root: rej, included: @[]))
-          except CatchableError: break
+        # response, and an unrecoverable id now takes §4.11's uncorrelated best-effort
+        # form rather than the silence it used to take.
+        refusal = preAdmissionRefusal(getCurrentException())
+      if refusal.status != 0:
+        await refusePreAdmission(io, salvageRequestId(frame.payload).get(""), refusal)
         continue                                     # keep reading
       if env.root.typ == ResponseType:
         io.routeResponse(env)
-      elif env.root.typ == ExecuteType:
-        asyncCheck dispatchAndRespond(p, conn, io, env)   # §4.8: do not block reader
-      # §6.5 other root type → ignore (client-style; a strict responder closes)
+      else:
+        # EXECUTE dispatches on its own task (§4.8: do not block the reader); any OTHER
+        # root type reaches the same path, where peer.dispatch answers §6.5's rewritten
+        # "Other type?" arm with 400 invalid_request (N12/N17). It used to be dropped
+        # here without ever reaching dispatch.
+        asyncCheck dispatchAndRespond(p, conn, io, env)
   except CatchableError:
     discard
   io.closeIo()

@@ -66,6 +66,56 @@ final class Wire
         return \pack('N', \strlen($payload)) . $payload;
     }
 
+    // ── §4.11 pre-admission refusal classification (0.8.2.25) ─────────────────────
+
+    /**
+     * The `[status, code, message]` §4.11 assigns a pre-admission failure's CAUSE.
+     *
+     * "The frame obligation belongs to the class; the CODE belongs to the cause [MUST]" —
+     * a single code for the class would answer an honest caller under the wrong reason
+     * and send them to the wrong layer.
+     *
+     *   connect-auth proof-of-possession      401 authentication_failed  (§4.6/§4.7 —
+     *                                            the connect handler's, not here)
+     *   envelope over the configured maximum  413 payload_too_large      (§4.10(a), N14)
+     *   resolution integrity (mis-keyed inc.) 400 hash_mismatch          (§5.2a, §1.8)
+     *   framing / never becomes an Envelope   400 invalid_request        (§4.7, §4.11)
+     *   root is neither EXECUTE nor E_R       400 invalid_request        (§3.3, §4.11 —
+     *                                            in Peer::dispatch, not here)
+     *
+     * THE TAG ARM KEEPS `non_canonical_ecf` AND THAT IS DELIBERATE. §4.11 rules that code
+     * non-conformant "on the framing arm" and gives its reason in the same sentence:
+     * `ENTITY-CBOR-ENCODING` defines it for CBOR tag-policy violations specifically, which
+     * that document still MUSTs at decode time (§6.3). The two rows are disjoint by CAUSE
+     * rather than in conflict. Everything else this decoder calls non-canonical (a
+     * non-minimal head, an indefinite length, mis-ordered keys) is genuinely
+     * "non-canonical CBOR that never becomes an Envelope".
+     *
+     * ORDER IS LOAD-BEARING: TagRejectedException extends NonCanonicalEcfException and
+     * HashMismatchException extends ProtocolException, so each specific arm must be tested
+     * before its superclass or it can never be reached.
+     *
+     * The messages are a FIXED TABLE, never the internal exception text: a wire-visible
+     * string stays ASCII (two peers in this cohort have been killed at runtime by a
+     * non-ASCII byte in an encoded string, on two unrelated compilers), the internal texts
+     * carry section signs, and nothing here echoes attacker-supplied bytes back.
+     *
+     * @return array{0:int,1:string,2:string}
+     */
+    public static function preAdmissionRefusal(\Throwable $e): array
+    {
+        if ($e instanceof PayloadTooLargeException) {
+            return [413, 'payload_too_large', 'inbound frame exceeds the configured maximum size'];
+        }
+        if ($e instanceof HashMismatchException) {
+            return [400, 'hash_mismatch', 'an entity was addressed by a hash that does not bind to it'];
+        }
+        if ($e instanceof TagRejectedException) {
+            return [400, 'non_canonical_ecf', 'CBOR tags are forbidden anywhere in an entity data field'];
+        }
+        return [400, 'invalid_request', 'frame did not decode into an envelope'];
+    }
+
     // ── EXECUTE builder (§3.2) ────────────────────────────────────────────────────
 
     public static function makeExecute(

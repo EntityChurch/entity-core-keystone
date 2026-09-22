@@ -15,6 +15,14 @@ MAX_FRAME :: 16 * 1024 * 1024 // §4.10(a) — 16 MiB inbound payload bound
 Wire_Error :: enum {
 	None = 0,
 	Closed,
+	// A stream that ended MID-FRAME: a partial length prefix, or a prefix declaring
+	// n bytes followed by fewer. §4.11's framing arm names this input outright and
+	// makes it a REFUSAL owed a coded frame, where a clean EOF at a FRAME BOUNDARY
+	// (.Closed above) is an ordinary hangup and is owed nothing. The two arrive at the
+	// socket as the same short read, so the distinction can only be made where the frame
+	// boundary is known -- here -- and getting it wrong in the other direction answers
+	// 400 to every peer that simply hangs up.
+	Truncated,
 	Frame_Too_Large,
 	Write_Failed,
 	Codec,
@@ -22,16 +30,18 @@ Wire_Error :: enum {
 
 // ── socket read/write of a full frame ─────────────────────────────────────────
 
-read_exact :: proc(sock: net.TCP_Socket, buf: []u8) -> Wire_Error {
+// Fill `buf` completely. Reports how many bytes DID arrive, because the caller is the
+// only place that knows whether a short read is an ordinary close or a truncation.
+read_exact :: proc(sock: net.TCP_Socket, buf: []u8) -> (got: int, err: Wire_Error) {
 	off := 0
 	for off < len(buf) {
-		n, err := net.recv_tcp(sock, buf[off:])
-		if err != nil || n == 0 {
-			return .Closed
+		n, e := net.recv_tcp(sock, buf[off:])
+		if e != nil || n == 0 {
+			return off, .Closed
 		}
 		off += n
 	}
-	return .None
+	return off, .None
 }
 
 // read_frame reads one length-prefixed frame; returns the owned payload (caller
@@ -41,16 +51,27 @@ read_frame :: proc(
 	allocator := context.allocator,
 ) -> (payload: []u8, err: Wire_Error) {
 	hdr: [4]u8
-	read_exact(sock, hdr[:]) or_return
+	if got, e := read_exact(sock, hdr[:]); e != .None {
+		// ZERO bytes of the prefix is the ordinary close; one to three is a PARTIAL
+		// LENGTH PREFIX, which §4.11 owes a coded frame. This arm is the one a naive
+		// read-exact collapses into a hangup, and it is invisible to a driver whose
+		// "truncated" case sends a COMPLETE prefix -- that truncation is caught in the
+		// body read below instead.
+		return nil, got == 0 ? .Closed : .Truncated
+	}
 	length :=
 		u32(hdr[0]) << 24 | u32(hdr[1]) << 16 | u32(hdr[2]) << 8 | u32(hdr[3])
 	if int(length) > MAX_FRAME {
 		return nil, .Frame_Too_Large
 	}
+	// A ZERO-LENGTH frame is COMPLETE, not truncated: it reaches the decoder and is
+	// refused there as bytes that never become an Envelope.
 	buf := make([]u8, int(length), allocator)
-	if e := read_exact(sock, buf); e != .None {
+	if _, e := read_exact(sock, buf); e != .None {
 		delete(buf, allocator)
-		return nil, e
+		// The prefix arrived and the body did not: a truncation whatever the socket
+		// called it.
+		return nil, .Truncated
 	}
 	return buf, .None
 }

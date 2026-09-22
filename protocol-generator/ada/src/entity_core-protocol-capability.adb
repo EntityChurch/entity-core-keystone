@@ -282,11 +282,25 @@ package body Entity_Core.Protocol.Capability is
       Incl : constant Ecf_Value := Field (Scope, "include");
       Excl : constant Ecf_Value := Field (Scope, "exclude");
    begin
-      if Exclude_Unmatchable (Local_Peer, Excl) then
-         return False;  --  0.8.2.21 -- deny
-      end if;
       if Kind_Of = Id_Scope then
+         --  NO SENTINEL GUARD HERE, and that is 0.8.2.24's ruling (N2/N3) rather
+         --  than an omission. §5.4: "a capability carrying an unmatchable
+         --  PATH-SCOPE pattern is INVALID ... It does NOT reach `operations` or
+         --  `peers` [MUST]". Under the id-scope grammar every non-star pattern is
+         --  a LITERAL and a literal is never structurally unmatchable, so there is
+         --  nothing here for the sentinel to detect.
+         --
+         --  The un-scoped form this replaces transcribed §5.2's exclude loop
+         --  before that loop grew its type dispatch: it ran an id pattern through
+         --  the §5.4 PATH transforms purely to classify it and then DENIED THE
+         --  WHOLE DIMENSION on a property unrelated to whether the exclude carves
+         --  anything out. An `operations` exclude naming an ordinary namespaced
+         --  operation with a leading star-slash canonicalized to the sentinel and
+         --  denied every operation. Over-denial, invisible on a well-formed grant.
          return Covered_Id (Incl, Value) and then not Covered_Id (Excl, Value);
+      end if;
+      if Exclude_Unmatchable (Local_Peer, Excl) then
+         return False;  --  0.8.2.21 -- deny, do not carve out nothing
       end if;
       declare
          CV : constant String := Canonicalize (Local_Peer, Value);
@@ -489,7 +503,27 @@ package body Entity_Core.Protocol.Capability is
 
    --  Scope-subset on one scope dimension (child ⊆ parent), canonicalizing on
    --  the given frames.
-   function Scope_Subset (Child_Peer, Parent_Peer : String; Child, Parent : Ecf_Value)
+   --  §5.5a/§5.6 attenuation subset, TYPED BY SCOPE KIND (F50, ruled 0.8.2.16).
+   --
+   --  §3.6's grammar binds the SCOPE TYPE, not one function: "An implementation
+   --  on the canonicalizing reading is non-conformant and MUST adopt the literal
+   --  matcher." F40 typed Matches_Scope and this sibling was left on the path
+   --  matcher for all four dimensions, so `operations` and `peers` -- both
+   --  id-scope -- were compared with §5.4 canonicalization and wildcard semantics
+   --  they do not have. The divergence is narrow and FAIL-CLOSED (an include of a
+   --  namespaced operation is not covered by a parent bare star under the path
+   --  matcher, which widens nothing but refuses legitimate delegation), which is
+   --  exactly why no hand-tried example found it.
+   --
+   --  Kind_Of has NO DEFAULT and is named at every call site, because a default
+   --  is how the next dimension inherits the wrong matcher silently -- the
+   --  original F40 defect.
+   --
+   --  On the Id_Scope arm Child_Peer/Parent_Peer are UNUSED BY CONSTRUCTION: no
+   --  canonicalization frame applies to an identifier, so the two operands are
+   --  compared as written.
+   function Scope_Subset (Child_Peer, Parent_Peer : String; Child, Parent : Ecf_Value;
+                          Kind_Of : Scope_Kind)
                           return Boolean is
       C_Incl : constant Ecf_Value := Field (Child, "include");
       P_Incl : constant Ecf_Value := Field (Parent, "include");
@@ -501,7 +535,9 @@ package body Entity_Core.Protocol.Capability is
             declare
                CP : constant Ecf_Value := Array_Element (C_Incl, I);
                CC : constant String :=
-                 (if Kind (CP) = K_Text then Canonicalize (Child_Peer, As_Text (CP)) else "");
+                 (if Kind (CP) /= K_Text then ""
+                  elsif Kind_Of = Id_Scope then As_Text (CP)
+                  else Canonicalize (Child_Peer, As_Text (CP)));
                Any_Match : Boolean := False;
             begin
                if Kind (P_Incl) = K_Array then
@@ -510,7 +546,10 @@ package body Entity_Core.Protocol.Capability is
                         PP : constant Ecf_Value := Array_Element (P_Incl, J);
                      begin
                         if Kind (PP) = K_Text
-                          and then Matches_Pattern (CC, Canonicalize (Parent_Peer, As_Text (PP)))
+                          and then (if Kind_Of = Id_Scope
+                                    then Matches_Id_Pattern (CC, As_Text (PP))
+                                    else Matches_Pattern
+                                           (CC, Canonicalize (Parent_Peer, As_Text (PP))))
                         then
                            Any_Match := True;
                            exit;
@@ -530,7 +569,9 @@ package body Entity_Core.Protocol.Capability is
             declare
                PE : constant Ecf_Value := Array_Element (P_Excl, I);
                CPE : constant String :=
-                 (if Kind (PE) = K_Text then Canonicalize (Parent_Peer, As_Text (PE)) else "");
+                 (if Kind (PE) /= K_Text then ""
+                  elsif Kind_Of = Id_Scope then As_Text (PE)
+                  else Canonicalize (Parent_Peer, As_Text (PE)));
                Any_Match : Boolean := False;
             begin
                if Kind (C_Excl) = K_Array then
@@ -539,7 +580,10 @@ package body Entity_Core.Protocol.Capability is
                         CE : constant Ecf_Value := Array_Element (C_Excl, J);
                      begin
                         if Kind (CE) = K_Text
-                          and then Matches_Pattern (CPE, Canonicalize (Child_Peer, As_Text (CE)))
+                          and then (if Kind_Of = Id_Scope
+                                    then Matches_Id_Pattern (CPE, As_Text (CE))
+                                    else Matches_Pattern
+                                           (CPE, Canonicalize (Child_Peer, As_Text (CE))))
                         then
                            Any_Match := True;
                            exit;
@@ -571,23 +615,27 @@ package body Entity_Core.Protocol.Capability is
       return Boolean is
    begin
       if not Scope_Subset (Local_Peer, Local_Peer,
-                           Field (Child, "handlers"), Field (Parent, "handlers"))
+                           Field (Child, "handlers"), Field (Parent, "handlers"),
+                           Path_Scope)
       then
          return False;
       end if;
       if not Scope_Subset (Local_Peer, Local_Peer,
-                           Field (Child, "operations"), Field (Parent, "operations"))
+                           Field (Child, "operations"), Field (Parent, "operations"),
+                           Id_Scope)
       then
          return False;
       end if;
       if not Scope_Subset (Child_Peer, Parent_Peer,
-                           Field (Child, "resources"), Field (Parent, "resources"))
+                           Field (Child, "resources"), Field (Parent, "resources"),
+                           Path_Scope)
       then
          return False;
       end if;
       return Scope_Subset (Local_Peer, Local_Peer,
                            Peers_Or_Default (Local_Peer, Child),
-                           Peers_Or_Default (Local_Peer, Parent));
+                           Peers_Or_Default (Local_Peer, Parent),
+                           Id_Scope);
    end Grant_Subset;
 
    --  Every child grant must be a subset of SOME parent grant.
@@ -668,6 +716,124 @@ package body Entity_Core.Protocol.Capability is
       end loop;
       return True;
    end Grants_Are_Subset;
+
+   -----------------------
+   -- Effective_Targets --
+   -----------------------
+   --  See the spec file. The survivors are RAW (the caller's own spelling); the
+   --  Has_Resource out-parameter is §3.3's non-lossy two-empties discriminator.
+   function Effective_Targets
+     (Local_Peer   : String;
+      Exec         : Materialized_Entity;
+      Has_Resource : out Boolean) return Value_Vector
+   is
+      R : constant Ecf_Value := Field (Data (Exec), "resource");
+      Found : Boolean;
+   begin
+      Has_Resource := False;
+      if Kind (R) /= K_Map then
+         return Value_Vector'(1 .. 0 => Make_Null);
+      end if;
+      declare
+         Targets : constant Value_Vector := Text_List (R, "targets", Found);
+      begin
+         if not Found then
+            --  A `resource` MAP carrying no `targets` key reads ABSENT here, which
+            --  is what every 0.8.2.25 peer answers and is an OPEN question rather
+            --  than a settled one: §3.2 says `targets` "MUST contain at least one
+            --  entry", which makes the shape MALFORMED rather than absent. Nothing
+            --  in the pinned check set drives it and no disposition is pinned, so
+            --  the shipped behaviour is HELD rather than changed.
+            return Value_Vector'(1 .. 0 => Make_Null);
+         end if;
+         Has_Resource := True;
+         declare
+            Caller_Excl : constant Ecf_Value := Field (R, "exclude");
+            Kept : Value_Vector (1 .. Targets'Length);
+            N    : Natural := 0;
+         begin
+            for T of Targets loop
+               if Kind (T) = K_Text then
+                  declare
+                     CT : constant String := Canonicalize (Local_Peer, As_Text (T));
+                     Dropped : Boolean := False;
+                  begin
+                     if Kind (Caller_Excl) = K_Array then
+                        for I in 1 .. Array_Length (Caller_Excl) loop
+                           declare
+                              X : constant Ecf_Value := Array_Element (Caller_Excl, I);
+                           begin
+                              --  THE CALLER-EXCLUDE ARM IS FAIL-OPEN on an
+                              --  unmatchable pattern -- §5.4's table rules it
+                              --  separately from the GRANT arm: Canonicalize
+                              --  answers the sentinel, Matches_Pattern then answers
+                              --  False, and the target simply SURVIVES. That
+                              --  asymmetry is 0.8.2.21's whole point and it is
+                              --  INHERITED from the primitives here, never restated.
+                              if Kind (X) = K_Text
+                                and then Matches_Pattern
+                                           (CT, Canonicalize (Local_Peer, As_Text (X)))
+                              then
+                                 Dropped := True;
+                                 exit;
+                              end if;
+                           end;
+                        end loop;
+                     end if;
+                     if not Dropped then
+                        N := N + 1;
+                        Kept (N) := T;   --  RAW, not CT
+                     end if;
+                  end;
+               end if;
+            end loop;
+            return Kept (1 .. N);
+         end;
+      end;
+   end Effective_Targets;
+
+   ---------------------------
+   -- Check_Path_Permission --
+   ---------------------------
+   --  See the spec file. Three dimensions, the LOCAL frame, and no caller-exclude
+   --  set: the subject is a single concrete path and the caller's exclusions have
+   --  already been applied in deriving it, so every grant exclude covering the
+   --  subject denies -- which Matches_Scope already implements, including
+   --  0.8.2.21's sentinel rule.
+   function Check_Path_Permission
+     (Local_Peer      : String;
+      Operation       : String;
+      Path            : String;
+      Token           : Materialized_Entity;
+      Handler_Pattern : String) return Boolean
+   is
+      --  Canonicalize is TOTAL and may answer Never_Match, which matches no grant
+      --  (§5.4) -- so a malformed path falls through to DENY rather than being
+      --  matched against anything.
+      CP : constant String := Canonicalize (Local_Peer, Path);
+      Grants : constant Ecf_Value := Grants_Of (Token);
+   begin
+      if Kind (Grants) /= K_Array then
+         return False;
+      end if;
+      for I in 1 .. Array_Length (Grants) loop
+         declare
+            G : constant Ecf_Value := Array_Element (Grants, I);
+         begin
+            if Kind (G) = K_Map
+              and then Matches_Scope (Local_Peer, Handler_Pattern,
+                                      Field (G, "handlers"), Path_Scope)
+              and then Matches_Scope (Local_Peer, Operation,
+                                      Field (G, "operations"), Id_Scope)
+              and then Matches_Scope (Local_Peer, CP,
+                                      Field (G, "resources"), Path_Scope)
+            then
+               return True;
+            end if;
+         end;
+      end loop;
+      return False;
+   end Check_Path_Permission;
 
    --  Per-link granter frame (§PR-8): the link's resource patterns canonicalize
    --  on its granter's peer_id. Multi-sig root (no granter) → Local_Peer.

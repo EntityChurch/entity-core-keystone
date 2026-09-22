@@ -33,6 +33,17 @@ FrameOf←{((4⍴256)⊤≢⍵),⍵}                          ⍝ payload -> [4-
  have:gRxBuf[idx]←⊂(idx⊃gRxBuf),bytes
 ∇
 
+⍝ 1 iff fd's receive buffer still holds bytes that never completed a frame. §4.11's
+⍝ framing arm needs this to tell a MID-FRAME end of stream (a refusal, owed a coded
+⍝ frame) from a clean close at a frame boundary (an ordinary hangup, owed nothing). The
+⍝ two are indistinguishable at the socket: read(2) answers 0 for both.
+∇Z←TrRxPending fd;idx
+ Z←0
+ idx←RxIndex fd
+ →(idx=0)/0
+ Z←0<≢idx⊃gRxBuf
+∇
+
 ∇TrRxDrop fd;idx
  idx←RxIndex fd
  →(idx=0)/0

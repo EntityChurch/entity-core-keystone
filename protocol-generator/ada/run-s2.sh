@@ -30,10 +30,16 @@ run() {
 BUILD='gprbuild -P entity_core_protocol.gpr -p'
 CONF="./bin/run_conformance $VECTORS"
 TESTS='./bin/run_tests'
+# The PEER-machinery units (§3.3 ladder, §6.3 path check + listing filter, §5.4's
+# scoped sentinel, §5.5a's typed subset, §4.11's refusal classification). Separate
+# from run_tests because that one is the CODEC gate; both run in `all`, and an axis
+# whose gate is not in the sweep's entry point is an axis nobody measures.
+PEER_TESTS='./bin/run_peer_tests'
 
 case "${1:-all}" in
   build) run "$BUILD" ;;
   conf)  run "$CONF" ;;
-  tests) run "$TESTS" ;;
-  *)     run "$BUILD && echo '--- self-tests ---' && $TESTS && echo '--- conformance ---' && $CONF" ;;
+  tests) run "$TESTS && $PEER_TESTS" ;;
+  peer)  run "$PEER_TESTS" ;;
+  *)     run "$BUILD && echo '--- self-tests ---' && $TESTS && echo '--- peer self-tests ---' && $PEER_TESTS && echo '--- conformance ---' && $CONF" ;;
 esac
