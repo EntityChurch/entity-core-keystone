@@ -121,7 +121,12 @@ trap reap_host EXIT INT TERM
 i=0; while [ "$i" -lt 100 ]; do grep -q "^BRIDGE-LISTENING" /tmp/bridge.out 2>/dev/null && break; kill -0 "$BR" 2>/dev/null || { echo "bridge died:"; cat /tmp/bridge.out; exit 1; }; i=$((i+1)); sleep 0.1; done
 
 # 2. Peer harness (connects OUT to the bridge over WS; the Scratch-extension stand-in).
-WS_URL="ws://127.0.0.1:$WS_PORT" node harness/ec-peer-node.js >/tmp/peer.out 2>/tmp/peer.err &
+# `--debug-open-grants` is passed explicitly rather than hardcoded in the harness source,
+# so this peer's grant configuration is visible on its command line like every other
+# harness in the cohort — which is what lets tools/arc-probe/run.sh make its one edit
+# (remove the flag) instead of refusing the peer outright. The launched configuration is
+# unchanged; it is now READABLE.
+WS_URL="ws://127.0.0.1:$WS_PORT" node harness/ec-peer-node.js --debug-open-grants >/tmp/peer.out 2>/tmp/peer.err &
 PEER=$!
 i=0; while [ "$i" -lt 100 ]; do grep -q "^PEER-CONNECTED" /tmp/bridge.out 2>/dev/null && break; kill -0 "$PEER" 2>/dev/null || { echo "peer died:"; cat /tmp/peer.out /tmp/peer.err; exit 1; }; i=$((i+1)); sleep 0.1; done
 echo "BRIDGE + PEER up (tcp:$EC_PORT ws:$WS_PORT)"

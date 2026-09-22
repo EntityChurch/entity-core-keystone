@@ -101,20 +101,24 @@
     "id": "n-invalid",
     "type": "function",
     "z": "tab-ec-peer",
-    "name": "root neither EXECUTE nor RESPONSE → drop (§3.3)",
-    "func": "// A frame that DECODED cleanly but whose root is neither EXECUTE nor\n// EXECUTE_RESPONSE. The TS peer closes the connection here; Node-RED drops\n// (a socket-close hook is a follow-up robustness node).\n//\n// THIS NODE USED TO RECEIVE §6.3's CASE TOO, and answered it with `return null`.\n// A frame the strict decoder REJECTS is a different case with a different\n// answer -- see n-reject-noncanon -- and collapsing the two made this peer\n// answer a mis-keyed `included` entry with silence.\nreturn null;",
+    "name": "root neither EXECUTE nor RESPONSE -> 400 invalid_request (3.3/4.11)",
+    "func": "// A frame that DECODED cleanly but whose root is neither EXECUTE nor\n// EXECUTE_RESPONSE. 0.8.2.25 4.11: a pre-admission refusal MUST put a CODED\n// EXECUTE_RESPONSE on the wire, and this node used to `return null` -- a silent\n// drop, which is one of the two behaviours 4.11 names separately as\n// non-conformant and the weaker one PRECISELY BECAUSE NOTHING SURFACES IT.\n//\n// It is also the easiest to leave in place: the input reads as an unroutable\n// message rather than as a refusal. But the caller is CORRELATABLE -- the\n// request_id sits in a root that decoded -- so the drop billed them their whole\n// 6.11(c) deadline for a frame we read successfully and chose not to answer.\nconst S = global.get('ec').sessions.get(msg.conn);\nif (!S) return null;\nconst bytes = S.refuseNonExecuteRootBytes(msg.payload);\nif (!bytes) return null;\nmsg.payload = bytes;\nreturn msg;",
     "outputs": 0,
     "noerr": 0,
     "x": 950,
     "y": 40,
-    "wires": []
+    "wires": [
+      [
+        "n-listener"
+      ]
+    ]
   },
   {
     "id": "n-reject-noncanon",
     "type": "function",
     "z": "tab-ec-peer",
-    "name": "strict-decode refusal → 400 non_canonical_ecf (§6.3)",
-    "func": "// §6.3: \"Rejection returns `400 non_canonical_ecf`\" -- the frame is refused\n// (the strict decoder already did that) and THAT REFUSAL MUST BE A STATUS, NOT\n// SILENCE. Dropping it satisfies only the first half of the sentence and leaves\n// the sender blocked until its own timeout, so a refusal is indistinguishable\n// from a dead peer. §4.9(c) deliver-or-signal says the same from the other side.\n//\n// The frame stays rejected: the session's builder salvage-decodes it ONLY to\n// recover the request_id, and null means there is nobody to answer.\nconst S = global.get('ec').sessions.get(msg.conn);\nif (!S) return null;\nconst bytes = S.rejectNonCanonicalBytes(msg.payload);\nif (!bytes) return null;\nmsg.payload = bytes;\nreturn msg;",
+    "name": "strict-decode refusal -> the code its CAUSE is assigned (4.11/5.2a)",
+    "func": "// 4.11 (0.8.2.25): a peer that refuses a frame pre-admission MUST put a CODED\n// EXECUTE_RESPONSE on the wire -- correlated where the request_id is available,\n// and otherwise as a best-effort coded frame carrying no correlation. 4.9(c)'s\n// deliver-or-signal rule is scoped to requests the peer ADMITS and reaches none\n// of these, which is why 4.11 exists.\n//\n// THE CODE IS THE CAUSE'S. This answered non_canonical_ecf for everything until\n// 5.2a (N4/N5) pinned a mis-keyed included entry to 400 hash_mismatch and ruled\n// non_canonical_ecf non-conformant there. The builder delegates the table rather\n// than restating it, so there is one reading of which error means which code.\n//\n// The frame stays rejected: the builder salvage-decodes it ONLY to recover the\n// request_id, and an unrecoverable one is now an UNCORRELATED answer rather than\n// silence.\nconst S = global.get('ec').sessions.get(msg.conn);\nif (!S) return null;\nconst bytes = S.refusePreAdmissionBytes(msg.payload);\nif (!bytes) return null;\nmsg.payload = bytes;\nreturn msg;",
     "outputs": 1,
     "noerr": 0,
     "x": 950,

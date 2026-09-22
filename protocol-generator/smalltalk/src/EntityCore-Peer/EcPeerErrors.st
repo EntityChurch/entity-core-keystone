@@ -16,13 +16,26 @@ LIVE-IMAGE NOTE (A-ST-010): each class installed off its parent class object; th
 time this doit runs (EcErrors loads first, and the two intermediate parents are installed +
 referenced across statements here, not by not-yet-registered global name in one expression)."
 
-| pkg core proto transport |
+| pkg core proto transport wire |
 pkg := 'EntityCore-Peer'.
 
 core := Smalltalk at: #EntityCoreError.
 
 proto := (core << #EntityProtocolError package: pkg) install.
-(proto << #EcWireError package: pkg) install.
+wire := (proto << #EcWireError package: pkg) install.
+"EcHashMismatchError — the RESOLUTION-INTEGRITY refusal, a SUBCLASS of EcWireError so every
+ existing `isKindOf: EcWireError` catch keeps working unchanged.
+
+ It exists because §4.11 (0.8.2.25) says the frame obligation belongs to the CLASS and the CODE
+ belongs to the CAUSE, and §5.2a (N4/N5) then pins this particular cause: a mis-keyed `included`
+ entry is `400 hash_mismatch`, and `400 non_canonical_ecf` is NOT conformant for it. The bytes ARE
+ canonical — what is false is the claim the KEY makes — so `non_canonical_ecf`'s remedy (re-encode)
+ sends an honest caller to the wrong layer.
+
+ A SUBCLASS RATHER THAN A MESSAGE-TEXT MATCH, deliberately: the two sites that raise this are
+ distinguishable today only by their prose, and a refusal code selected by grepping an error
+ string is one rename away from silently answering the wrong cause."
+(wire << #EcHashMismatchError package: pkg) install.
 (proto << #EcHelloFailedError package: pkg) install.
 (proto << #EcAuthenticationError package: pkg) install.
 

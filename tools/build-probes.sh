@@ -27,7 +27,7 @@ mkdir -p "$OUT"
 
 probes=("$@")
 if [ ${#probes[@]} -eq 0 ]; then
-  probes=(p47-probe put-probe host-seam-probe f68-probe arc-probe)
+  probes=(p47-probe put-probe host-seam-probe f68-probe arc-probe pa-probe)
 fi
 
 for p in "${probes[@]}"; do

@@ -18,6 +18,10 @@ const net = require("node:net");
 const path = require("node:path");
 const { createKernel } = require(path.join(__dirname, "..", "lib", "peer-kernel.js"));
 const { newSession } = require(path.join(__dirname, "..", "lib", "session.js"));
+// The two §4.11 framing causes. This node OWNS the length prefix, so it is the only
+// place that can detect them — and it hands them to the delegated classification table
+// (via session.refuseFramingBytes) rather than hard-coding two more codes beside it.
+const ec = require(path.join(__dirname, "..", "lib", "codec-bridge.js"));
 
 const MAX_FRAME_BYTES = 16 * 1024 * 1024; // §1.6 SHOULD
 
@@ -57,7 +61,35 @@ module.exports = function (RED) {
       socket.write(framed);
     }
 
-    const server = net.createServer((socket) => {
+    // `allowHalfOpen: true` IS A §4.11 REQUIREMENT ON NODE, NOT A TUNING KNOB. A
+    // truncated frame is only knowable at END-OF-STREAM, and Node's default ends the
+    // server's write side the moment the client's FIN arrives — so the runtime REFUSES
+    // the mandatory coded response with "This socket has been ended by the other party"
+    // and no line of this file is wrong. Go's TCPConn has the behaviour by default,
+    // which is exactly why neither 0.8.2.25 vanguard needed the line and neither would
+    // have predicted it; the BEAM spells the same requirement `exit_on_close: false`.
+    // The cost is that WE now own the close, which every arm below does explicitly.
+    /**
+     * Put §4.11's best-effort UNCORRELATED coded frame on the wire for a framing refusal.
+     *
+     * There is no request_id by construction — no frame ever arrived — and §4.11
+     * PRESCRIBES the uncorrelated form for exactly that case rather than tolerating it:
+     * an uncorrelated coded frame still tells the sender its frame was REFUSED rather
+     * than lost, which is the distinction a silent drop destroys.
+     *
+     * The write may fail on the truncation arm, because the client has already sent FIN
+     * and may be gone. That is why the result is not checked: the obligation is to EMIT.
+     */
+    function refuse(entry, err) {
+      try {
+        const bytes = entry.session.refuseFramingBytes(err);
+        if (bytes) writeFrame(entry.socket, Buffer.from(bytes));
+      } catch (_) {
+        /* best-effort: the socket may already be gone */
+      }
+    }
+
+    const server = net.createServer({ allowHalfOpen: true }, (socket) => {
       socket.setNoDelay(true);
       const id = "c" + nextId++;
       // Per-connection session (registered by id in the shared registry). sendFrame
@@ -81,7 +113,21 @@ module.exports = function (RED) {
         while (entry.buffer.length >= 4) {
           const length = entry.buffer.readUInt32BE(0);
           if (length > MAX_FRAME_BYTES) {
+            // §4.11 + §4.10(a) N14: the coded frame goes out and THEN the connection
+            // closes. This used to be a bare `socket.destroy()` — a close with no frame,
+            // which §4.11 names as one of its two separately-non-conformant behaviours
+            // and which is indistinguishable from a network fault (§4.6). §4.10(a)'s
+            // "SHOULD ... and otherwise MAY close after a best-effort coded frame" became
+            // a MUST precisely because this condition is detected AT THE LENGTH PREFIX
+            // with the connection intact and nothing spent: the peer has not allocated,
+            // has not buffered, and has every resource it needs to answer.
+            //
+            // The body was never drained, so the framing is lost and closing is still the
+            // only sound choice. §4.11 makes it a choice IN ADDITION to answering rather
+            // than INSTEAD of it.
             node.error("frame length " + length + " exceeds limit " + MAX_FRAME_BYTES, {});
+            refuse(entry, new ec.FrameTooLargeError(
+              "frame length " + length + " exceeds limit " + MAX_FRAME_BYTES));
             socket.destroy();
             return;
           }
@@ -93,6 +139,24 @@ module.exports = function (RED) {
           // the session from the shared registry by msg.conn.
           node.send({ payload: Buffer.from(payload), conn: id });
         }
+      });
+      // FIN FROM THE CLIENT. A CLEAN CLOSE AT A FRAME BOUNDARY AND A STREAM THAT ENDED
+      // MID-FRAME ARE DIFFERENT EVENTS, and only the frame boundary knows which: the
+      // first is an ordinary hangup, owed nothing and answered with nothing; the second
+      // is a TRUNCATED frame, which §4.11's framing arm names in as many words ("a length
+      // prefix that never completes") and answers `400 invalid_request`. The
+      // discriminator is whether any bytes are still buffered — a partial prefix or a
+      // partial body means a frame was begun and never finished.
+      //
+      // Answering both would be worse than answering neither: it turns every ordinary
+      // disconnect into a refusal of nothing. This event only exists as a separate hook
+      // because `allowHalfOpen` above keeps our write side alive to reach it.
+      socket.on("end", () => {
+        if (entry.buffer.length > 0) {
+          refuse(entry, new ec.TruncatedFrameError(
+            "stream ended mid-frame with " + entry.buffer.length + " buffered byte(s)"));
+        }
+        socket.destroy(); // we own the close now that the runtime does not
       });
       socket.on("error", () => { entry.session.dispose(); conns.delete(id); });
       socket.on("close", () => { entry.session.dispose(); conns.delete(id); });

@@ -104,48 +104,104 @@ conn compile: 'recvExactly: n
 	out := ByteArray new: n.
 	got := 0.
 	[ got < n ] whileTrue: [
-		socket isConnected ifFalse: [ ^ nil ].
-		(socket waitForDataFor: EcNet readTimeout ifClosed: [ ^ nil ] ifTimedOut: [ nil ]).
+		socket isConnected ifFalse: [ ^ got = 0 ifTrue: [ nil ] ifFalse: [ #short ] ].
+		(socket waitForDataFor: EcNet readTimeout ifClosed: [ ^ got = 0 ifTrue: [ nil ] ifFalse: [ #short ] ] ifTimedOut: [ nil ]).
 		socket dataAvailable ifTrue: [
 			chunk := ByteArray new: n - got.
 			r := socket receiveAvailableDataInto: chunk.
-			r = 0 ifTrue: [ ^ nil ].                          "orderly EOF"
+			r = 0 ifTrue: [ ^ got = 0 ifTrue: [ nil ] ifFalse: [ #short ] ].
 			out replaceFrom: got + 1 to: got + r with: chunk startingAt: 1.
 			got := got + r ] ].
 	^ out'.
 
-"drain: — read and discard n bytes (an oversize §4.10 body). Keeps the connection (§4.9)."
-conn compile: 'drain: n
-	| left chunk r |
-	left := n.
-	[ left > 0 and: [ socket isConnected ] ] whileTrue: [
-		(socket waitForDataFor: EcNet readTimeout ifClosed: [ ^ self ] ifTimedOut: [ ^ self ]).
-		socket dataAvailable ifTrue: [
-			chunk := ByteArray new: (left min: 4096).
-			r := socket receiveAvailableDataInto: chunk.
-			r = 0 ifTrue: [ ^ self ].
-			left := left - r ] ]'.
+"drain: IS GONE, AND ITS ABSENCE IS THE POINT. readFrame used to answer #oversize only AFTER
+ reading and discarding the declared body, so the connection could be kept framed. That is
+ exactly the polite-looking behaviour §4.10(a) forbids — `reject BEFORE fully buffering` — and it
+ is a denial of service against ourselves: a sender that declares 4 GiB and then sends nothing
+ parks the reader for the whole read timeout while no 413 is ever emitted. Measured on the wire
+ (pa-probe D1): `DROPPED — nothing on the wire and the connection stayed open`.
+
+ The over-limit condition is knowable from FOUR BYTES, with nothing allocated and nothing spent,
+ which is why §4.10(a)'s SHOULD became a MUST at 0.8.2.25 (N14). readFrame now answers #oversize
+ at the prefix and the caller emits 413 and closes: the framing is lost either way, so closing is
+ a CHOICE IN ADDITION to answering rather than instead of it."
+
+"recvExactly: answers nil when the stream ended with NOTHING read, and #short when it ended
+ PART WAY THROUGH. The two used to collapse into nil, exactly as io.ReadFull collapses EOF and
+ UnexpectedEOF — and §4.11 (0.8.2.25) makes them different events: a clean close at a frame
+ boundary is an ordinary hangup owed nothing, while a stream that ends mid-frame is a TRUNCATED
+ frame owed `400 invalid_request`. Only the frame boundary knows which, so readFrame below is
+ where the distinction is USED and this is where it has to be MADE."
 
 "readFrame — read one [len:4 BE][payload] frame. Answers:
    a ByteArray  — a valid frame payload
-   #eof         — EOF / broken connection (caller closes)
-   #oversize    — §4.10(a): len > maxFrame; body drained, connection kept (413-class)."
+   #eof         — a clean close at a frame boundary (caller closes, answers nothing)
+   #truncated   — §4.11: a partial length prefix, or a declared body that never arrived
+   #oversize    — §4.10(a)/§4.11 N14: len > maxFrame, detected AT THE PREFIX with nothing
+                  buffered (caller emits 413, then closes)."
 conn compile: 'readFrame
-	| hdr len |
+	| hdr len body |
 	hdr := self recvExactly: 4.
 	hdr isNil ifTrue: [ ^ #eof ].
+	hdr == #short ifTrue: [ ^ #truncated ].
 	len := ((hdr at: 1) bitShift: 24) + ((hdr at: 2) bitShift: 16)
 		+ ((hdr at: 3) bitShift: 8) + (hdr at: 4).
-	(len < 0 or: [ len > EcNet maxFrame ]) ifTrue: [
-		self drain: len.
-		^ #oversize ].
-	^ self recvExactly: len ifNil: [ #eof ]'.
+	(len < 0 or: [ len > EcNet maxFrame ]) ifTrue: [ ^ #oversize ].
+	body := self recvExactly: len.
+	(body isNil or: [ body == #short ]) ifTrue: [ ^ #truncated ].
+	^ body'.
 
 "a small ifNil: helper so readFrame reads cleanly."
 conn compile: 'recvExactly: n ifNil: aBlock
 	| r |
 	r := self recvExactly: n.
 	^ r isNil ifTrue: [ aBlock value ] ifFalse: [ r ]'.
+
+"sendFrameHalfOpen: — the §4.11 framing-refusal writer. Answers whether the frame reached the wire.
+
+ THE RUNTIME, NOT THIS PEER, DECIDES WHETHER A REFUSAL REACHES THE WIRE — and Pharo decides NO
+ once the far end has half-closed. That is the third runtime in this cohort to make the decision
+ and the FIRST WITH NO KNOB. Node has `allowHalfOpen`, the BEAM has `exit_on_close: false`; Pharo
+ has no half-open support in `Socket` at all. Traced rather than inferred, in the stderr this peer keeps:
+
+   sendData:      -> ConnectionClosed: connection closed while sending data
+   sendSomeData:  -> ConnectionClosed   (the lower primitive, past the liveness guard)
+
+ `isConnected` answers false the moment the far end sends FIN, and BOTH write paths gate on it.
+ So the §4.11 TRUNCATION arm is detected correctly, reaches its refusal, and cannot deliver it:
+ `readFrame` answers #truncated, `serveConn:` answers 400 invalid_request, and the image refuses
+ to write it. That is a disclosed gap, not a silent one — the arm stays because it is right and
+ becomes deliverable the day the socket layer supports a half-open write, and because a peer that
+ DETECTS the condition and says so is a different artifact from one that never looked.
+
+ The OVERSIZE arm is unaffected and delivers normally: the far end has not closed there, which is
+ exactly why §4.10(a) N14 made that emission a MUST — the condition is knowable from four bytes
+ with the connection intact.
+
+ Bounded and QUIET: one report, not one per pass. A refusal that cannot be delivered is worth a
+ line, and sixty-four lines is worth none."
+conn compile: 'sendFrameHalfOpen: aPayloadByteArray
+	| len hdr buf sent n |
+	len := aPayloadByteArray size.
+	hdr := ByteArray new: 4.
+	hdr at: 1 put: ((len bitShift: -24) bitAnd: 16rFF).
+	hdr at: 2 put: ((len bitShift: -16) bitAnd: 16rFF).
+	hdr at: 3 put: ((len bitShift: -8) bitAnd: 16rFF).
+	hdr at: 4 put: (len bitAnd: 16rFF).
+	buf := hdr , aPayloadByteArray.
+	sent := 0.
+	[ sent < buf size ] whileTrue: [
+		n := [ socket sendSomeData: buf startIndex: sent + 1 count: buf size - sent ]
+			on: Error
+			do: [ :e |
+				Stdio stderr << ''[refuse-undeliverable] '' << e class name
+					<< '' after '' << sent printString << ''/'' << buf size printString
+					<< '' bytes (this runtime cannot write a half-closed socket)''
+					<< (String with: Character lf); flush.
+				^ false ].
+		n = 0 ifTrue: [ ^ false ].
+		sent := sent + n ].
+	^ true'.
 
 "sendFrame: — send [len:4 BE][payload] (§1.6)."
 conn compile: 'sendFrame: aPayloadByteArray

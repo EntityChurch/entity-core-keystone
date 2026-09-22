@@ -300,3 +300,44 @@ registration race so 256+ live sockets don't fell the peer) and keep serving the
 (the SHOULD → WARN outcome).
 **Escalation:** **operator — RESOLVED at S4.** Generator-robustness lesson for any cooperative
 single-event-loop peer.
+
+## A-ST-018: Pharo cannot write a half-closed socket, so §4.11's TRUNCATION refusal is undeliverable (S4 finding, DISCLOSED GAP)
+
+**V8 section:** §4.11 pre-admission refusal (0.8.2.25), framing arm
+**Profile field:** `[async]` single-event-loop; the `Socket` abstraction
+**Finding:** §4.11 makes a coded `EXECUTE_RESPONSE` mandatory for every pre-admission refusal,
+including *"a length prefix that never completes"*. A truncated frame is only KNOWABLE at
+end-of-stream — the sender writes a prefix, writes part of the body, and sends FIN — so answering
+it requires writing to a socket whose far end has half-closed.
+
+**Pharo refuses that write at every API level available to the image, and it was traced rather
+than inferred.** From this peer's own stderr:
+
+```
+sendData:      -> ConnectionClosed: connection closed while sending data
+sendSomeData:  -> ConnectionClosed          (the lower primitive, past the liveness guard)
+```
+
+`Socket>>isConnected` answers false the moment the far end sends FIN, and both write paths gate
+on it. There is no `allowHalfOpen` here: Pharo's `Socket` has no half-open support to enable.
+
+**This is the third runtime in the cohort to decide, by its stream layer, whether a refusal
+reaches the wire — and the first with no knob.** Node needs `allowHalfOpen: true`; the BEAM needs
+`exit_on_close: false`; go's `TCPConn` has the behaviour by default, which is why neither
+`0.8.2.25` vanguard needed the line and neither would have predicted any of the three.
+
+**What is implemented anyway, and why it stays:** `readFrame` distinguishes a clean close at a
+frame boundary (`#eof`, owed nothing) from a stream that ended mid-frame (`#truncated`), the
+truncation arm is reached — verified by trace — and it composes `400 invalid_request`. Only the
+delivery fails, and it says so on stderr once rather than silently. A peer that DETECTS the
+condition and reports that it cannot answer is a different artifact from one that never looked,
+and the arm becomes deliverable the day the socket layer supports a half-open write.
+
+**Not affected:** the OVERSIZE arm delivers normally (`413 payload_too_large`, measured), because
+the far end has not closed there — which is exactly why §4.10(a)'s SHOULD became a MUST at N14:
+the condition is knowable from four bytes with the connection intact.
+
+**Measured:** `tools/pa-probe` — 5 of 6 arms owed → 1, both controls green. The remaining one is
+this.
+**Escalation:** **operator / substrate.** Not a spec ambiguity and not routed to architecture: the
+rule is clear and this peer cannot meet one clause of it on this runtime.

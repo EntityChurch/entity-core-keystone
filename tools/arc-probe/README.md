@@ -83,8 +83,18 @@ Reports land in `output/scratch/arc/` and `output/scratch/arc-mint-floor/` (giti
    run identity. That happened while building family F and the content check is what caught it.
 3. **`not_driven` is published in every report and is part of the result.** A count with no stated
    surface grows while its coverage does not. Notably NOT driven: §6.8's handler/caller authority
-   intersection, PD-2's outbound sub-dispatch (so **a green family F is not a green `peers`
-   dimension**), and `turbowarp`, which no family reaches.
+   intersection, and PD-2's outbound sub-dispatch (so **a green family F is not a green `peers`
+   dimension**).
+
+   ⛔ **This list used to end *"and `turbowarp`, which no family reaches"*. That was never a fact
+   about the substrate — it was one hardcoded boolean.** That peer's harness set
+   `debugOpenGrants: true` in its source, so it carried no such flag on its command line, and this
+   probe's single edit is *remove `--debug-open-grants`* with an explicit refusal when the flag is
+   absent rather than a guess at the peer's grant configuration. The refusal was right; the
+   conclusion drawn from it was not. The flag moved to `argv` on 2026-09-15 (launch configuration
+   unchanged — `run-s4.sh` now passes it) and **`turbowarp` measures `0 of 15` like everyone else.**
+   A `not_driven` row is a claim, and this one had been read as a limit of the instrument for as
+   long as nobody re-derived it.
 
 ## Retirement condition
 

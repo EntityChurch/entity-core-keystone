@@ -104,7 +104,7 @@ entity class compile: 'fromWireMap: anEcMap
 	ent := self type: typeV string data: dataV.
 	carried := anEcMap entryAt: ''content_hash''.
 	(carried isKindOf: EcByteString) ifTrue: [
-		ent contentHash = carried bytes ifFalse: [ ^ EcWireError signal: ''entity: content_hash mismatch'' ] ].
+		ent contentHash = carried bytes ifFalse: [ ^ EcHashMismatchError signal: ''entity: content_hash mismatch'' ] ].
 	^ ent'.
 
 "admittedType:data:hash: — the §6.3 RECEIPT constructor: bind an entity to a content_hash

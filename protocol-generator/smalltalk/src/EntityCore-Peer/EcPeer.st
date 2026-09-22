@@ -127,8 +127,14 @@ cls compile: 'onFrame: aPayloadByteArray from: aConn
 	root type = EcWire typeExecute ifTrue: [ ^ self handleExecute: root envelope: env on: aConn ].
 	root type = EcWire typeResponse ifTrue: [
 		^ pending deliverReplyFor: (root textAt: ''request_id'') root: root ].
-	"any other root type: close the connection (§3.3)."
-	self closeConnection: aConn'.
+	"A frame that DECODED cleanly and is not a request (section 3.3). This CLOSED the connection,
+	 which section 4.11 names as one of its two separately-non-conformant behaviours: a bare close
+	 is indistinguishable from a network fault (section 4.6) and, on a connection carrying other
+	 admitted requests, destroys them too. The caller is correlatable — the request_id is in a root
+	 we read successfully — so the answer is a correlated 400 invalid_request and the connection
+	 keeps serving."
+	^ self sendResponse: (EcHandlerResult error: 400 code: ''invalid_request'' message: '''')
+		requestId: ((root textAt: ''request_id'') ifNil: [ '''' ]) on: aConn'.
 
 "── the §6.5 dispatch chain for a decoded inbound EXECUTE ──"
 "handleExecute:envelope:on: — dispatch + send the EXECUTE_RESPONSE on the connection. §4.9
@@ -283,11 +289,23 @@ cls compile: 'serveTick: acceptTimeout
 					ifTrue: [ connections add: newConn ]
 					ifFalse: [ newConn close ].          "over the cap: refuse (drain the backlog, stay alive)"
 				worked := true. accepted := accepted + 1 ] ].
-	"snapshot (a handler may mutate the list); drain each ready connection of all available frames."
+	"snapshot (a handler may mutate the list); drain each ready connection of all available frames.
+
+	 THE READINESS TEST IS `dataAvailable`, NOT `isOpen and: dataAvailable`, AND THAT ONE CHANGE
+	 IS WHAT MAKES A TRUNCATED FRAME REACHABLE AT ALL. Pharo answers `isConnected` false once the
+	 other end has sent FIN — even while bytes it already delivered are still sitting in our
+	 receive buffer. So a peer that wrote a length prefix, wrote part of the body and closed had
+	 its remaining bytes reaped unread, and section 4.11''s truncation arm in readFrame was
+	 UNREACHABLE: the wire saw a bare close, which is the behaviour the arm exists to remove.
+	 Buffered data is servable whether or not the far end is still there; a half-closed socket can
+	 still be written to, which is what the refusal needs.
+
+	 The reap below follows the same rule for the same reason — a connection with bytes left is
+	 not a closed connection, and dropping it here is how the unread bytes were lost."
 	connections copy do: [ :c |
-		[ c isOpen and: [ c dataAvailable ] ] whileTrue: [ self serveConn: c. worked := true ] ].
-	"reap closed connections."
-	connections := connections reject: [ :c | c isOpen not ].
+		[ c dataAvailable and: [ self serveConn: c ] ] whileTrue: [ worked := true ] ].
+	"reap closed connections (keeping any that still have buffered bytes to serve)."
+	connections := connections reject: [ :c | c isOpen not and: [ c dataAvailable not ] ].
 	^ worked'.
 "maxConns — §4.10(c) working-set ceiling. Sized ABOVE the resource_bounds r3 flood (256) plus
  headroom for the post-flood keep-serving probe, so the peer accepts the WHOLE flood AND still
@@ -301,8 +319,28 @@ cls class compile: 'maxConns  ^ 400'.
 cls compile: 'serveConn: aConn
 	| frame |
 	frame := aConn readFrame.
-	frame == #eof ifTrue: [ ^ self closeConnection: aConn ].
-	frame == #oversize ifTrue: [ ^ self ].                  "413-class: drained + kept (§4.10a)"
+	"ANSWERS true WHEN THIS CONNECTION MAY BE DRAINED AGAIN, false once it is finished with.
+	 It used to answer self, and the caller looped on `c isOpen and: dataAvailable` — safe only
+	 because `isOpen` went false the instant the far end closed, which is the very thing that made
+	 the truncation arm unreachable. Looping on `dataAvailable` alone without this return value is
+	 an INFINITE LOOP on a closed connection whose buffer still holds bytes nothing will consume,
+	 and on a single event loop that is the whole peer: measured, every subsequent dial failed to
+	 establish while D3 (a clean close) reported an over-refusal. The negative control is what
+	 caught it — D2 and D3 differ by one input byte, and a fix for one that breaks the other has
+	 deleted the distinction rather than implemented it."
+	frame == #eof ifTrue: [ self closeConnection: aConn. ^ false ].
+	"section 4.11 (0.8.2.25): a pre-admission refusal MUST put a CODED EXECUTE_RESPONSE on the
+	 wire, and BOTH framing arms below used to put nothing there. #oversize returned bare (the
+	 body had been drained, which is the buffering section 4.10(a) forbids) and a truncated
+	 stream came back as #eof and was closed on silently -- the two behaviours section 4.11 names
+	 separately as non-conformant, one of each. There is no request_id in either case by
+	 construction, so both take the uncorrelated best-effort form the section PRESCRIBES."
+	frame == #oversize ifTrue: [
+		self refuseFraming: aConn status: 413 code: ''payload_too_large''.
+		self closeConnection: aConn. ^ false ].
+	frame == #truncated ifTrue: [
+		self refuseFraming: aConn status: 400 code: ''invalid_request''.
+		self closeConnection: aConn. ^ false ].
 	[ self onFrame: frame from: aConn ]
 		on: Error do: [ :e |
 			"§4.9: swallow ANY frame-handling error (a malformed-frame THROW or a live DNU in the
@@ -318,26 +356,63 @@ cls compile: 'serveConn: aConn
 			 ONLY a decode/shape error is answered this way. A live DNU in the router is a defect
 			 in this peer, not a claim about the senders bytes, and it keeps the bare swallow."
 			((e isKindOf: EntityCodecError) or: [ e isKindOf: EcWireError ]) ifTrue: [
-				[ self rejectNonCanonical: frame on: aConn ] on: Error do: [ :e2 | ] ].
-			EcPeer traceError ifTrue: [ Stdio stderr << ''[frame-error] ''; << e class name; << '': ''; << (e messageText ifNil: [ '''' ]); << (String with: Character lf); flush ] ]'.
+				[ self refusePreAdmission: frame on: aConn cause: e ] on: Error do: [ :e2 | ] ].
+			EcPeer traceError ifTrue: [ Stdio stderr << ''[frame-error] ''; << e class name; << '': ''; << (e messageText ifNil: [ '''' ]); << (String with: Character lf); flush ] ].
+	^ true'.
 
-"rejectNonCanonical:on: — answer a frame the STRICT decoder rejected with 400
- non_canonical_ecf (section 6.3), recovering ONLY the request_id so the sender can correlate
- the refusal.
+"refusePreAdmission:on:cause: — answer a frame the STRICT decoder rejected with the coded
+ EXECUTE_RESPONSE section 4.11 requires, recovering the request_id where it can so the sender
+ can correlate.
 
- The frame stays rejected: nothing is built from it, nothing is stored, and the tag is never
- interpreted — the salvage decode exists solely to read back the correlation key. If even the
- request_id is unrecoverable there is nobody to answer, so the frame is dropped; that is the
- one case where silence is all that is available."
-cls compile: 'rejectNonCanonical: aPayloadByteArray on: aConn
-	| rid |
+ THE CODE IS THE CAUSE'S. This answered 400 non_canonical_ecf for every decode-boundary
+ refusal until 0.8.2.24/.25 pinned them apart. Section 5.2a: a mis-keyed included entry is
+ 400 hash_mismatch and non_canonical_ecf is NOT conformant there — the bytes ARE canonical,
+ and what is false is the claim the KEY makes, so non_canonical_ecf's remedy (re-encode) sends
+ an honest caller to the wrong layer. The tag arm keeps its own code because
+ ENTITY-CBOR-ENCODING defines that code for CBOR tag-policy violations specifically, which
+ section 6.3 still MUSTs at decode time; the two rows are disjoint by CAUSE. Everything else
+ that never becomes an Envelope takes 400 invalid_request.
+
+ The exception CLASS is the discriminator, not its message text — see EcHashMismatchError.
+
+ AND AN UNRECOVERABLE request_id IS NO LONGER SILENCE. It used to be, on the reading that an
+ unattributable frame has nobody to answer; section 4.11 rules otherwise and prescribes the
+ uncorrelated best-effort frame for exactly that case, because an uncorrelated answer still
+ tells the sender its frame was REFUSED rather than lost.
+
+ The frame stays rejected either way: nothing is built from it, nothing is stored, and the tag
+ is never interpreted — the salvage decode exists solely to read back the correlation key."
+cls compile: 'refusePreAdmission: aPayloadByteArray on: aConn cause: anError
+	| rid code |
 	rid := [ self salvagedRequestIdOf: aPayloadByteArray ] on: Error do: [ :e | nil ].
-	rid isNil ifTrue: [ ^ self ].
-	self sendResponse: (EcHandlerResult
-			error: 400
-			code: ''non_canonical_ecf''
-			message: ''frame is not canonical ECF (section 6.3)'')
+	rid isNil ifTrue: [ rid := '''' ].
+	code := self preAdmissionCodeFor: anError.
+	self sendResponse: (EcHandlerResult error: 400 code: code message: '''')
 		requestId: rid on: aConn'.
+
+"preAdmissionCodeFor: — the cause-to-code table section 4.11 and section 5.2a pin. One table,
+ reached from the decode arm only; the two FRAMING arms carry their own codes because they have
+ no exception to classify (nothing was ever decoded)."
+cls compile: 'preAdmissionCodeFor: anError
+	(anError isKindOf: EcHashMismatchError) ifTrue: [ ^ ''hash_mismatch'' ].
+	(anError isKindOf: TagRejectedError) ifTrue: [ ^ ''non_canonical_ecf'' ].
+	^ ''invalid_request'''.
+
+"refuseFraming:status:code: — section 4.11's UNCORRELATED best-effort frame, for a refusal the
+ framing layer detected itself. There is no request_id by construction: no frame ever arrived."
+cls compile: 'refuseFraming: aConn status: aStatus code: aCode
+	| resp env |
+	[ resp := EcWire response: '''' status: aStatus result: (EcHandlerResult error: aStatus code: aCode message: '''') result.
+	  env := EcEnvelope root: resp.
+	  aConn sendFrameHalfOpen: env asWireBytes ]
+		on: Error
+		do: [ :e |
+			"A REFUSAL THAT CANNOT BE DELIVERED IS WORTH A LINE, and this one is not
+			 conditional on traceError. Every other swallow in this file is discarding an
+			 error about the SENDER''S bytes; this one is discarding our own failure to meet
+			 a MUST, and a silent catch here is indistinguishable from never having tried."
+			Stdio stderr << ''[refuse-framing-undeliverable] '' << e class name << '': ''
+				<< (e messageText ifNil: [ '''' ]) << (String with: Character lf); flush ]'.
 
 "salvagedRequestIdOf: — envelope -> root (an entity wrapper) -> data -> request_id, read with
  the lenient decoder. Answers nil at the first shape that is not what it must be."

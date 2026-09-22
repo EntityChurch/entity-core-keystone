@@ -38,6 +38,14 @@ const canonicalCbor = load("codec/canonical-cbor.js");
 const model = load("model/index.js");
 const identity = load("identity/index.js");
 const capability = load("capability/index.js");
+// §4.11's cause-to-code table (0.8.2.25), delegated for the same reason the codec is:
+// it is a CLASSIFICATION OF DECODER FAILURES, so re-deriving it in the flow graph
+// would mean maintaining a second reading of which error means which code — and the
+// two would drift on exactly the revision that adds a cause. `FrameTooLargeError` and
+// `TruncatedFrameError` come with it because the AUTHORED framing node detects those
+// two conditions itself (it owns the length prefix) and must be able to hand them to
+// the same table rather than hard-coding two more codes beside it.
+const frameCodec = load("transport/frame-codec.js");
 
 const { Ecf, Entity, Envelope, Execute, ExecuteResponse, Status, Protocols, TypeNames } = model;
 
@@ -75,6 +83,11 @@ module.exports = {
   decodeEnvelope,
   decodeSalvage,
   encodeEnvelope,
+  // delegated §4.11 classification (0.8.2.25) — one table, two callers: the strict-decode
+  // refusal in session.js and the framing refusals in the ec-listener node.
+  preAdmissionRefusal: frameCodec.preAdmissionRefusal,
+  FrameTooLargeError: frameCodec.FrameTooLargeError,
+  TruncatedFrameError: frameCodec.TruncatedFrameError,
   // delegated model/value constructors the authored handler nodes use to build
   // responses (they build LOGIC with these; they do not touch bytes)
   Ecf,

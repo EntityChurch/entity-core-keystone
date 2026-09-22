@@ -51,7 +51,10 @@ wss.on("connection", (ws) => {
     const payload = buf.subarray(4);
     const sock = sockets.get(connId);
     if (!sock) return;
-    if (payload.length === 0) { sock.end(); sockets.delete(connId); }
+    // The peer asking to close. `destroy` rather than `end`: with allowHalfOpen the
+    // runtime no longer tears the socket down for us, so an `end` alone would leave the
+    // read half open on a connection the peer has already disposed.
+    if (payload.length === 0) { sock.destroy(); sockets.delete(connId); }
     else sock.write(payload);
   });
   ws.on("close", () => { if (peer === ws) peer = null; });
@@ -59,12 +62,25 @@ wss.on("connection", (ws) => {
 });
 
 // ---- TCP side: the oracle dials here ----
-const server = net.createServer((sock) => {
+// `allowHalfOpen: true` IS A §4.11 REQUIREMENT ON NODE, NOT A TUNING KNOB — and it is
+// needed HERE rather than in the peer because this is the process that owns the TCP
+// socket. A truncated frame is only knowable at END-OF-STREAM, and Node's default ends
+// this side's write half the moment the client's FIN arrives, so the peer's `400
+// invalid_request` would be composed, shipped over the WebSocket, and then refused by the
+// runtime with "This socket has been ended by the other party". Go's TCPConn has the
+// behaviour by default, which is why neither 0.8.2.25 vanguard needed the line; the BEAM
+// spells the same requirement `exit_on_close: false`. Third peer in this cohort to need it.
+const server = net.createServer({ allowHalfOpen: true }, (sock) => {
   sock.setNoDelay(true);
   const connId = nextId++;
   sockets.set(connId, sock);
   sock.on("data", (chunk) => toPeer(connId, chunk));            // raw bytes → peer
-  sock.on("close", () => { toPeer(connId, Buffer.alloc(0)); sockets.delete(connId); }); // close signal
+  // FIN: signal end-of-stream to the peer and KEEP THE SOCKET. The peer decides whether
+  // anything is owed — a partial frame in its buffer means a truncation refusal is on its
+  // way back through this socket, and deleting the entry here (as the old `close` handler
+  // did) would drop that answer on the floor with no error anywhere.
+  sock.on("end", () => { toPeer(connId, Buffer.alloc(0)); });
+  sock.on("close", () => { sockets.delete(connId); });
   sock.on("error", () => { sockets.delete(connId); });
 });
 server.on("error", (e) => { process.stderr.write("bridge tcp error: " + e.message + "\n"); process.exit(1); });

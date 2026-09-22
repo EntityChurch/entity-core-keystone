@@ -78,7 +78,7 @@ cls class compile: 'fromWireMap: anEcMap
 			keyBytes := entry key bytes.
 			ent := EcEntity fromWireValue: entry value.
 			ent contentHash = keyBytes ifFalse: [
-				^ EcWireError signal: ''envelope: included key != content_hash (N5)'' ].
+				^ EcHashMismatchError signal: ''envelope: included key != content_hash (N5)'' ].
 			env include: ent ] ].
 	^ env'.
 

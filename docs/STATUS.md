@@ -1,6 +1,39 @@
 # entity-core-keystone — status
 
-_Updated: 2026-09-09 · oracle pin: the 778-check set `7aa6f3de…` · spec snapshot **`v0.8.2.11`** (vendored; no peer regenerated against it yet)_
+_Updated: 2026-09-15 · oracle pin: the 778-check set `7aa6f3de…` · spec snapshot **`v0.8.2.25`** (vendored 2026-09-15)_
+
+## ⭐ In flight: the `0.8.2.25` sweep — **37 of 46 peers**, and the cohort is at MIXED SPEC REVISIONS
+
+**This is the first thing to know and it qualifies every per-peer number below.** The spec moved
+fourteen revisions under a cohort pinned at `v0.8.2.11`, and the peers are being brought forward a
+tranche at a time. **The oracle pin has NOT moved** — every row is still measured on the 778-check
+set `7aa6f3de…`, so the conformance numbers remain comparable with each other. What differs across
+the cohort is which SPEC REVISION each peer implements.
+
+| | count | peers |
+|---|---:|---|
+| at `0.8.2.25` | **37** | everything not listed below |
+| **not yet swept** | **9** | `asm-arm64` `asm-x86_64` `riscv64` `wasm-wat` `cobol` `forth` `oz` `pd` `smalltalk` |
+
+Two of the nine have had **§4.11 only** (`oz`, `smalltalk`) and still owe the §5 rules; they are
+counted as unswept because a rule set is not partially done. `smalltalk` carries one **disclosed
+gap** rather than a pass — Pharo cannot write a half-closed socket, so §4.11's truncation refusal
+is detected and undeliverable (`A-ST-018`, traced).
+
+**The headline rule of the arc is §4.11 (pre-admission refusal):** a peer that refuses a frame
+before it becomes an admitted request MUST put a **coded** `EXECUTE_RESPONSE` on the wire, and the
+code belongs to the **cause** rather than to the class. §4.9(c)'s deliver-or-signal rule is scoped
+to requests the peer *admits* and reaches none of those inputs, which is why §4.11 exists.
+
+**The executed check set has no vector on that surface**, so it is measured by
+`tools/pa-probe` — six arms, two controls, per-peer JSON, and it never enters a published number.
+Baseline when the nine were measured: **5 or 6 of 6 arms owed on every one of them.**
+
+**A note for anyone measuring this cohort:** a run taken today crosses a mixed-pin cohort, so a
+verdict is only a measurement if it records the peer's spec revision per row. That field does not
+exist yet and is being designed with `entity-system-conformance`
+(`docs/status/TRACKER-entity-system-conformance.md`, `Y-2`). Until it does, the git log is
+authoritative for which peer is at which revision.
 
 > **For where this is going — the seats keystone sits between, the state of every verification
 > axis, the measured size of the queued work and what freeze looks like — see

@@ -174,6 +174,11 @@ is a bigger commitment than unblocking authorship and should be decided on its o
 |---|---|---|
 | `tools/put-probe/` | A | **retired** — the oracle's `tree_put_error_codes.go` ships six `put_*` vectors on this surface at the check set succeeding `d30c3dd0…`; the finding stands, the probe stops being cited |
 | `tools/p47-probe/` | A | active — §4.7 pre-hello divergence; check for a superseding vector at each re-pin |
+| `tools/host-seam-probe/` | A | active — §6.13(a) entity-native dispatch (the H1 census); retires when the check set can tell a live host from a bound-but-unrunnable one |
+| `tools/f68-probe/` | A | active — F68 caller-exclude composition; retires on a vector at §6.3's selection |
+| `tools/arc-probe/` | A | active — the `0.8.2.12 → 0.8.2.23` scope-algebra census; **family C already retired** when `J4` clause 2 was withdrawn at `.24`, which is the retirement rule working |
+| `tools/pa-probe/` | A | active — §4.11 pre-admission refusal (`0.8.2.25`); the four FRAMING arms reach a surface no other instrument here does, and it is what makes `RULE D` checkable on substrates where a language-native socket test is not available |
+| `tools/kind-c/connect-errors/` | C | active — the §4.7 connection-error table, the first Kind C artifact |
 | `protocol-generator/shared/scope-matching/` | B | active — the reference shape for this kind |
 | `protocol-generator/shared/seed-policy/` | B-adjacent | Layer 2a convention, not a check; see `CONTRACT-LAYERS.md` |
 | `protocol-generator/*/run-s3.sh` | C (retroactively) | **the debt** — 17 of 18 are hand-written with no oracle behind them, authored before this document existed, and are what proved the rot hazard |

@@ -95,19 +95,23 @@ function newSession(kernel, connId, sendFrame) {
      * §6.11 demux discriminant from raw frame bytes.
      *
      * "undecodable" and "invalid" ARE DIFFERENT ANSWERS AND THIS USED TO COLLAPSE THEM.
-     * A frame the strict decoder rejects is §6.3's case and MUST be answered `400
-     * non_canonical_ecf`; a frame that decodes cleanly but whose root is neither EXECUTE
-     * nor EXECUTE_RESPONSE is §3.3's case, which the TS peer closes on. Returning
-     * "invalid" for both sent the first one to a node whose whole body was `return null`,
-     * so this peer answered a mis-keyed `included` entry with silence — measured on the
-     * wire 2026-09-14, status 0 on both B-family cases. §4.9(c) deliver-or-signal.
+     * A frame the strict decoder rejects is the decode-boundary case and takes the code
+     * its CAUSE is assigned (§4.11, §5.2a); a frame that decodes cleanly but whose root is
+     * neither EXECUTE nor EXECUTE_RESPONSE is §3.3's case and takes `400 invalid_request`.
+     * Returning "invalid" for both sent the first one to a node whose whole body was
+     * `return null`, so this peer answered a mis-keyed `included` entry with silence —
+     * measured on the wire 2026-09-14, status 0 on both B-family cases.
+     *
+     * BOTH ARMS NOW ANSWER, which is the .25 change: §4.9(c)'s deliver-or-signal rule is
+     * scoped to requests the peer ADMITS and reaches NEITHER of these, and §4.11 is the
+     * rule that does. See `refusePreAdmissionBytes` and `refuseNonExecuteRootBytes`.
      */
     classifyBytes(bytes) {
       let env;
       try {
         env = ec.decodeEnvelope(bytes);
       } catch (_) {
-        return "undecodable"; // §6.3 — refused, and the refusal is a STATUS (see rejectNonCanonicalBytes)
+        return "undecodable"; // refused — and the refusal is a STATUS (refusePreAdmissionBytes)
       }
       const t = env.root.type;
       if (t === ec.TypeNames.Execute) return "execute";
@@ -116,31 +120,96 @@ function newSession(kernel, connId, sendFrame) {
     },
 
     /**
-     * Build the `400 non_canonical_ecf` answer for a frame the strict decoder rejected
-     * (§6.3), recovering ONLY the `request_id` so the sender can correlate the refusal.
-     * Returns the encoded response bytes, or null when there is nobody to answer.
+     * Build the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires for a frame the strict
+     * decoder rejected — CORRELATED where a request_id is recoverable, best-effort
+     * uncorrelated where it is not. Returns the encoded response bytes.
      *
-     * The frame stays rejected: nothing is built from it and nothing is stored — the
-     * salvage decode exists solely to read back the correlation key. If even the
-     * request_id is unrecoverable there is no correlation target, which is the one case
-     * where silence is all that is available.
+     * TWO THINGS CHANGED AT .25 AND THEY FAIL DIFFERENTLY.
+     *
+     * THE CODE IS THE CAUSE'S. This answered `non_canonical_ecf` for every decode
+     * failure. §5.2a (N4/N5) makes a mis-keyed `included` entry `400 hash_mismatch` and
+     * rules `non_canonical_ecf` NOT conformant there: the bytes ARE canonical, and what is
+     * false is the claim the KEY makes, so `non_canonical_ecf`'s remedy (re-encode) sends
+     * an honest caller to the wrong layer. The tag-policy arm keeps its own code, because
+     * ENTITY-CBOR-ENCODING defines that code for that violation specifically. The table is
+     * DELEGATED (`ec.preAdmissionRefusal`) rather than restated here — a second reading of
+     * which error means which code drifts on the first revision that adds a cause.
+     *
+     * AND AN UNRECOVERABLE request_id IS NO LONGER SILENCE. This returned null on the
+     * reading that "there is nobody to answer". §4.11 rules otherwise and is right to: an
+     * uncorrelated coded frame still tells the sender its frame was REFUSED rather than
+     * lost, which is exactly the distinction a silent drop destroys.
+     *
+     * The frame stays rejected either way: nothing is built from it and nothing is stored
+     * — the salvage decode exists solely to read back the correlation key.
      */
-    rejectNonCanonicalBytes(bytes) {
-      let requestId;
+    refusePreAdmissionBytes(bytes) {
+      let err;
+      try {
+        ec.decodeEnvelope(bytes);
+        return null; // it decodes \u2014 not this node's case
+      } catch (e) {
+        err = e;
+      }
+      const { status, code, message } = ec.preAdmissionRefusal(err);
+      let requestId = "";
       try {
         const salvaged = ec.decodeSalvage(bytes);
         const root = ec.Ecf.require(salvaged, "root");
         requestId = ec.Ecf.requireText(ec.Ecf.require(root, "data"), "request_id");
       } catch (_) {
+        requestId = ""; // \u00a74.11's best-effort form, prescribed rather than tolerated
+      }
+      try {
+        const response = ec.ExecuteResponse.error(requestId, status, code, message);
+        return ec.encodeEnvelope(new ec.Envelope(response.entity, []));
+      } catch (_) {
         return null;
+      }
+    },
+
+    /**
+     * Build the `400 invalid_request` answer for a frame that DECODED cleanly and whose
+     * root is neither EXECUTE nor EXECUTE_RESPONSE (\u00a73.3, \u00a74.11).
+     *
+     * ITS PREDECESSOR DROPPED THE FRAME, and that is one of the two behaviours \u00a74.11
+     * names separately as non-conformant. It is also the easiest one to leave in place,
+     * because the input reads as an unroutable message rather than as a refusal \u2014 and the
+     * caller IS correlatable: the request_id is right there in a root that decoded. A drop
+     * bills them their full \u00a76.11(c) deadline for a frame we read successfully and chose
+     * not to answer.
+     */
+    refuseNonExecuteRootBytes(bytes) {
+      let requestId = "";
+      try {
+        const env = ec.decodeEnvelope(bytes);
+        requestId = ec.Ecf.optText(env.root.data, "request_id") || "";
+      } catch (_) {
+        return null; // undecodable is the other node's case
       }
       try {
         const response = ec.ExecuteResponse.error(
           requestId,
           400,
-          "non_canonical_ecf",
-          "frame is not canonical ECF (\u00a76.3): CBOR tags are forbidden anywhere in an entity",
+          "invalid_request",
+          "root is neither an EXECUTE nor an EXECUTE_RESPONSE",
         );
+        return ec.encodeEnvelope(new ec.Envelope(response.entity, []));
+      } catch (_) {
+        return null;
+      }
+    },
+
+    /**
+     * Build the coded frame for a FRAMING refusal the authored transport node detected
+     * itself \u2014 an over-limit length prefix, or a stream that ended mid-frame. There is no
+     * request_id by construction (no frame ever arrived), so this is \u00a74.11's best-effort
+     * uncorrelated form, which the section prescribes rather than tolerates.
+     */
+    refuseFramingBytes(err) {
+      const { status, code, message } = ec.preAdmissionRefusal(err);
+      try {
+        const response = ec.ExecuteResponse.error("", status, code, message);
         return ec.encodeEnvelope(new ec.Envelope(response.entity, []));
       } catch (_) {
         return null;
