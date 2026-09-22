@@ -121,7 +121,15 @@ sunit: image
 	@$(call st_suite,EcCapAuthzTest,Smalltalk compiler evaluate: (FileLocator workingDirectory / 'tests/EntityCore-Tests/EcCapAuthzTest.st') contents.)
 
 # $(call st_suite,<TestCase class>,<setup statements>) — run an SUnit suite and
-# FAIL unless it reports zero failures and zero errors.
+# FAIL unless it reports zero failures and zero errors AND actually ran something.
+#
+# The `runs=[1-9]` half is not decoration. `buildSuite` on a class whose test
+# methods failed to compile — or were renamed out of the `test*` convention —
+# answers an EMPTY suite, which reports `runs=0 passes=0 failures=0 errors=0` and
+# satisfies a failures/errors-only check perfectly. That is the
+# gate-that-examined-zero-things shape: an empty error list is the expected output
+# of both a passing check and an absent one, so the COUNT is what has to be
+# asserted. Same one-line fix as the XCTest floor in swift/run-s2.sh.
 define st_suite
 $(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "| r | $(2) \
   r := (Smalltalk at: #$(1)) buildSuite run. \
@@ -129,8 +137,8 @@ $(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "| r | $(2) \
   ' passes=', r passedCount printString, \
   ' failures=', r failureCount printString, \
   ' errors=', r errorCount printString" \
-  | tee /dev/stderr | grep -q 'failures=0 errors=0' \
-  || { echo "make: *** $(1) SUnit suite is not green" >&2; exit 1; }
+  | tee /dev/stderr | grep -qE 'runs=[1-9][0-9]* .*failures=0 errors=0' \
+  || { echo "make: *** $(1) SUnit suite is not green, or ran no tests at all" >&2; exit 1; }
 endef
 
 # ── S5 packaging (deferred like the cohort; source distribution + Metacello baseline) ──

@@ -15,8 +15,31 @@ BUILD       := build
 EXTERNAL    := $(BUILD)/ecodec.pd_linux
 CODEC_SO    := $(BUILD)/libentitycore_codec.so
 
-.PHONY: all external codec smoke frametest decodetest responsetest treewalktest hellotest authkat authzkat authzdenykat authzpeerskat treegetkat clean
+.PHONY: all external patchlint codec smoke frametest decodetest responsetest treewalktest hellotest authkat authzkat authzdenykat authzpeerskat treegetkat clean
 all: external
+
+# PROSE IN A COMMENT IS CODE IN THIS FILE FORMAT. A Pd record ends at an
+# unescaped `,` or `;`, INCLUDING inside a `#X text` comment — so ordinary
+# punctuation in an English sentence breaks out of the comment and Pd dispatches
+# the remainder as messages at load time. Measured 2026-09-02 on the RT-6 comment
+# in src/main.pd: four unescaped separators produced three load-time errors
+# (`canvas: no method for 'not'` from "REJECTED, not re-processed", and two
+# `established_ok: no such object` from "auth_decode; established_ok 0 -> 401").
+#
+# Those three were harmless ONLY because the words after the separators happened
+# to name nothing. The same defect one word over sends a real message to a real
+# receiver at load — `; net_listen`, `; buf_reset` — and nothing would report it.
+# That is why this is a build gate and not a style note.
+#
+# It was invisible for months because pd writes to stderr and run-s4.sh sent that
+# to a path inside a --rm container, so the errors died with every run. They are
+# captured now; this keeps them from coming back.
+# The check lives in tools/patchlint.py, NOT inline here: the pattern needs a
+# backslash class, and Make + shell + python quoting mangled it into one that
+# flagged already-escaped separators. A gate that reports the wrong answer is
+# worse than none, and inline escaping is how it got there.
+patchlint:
+	@python3 tools/patchlint.py
 
 # The C-ABI codec (libentitycore_codec.so). PIC shared lib, exports only ec_*
 # (export.map version script), libsodium privately localized. We link the SHARED
@@ -32,7 +55,7 @@ $(CODEC_SO):
 # The [ecodec] Pd external. Compiled against m_pd.h + the verbatim C-ABI header;
 # linked to the co-located codec .so via an $$ORIGIN rpath so the shipped pair
 # (ecodec.pd_linux + libentitycore_codec.so) is self-locating in Pd's -path dir.
-external: $(EXTERNAL)
+external: patchlint $(EXTERNAL)
 $(EXTERNAL): src/ecodec/ecodec.c | codec
 	gcc -DPD -fPIC -shared -Wall \
 	    -I$(PD_SRC) -I$(SPEC) \

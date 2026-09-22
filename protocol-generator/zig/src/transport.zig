@@ -45,28 +45,30 @@ pub const Io = struct {
     pending: std.StringHashMapUnmanaged(*PendingSlot) = .{},
     closed: bool = false,
 
-    /// Detached §4.8 dispatch threads currently running against THIS connection.
+    /// The §4.8 dispatch threads running against THIS connection, owned.
     ///
-    /// readLoop spawns one per inbound EXECUTE and detaches it; each holds a `*Io`
-    /// and a `*Conn` that point INTO the connection's ConnState, which
-    /// host.serveConnection frees as soon as readLoop returns. Without this
-    /// counter, a client that closes right after sending a request makes readLoop
-    /// return while a dispatch thread is still running, and that thread then
-    /// dereferences freed memory — a use-after-free that SEGFAULTS the whole
-    /// process, taking every other connection with it.
+    /// readLoop spawns one per inbound EXECUTE; each holds a `*Io` and a `*Conn`
+    /// that point INTO the connection's ConnState, which host.serveConnection frees
+    /// as soon as readLoop returns. Without ownership, a client that closes right
+    /// after sending a request makes readLoop return while a dispatch thread is
+    /// still running, and that thread then dereferences freed memory — a
+    /// use-after-free that SEGFAULTS the whole process, taking every other
+    /// connection with it.
     ///
     /// Measured, not theorised: 3 of 5 consecutive `--profile core` runs on an
     /// otherwise idle host died with `Segmentation fault ... transport.zig:
     /// io.gpa.destroy(ctx)` during t2_2_connection_churn (100 open → request →
     /// close cycles, which is precisely the shape that closes the connection
     /// mid-dispatch), then reported 27 downstream checks as connection-refused.
-    inflight: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-
-    /// Block until every dispatch thread spawned for this connection has finished.
-    /// MUST be called before the owner frees the ConnState these threads point at.
-    pub fn awaitInflight(self: *Io) void {
-        while (self.inflight.load(.acquire) != 0) std.Thread.yield() catch {};
-    }
+    ///
+    /// This was first fixed with an in-flight COUNTER and a `th.detach()`, which
+    /// made the free safe and left a second lifetime bug one level down: a detached
+    /// thread frees its own stack+TLS mapping, and the runtime aborted when a new
+    /// spawn was handed an address the previous thread had not finished with (see
+    /// the note at the accept loop in host.zig). Holding the handle answers both —
+    /// `join()` waits for the thread AND frees the mapping, in that order, from the
+    /// owner. Only the reader thread touches this list, so it needs no lock.
+    workers: std.ArrayList(Worker) = .empty,
 
     pub fn init(gpa: std.mem.Allocator, stream: std.net.Stream) Io {
         return .{ .gpa = gpa, .stream = stream };
@@ -74,6 +76,33 @@ pub const Io = struct {
 
     pub fn deinit(self: *Io) void {
         self.pending.deinit(self.gpa);
+        self.workers.deinit(self.gpa);
+    }
+
+    /// Join every dispatch thread that has signalled completion. Called from the
+    /// reader before each spawn, so a long-lived connection reaps as it goes
+    /// instead of accumulating one unfreed thread mapping per request.
+    fn reapWorkers(self: *Io) void {
+        var i: usize = 0;
+        while (i < self.workers.items.len) {
+            const w = self.workers.items[i];
+            if (w.done.load(.acquire)) {
+                w.thread.join();
+                self.gpa.destroy(w.done);
+                _ = self.workers.swapRemove(i);
+            } else i += 1;
+        }
+    }
+
+    /// Block until every dispatch thread spawned for this connection has finished,
+    /// and release each one's runtime resources. MUST be called before the owner
+    /// frees the ConnState these threads point at.
+    pub fn joinWorkers(self: *Io) void {
+        for (self.workers.items) |w| {
+            w.thread.join();
+            self.gpa.destroy(w.done);
+        }
+        self.workers.clearRetainingCapacity();
     }
 
     /// Serialized framed write (responses + outbound requests share the stream).
@@ -135,11 +164,22 @@ pub const Io = struct {
 
 // ── reader loop (§6.11 demux) ────────────────────────────────────────────────
 
+/// One owned §4.8 dispatch thread. `done` is heap-allocated rather than stored
+/// inline because the worker holds a pointer to it and `workers` is an ArrayList
+/// that reallocates — a flag living in the list's buffer would move underneath the
+/// thread that writes it.
+const Worker = struct {
+    thread: std.Thread,
+    done: *std.atomic.Value(bool),
+};
+
 const DispatchCtx = struct {
     peer: *Peer,
     conn: *Conn,
     io: *Io,
     env: Envelope,
+    /// Set to true as the LAST act of the dispatch thread; read by the reader.
+    done: *std.atomic.Value(bool),
 };
 
 /// §6.11 reentry shim: adapt `Io.outbound` to the peer's OutboundFn ABI so a §7a
@@ -167,13 +207,14 @@ fn outboundShim(ctx: ?*anyopaque, gpa: std.mem.Allocator, req: Envelope) ?Envelo
 fn dispatchExecuteThread(ctx: *DispatchCtx) void {
     const io = ctx.io;
     const env = ctx.env;
+    const done = ctx.done; // read before ctx is destroyed
     defer {
         env.deinit(io.gpa);
         io.gpa.destroy(ctx);
-        // Release LAST: readLoop's awaitInflight() may free the ConnState (and
-        // therefore `io` itself) the instant this reaches zero, so nothing may
-        // touch `io` after this line.
-        _ = io.inflight.fetchSub(1, .release);
+        // Release LAST: the reader may join this thread and free the ConnState (and
+        // therefore `io` itself) the instant it observes this flag, so nothing may
+        // touch anything this connection owns after this line.
+        done.store(true, .release);
     }
     // Bind the §6.11 reentry seam so a §7a dispatch-outbound handler can originate.
     ctx.conn.outbound = &outboundShim;
@@ -235,28 +276,45 @@ pub fn readLoop(peer: *Peer, conn: *Conn, io: *Io) void {
         } else {
             // dispatch on its own thread (§4.8). The thread owns `env`. The
             // reader keeps reading/routing §6.11 reentry responses meanwhile.
+            io.reapWorkers(); // join whatever finished since the last frame
             const ctx = gpa.create(DispatchCtx) catch {
                 env.deinit(gpa);
                 continue;
             };
-            ctx.* = .{ .peer = peer, .conn = conn, .io = io, .env = env };
-            // Register BEFORE spawning: the thread can finish before spawn() even
-            // returns here, and a count taken afterwards could miss it entirely.
-            _ = io.inflight.fetchAdd(1, .acquire);
-            const th = std.Thread.spawn(.{}, dispatchExecuteThread, .{ctx}) catch {
-                _ = io.inflight.fetchSub(1, .release);
+            const done = gpa.create(std.atomic.Value(bool)) catch {
                 env.deinit(gpa);
                 gpa.destroy(ctx);
                 continue;
             };
-            th.detach();
+            done.* = std.atomic.Value(bool).init(false);
+            ctx.* = .{ .peer = peer, .conn = conn, .io = io, .env = env, .done = done };
+            const th = std.Thread.spawn(.{}, dispatchExecuteThread, .{ctx}) catch {
+                env.deinit(gpa);
+                gpa.destroy(ctx);
+                gpa.destroy(done);
+                continue;
+            };
+            // Record the handle BEFORE anything else can need it. If even this
+            // allocation fails there is no way to track the thread, and abandoning
+            // it is exactly the detach we are here to remove — so join it inline.
+            // That blocks the reader, which is the right trade when the alternative
+            // is an untracked thread pointing at state we are about to free.
+            io.workers.append(gpa, .{ .thread = th, .done = done }) catch {
+                th.join();
+                gpa.destroy(done);
+            };
         }
     }
-    // The reader is done, but detached dispatch threads may still be holding this
-    // `*Io` and the `*Conn` beside it. host.serveConnection frees that state the
-    // moment we return, so waiting here is what makes the free safe (§4.8).
-    io.awaitInflight();
+    // The reader is done, but dispatch threads may still be holding this `*Io` and
+    // the `*Conn` beside it. host.serveConnection frees that state the moment we
+    // return, so joining here is what makes the free safe (§4.8).
+    //
+    // CLOSE FIRST. A dispatch thread parked in `Io.outbound` is waiting for a reply
+    // that this reader will never route again, and joining it before waking it is a
+    // hang, not a wait — `close()` broadcasts to every pending waiter so they can
+    // finish and be joined.
     io.close();
+    io.joinWorkers();
 }
 
 // ── listener / dialer ────────────────────────────────────────────────────────

@@ -236,13 +236,49 @@ struct Listener::Impl {
     std::atomic<bool> stop{false};
     std::thread accept_thread;
     // Each accepted connection: keep its Io + Connection + reader thread alive until reaped.
+    //
+    // AND NOTHING REAPED THEM. This list was push_back-only: no erase anywhere, so a
+    // finished connection's `Io` stayed referenced for the process lifetime — and
+    // `~Io` is what calls `::close(fd_)`, while `close_io()` only `shutdown()`s. So
+    // the peer retained ONE FILE DESCRIPTOR PER CONNECTION, forever, and the comment
+    // above ("until reaped") described an intention rather than the code.
+    //
+    // Measured on the running peer rather than argued from the source: 4 fds idle →
+    // **1419 after one `--profile core` suite → 2834 after two**, linear and
+    // unbounded. It has never failed a run because the container's soft limit is
+    // 524288; under the conventional 1024 it would exhaust descriptors partway
+    // through a single suite, and `accept()` would then fail with EMFILE. It is
+    // remotely triggerable by anyone who can open a connection.
+    //
+    // `done` is what makes the reap safe without blocking the accept loop: the reader
+    // sets it as its LAST act, so an entry is only ever erased once its thread has
+    // finished, and the erase joins that thread before dropping the shared_ptrs.
+    // Detached §4.8 dispatch threads hold their own shared_ptr copies, so the fd
+    // survives exactly as long as someone is still using it — the refcount is the
+    // ownership discipline here, the way `join()` is in the thread-per-connection
+    // peers.
     struct Conn {
         std::shared_ptr<Io> io;
         std::shared_ptr<Connection> conn;
         std::thread reader;
+        std::shared_ptr<std::atomic<bool>> done;
     };
     std::mutex conns_mu;
     std::list<Conn> conns;
+
+    // Join and drop every connection whose reader has finished. Called from the
+    // accept loop AFTER accept() returns, so a connection that ended while we were
+    // parked is released on the next one rather than at process exit.
+    void reap_finished() {
+        for (auto it = conns.begin(); it != conns.end();) {
+            if (it->done->load(std::memory_order_acquire)) {
+                if (it->reader.joinable()) it->reader.join();
+                it = conns.erase(it);  // last shared_ptr → ~Io → ::close(fd)
+            } else {
+                ++it;
+            }
+        }
+    }
 
     ~Impl() {
         stop = true;
@@ -269,8 +305,17 @@ struct Listener::Impl {
             auto io = std::make_shared<Io>(client);
             auto conn = std::make_shared<Connection>();
             conn->seam = io.get();  // §6.13(b) reentry seam: this is the inbound connection
+            auto done = std::make_shared<std::atomic<bool>>(false);
             std::lock_guard lk(conns_mu);
-            conns.push_back(Conn{io, conn, std::thread(reader_loop, peer, conn, io)});
+            reap_finished();
+            conns.push_back(Conn{io, conn,
+                                 std::thread([this, conn, io, done] {
+                                     reader_loop(peer, conn, io);
+                                     // LAST: the accept loop may join this thread and
+                                     // drop the connection the instant it reads true.
+                                     done->store(true, std::memory_order_release);
+                                 }),
+                                 done});
         }
     }
 };

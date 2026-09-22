@@ -291,16 +291,83 @@ ec_envelope *ec_io_outbound(ec_io *io, ec_envelope *request)
 
 /* ── reader loop (§6.11 demux + §4.8 inbound dispatch) ───────────────────────── */
 
+/* A DETACHED WORKER MUST NOT OUTLIVE THE STATE IT BORROWS.
+ *
+ * dispatch_thread runs detached and borrows `conn` and `io`, both of which live
+ * INSIDE the connection's serve_state. The reader returns the moment the client
+ * closes, and the reaper used to join ONLY the reader and then immediately free
+ * that serve_state — so any dispatch still in flight was reading and writing
+ * freed memory, and writing to an fd that could already have been recycled by a
+ * later accept().
+ *
+ * Not hypothetical, and not a leak: measured 2026-09-02 on the first cohort
+ * census after run-s4.sh started keeping the peer's stderr. `c` aborted with
+ * `free(): chunks in smallbin corrupted` at t2_2_connection_churn cycle 30 and
+ * took 26 downstream checks with it (756 - 288P/335W/27F). 100 open -> request
+ * -> close cycles is a loop that closes the connection MID-DISPATCH by
+ * construction; a sequential suite never opens that window.
+ *
+ * This counter is the same shape the zig peer already carries, and the ordering
+ * is the whole of it: reserve BEFORE the spawn (the thread can finish before
+ * pthread_create returns), release LAST in the worker (the owner may free
+ * everything the instant the count hits zero), and drain before the owner frees.
+ */
+typedef struct conn_inflight {
+    pthread_mutex_t lk;
+    pthread_cond_t  cv;
+    int n;
+} conn_inflight;
+
+static void inflight_init(conn_inflight *b)
+{
+    pthread_mutex_init(&b->lk, NULL);
+    pthread_cond_init(&b->cv, NULL);
+    b->n = 0;
+}
+
+static void inflight_acquire(conn_inflight *b)
+{
+    if (!b) { return; }
+    pthread_mutex_lock(&b->lk);
+    b->n++;
+    pthread_mutex_unlock(&b->lk);
+}
+
+static void inflight_release(conn_inflight *b)
+{
+    if (!b) { return; }
+    pthread_mutex_lock(&b->lk);
+    if (--b->n == 0) { pthread_cond_broadcast(&b->cv); }
+    pthread_mutex_unlock(&b->lk);
+}
+
+static void inflight_drain(conn_inflight *b)
+{
+    pthread_mutex_lock(&b->lk);
+    while (b->n > 0) { pthread_cond_wait(&b->cv, &b->lk); }
+    pthread_mutex_unlock(&b->lk);
+}
+
+static void inflight_destroy(conn_inflight *b)
+{
+    pthread_mutex_destroy(&b->lk);
+    pthread_cond_destroy(&b->cv);
+}
+
 typedef struct dispatch_job {
     ec_peer *peer;
     ec_conn *conn;
     ec_io *io;
     ec_envelope *env;            /* owned; freed by the job */
+    conn_inflight *busy;         /* NULL on a client session (no reaper frees it) */
 } dispatch_job;
 
 static void *dispatch_thread(void *arg)
 {
     dispatch_job *j = arg;
+    /* Held in a local: the slot is released AFTER `j` is gone, and releasing it
+     * may let the owner free everything this thread can still see. */
+    conn_inflight *busy = j->busy;
     ec_envelope *resp = NULL;
     if (ec_peer_dispatch(j->peer, j->conn, j->env, &resp) == EC_OK && resp) {
         write_envelope(j->io, resp);
@@ -308,6 +375,7 @@ static void *dispatch_thread(void *arg)
     }
     ec_env_free(j->env);
     free(j);
+    inflight_release(busy);      /* LAST — nothing borrowed may be touched after */
     return NULL;
 }
 
@@ -315,6 +383,7 @@ typedef struct reader_args {
     ec_peer *peer;
     ec_conn *conn;
     ec_io *io;
+    conn_inflight *busy;         /* the serve_state's counter; NULL for a client session */
 } reader_args;
 
 /* §6.3: answer a rejected frame with `400 non_canonical_ecf`, correlated by the
@@ -388,10 +457,15 @@ static void *reader_loop(void *arg)
             j->conn = ra->conn;
             j->io = ra->io;
             j->env = env;
+            j->busy = ra->busy;
             pthread_t t;
+            /* BEFORE the spawn, not inside the thread: the worker can run to
+             * completion before pthread_create() even returns here. */
+            inflight_acquire(ra->busy);
             if (pthread_create(&t, NULL, dispatch_thread, j) == 0) {
                 pthread_detach(t);
             } else {
+                inflight_release(ra->busy);
                 ec_env_free(env);
                 free(j);
             }
@@ -417,18 +491,29 @@ typedef struct serve_state {
     ec_io *io;
     ec_conn conn;
     pthread_t reader;
+    conn_inflight busy;          /* detached dispatch threads borrowing io + conn */
 } serve_state;
 
-/* Joins the connection's reader, then frees its io + conn (so every connection is
- * deterministically reaped → LSan-clean). */
+/* Joins the connection's reader, DRAINS every dispatch thread still borrowing this
+ * connection's io + conn, and only then frees them (so every connection is
+ * deterministically reaped → LSan-clean).
+ *
+ * The drain is load-bearing, not tidiness. Joining the reader alone was the
+ * 2026-09-02 heap corruption: the reader returns as soon as the client closes,
+ * while a detached dispatch_thread is still inside ec_peer_dispatch holding
+ * &ss->conn and ss->io. ec_io_free() also close()s the fd, so without the drain a
+ * late write could land on a descriptor number already recycled by a later
+ * accept() — a cross-connection write, not just a lost response. */
 static void *serve_reaper(void *arg)
 {
     serve_state **box = arg;
     serve_state *ss = *box;
     free(box);
     pthread_join(ss->reader, NULL);
+    inflight_drain(&ss->busy);
     ec_io_free(ss->io);
     ec_conn_destroy(&ss->conn);
+    inflight_destroy(&ss->busy);
     free(ss);
     return NULL;
 }
@@ -477,6 +562,7 @@ static void *accept_loop(void *arg)
             continue;
         }
         ec_conn_init(&ss->conn);
+        inflight_init(&ss->busy);
         ss->conn.io = ss->io;    /* §6.13(b) reentry seam: this is the inbound connection */
         reader_args *ra = malloc(sizeof(*ra));
         serve_state **box = malloc(sizeof(*box));
@@ -484,12 +570,14 @@ static void *accept_loop(void *arg)
             free(ra); free(box);
             ec_io_free(ss->io);
             ec_conn_destroy(&ss->conn);
+            inflight_destroy(&ss->busy);
             free(ss);
             continue;
         }
         ra->peer = l->peer;
         ra->conn = &ss->conn;
         ra->io = ss->io;
+        ra->busy = &ss->busy;
         /* The reader owns ss for the connection's lifetime (it reads via ra->io). A
          * reaper joins the reader then frees ss → every connection is deterministically
          * freed (LSan-clean), without a per-listener registry. */
@@ -497,6 +585,7 @@ static void *accept_loop(void *arg)
             free(ra); free(box);
             ec_io_free(ss->io);
             ec_conn_destroy(&ss->conn);
+            inflight_destroy(&ss->busy);
             free(ss);
             continue;
         }
@@ -576,6 +665,13 @@ struct ec_session {
     ec_entity *cap_signature;    /* +1 ref */
     int req_counter;
     pthread_mutex_t counter_lock;
+    /* Same hazard as serve_state's: a §6.13(b) reentry EXECUTE arriving on this
+     * client connection dispatches on a DETACHED thread borrowing io + conn, and
+     * ec_session_close() joins only the reader before freeing both. Not the path
+     * the churn corruption was measured on (that was the server side), but the
+     * identical defect with a different owner -- fixed together rather than left
+     * for the next census to find. */
+    conn_inflight busy;
 };
 
 static char *next_request_id(ec_session *s)
@@ -817,10 +913,12 @@ ec_status ec_session_dial(ec_peer *initiator, const char *host, int port, ec_ses
     s->initiator = initiator;
     s->local = ec_peer_identity(initiator);
     pthread_mutex_init(&s->counter_lock, NULL);
+    inflight_init(&s->busy);
     ec_conn_init(&s->conn);
     ec_status st = ec_io_new(fd, &s->io);
     if (st != EC_OK) {
         pthread_mutex_destroy(&s->counter_lock);
+        inflight_destroy(&s->busy);
         ec_conn_destroy(&s->conn);
         free(s);
         return st;
@@ -832,6 +930,7 @@ ec_status ec_session_dial(ec_peer *initiator, const char *host, int port, ec_ses
     if (!ra) {
         ec_io_free(s->io);
         pthread_mutex_destroy(&s->counter_lock);
+        inflight_destroy(&s->busy);
         ec_conn_destroy(&s->conn);
         free(s);
         return EC_ERR_OOM;
@@ -839,10 +938,12 @@ ec_status ec_session_dial(ec_peer *initiator, const char *host, int port, ec_ses
     ra->peer = initiator;
     ra->conn = &s->conn;
     ra->io = s->io;
+    ra->busy = &s->busy;
     if (pthread_create(&s->reader, NULL, reader_loop, ra) != 0) {
         ec_io_free(s->io);
         free(ra);
         pthread_mutex_destroy(&s->counter_lock);
+        inflight_destroy(&s->busy);
         ec_conn_destroy(&s->conn);
         free(s);
         return EC_ERR_CRYPTO;
@@ -863,7 +964,9 @@ void ec_session_close(ec_session *s)
     }
     ec_io_close(s->io);
     pthread_join(s->reader, NULL);
+    inflight_drain(&s->busy);    /* before ec_io_free closes the fd */
     ec_io_free(s->io);
+    inflight_destroy(&s->busy);
     ec_entity_unref(s->capability);
     ec_entity_unref(s->granter_peer);
     ec_entity_unref(s->cap_signature);

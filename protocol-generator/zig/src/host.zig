@@ -52,19 +52,62 @@ const ConnState = struct {
 //
 // THE RELEASE PATH IS THE WHOLE DESIGN. A counter that admits but never releases
 // presents as a DEAD peer, not an over-permissive one, so:
-//   * increment BEFORE the spawn — a detached thread can run to completion before
-//     `spawn()` even returns, and a post-spawn increment can therefore go negative
-//     or double-count;
-//   * decrement LAST in the worker's teardown, after the stream is closed and the
+//   * reserve BEFORE the spawn — a worker can run to completion before `spawn()`
+//     even returns, and a post-spawn reservation can therefore double-count;
+//   * release LAST in the worker's teardown, after the stream is closed and the
 //     state destroyed, so a slot is never free while its resources are still held.
 // Refusal is a clean immediate close, which is what §4.10(c) asks for and what the
 // oracle scores as self-bounded.
-const max_connections: u32 = 64;
-var live_connections = std.atomic.Value(u32).init(0);
+//
+// THE BOUND AND THE THREAD LIFETIME ARE ONE MECHANISM, not two. This used to be a
+// bare atomic counter beside a `th.detach()`, and the two disagreed about what a
+// slot meant: the counter said "this connection is finished" while the THREAD was
+// still being torn down by the runtime. The table below is the counter — an
+// occupied slot holds its handle, so a slot is free only once its thread has been
+// JOINED, i.e. once the kernel has finished with it. See the accept loop for why
+// detaching was not survivable.
+const max_connections: usize = 64;
 
-fn serveConnection(peer: *Peer, gpa: std.mem.Allocator, stream: std.net.Stream) void {
-    // Released LAST, and on every exit path including the early `create` failure.
-    defer _ = live_connections.fetchSub(1, .release);
+const Slot = struct {
+    thread: std.Thread = undefined,
+    /// Owned by the accept thread: only it claims, joins, and releases a slot.
+    used: bool = false,
+    /// Written ONLY by the worker, and only as the very last thing it does.
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+};
+var slots: [max_connections]Slot = [_]Slot{.{}} ** max_connections;
+
+/// Join every worker that has signalled completion, freeing its slot. Runs on the
+/// accept thread AFTER `accept()` returns and before the admission decision — the
+/// same double-reap discipline the ISA peers needed: a reap that only runs before
+/// the blocking call counts every connection that ended while we were parked as
+/// still live, which at the bound is fatal and at idle is invisible.
+fn reapFinished() void {
+    for (&slots) |*s| {
+        if (s.used and s.done.load(.acquire)) {
+            s.thread.join(); // returns once the thread is fully gone
+            s.done.store(false, .monotonic);
+            s.used = false;
+        }
+    }
+}
+
+fn claimSlot() ?*Slot {
+    for (&slots) |*s| {
+        if (!s.used) {
+            s.used = true;
+            return s;
+        }
+    }
+    return null;
+}
+
+fn serveConnection(peer: *Peer, gpa: std.mem.Allocator, stream: std.net.Stream, slot: *Slot) void {
+    // Declared FIRST so it runs LAST (defers are LIFO): the accept thread may join
+    // this thread and hand the slot to a new connection the instant it reads true,
+    // so nothing below may touch anything this connection owns after this point.
+    // It fires on every exit path, including the early `create` failure.
+    defer slot.done.store(true, .release);
 
     transport.setNoDelay(stream); // low-latency request/response (handshake churn — §7b t2_2)
     var cs = gpa.create(ConnState) catch {
@@ -184,29 +227,33 @@ pub fn main() !void {
                 break;
             },
         };
-        // §4.10(c): reserve the slot BEFORE spawning (see the note on the counter).
+        // Join everything that finished while we were parked in accept(), THEN
+        // decide admission — a slot whose thread has ended still counts as live
+        // until it is joined.
+        reapFinished();
+
+        // §4.10(c): reserve the slot BEFORE spawning (see the note on the table).
         // Over the bound, refuse cleanly — close immediately, keep accepting — so a
         // flood is shed rather than absorbed, and the peer stays answerable.
-        if (live_connections.fetchAdd(1, .acquire) >= max_connections) {
-            _ = live_connections.fetchSub(1, .release);
+        const slot = claimSlot() orelse {
             accepted.stream.close();
             continue;
-        }
+        };
 
         // A spawn failure closes the connection and keeps serving — correct, but it
         // is ALSO a silent refusal, so name the errno for the same reason as the
         // accept arm above. The reserved slot is released here because the worker
         // that would have released it never started.
-        const th = std.Thread.spawn(.{}, serveConnection, .{ &peer, gpa, accepted.stream }) catch |err| {
+        const th = std.Thread.spawn(.{}, serveConnection, .{ &peer, gpa, accepted.stream, slot }) catch |err| {
             std.debug.print("host: thread spawn refused a connection: {s}\n", .{@errorName(err)});
-            _ = live_connections.fetchSub(1, .release);
+            slot.used = false;
             accepted.stream.close();
             continue;
         };
-        // KNOWN RESIDUAL, root-caused here and NOT fixed — do not read the admission
-        // bound above as closing it. `detach()` hands the thread's own teardown the
-        // job of freeing its stack+TLS+Instance mapping, and that teardown aborts the
-        // PROCESS intermittently:
+        // THIS USED TO BE `th.detach()`, AND THAT ONE CALL ABORTED THE PROCESS.
+        //
+        // `detach()` hands the thread's own teardown the job of freeing its
+        // stack+TLS+Instance mapping, and that teardown died intermittently:
         //
         //   thread NNNNN panic: reached unreachable code
         //   /opt/zig/lib/std/Thread.zig:1377:31 in entryFn
@@ -214,25 +261,40 @@ pub fn main() !void {
         //
         // That arm is `.completed => unreachable`, so the completion was ALREADY
         // `.completed` when this thread finished — i.e. an `Instance` mapping was
-        // reused while its previous thread was still inside this `defer`. It is the
-        // detached-thread lifetime race one level below our code: `freeAndExit`
-        // munmaps the region, and a concurrent `spawn()` can be handed the same
-        // address.
+        // reused while a previous thread was still inside that `defer`. Only the
+        // detached path can produce that: `freeAndExit` munmaps the region from
+        // INSIDE the dying thread and then exits, so a concurrent `spawn()` can be
+        // handed the same address while the kernel has yet to run this thread's
+        // `CLONE_CHILD_CLEARTID` write into it. Joining removes the whole shape:
+        // the mapping is freed by the OWNER, after the kernel is finished with the
+        // thread, so no `Instance` is ever live at an address that has been handed
+        // out again.
         //
-        // Measured, because "flaky" is not a diagnosis: over 60 full `--profile core`
-        // runs with the bound in place it aborted 5 times (8%), always first visible
-        // as `t2_2_connection_churn` failing mid-cycle with `broken pipe`, after which
-        // every later check reports `connection refused` — INCLUDING r3, whose
-        // "admission slots leaked" message is the oracle's inference from a dead peer
-        // and is not the mechanism. The accept-loop-exit line below never fires in
-        // those runs, which is what proves the process died rather than stopped
-        // listening.
-        //
-        // Fixing it means not detaching — owning the handles and joining them — which
-        // is real machinery and is not attempted here.
-        th.detach();
+        // Measured, because "flaky" is not a diagnosis and neither is "fixed":
+        // 5 aborts in 60 full `--profile core` runs (8%) detached, always first
+        // visible as `t2_2_connection_churn` failing mid-cycle with `broken pipe`,
+        // after which every later check reports `connection refused` — INCLUDING
+        // r3, whose "admission slots leaked" message is the oracle's inference from
+        // a dead peer and is not the mechanism. The accept-loop-exit line below
+        // never fired in those runs, which is what proved the process had died
+        // rather than stopped listening. Note what did NOT reproduce it: 100
+        // consecutive `-category concurrency` runs, 0 aborts. An isolated category
+        // is a different process — the crash needs the full suite ahead of it.
+        slot.thread = th;
     }
     std.debug.print("host: accept loop has EXITED — no longer listening\n", .{});
+
+    // The listener is gone but connection threads may still be serving. They hold
+    // `&peer`, which `defer peer.deinit()` frees the moment this function returns,
+    // so returning without joining is a use-after-free on the way out. This blocks
+    // until every live connection ends, which is the correct behaviour for a path
+    // only reached when the listening socket itself has failed.
+    for (&slots) |*s| {
+        if (s.used) {
+            s.thread.join();
+            s.used = false;
+        }
+    }
 }
 
 fn randomSeed() [32]u8 {

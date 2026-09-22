@@ -120,7 +120,7 @@
 #X msg 1340 1520 outbound_serve;
 #X msg 610 590 auth_check_established;
 #X obj 860 555 sel 0 1;
-#X text 860 505 RT-6 (sec4.6) anti-replay: a SECOND authenticate on an already-established connection must be REJECTED, not re-processed (it would re-verify the still-cached nonce and re-issue a grant). auth_check_established runs before auth_decode; established_ok 0 -> 401 invalid_nonce (obj 35, the same rung a bad nonce-echo uses) WITHOUT touching auth_decode/nonce/sig/bind; established_ok 1 -> the normal PoP ladder proceeds unchanged.;
+#X text 860 505 RT-6 (sec4.6) anti-replay: a SECOND authenticate on an already-established connection must be REJECTED\, not re-processed (it would re-verify the still-cached nonce and re-issue a grant). auth_check_established runs before auth_decode\; established_ok 0 -> 401 invalid_nonce (obj 35\, the same rung a bad nonce-echo uses) WITHOUT touching auth_decode/nonce/sig/bind\; established_ok 1 -> the normal PoP ladder proceeds unchanged.;
 #X msg 470 1600 uri_targets_local;
 #X obj 470 1650 sel 0 1;
 #X msg 300 1700 build_response 400 invalid_request;

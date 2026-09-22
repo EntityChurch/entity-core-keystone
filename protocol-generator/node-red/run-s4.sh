@@ -93,3 +93,16 @@ if [ "$#" -eq 0 ]; then
   set -- -profile core -json-out "$NR/../status/CONFORMANCE-REPORT.json"
 fi
 "$ORACLE" -addr "127.0.0.1:$EC_PORT" "$@" || true
+
+# SURFACE THE STDERR OF THE PEER ITSELF. /tmp/nr.err is a path INSIDE a --rm
+# container, so without this the dying words of the peer are discarded with the
+# container and a mid-run abort leaves a log reading only "connection refused".
+# That is not hypothetical: the zig intermittent survived four investigations
+# reported as "no crash, empty stderr" until this line existed on that harness,
+# and then produced a stack trace on the first reproduction. Emitted on stderr so
+# it cannot be mistaken for oracle output, and only when non-empty so a clean run
+# stays quiet.
+if [ -s /tmp/nr.err ]; then
+  echo "--- peer stderr (/tmp/nr.err) ---" >&2
+  cat /tmp/nr.err >&2
+fi

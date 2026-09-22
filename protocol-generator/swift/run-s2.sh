@@ -9,13 +9,43 @@
 # which surfaces as a BoringSSL compile error plus an llbuild SQLite assertion
 # failure, neither of which points at the label.
 #
-#   ./run-s2.sh          # swift test
+# THE COUNT IS ASSERTED, NOT JUST PRINTED. `swift test` exits 0 for a suite that
+# ran 35 cases and for one that ran none — a dropped test file, a mis-declared
+# target, or a filter that matches nothing all leave this gate green. That is the
+# gate-that-examined-zero-things shape the charter names, and the enforcement it
+# asks for is one line: require the executed count to be at or above the floor.
+#
+# About the "0 tests in 0 suites" line at the end of the output: that is the
+# swift-testing runner, which Swift 6 runs alongside XCTest. This package has no
+# `@Test` functions — all four test files are XCTestCase — so it correctly reports
+# an empty run. It is not a broken target and not a silent skip; the 35 XCTest
+# cases below it are the suite. If swift-testing cases are ever added, that line
+# changes and the XCTest floor here still holds.
+#
+#   ./run-s2.sh          # swift test + count assertion
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$REPO_ROOT/tools/podman-caps.sh"
 
-podman run $PODMAN_RUN_CAPS --rm --network=none --security-opt label=disable \
+FLOOR="${SWIFT_TEST_FLOOR:-35}"
+
+# No pipe: `cmd | tee` reports the EXIT STATUS OF TEE, which is how a failing gate
+# reads as green (written down twice in AGENTS.md, re-created twice anyway).
+out="$(podman run $PODMAN_RUN_CAPS --rm --network=none --security-opt label=disable \
   -v "$REPO_ROOT":/work:Z -w /work/protocol-generator/swift \
   entity-core-keystone/swift-toolchain:latest \
-  bash -lc 'swift test'
+  bash -lc 'swift test' 2>&1)" || { echo "$out"; echo "run-s2: swift test FAILED" >&2; exit 1; }
+echo "$out"
+
+ran="$(printf '%s\n' "$out" |
+  sed -n "s/.*Executed \([0-9]\{1,\}\) tests\{0,1\}, with 0 failures.*/\1/p" | tail -1)"
+if [ -z "$ran" ]; then
+  echo "run-s2: could not find an 'Executed N tests, with 0 failures' line — not green" >&2
+  exit 1
+fi
+if [ "$ran" -lt "$FLOOR" ]; then
+  echo "run-s2: executed $ran XCTest cases, floor is $FLOOR — the suite SHRANK" >&2
+  exit 1
+fi
+echo "run-s2: OK — $ran XCTest cases executed, 0 failures (floor $FLOOR)"

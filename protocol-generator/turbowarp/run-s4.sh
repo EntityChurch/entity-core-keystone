@@ -69,11 +69,24 @@ trap 'kill "$BR" "${PEER:-0}" 2>/dev/null || true' EXIT INT TERM
 i=0; while [ "$i" -lt 100 ]; do grep -q "^BRIDGE-LISTENING" /tmp/bridge.out 2>/dev/null && break; kill -0 "$BR" 2>/dev/null || { echo "bridge died:"; cat /tmp/bridge.out; exit 1; }; i=$((i+1)); sleep 0.1; done
 
 # 2. Peer harness (connects OUT to the bridge over WS; the Scratch-extension stand-in).
-WS_URL="ws://127.0.0.1:$WS_PORT" node harness/ec-peer-node.js >/tmp/peer.out 2>&1 &
+WS_URL="ws://127.0.0.1:$WS_PORT" node harness/ec-peer-node.js >/tmp/peer.out 2>/tmp/peer.err &
 PEER=$!
-i=0; while [ "$i" -lt 100 ]; do grep -q "^PEER-CONNECTED" /tmp/bridge.out 2>/dev/null && break; kill -0 "$PEER" 2>/dev/null || { echo "peer died:"; cat /tmp/peer.out; exit 1; }; i=$((i+1)); sleep 0.1; done
+i=0; while [ "$i" -lt 100 ]; do grep -q "^PEER-CONNECTED" /tmp/bridge.out 2>/dev/null && break; kill -0 "$PEER" 2>/dev/null || { echo "peer died:"; cat /tmp/peer.out /tmp/peer.err; exit 1; }; i=$((i+1)); sleep 0.1; done
 echo "BRIDGE + PEER up (tcp:$EC_PORT ws:$WS_PORT)"
 
 # 3. Oracle.
 if [ "$#" -eq 0 ]; then set -- -profile core -json-out "$TW/../status/CONFORMANCE-REPORT.json"; fi
 "$ORACLE" -addr "127.0.0.1:$EC_PORT" "$@" || true
+
+# SURFACE THE STDERR OF THE PEER ITSELF. /tmp/peer.err is a path INSIDE a --rm
+# container, so without this the dying words of the peer are discarded with the
+# container and a mid-run abort leaves a log reading only "connection refused".
+# That is not hypothetical: the zig intermittent survived four investigations
+# reported as "no crash, empty stderr" until this line existed on that harness,
+# and then produced a stack trace on the first reproduction. Emitted on stderr so
+# it cannot be mistaken for oracle output, and only when non-empty so a clean run
+# stays quiet.
+if [ -s /tmp/peer.err ]; then
+  echo "--- peer stderr (/tmp/peer.err) ---" >&2
+  cat /tmp/peer.err >&2
+fi

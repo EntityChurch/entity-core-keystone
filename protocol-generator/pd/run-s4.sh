@@ -86,11 +86,32 @@ podman run $PODMAN_RUN_CAPS --rm --network=none \
         "ERERERERERERERERERERERERERERERERERERERERERE=" \
         "-----END ENTITY PRIVATE KEY-----" > "$KPDIR/keypair"
     fi
-    make external >/dev/null 2>&1
-    pd -nogui -noaudio -stderr -path build -open "$PATCH" >build/s4-pd.log 2>&1 &
+    # Quiet on success, but SAY WHY on failure. This used to be
+    # `make external >/dev/null 2>&1`: set -e still aborted the run, so a build
+    # break was loud, but the REASON was discarded -- and `external` now depends
+    # on the patchlint gate, whose whole value is the message naming the file and
+    # line. A build that fails without saying why is the Pharo `grep -vi warning`
+    # shape one step removed.
+    make external >build/s4-make.log 2>&1 \
+      || { echo "make external FAILED:" >&2; cat build/s4-make.log >&2; exit 1; }
+    pd -nogui -noaudio -stderr -path build -open "$PATCH" >build/s4-pd.log 2>build/s4-pd.err &
     PDPID=$!
     trap "kill $PDPID 2>/dev/null || true" EXIT
     sleep 2
-    kill -0 $PDPID 2>/dev/null || { echo "pd failed to start:"; cat build/s4-pd.log; exit 1; }
-    "$ORACLE" -addr "127.0.0.1:$PORT" "$@"
+    kill -0 $PDPID 2>/dev/null || { echo "pd failed to start:"; cat build/s4-pd.log build/s4-pd.err; exit 1; }
+    rc=0; "$ORACLE" -addr "127.0.0.1:$PORT" "$@" || rc=$?
+
+    # SURFACE THE STDERR OF THE PEER ITSELF. build/s4-pd.err is a path INSIDE a --rm
+    # container, so without this the dying words of the peer are discarded with the
+    # container and a mid-run abort leaves a log reading only "connection refused".
+    # That is not hypothetical: the zig intermittent survived four investigations
+    # reported as "no crash, empty stderr" until this line existed on that harness,
+    # and then produced a stack trace on the first reproduction. Emitted on stderr so
+    # it cannot be mistaken for oracle output, and only when non-empty so a clean run
+    # stays quiet.
+    if [ -s build/s4-pd.err ]; then
+      echo "--- peer stderr (build/s4-pd.err) ---" >&2
+      cat build/s4-pd.err >&2
+    fi
+    exit "$rc"
   ' bash "$@"

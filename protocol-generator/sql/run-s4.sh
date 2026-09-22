@@ -63,10 +63,24 @@ podman run $PODMAN_RUN_CAPS --rm --network=none \
     printf "%s\n%s\n%s\n" "-----BEGIN ENTITY PRIVATE KEY-----" \
       "ERERERERERERERERERERERERERERERERERERERERERE=" "-----END ENTITY PRIVATE KEY-----" > "$KPDIR/keypair"
     make peer >/tmp/build-s4.log 2>&1 || { echo "peer build failed:"; cat /tmp/build-s4.log; exit 1; }
-    /tmp/ec-sql-build/ec-sql-peer --name "$EC_NAME" --debug-open-grants --validate --port "$PORT" >/tmp/peer-s4.log 2>&1 &
+    /tmp/ec-sql-build/ec-sql-peer --name "$EC_NAME" --debug-open-grants --validate --port "$PORT" >/tmp/peer-s4.log 2>/tmp/peer-s4.err &
     PP=$!
     trap "kill $PP 2>/dev/null || true" EXIT
     sleep 1
-    kill -0 $PP 2>/dev/null || { echo "peer failed to start:"; cat /tmp/peer-s4.log; exit 1; }
-    "$ORACLE" -addr "127.0.0.1:$PORT" "$@"
+    kill -0 $PP 2>/dev/null || { echo "peer failed to start:"; cat /tmp/peer-s4.log /tmp/peer-s4.err; exit 1; }
+    rc=0; "$ORACLE" -addr "127.0.0.1:$PORT" "$@" || rc=$?
+
+    # SURFACE THE STDERR OF THE PEER ITSELF. /tmp/peer-s4.err is a path INSIDE a --rm
+    # container, so without this the dying words of the peer are discarded with the
+    # container and a mid-run abort leaves a log reading only "connection refused".
+    # That is not hypothetical: the zig intermittent survived four investigations
+    # reported as "no crash, empty stderr" until this line existed on that harness,
+    # and then produced a stack trace on the first reproduction. Emitted on stderr so
+    # it cannot be mistaken for oracle output, and only when non-empty so a clean run
+    # stays quiet.
+    if [ -s /tmp/peer-s4.err ]; then
+      echo "--- peer stderr (/tmp/peer-s4.err) ---" >&2
+      cat /tmp/peer-s4.err >&2
+    fi
+    exit "$rc"
   ' bash "$@"
