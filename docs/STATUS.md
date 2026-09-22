@@ -30,18 +30,17 @@ evolving as spec amendments run through the generator.
 
 | State | Count | Peers |
 |---|---:|---|
-| **0-FAIL** — publishable | **39** | M1 5/5 · M2 8/8 · M3 12/13 · probe 13/18 · exploratory 1/2 |
+| **0-FAIL** — publishable | **41** | M1 5/5 · M2 8/8 · M3 12/13 · probe 14/18 · exploratory 2/2 |
 | Standing defect + the CAP trio | 1 | `cobol` (30F = 3 + its standing 27) |
-| CAP gap, propagation not reached | 2 | `wasm-wat` (2F) · `turbowarp` (3F, never gates) |
 | **INVALID MEASUREMENT** — not scores | 3 | `asm-x86_64` · `asm-arm64` · `riscv64` |
 | Not measured | 1 | `apl` — upstream-blocked |
 
-**The headline is one sentence: the CAP propagation is complete, and what remains is six
+**The headline is one sentence: the CAP propagation is complete, and what remains is four
 separate problems rather than one.** `--profile core` gained three `capability` checks at the
 2026-08-21 re-pin; every unfixed peer failed exactly those three, and that uniformity held all
-the way through the cohort. None of the six peers still outstanding is failing on the mint
-ceiling — say it that way, because "6 peers still fail" invites the reader to assume a shared
-debt that is not there.
+the way through the cohort. **None of the four peers still outstanding is failing on the mint
+ceiling** — say it that way, because "four peers still fail" invites the reader to assume a
+shared debt that is not there.
 
 **The fix shape did not vary across thirty-six languages** — roughly 200 lines over five or six
 files, in the same five places every time (capability mint, codec salvage decode, wire `400`,
@@ -57,24 +56,49 @@ worse than having none — it minted tokens that outlived their own authority by
 still returned `200`.
 
 **Publication rule is unchanged: "no green report → no publish."** Today that means those
-thirty-nine peers, and only those. Per [ADR-0012] they are **cohort-consistent, not independent
+forty-one peers, and only those. Per [ADR-0012] they are **cohort-consistent, not independent
 convergence** — they share a generation lineage and, for the FFI-hybrid peers, one codec `.so`.
 
 ## What's next
 
-1. **`wasm-wat` 2F** — diagnosed, not started. The mint is a literal call with hand-placed WAT
-   memory offsets, so adding `expires_at` is an arity + data-segment edit rather than a code
-   edit, and the §6.3 salvage wants a second decoder entry point in the same style.
-2. **`turbowarp` 3F** — the block-interpreter probe. Never gates; the CAP trio in Scratch blocks.
-3. **The asm/ISA trio's connection-pressure family** (§1a) — three ISAs of hand-written assembly,
-   one failure family: children block forever in `read(2)` with no idle deadline and there is no
-   §4.10(c) connection-admission cap. It is also why the cohort-wide mode of
-   `tools/check-set-gate.py` exits non-zero: those runs starved, so they are quarantined rather
-   than scored. (`--tracked`, the mode `make lint` runs, gates the publishable set and passes.)
-4. **`cobol`'s standing 27-FAIL liveness cascade** — a separate investigation.
-5. **`apl`** — upstream-blocked and unmeasured. GNU deleted the pinned 1.9 tarball when 2.0
+1. **§5.5 delegation chains, in the three ISA ports** (`asm-x86_64`, `asm-arm64`, `riscv64`).
+   Each requires a presented capability's granter to be itself and refuses everything else, so a
+   delegated capability is refused before the mint is reached, and roughly ten `security` chain
+   vectors pass *because* of that refusal — every chain vector in the category is reject-direction,
+   so a peer that refuses all chains answers them all correctly for an unrelated reason. **The
+   reference now exists**: `wasm-wat` was the fourth peer with this gap and took the full
+   implementation on 2026-08-29 (chain walk, §5.5a canonicalization on both surfaces, §5.6
+   attenuation with constraints/allowances, delegation caveats, §3.6 K-of-N). The three ports are
+   the same work in three assembly languages.
+2. **The asm/ISA trio's connection-pressure family** (§1a) — one check, `t2_2_connection_churn`,
+   consumes the whole 10-minute budget and is why these three are INVALID MEASUREMENTS rather
+   than low scores. Three named defects were fixed on 2026-08-29 (leaked listen fd, unbounded
+   child read, missing §4.10(c) admission bound) plus a fourth found in the spec rather than the
+   check (the oversize path buffered the entire declared body before refusing). **The family did
+   not move**, and the peer is now measurably healthy at the moment of failure — so the remaining
+   cause is not accumulation, which is what the August characterisation assumed.
+3. **`cobol`'s standing 27-FAIL cascade** — read once on 2026-08-29 and it is *one* defect, not
+   27: the peer stops accepting during `concurrency` and every later check reports
+   `connection refused`. A separate investigation, but a smaller one than the number suggests.
+4. **`apl`** — upstream-blocked and unmeasured. GNU deleted the pinned 1.9 tarball when 2.0
    shipped; the toolchain bump is its own piece of work.
-6. **Package-registry publish** and **Ed448/SHA-384 agility** stay demand-driven.
+5. **Package-registry publish** and **Ed448/SHA-384 agility** stay demand-driven.
+
+**Closed 2026-08-29 — `wasm-wat` got a real §5.5 delegation chain and is `755 · 0F`.** Its three
+remaining failures were never the mint ceiling: the peer had no chain walk at all, so CAP-5, CAP-6
+and CAP-6a were refused two gates before the mint they are named after, and about ten `security`
+chain vectors were passing because it refused every chain rather than because it evaluated one.
+The walk, §5.5a canonicalization on both the attenuation and dispatch surfaces, §5.6 attenuation
+including constraints/allowances and the nil-vs-finite expiry rule, delegation caveats, CAP-6a
+representability and §3.6 K-of-N all landed together; the row is now the cohort-standard
+312P/337W/0F/106S. Two of the mistakes along the way were found only by measuring: framing the
+chain surface without the dispatch surface, and a pattern matcher that refused every root listing.
+
+**Closed 2026-08-29 — `turbowarp`, the other peer the propagation had not reached, took the
+ordinary CAP fix and is `755 · 0F`.** The fix shape did not vary in the 37th language either:
+MIN_DEFINED by construction rather than a `<= caller_exp` comparison, `created_at` sampled once,
+overflow terms dropped, and `grants: []` accepted as the CAP-2 withdrawal form. Measured twice by
+two destinations of the same tool, agreeing byte-for-byte.
 
 **Closed 2026-08-28 — the CAP propagation, 13 publishable → 39.** All of M3 but `cobol`, 13 of
 the 18 probes, and `node-red`. Three of the peers in that count were **never broken**:
@@ -139,7 +163,7 @@ more found by walking the published tree by hand:
 showed each peer contradicting its own published row. §1 was never wrong — it is census-backed — but
 nothing gated those files. All 13 publishable peers were **re-measured** (each reproduced its
 published number exactly) and `make lint` now runs `check-set-gate.py --tracked`. As of 2026-08-28
-all 39 publishable peers carry a committed report at the pinned check set; the remaining 6 stay
+all 40 publishable peers carry a committed report at the pinned check set; the remaining 5 stay
 behind by design — they owe the *fix*, not the paperwork.
 
 ## Where the detail lives

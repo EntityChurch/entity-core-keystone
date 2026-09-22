@@ -629,6 +629,35 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   peer's FAIL count, DO NOT revert to protect the row.** Read each new FAIL; if it names a check the
   peer never implemented, the peer was never passing it. Reverting restores a lower number and a
   worse peer, which is the overclaim this repo exists not to make.
+  **THIRD AND FOURTH OCCURRENCE, 2026-08-29, and the scale is different: the missing feature can be
+  a WHOLE SPEC SECTION, and a category with no accept-direction vector will never say so.** All four
+  hand-authored peers — `asm-x86_64` `asm-arm64` `riscv64` `wasm-wat` — implement **no §5.5
+  delegation chain at all**. Each requires a presented capability's `granter` to be the local peer
+  and refuses everything else. `asm`'s own source states the trade: *"until the delegation-chain walk
+  exists, fail closed: granter ≠ our identity_hash → 403. (Closes forged_root_capability and the
+  chain-\* reject probes, which all require denial.)"* — **the author knew it was a stand-in and
+  wrote down what it closed; nobody re-read that comment as a list of vectors passing for the wrong
+  reason.** Roughly ten `security` chain vectors are in that state (`chain_no_delegation_denied`,
+  `chain_max_delegation_ttl_denied`, `chain_per_link_temporal_denied`, `chain_mid_link_expiry_denied`,
+  `chain_parent_exclude_drop_denied`, all three `authz_attenuation_foreign_granter_*`, …) — every one
+  reject-direction, every one answered correctly by a peer that refuses all chains.
+  **Two things generalize, and the second is the sharper one:**
+  (a) **Suspect the hand-authored substrates specifically.** It is not chance that these four have it:
+  chain walking is the most laborious part of §5.5 to write by hand, so it is the part that gets
+  deferred, in assembly and in WAT alike. When a cohort defect is about *effort*, its distribution
+  follows authoring cost, not language family — look at how the peer was written before assuming a
+  substrate limit.
+  (b) **A deferral comment is a conformance claim with no gate on it.** `until X exists, fail closed`
+  is honest engineering and completely invisible to every number this repo publishes. **Enforcement:
+  `grep -rniE 'until .* exists|deferred|not implemented|fail closed for now' protocol-generator/*/src/`
+  and, for each hit, ask which vectors that branch is currently answering.** A peer at 2F with a
+  comment like that is not a peer with two problems.
+  **And the symptom that led here is worth carrying on its own: CAP-5/CAP-6 failing with `403` does
+  NOT mean the §5.6 ceiling is missing.** Both checks present a *delegated* capability, so on a peer
+  with no chain support they are refused two gates before the mint is reached, and the failure names
+  a feature that is not the one broken. Trace the refusal to its gate before implementing what the
+  check is named after — on `wasm-wat` that was one instrumented build and it invalidated a
+  documented scope estimate ("an arity + data-segment edit … neither is hard").
 - **A PARTIAL IMPLEMENTATION OF A NEW RULE IS WORSE THAN ITS ABSENCE — it produces a plausible value
   and reads as done.** Candidate (first occurrence, `nim` 2026-08-28, but the enforcement point is
   exact). `nim` was the only peer in the cohort that ALREADY had a §5.6 ceiling, and it was wrong

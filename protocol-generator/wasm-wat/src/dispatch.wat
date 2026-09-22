@@ -2796,7 +2796,37 @@
     (i32.const 1))
 
   ;; ∃ grant permitting op×handler(g_hptr/len)×target×peer(g_tpp/len) ? "*" honored per dimension.
-  (func $grant_scope_ok (param $td i32) (param $target i32) (param $tlen i32) (param $op i32) (param $oplen i32) (result i32)
+  ;; §5.5a surface 1 — the DISPATCH boundary. Does some pattern in a grant's resources cover
+  ;; the request's target path?
+  ;;
+  ;; The two sides canonicalize against DIFFERENT frames, and that asymmetry is the rule:
+  ;; a cap's resource patterns are the GRANTER's to write, so they canonicalize against the
+  ;; granter's peer_id; the request target is a path into THIS peer's namespace, so it
+  ;; canonicalizes against the local peer_id. Frame both against the local peer and a
+  ;; foreign-granted bare "*" silently becomes "/{verifier}/*" and authorizes the verifier's
+  ;; own namespace — which is the whole point of §5.5a and the defect
+  ;; captok_form_dispatch_minted_pl_presented_xpeer exists to catch.
+  (func $resources_cover_target (param $inc i32) (param $target i32) (param $tlen i32)
+                                (param $fr i32) (param $frlen i32) (result i32)
+    (local $tclen i32) (local $n i64) (local $i i64) (local $p i32) (local $ep i32) (local $el i32) (local $plen i32)
+    (local.set $tclen (call $canon (local.get $target) (local.get $tlen)
+                                   (i32.const 0x420200) (i32.load (i32.const 0x4202F0)) (i32.const 0x9A0A00)))
+    (local.set $p (call $rd_head (local.get $inc)))
+    (if (i32.ne (global.get $g_major) (i32.const 4)) (then (return (i32.const 0))))
+    (local.set $n (global.get $g_arg))
+    (block $done (loop $L
+      (br_if $done (i64.ge_u (local.get $i) (local.get $n)))
+      (local.set $ep (call $rd_head (local.get $p)))
+      (local.set $el (i32.wrap_i64 (global.get $g_arg)))
+      (local.set $p (i32.add (local.get $ep) (local.get $el)))
+      (local.set $plen (call $canon (local.get $ep) (local.get $el) (local.get $fr) (local.get $frlen) (i32.const 0x9A0E00)))
+      (if (call $pat_covers (i32.const 0x9A0A00) (local.get $tclen) (i32.const 0x9A0E00) (local.get $plen))
+        (then (return (i32.const 1))))
+      (local.set $i (i64.add (local.get $i) (i64.const 1)))
+      (br $L)))
+    (i32.const 0))
+
+  (func $grant_scope_ok (param $td i32) (param $target i32) (param $tlen i32) (param $op i32) (param $oplen i32) (param $fr i32) (param $frlen i32) (result i32)
     (local $grants i32) (local $n i64) (local $i i64) (local $g i32) (local $m i32) (local $inc i32)
     (local.set $grants (call $map_find (local.get $td) (i32.const 0x4611c0) (i32.const 6)))   ;; grants
     (if (i32.eq (local.get $grants) (i32.const -1)) (then (return (i32.const 0))))
@@ -2821,7 +2851,8 @@
         (br_if $next (i32.eq (local.get $m) (i32.const -1)))
         (local.set $inc (call $map_find (local.get $m) (i32.const 0x4613c0) (i32.const 7)))
         (br_if $next (i32.eq (local.get $inc) (i32.const -1)))
-        (if (call $resource_matches (local.get $inc) (local.get $target) (local.get $tlen))
+        (if (call $resources_cover_target (local.get $inc) (local.get $target) (local.get $tlen)
+                                          (local.get $fr) (local.get $frlen))
           (then (return (i32.const 1)))))
       (local.set $g (call $skip (local.get $g)))
       (local.set $i (i64.add (local.get $i) (i64.const 1)))
@@ -3112,56 +3143,576 @@
     (if (call $ed_verify (local.get $pkp) (local.get $rcp) (i32.const 33) (local.get $sig)) (then (return (call $err_authfail (local.get $out) (local.get $rid) (local.get $rlen)))))
     (i32.const 0))
 
-  ;; §5.2 cap-class (403 / 401 unresolvable_grantee): token bound, unaltered, grantee==author,
-  ;; granter==this peer (root-trust), granter-signed.
+  ;; ==================== §5.5 delegation-chain verification ====================
+  ;; Until 2026-08-29 this peer had NO chain walk: $verify_cap required a presented
+  ;; capability's granter to be this peer and refused everything else, under the reading
+  ;; that a fail-closed root-trust gate is a safe placeholder. It is not a safe placeholder,
+  ;; it is a silent one — every chain vector in the oracle's `security` category is
+  ;; reject-direction, so a peer that refuses all chains answers about ten of them correctly
+  ;; for a reason unrelated to what they test, and CAP-5/CAP-6/CAP-6a (which present a
+  ;; DELEGATED capability) were refused two gates before the mint they are named after.
+  ;;
+  ;; Scratch, 0x9A0000..0x9A1000 — between the pending-reentry table (0x990000, 2 KiB) and
+  ;; the store arena (0xA10000):
+  ;;   0x9A0000 child-link granter peer_id (128 cap)   0x9A0080 its length
+  ;;   0x9A0100 parent-link granter peer_id (128 cap)  0x9A0180 its length
+  ;;   0x9A0200 canonicalized child pattern (1 KiB)
+  ;;   0x9A0600 canonicalized parent pattern (1 KiB)
+  ;;   0x9A0800 the child link's granter hash, carried across one hop (33)
+  ;;   0x9A0A00 canonicalized dispatch target (1 KiB)
+  ;;   0x9A0E00 canonicalized dispatch pattern (1 KiB)
+  ;;   0x9A1200 dispatch-surface granter frame (128) + 0x9A1280 its length
+
+  ;; peer_id_of(incl, hash33, out, out_len_ptr) → 1 on success.
+  ;; The §5.5a canonicalization FRAME for a link is its granter's peer_id — which is not on
+  ;; the wire. It is derived from the granter's system/peer entity in `included`, the same
+  ;; entity the link's signature is verified against.
+  (func $peerid_of (param $incl i32) (param $h i32) (param $out i32) (param $lenp i32) (result i32)
+    (local $e i32) (local $d i32) (local $pk i32) (local $pkp i32)
+    (local.set $e (call $included_find_by_key (local.get $incl) (local.get $h)))
+    (if (i32.eqz (local.get $e)) (then (return (i32.const 0))))
+    (local.set $d (call $map_find (local.get $e) (i32.const 0x460010) (i32.const 4)))
+    (if (i32.eq (local.get $d) (i32.const -1)) (then (return (i32.const 0))))
+    (local.set $pk (call $map_find (local.get $d) (i32.const 0x461080) (i32.const 10)))
+    (if (i32.eq (local.get $pk) (i32.const -1)) (then (return (i32.const 0))))
+    (local.set $pkp (call $rd_head (local.get $pk)))
+    (if (i64.ne (global.get $g_arg) (i64.const 32)) (then (return (i32.const 0))))
+    (if (call $format_peer_id (local.get $pkp) (local.get $out) (i32.const 128) (local.get $lenp))
+      (then (return (i32.const 0))))
+    (i32.const 1))
+
+  ;; §5.5a canonicalize(pattern, frame_peer_id) → out; returns the canonical length.
+  ;;   leading "/"  ⇒ absolute: the pattern names a peer position explicitly — copy verbatim
+  ;;   otherwise    ⇒ peer-relative: "/" + frame + "/" + pattern
+  ;; Bare "*" needs NO special case and deliberately does not get one: it falls out of the
+  ;; general rule as "/{frame}/*", which is exactly what §5.5a says it means — "the granter's
+  ;; own namespace, NOT a universal cross-peer wildcard". Special-casing it is how the
+  ;; no-canon-before-wildcard-shortcircuit bug shape (§5.5a's informative footnote) gets built.
+  (func $canon (param $p i32) (param $plen i32) (param $fr i32) (param $frlen i32) (param $out i32) (result i32)
+    (if (i32.and (i32.gt_u (local.get $plen) (i32.const 0))
+                 (i32.eq (i32.load8_u (local.get $p)) (i32.const 0x2f)))
+      (then (memory.copy (local.get $out) (local.get $p) (local.get $plen))
+            (return (local.get $plen))))
+    (i32.store8 (local.get $out) (i32.const 0x2f))
+    (memory.copy (i32.add (local.get $out) (i32.const 1)) (local.get $fr) (local.get $frlen))
+    (i32.store8 (i32.add (local.get $out) (i32.add (local.get $frlen) (i32.const 1))) (i32.const 0x2f))
+    (memory.copy (i32.add (local.get $out) (i32.add (local.get $frlen) (i32.const 2)))
+                 (local.get $p) (local.get $plen))
+    (i32.add (i32.add (local.get $frlen) (i32.const 2)) (local.get $plen)))
+
+  ;; Does parent pattern PP cover child pattern CP? Both canonical, both absolute. Segment-wise:
+  ;;   parent "*" as the LAST segment → covers everything remaining
+  ;;   parent "*" mid-pattern         → covers exactly one child segment, whatever it is
+  ;;   parent literal                 → the child segment must be that literal; a child "*"
+  ;;                                    here is BROADER than the parent and is refused
+  ;; Both exhausted together → covered; either alone → not covered.
+  (func $pat_covers (param $cp i32) (param $cplen i32) (param $pp i32) (param $pplen i32) (result i32)
+    (local $ci i32) (local $pi i32) (local $cs i32) (local $cl i32) (local $ps i32) (local $pl i32)
+    (if (i32.eqz (local.get $cplen)) (then (return (i32.const 0))))
+    (if (i32.eqz (local.get $pplen)) (then (return (i32.const 0))))
+    (if (i32.ne (i32.load8_u (local.get $cp)) (i32.const 0x2f)) (then (return (i32.const 0))))
+    (if (i32.ne (i32.load8_u (local.get $pp)) (i32.const 0x2f)) (then (return (i32.const 0))))
+    (local.set $ci (i32.const 1))
+    (local.set $pi (i32.const 1))
+    (block $done (loop $L
+      (if (i32.ge_u (local.get $pi) (local.get $pplen))
+        (then (return (i32.ge_u (local.get $ci) (local.get $cplen)))))
+      ;; parent segment — read BEFORE testing whether the child is exhausted, because a
+      ;; trailing "*" covers the remainder INCLUDING the empty one. "/{peer}/*" authorizes
+      ;; the peer's namespace, and listing that namespace's own root ("/{peer}/") is inside
+      ;; it, not above it. Testing child-exhaustion first refuses every root listing, which
+      ;; is what this ordering was originally written as and what the two listing checks caught.
+      (local.set $ps (i32.add (local.get $pp) (local.get $pi)))
+      (local.set $pl (i32.const 0))
+      (block $pe (loop $pL
+        (br_if $pe (i32.ge_u (i32.add (local.get $pi) (local.get $pl)) (local.get $pplen)))
+        (br_if $pe (i32.eq (i32.load8_u (i32.add (local.get $ps) (local.get $pl))) (i32.const 0x2f)))
+        (local.set $pl (i32.add (local.get $pl) (i32.const 1)))
+        (br $pL)))
+      (if (i32.and (i32.and (i32.eq (local.get $pl) (i32.const 1))
+                            (i32.eq (i32.load8_u (local.get $ps)) (i32.const 0x2a)))
+                   (i32.ge_u (i32.add (local.get $pi) (local.get $pl)) (local.get $pplen)))
+        (then (return (i32.const 1))))
+      (if (i32.ge_u (local.get $ci) (local.get $cplen)) (then (return (i32.const 0))))
+      ;; child segment
+      (local.set $cs (i32.add (local.get $cp) (local.get $ci)))
+      (local.set $cl (i32.const 0))
+      (block $ce (loop $cL
+        (br_if $ce (i32.ge_u (i32.add (local.get $ci) (local.get $cl)) (local.get $cplen)))
+        (br_if $ce (i32.eq (i32.load8_u (i32.add (local.get $cs) (local.get $cl))) (i32.const 0x2f)))
+        (local.set $cl (i32.add (local.get $cl) (i32.const 1)))
+        (br $cL)))
+      (if (i32.and (i32.eq (local.get $pl) (i32.const 1))
+                   (i32.eq (i32.load8_u (local.get $ps)) (i32.const 0x2a)))
+        (then)          ;; mid-pattern "*" — matches this one child segment, whatever it is
+        (else
+          ;; literal parent segment: a "*" child here is broader, and a mismatch is a miss
+          (if (i32.and (i32.eq (local.get $cl) (i32.const 1))
+                       (i32.eq (i32.load8_u (local.get $cs)) (i32.const 0x2a)))
+            (then (return (i32.const 0))))
+          (if (i32.eqz (call $streq (local.get $cs) (local.get $cl) (local.get $ps) (local.get $pl)))
+            (then (return (i32.const 0))))))
+      (local.set $ci (i32.add (i32.add (local.get $ci) (local.get $cl)) (i32.const 1)))
+      (local.set $pi (i32.add (i32.add (local.get $pi) (local.get $pl)) (i32.const 1)))
+      (br $L)))
+    (i32.const 0))
+
+  ;; every element of $sub covered by some element of $super, under §5.5a framing.
+  (func $arr_subset_framed (param $sub i32) (param $super i32)
+                           (param $sfr i32) (param $sfrlen i32) (param $pfr i32) (param $pfrlen i32) (result i32)
+    (local $n i64) (local $i i64) (local $p i32) (local $ep i32) (local $el i32) (local $clen i32)
+    (local $qn i64) (local $qi i64) (local $q i32) (local $qp i32) (local $ql i32) (local $plen i32) (local $hit i32)
+    (local.set $p (call $rd_head (local.get $sub)))
+    (if (i32.ne (global.get $g_major) (i32.const 4)) (then (return (i32.const 0))))
+    (local.set $n (global.get $g_arg))
+    (block $done (loop $L
+      (br_if $done (i64.ge_u (local.get $i) (local.get $n)))
+      (local.set $ep (call $rd_head (local.get $p)))
+      (local.set $el (i32.wrap_i64 (global.get $g_arg)))
+      (local.set $p (i32.add (local.get $ep) (local.get $el)))
+      (local.set $clen (call $canon (local.get $ep) (local.get $el) (local.get $sfr) (local.get $sfrlen) (i32.const 0x9A0200)))
+      (local.set $hit (i32.const 0))
+      (local.set $q (call $rd_head (local.get $super)))
+      (if (i32.ne (global.get $g_major) (i32.const 4)) (then (return (i32.const 0))))
+      (local.set $qn (global.get $g_arg))
+      (local.set $qi (i64.const 0))
+      (block $qdone (loop $qL
+        (br_if $qdone (i64.ge_u (local.get $qi) (local.get $qn)))
+        (local.set $qp (call $rd_head (local.get $q)))
+        (local.set $ql (i32.wrap_i64 (global.get $g_arg)))
+        (local.set $q (i32.add (local.get $qp) (local.get $ql)))
+        (local.set $plen (call $canon (local.get $qp) (local.get $ql) (local.get $pfr) (local.get $pfrlen) (i32.const 0x9A0600)))
+        (if (call $pat_covers (i32.const 0x9A0200) (local.get $clen) (i32.const 0x9A0600) (local.get $plen))
+          (then (local.set $hit (i32.const 1)) (br $qdone)))
+        (local.set $qi (i64.add (local.get $qi) (i64.const 1)))
+        (br $qL)))
+      (if (i32.eqz (local.get $hit)) (then (return (i32.const 0))))
+      (local.set $i (i64.add (local.get $i) (i64.const 1)))
+      (br $L)))
+    (i32.const 1))
+
+  ;; One scope dimension, child ⊆ parent. $framed selects §5.5a canonicalization, which scopes
+  ;; the RESOURCE dimension ONLY — handlers/operations/peers are id-scope and take no frame
+  ;; (over-applying the frame is the swift/sql defect: a universal parent grant stops covering
+  ;; any child grant the moment the two have different granters, and every delegated cap 403s).
+  ;; Both halves of the spec's scope_subset are here: child includes covered by parent includes,
+  ;; AND every parent exclude inherited by some child exclude.
+  (func $dim_subset (param $cs i32) (param $ps i32) (param $framed i32)
+                    (param $cfr i32) (param $cfrlen i32) (param $pfr i32) (param $pfrlen i32) (result i32)
+    (local $ci i32) (local $pi i32) (local $cx i32) (local $px i32)
+    (local.set $ci (call $map_find (local.get $cs) (i32.const 0x4613c0) (i32.const 7)))
+    (local.set $pi (call $map_find (local.get $ps) (i32.const 0x4613c0) (i32.const 7)))
+    (if (i32.eq (local.get $ci) (i32.const -1)) (then (return (i32.const 0))))
+    (if (i32.eq (local.get $pi) (i32.const -1)) (then (return (i32.const 0))))
+    (if (local.get $framed)
+      (then (if (i32.eqz (call $arr_subset_framed (local.get $ci) (local.get $pi)
+                                                  (local.get $cfr) (local.get $cfrlen)
+                                                  (local.get $pfr) (local.get $pfrlen)))
+              (then (return (i32.const 0)))))
+      (else (if (i32.eqz (call $array_subset_star (local.get $ci) (local.get $pi)))
+              (then (return (i32.const 0))))))
+    ;; exclude inheritance: each PARENT exclude must be covered by some CHILD exclude —
+    ;; the direction is the reverse of includes, because the child must exclude at least as
+    ;; much as its parent did. A child that simply drops the parent's exclude widens itself.
+    (local.set $px (call $map_find (local.get $ps) (i32.const 0x4619c0) (i32.const 7)))
+    (if (i32.eq (local.get $px) (i32.const -1)) (then (return (i32.const 1))))
+    (local.set $cx (call $map_find (local.get $cs) (i32.const 0x4619c0) (i32.const 7)))
+    (if (i32.eq (local.get $cx) (i32.const -1)) (then (return (i32.const 0))))
+    (if (local.get $framed)
+      (then (return (call $arr_subset_framed (local.get $px) (local.get $cx)
+                                             (local.get $pfr) (local.get $pfrlen)
+                                             (local.get $cfr) (local.get $cfrlen)))))
+    (call $array_subset_star (local.get $px) (local.get $cx)))
+
+  ;; Constraints: every PARENT key must survive on the child, byte-identical. A dropped key
+  ;; widens the child. Allowances: every CHILD key must already exist on the parent,
+  ;; byte-identical — an added key widens the child. Opposite directions, same comparison.
+  (func $map_attenuated (param $from i32) (param $to i32) (result i32)
+    (local $n i64) (local $i i64) (local $p i32) (local $kb i32) (local $kl i32)
+    (local $vp i32) (local $other i32) (local $vlen i32) (local $olen i32)
+    (if (i32.eq (local.get $from) (i32.const -1)) (then (return (i32.const 1))))
+    (local.set $p (call $rd_head (local.get $from)))
+    (if (i32.ne (global.get $g_major) (i32.const 5)) (then (return (i32.const 0))))
+    (local.set $n (global.get $g_arg))
+    (if (i64.eqz (local.get $n)) (then (return (i32.const 1))))
+    (if (i32.eq (local.get $to) (i32.const -1)) (then (return (i32.const 0))))
+    (block $done (loop $L
+      (br_if $done (i64.ge_u (local.get $i) (local.get $n)))
+      (local.set $kb (call $rd_head (local.get $p)))
+      (local.set $kl (i32.wrap_i64 (global.get $g_arg)))
+      (local.set $vp (i32.add (local.get $kb) (local.get $kl)))
+      (local.set $other (call $map_find (local.get $to) (local.get $kb) (local.get $kl)))
+      (if (i32.eq (local.get $other) (i32.const -1)) (then (return (i32.const 0))))
+      (local.set $vlen (i32.sub (call $skip (local.get $vp)) (local.get $vp)))
+      (local.set $olen (i32.sub (call $skip (local.get $other)) (local.get $other)))
+      (if (i32.eqz (call $streq (local.get $vp) (local.get $vlen) (local.get $other) (local.get $olen)))
+        (then (return (i32.const 0))))
+      (local.set $p (call $skip (local.get $vp)))
+      (local.set $i (i64.add (local.get $i) (i64.const 1)))
+      (br $L)))
+    (i32.const 1))
+
+  ;; All four scope dimensions + constraints + allowances, per §5.6 grant_subset.
+  (func $grant_subset_framed (param $cg i32) (param $pg i32)
+                             (param $cfr i32) (param $cfrlen i32) (param $pfr i32) (param $pfrlen i32) (result i32)
+    (local $a i32) (local $b i32)
+    ;; handlers — id-scope, no frame
+    (local.set $a (call $map_find (local.get $cg) (i32.const 0x461300) (i32.const 8)))
+    (local.set $b (call $map_find (local.get $pg) (i32.const 0x461300) (i32.const 8)))
+    (if (i32.or (i32.eq (local.get $a) (i32.const -1)) (i32.eq (local.get $b) (i32.const -1)))
+      (then (return (i32.const 0))))
+    (if (i32.eqz (call $dim_subset (local.get $a) (local.get $b) (i32.const 0)
+                                   (local.get $cfr) (local.get $cfrlen) (local.get $pfr) (local.get $pfrlen)))
+      (then (return (i32.const 0))))
+    ;; operations — id-scope, no frame
+    (local.set $a (call $map_find (local.get $cg) (i32.const 0x461380) (i32.const 10)))
+    (local.set $b (call $map_find (local.get $pg) (i32.const 0x461380) (i32.const 10)))
+    (if (i32.or (i32.eq (local.get $a) (i32.const -1)) (i32.eq (local.get $b) (i32.const -1)))
+      (then (return (i32.const 0))))
+    (if (i32.eqz (call $dim_subset (local.get $a) (local.get $b) (i32.const 0)
+                                   (local.get $cfr) (local.get $cfrlen) (local.get $pfr) (local.get $pfrlen)))
+      (then (return (i32.const 0))))
+    ;; resources — THE framed dimension, and the only one
+    (local.set $a (call $map_find (local.get $cg) (i32.const 0x461340) (i32.const 9)))
+    (local.set $b (call $map_find (local.get $pg) (i32.const 0x461340) (i32.const 9)))
+    (if (i32.ne (local.get $a) (i32.const -1))
+      (then
+        (if (i32.eq (local.get $b) (i32.const -1)) (then (return (i32.const 0))))
+        (if (i32.eqz (call $dim_subset (local.get $a) (local.get $b) (i32.const 1)
+                                       (local.get $cfr) (local.get $cfrlen) (local.get $pfr) (local.get $pfrlen)))
+          (then (return (i32.const 0))))))
+    ;; peers — id-scope; absent defaults to {include:[local_peer_id]} on BOTH sides, so an
+    ;; absent-vs-absent pair is trivially a subset and needs no synthesised map.
+    (local.set $a (call $map_find (local.get $cg) (i32.const 0x461980) (i32.const 5)))
+    (local.set $b (call $map_find (local.get $pg) (i32.const 0x461980) (i32.const 5)))
+    (if (i32.ne (local.get $a) (i32.const -1))
+      (then
+        (if (i32.eq (local.get $b) (i32.const -1)) (then (return (i32.const 0))))
+        (if (i32.eqz (call $dim_subset (local.get $a) (local.get $b) (i32.const 0)
+                                       (local.get $cfr) (local.get $cfrlen) (local.get $pfr) (local.get $pfrlen)))
+          (then (return (i32.const 0))))))
+    ;; constraints: parent keys must be retained; allowances: child keys must pre-exist
+    (if (i32.eqz (call $map_attenuated (call $map_find (local.get $pg) (i32.const 0x463f00) (i32.const 11))
+                                       (call $map_find (local.get $cg) (i32.const 0x463f00) (i32.const 11))))
+      (then (return (i32.const 0))))
+    (call $map_attenuated (call $map_find (local.get $cg) (i32.const 0x463e80) (i32.const 10))
+                          (call $map_find (local.get $pg) (i32.const 0x463e80) (i32.const 10))))
+
+  ;; §5.6 is_attenuated(child, parent) with the per-link §5.5a frames.
+  (func $is_attenuated (param $ctd i32) (param $ptd i32)
+                       (param $cfr i32) (param $cfrlen i32) (param $pfr i32) (param $pfrlen i32) (result i32)
+    (local $cg i32) (local $pg i32) (local $n i64) (local $i i64) (local $p i32) (local $g i32)
+    (local $qn i64) (local $qi i64) (local $q i32) (local $hit i32) (local $f i32) (local $pex i64)
+    (local.set $cg (call $map_find (local.get $ctd) (i32.const 0x4611c0) (i32.const 6)))
+    (local.set $pg (call $map_find (local.get $ptd) (i32.const 0x4611c0) (i32.const 6)))
+    (if (i32.eq (local.get $cg) (i32.const -1)) (then (return (i32.const 0))))
+    (if (i32.eq (local.get $pg) (i32.const -1)) (then (return (i32.const 0))))
+    (local.set $p (call $rd_head (local.get $cg)))
+    (if (i32.ne (global.get $g_major) (i32.const 4)) (then (return (i32.const 0))))
+    (local.set $n (global.get $g_arg))
+    (block $done (loop $L
+      (br_if $done (i64.ge_u (local.get $i) (local.get $n)))
+      (local.set $g (local.get $p))
+      (local.set $hit (i32.const 0))
+      (local.set $q (call $rd_head (local.get $pg)))
+      (if (i32.ne (global.get $g_major) (i32.const 4)) (then (return (i32.const 0))))
+      (local.set $qn (global.get $g_arg))
+      (local.set $qi (i64.const 0))
+      (block $qdone (loop $qL
+        (br_if $qdone (i64.ge_u (local.get $qi) (local.get $qn)))
+        (if (call $grant_subset_framed (local.get $g) (local.get $q)
+                                       (local.get $cfr) (local.get $cfrlen) (local.get $pfr) (local.get $pfrlen))
+          (then (local.set $hit (i32.const 1)) (br $qdone)))
+        (local.set $q (call $skip (local.get $q)))
+        (local.set $qi (i64.add (local.get $qi) (i64.const 1)))
+        (br $qL)))
+      (if (i32.eqz (local.get $hit)) (then (return (i32.const 0))))
+      (local.set $p (call $skip (local.get $g)))
+      (local.set $i (i64.add (local.get $i) (i64.const 1)))
+      (br $L)))
+    ;; Expiration nil-vs-finite (§5.6, normative): a child with NO expires_at is infinite, and
+    ;; infinite exceeds any finite parent. The permissive reading — treat the absent child
+    ;; field as "inherits the parent's" — is the one a reader reaches by accident and is
+    ;; explicitly non-conformant.
+    (local.set $f (call $map_find (local.get $ptd) (i32.const 0x462180) (i32.const 10)))
+    (if (i32.eq (local.get $f) (i32.const -1)) (then (return (i32.const 1))))
+    (drop (call $rd_head (local.get $f)))
+    (if (i32.ne (global.get $g_major) (i32.const 0)) (then (return (i32.const 0))))
+    (local.set $pex (global.get $g_arg))
+    (local.set $f (call $map_find (local.get $ctd) (i32.const 0x462180) (i32.const 10)))
+    (if (i32.eq (local.get $f) (i32.const -1)) (then (return (i32.const 0))))
+    (drop (call $rd_head (local.get $f)))
+    (if (i32.ne (global.get $g_major) (i32.const 0)) (then (return (i32.const 0))))
+    (i64.le_u (global.get $g_arg) (local.get $pex)))
+
+  ;; §5.5 check_delegation_caveats(parent, child, depth). Absent block → nothing to enforce.
+  (func $caveats_ok (param $ptd i32) (param $ctd i32) (param $depth i32) (result i32)
+    (local $cav i32) (local $f i32) (local $lim i64) (local $cex i64) (local $ccr i64)
+    (local.set $cav (call $map_find (local.get $ptd) (i32.const 0x464680) (i32.const 18)))
+    (if (i32.eq (local.get $cav) (i32.const -1)) (then (return (i32.const 1))))
+    ;; no_delegation
+    (local.set $f (call $map_find (local.get $cav) (i32.const 0x463b80) (i32.const 13)))
+    (if (i32.ne (local.get $f) (i32.const -1))
+      (then (drop (call $rd_head (local.get $f)))
+            (if (i32.and (i32.eq (global.get $g_major) (i32.const 7))
+                         (i64.eq (global.get $g_arg) (i64.const 21)))     ;; CBOR true
+              (then (return (i32.const 0))))))
+    ;; max_delegation_depth — denied when depth >= limit
+    (local.set $f (call $map_find (local.get $cav) (i32.const 0x463c00) (i32.const 20)))
+    (if (i32.ne (local.get $f) (i32.const -1))
+      (then (drop (call $rd_head (local.get $f)))
+            (if (i32.ne (global.get $g_major) (i32.const 0)) (then (return (i32.const 0))))
+            (if (i64.ge_u (i64.extend_i32_u (local.get $depth)) (global.get $g_arg))
+              (then (return (i32.const 0))))))
+    ;; max_delegation_ttl — an infinite child exceeds any finite limit
+    (local.set $f (call $map_find (local.get $cav) (i32.const 0x463bc0) (i32.const 18)))
+    (if (i32.eq (local.get $f) (i32.const -1)) (then (return (i32.const 1))))
+    (drop (call $rd_head (local.get $f)))
+    (if (i32.ne (global.get $g_major) (i32.const 0)) (then (return (i32.const 0))))
+    (local.set $lim (global.get $g_arg))
+    (local.set $f (call $map_find (local.get $ctd) (i32.const 0x462180) (i32.const 10)))
+    (if (i32.eq (local.get $f) (i32.const -1)) (then (return (i32.const 0))))
+    (drop (call $rd_head (local.get $f)))
+    (if (i32.ne (global.get $g_major) (i32.const 0)) (then (return (i32.const 0))))
+    (local.set $cex (global.get $g_arg))
+    (local.set $f (call $map_find (local.get $ctd) (i32.const 0x461280) (i32.const 10)))
+    (if (i32.eq (local.get $f) (i32.const -1)) (then (return (i32.const 0))))
+    (drop (call $rd_head (local.get $f)))
+    (if (i32.ne (global.get $g_major) (i32.const 0)) (then (return (i32.const 0))))
+    (if (i64.lt_u (local.get $cex) (global.get $g_arg)) (then (return (i32.const 1))))
+    (i64.le_u (i64.sub (local.get $cex) (global.get $g_arg)) (local.get $lim)))
+
+  ;; CAP-6a + temporal validity for ONE link, against the once-sampled `now`.
+  ;;
+  ;; The representability test runs FIRST and is the whole point: an accessor that answers
+  ;; "nothing" for both an ABSENT field and a PRESENT-but-not-uint64 one collapses MALFORMED
+  ;; into ABSENT — and absent means "no expiry", so the fail-open reading hands an immortal
+  ;; capability to whoever sent the malformed value. Here the two are distinguishable by
+  ;; construction: $map_find answers ABSENT, $g_major answers REPRESENTABLE. CAP-6a covers
+  ;; THREE fields, and created_at is the one an audit shaped around expiry checks misses.
+  ;; (A bignum can only reach a peer as a major-type-6 tag and is refused at decode; what
+  ;; arrives here is the negative form, major type 1.)
+  (func $link_temporal_ok (param $td i32) (param $now i64) (result i32)
+    (local $f i32)
+    (local.set $f (call $map_find (local.get $td) (i32.const 0x461280) (i32.const 10)))     ;; created_at
+    (if (i32.ne (local.get $f) (i32.const -1))
+      (then (drop (call $rd_head (local.get $f)))
+            (if (i32.ne (global.get $g_major) (i32.const 0)) (then (return (i32.const 0))))))
+    (local.set $f (call $map_find (local.get $td) (i32.const 0x4621c0) (i32.const 10)))     ;; not_before
+    (if (i32.ne (local.get $f) (i32.const -1))
+      (then (drop (call $rd_head (local.get $f)))
+            (if (i32.ne (global.get $g_major) (i32.const 0)) (then (return (i32.const 0))))
+            (if (i64.lt_u (local.get $now) (global.get $g_arg)) (then (return (i32.const 0))))))
+    (local.set $f (call $map_find (local.get $td) (i32.const 0x462180) (i32.const 10)))     ;; expires_at
+    (if (i32.ne (local.get $f) (i32.const -1))
+      (then (drop (call $rd_head (local.get $f)))
+            (if (i32.ne (global.get $g_major) (i32.const 0)) (then (return (i32.const 0))))
+            ;; §5.6 CAP-6: expiry is an EXCLUSIVE upper bound — expired when now >= expires_at.
+            ;; This pairs with ttl_ms:0 minting expires_at == created_at, which must be expired
+            ;; at every observable instant rather than valid for one and racing.
+            (if (i64.ge_u (local.get $now) (global.get $g_arg)) (then (return (i32.const 0))))))
+    (i32.const 1))
+
+  ;; §3.6 / §5.5 K-of-N multi-granter (M3 structure, M4 threshold, M6 local participation).
+  ;; $g is the granter VALUE pointer (a map {signers, threshold}); $target is the link's own
+  ;; content hash, which is what each signer signs. Returns 1 only when the quorum is met AND
+  ;; the local peer is one of the signers that actually signed — M6 generalizes "root granter
+  ;; must be the local peer" to "the local peer must have jointly authorized this root", which
+  ;; is what keeps a K-of-N cap locally rooted rather than universally usable.
+  (func $multi_granter_ok (param $g i32) (param $incl i32) (param $target i32) (result i32)
+    (local $sg i32) (local $th i32) (local $n i64) (local $i i64) (local $j i64) (local $thr i64)
+    (local $p i32) (local $q i32) (local $sp i32) (local $qp i32) (local $valid i64) (local $localhit i32)
+    (local $ident i32) (local $d i32) (local $pk i32) (local $pkp i32) (local $sig i32)
+    (local.set $sg (call $map_find (local.get $g) (i32.const 0x464080) (i32.const 7)))       ;; signers
+    (if (i32.eq (local.get $sg) (i32.const -1)) (then (return (i32.const 0))))
+    (local.set $p (call $rd_head (local.get $sg)))
+    (if (i32.ne (global.get $g_major) (i32.const 4)) (then (return (i32.const 0))))
+    (local.set $n (global.get $g_arg))
+    (if (i64.lt_u (local.get $n) (i64.const 2)) (then (return (i32.const 0))))               ;; M3: >= 2 signers
+    (local.set $th (call $map_find (local.get $g) (i32.const 0x4640c0) (i32.const 9)))       ;; threshold
+    (if (i32.eq (local.get $th) (i32.const -1)) (then (return (i32.const 0))))
+    (drop (call $rd_head (local.get $th)))
+    (if (i32.ne (global.get $g_major) (i32.const 0)) (then (return (i32.const 0))))
+    (local.set $thr (global.get $g_arg))
+    (if (i64.lt_u (local.get $thr) (i64.const 2)) (then (return (i32.const 0))))             ;; M3: 2 <= threshold
+    (if (i64.gt_u (local.get $thr) (local.get $n)) (then (return (i32.const 0))))            ;; M3: threshold <= |signers|
+    ;; M3: no duplicate signers — otherwise one key could satisfy a K-of-N by being listed K times
+    (local.set $p (call $rd_head (local.get $sg)))
+    (block $ddone (loop $dL
+      (br_if $ddone (i64.ge_u (local.get $i) (local.get $n)))
+      (local.set $sp (call $rd_head (local.get $p)))
+      (if (i64.ne (global.get $g_arg) (i64.const 33)) (then (return (i32.const 0))))
+      (local.set $p (i32.add (local.get $sp) (i32.const 33)))
+      (local.set $q (local.get $p))
+      (local.set $j (i64.add (local.get $i) (i64.const 1)))
+      (block $idone (loop $iL
+        (br_if $idone (i64.ge_u (local.get $j) (local.get $n)))
+        (local.set $qp (call $rd_head (local.get $q)))
+        (if (i64.ne (global.get $g_arg) (i64.const 33)) (then (return (i32.const 0))))
+        (local.set $q (i32.add (local.get $qp) (i32.const 33)))
+        (if (call $streq (local.get $sp) (i32.const 33) (local.get $qp) (i32.const 33))
+          (then (return (i32.const 0))))
+        (local.set $j (i64.add (local.get $j) (i64.const 1)))
+        (br $iL)))
+      (local.set $i (i64.add (local.get $i) (i64.const 1)))
+      (br $dL)))
+    ;; M4 + M6: count signatures that actually verify, and note whether one of them is ours
+    (local.set $i (i64.const 0))
+    (local.set $p (call $rd_head (local.get $sg)))
+    (block $vdone (loop $vL
+      (br_if $vdone (i64.ge_u (local.get $i) (local.get $n)))
+      (local.set $sp (call $rd_head (local.get $p)))
+      (local.set $p (i32.add (local.get $sp) (i32.const 33)))
+      (block $next
+        (local.set $ident (call $included_find_by_key (local.get $incl) (local.get $sp)))
+        (br_if $next (i32.eqz (local.get $ident)))
+        (local.set $d (call $map_find (local.get $ident) (i32.const 0x460010) (i32.const 4)))
+        (br_if $next (i32.eq (local.get $d) (i32.const -1)))
+        (local.set $pk (call $map_find (local.get $d) (i32.const 0x461080) (i32.const 10)))
+        (br_if $next (i32.eq (local.get $pk) (i32.const -1)))
+        (local.set $pkp (call $rd_head (local.get $pk)))
+        (local.set $sig (call $find_req_sig (local.get $incl) (local.get $sp) (local.get $target)))
+        (br_if $next (i32.eqz (local.get $sig)))
+        (br_if $next (call $ed_verify (local.get $pkp) (local.get $target) (i32.const 33) (local.get $sig)))
+        (local.set $valid (i64.add (local.get $valid) (i64.const 1)))
+        (if (call $streq (local.get $sp) (i32.const 33) (i32.const 0x440000) (i32.const 33))
+          (then (local.set $localhit (i32.const 1)))))
+      (local.set $i (i64.add (local.get $i) (i64.const 1)))
+      (br $vL)))
+    (if (i64.lt_u (local.get $valid) (local.get $thr)) (then (return (i32.const 0))))
+    (local.get $localhit))
+
+  ;; §5.2 cap-class (403 / 401 unresolvable_grantee) + §5.5 delegation-chain verification.
+  ;;
+  ;; Walks capability → parent → … → root, validating EVERY link: content-hash integrity,
+  ;; revocation, grantee resolution, temporal validity (CAP-6a representability first), and
+  ;; the granter's signature. For every non-root link it additionally checks the parent
+  ;; linkage (parent.grantee == child.granter), §5.6 attenuation under §5.5a per-link granter
+  ;; frames, and the parent's delegation caveats. The ROOT's granter must be this peer —
+  ;; that check has not gone away, it has moved to the end of the walk where it belongs
+  ;; instead of standing in for the walk.
   (func $verify_cap (param $edp i32) (param $in i32) (param $out i32) (param $rid i32) (param $rlen i32) (result i32)
-    (local $cap i32) (local $capp i32) (local $author i32) (local $ap i32) (local $incl i32)
-    (local $tok i32) (local $td i32) (local $tdlen i32) (local $gee i32) (local $gp i32) (local $gpeer i32)
-    (local $gt i32) (local $gtp i32) (local $gtr i32) (local $grp i32) (local $gpd i32) (local $gpk i32) (local $gpkp i32) (local $sig i32)
-    (local.set $cap (call $map_find (local.get $edp) (i32.const 0x462040) (i32.const 10)))       ;; capability
-    (if (i32.eq (local.get $cap) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $capp (call $rd_head (local.get $cap)))
-    (local.set $author (call $map_find (local.get $edp) (i32.const 0x462000) (i32.const 6)))
-    (if (i32.eq (local.get $author) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $ap (call $rd_head (local.get $author)))
+    (local $capp i32) (local $ap i32) (local $incl i32) (local $cur i32) (local $depth i32)
+    (local $tok i32) (local $td i32) (local $tdlen i32) (local $now i64)
+    (local $gee i32) (local $gp i32) (local $gpeer i32) (local $gt i32) (local $gtp i32) (local $gtl i32)
+    (local $gtr i32) (local $grp i32) (local $gpd i32) (local $gpk i32) (local $gpkp i32) (local $sig i32)
+    (local $par i32) (local $ctd i32)
+    (local.set $capp (call $map_find (local.get $edp) (i32.const 0x462040) (i32.const 10)))
+    (if (i32.eq (local.get $capp) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+    (local.set $capp (call $rd_head (local.get $capp)))
+    (local.set $ap (call $map_find (local.get $edp) (i32.const 0x462000) (i32.const 6)))
+    (if (i32.eq (local.get $ap) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+    (local.set $ap (call $rd_head (local.get $ap)))
     (local.set $incl (call $map_find (local.get $in) (i32.const 0x461040) (i32.const 8)))
     (if (i32.eq (local.get $incl) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $tok (call $included_find_by_key (local.get $incl) (local.get $capp)))
-    (if (i32.eqz (local.get $tok)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $td (call $map_find (local.get $tok) (i32.const 0x460010) (i32.const 4)))
-    (if (i32.eq (local.get $td) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $tdlen (i32.sub (call $skip (local.get $td)) (local.get $td)))
-    (drop (call $content_hash (i32.const 0x461540) (i32.const 23) (local.get $td) (local.get $tdlen) (i32.const 0x920280)))
-    (if (i32.eqz (call $streq (i32.const 0x920280) (i32.const 33) (local.get $capp) (i32.const 33))) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    ;; §6.9a — a revoked cap is denied on use (revocation marker present in the write store).
-    (if (call $store_get (i32.const 0x978000) (call $revoc_path (local.get $capp)))
-      (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $gee (call $map_find (local.get $td) (i32.const 0x461200) (i32.const 7)))         ;; grantee
-    (if (i32.eq (local.get $gee) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $gp (call $rd_head (local.get $gee)))
-    (if (i64.ne (global.get $g_arg) (i64.const 33)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $gpeer (call $included_find_by_key (local.get $incl) (local.get $gp)))
-    (if (i32.eqz (local.get $gpeer)) (then (return (call $err_unresg (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $gt (call $map_find (local.get $gpeer) (i32.const 0x460020) (i32.const 4)))       ;; type
-    (if (i32.eq (local.get $gt) (i32.const -1)) (then (return (call $err_unresg (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $gtp (call $rd_head (local.get $gt)))
-    (if (i32.eqz (call $streq (local.get $gtp) (i32.wrap_i64 (global.get $g_arg)) (i32.const 0x4614c0) (i32.const 11))) (then (return (call $err_unresg (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (if (i32.eqz (call $streq (local.get $gp) (i32.const 33) (local.get $ap) (i32.const 33))) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $gtr (call $map_find (local.get $td) (i32.const 0x461240) (i32.const 7)))         ;; granter
-    (if (i32.eq (local.get $gtr) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $grp (call $rd_head (local.get $gtr)))
-    (if (i32.eq (global.get $g_major) (i32.const 5)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))  ;; multisig — deferred
-    (if (i32.eqz (call $streq (local.get $grp) (i32.const 33) (i32.const 0x440000) (i32.const 33))) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))  ;; root-trust
-    (local.set $gpeer (call $included_find_by_key (local.get $incl) (local.get $grp)))
-    (if (i32.eqz (local.get $gpeer)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $gpd (call $map_find (local.get $gpeer) (i32.const 0x460010) (i32.const 4)))
-    (if (i32.eq (local.get $gpd) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $gpk (call $map_find (local.get $gpd) (i32.const 0x461080) (i32.const 10)))
-    (if (i32.eq (local.get $gpk) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $gpkp (call $rd_head (local.get $gpk)))
-    (local.set $sig (call $find_req_sig (local.get $incl) (local.get $grp) (local.get $capp)))
-    (if (i32.eqz (local.get $sig)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (if (call $ed_verify (local.get $gpkp) (local.get $capp) (i32.const 33) (local.get $sig)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+    ;; §5.5 v7.76: `t` is sampled ONCE per verdict and never re-sampled per link — otherwise
+    ;; the verdict depends on wall-clock drift within a single walk.
+    (drop (call $clock_time_get (i32.const 0) (i64.const 0) (i32.const 0x930040)))
+    (local.set $now (i64.div_u (i64.load (i32.const 0x930040)) (i64.const 1000000)))
+    (local.set $cur (local.get $capp))
+    (block $chain_done (loop $walk
+      (local.set $tok (call $included_find_by_key (local.get $incl) (local.get $cur)))
+      (if (i32.eqz (local.get $tok)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      (local.set $td (call $map_find (local.get $tok) (i32.const 0x460010) (i32.const 4)))
+      (if (i32.eq (local.get $td) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      (local.set $tdlen (i32.sub (call $skip (local.get $td)) (local.get $td)))
+      ;; integrity: the link's data must hash to the hash we followed to reach it
+      (drop (call $content_hash (i32.const 0x461540) (i32.const 23) (local.get $td) (local.get $tdlen) (i32.const 0x920280)))
+      (if (i32.eqz (call $streq (i32.const 0x920280) (i32.const 33) (local.get $cur) (i32.const 33)))
+        (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      ;; §6.9a — revocation is per-link: revoking an intermediate kills everything under it
+      (if (call $store_get (i32.const 0x978000) (call $revoc_path (local.get $cur)))
+        (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      ;; grantee must resolve to a present system/peer — per link, not just at the leaf
+      (local.set $gee (call $map_find (local.get $td) (i32.const 0x461200) (i32.const 7)))
+      (if (i32.eq (local.get $gee) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      (local.set $gp (call $rd_head (local.get $gee)))
+      (if (i64.ne (global.get $g_arg) (i64.const 33)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      (local.set $gpeer (call $included_find_by_key (local.get $incl) (local.get $gp)))
+      (if (i32.eqz (local.get $gpeer)) (then (return (call $err_unresg (local.get $out) (local.get $rid) (local.get $rlen)))))
+      (local.set $gt (call $map_find (local.get $gpeer) (i32.const 0x460020) (i32.const 4)))
+      (if (i32.eq (local.get $gt) (i32.const -1)) (then (return (call $err_unresg (local.get $out) (local.get $rid) (local.get $rlen)))))
+      (local.set $gtp (call $rd_head (local.get $gt)))
+      (local.set $gtl (i32.wrap_i64 (global.get $g_arg)))
+      (if (i32.eqz (call $streq (local.get $gtp) (local.get $gtl) (i32.const 0x4614c0) (i32.const 11)))
+        (then (return (call $err_unresg (local.get $out) (local.get $rid) (local.get $rlen)))))
+      ;; linkage: the LEAF is granted to the request author; every parent is granted to the
+      ;; granter of the link below it. `$g_pgee` carries the child's granter across the hop.
+      (if (i32.eqz (local.get $depth))
+        (then (if (i32.eqz (call $streq (local.get $gp) (i32.const 33) (local.get $ap) (i32.const 33)))
+                (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen))))))
+        (else (if (i32.eqz (call $streq (local.get $gp) (i32.const 33) (i32.const 0x9A0800) (i32.const 33)))
+                (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))))
+      (if (i32.eqz (call $link_temporal_ok (local.get $td) (local.get $now)))
+        (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      ;; granter
+      (local.set $gtr (call $map_find (local.get $td) (i32.const 0x461240) (i32.const 7)))
+      (if (i32.eq (local.get $gtr) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      (local.set $grp (call $rd_head (local.get $gtr)))
+      ;; §3.6 K-of-N multi-granter.
+      (if (i32.eq (global.get $g_major) (i32.const 5))
+        (then
+          ;; M3 structural validity runs BEFORE any signature verification, so a violation
+          ;; surfaces as 403 capability_denied rather than as a signature failure. Multi-sig
+          ;; is ROOT-ONLY: a multi-granter link carrying a parent is structurally invalid.
+          (if (i32.ne (call $map_find (local.get $td) (i32.const 0x462140) (i32.const 6)) (i32.const -1))
+            (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+          ;; A quorum root has no single granter peer_id, so §5.5a has no frame to canonicalize
+          ;; its resource patterns against. Rather than invent one, this peer accepts a K-of-N
+          ;; root only when it is the capability actually PRESENTED (depth 0) — where no
+          ;; attenuation comparison is needed. A chain whose root is K-of-N is refused, and
+          ;; that limit is written here rather than left to be discovered.
+          (if (local.get $depth) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+          (if (i32.eqz (call $multi_granter_ok (local.get $gtr) (local.get $incl) (local.get $cur)))
+            (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+          (br $chain_done)))
+      (if (i64.ne (global.get $g_arg) (i64.const 33)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      ;; signature over THIS link, by THIS link's granter
+      (local.set $gpeer (call $included_find_by_key (local.get $incl) (local.get $grp)))
+      (if (i32.eqz (local.get $gpeer)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      (local.set $gpd (call $map_find (local.get $gpeer) (i32.const 0x460010) (i32.const 4)))
+      (if (i32.eq (local.get $gpd) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      (local.set $gpk (call $map_find (local.get $gpd) (i32.const 0x461080) (i32.const 10)))
+      (if (i32.eq (local.get $gpk) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      (local.set $gpkp (call $rd_head (local.get $gpk)))
+      (local.set $sig (call $find_req_sig (local.get $incl) (local.get $grp) (local.get $cur)))
+      (if (i32.eqz (local.get $sig)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      (if (call $ed_verify (local.get $gpkp) (local.get $cur) (i32.const 33) (local.get $sig))
+        (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      ;; this link's §5.5a frame = its granter's peer_id
+      (if (i32.eqz (call $peerid_of (local.get $incl) (local.get $grp) (i32.const 0x9A0100) (i32.const 0x9A0180)))
+        (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      ;; attenuation + caveats against the child we arrived from
+      (if (local.get $depth)
+        (then
+          (if (i32.eqz (call $is_attenuated (local.get $ctd) (local.get $td)
+                                            (i32.const 0x9A0000) (i32.load (i32.const 0x9A0080))
+                                            (i32.const 0x9A0100) (i32.load (i32.const 0x9A0180))))
+            (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+          (if (i32.eqz (call $caveats_ok (local.get $td) (local.get $ctd) (i32.sub (local.get $depth) (i32.const 1))))
+            (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))))
+      ;; root?
+      (local.set $par (call $map_find (local.get $td) (i32.const 0x462140) (i32.const 6)))
+      (if (i32.eq (local.get $par) (i32.const -1))
+        (then
+          ;; §5.5 root trust: the chain must terminate at a capability this peer granted.
+          (if (i32.eqz (call $streq (local.get $grp) (i32.const 33) (i32.const 0x440000) (i32.const 33)))
+            (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+          (br $chain_done)))
+      ;; carry the child state across the hop: its data, its granter, and its frame
+      (local.set $ctd (local.get $td))
+      (memory.copy (i32.const 0x9A0800) (local.get $grp) (i32.const 33))
+      (memory.copy (i32.const 0x9A0000) (i32.const 0x9A0100) (i32.const 128))
+      (i32.store (i32.const 0x9A0080) (i32.load (i32.const 0x9A0180)))
+      (local.set $cur (call $rd_head (local.get $par)))
+      (if (i64.ne (global.get $g_arg) (i64.const 33)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      (local.set $depth (i32.add (local.get $depth) (i32.const 1)))
+      ;; §5.5 collect_authority_chain bounds depth at 64; $chain_depth_check already answers
+      ;; 400 chain_depth_exceeded ahead of this walk, so this is the belt to that braces —
+      ;; it exists so the loop cannot run unbounded if the walk is ever reached by another path.
+      (if (i32.gt_u (local.get $depth) (i32.const 64))
+        (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+      (br $walk)))
     (i32.const 0))
 
   ;; §5.2 grant-scope (403): token temporal-valid + some grant covers op×handler×target.
@@ -3201,7 +3752,27 @@
     (if (i64.eqz (global.get $g_arg)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
     (local.set $tgp (call $rd_head (local.get $tgp)))
     (local.set $tglen (i32.wrap_i64 (global.get $g_arg)))
-    (if (call $grant_scope_ok (local.get $td) (local.get $tgp) (local.get $tglen) (local.get $opp) (local.get $oplen)) (then (return (i32.const 0))))
+    ;; §5.5a frame for the DISPATCH surface: the presented cap's own granter. Derived here
+    ;; rather than assumed to be the local peer — they are byte-identical for every
+    ;; self-issued capability, which is exactly why framing against the verifier stays
+    ;; latent until a foreign-granted cap arrives.
+    (local.set $f (call $map_find (local.get $td) (i32.const 0x461240) (i32.const 7)))          ;; granter
+    (if (i32.eq (local.get $f) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
+    (local.set $f (call $rd_head (local.get $f)))
+    (if (i32.eq (global.get $g_major) (i32.const 5))
+      (then
+        ;; §3.6 K-of-N root: there is no single granter, so §5.5a has no granter peer_id to
+        ;; frame against. The local peer is the correct frame here and not a fallback — M6
+        ;; already required that the local peer be in the signer set AND have signed, and
+        ;; §5.5 says a quorum cap's "subsequent use is locally rooted". The quorum authorized
+        ;; issuance; the namespace the patterns name is this peer's.
+        (memory.copy (i32.const 0x9A1200) (i32.const 0x420200) (i32.load (i32.const 0x4202F0)))
+        (i32.store (i32.const 0x9A1280) (i32.load (i32.const 0x4202F0))))
+      (else
+        (if (i32.eqz (call $peerid_of (local.get $incl) (local.get $f) (i32.const 0x9A1200) (i32.const 0x9A1280)))
+          (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))))
+    (if (call $grant_scope_ok (local.get $td) (local.get $tgp) (local.get $tglen) (local.get $opp) (local.get $oplen)
+                              (i32.const 0x9A1200) (i32.load (i32.const 0x9A1280))) (then (return (i32.const 0))))
     (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))
 
   ;; 200 EXECUTE_RESPONSE {result:<blob>, status:200, request_id} wrapping a stored entity blob.
@@ -3722,6 +4293,7 @@
     (local $grants i32) (local $gptr i32) (local $glen i32)
     (local $cap i32) (local $capp i32) (local $incl i32) (local $tok i32) (local $ctd i32)
     (local $ms i64) (local $toklen i32) (local $sigdlen i32) (local $grlen i32) (local $rdlen i32) (local $peerlen i32)
+    (local $f i32) (local $expv i64) (local $exp_have i32) (local $tterm i64)
     ;; §5.2 auth-class (401) then capability-class (403). No grant-scope gate — a request op
     ;; carries no resource.targets; attenuation below is the widening guard.
     (local.set $e (call $verify_auth (local.get $edp) (local.get $in) (local.get $out) (local.get $rid) (local.get $rlen)))
@@ -3759,13 +4331,61 @@
     ;; ======================= mint (mirror $build_auth's tail) =======================
     (drop (call $clock_time_get (i32.const 0) (i64.const 0) (i32.const 0x930040)))
     (local.set $ms (i64.div_u (i64.load (i32.const 0x930040)) (i64.const 1000000)))
-    ;; token data {grants:<raw copy>, grantee, granter, created_at} @0x940000
+    ;; ---- §6.2 CAP-5 / §5.6 MIN_DEFINED mint ceiling ----
+    ;;
+    ;;   expires_at = MIN_DEFINED( caller_capability.expires_at,   ; ABSOLUTE, enters directly
+    ;;                             created_at + request.ttl_ms )   ; DURATION, converted first
+    ;;
+    ;; `request` mints a ROOT token (parent: null), so §5.6's parent-child attenuation never
+    ;; reaches it — without this clamp, temporal attenuation is the one dimension a requester
+    ;; could escape, and policy withdrawal would have no bounded latency. Note this is NOT an
+    ;; authorization decision: an over-long ttl_ms from a bounded caller MINTS the clamped
+    ;; value and returns 200, and refusing it is non-conformant.
+    ;;
+    ;; The value is reached BY CONSTRUCTION, not by comparison. A `<= caller_exp` check
+    ;; satisfies a strictly weaker test than the one being run — the oracle says so in its
+    ;; own failure text — so there is deliberately no comparison against the caller's expiry
+    ;; anywhere in here.
+    ;;
+    ;; §5.6's third term, `created_at + policy_entry.ttl_ms`, is structurally absent on this
+    ;; peer: it writes policy entries (§6.2 configure) but never reads one back on the request
+    ;; path, so there is no policy entry in scope to take a ttl from. That is a missing TERM,
+    ;; not a missing rule — MIN_DEFINED over the terms that exist is exactly what it computes.
+    ;; `created_at` is sampled ONCE, above, and the duration term is converted against that
+    ;; same instant; sampling again here would emit a token whose stated birth and derived
+    ;; expiry are different instants.
+    (local.set $f (call $map_find (local.get $ctd) (i32.const 0x462180) (i32.const 10)))     ;; caller expires_at
+    (if (i32.ne (local.get $f) (i32.const -1))
+      (then (drop (call $rd_head (local.get $f)))
+            (if (i32.eq (global.get $g_major) (i32.const 0))
+              (then (local.set $expv (global.get $g_arg)) (local.set $exp_have (i32.const 1))))))
+    (local.set $f (call $map_find (local.get $pdata) (i32.const 0x463ac0) (i32.const 6)))    ;; request ttl_ms
+    (if (i32.ne (local.get $f) (i32.const -1))
+      (then (drop (call $rd_head (local.get $f)))
+            (if (i32.eq (global.get $g_major) (i32.const 0))
+              (then
+                (local.set $tterm (i64.add (local.get $ms) (global.get $g_arg)))
+                ;; §5.6 rule 3: a term that does not fit is DROPPED — never wrapped, never
+                ;; saturated. Saturation would manufacture expires_at == 2^64-1, a finite
+                ;; bound no reader can tell from a deliberate one. ttl_ms == 0 is NOT special-
+                ;; cased (rule 2): it falls out as created_at, which is what keeps "expire
+                ;; immediately" from collapsing into the absent/"no bound" spelling.
+                (if (i64.ge_u (local.get $tterm) (local.get $ms))
+                  (then (if (i32.eqz (local.get $exp_have))
+                          (then (local.set $expv (local.get $tterm)) (local.set $exp_have (i32.const 1)))
+                          (else (if (i64.lt_u (local.get $tterm) (local.get $expv))
+                                  (then (local.set $expv (local.get $tterm))))))))))))
+    ;; token data {grants:<raw copy>, grantee, granter, created_at[, expires_at]} @0x940000.
+    ;; Canonical key order is length-then-lex, so expires_at sorts AFTER created_at (same
+    ;; length, c < e) and appends cleanly at the end.
     (global.set $g_wp (i32.const 0x940000))
-    (call $w_map (i64.const 4))
+    (call $w_map (i64.extend_i32_u (i32.add (i32.const 4) (local.get $exp_have))))
     (call $w_text (i32.const 0x4611c0) (i32.const 6))  (call $w_bytes (local.get $gptr) (local.get $glen))    ;; grants (verbatim)
     (call $w_text (i32.const 0x461200) (i32.const 7))  (call $w_bstr (local.get $ap) (i32.const 33))          ;; grantee = author
     (call $w_text (i32.const 0x461240) (i32.const 7))  (call $w_bstr (i32.const 0x440000) (i32.const 33))     ;; granter = my idhash
     (call $w_text (i32.const 0x461280) (i32.const 10)) (call $w_uint (local.get $ms))                         ;; created_at
+    (if (local.get $exp_have)
+      (then (call $w_text (i32.const 0x462180) (i32.const 10)) (call $w_uint (local.get $expv))))              ;; expires_at
     (local.set $toklen (i32.sub (global.get $g_wp) (i32.const 0x940000)))
     (drop (call $content_hash (i32.const 0x461540) (i32.const 23) (i32.const 0x940000) (local.get $toklen) (i32.const 0x920100)))
     (drop (call $ed_sign (i32.const 0x420000) (i32.const 0x920100) (i32.const 33) (i32.const 0x920200)))

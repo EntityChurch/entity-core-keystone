@@ -533,26 +533,95 @@ class EntityCoreUtils {
       const { env, execute } = o, peer = this.kernel.services, local = this.kernel.identity;
       const granteePeer = env.find(execute.author);
       const requested = this._requestedGrants(execute);
-      const ttlMs = Ecf.optUint(execute.params.data, "ttl_ms");
-      const expiresAt = ttlMs === null ? null : peer.nowMs + ttlMs;
-      const { token, signature } = CapabilityToken.createRoot(local, granteePeer.contentHash, requested, peer.nowMs, expiresAt);
+      // §6.2 CAP-5 / §5.6: sample created_at ONCE and thread it through both the emitted
+      // created_at and every duration term, so the two cannot skew. The previous form read
+      // `peer.nowMs` twice — once for the expiry, once as created_at — so the token's stated
+      // birth and the expiry derived from it were two different instants.
+      const createdAt = peer.nowMs;
+      const expiresAt = this._mintExpiry(o, createdAt);
+      const { token, signature } = CapabilityToken.createRoot(local, granteePeer.contentHash, requested, createdAt, expiresAt);
       const grant = Entity.create(TypeNames.CapabilityGrant, Ecf.map(["token", Ecf.bytes(token.contentHash)]));
       const included = [token.entity, local.peerEntity, granteePeer, signature];
       const resp = ExecuteResponse.build(execute.requestId, Status.Ok, grant);
       return this._ref({ _resp: true, env: new Envelope(resp.entity, included) });
     } catch (_) { return ""; }
   }
-  // §6.2 configure — a policy entry MUST be a policy-entry type, carry a valid peer_pattern
-  // (v7.62 §4 / v7.65 §3.6), and at least one grant. Each verdict is its own block so the
-  // 400 invalid_params guards read on the canvas.
+  // §6.2 CAP-5's mint ceiling, in the §5.6 MIN_DEFINED construction:
+  //
+  //     expires_at = MIN_DEFINED(
+  //         caller_capability.expires_at,      ; ABSOLUTE — enters directly
+  //         created_at + policy_entry.ttl_ms,  ; DURATION — converted first
+  //         created_at + request.ttl_ms)       ; DURATION — converted first
+  //
+  // This is a value reached by CONSTRUCTION, not a bound verified by comparison. The
+  // oracle says so in its own failure text — "a `<= caller_exp` check would pass this;
+  // CAP-5 requires the exact clamped value" — so any implementation that reaches it by
+  // comparing satisfies a weaker test than the one being run.
+  //
+  // What this replaces carried ONLY the request's own ttl_ms, which is the one term the
+  // requester controls. `request` mints a ROOT token (parent: null), so §5.6's parent-child
+  // attenuation never reaches it, and without the caller-cap term temporal attenuation is
+  // the single dimension a requester can escape: measured 2026-08-29, this peer minted
+  // expires_at=2102714473569 against a caller capability expiring at 1787358073564 — a
+  // token outliving the authority that permitted it by ten years, returned as a clean 200.
+  _mintExpiry(o, createdAt) {
+    const cap = this._callerCap(o);
+    return this._minDefined(
+      cap === null ? null : cap.expiresAt,
+      this._durationTerm(createdAt, this._policyTtlMs(o)),
+      this._durationTerm(createdAt, Ecf.optUint(o.execute.params.data, "ttl_ms")),
+    );
+  }
+  // §5.6 rule 1: a DURATION term becomes absolute against created_at. Rule 2: ttl_ms of 0 is
+  // DEFINED and yields created_at (expire immediately) — deliberately NOT special-cased, so
+  // it cannot collapse into the absent/"no bound" spelling. Rule 3: an overflowing term is
+  // DROPPED, never wrapped and never saturated. Dropping is why the overflow probe returns
+  // 200 rather than the 500 this peer used to raise on it.
+  _durationTerm(createdAt, ttl) {
+    if (ttl === null) return null;
+    const sum = createdAt + ttl;
+    return sum > 0xffffffffffffffffn ? null : sum;
+  }
+  // §5.6 MIN_DEFINED: the minimum over the DEFINED terms only; null when none is defined,
+  // which is the only spelling of "no bound".
+  _minDefined(...terms) {
+    let out = null;
+    for (const t of terms) if (t !== null && (out === null || t < out)) out = t;
+    return out;
+  }
+  // The ttl_ms of the policy entry that ceilings THIS caller, via the same v7.64 dual-form
+  // lookup (hex → Base58 → default) the §4.4 authenticate path uses. This is the term that
+  // makes policy withdrawal bounded on the `request` path.
+  _policyTtlMs(o) {
+    try {
+      if (o.execute.author === null) return null;
+      const caller = o.env.find(o.execute.author);
+      if (caller === undefined) return null;
+      const peer = this.kernel.services, peerId = this.kernel.identity.peerId;
+      const base = "/" + peerId + "/system/capability/policy/";
+      const entry = peer.tree.get(base + hashHex(caller.contentHash)) ?? peer.tree.get(base + "default");
+      return entry === undefined ? null : Ecf.optUint(entry.data, "ttl_ms");
+    } catch (_) { return null; }
+  }
+  // §6.2 configure — a policy entry MUST be a policy-entry type and carry a valid peer_pattern
+  // (v7.62 §4 / v7.65 §3.6). Each verdict is its own block so the 400 invalid_params guards
+  // read on the canvas.
   isPolicyEntryParams(a) { const o = this._exec(a.H); try { return o.execute.params.type === TypeNames.CapabilityPolicyEntry; } catch (_) { return false; } }
   validPolicyPattern(a) {
     const o = this._exec(a.H); if (!o) return false;
     try { const p = Ecf.optText(o.execute.params.data, "peer_pattern"); return p !== null && isValidPolicyPattern(p); } catch (_) { return false; }
   }
+  // §6.2 CAP-2: an EMPTY grants array is valid and meaningful — `configure` MUST accept
+  // `grants: []` and MUST write it. It is the WITHDRAWAL form: because an exact-match entry
+  // suppresses the `default` fallback simply by existing, an empty entry means "this peer
+  // matches, and is granted nothing." Rejecting it (the retired v7.62 §4 "at least one grant"
+  // reading, which this block enforced) leaves an operator only the MORE PERMISSIVE spelling —
+  // removal, which RESTORES the default fallback (CAP-3) and is a different operation, not a
+  // synonym. So this guard is now a SHAPE check only: `grants` must be present and an array;
+  // length 0 is legal.
   policyHasGrants(a) {
     const o = this._exec(a.H); if (!o) return false;
-    try { return Ecf.asArray(Ecf.require(o.execute.params.data, "grants")).length > 0; } catch (_) { return false; }
+    try { Ecf.asArray(Ecf.require(o.execute.params.data, "grants")); return true; } catch (_) { return false; }
   }
   configurePolicy(a) {
     const o = this._exec(a.H); if (!o) return "";

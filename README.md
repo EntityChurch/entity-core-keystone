@@ -223,15 +223,20 @@ Both are verbatim, byte-for-byte, SHA-256-pinned snapshots with provenance in th
 The whole cohort is measured at **one** pin — the 755-check set `95edd774…`, spec snapshot
 `v0.8.2` — with every row a fresh measurement at that pin:
 
-- **39 of the 45 measurable peers pass `--profile core` 0-FAIL.** Tiers M1 (5/5) and M2 (8/8) since
-  2026-08-22; M3 12/13 and the probes 13/18 since 2026-08-28. The maintenance-tier gate is green.
+- **41 of the 45 measurable peers pass `--profile core` 0-FAIL.** Tiers M1 (5/5) and M2 (8/8) since
+  2026-08-22; M3 12/13 since 2026-08-28; the probes 14/18 and exploratory 2/2 since 2026-08-29. The maintenance-tier gate is green.
 - **`cobol` 30F** — the CAP trio plus its standing 27-FAIL liveness cascade, a separate
   investigation.
 - **3 peers produce INVALID MEASUREMENTS** (`asm-x86_64`, `asm-arm64`, `riscv64`) — starved runs
   that executed fewer checks than the pinned set. They are quarantined, not scored. A run measured
   on a different set of checks is not a worse score; it is not a score.
-- **`wasm-wat` 2F** (hand-authored WebAssembly text) and **`turbowarp` 3F** (the block-interpreter
-  probe, which never gates) are the two the propagation did not reach.
+- **`wasm-wat`** was the last peer the propagation had not reached, and its failures turned out not
+  to be the CAP feature at all: the hand-authored WebAssembly peer had **no §5.5 delegation chain**,
+  so a delegated capability was refused two gates before the mint was reached, and about ten
+  `security` chain vectors were passing *because* of that refusal rather than because of anything
+  they test. The chain walk, §5.5a canonicalization, §5.6 attenuation, delegation caveats and §3.6
+  K-of-N landed 2026-08-29; it is 0-FAIL. *(`turbowarp`, the block-interpreter probe, took the
+  ordinary CAP fix the same day.)*
 - `apl` remains upstream-blocked and unmeasured.
 
 **The failures were never regressions — they were a feature nobody had implemented.** §5.6's
@@ -248,9 +253,9 @@ than the CAP trio, and both were found the same way: **fixing a wrong denial mad
 UP, and the new failures were the truth.** `sql` went 2F → 7F → 0F once a scope-canonicalization bug
 stopped standing in for two authorization checks it had never implemented.
 
-> **The honest one-line summary: 39 of 45 measured peers are publishable today.** "No green report →
-> no publish" is unchanged, and it now withholds the other **6** — plus the unmeasured `apl`, which
-> has no green report either, so 7 of the 46 in the tree. (Written as a subtraction on purpose: two
+> **The honest one-line summary: 41 of 45 measured peers are publishable today.** "No green report →
+> no publish" is unchanged, and it now withholds the other **4** — plus the unmeasured `apl`, which
+> has no green report either, so 5 of the 46 in the tree. (Written as a subtraction on purpose: two
 > numbers in one sentence that must sum to a third is a shape that rots silently, and this one has
 > been wrong before.) `CONFORMANCE-MATRIX.md` is authoritative — its banner carries the full
 > accounting, §1a the invalid measurements, §1b the cascade.
