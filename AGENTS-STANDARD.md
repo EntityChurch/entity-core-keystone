@@ -1,14 +1,13 @@
 # AGENTS-STANDARD.md — how we work (entity-core ecosystem)
 
-**This file is identical in every entity-core repo** — the ecosystem-wide conventions,
-maintained in one place and injected unchanged into each repo (the same overlay
-mechanism as the community-health files, [ADR-0010]). Your repo's own `AGENTS.md` sits
-beside it and adds the repo-specific details (languages, build/test commands, layout,
-boundaries). When the two seem to differ, the repo `AGENTS.md` wins on repo-specific
-facts; this file wins on ecosystem conventions.
+**This file is identical in every entity-core repo.** It is maintained in one place and
+injected unchanged ([ADR-0010]). **Do not edit it in your repo** — propose changes upstream.
 
-> **For any agent, not just Claude** ([ADR-0016]). Claude reads it via `@AGENTS.md` in
-> `CLAUDE.md`; every other agent reads it as the plain sibling file it is.
+Your repo's own `AGENTS.md` sits beside it and adds the repo-specific details (languages,
+build/test commands, layout, boundaries). Where the two differ, the repo `AGENTS.md` wins
+on repo-specific facts; this file wins on ecosystem conventions.
+
+For any agent, not just Claude ([ADR-0016]).
 
 ## What this ecosystem is
 
@@ -18,272 +17,215 @@ ground-up reference implementations (`entity-core-{go,rust,py}`), a canonical
 conformance anchor (`entity-core-keystone`), formal models, and UI/tooling repos — each
 with an independent lifecycle. You are working inside one of them; see its `AGENTS.md`.
 
-## Golden rules (the don't-break-it floor)
+## Golden rules
 
-- **Never lose or rewrite history.** No history-destroying rebase/reset on shared
-  branches, no clobbering remote refs. **Never force-push** (`--force` /
-  `--force-with-lease`) — anywhere. If a non-fast-forward ever seems necessary, **stop
-  and ask**, don't force it.
-- **Stay in your tree.** Don't reach changes into sibling or meta repos. Cross-repo
-  coordination goes through the maintainers / a review hand-off, not by editing a
-  neighbor's directory. If you *do* read a sibling repo, treat its git as read-only:
-  `git status` first, stage **specific paths**, never `git add -A` in a repo that isn't your
-  working directory.
+- **Never lose or rewrite history.** No history-destroying rebase or reset on shared
+  branches. No clobbering remote refs. **Never force-push** (`--force` /
+  `--force-with-lease`), anywhere. If a non-fast-forward seems necessary, **stop and ask.**
+- **Stay in your tree.** Do not reach changes into sibling or meta repos. Cross-repo
+  coordination goes through a review hand-off. If you read a sibling repo, treat its git as
+  read-only: `git status` first, stage **specific paths**, never `git add -A` in a repo that
+  is not your working directory.
 
 ## Build & toolchain
 
-- **System toolchains, minimal dependencies** (supply-chain conscious): prefer stock
-  tools (e.g. raw `podman run`, not podman-compose); avoid `mise` / `just` / bespoke
-  toolchain managers.
+- **System toolchains, minimal dependencies.** Prefer stock tools (raw `podman run`, not
+  podman-compose). Avoid `mise`, `just`, and bespoke toolchain managers.
 - **`make <verb>` is the build interface.** Most repos are thin `make` orchestration over
-  **podman** (host needs only `make` + `podman`). A standard verb vocabulary
-  (`build` / `test` / `lint` / `fmt` / `check` / `clean`, container-default with a
-  `-native` opt-in) is converging — see your repo's `AGENTS.md` for its exact targets.
-- **Default branch is `master`** (not `main`).
+  **podman**; the host needs only `make` + `podman`. Standard verbs: `build` `test` `lint`
+  `fmt` `check` `clean`, container-default with a `-native` opt-in. See your repo's
+  `AGENTS.md` for its exact targets.
+- **Default branch is `master`.**
 
 ## Contributing
 
-- **DCO sign-off required** ([ADR-0006]): `git commit -s` → `Signed-off-by:`, from an
-  **accountable human** who certifies the right to submit and stands behind the work.
-  No CLA. Code is **Apache-2.0** ([ADR-0005]); spec text is licensed separately ([ADR-0007]).
-- **AI is welcome and unrestricted** ([ADR-0017]) — this ecosystem is AI-native. No
-  AI-usage limit, no mandatory disclosure trailer. The gate is the accountable human +
-  the **quality bar**, applied equally however much tooling was used.
+- **DCO sign-off required** ([ADR-0006]): `git commit -s`, from an **accountable human**
+  who certifies the right to submit and stands behind the work. No CLA. Code is
+  **Apache-2.0** ([ADR-0005]); spec text is licensed separately ([ADR-0007]).
+- **AI is welcome and unrestricted** ([ADR-0017]). No usage limit, no disclosure trailer.
+  The gate is the accountable human plus the quality bar, applied equally however much
+  tooling was used.
 - **Open a PR; keep CI and the conformance suite green.** A **tag is a release**, not a
-  push — a docs/`AGENTS.md` change doesn't get its own tag ([ADR-0015]). *(The exact
-  branch-promotion model is still settling; this file stays contributor-facing.)*
+  push ([ADR-0015]).
 
 ## Working across the polyrepo
 
-- **The spec is upstream; implementations implement, they don't define it.** Don't invent
+- **The spec is upstream; implementations implement, they do not define it.** Do not invent
   wire formats, primitives, opcodes, or handler semantics in an implementation repo.
-  Implement against the **landed spec**, not in-flight proposals. Hit a gap or ambiguity?
-  **Log it** (e.g. `docs/SPEC-AMBIGUITIES.md`) and route it upstream — don't paper over
-  it locally. The locked wire core is never renumbered; unknowns are MUST-ignore ([ADR-0002]).
-- **Read the source, not memory.** Sibling implementations are interop *context*, not a
-  template to copy. Verify against the actual code/spec.
+  Implement against the **landed spec**, not in-flight proposals. On a gap or ambiguity:
+  **log it** (`docs/SPEC-AMBIGUITIES.md`) and route it upstream. The locked wire core is
+  never renumbered; unknowns are MUST-ignore ([ADR-0002]).
+- **Read the source, not memory.** Sibling implementations are interop context, not a
+  template to copy. Verify against the actual code and spec.
 - **Prove a negative before you claim it.** Before asserting "X is missing / not implemented
-  in repo Y," run an exhaustive named search (and `git log --since` for recent additions) —
-  an absence claim from a partial grep is how false "spec gaps" and false "sibling bugs" get
-  filed. (Pass this discipline on to any agent you spawn.)
-- **Pin citations to `(symbol, path, commit)`, not line numbers.** Line numbers expire the
-  moment the file moves; a symbol + path (+ commit when it matters) stays resolvable.
+  in repo Y", run an exhaustive named search and `git log --since`. Pass this on to any
+  agent you spawn.
+- **Pin citations to `(symbol, path, commit)`, not line numbers.**
 
 ## Respect the protocol
 
-Significant or normative/protocol changes are **proposal-first**, not a direct edit
-(wording-only hygiene can go direct). Conformance to the spec is the contract; honor the
-locked wire core and the stability tiers ([ADR-0004]).
+Significant or normative changes are **proposal-first**, not a direct edit; wording-only
+hygiene may go direct. Conformance to the spec is the contract. Honor the locked wire core
+and the stability tiers ([ADR-0004]).
 
 ## Methodology — Disciplines, Doctrines & the Ratchet
 
 **Every repo runs this. The tier differs; the ratchet does not.** The full framework is
-`METHODOLOGY.md` — injected beside this file, identical everywhere. Read it once; then your
-repo's own charter, which carries the local grounding.
+`METHODOLOGY.md`, injected beside this file. Read it once, then your repo's own charter.
 
-We build OS-level software. Conformance is the contract at the core and is nearly sufficient
-there. It stops being sufficient the moment work leaves the core — a browser engine, a game
-engine, a GUI toolkit, an FFI boundary, a GC we do not own. Out there **green tests are not
-evidence of a working system**, and the methodology is what keeps that from being free.
+Five artifact kinds — do not conflate them:
 
-Four artifact kinds, four jobs — do not conflate them:
-
-- **Disciplines** — invariants, the *what*. Checked continuously, on every diff.
-- **Doctrines** — procedures, the *how*. Opened at task-start (Feature / Audit / Foundation).
+- **Disciplines** — invariants, the *what*. Checked on every diff. **D1–D12 are the
+  ecosystem's; yours start at D13.**
+- **Doctrines** — procedures, the *how*. Opened at task-start. **There are exactly three —
+  Feature, Audit, Foundation — they live in `METHODOLOGY.md` §7, and you do not write one.**
+- **Workflows** — your substrate's procedures, under a doctrine's step. `docs/**/WORKFLOW-*.md`.
+  As many as you earn. **`DOCTRINE-*` is a reserved filename; use `WORKFLOW-*`.**
 - **Substrate model** — ground truth about the platform. Read before any lifetime, leak,
   render, or persistence work.
 - **Anti-pattern catalog** — named failure modes, each with a source commit.
 
-**The law — the ratchet.** *A feature must make us stronger, not weaker.* Every feature and
-every audit ends by feeding what it taught back into the disciplines, **in the same session**.
-Feature: the close-out review. Audit: the process review — the audit of the audit, which is
-non-skippable. **If it didn't land in the charter / `AGENTS.md`, it didn't land.**
+**Load by trigger, not all at once.** `AGENTS.md` and this file are always in context and stay
+small; `AGENTS.md` names the trigger and does not carry the content. Read `METHODOLOGY.md`
+§1–§4 once on cold start. Open **one** doctrine when its input arrives — a feature asked for,
+*"Y is broken"*, a surface you have not designed against — plus the substrate model before
+lifetime/render/persistence work. Everything else is looked up when something points at it.
+Then research the actual area, from canonical sources (D12), never from a summary.
+
+**The ratchet: a feature must make us stronger, not weaker.** Every feature and every audit
+ends by feeding what it taught back into the disciplines, **in the same session**. Feature:
+the close-out review. Audit: the process review, which is non-skippable. **If it did not
+land in the charter or `AGENTS.md`, it did not land.**
 
 **The promotion ladder.** Rules are earned on evidence, never speculation. Bit us once →
 anti-pattern catalog. Bit us a **second time in a different shape** → ratified discipline.
-Between the two it is a **candidate**: apply it, but don't yet claim it generalizes. A
-discipline added on speculation is removed if unearned within a release cycle. **A discipline
-with no enforcement point is theater** — name the file, grep, lint rule, or gate test.
+Between the two it is a **candidate**: apply it, do not claim it generalizes. A discipline
+added on speculation is removed if unearned within a release cycle. **A discipline with no
+enforcement point does not count** — name the file, grep, lint rule, or gate test.
 
 **D1–D12 are universal and transfer verbatim** (use the kernel · L1 default, L0 back door ·
 capability-typed dispatch · bounded interfaces · declared composition · per-host namespaces ·
 symmetric state · surface spec drift · accounting · real-session coverage · inventory boundary ·
-read canonical sources). **Above those, each repo earns its own on its own bugs** — copying
-another repo's substrate disciplines is a category error.
+read canonical sources). **D1–D12 are reserved: your own disciplines are numbered from D13,
+and you earn them on your own bugs.** Do not copy another repo's substrate disciplines, and
+do not reuse a universal number for one.
 
-**Tiers** (your `AGENTS.md` declares yours and links its docs):
+**Tiers** — your `AGENTS.md` declares yours and links its docs:
 
 | Tier | Runs | Who |
 |---|---|---|
 | **Full** | D1–D12 + native · Feature + Audit + Foundation doctrines · substrate model · catalog | Complex non-deterministic runtimes (browser, engines, GUI/FFI stacks) |
-| **Core** | D1–D12 + native · **Audit doctrine** · catalog · review questions | Reference implementations, conformance anchor, tooling — conformance gates the wire, not process drift or accounting |
-| **Authoring** | Lifecycle disciplines · **Audit + Foundation doctrines** · catalog | Spec / formal repos — no runtime to hold; the corpus is the substrate |
+| **Core** | D1–D12 + native · **Audit doctrine** · catalog · review questions | Reference implementations, conformance anchor, tooling |
+| **Authoring** | Lifecycle disciplines · **Audit + Foundation doctrines** · catalog | Spec and formal repos |
 
-**Conformance does not exempt a repo from this.** It gates the wire; it does not catch process
-drift, stale build-state claims, unaccounted accumulation, or a discipline quietly eaten by a
-legitimate competing pressure. Those need the ratchet.
+**Conformance does not exempt a repo from this.** It gates the wire, not process drift,
+stale build-state claims, or unaccounted accumulation.
 
 ## Honesty & conformance ([ADR-0012])
 
-- **Conformance is the contract**, not the version number. Green unit tests ≠ a release;
-  the **full conformance suite** is the gate. `entity-core-keystone` is the canonical
-  anchor (provided, not mandatory — anyone may build a ground-up implementation).
-- **Every published conformance number is reproducible and anchored on a CONTENT DIGEST**
-  — `N·0F @ <core_gate_fingerprint / check_set_digest>`, with the P/W/F/S breakdown, never
-  a bare percentage. A skip counts as a failure; never label a failure "pre-existing"
-  without bisecting. A "matches the spec" claim needs evidence (a grep / `file:line`), not
-  an assertion.
-  > **Changed 2026-08-23 ([ADR-0012] Amendment 1). This used to say `@ <oracle-commit>`.**
-  > [ADR-0027] authors every published commit fresh at the release boundary, so public
-  > `master` is a different history from `dev` — **a `dev` SHA has never resolved for a
-  > public reader and never will.** It already fired on the flagship claim: the conformance
-  > matrix on keystone's published `master` anchors its counts on an oracle commit that
-  > exists in no repo in the ecosystem. A commit SHA is now a **non-normative convenience**
-  > and, where given, MUST be reachable from `master` or a release tag.
-  > *(This paragraph originally named that dead commit. Quoting it put a dangling pin into
-  > a canonical doc in eleven repos — in the sentence forbidding them — and `spec pins`
-  > caught it. Cite the failure by content too.)*
-- **Never overclaim.** The ground-up impls (go/rust/py) are independent code bases;
-  keystone-generated peers share a generation lineage — and a cohort of implementers all
-  passing one author's vectors is **cohort-consistent, not independent convergence**.
-  State the distinction precisely. (And conformance-green ≠ correct if the test asserts
-  the wrong thing.)
+- **Conformance is the contract**, not the version number. Green unit tests are not a
+  release; the **full conformance suite** is the gate. `entity-core-keystone` is the
+  canonical anchor — provided, not mandatory.
+- **Every published conformance number is reproducible and anchored on a CONTENT DIGEST** —
+  `N·0F @ <core_gate_fingerprint / check_set_digest>`, with the P/W/F/S breakdown, never a
+  bare percentage. **A skip counts as a failure.** Never label a failure "pre-existing"
+  without bisecting. A "matches the spec" claim needs evidence — a grep or `file:line`.
+- **A commit SHA is a non-normative convenience** and, where given, MUST be reachable from
+  `master` or a release tag ([ADR-0012] Am. 1).
+- **Never overclaim.** The ground-up implementations are independent code bases;
+  keystone-generated peers share a generation lineage. A cohort all passing one author's
+  vectors is **cohort-consistent, not independent convergence.** Conformance-green is not
+  correct if the test asserts the wrong thing.
 
 ## Documentation & tree hygiene ([ADR-0009], [ADR-0018])
 
-Clean as you go — drift is rejected at the PR gate by a tree-hygiene linter (hard-gate
-the contract, flag the cosmetics):
+Clean as you go. Drift is rejected at the PR gate by a tree-hygiene linter.
 
 | Category | Lives in |
 |---|---|
 | Reference / durable docs, specs | `docs/`, `docs/{architecture,reference,spec}/` — edit in place |
 | Agent guidance | `AGENTS.md` + `AGENTS-STANDARD.md` + `CLAUDE.md` (root) |
-| Dated status / handoffs | `docs/status/` (`HANDOFF-*`, `CHECKPOINT-*`, dated snapshots) — ephemeral, **and never published** ([ADR-0031]) |
-| **The rolling canonical status log** | **`docs/STATUS.md`** — one file, not dated, **publishes if you declare it.** Separated from the snapshots **by path**, so `docs/status/` can be dropped wholesale without taking it ([ADR-0031], as corrected) |
-| **Ecosystem ADRs** (the decisions that bind every repo) | **`docs/adr/ecosystem/` — internal, read-only, and NOT published** — see below |
+| Dated status / handoffs | `docs/status/` (`HANDOFF-*`, `CHECKPOINT-*`, dated snapshots) — **never published** ([ADR-0031]) |
+| The rolling canonical status log | **`docs/STATUS.md`** — one file, not dated. **Publishes if you declare it** |
+| Ecosystem ADRs | **Not in your repo.** Cite by number, do not copy |
 | Your repo's own ADRs | `docs/adr/` (`NNNN-slug.md`) — your numbering, your call |
 | Scratch / local | `.gitignore` — never committed |
 
-- **One canonical home per fact** — cross-reference, don't duplicate; the upstream/
-  authoritative source wins on overlap. Never dump handoffs or analysis at repo root.
-- **Archive, don't delete** — move closed docs to `docs/archive/` with an `INDEX.md`
-  breadcrumb; status snapshots are immutable once published; no `-v2` files.
+- **One canonical home per fact.** Cross-reference, do not duplicate; the authoritative
+  source wins on overlap. Never dump handoffs or analysis at repo root.
+- **Archive, do not delete.** Move closed docs to `docs/archive/` with an `INDEX.md`
+  breadcrumb. Status snapshots are immutable once published. No `-v2` files.
 
-## The ecosystem ADRs — how to cite them, and why they do NOT publish
+## The ecosystem ADRs
 
-**`[ADR-NNNN]` unqualified always means the ecosystem ADR.** Cite your own repo's ADRs as
-`[<repo>-ADR-NNNN]`. The two numbering spaces are different decisions — ecosystem
-`[ADR-0002]` is the version scheme; `entity-browser-rust`'s own `0002` is its Tauri release
-model.
-
-**Citing an ecosystem ADR by number in a published document is fine and stays fine.** The
-number references a decision; it is not a promise of a file.
-
-**But the ADRs themselves are NOT a publication surface, and this is a standing operator
-ruling (2026-08-24), not a gap:**
-
-> *"We're not exporting the ADRs yet. We haven't decided what publishing them means — there
-> has to be an ADR on publishing before we publish the ADRs. It's fine if we reference the
-> ADRs in our stuff; we're not publishing them yet."*
-
-- **Do not declare anything under `docs/adr/` in `CANONICAL-DOCS.toml`.** They strip, by
-  design. If your release simulation reports them as dropped, that is the correct answer.
-- **Do not edit anything in `docs/adr/ecosystem/`** if your repo carries a copy. Propose the
-  change to meta.
-- **Do not write published prose that sends a reader to `docs/adr/ecosystem/`.** That
-  directory does not exist in the mirror. *(This paragraph exists because this file used to
-  do exactly that — a canonical doc pointing a public reader at a stripped directory, which
-  is the index-ships-evidence-doesn't shape, committed in the standard that warns about it.
-  Caught pre-cut by `entity-core-keystone` on 2026-08-24, before it reached any mirror.)*
-
-**Whether a repo carries the ADR text at all is currently unsettled.** [ADR-0030] specified
-injecting it into every repo, was executed the same hour, and was **stopped and retracted** —
-`OVERLAY_DIRS` is empty and stays empty. Meta reads a repo; meta does not write to one. So
-there is **no automated transport** today: a repo that wants the text hand-syncs it and says
-so in the commit message. That is known, deliberate, and blocked behind the publishing
-decision above. **Do not build a mechanism for it locally.**
+- **`[ADR-NNNN]` unqualified means the ecosystem ADR.** Cite your own repo's as
+  `[<repo>-ADR-NNNN]`.
+- **Citing by number is fine anywhere**, published or not.
+- **Do not keep a copy of the ecosystem ADRs in your repo**, and do not write prose that
+  sends a reader to one as a path. Propose changes upstream.
+- **Do not declare anything under `docs/adr/` in `CANONICAL-DOCS.toml`.** ADRs do not publish.
 
 ## Cite by CONTENT, never by commit SHA — in anything that publishes ([ADR-0012] Am. 1)
 
-**An identifier is only a pin if it resolves for the audience it ships to.** Published
-commits are authored fresh at the release boundary ([ADR-0027]), so **public `master` is a
-different history from `dev`** — an internal SHA in a published document resolves to
-nothing, forever, by construction. It is not broken by the release; it was never valid.
+Published commits are authored fresh at the release boundary ([ADR-0027]), so public
+`master` is a different history from `dev`. **An internal SHA in a published document
+resolves to nothing.**
 
-- **In a canonical doc:** cite by content — *"the commit that fixed the corpus root"*, a
-  **release tag**, or a **content digest** (sha256, `core_gate_fingerprint`). Content
-  digests are immune and are the model; the ecosystem already has ~4,000 of them.
+- **In a canonical doc:** cite by content, a **release tag**, or a **content digest**
+  (sha256, `core_gate_fingerprint`).
 - **In an internal doc:** cite SHAs freely. `docs/status/`, handoffs and proposals are not
   a publication surface.
 - **Check it:** `python3 <arch-tools>/spec-tool/cli.py pins --root .` — scoped to your
-  `CANONICAL-DOCS.toml` keep-list, resolves cross-repo, never flags 64-hex content hashes.
-  Reader by default. **Run it before a release cut and after adding any commit citation to
-  a canonical doc.** The measured backlog was 808 fleet-wide on 2026-08-23;
-  `entity-core-protocol` is at **0**, which is the proof it is finishable.
+  `CANONICAL-DOCS.toml`, resolves cross-repo, never flags 64-hex content hashes. **Run it
+  before a release cut and after adding any commit citation to a canonical doc.**
 
-## What DevOps owns, and what you own ([ADR-0031])
+## Publication ([ADR-0031])
 
-**You do not manage publication. You declare; DevOps publishes.** Several repos have been
-curating documents for a public reader, which is both work you should not be doing and a
-job you are not positioned to do.
+**You declare; the release pipeline publishes.** Do not curate documents for a public
+reader.
 
 | | Owner |
 |---|---|
-| **What in your repo is canonical** | **you** — `CANONICAL-DOCS.toml`, and that is the whole interface |
-| Which files reach public `master`, the release branch, the gates, the forge push | **DevOps** — `canon-filter`, `leak-audit`, `public-regress`, the promote pipeline |
-| Your internal docs | **you**, unconstrained — see below |
+| What in your repo is canonical | **you** — `CANONICAL-DOCS.toml`, and that is the whole interface |
+| Which files reach public `master`, the release branch, the gates, the forge push | not yours |
+| Your internal docs | **you**, unconstrained |
 
-**Write your internal status docs for the next session, not for an audience.** Everything
-under `docs/status/` is never published ([ADR-0031]) — handoffs, checkpoints, dated
-snapshots. Keep them frank: blockers, half-verified measurements, seat-by-seat argument,
-mistakes. That candor is why they are useful, and it survives only because nobody outside
-reads them. **No scrub obligation, no pin hygiene, no audience.**
+- **Everything a published file says is addressed to a reader outside this ecosystem.**
+  Write it for them. Ecosystem operations — release tooling, gates, internal paths, who
+  decided what and when — do not belong in any file you declare canonical.
+- **Write your internal status docs for the next session, not for an audience.** Under
+  `docs/status/` nothing is published: no scrub obligation, no pin hygiene, no audience.
+  Keep them frank.
+- **The rolling status log lives at `docs/STATUS.md`**, outside `docs/status/`. Declare it
+  if you want a public reader to have it.
 
-> **Corrected 2026-08-23. This used to read "`docs/status/` publishes nothing, *including*
-> `STATUS.md`."** [ADR-0031] as first written dropped the whole directory, which took the
-> single **rolling canonical** `STATUS.md` with it — and nothing in its evidence supported
-> that: the six repos holding all 466 unreachable citations do not include the two repos
-> that shipped under the rule, both of which measure **zero**. `entity-core-protocol` lost a
-> clean 125-line `STATUS.md` to it. **The durable fix is a MOVE, not an exemption:** the
-> rolling log lives at **`docs/STATUS.md`**, so the two kinds of document are separable by
-> **path** rather than by remembering a filename, and `docs/status/` can be dropped wholesale
-> forever. Declare `docs/STATUS.md` if you want a public reader to have it.
-
-What the public reader actually gets from you: `README.md` (what this is), `CHANGELOG.md`
-(what changed), `docs/STATUS.md` if you declare it, and your conformance artifact if you
-have one.
+A public reader gets: `README.md`, `CHANGELOG.md`, `docs/STATUS.md` if you declare it, and
+your conformance artifact if you have one.
 
 ## Multi-forge ([ADR-0014])
 
-**GitHub is canonical** for contributions (issues + PRs); **Codeberg is a one-way,
-append-only mirror.** Never push to the mirror; never `git push --mirror` / `--prune`.
+**GitHub is canonical** for contributions. **Codeberg is a one-way, append-only mirror.**
+Never push to the mirror; never `git push --mirror` or `--prune`.
 
-## Local agent context (your own, not shared)
+## Local agent context
 
-This file is the **shared** layer. For your **own** local context — scratch notes,
-working memory, personal preferences, machine-specific paths — use the repo's
-**git-ignored `AGENTS.local.md`** (the personal counterpart to this `AGENTS.md`,
-mirroring `CLAUDE.local.md`; [ADR-0020]), or a git-ignored **`.agents/`** directory
-for anything larger than one file. Both are injectable, never committed, never shared,
-and are where per-contributor or personal-style notes live **instead of** this shared file. (For us, it also replaces the
-drift-prone per-machine `~/.claude` memory — durable shared facts live here in the repo;
-local context lives, untracked, in that directory.)
+This file is the **shared** layer. For your own local context — scratch notes, working
+memory, personal preferences, machine-specific paths — use the git-ignored
+**`AGENTS.local.md`**, or a git-ignored **`.agents/`** directory for anything larger than
+one file ([ADR-0020]). Both are injectable, never committed, never shared. Per-contributor
+and personal-style notes go there, **not** in this file.
 
 ---
 
 ## Your repo's `AGENTS.md` adds
 
-Language version(s) · exact `make` build & test verbs (full suite + single test) · source
+Language versions · exact `make` build and test verbs (full suite and single test) · source
 layout · **boundaries — do NOT modify** (generated code, frozen spec files, secrets,
-vendored trees) · curated repo-specific facts. Keep it **short** — this standard already
-carries the cross-cutting "how we work."
+vendored trees) · curated repo-specific facts. Keep it **short**.
 
 <!-- Reference ADRs (meta `docs/adr/`): 0001 record-ADRs · 0002 SemVer · 0004 tiers ·
 0005 Apache-2.0 · 0006 DCO · 0007 spec-license · 0009 doc-hygiene · 0010 polyrepo+inject ·
 0012 conformance · 0014 multi-forge · 0015 branch/release · 0016 AGENTS.md · 0017 AI-policy ·
-0018 tree-hygiene · 0019 build-vocabulary (Proposed) · 0020 local-agent-context dir (Proposed) ·
-0021 canonical-docs link integrity (Proposed) · 0027 release-history-model ·
-0028 methodology · 0030 ADRs-ship-into-every-repo (RETRACTED — see above) ·
-0031 status-docs-not-published (as corrected). **Full text is authored in meta's
-`docs/adr/`. There is no automated transport into your repo and the ADRs do not publish —
-cite by number; do not link a public reader at a path.** -->
+0018 tree-hygiene · 0019 build-vocabulary · 0020 local-agent-context · 0021 canonical-docs
+link integrity · 0027 release-history-model · 0028 methodology · 0031 status-docs.
+Full text is authored upstream. Cite by number; do not link a public reader at a path. -->

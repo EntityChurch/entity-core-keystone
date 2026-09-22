@@ -265,7 +265,7 @@ signal — but it is also a strong signal about the **oracle's blind spot**, whi
   absolutization** as a candidate simplification that would make the whole granter-frame bug class
   structurally impossible. Pressure-test it against the "resource frame unknowable at mint" counterexample
   hunt above; if it survives, it is a real correctness-by-construction win worth landing before 1.0 (when
-  changing it becomes a "total bitch," per the timeless-cost argument). If it fails, retract to "irreducible
+  changing it becomes prohibitively expensive, per the timeless-cost argument). If it fails, retract to "irreducible
   essential complexity, correctly flagged" — an honest outcome either way.
 - **Record the meta-finding** regardless: the most-corroborated authorization bug in the project was (i) the
   *natural* reading for six implementers and (ii) invisible to the oracle until hand-authored. Both point at

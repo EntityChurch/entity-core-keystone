@@ -41,17 +41,46 @@ written, enforced constraint — so the same class cannot recur. That conversion
 
 ---
 
-## 1. The four artifact kinds
+## 1. The five artifact kinds
 
-The methodology is four kinds of document with four different jobs. Conflating them is the
-most common way it degrades, so the split is normative.
+The methodology is five kinds of document with five different jobs. Conflating them is the
+most common way it degrades, so the split is normative — and **the split that matters most is
+the one between what the ecosystem hands down and what a repo earns for itself.**
 
 | Kind | Form | Answers | When read | Location |
 |---|---|---|---|---|
-| **Disciplines** | Invariants — the ***what*** | "What must always be true?" | Continuously; every diff, every review | The repo's charter + `AGENTS.md` inline |
-| **Doctrines** | Procedures — the ***how*** | "What do I do next?" | At task-start, when work lands | `docs/DOCTRINES*.md` |
+| **Disciplines** | Invariants — the ***what*** | "What must always be true?" | Continuously; every diff, every review | **D1–D12 here (§4) — ecosystem-owned.** D13+ in the repo's charter + `AGENTS.md` inline |
+| **Doctrines** | Procedures — the ***how*** | "What do I do next?" | At task-start, when work lands | **§7 of this document, and nowhere else. Three of them. Ecosystem-owned, closed set** |
+| **Workflows** | Local procedures — the ***how, here*** | "What do I do next *on this substrate*?" | At task-start, under a doctrine | The repo's own `docs/**/WORKFLOW-*.md`. **Unlimited, repo-owned** |
 | **Substrate model** | Ground truth — the ***what actually happens*** | "What does this platform really do?" | Before any lifetime / leak / render / persistence work | `MODEL-<SUBSTRATE>.md` |
 | **Anti-patterns** | Named failure modes — the ***what bit us*** | "Have we paid for this before?" | At review; cited by disciplines | Catalog in the charter or `AGENTS.md` |
+
+> **WHAT IS ECOSYSTEM-OWNED AND WHAT IS YOURS — read this before writing any of the above.**
+>
+> | | who decides | how many |
+> |---|---|---|
+> | **Doctrines** | **the ecosystem. Handed down.** | **exactly three** (§7), and a repo does not mint a fourth |
+> | **Disciplines D1–D12** | **the ecosystem** (§4) | twelve, reserved |
+> | **Disciplines D13+** | the repo, on its own bugs | as many as it earns |
+> | **Workflows** | the repo | as many as it likes |
+> | Substrate model · anti-patterns · guides | the repo | its own |
+>
+> **A repo's hard-won procedure is a WORKFLOW, not a doctrine.** This is not a naming
+> preference. A doctrine is the *shape of the work itself* — what you do when a feature is
+> asked for, when something is broken, when you open a new surface — and it must be the same
+> shape everywhere or the ecosystem cannot compare two repos' output, review across them, or
+> move a person between them. A workflow is how that shape lands on **your** substrate: the
+> order that actually converges for an Avalonia crash, the sequence for a cohort state sweep,
+> the browser-substrate procedure. Those are real, valuable, and yours. **They are not
+> doctrines, and naming them so quietly re-opens a closed set.**
+>
+> **This document caused the drift it is correcting.** §1 sent repos to their own
+> `docs/DOCTRINES*.md`, §12 told a cold-start session to read *"the repo's doctrines"*, and
+> §11 lists a repo's `DOCTRINE-*.md` approvingly in the provenance table — while §7 said
+> there are three. Three repos did exactly what they were told and produced
+> `DOCTRINE-CRASH-FORENSICS.md`, `DOCTRINE-COHORT-STATE-TRACKING.md` and
+> `DOCTRINES-BROWSER-SUBSTRATE.md`. **The ambiguity was ours; the renames are theirs, routed,
+> and no repo is at fault for following canon.** `conform-audit` **R34** holds the line now.
 
 Two supporting kinds, not part of the methodology proper but load-bearing beside it:
 
@@ -59,7 +88,8 @@ Two supporting kinds, not part of the methodology proper but load-bearing beside
   *achieve* an invariant, never what the invariant is.
 - **References** — canonical specs for a surface, produced by a Foundation Audit (§7.3).
 
-**Disciplines = invariants. Doctrines = procedures. Model = ground truth. Guides = recipes.
+**Disciplines = invariants. Doctrines = procedures, and there are three. Workflows = your
+procedures, and there are as many as you earn. Model = ground truth. Guides = recipes.
 References = canonical specs. All are load-bearing; none substitutes for another.**
 
 The two rules that keep the split honest:
@@ -135,12 +165,23 @@ contract-test shape.
 
 ---
 
-## 4. The universal disciplines (D1–D11)
+## 4. The universal disciplines (D1–D12)
 
-**These eleven transfer verbatim.** They govern how any implementation uses the entity
-substrate; they are stack-agnostic. Godot codified D1–D8, the foundation audit added D9–D11,
+**These twelve transfer verbatim, and they keep their numbers everywhere.** They govern how
+any implementation uses the entity substrate; they are stack-agnostic. Godot codified D1–D8,
+the foundation audit added D9–D11, D12 was generalized from the borrowed-framing anti-pattern,
 egui/browser-rust cosigned, workbench-go inherited them verbatim, and arch published them
 outward in `GUIDE-IMPL-DISCIPLINE.md`.
+
+> **D1–D12 ARE RESERVED. A repo's own disciplines start at D13.** This paragraph exists
+> because this document said three different things at once and a repo did exactly what it
+> was told: §4 called the universal set D1–D11, the sentence under the table called D12
+> *"universal in substance though numbered locally"*, the rule below said *"inherit D1–D12
+> verbatim"*, and the native table then handed **D12** to two repos for something else
+> entirely. So two different D12s exist in the fleet, and the repo that minted one was
+> following canon, not drifting from it. **The ambiguity was ours.** Numbering is now fixed:
+> universal is D1–D12 and native is D13 upward, which is what `entity-system-architecture`
+> already did without being asked. `conform-audit` **R33** enforces both halves.
 
 | # | Discipline | The invariant |
 |---|---|---|
@@ -156,7 +197,7 @@ outward in `GUIDE-IMPL-DISCIPLINE.md`.
 | **D10** | **Real-session coverage — green tests ≠ a working system** | Load-bearing changes are exercised across the loops the user actually runs: **cross-boot / cross-reload** (boot → act → quit → boot, asserting each store's documented contract), the **real runtime** (headed, the actual WebView, real Skia — a tier that skip-passes is not coverage), and the **real store** (inspect the actual on-disk state; code-only analysis misses scale). |
 | **D11** | **Inventory-boundary declaration (meta-discipline)** | Inventory-driven audits find what's in the inventory. At audit open, name what is in scope **and what is not**. At close, carry the un-inventoried domains forward. A finding from outside the boundary extends the boundary next time. |
 
-**D12 is universal in substance though numbered locally:** *read canonical sources before
+**D12 — universal, and it is D12 everywhere:** *read canonical sources before
 designing against them.* Cite the canonical source verbatim with `(symbol, path, commit)` and a
 citation **type** (source-read / peer-reported / measured). Never paraphrase canonical material
 from a handoff, summary, prior session note, or another implementer's design doc — those are
@@ -172,13 +213,19 @@ Above D11/D12, each repo earns its own. **These are the disciplines the substrat
 copying them between repos is a category error — godot's Godot-runtime rules are meaningless in
 a browser, and browser-rust's arm matrix is meaningless in .NET.
 
-The rule: **inherit D1–D12 verbatim, then earn your own on your own bugs.**
+The rule: **inherit D1–D12 verbatim, then earn your own on your own bugs — numbered from D13.**
+
+**Two rows below are RENUMBERS OWED, not descriptions of a correct state.** `entity-browser-rust`
+and `entity-workbench-go` were each assigned a native **D12** by an earlier version of this
+table, which is the collision described in §4. Their native sets shift up by one when they next
+touch their charters; canon records the corrected numbering now so nothing new is minted against
+the old one. Neither repo did anything wrong.
 
 | Repo | Substrate | Native disciplines | The failure class the substrate forces |
 |---|---|---|---|
 | **godot-entity-core-rust** | Godot 4 + GDScript + GDExtension | D13 observable long-running ops · D14 binding-contract negative tests · D15 input-fact single-writer · D16 perf-claim measurement · D17 visual-contract honesty | No GC; deterministic refcount + explicit free; cycles are silent leaks; headless tests assert wiring, never pixels |
-| **entity-browser-rust** | WASM + JS + Worker + service worker + WebView | D12 two-heap accounting · D13 frame-loop integrity · D14 worker-wire discipline · D15 arm decision from the bound peer · D16 persistence + cold-return | Two heaps with different collection semantics; one frame loop a panic can kill forever; the same code runs on Direct and Worker arms with different stores |
-| **entity-workbench-go** | Avalonia + .NET + cgo + Go | D12 cross-language lifetime accounting · D13 UI-thread/dispatcher integrity · D14 JSON-envelope IPC contract · D15 bounded payloads · D16 test-depth honesty · D17 persistence honesty · D18 renderer-agnostic substrate | Two GCs that don't know about each other; one UI thread; unbounded visual trees blow Skia's paint recursion |
+| **entity-browser-rust** | WASM + JS + Worker + service worker + WebView | **D13** two-heap accounting · **D14** frame-loop integrity · **D15** worker-wire discipline · **D16** arm decision from the bound peer · **D17** persistence + cold-return *(renumber owed: was D12–D16)* | Two heaps with different collection semantics; one frame loop a panic can kill forever; the same code runs on Direct and Worker arms with different stores |
+| **entity-workbench-go** | Avalonia + .NET + cgo + Go | **D13** cross-language lifetime accounting · **D14** UI-thread/dispatcher integrity · **D15** JSON-envelope IPC contract · **D16** bounded payloads · **D17** test-depth honesty · **D18** persistence honesty · **D19** renderer-agnostic substrate *(renumber owed: was D12–D18)* | Two GCs that don't know about each other; one UI thread; unbounded visual trees blow Skia's paint recursion |
 | **entity-system-architecture** | Prose specs, no runtime | *(see §9 — arch's native layer is the spec-lifecycle discipline, and it is the gap this document's adoption plan closes)* | No compiler, no test runner; the only gates are a linter and a cohort |
 
 **What makes a native discipline legitimate**, in all three worked cases: a **source bug with a
@@ -222,7 +269,17 @@ Disciplines tell you what must be true. Doctrines tell you **what to do next**. 
 that when a bug lands or a feature is asked for, the answer is never *"think hard and hope"* —
 it is *"open this doctrine, you are at step N, the next step is M."*
 
-Three doctrines, distinguished by their input.
+**Three doctrines, distinguished by their input — and three is the whole set.** They are
+ecosystem canon, maintained here, and **a repo does not author one.** What a repo earns from
+its own substrate is a **workflow** (§1): open the doctrine, and where a step lands differently
+on your platform, that landing is a `WORKFLOW-*.md` the doctrine's step points at.
+
+**Why the set is closed, stated so it does not read as bureaucracy.** The doctrines are the
+shape of the work — feature, breakage, new surface. If each repo defines its own, two repos'
+audits stop being comparable, a reviewer cannot tell whether a step was skipped or never
+existed, and the ratchet has nothing common to ratchet against. The substrate-specific part is
+exactly the part that *should* vary, and that is what workflows are for. **Nothing is lost by
+the rename; a closed set is gained.**
 
 ### 7.1 Feature Development Doctrine (F0–F8)
 
@@ -359,8 +416,8 @@ tiers, not two.
 
 | Tier | Runs | Repos | Rationale |
 |---|---|---|---|
-| **Full** | Disciplines (D1–D12 + native) · Feature + Audit + Foundation doctrines · substrate model · anti-pattern catalog · review questions | `entity-browser-rust`, `entity-workbench-go`, `godot-entity-core-rust` *(archived; the origin instance)* | Complex non-deterministic substrates. Conformance cannot reach them. |
-| **Core** | Disciplines (D1–D12 + native) · **Audit Doctrine** · anti-pattern catalog · review questions. Feature Doctrine optional; Foundation Doctrine when opening a new surface | `entity-core-go`, `entity-core-rust`, `entity-core-py`, `entity-core-keystone`, `entity-system-arch-tools` | Conformance is a strong gate but does **not** cover process drift, build-state claims, or accounting. |
+| **Full** | Disciplines (D1–D12 universal + native from D13) · Feature + Audit + Foundation doctrines · substrate model · anti-pattern catalog · review questions | `entity-browser-rust`, `entity-workbench-go`, `godot-entity-core-rust` *(archived; the origin instance)* | Complex non-deterministic substrates. Conformance cannot reach them. |
+| **Core** | Disciplines (D1–D12 universal + native from D13) · **Audit Doctrine** · anti-pattern catalog · review questions. Feature Doctrine optional; Foundation Doctrine when opening a new surface | `entity-core-go`, `entity-core-rust`, `entity-core-py`, `entity-core-keystone`, `entity-system-arch-tools` | Conformance is a strong gate but does **not** cover process drift, build-state claims, or accounting. |
 | **Authoring** | A **lifecycle discipline set** in place of runtime disciplines · **Audit Doctrine** · **Foundation Audit Doctrine** · the ratchet | `entity-system-architecture`, `entity-core-protocol`, `entity-core-formalization` | No runtime to hold; the substrate is the corpus itself, and the failure modes are lifecycle failures. |
 
 **The Core tier is a real gap, and it has already been measured.** `entity-core-go`'s own
@@ -467,21 +524,44 @@ Four independent instances, built over roughly eight months, reconciled here.
 | Instance | Artifacts | Contribution to the whole |
 |---|---|---|
 | **godot-entity-core-rust** | `REFRAME-EOS-DISCIPLINE.md` · `DOCTRINES.md` · `MODEL-GODOT-RUNTIME.md` · inline core in `CLAUDE.md` | **The origin.** D1–D8 from the substrate-sandwich reframe; D9–D11 from the foundation audit that found 28 phantom hosts at 104/104 green; the Feature/Audit/Foundation doctrine skeleton; the second-incident promotion ladder; the anti-pattern catalog convention |
-| **entity-browser-rust** | `DISCIPLINE-REFRAME-BROWSER-SUBSTRATE.md` · `DOCTRINES-BROWSER-SUBSTRATE.md` · `MODEL-BROWSER-WASM-RUNTIME.md` | **The generalization proof** — took the skeleton verbatim and re-earned the substrate layer on its own bugs. Contributed the §0.5 *name the recurring cycle* practice, the configuration-matrix step, *trace before you theorize*, delivery-path verification, and the enforcement-point requirement |
-| **entity-workbench-go** | `DISCIPLINE-CHARTER.md` · `MODEL-AVALONIA-RUNTIME.md` · `GUIDE-AVALONIA-PANEL-PATTERNS.md` · `TESTING-STRATEGY.md` | **The second generalization** — inherited D1–D11 verbatim across a completely different stack. Contributed the explicit promotion criteria (§5 of its charter), the enforcement-surfaces table, test-depth honesty (*naming the tier is the discipline*), and the AP-grounded-by-commit convention |
-| **entity-system-architecture** | `guides/GUIDE-IMPL-DISCIPLINE.md` · `DOCTRINE-COHORT-STATE-TRACKING.md` | **The outward publication** — carried D7–D12 into a contributor-facing guide, and added the architecture-side mirror disciplines (A-D1…A-D6) addressing the *"we aligned but never followed up"* pattern |
+| **entity-browser-rust** | `DISCIPLINE-REFRAME-BROWSER-SUBSTRATE.md` · `DOCTRINES-BROWSER-SUBSTRATE.md` *(a workflow — rename owed, §1)* · `MODEL-BROWSER-WASM-RUNTIME.md` | **The generalization proof** — took the skeleton verbatim and re-earned the substrate layer on its own bugs. Contributed the §0.5 *name the recurring cycle* practice, the configuration-matrix step, *trace before you theorize*, delivery-path verification, and the enforcement-point requirement |
+| **entity-workbench-go** | `DISCIPLINE-CHARTER.md` · `MODEL-AVALONIA-RUNTIME.md` · `DOCTRINE-CRASH-FORENSICS.md` *(a workflow — rename owed, §1)* · `GUIDE-AVALONIA-PANEL-PATTERNS.md` · `TESTING-STRATEGY.md` | **The second generalization** — inherited D1–D11 verbatim across a completely different stack. Contributed the explicit promotion criteria (§5 of its charter), the enforcement-surfaces table, test-depth honesty (*naming the tier is the discipline*), and the AP-grounded-by-commit convention |
+| **entity-system-architecture** | `guides/GUIDE-IMPL-DISCIPLINE.md` · `DOCTRINE-COHORT-STATE-TRACKING.md` *(a workflow — rename owed, §1)* | **The outward publication** — carried D7–D12 into a contributor-facing guide, and added the architecture-side mirror disciplines (A-D1…A-D6) addressing the *"we aligned but never followed up"* pattern |
 | **entity-core-go** | its 2026-08-12 discipline self-audit | **The diagnosis** — the self-audit that measured drift in a Core-tier repo and named the root cause: rules with no home in the repo that must follow them |
 
 ---
 
-## 12. Reading order on cold start
+## 12. Progressive discovery — what loads when, and why not all of it
 
-A session asking *"how do we work here?"*:
+**The constraint is real and it is not going away: this material cannot all sit in every
+context window.** A session that loads the whole methodology, every charter, every doctrine and
+every model has spent its budget before it reads a line of code — and a session that loads none
+of it re-derives decisions the ecosystem already paid for. The resolution is not a compromise
+between the two. It is that **each artifact has a trigger, and the trigger is what gets
+memorized, not the content.**
 
-1. **`AGENTS.md`** (auto-loaded) — the repo's specifics + inline disciplines + anti-patterns + red flags.
-2. **`AGENTS-STANDARD.md`** — the ecosystem conventions, and the pointer here.
-3. **This document** — the methodology.
-4. **The repo's charter** — its disciplines with their local grounding.
-5. **The repo's doctrines** — opened at task-start, not read cover-to-cover.
-6. **The substrate model** — before any lifetime / leak / render / persistence work.
-7. **The latest handoff** — current state.
+| tier | what | when |
+|---|---|---|
+| **0 — always** | `AGENTS.md` + `AGENTS-STANDARD.md` | auto-loaded. **Keep them small.** |
+| **1 — cold start, once** | this document §1–§4 (kinds · ratchet · ladder · D1–D12) · the repo charter's discipline list · the latest handoff | a session asking *"how do we work here?"* |
+| **2 — by trigger** | **the one doctrine matching the task** (§7) · the substrate model · the workflow the doctrine's step names | at task start, never speculatively |
+| **3 — looked up** | anti-pattern entries · guides · references · dated status docs · this document's §5–§11 | when something points at them |
+
+**The triggers, explicitly** — this is the part worth knowing by heart:
+
+- building something asked for → **Feature Doctrine** (§7.1)
+- *"Y is broken"* or *"something feels wrong"* → **Audit Doctrine** (§7.2). **A1 is the prime:
+  trace a value before you theorize.**
+- opening a surface you have not designed against → **Foundation Audit Doctrine** (§7.3)
+- touching lifetime, leaks, rendering or persistence → **the substrate model**, first
+- a crash, a cohort sweep, a platform-specific procedure → **the repo's `WORKFLOW-*`**
+
+**The rule that keeps tier 0 small: `AGENTS.md` names the trigger; it does not carry the
+content.** Any section of it that could be replaced by *"when X, open Y"* should be. An
+`AGENTS.md` that grows into a library stops being read at all — measured, at 4,663 lines, on
+the repo where it had become the front door.
+
+**And then go and read the actual area.** The doctrines tell you the shape of the work; they
+do not tell you the domain. Once the matching doctrine is open, the next move is research on
+the surface in front of you — the spec section, the substrate's real behavior, the sibling
+implementation's source — **read canonically, per D12, never from a summary of a summary.**

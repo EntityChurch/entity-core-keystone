@@ -5,8 +5,7 @@ of what the Keystone cohort and the surrounding research say about the **machine
 the interface between entity computation and the physical/host substrate. Connects three
 tracks that have been approaching one question from different sides:
 
-- **Paper 04** — *The Entity Machine Boundary*
-  (`entity-lab-legacy-meta/entity-core-papers/papers/04-machine-boundary/`) — the top-down
+- **Paper 04** — *The Entity Machine Boundary* — the top-down
   analytic floor (bootstrap evaluator, seven primitives, four fixed points, five profiles).
 - **The Keystone cohort** — 43 peers + the `AGENTS.md` §7b concurrency taxonomy — the
   bottom-up empirical demonstration of how thin the substrate can be.
