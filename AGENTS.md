@@ -2111,6 +2111,52 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   the file's vocabulary** — a `scope_subset` with no scope-type parameter cannot dispatch on one
   whatever its neighbours say. The H4 packaging entry records the first member that *understated*
   a capability; this one **overstates conformance**, which is the direction nobody re-checks.)*
+- **RATIFIED — A COUNT INHERITS THE SHAPE OF THE SEARCH THAT PRODUCED IT, AND THE SHAPE IS INVISIBLE
+  IN THE NUMBER. THREE INSTANCES IN ONE AUDIT, THREE DIFFERENT MECHANISMS, TWO SEATS — AND ONE WAS
+  OURS, RELAYED VERBATIM INTO A NORMATIVE PROPOSAL.** 2026-09-11, reviewing arch's `0.8.2.20` draft.
+  The false-negative family already in this file is about a search that *could not see* its target
+  (a NUL byte, the wrong vocabulary, a pattern that could not span the construction). **This is its
+  arithmetic half: the search saw everything it looked at, and what it looked at was the wrong
+  population.** All three published as a bare integer, which is the form that carries no provenance.
+  - **MEMBER OMISSION — a claim of the form *"A and B do X; C and D do Y"* over a FIVE-member cohort
+    names four and leaves the fifth to be inferred.** Ours. `f68-caller-exclude-wire-census.md`
+    published *"`ocaml` and `python` have no arity check … `csharp`, `typescript` count"*, and
+    **the generated `go` has the identical defect** (`handlers.go:231-243` tests `len(targets)==0`
+    then returns `targets[0]`). Three, not two — and the missed member is in the reproducing set,
+    because the head selection is *why* it reproduces. Nobody re-read it: the sentence is
+    well-formed, the four it names are correct, and the fifth is absent rather than wrong. It was
+    relayed into `entity-core-protocol` `564055f` §6 and two architecture packets before being
+    re-derived. **Enforcement: enumerate every member of a cohort BY NAME, including the ones the
+    claim is not about.** A cohort sentence that does not sum to the roster is a defect regardless
+    of whether its named members are right.
+  - **LINE COUNT vs SITE COUNT, and a CROSS-REFERENCE IS NOT A RAISE.** Arch's. The proposal states
+    *"`EXTENSION-ROLE` raises `malformed_resource` at five sites"*; the document contains **three**
+    occurrences, of which **one** is a `return error(...)`, one is prose stating the rule, and one is
+    a comparison *about a different code*. The five is a `grep -rn` returning five LINES across
+    **three documents**, one of them arch's own `DESIGN-REGISTER`. **Enforcement: `grep -c` counts
+    lines and `grep -o | wc -l` counts occurrences, and NEITHER counts sites** — classify each hit as
+    raise / statement / citation before it becomes a number in a normative document.
+  - **A SENTENCE-SHAPED SWEEP CANNOT FIND A BLOCK-SHAPED RESTATEMENT.** Arch's, and it is their own
+    `L23` pointed back at them. `G4` withdraws a characterization at **three** sentences; it occurs
+    at **seven** places, and the four unswept ones are §9.1 MUST Implement, **two pseudocode comments
+    inside the very block that implements the rule**, the layer table, and a second occurrence on
+    `G4`'s own cited line. The proposal's whole argument is that *the block is what gets implemented
+    and the prose beside it is not* — and the sweep took the prose.
+  **The common enforcement, and it is one line rather than three: publish the SURFACE a count ranges
+  over, never the count alone** — *"N sites, in documents X/Y/Z, classified as raises"*. That is the
+  `abi_differential` *"71/71 over 19 of 27 symbols"* rule generalized off harnesses and onto prose,
+  and each of the three above is caught by it. **Corollary, measured twice here in one day:
+  recomputing a supplied inventory is minutes and the diff is always the question worth asking** —
+  arch's `22 targets[0] sites across 5 documents` recomputes to **28 across 7**, the extra two being
+  `guides/`, i.e. the sweep was scoped to `specs/` while the mechanism it serves (*a function
+  nameable in the pseudocode both sides copy*) lives or dies on the guides. **A scope boundary is
+  the most common reason a diligent count is wrong, and it never appears in the count.**
+  *(Sub-lesson, and it is the standing "check the floor, the summary and the index whenever a rule
+  moves" rule recurring at the SHORTEST possible distance: §9.1's conformance floor was missed again,
+  in the same arc, four commits after the seat recorded the lesson about missing §9.1. **A lesson
+  written down in a status doc is not an enforcement point.** The floor is where a new implementation
+  builds from, so it is the site whose staleness costs the most and the one a sweep reaches last —
+  put it FIRST in the sweep order, not last.)*
   - **A section headed "Current state" was anchored to a pin retired three flips earlier**
     (`CONFORMANCE-MATRIX.md` §4, `2026-08-30 @ the 755-check pin`, while §1 published `778`).
     `coherence-gate` is scoped to §1's rows and the 46 per-peer banners, so §2–§4 prose can go

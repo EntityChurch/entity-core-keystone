@@ -127,12 +127,32 @@ both reachable and bounded by resources.
 
 ## Two things found alongside, independent of F68
 
-- **`ocaml` and `python` have no arity check at all** on the resource target. Both take the head of
-  `targets` whatever its length — `peer.ml:356-360` under a comment reading *"Exactly one target is
-  required — else 400 `ambiguous_resource`"*, and `handlers.py:163-170`. `csharp`, `typescript`
-  count. This is the defect `entity-core-go` reverted at `e030bcd` and was asked to restore, sitting
-  unremarked in two generator backends, and it is what makes case D reach `targets[0]` there in the
-  first place.
+- **CORRECTED 2026-09-11 — it is THREE backends, not two, and the one this sentence missed is in the
+  reproducing set.** As first published this read *"`ocaml` and `python` have no arity check at all …
+  `csharp`, `typescript` count"*, which named four of five and left `go` to be inferred into the
+  counting half. **The generated `go` has the identical defect**: `execResourceTarget`
+  (`handlers.go:231-243`) tests `len(targets) == 0` and then returns `targets[0]`, so
+  `registerPattern` (`:622`) takes the head of a list of any length exactly as `ocaml` and `python`
+  do. **`ocaml`, `python` and the generated `go` have no arity check**; `csharp`
+  (`HandlersHandler.cs:165`, `Targets.Count != 1`) and `typescript`
+  (`handlers-handler.ts:153`, `targets.length !== 1`) count. The three with no arity check are
+  precisely the three that reproduce `F68` — the same three, not a coincidence, since it is the head
+  selection that makes case D reach `targets[0]`.
+  **The undercount is the lesson: a claim of the form *"A and B do X, C and D do Y"* over a
+  five-member cohort names four and leaves the fifth to be inferred, and the inference is invisible
+  in the sentence.** This one was relayed verbatim into a normative proposal
+  (`entity-core-protocol` `564055f` §6) and into two architecture packets before it was re-derived.
+  **Enumerate every member of a cohort by name, including the ones the claim is not about.**
+  This is the defect `entity-core-go` reverted at `e030bcd` and was asked to restore, sitting
+  unremarked in three generator backends.
+- **All five emit the WRONG CODE for the absent case, and §3.3 names that non-conformant in the
+  sentence that creates the rule.** §3.3's 400 row and §6.13 both pin *zero targets →
+  `400 path_required`, more than one → `400 ambiguous_resource`*, and the row adds: *"A handler
+  specification that collapses them into one code is non-conformant on the absent case."*
+  **Every one of the five answers `ambiguous_resource` when the resource is absent** — the >1 code
+  for the =0 condition, i.e. not merely collapsed but inverted. `csharp` and `typescript` carry the
+  arity check and still collapse, so having the count does not imply having the codes. This is
+  independent of `F68`, is against landed core text, and is owed by all five.
 - **Arch's exculpatory claim about the oracle holds, verified independently.** *"The oracle has
   never sent a caller-side resource exclude in its life"* — every `ResourceTarget{...}` in
   `entity-core-go`'s `cmd/internal/validate` sets `Targets` and nothing else; the one live `Exclude`
