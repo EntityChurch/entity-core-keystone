@@ -100,26 +100,37 @@ check — and it has no vendored crate closure, so its build needs the network.
 
 ## 3. What is queued, in order, with sizes
 
-### 3a. The `0.8.2.9` catch-up — **measured, bounded, and next**
+### 3a. The `0.8.2.11` catch-up — **re-measured 2026-09-06, and the target moved twice under it**
 
-Our snapshot is `v0.8.2.3`; the protocol is at **`0.8.2.9`** — six bumps. Arch's
-`ROUTING-2026-09-05-b` consolidates the whole arc into **one vendor step**, and states that no
-further core change is queued on this track. No flag day, no divergence unit: everything in it
-changes what a peer **emits**, never what it accepts. One snapshot picks up `.4` through `.9` plus
-five extension tables (`EXTENSION-TYPE` v1.3, `REGISTRY` v1.22, `DISCOVERY` v1.2, `REVISION` v3.13,
-`TREE` v4.4).
+Our snapshot is `v0.8.2.3`; the protocol is at **`0.8.2.11`** — **eight** bumps. The governing packet
+is **`ROUTING-2026-09-06-d`**, which supersedes `-b`, which had already superseded the
+`ROUTING-2026-09-05-b` this section was first written against. Arch retracts its own sequencing
+promise in it and says why: *"this is the last arch fold queued today" was true when written at 06:23
+and is no longer.* **Check `ENTITY-CORE-PROTOCOL.md` line 3 against `0.8.2.11` before spending a
+cycle** — arch's own instruction, and one `head -3` is cheaper than a sweep.
 
-**Measured rather than guessed** (method: attribute by *category*, never by commit subject) — **and
-every figure in this block was taken at `0.8.2.7` against go `c42bbf3`, before the arc consolidated.
-They are a floor, not the `0.8.2.9` numbers**, which need re-measuring at the vendor step; go has
-moved twice since and the sweep now also carries `0.8.2.5`'s pre-establishment `401` and `0.8.2.8`'s
-half-open naming:
+**The "everything changes what a peer emits, never what it accepts" claim in the previous revision of
+this section is WITHDRAWN.** It was true through `0.8.2.9` and `0.8.2.11` ended it: §6.3 adds a `put`
+**admission ladder**, which is an accept-side rule and therefore the class that *partitions a cohort
+during adoption* rather than merely diverging its error strings. That is a different kind of work
+from the rest of the arc and is sized separately, in `docs/status/HANDOFF-2026-09-06`.
 
-- **1 of 3** normative files moved, `+80/−12`.
-- The go oracle grew **+15 checks, 0 removed**; **13 are `catConnectivity`, a core category**. The
-  other two are relay, non-core.
-- `core_gate_fingerprint` is **unchanged** — fifth time in this exact shape. It will not warn us.
-- Executed core set **758 → 772**.
+**Measured rather than guessed** (method: attribute by *category*, never by commit subject — and the
+extraction method was validated against the recorded pin digest as a control before its new value was
+trusted):
+
+- **All 3** normative files moved, **`+117/−24`** together. `EXTENSION-TREE` v4.5 is cited by §6.3 but
+  is **not in our snapshot** — we pin the three core documents only.
+- The go oracle grew **+26 declared checks, 0 removed**; **19 are core** — 11 (`connectivity_conn_errors.go`)
+  + 2 (`connectivity_section33.go`) in `catConnectivity`, and **6 (`tree_put_error_codes.go`) in
+  `catTreeOps`**. The other 7 are `catType` (5) and `catRelayStoreBounds` (2), neither in
+  `coreProfileCategories`.
+- `core_gate_fingerprint` is **byte-identical across the pin** (`8261a033fe1af56b…`) — **sixth** time
+  in this exact shape. It will not warn us. The candidate declared digest at go HEAD is recorded in
+  `docs/status/HANDOFF-2026-09-06`, not here: it anchors a commit that moved four times that day, so
+  it is a measurement rather than a pin, and this file publishes.
+- Executed core set: **needs re-measuring against a candidate oracle built to a scratch path.** The
+  `758 → 772` below is the previous pin's and is now both stale and a floor.
 - Probed on **three peers of three lineages** (`go`, `rust`, `python`) with an oracle built to scratch
   — a diagnostic, not a census, and the pinned oracle was untouched. **All three identical:
   `772 · 324P/336W/5F/107S`.** Seven of the thirteen new checks already pass; nothing outside them
@@ -150,9 +161,18 @@ non-conformant"*, with the **code slot** as the unit of conformance rather than 
 read to emit `404 not_found` at the handler-resolution-miss site. It has never been measured here:
 the check that drives it is absent from all 46 committed reports and arrives with the re-pin.
 
-**This is not a regeneration.** It is the shape of the §5.6 mint-ceiling sweep that went across 36
-languages: author once, propagate, re-census. Order: vendor `v0.8.2.9` → fix → re-pin the oracle
-(758 → 772+) → sweep 46 → re-measure the tracked reports.
+**A fourth item arrived with `0.8.2.11` and is the only unmeasured one: the §6.3 `put` admission
+ladder** — 6 new `catTreeOps` checks, an accept-side rule, and a surface **no generated peer has ever
+been driven on**. The discriminating probe is one input (`{type, data}` with no `content_hash` → must
+answer `400 invalid_request`) and it separates three behaviours, the worst of which is *silently
+author and store*. It is specified, with its two required controls, in `docs/status/HANDOFF-2026-09-06`.
+
+**The emit-side half is not a regeneration** — it is the shape of the §5.6 mint-ceiling sweep that
+went across 36 languages: author once, propagate, re-census. The accept-side half is not yet sized.
+Order: **probe `put` across 46** → vendor `v0.8.2.11` → fix → sweep 46 → re-pin the oracle → re-census
+and re-measure the tracked reports. **The vendor and the re-pin are deliberately decoupled**: go is 54
+commits past our pinned oracle and landed two `fix(tree)` commits on this exact surface on 2026-09-06,
+with rust and py being routed the same day, so pinning to a moving HEAD buys a second census.
 
 ### 3b. The keystone specification layer — **unblocked, ours, not started**
 

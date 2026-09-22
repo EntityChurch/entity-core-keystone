@@ -22,6 +22,7 @@ from .capability import (
 from .identity import verify_signature
 from .model import Entity
 from .wire import (
+    MAX_FRAME,
     empty_params,
     error_result,
     resource_target,
@@ -59,6 +60,26 @@ class DispatchCtx:
     included: dict
     caller_cap: Entity | None = None
     has_cap: bool = False
+    #: The peer's configured frame bound, used only when this context carries no
+    #: connection.  Never read it directly — call :meth:`frame_budget`.
+    peer_max_frame: int = MAX_FRAME
+
+    def frame_budget(self) -> int:
+        """The §4.10(a) inbound frame bound IN FORCE for this request, in bytes.
+
+        A handler that must size a response against the connection's limit reads it
+        here.  The value is the one the transport is enforcing on *this* connection,
+        falling back to the peer's configured default when the context was built off
+        the serving path (an in-process call, where no frame exists at all).
+
+        It is deliberately NOT the module constant: a body that hardcodes 16 MiB, or
+        reads :data:`~entity_core.peer.wire.MAX_FRAME`, answers with a number that a
+        peer configured or negotiated otherwise is not enforcing.
+        """
+        conn_budget = getattr(self.conn, "max_frame_bytes", None)
+        if isinstance(conn_budget, int):
+            return conn_budget
+        return self.peer_max_frame
 
 
 UINT64_MAX = (1 << 64) - 1

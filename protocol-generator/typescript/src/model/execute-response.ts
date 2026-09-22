@@ -2,6 +2,7 @@ import { ecfPreEncoded } from "../codec/ecf-value.js";
 import { EntityProtocolError } from "../errors.js";
 import * as Ecf from "./ecf.js";
 import { Entity } from "./entity.js";
+import { hashHex } from "./hashes.js";
 import { TypeNames } from "./protocol-constants.js";
 
 /**
@@ -12,11 +13,34 @@ import { TypeNames } from "./protocol-constants.js";
 export class ExecuteResponse {
   readonly entity: Entity;
 
-  constructor(entity: Entity) {
+  /**
+   * The response envelope's `included` map (§3.1), keyed by content-hash hex.
+   *
+   * A response carries supporting entities the same way a request does — a minted
+   * capability and its granter identity on the handshake, and, for an extension like
+   * CONTENT, the blob and chunk entities the result entity only *references*. This
+   * view used to be constructed from `envelope.root` alone, so every caller reaching a
+   * peer through its own client surface received the reference and not the referent:
+   * the server side was correct and nothing was conformance-visible, because the
+   * oracle reads the envelope directly rather than through this class.
+   *
+   * Empty when the view was built from a bare entity, which is what
+   * {@link ExecuteResponse.build} does — a response under construction has no envelope
+   * yet, and its included entities are carried by {@link HandlerResult}.
+   */
+  readonly included: ReadonlyMap<string, Entity>;
+
+  constructor(entity: Entity, included: ReadonlyMap<string, Entity> = new Map()) {
     if (entity.type !== TypeNames.ExecuteResponse) {
       throw new EntityProtocolError(`expected ${TypeNames.ExecuteResponse}, got '${entity.type}'`);
     }
     this.entity = entity;
+    this.included = included;
+  }
+
+  /** Look an included entity up by its content hash (§3.1 map key). */
+  includedByHash(contentHash: Uint8Array): Entity | undefined {
+    return this.included.get(hashHex(contentHash));
   }
 
   get requestId(): string {

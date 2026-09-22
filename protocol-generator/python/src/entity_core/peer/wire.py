@@ -6,11 +6,15 @@ envelope (§3.1).  Only EXECUTE and EXECUTE_RESPONSE are wire message types
 (§3.3); ``hello`` / ``authenticate`` are OPERATIONS on system/protocol/connect,
 not message types.
 
-§4.10(a) resource bound: a finite max inbound payload (:data:`MAX_FRAME`, 16
-MiB) is enforced by checking the LENGTH PREFIX *before* buffering the body — an
-over-limit frame is rejected (-> ``413 payload_too_large``) at read time, before
-the oversized buffer is ever allocated.  The recommended (informative) default
-is 16 MiB.
+§4.10(a) resource bound: a finite max inbound payload is enforced by checking the
+LENGTH PREFIX *before* buffering the body — an over-limit frame is rejected (->
+``413 payload_too_large``) at read time, before the oversized buffer is ever
+allocated.  :data:`MAX_FRAME` (16 MiB) is the recommended informative DEFAULT,
+not the bound: the bound in force is a per-connection value threaded from the
+peer (:attr:`Peer.max_frame_bytes`) into :func:`read_frame`, and it is what a
+handler body reads back through ``DispatchCtx.frame_budget()``.  A body that
+sizes a response against the module constant instead is answering with a number
+that may not be the one enforced.
 """
 
 from __future__ import annotations
@@ -21,12 +25,14 @@ from typing import Any
 
 from .model import Entity, Envelope, decode_envelope, encode_envelope
 
-#: §4.10(a) finite inbound-payload bound (16 MiB, the informative default).
+#: §4.10(a) finite inbound-payload bound — the informative DEFAULT (16 MiB), used
+#: when a peer is constructed without an explicit ``max_frame_bytes``.  Read the
+#: bound in force from the connection, never from here.
 MAX_FRAME = 16 * 1024 * 1024
 
 
 class FrameTooLargeError(Exception):
-    """A length prefix exceeded MAX_FRAME (-> 413 payload_too_large).
+    """A length prefix exceeded the connection's frame bound (-> 413 payload_too_large).
 
     Raised BEFORE the body is buffered (§4.10(a)).
     """
@@ -43,16 +49,19 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes:
     return bytes(buf)
 
 
-def read_frame(sock: socket.socket) -> bytes:
+def read_frame(sock: socket.socket, max_frame: int = MAX_FRAME) -> bytes:
     """Read one length-prefixed frame, returning its CBOR payload.
 
-    The length prefix is validated against :data:`MAX_FRAME` before any body
-    bytes are read (§4.10(a)).  A clean EOF raises ConnectionError.
+    The length prefix is validated against ``max_frame`` before any body bytes are
+    read (§4.10(a)).  A clean EOF raises ConnectionError.
+
+    ``max_frame`` is the bound IN FORCE for this connection, threaded from the
+    peer; the default exists for direct callers, not for the serving path.
     """
     hdr = _recv_exact(sock, 4)
     (n,) = struct.unpack(">I", hdr)
-    if n > MAX_FRAME:
-        raise FrameTooLargeError(f"{n} > {MAX_FRAME} (413 payload_too_large)")
+    if n > max_frame:
+        raise FrameTooLargeError(f"{n} > {max_frame} (413 payload_too_large)")
     return _recv_exact(sock, n)
 
 

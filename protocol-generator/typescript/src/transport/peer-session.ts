@@ -58,7 +58,10 @@ export class PeerSession {
 
     const request = new Envelope(execute.entity, included);
     const response = await this.connection.sendRequest(request, timeoutMs);
-    return new ExecuteResponse(response.root);
+    // §3.1: the response's supporting entities travel in `included`. Constructing the
+    // view from `root` alone dropped them, so a caller using this client surface could
+    // read a result that references entities it could never obtain.
+    return new ExecuteResponse(response.root, response.included);
   }
 
   /** Empty-params entity for operations that take no params (§3.2): `0xA0`. */

@@ -12,22 +12,36 @@ Usage: ``PYTHONPATH=src python tests/peer/_run.py``
 from __future__ import annotations
 
 import importlib
+import pathlib
 import sys
 import traceback
 
-MODULES = [
-    "tests.peer.test_type_registry",
-    "tests.peer.test_multisig",
-    "tests.peer.test_loopback",
-]
+def _discover() -> list[str]:
+    """Every ``test_*.py`` beside this file, DERIVED rather than listed.
+
+    A hand-maintained module list is a second copy of the inventory and it drifts:
+    this one had gone stale on ``test_f40_scope_typing``, which pytest collected and
+    this runner did not — so the stdlib fallback silently graded a smaller suite than
+    the gate it stands in for.
+    """
+    here = pathlib.Path(__file__).resolve().parent
+    return sorted(
+        "tests.peer." + p.stem
+        for p in here.glob("test_*.py")
+    )
 
 
 def main() -> int:
     sys.path.insert(0, ".")  # repo root for `tests.*`
     sys.path.insert(0, "src")  # the package
+    modules = _discover()
+    if not modules:
+        # A runner that examined nothing prints the same word as one that passed.
+        print("[FAIL] no test modules discovered beside _run.py")
+        return 1
     passed = 0
     failed = 0
-    for modname in MODULES:
+    for modname in modules:
         mod = importlib.import_module(modname)
         for name in sorted(dir(mod)):
             if not name.startswith("test_"):
@@ -43,7 +57,7 @@ def main() -> int:
                 failed += 1
                 print(f"[FAIL] {modname}::{name}")
                 traceback.print_exc()
-    print(f"\n=== {passed} passed, {failed} failed ===")
+    print(f"\n=== {passed} passed, {failed} failed, {len(modules)} modules ===")
     return 1 if failed else 0
 
 

@@ -288,3 +288,48 @@ oracle_commit     = "e8524ed"                     # recorded for S4 byte-validat
 # proposal text), Python derives S1/S2/S3 against the COMPLETE v7.75 snapshot — the
 # register/outbound/emit/owner-cap/§7a peer surface AND the §4.8/§4.9/§4.10 substrate
 # floor are all present as ratified spec text. No A-ELX-001-style snapshot-lag caveat.
+
+[extension_host]
+# The keystone HOST CONTRACT bindings (H1-H7) for this language. See the block of the
+# same name in typescript/profile.toml for why it is `extension_host` and not `[host]`,
+# and why `dispatch_read_site` is the load-bearing field rather than the register call.
+#
+# What is distinctive here and costs an adapter: this peer has NO registration surface.
+# There is no `register_handler`, and that is a measured fact rather than an omission
+# from this file -- every §11.6.1 write is the caller's, through public entry points
+# (`store.bind`, `mint_token`, the `handlers` dict). A host program installs by writing
+# the entities and then binding the body; the peer offers no method that does both.
+status                  = "host"             # host | not-yet | declined | unknown. MEASURED, not read -- see verified_by.
+verified_by             = "entity-system-generator gates/host-seam/probe-seam.py (4 controls, H1 MEASURED PASS) + tests/peer/test_frame_budget.py"
+
+# H1 -- a handler installed after construction is reachable by dispatch.
+handler_register_call   = "none -- peer.handlers[pattern] = body, after peer.store.bind of the §11.6.1 entities"
+handler_body_shape      = "any object with handle_op(operation: str, ctx: DispatchCtx) -> Outcome"
+dispatch_read_site      = "Peer._run_chain -- self.handlers.get(stripped), src/entity_core/peer/peer.py; the DICT is the consulted container, not the tree (probe control C: tree bound + dict unset -> 501 no_handler_body)"
+handle_lifecycle        = "absent"           # no handle/close object; unregister is the wire op
+ctx_carries_peer        = false              # DispatchCtx is exec/conn/included/caller_cap/has_cap/peer_max_frame -- a body reaches the store by registration-time capture
+ctx_carries_suffix      = false              # _resolve_handler matches the pattern and drops the remainder; the body re-derives it from the URI
+
+# H2 -- an emit-pathway consumer can be registered after construction.
+consumer_register_call  = "Store.register_tree_consumer(fn) / Store.register_content_consumer(fn)"
+consumer_body_shape     = "callable(event) -- TreeEvent / ContentEvent"
+consumer_ordering       = "registration order"                               # SYSTEM-COMPOSITION §1.2 / §2.2 -- NOT yet measured here
+
+# H4 -- both consumption modes.
+packaging_unit          = "PEP 517 src-layout project"                       # pyproject.toml; not published to PyPI
+package_name            = "entity-core-protocol-python"
+packaging_boundary      = "package import surface"                           # entity_core.peer.__all__ is the declared surface
+library_entry_point     = "from entity_core.peer import Peer, listen, dial"
+standalone_entry_point  = "python -m entity_core.host --port N [--name NAME] [--validate]"
+
+# H6 -- the frame budget in force for the request is readable by the body.
+frame_budget_accessor   = "DispatchCtx.frame_budget()"                       # connection value, peer default as fallback
+frame_budget_per_connection = "Conn.max_frame_bytes"                         # stamped by the transport from the peer's value; the same number read_frame enforces
+frame_budget_configurable   = "Peer(seed, max_frame_bytes=N)"
+# wire.MAX_FRAME (16 MiB) is the informative DEFAULT and is deliberately not the
+# accessor's answer: it is the literal CONTENT §6.2 Amendment 1 names as wrong.
+
+# H7 -- entity-native (§6.13(a)) dispatch is delegable to an installed evaluator.
+evaluator_install_call  = "none"             # not-yet: _entity_native_dispatch evaluates compute/literal in-process and 501s the rest, with no injection point
+evaluator_read_site     = "Peer._entity_native_dispatch -- src/entity_core/peer/peer.py"
+evaluator_builtin_floor = "compute/literal"

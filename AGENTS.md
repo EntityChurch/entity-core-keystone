@@ -1087,6 +1087,44 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   **Rule: when adding a seam to a path a conformance check already exercises, the built-in floor
   goes first and the seam gets the fallback arm — and assert that with its own test, because the
   ordering is invisible in any run where the seam is uninstalled.**
+- **A PEER CAN OFFER TWO SURFACES FOR ONE OPERATION, AND THE ORACLE DRIVES EXACTLY ONE OF THEM —
+  the other is the one an extension host is told to use.** RATIFIED 2026-09-06: two shapes in one
+  session, both on `typescript`, both routed by `entity-system-generator` out of building `CONTENT`,
+  and both **structurally invisible to `--profile core`**.
+  - **Registration.** The wire `system/handler:register` op forwards a full §3.7 manifest verbatim
+    (`handlers-handler.ts:53,82`), so an `operations` map carrying `input_type`/`output_type`
+    reaches the interface entity. The IN-PROCESS `registerHandler` declared
+    `operations: readonly string[]` and rendered each op as an **empty** `operation-spec` — so a
+    handler installed the way a host installs one could publish operation NAMES and nothing else,
+    and the extension had to re-write its own interface entity afterwards. §3.7 calls those types
+    the thing *"tooling and code generators rely on to derive op shapes without per-extension
+    knowledge"*. **`python`'s bootstrap already carried `(op, input_type, output_type)` triples in
+    `_CORE_SPECS`** — so this was a cohort outlier and a sibling had the answer, which is the
+    standing *"when a scope question has 45 existing answers in the tree, ask them"* rule again.
+  - **The response view.** `ExecuteResponse` was built from `envelope.root` **alone** at all three
+    client sites, discarding the envelope's `included` map (§3.1) — which is how CONTENT returns a
+    blob and its chunks. A caller using the peer's own client surface received the reference and
+    could never obtain the referent. The server side was correct throughout.
+  **Why neither could be measured, and it is not an oracle gap:** the oracle is a WIRE client. It
+  builds its own envelopes and reads ours directly; it never constructs the peer's `Handler` type
+  and never goes through the peer's `ExecuteResponse`. So a defect in either surface sits outside
+  every conformance category by construction — confirmed rather than assumed: both fixes moved
+  **0 of 721** severities, and the only difference against the tracked report was the documented
+  `t1_1_concurrent_demux` flake (WARN in 3 of 3 runs, so the tracked PASS is the outlier and the
+  report was left alone).
+  **Enforcement: for any operation a peer exposes BOTH over the wire and in-process, diff what the
+  two ACCEPT and what each PUBLISHES.** A narrower in-process surface is the defect, every time,
+  because the wire one is the one under test. Generalize past registration: any type that wraps a
+  wire message for a caller (`ExecuteResponse`, a session, a client) must be checked against the
+  ENVELOPE it was built from, not against the root entity — a field the oracle reads directly is a
+  field a wrapper can silently drop.
+  *(Sub-lesson, and it is the standing control rule pointed at my own prediction: **name which ARM
+  a plant reddens, then RUN it.** The `python` H6 controls were written predicting checks 1 and 3;
+  measured, the ACCESSOR plant reddens 1 and 4 and only the ENFORCER plant reddens 3. Two plants on
+  **disjoint** checks is what proves the accessor arm and the enforcer arm are independently
+  measured rather than one carrying the other — with a single plant, *"the number a body reads is
+  the number in force"* would have rested on one observation. The prediction was recorded in the
+  test's own docstring and corrected there.)*
 - **A GATE MUST NOT REWRITE A COMMITTED ARTIFACT — and on 36 of 46 peers a bare `./run-s4.sh`
   DOES.** Found 2026-09-04 while diagnosing an unrelated change: `run-s4.sh` with no arguments
   defaults `-json-out` to `status/CONFORMANCE-REPORT.json`, **the tracked, signed-off record**. A

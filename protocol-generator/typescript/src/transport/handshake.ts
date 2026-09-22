@@ -129,7 +129,7 @@ function sendConnect(
 }
 
 function requireOk(response: Envelope, step: string): ExecuteResponse {
-  const resp = new ExecuteResponse(response.root);
+  const resp = new ExecuteResponse(response.root, response.included);
   if (resp.statusCode !== Status.Ok) {
     const code = Ecf.optText(resp.result.data, "code") ?? "unknown";
     const message = Ecf.optText(resp.result.data, "message") ?? "";

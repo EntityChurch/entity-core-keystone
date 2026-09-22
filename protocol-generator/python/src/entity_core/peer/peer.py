@@ -37,7 +37,7 @@ from .identity import Identity, peer_id_of_public_key, verify_signature
 from .model import Entity, Envelope
 from .store import Store
 from .typedefs import core_type_entities
-from .wire import error_result, make_execute, make_response
+from .wire import MAX_FRAME, error_result, make_execute, make_response
 
 
 # ── per-connection state (§4.2) ───────────────────────────────────────────────
@@ -48,6 +48,11 @@ class Conn:
     hello_peer_id: str = ""
     outbound: Callable[[Envelope], "Envelope | None"] | None = None
     out_counter: int = 0
+    #: The §4.10(a) inbound frame bound IN FORCE on this connection, stamped by the
+    #: transport from the peer's own value.  ``None`` means "this Conn was built
+    #: outside the serving path", and a body reading the budget then falls back to
+    #: the peer default rather than to a literal — see ``DispatchCtx.frame_budget``.
+    max_frame_bytes: int | None = None
 
 
 # ── grant construction (§4.4 / §5.4) ──────────────────────────────────────────
@@ -94,12 +99,23 @@ def _open_grants_scope() -> list[GrantSpec]:
 class Peer:
     """A bootstrapped Entity Core peer."""
 
-    def __init__(self, seed: bytes, *, open_grants: bool = False, conformance: bool = False) -> None:
+    def __init__(
+        self,
+        seed: bytes,
+        *,
+        open_grants: bool = False,
+        conformance: bool = False,
+        max_frame_bytes: int = MAX_FRAME,
+    ) -> None:
         self.identity = Identity.of_seed(seed)
         self.store = Store()
         self.local_peer = self.identity.peer_id
         self.open_grants = open_grants
         self.conformance = conformance
+        #: §4.10(a): this peer's inbound frame bound.  The transport enforces it
+        #: per connection and stamps it onto each :class:`Conn`, so the number a
+        #: handler body reads back is the number actually in force.
+        self.max_frame_bytes = max_frame_bytes
         self.handlers: dict[str, Any] = {}
         self._bootstrap()
 
@@ -298,7 +314,10 @@ class Peer:
         # The connect handler is reached pre-authentication (the handshake).
         if uri == "system/protocol/connect":
             h = self.handlers["system/protocol/connect"]
-            return h.handle_op(operation, DispatchCtx(exec=exec_e, conn=c, included=env.included))
+            return h.handle_op(operation, DispatchCtx(
+                exec=exec_e, conn=c, included=env.included,
+                peer_max_frame=self.max_frame_bytes,
+            ))
 
         self._ingest_signatures(env)
 
@@ -335,6 +354,7 @@ class Peer:
             return inst.handle_op(operation, DispatchCtx(
                 exec=exec_e, conn=c, included=env.included,
                 caller_cap=caller_cap, has_cap=True,
+                peer_max_frame=self.max_frame_bytes,
             ))
         return self._entity_native_dispatch(pattern)
 

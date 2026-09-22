@@ -45,6 +45,10 @@ export class OutboundDispatchImpl implements OutboundDispatch {
     ];
 
     const response = await this.sender.sendRequest(new Envelope(execute.entity, included), timeoutMs);
-    return new ExecuteResponse(response.root);
+    // Carry the response envelope's `included` through (§3.1). A handler that
+    // originates an EXECUTE and gets back a result REFERENCING entities — CONTENT's
+    // blob and chunk shapes are the motivating case — needs the referents, and
+    // dropping the map here made them unreachable from the only surface a body has.
+    return new ExecuteResponse(response.root, response.included);
   }
 }

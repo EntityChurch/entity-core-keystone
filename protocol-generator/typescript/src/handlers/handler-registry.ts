@@ -1,7 +1,12 @@
 import { type EcfValue } from "../codec/ecf-value.js";
 import { Entity, Ecf, TypeNames } from "../model/index.js";
 import { CapabilityToken } from "../capability/index.js";
-import { type Handler, type PeerServices } from "./handler-abstractions.js";
+import {
+  type Handler,
+  type HandlerOperations,
+  type OperationSpec,
+  type PeerServices,
+} from "./handler-abstractions.js";
 
 /**
  * A resolved dispatch target (§6.6): the peer-relative pattern, the URI suffix, and the
@@ -116,6 +121,26 @@ export class HandlerRegistry {
   }
 }
 
-function operationsMap(operations: readonly string[]): EcfValue {
-  return Ecf.map(...operations.map((op) => [op, Ecf.emptyMap()] as [string, EcfValue]));
+/**
+ * Render §3.7's `operations` map: operation name -> `system/handler/operation-spec`.
+ *
+ * The bare-name form yields an empty spec per operation — both spec fields are
+ * optional, so that is well-formed, and it is what every bootstrap handler produces
+ * (byte-unchanged by the mapped form's introduction). The mapped form publishes the
+ * `input_type` / `output_type` a handler declares, which is the half a code generator
+ * needs and the half this surface could not express.
+ */
+function operationsMap(operations: HandlerOperations): EcfValue {
+  if (Array.isArray(operations)) {
+    return Ecf.map(...(operations as readonly string[]).map((op) => [op, Ecf.emptyMap()] as [string, EcfValue]));
+  }
+  const specs = operations as Readonly<Record<string, OperationSpec>>;
+  return Ecf.map(
+    ...Object.entries(specs).map(([op, spec]) => {
+      const fields: [string, EcfValue][] = [];
+      if (spec.inputType !== undefined) fields.push(["input_type", Ecf.text(spec.inputType)]);
+      if (spec.outputType !== undefined) fields.push(["output_type", Ecf.text(spec.outputType)]);
+      return [op, Ecf.map(...fields)] as [string, EcfValue];
+    }),
+  );
 }

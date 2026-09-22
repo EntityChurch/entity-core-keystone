@@ -20,8 +20,9 @@ import {
   SeedPolicy,
   Status,
   TypeNames,
-  type ExecuteResponse,
+  ExecuteResponse,
 } from "../src/index.js";
+import { type EcfValue } from "../src/codec/ecf-value.js";
 
 /**
  * The keystone HOST-SEAM obligations — the things an extension host needs that core
@@ -285,4 +286,123 @@ test("H7: the evaluator seam is reachable and clearable through the public surfa
   assert.equal(peer.expressionEvaluator, evaluator);
   peer.setExpressionEvaluator(null);
   assert.equal(peer.expressionEvaluator, null);
+});
+
+// ----- The in-process registration surface's §3.7 manifest ----------------------
+//
+// Routed from `entity-system-generator` after building `typescript` x CONTENT: the
+// `Handler` contract declared `operations: readonly string[]`, so `registerHandler`
+// could publish operation NAMES and nothing else, and the extension had to re-write
+// its own interface entity after installing to say what its operations take and
+// return. The WIRE register op (§6.2) has always accepted a full manifest — the
+// in-process surface was the narrower of the two, which is backwards for the surface
+// an extension host is supposed to use.
+
+/** Read a peer-relative path back out of the tree over the wire. */
+async function treeGet(session: PeerSession, path: string): Promise<ExecuteResponse> {
+  return session.execute("system/tree", "get", PeerSession.emptyParams(), new ResourceTarget([path], null), TIMEOUT);
+}
+
+async function publishedOperations(handler: Handler): Promise<EcfValue> {
+  const responder = new Peer({ seedPolicy: SeedPolicy.debugOpen() });
+  responder.registerHandler(handler);
+  const initiator = new Peer();
+  try {
+    const port = await responder.listen(0);
+    const session = await initiator.connect("127.0.0.1", port, TIMEOUT);
+    const resp = await treeGet(session, "system/handler/" + handler.pattern);
+    assert.equal(resp.statusCode, Status.Ok);
+    assert.equal(resp.result.type, TypeNames.HandlerInterface);
+    return Ecf.require(resp.result.data, "operations");
+  } finally {
+    await initiator.dispose();
+    await responder.dispose();
+  }
+}
+
+test("§3.7: registerHandler publishes an operation's input_type and output_type", async () => {
+  const ops = await publishedOperations({
+    pattern: "app/hostseam/manifest",
+    name: "manifest-probe",
+    operations: {
+      put: { inputType: "app/hostseam/manifest/put-request", outputType: "app/hostseam/manifest/put-result" },
+      get: { inputType: "app/hostseam/manifest/get-request" },
+    },
+    handle: (): Promise<HandlerResultType> =>
+      Promise.resolve(HandlerResult.ok(Entity.create(TypeNames.PrimitiveAny, Ecf.emptyMap()))),
+  });
+  const put = Ecf.require(ops, "put");
+  assert.equal(Ecf.requireText(put, "input_type"), "app/hostseam/manifest/put-request");
+  assert.equal(Ecf.requireText(put, "output_type"), "app/hostseam/manifest/put-result");
+  // An operation may declare one side only — both fields are optional in §3.7, and
+  // "absent" must stay distinguishable from "declared as something".
+  const get = Ecf.require(ops, "get");
+  assert.equal(Ecf.requireText(get, "input_type"), "app/hostseam/manifest/get-request");
+  assert.equal(Ecf.optText(get, "output_type"), null);
+});
+
+test("§3.7: the bare-name form is unchanged — an empty spec per operation", async () => {
+  // The control. Every bootstrap handler in this peer uses this form, so if it moved,
+  // the peer's own published interface entities would have moved with it.
+  const ops = await publishedOperations({
+    pattern: "app/hostseam/names",
+    name: "names-probe",
+    operations: ["alpha", "beta"],
+    handle: (): Promise<HandlerResultType> =>
+      Promise.resolve(HandlerResult.ok(Entity.create(TypeNames.PrimitiveAny, Ecf.emptyMap()))),
+  });
+  assert.equal(Ecf.optText(Ecf.require(ops, "alpha"), "input_type"), null);
+  assert.equal(Ecf.optText(Ecf.require(ops, "beta"), "output_type"), null);
+});
+
+// ----- The response envelope's `included` reaches the caller --------------------
+//
+// Also routed from the CONTENT build. A result entity may REFERENCE entities that
+// travel beside it in the envelope's `included` map (§3.1) — which is how CONTENT
+// returns a blob and its chunks. `ExecuteResponse` was constructed from the envelope
+// ROOT alone at every client site, so a consumer using this peer's own client surface
+// received the reference and could never obtain the referent. The server side was
+// correct throughout and no conformance check moved: the oracle reads the envelope
+// directly rather than through this class, which is exactly why nothing caught it.
+
+test("§3.1: a response's included entities reach the caller through PeerSession", async () => {
+  const carried = Entity.create(TypeNames.PrimitiveAny, Ecf.map(["carried", Ecf.text("payload-entity")]));
+  const responder = new Peer({ seedPolicy: SeedPolicy.debugOpen() });
+  responder.registerHandler({
+    pattern: "app/hostseam/included",
+    name: "included-probe",
+    operations: ["fetch"],
+    handle: (): Promise<HandlerResultType> =>
+      // The result REFERENCES the payload by hash; the payload itself rides in `included`.
+      Promise.resolve(
+        HandlerResult.ok(
+          Entity.create(TypeNames.PrimitiveAny, Ecf.map(["ref", Ecf.bytes(carried.contentHash)])),
+          [carried],
+        ),
+      ),
+  });
+  const initiator = new Peer();
+  try {
+    const port = await responder.listen(0);
+    const session = await initiator.connect("127.0.0.1", port, TIMEOUT);
+    const resp = await session.execute("app/hostseam/included", "fetch", PeerSession.emptyParams(), null, TIMEOUT);
+    assert.equal(resp.statusCode, Status.Ok);
+
+    const ref = Ecf.requireBytes(resp.result.data, "ref");
+    const referent = resp.includedByHash(ref);
+    assert.notEqual(referent, undefined, "the referenced entity is reachable from the response view");
+    assert.equal(Ecf.requireText(referent!.data, "carried"), "payload-entity");
+    assert.equal(resp.included.get(carried.contentHashHex)?.contentHashHex, carried.contentHashHex);
+  } finally {
+    await initiator.dispose();
+    await responder.dispose();
+  }
+});
+
+test("§3.1: a response view built from a bare entity has an empty included map", () => {
+  // The control for the above: `build()` has no envelope, so the map is empty rather
+  // than absent — a caller never has to null-check it.
+  const resp = ExecuteResponse.build("req-1", Status.Ok, Entity.create(TypeNames.PrimitiveAny, Ecf.emptyMap()));
+  assert.equal(resp.included.size, 0);
+  assert.equal(resp.includedByHash(new Uint8Array(33)), undefined);
 });

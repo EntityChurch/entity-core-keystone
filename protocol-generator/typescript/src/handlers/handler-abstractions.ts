@@ -201,13 +201,43 @@ export interface ExpressionEvaluator {
   evaluate(request: ExpressionRequest): Promise<HandlerResult | null> | HandlerResult | null;
 }
 
+/**
+ * One operation's declared shape (V7 §3.7 `system/handler/operation-spec`).
+ *
+ * Both fields are optional in the spec, so an operation declared by name alone is
+ * well-formed — but §3.7 makes the naming convention (`{handler-path}/{op}-request`
+ * / `-result`) the thing *"tooling and code generators rely on to derive op shapes
+ * without per-extension knowledge"*, which they cannot do if the shapes are never
+ * published.
+ */
+export interface OperationSpec {
+  /** Canonical input type name, e.g. `system/content/put-request`. */
+  readonly inputType?: string;
+  /** Canonical output type name, e.g. `system/content/put-result`. */
+  readonly outputType?: string;
+}
+
+/**
+ * A handler's declared operations — either bare names, or names mapped to their
+ * §3.7 specs.
+ *
+ * The bare-name form renders each operation as an empty `operation-spec`, which is
+ * what every bootstrap handler here does and is byte-unchanged. The mapped form is
+ * for a handler that knows its own op shapes: without it, `registerHandler` could
+ * publish operation NAMES only, so an extension installed in-process had to re-write
+ * its own interface entity afterwards to say what its operations take and return —
+ * while the *wire* register op (§6.2) has always passed a full manifest through.
+ * The in-process surface was the narrower of the two.
+ */
+export type HandlerOperations = readonly string[] | Readonly<Record<string, OperationSpec>>;
+
 /** A registered handler's executable contract (V7 §6.1). The dispatch target. */
 export interface Handler {
   /** Peer-relative pattern path this handler is registered at. */
   readonly pattern: string;
   /** Human-readable handler name (for the interface entity, §3.7). */
   readonly name: string;
-  /** Operation names this handler declares (for the interface entity). */
-  readonly operations: readonly string[];
+  /** Operations this handler declares (for the interface entity, §3.7). */
+  readonly operations: HandlerOperations;
   handle(ctx: HandlerContext): Promise<HandlerResult>;
 }

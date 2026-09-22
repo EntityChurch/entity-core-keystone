@@ -26,6 +26,7 @@ from typing import Callable
 
 from .model import Entity, Envelope
 from .wire import (
+    MAX_FRAME,
     FrameTooLargeError,
     frame_of_envelope,
     make_execute,
@@ -49,9 +50,13 @@ def _set_nodelay(sock: socket.socket) -> None:
 class TransportIO:
     """A per-connection IO endpoint shared by server + client."""
 
-    def __init__(self, sock: socket.socket) -> None:
+    def __init__(self, sock: socket.socket, max_frame_bytes: int = MAX_FRAME) -> None:
         _set_nodelay(sock)
         self.sock = sock
+        #: The §4.10(a) bound this connection ENFORCES.  It is the same value a
+        #: handler body reads back through ``DispatchCtx.frame_budget()`` — the
+        #: accessor would be a lie if the reader and the enforcer could differ.
+        self.max_frame_bytes = max_frame_bytes
         self._write_lock = threading.Lock()
         self._cond = threading.Condition()
         self._pending: dict[str, Envelope | None] = {}  # request_id -> response
@@ -148,7 +153,7 @@ class TransportIO:
 
         while True:
             try:
-                payload = read_frame(self.sock)
+                payload = read_frame(self.sock, self.max_frame_bytes)
             except FrameTooLargeError:
                 # §4.10(a): rejected before buffering; close + keep the peer
                 # serving other connections (this loop just ends).
@@ -195,9 +200,12 @@ class Listener:
             threading.Thread(target=self._serve, args=(conn_sock,), daemon=True).start()
 
     def _serve(self, conn_sock: socket.socket) -> None:
-        tio = TransportIO(conn_sock)
+        tio = TransportIO(conn_sock, self.peer.max_frame_bytes)
         cn = Conn()
         cn.outbound = tio.outbound  # wire the §6.11 reentry seam to this conn
+        # Stamp the bound this connection enforces onto the per-connection state, so
+        # a handler body reads back the number in force rather than a module default.
+        cn.max_frame_bytes = tio.max_frame_bytes
 
         def on_execute(env: Envelope) -> None:
             # per-request isolation: an adversarial request must NOT tear down the

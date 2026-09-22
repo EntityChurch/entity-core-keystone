@@ -164,12 +164,35 @@ standing `apl` lesson.
 
 **Two live items, both measured. Everything below them is closed and kept for the record.**
 
-**A. The `0.8.2.9` catch-up — bounded, and it is not a regeneration.** Our snapshot is `v0.8.2.3`;
-the protocol is at **`0.8.2.9`**, and arch has consolidated the whole arc into **one vendor step**
-with no further core change queued on this track. No flag day. Measured
-rather than guessed: **1 of 3** normative files moved (`+80/−12`); the go oracle grew **+15 checks,
-13 of them in `catConnectivity` — a core category**; `core_gate_fingerprint` is **unchanged**, so it
-will not warn us, for the fifth time in this exact shape; the executed set goes **758 → 772**.
+**A. The `0.8.2.11` catch-up — bounded on the emit side, UNMEASURED on the accept side.** Our
+snapshot is `v0.8.2.3`; the protocol is at **`0.8.2.11`** — **eight** fourth-component bumps — and
+arch has consolidated the whole arc into **one vendor step**. No flag day for the code-slot half.
+Measured 2026-09-06 rather than guessed: **all 3** normative files moved (`+117/−24` together); the
+go oracle grew **+26 declared checks, 0 removed**, of which **19 land in core categories** —
+11 + 2 in `catConnectivity` and **6 in `catTreeOps`** — attributed by mapping each check to its file
+and each file's category const against `coreProfileCategories`, never by name.
+`core_gate_fingerprint` is **byte-identical across the pin** (`8261a033fe1af56b…`), so it will not
+warn us, **for the sixth time in this exact shape**. The candidate declared digest at go HEAD is
+recorded in `docs/status/HANDOFF-2026-09-06` rather than here: it anchors a sibling commit that moved
+four times on 2026-09-06, so it is a measurement and not yet a pin, and this file publishes.
+
+**The `0.8.2.11` fold is the first ACCEPT-side rule of the arc, and it is why this row is no longer
+just a catch-up.** §6.3 adds a `put` admission ladder — structure, then hash — governing what a peer
+**accepts** rather than what it emits. A submitted entity must be a map with non-empty text `type`,
+present `data`, and a well-formed `content_hash`; any failure is `400 invalid_request`, a hash
+disagreement is `400 hash_mismatch`, and **a peer MUST NOT compute a missing `content_hash` on the
+submitter's behalf** — accepting the two-key `{type, data}` form leaves the peer holding an entity
+under a hash nobody agreed to. **The `tree:put` admission of all 46 peers has never been driven**;
+the row did not exist until `EXTENSION-TREE` v4.4 and had no predicate until v4.5. Arch's instruction
+is explicit and is followed here: *do not size this from the assumption that the cohort is
+conformant.* That exposure is **unmeasured and is not estimated** — the discriminating probe is
+specified in `docs/status/HANDOFF-2026-09-06`, and a source grep will not answer it (our own `37/46`
+count for the 404 slot was inflated by the oracle's vocabulary appearing in each peer's generated
+report).
+
+**The figures in the rest of this paragraph are the previous pin's and are a FLOOR.** They were taken
+at `0.8.2.7` against go `c42bbf3`; the delta above supersedes their scope but the per-defect detail
+still holds.
 Probed on three peers of three lineages (`go`, `rust`, `python`) against an oracle built to scratch —
 a diagnostic, not a census — all three returned an **identical** `772 · 324P/336W/5F/107S`, with all
 five failures among the new connect-path checks and nothing else moving. **Five failures are three
