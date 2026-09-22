@@ -32,6 +32,7 @@ use entity_core_protocol::peer::core::OutboundFn;
 use entity_core_protocol::peer::model::{self, Envelope};
 use entity_core_protocol::peer::wire;
 use entity_core_protocol::peer::{Conn, CreateOptions, Peer};
+use entity_core_protocol::Value;
 
 /// The cohort conformance seed (0x11×32) — yields the same peer_id the Go `entity-peer
 /// --name conformance` produces, so the oracle's expected identity matches. `--name` is
@@ -281,6 +282,42 @@ fn read_one_frame_blocking(io: &Arc<Mutex<ConnIo>>) -> Option<Vec<u8>> {
     }
 }
 
+/// Answer a frame the strict decoder rejected with `400 non_canonical_ecf` (§6.3),
+/// recovering ONLY the `request_id` so the sender can correlate the refusal.
+///
+/// THE PARENT CRATE HAS ANSWERED THIS SINCE AUGUST AND THIS SEAM DID NOT, which is the
+/// whole lesson: the §6.3 sweep landed in `peer/transport.rs`'s read loop, and a thin
+/// transport seam that reimplements the read loop does NOT inherit a read-loop fix by
+/// depending on the crate. Measured on the wire 2026-09-14: this peer answered nothing to
+/// a mis-keyed `included` entry — `Err(_) => continue` refuses the frame (correct) and
+/// satisfies only the first half of §6.3's sentence, leaving the sender blocked until its
+/// own timeout, so a refusal is indistinguishable from a dead peer. §4.9(c)
+/// deliver-or-signal says the same from the other direction.
+///
+/// The frame stays rejected: nothing is built from it and nothing is stored — the salvage
+/// decode exists solely to read back the correlation key. If even the request_id is
+/// unrecoverable there is nobody to answer, which is the one case where silence is all
+/// that is available.
+fn reject_non_canonical(io: &Arc<Mutex<ConnIo>>, payload: &[u8]) {
+    let Ok(v) = entity_core_protocol::cbor::decode_salvage(payload) else {
+        return;
+    };
+    let request_id = match model::map_get(&v, "root")
+        .and_then(|root| model::map_get(root, "data"))
+        .and_then(|data| model::map_get(data, "request_id"))
+    {
+        Some(Value::Text(s)) => s.clone(),
+        _ => return, // no correlatable request_id — nothing to answer
+    };
+    let result = wire::error_result(
+        "non_canonical_ecf",
+        Some("frame is not canonical ECF (section 6.3): CBOR tags are forbidden anywhere in an entity"),
+    );
+    let resp = wire::response_envelope(&request_id, 400, &result);
+    let fd = io.lock().unwrap().fd;
+    let _ = write_frame_oneshot(fd, &resp.encode());
+}
+
 /// The §7a / §6.11 outbound-reentry hook, single-threaded. Sends `req` down the inbound fd
 /// and pumps that fd until the correlated EXECUTE_RESPONSE returns. Inbound requests seen
 /// mid-pump are deferred; unrelated responses are stashed for an outer pump.
@@ -300,7 +337,10 @@ fn pump_outbound(io: &Arc<Mutex<ConnIo>>, req: Envelope) -> Option<Envelope> {
         let frame = read_one_frame_blocking(io)?;
         let env = match model::envelope_of_frame(&frame) {
             Ok(e) => e,
-            Err(_) => continue, // malformed → drop, keep pumping
+            Err(_) => {
+                reject_non_canonical(io, &frame); // §6.3: a refusal is a STATUS, not silence
+                continue;
+            }
         };
         if env.root.typ == RESPONSE_TYPE {
             let erid = env.root.text_field("request_id").unwrap_or("").to_string();
@@ -345,7 +385,12 @@ fn service_readable(peer: &Arc<Peer>, io: &Arc<Mutex<ConnIo>>, conn: &mut Conn) 
                     drop(g);
                     match model::envelope_of_frame(&frame) {
                         Ok(e) => e,
-                        Err(_) => continue, // malformed → drop, keep going
+                        Err(_) => {
+                            // §6.3: a refusal is a STATUS, not silence. The lock is
+                            // already released above, so answering here cannot deadlock.
+                            reject_non_canonical(io, &frame);
+                            continue;
+                        }
                     }
                 }
                 None => match g.deferred.pop_front() {

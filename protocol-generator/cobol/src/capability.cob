@@ -322,6 +322,23 @@ procedure division using lk-buf lk-scopeoff lk-val lk-vallen lk-res.
 end program cap-scope-match.
 
 *> ---- inc-find-hash : entity offset in the included map by 33-byte key
+*>
+*> §3.1 RESOLUTION INTEGRITY. The key is wire-supplied and so is the value, so a
+*> byte compare on the key alone makes the included map an ATTACKER-CHOSEN ADDRESS
+*> BOOK: whoever knows a victim's identity hash files their own system/peer under
+*> it, signs with their own key, and is attributed the victim's authority. Every
+*> signature in that exchange is genuine. Measured on the wire 2026-09-14: this
+*> peer answered 200.
+*>
+*> The bind recomputes content_hash({type,data}) from the candidate entity's own
+*> verbatim bytes and requires it to equal the key. This is mechanism (b) of §1.8
+*> (discard the key, address by validated hash), so a forged address produces a
+*> MISS rather than a new refusal class, and each caller's existing rung answers
+*> the §5.2a row that lookup already owns. 0.8.2.23 ruled that a uniform verdict
+*> MUST NOT be required, which is what makes the per-site answer conformant.
+*>
+*> Fails CLOSED: an entry whose type or data cannot be read, or whose hash cannot
+*> be recomputed, is not a resolution.
 identification division.
 program-id. inc-find-hash.
 data division.
@@ -335,6 +352,17 @@ working-storage section.
 01 klen  pic 9(9) comp-5.
 01 koff  pic 9(9) comp-5.
 01 st    pic s9(9) comp-5.
+01 kn      pic x(32).
+01 knl     pic 9(9) comp-5.
+01 voff    pic 9(9) comp-5.
+01 fnd     pic 9(1).
+01 scan    pic 9(9) comp-5.
+01 toff    pic 9(9) comp-5.
+01 tlen    pic 9(9) comp-5.
+01 doff    pic 9(9) comp-5.
+01 dlen    pic 9(9) comp-5.
+01 hash33  pic x(33).
+01 rc      pic s9(9) comp-5.
 linkage section.
 01 lk-buf    pic x(524288).
 01 lk-incoff pic 9(9) comp-5.
@@ -353,13 +381,43 @@ procedure division using lk-buf lk-incoff lk-hash lk-entoff lk-found.
         move cur to koff
         add klen to cur
         if klen = 33 and lk-buf(koff:33) = lk-hash(1:33)
-            move cur to lk-entoff
-            move 1 to lk-found
+            perform key-binds
+            if lk-found = 1
+                move cur to lk-entoff
+            end-if
             goback
         end-if
         call "cbor-skip" using lk-buf cur st
     end-perform
     goback.
+
+*> Recompute the candidate entity's content_hash and require it to equal the key.
+*> Sets lk-found to 1 only when it binds.
+key-binds.
+    move 0 to lk-found
+    move "type" to kn  move 4 to knl
+    call "cbor-find-key" using lk-buf cur kn knl voff fnd st
+    if fnd = 0 then exit paragraph end-if
+    move voff to scan
+    call "cbor-read-head" using lk-buf scan maj addl arg st
+    move arg to tlen
+    move scan to toff
+    move "data" to kn  move 4 to knl
+    call "cbor-find-key" using lk-buf cur kn knl voff fnd st
+    if fnd = 0 then exit paragraph end-if
+    move voff to doff
+    move voff to scan
+    call "cbor-skip" using lk-buf scan st
+    compute dlen = scan - doff
+    call "ec_content_hash" using
+        by reference lk-buf(toff:tlen) by value tlen
+        by reference lk-buf(doff:dlen) by value dlen
+        by reference hash33
+        returning rc
+    if rc not = 0 then exit paragraph end-if
+    if hash33(1:33) = lk-hash(1:33)
+        move 1 to lk-found
+    end-if.
 end program inc-find-hash.
 
 *> ---- cap-resolve : hash -> entity bytes (included then store) -------

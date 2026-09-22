@@ -34,6 +34,7 @@ function load(rel) {
 
 // The delegated modules named in profile.toml [codec].interop_modules.
 const codec = load("codec/entity-codec.js");
+const canonicalCbor = load("codec/canonical-cbor.js");
 const model = load("model/index.js");
 const identity = load("identity/index.js");
 const capability = load("capability/index.js");
@@ -50,6 +51,19 @@ function decodeEnvelope(payload) {
   return Envelope.decode(payload); // static; canonical CBOR decode + non-canonical reject
 }
 
+/**
+ * Salvage-decode a frame the STRICT decoder has already rejected, to recover its
+ * `request_id` and nothing else (§6.3). Delegated, like every other codec call here:
+ * re-implementing a lenient CBOR reader in the flow graph is exactly what interop
+ * exists to avoid, and a second reader is a second thing to keep in step.
+ *
+ * This may NEVER reach an ingestion path. Its only caller builds a 400 and discards
+ * everything else it read.
+ */
+function decodeSalvage(payload) {
+  return canonicalCbor.decodeSalvage(payload);
+}
+
 /** Encode an Envelope back to canonical CBOR bytes for the frame-codec egress node. */
 function encodeEnvelope(envelope) {
   return envelope.encode(); // instance method; canonical CBOR encode
@@ -59,6 +73,7 @@ module.exports = {
   TS_DIST,
   // delegated codec
   decodeEnvelope,
+  decodeSalvage,
   encodeEnvelope,
   // delegated model/value constructors the authored handler nodes use to build
   // responses (they build LOGIC with these; they do not touch bytes)

@@ -375,9 +375,47 @@ static int cbor_value_slice(const unsigned char *buf, size_t len, size_t pos,
     return 0;
 }
 
+/* §3.1 RESOLUTION INTEGRITY: does the entity at `entpos` actually hash to the key
+ * it is filed under? Recomputes content_hash({type, data}) from the entity's own
+ * verbatim wire bytes and compares. 1 = binds, 0 = does not (or cannot be checked).
+ *
+ * THE KEY IS WIRE-SUPPLIED AND THE VALUE IS WIRE-SUPPLIED, so without this the map
+ * is an attacker-chosen address book. §3.1 states the invariant — "keyed by
+ * content hash" — and 0.8.2.23 §5.2a makes it a per-site obligation: an attacker
+ * who knows a victim's identity hash files their OWN system/peer under it and is
+ * attributed the victim's authority, with a genuine signature over a genuine
+ * public key. Measured on the wire 2026-09-14: this peer answered 200.
+ *
+ * Fails CLOSED on anything it cannot verify (no type, no data, over-long type):
+ * an entry that cannot be checked is not a resolution. */
+static int ec_entity_hash(const char *type, const unsigned char *data, size_t dlen,
+                          unsigned char out33[33]);   /* defined with the writers below */
+static int included_key_binds(const unsigned char *buf, size_t len,
+                              size_t entpos, const unsigned char key33[33])
+{
+    cbor_rd tf, df; char type[128];
+    const unsigned char *dptr; size_t dlen;
+    unsigned char recomputed[33];
+    if (!cbor_map_find(buf, len, entpos, "type", &tf)) return 0;
+    if (cbor_get_text(&tf, type, sizeof type) != 0) return 0;
+    if (!cbor_map_find(buf, len, entpos, "data", &df)) return 0;
+    if (cbor_value_slice(buf, len, df.pos, &dptr, &dlen) != 0) return 0;
+    if (ec_entity_hash(type, dptr, dlen, recomputed) != 0) return 0;
+    return memcmp(recomputed, key33, 33) == 0;
+}
+
 /* Find an entity in envelope.included by its 33-byte content_hash (bstr) key. On
  * hit, leave `out` at the entity map value and return 1; else 0. included keys are
- * byte strings (§3.1), so cbor_map_find (text keys) can't do this. */
+ * byte strings (§3.1), so cbor_map_find (text keys) can't do this.
+ *
+ * The bind is HERE, at the single read site every caller goes through, rather than
+ * as a separate envelope-wide rung. That is mechanism (b) of §1.8 — discard the
+ * key, resolve by validated content_hash — so a forged address does not produce a
+ * new refusal class: the lookup simply MISSES, and each caller's existing rung
+ * answers the §5.2a row that lookup already owns (author absent -> 401
+ * authentication_failed; capability absent -> 403 capability_denied). 0.8.2.23
+ * ruled explicitly that a uniform verdict MUST NOT be required, which is what
+ * makes the cheap fix the conformant one. */
 static int included_find(const unsigned char *buf, size_t len,
                          const unsigned char key33[33], cbor_rd *out)
 {
@@ -391,6 +429,7 @@ static int included_find(const unsigned char *buf, size_t len,
         int kmaj; uint64_t kl;
         if (cbor_head(&r, &kmaj, &kl) != 0) return 0;
         if (kmaj == 2 && kl == 33 && r.pos + 33 <= len && memcmp(r.p + r.pos, key33, 33) == 0) {
+            if (!included_key_binds(buf, len, r.pos + 33, key33)) return 0;   /* §3.1 */
             out->p = buf; out->len = len; out->pos = r.pos + 33; return 1;   /* value */
         }
         r.pos = khead;

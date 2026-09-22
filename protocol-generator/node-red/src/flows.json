@@ -58,11 +58,16 @@
         "t": "eq",
         "v": "invalid",
         "vt": "str"
+      },
+      {
+        "t": "eq",
+        "v": "undecodable",
+        "vt": "str"
       }
     ],
     "checkall": "false",
     "repair": false,
-    "outputs": 3,
+    "outputs": 4,
     "x": 690,
     "y": 100,
     "wires": [
@@ -74,6 +79,9 @@
       ],
       [
         "n-invalid"
+      ],
+      [
+        "n-reject-noncanon"
       ]
     ]
   },
@@ -93,13 +101,29 @@
     "id": "n-invalid",
     "type": "function",
     "z": "tab-ec-peer",
-    "name": "invalid root → drop (§3.3)",
-    "func": "// Neither EXECUTE nor EXECUTE_RESPONSE — the TS peer closes the connection here.\n// Node-RED: drop (a socket-close hook is a follow-up robustness node).\nreturn null;",
+    "name": "root neither EXECUTE nor RESPONSE → drop (§3.3)",
+    "func": "// A frame that DECODED cleanly but whose root is neither EXECUTE nor\n// EXECUTE_RESPONSE. The TS peer closes the connection here; Node-RED drops\n// (a socket-close hook is a follow-up robustness node).\n//\n// THIS NODE USED TO RECEIVE §6.3's CASE TOO, and answered it with `return null`.\n// A frame the strict decoder REJECTS is a different case with a different\n// answer -- see n-reject-noncanon -- and collapsing the two made this peer\n// answer a mis-keyed `included` entry with silence.\nreturn null;",
     "outputs": 0,
     "noerr": 0,
     "x": 950,
     "y": 40,
     "wires": []
+  },
+  {
+    "id": "n-reject-noncanon",
+    "type": "function",
+    "z": "tab-ec-peer",
+    "name": "strict-decode refusal → 400 non_canonical_ecf (§6.3)",
+    "func": "// §6.3: \"Rejection returns `400 non_canonical_ecf`\" -- the frame is refused\n// (the strict decoder already did that) and THAT REFUSAL MUST BE A STATUS, NOT\n// SILENCE. Dropping it satisfies only the first half of the sentence and leaves\n// the sender blocked until its own timeout, so a refusal is indistinguishable\n// from a dead peer. §4.9(c) deliver-or-signal says the same from the other side.\n//\n// The frame stays rejected: the session's builder salvage-decodes it ONLY to\n// recover the request_id, and null means there is nobody to answer.\nconst S = global.get('ec').sessions.get(msg.conn);\nif (!S) return null;\nconst bytes = S.rejectNonCanonicalBytes(msg.payload);\nif (!bytes) return null;\nmsg.payload = bytes;\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 950,
+    "y": 100,
+    "wires": [
+      [
+        "n-listener"
+      ]
+    ]
   },
   {
     "id": "n-dp-begin",

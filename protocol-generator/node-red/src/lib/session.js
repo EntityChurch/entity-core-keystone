@@ -91,18 +91,60 @@ function newSession(kernel, connId, sendFrame) {
 
     // ---- §6.11 demux (n-decode) + reentry routing (n-reentry) ----
 
-    /** §6.11 demux discriminant from raw frame bytes. */
+    /**
+     * §6.11 demux discriminant from raw frame bytes.
+     *
+     * "undecodable" and "invalid" ARE DIFFERENT ANSWERS AND THIS USED TO COLLAPSE THEM.
+     * A frame the strict decoder rejects is §6.3's case and MUST be answered `400
+     * non_canonical_ecf`; a frame that decodes cleanly but whose root is neither EXECUTE
+     * nor EXECUTE_RESPONSE is §3.3's case, which the TS peer closes on. Returning
+     * "invalid" for both sent the first one to a node whose whole body was `return null`,
+     * so this peer answered a mis-keyed `included` entry with silence — measured on the
+     * wire 2026-09-14, status 0 on both B-family cases. §4.9(c) deliver-or-signal.
+     */
     classifyBytes(bytes) {
       let env;
       try {
         env = ec.decodeEnvelope(bytes);
       } catch (_) {
-        return "invalid"; // frame-level malformation (§6.7 Layer 0)
+        return "undecodable"; // §6.3 — refused, and the refusal is a STATUS (see rejectNonCanonicalBytes)
       }
       const t = env.root.type;
       if (t === ec.TypeNames.Execute) return "execute";
       if (t === ec.TypeNames.ExecuteResponse) return "response";
       return "invalid";
+    },
+
+    /**
+     * Build the `400 non_canonical_ecf` answer for a frame the strict decoder rejected
+     * (§6.3), recovering ONLY the `request_id` so the sender can correlate the refusal.
+     * Returns the encoded response bytes, or null when there is nobody to answer.
+     *
+     * The frame stays rejected: nothing is built from it and nothing is stored — the
+     * salvage decode exists solely to read back the correlation key. If even the
+     * request_id is unrecoverable there is no correlation target, which is the one case
+     * where silence is all that is available.
+     */
+    rejectNonCanonicalBytes(bytes) {
+      let requestId;
+      try {
+        const salvaged = ec.decodeSalvage(bytes);
+        const root = ec.Ecf.require(salvaged, "root");
+        requestId = ec.Ecf.requireText(ec.Ecf.require(root, "data"), "request_id");
+      } catch (_) {
+        return null;
+      }
+      try {
+        const response = ec.ExecuteResponse.error(
+          requestId,
+          400,
+          "non_canonical_ecf",
+          "frame is not canonical ECF (\u00a76.3): CBOR tags are forbidden anywhere in an entity",
+        );
+        return ec.encodeEnvelope(new ec.Envelope(response.entity, []));
+      } catch (_) {
+        return null;
+      }
     },
 
     /** Route an inbound EXECUTE_RESPONSE frame to its parked origination (N7). */

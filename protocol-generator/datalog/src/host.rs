@@ -214,7 +214,16 @@ pub fn read_loop(peer: Arc<Peer>, conn: Arc<Mutex<Conn>>, io: Arc<Io>, mut read_
     while let Ok(payload) = read_frame(&mut read_stream) {
         let env = match model::envelope_of_frame(&payload) {
             Ok(e) => e,
-            Err(_) => continue, // malformed → drop, keep reading
+            Err(_) => {
+                // §6.3: "Rejection returns `400 non_canonical_ecf`" — the frame is refused
+                // (correct) and that refusal MUST be a STATUS, not silence. Dropping it
+                // satisfies only the first half of the sentence and leaves the sender
+                // blocked until its own timeout, so a refusal is indistinguishable from a
+                // dead peer; §4.9(c) deliver-or-signal says the same from the other
+                // direction. Answer, then keep reading.
+                reject_non_canonical(&io, &payload);
+                continue;
+            }
         };
         if env.root.typ == "system/protocol/execute/response" {
             io.route_response(env);
@@ -257,6 +266,43 @@ fn dispatch_one(peer: Arc<Peer>, conn: Arc<Mutex<Conn>>, io: Arc<Io>, env: Envel
             let _ = io.write_framed(&resp);
         }
     }
+}
+
+/// Answer a frame the strict decoder rejected with `400 non_canonical_ecf` (§6.3),
+/// recovering ONLY the `request_id` so the sender can correlate the refusal.
+///
+/// The frame stays rejected: nothing is built from it, nothing is stored, and the tag is
+/// never interpreted — the salvage decode exists solely to read back the correlation key.
+/// The envelope and entity-wrapper shapes are fixed maps with no legal tag position, so a
+/// frame whose ONLY defect is a tag inside some entity's `data` still has a structurally
+/// sound root, which is exactly the case worth recovering. If even the request_id is
+/// unrecoverable there is nobody to answer, so the frame is dropped: the one case where
+/// silence is all that is available.
+fn reject_non_canonical(io: &Arc<Io>, payload: &[u8]) {
+    let Ok(v) = cbor_host::decode_salvage(payload) else {
+        return;
+    };
+    let request_id = match cbor_host::map_get(&v, "root")
+        .and_then(|root| cbor_host::map_get(root, "data"))
+        .and_then(|data| cbor_host::map_get(data, "request_id"))
+    {
+        Some(Value::Text(s)) => s.clone(),
+        _ => return, // no correlatable request_id — nothing to answer
+    };
+    let err = Entity::make(
+        "system/protocol/error",
+        cbor_host::map(vec![
+            ("code", cbor_host::text("non_canonical_ecf")),
+            (
+                "message",
+                cbor_host::text(
+                    "frame is not canonical ECF (section 6.3): CBOR tags are forbidden anywhere in an entity",
+                ),
+            ),
+        ]),
+    );
+    let resp = Envelope::new(response_entity(&request_id, 400, &err));
+    let _ = io.write_framed(&resp);
 }
 
 fn response_entity(request_id: &str, status: u64, result: &Entity) -> Entity {

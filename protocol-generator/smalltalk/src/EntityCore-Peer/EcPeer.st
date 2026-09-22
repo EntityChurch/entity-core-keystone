@@ -306,8 +306,52 @@ cls compile: 'serveConn: aConn
 	[ self onFrame: frame from: aConn ]
 		on: Error do: [ :e |
 			"§4.9: swallow ANY frame-handling error (a malformed-frame THROW or a live DNU in the
-			 router/decoder) and keep serving — never let one bad frame crash the event loop."
+			 router/decoder) and keep serving — never let one bad frame crash the event loop.
+			 SWALLOWING IS ONLY HALF OF IT, AND THE OTHER HALF WAS MISSING. ENTITY-CBOR-ENCODING
+			 section 6.3 reads: implementations MUST reject, and rejection RETURNS 400
+			 non_canonical_ecf. Keeping the connection alive satisfies the first clause; answering
+			 nothing leaves the sender blocked until its own timeout, so a refusal is
+			 indistinguishable from a dead peer (section 4.9c deliver-or-signal, from the other
+			 direction). Measured on the wire 2026-09-14: a mis-keyed included entry — which the
+			 envelope decoder correctly refuses at N5 — got silence, and CAP-6a scored 3 of its 6
+			 variants as transport-drop for the same reason.
+			 ONLY a decode/shape error is answered this way. A live DNU in the router is a defect
+			 in this peer, not a claim about the senders bytes, and it keeps the bare swallow."
+			((e isKindOf: EntityCodecError) or: [ e isKindOf: EcWireError ]) ifTrue: [
+				[ self rejectNonCanonical: frame on: aConn ] on: Error do: [ :e2 | ] ].
 			EcPeer traceError ifTrue: [ Stdio stderr << ''[frame-error] ''; << e class name; << '': ''; << (e messageText ifNil: [ '''' ]); << (String with: Character lf); flush ] ]'.
+
+"rejectNonCanonical:on: — answer a frame the STRICT decoder rejected with 400
+ non_canonical_ecf (section 6.3), recovering ONLY the request_id so the sender can correlate
+ the refusal.
+
+ The frame stays rejected: nothing is built from it, nothing is stored, and the tag is never
+ interpreted — the salvage decode exists solely to read back the correlation key. If even the
+ request_id is unrecoverable there is nobody to answer, so the frame is dropped; that is the
+ one case where silence is all that is available."
+cls compile: 'rejectNonCanonical: aPayloadByteArray on: aConn
+	| rid |
+	rid := [ self salvagedRequestIdOf: aPayloadByteArray ] on: Error do: [ :e | nil ].
+	rid isNil ifTrue: [ ^ self ].
+	self sendResponse: (EcHandlerResult
+			error: 400
+			code: ''non_canonical_ecf''
+			message: ''frame is not canonical ECF (section 6.3)'')
+		requestId: rid on: aConn'.
+
+"salvagedRequestIdOf: — envelope -> root (an entity wrapper) -> data -> request_id, read with
+ the lenient decoder. Answers nil at the first shape that is not what it must be."
+cls compile: 'salvagedRequestIdOf: aPayloadByteArray
+	| v root data idv |
+	v := EcCborDecoder decodeSalvage: aPayloadByteArray.
+	(v isKindOf: EcMap) ifFalse: [ ^ nil ].
+	root := v entryAt: ''root''.
+	(root isKindOf: EcMap) ifFalse: [ ^ nil ].
+	data := root entryAt: ''data''.
+	(data isKindOf: EcMap) ifFalse: [ ^ nil ].
+	idv := data entryAt: ''request_id''.
+	(idv isKindOf: EcTextString) ifFalse: [ ^ nil ].
+	^ idv string'.
 
 cls compile: 'closeConnection: aConn
 	aConn close.

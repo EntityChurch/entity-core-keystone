@@ -110,6 +110,9 @@ ec_unsupported_chf:   .asciz "unsupported_content_hash_format"
 	.lcomm ch_resp,  64
 	# §6.3 put-admission scratch: the recomputed content_hash of the SUBMITTED entity.
 	.lcomm ch_admit, 64
+	.lcomm ch_bind,  64              # §3.1 included-key bind: recomputed content_hash
+                                         # (fork-per-connection, so a process global is
+                                         # one frame at a time — same argument as ch_admit)
 	.lcomm b_nonce,  32
 	.lcomm b_ts,     16
 	.lcomm b_hdr,    8
@@ -8744,8 +8747,81 @@ grants_attenuated:
 	addi sp, sp, 64
 	ret
 
+# included_key_binds(a0 = entity value ptr, a1 = key33) -> a0 = 1 if the entity
+# actually hashes to the key it is filed under, else 0.
+#
+# §3.1 RESOLUTION INTEGRITY. The key is wire-supplied and so is the value, so a byte
+# compare on the key alone makes `included` an attacker-chosen address book: whoever
+# knows a victim's identity hash files their OWN system/peer under it, signs with
+# their own key, and is attributed the victim's authority — every signature in the
+# exchange genuine. Measured on the wire 2026-09-14: this peer answered 200.
+#
+# Fails CLOSED on anything it cannot check (no type, no data, FFI error).
+	.type included_key_binds, @function
+# s1=entity, s2=key33, s4=type ptr, s5=type len, s6=data ptr.
+included_key_binds:
+	addi sp, sp, -64
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s4, 32(sp)
+	sd   s5, 40(sp)
+	sd   s6, 48(sp)
+	mv   s0, sp
+	mv   s1, a0                     # entity
+	mv   s2, a1                     # key33
+	# type
+	mv   a0, s1
+	lla  a1, k_type
+	li   a2, 4
+	call map_find
+	beqz a0, .Likb_no
+	call get_text                   # a0=ptr, a2=len
+	mv   s4, a0
+	mv   s5, a2
+	# data (verbatim canonical span)
+	mv   a0, s1
+	lla  a1, k_data
+	li   a2, 4
+	call map_find
+	beqz a0, .Likb_no
+	mv   s6, a0
+	call skip_value                 # a0 = after
+	sub  a3, a0, s6                 # data len
+	mv   a0, s4
+	mv   a1, s5
+	mv   a2, s6
+	lla  a4, ch_bind
+	call ec_content_hash
+	bnez a0, .Likb_no
+	lla  a0, ch_bind
+	mv   a1, s2
+	li   a2, 33
+	call memeq                      # a0 = 1 | 0
+	j    .Likb_ret
+.Likb_no:
+	li   a0, 0
+.Likb_ret:
+	ld   s6, 48(sp)
+	ld   s5, 40(sp)
+	ld   s4, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 64
+	ret
+
 # included_find_by_key(a0 = included map, a1 = key33 ptr) -> a0 = value entity ptr | 0.
-# `included` is keyed by 33-byte content hashes; returns the value whose key bytes match.
+# `included` is keyed by 33-byte content hashes; returns the value whose key bytes match
+# AND which actually hashes to that key (§3.1 — see included_key_binds).
+#
+# The bind is HERE, at the single read site all ten callers go through. That is
+# mechanism (b) of §1.8 — discard the key, resolve by validated content_hash — so a
+# forged address produces a MISS rather than a new refusal class, and each caller's
+# existing rung answers the §5.2a row that lookup already owns. 0.8.2.23 ruled that a
+# uniform verdict MUST NOT be required.
 	.type included_find_by_key, @function
 # s4=key, s2=cursor, s1=remaining pairs, s5=key bytes.
 included_find_by_key:
@@ -8781,6 +8857,10 @@ included_find_by_key:
 	addi s1, s1, -1
 	j    .Lifk_l
 .Lifk_found:
+	mv   a0, s2                     # value entity ptr
+	mv   a1, s4                     # key33
+	call included_key_binds         # §3.1
+	beqz a0, .Lifk_no               # mis-keyed → MISS, not a second refusal class
 	mv   a0, s2                     # value ptr (cursor sits at value)
 	j    .Lifk_ret
 .Lifk_no:

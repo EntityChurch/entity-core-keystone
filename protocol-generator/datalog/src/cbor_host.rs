@@ -147,7 +147,27 @@ pub enum DecodeError {
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Value, DecodeError> {
-    let mut d = Dec { buf: bytes, pos: 0 };
+    let mut d = Dec { buf: bytes, pos: 0, salvage: false };
+    let v = d.value()?;
+    if d.pos != d.buf.len() {
+        return Err(DecodeError::TrailingData);
+    }
+    Ok(v)
+}
+
+/// A LENIENT decode of a frame the STRICT decoder has ALREADY rejected, for one purpose
+/// only: recovering the `request_id` so the refusal can be correlated (§6.3, whose second
+/// half is that rejection returns a STATUS, not silence).
+///
+/// It differs from [`decode`] in exactly one respect — a major-type-6 tag head is SKIPPED
+/// and its content returned, instead of erroring. Everything else stays strict: minimal
+/// heads, key ordering, the float ladder, full-consume.
+///
+/// THIS MAY NEVER REACH AN INGESTION PATH. Its only caller builds a 400 and discards
+/// everything else it read, so the tag is never interpreted and nothing is stored — §6.3's
+/// MUST NOT strip / preserve / interpret rules all still hold.
+pub fn decode_salvage(bytes: &[u8]) -> Result<Value, DecodeError> {
+    let mut d = Dec { buf: bytes, pos: 0, salvage: true };
     let v = d.value()?;
     if d.pos != d.buf.len() {
         return Err(DecodeError::TrailingData);
@@ -158,6 +178,8 @@ pub fn decode(bytes: &[u8]) -> Result<Value, DecodeError> {
 struct Dec<'a> {
     buf: &'a [u8],
     pos: usize,
+    /// Set only by [`decode_salvage`]; unwraps tags instead of rejecting them.
+    salvage: bool,
 }
 
 impl<'a> Dec<'a> {
@@ -228,7 +250,16 @@ impl<'a> Dec<'a> {
                 }
                 Ok(Value::Map(entries))
             }
-            6 => Err(DecodeError::TagRejected), // N2 / §6.3
+            6 => {
+                // N2 / §6.3: tags are forbidden at any nesting depth. Salvage only
+                // (see `decode_salvage`): consume the tag's argument and answer its
+                // CONTENT, so an already-rejected frame can still yield its request_id.
+                if self.salvage {
+                    self.arg(ai)?;
+                    return self.value();
+                }
+                Err(DecodeError::TagRejected)
+            }
             7 => match ai {
                 20 => Ok(Value::Bool(false)),
                 21 => Ok(Value::Bool(true)),

@@ -2714,7 +2714,37 @@
     (call $finish_entity (i32.const 0x4666c0) (i32.const 28) (i32.const 0x463000) (i32.const 11) (i32.sub (global.get $g_wp) (i32.const 0xA08000)))
     )
 
-  ;; find entity in the `included` map at $inclp whose 33-byte key == $key; ptr or 0.
+  ;; §3.1 RESOLUTION INTEGRITY — does the entity at $ent actually hash to the key it is
+  ;; filed under? Recomputes content_hash({type,data}) from the entity's own verbatim
+  ;; bytes into scratch 0x920440 and compares. 1 = binds, 0 = does not (or cannot be
+  ;; checked — this fails CLOSED).
+  ;;
+  ;; The key is wire-supplied and so is the value, so a byte compare on the key alone
+  ;; makes `included` an attacker-chosen address book: whoever knows a victim's identity
+  ;; hash files their OWN system/peer under it, signs with their own key, and is
+  ;; attributed the victim's authority — every signature in the exchange genuine.
+  ;; Measured on the wire 2026-09-14: this peer answered 200.
+  (func $included_key_binds (param $ent i32) (param $key i32) (result i32)
+    (local $t i32) (local $tp i32) (local $tl i32) (local $dp i32)
+    (local.set $t (call $map_find (local.get $ent) (i32.const 0x460020) (i32.const 4)))   ;; type
+    (if (i32.eqz (local.get $t)) (then (return (i32.const 0))))
+    (local.set $tp (call $rd_head (local.get $t)))
+    (local.set $tl (i32.wrap_i64 (global.get $g_arg)))
+    (local.set $dp (call $map_find (local.get $ent) (i32.const 0x460010) (i32.const 4)))  ;; data
+    (if (i32.eqz (local.get $dp)) (then (return (i32.const 0))))
+    (if (call $content_hash (local.get $tp) (local.get $tl) (local.get $dp)
+              (i32.sub (call $skip (local.get $dp)) (local.get $dp)) (i32.const 0x920440))
+      (then (return (i32.const 0))))                                                      ;; non-zero = FFI error
+    (call $streq (i32.const 0x920440) (i32.const 33) (local.get $key) (i32.const 33)))
+
+  ;; find entity in the `included` map at $inclp whose 33-byte key == $key AND which
+  ;; actually hashes to that key (§3.1 — see $included_key_binds); ptr or 0.
+  ;;
+  ;; The bind is HERE, at the single read site all ten callers go through. That is
+  ;; mechanism (b) of §1.8 — discard the key, resolve by validated content_hash — so a
+  ;; forged address produces a MISS rather than a new refusal class, and each caller's
+  ;; existing rung answers the §5.2a row that lookup already owns. 0.8.2.23 ruled that a
+  ;; uniform verdict MUST NOT be required.
   (func $included_find_by_key (param $inclp i32) (param $key i32) (result i32)
     (local $n i64) (local $i i64) (local $p i32) (local $kb i32) (local $kl i32) (local $valp i32)
     (local.set $p (call $rd_head (local.get $inclp)))
@@ -2727,7 +2757,10 @@
       (local.set $valp (i32.add (local.get $kb) (local.get $kl)))
       (if (i32.eq (local.get $kl) (i32.const 33))
         (then (if (call $streq (local.get $kb) (i32.const 33) (local.get $key) (i32.const 33))
-          (then (return (local.get $valp))))))
+          (then
+            (if (call $included_key_binds (local.get $valp) (local.get $key))     ;; §3.1
+              (then (return (local.get $valp))))
+            (return (i32.const 0))))))                ;; mis-keyed → MISS, not a new class
       (local.set $p (call $skip (local.get $valp)))
       (local.set $i (i64.add (local.get $i) (i64.const 1)))
       (br $L)))

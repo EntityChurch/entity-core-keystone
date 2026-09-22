@@ -821,7 +821,22 @@ static void project_cap(const unsigned char *hash33, const unsigned char *buf, s
     }
 }
 
-/* iterate envelope.included (map hash→entity), projecting peers (pass 1) then caps+sigs (pass 2). */
+/* iterate envelope.included (map hash→entity), projecting peers (pass 1) then caps+sigs (pass 2).
+ *
+ * §3.1 RESOLUTION INTEGRITY — THE BIND IS AT THE PROJECTION BOUNDARY, WHICH ON THIS
+ * PEER IS THE ONLY PLACE IT CAN BE. Everything downstream is a SQL query against the
+ * tables built here, so an entity admitted under a key it does not hash to is not one
+ * bad lookup: `project_peer(key, …)` writes the SUBMITTER'S public key into `peer`
+ * under the VICTIM'S hash, and every ladder rung that joins `peer` on that hash then
+ * resolves the impostor with a genuine signature over a genuine key. Measured on the
+ * wire 2026-09-14: this peer answered 200, and it is the worst of the seven for
+ * exactly this reason — the forgery is durable in a table rather than transient in a
+ * call.
+ *
+ * An entry that does not bind is NOT PROJECTED, which is mechanism (b) of §1.8:
+ * the row is simply absent, the ladder's join misses, and `verify_ladder.sql`
+ * answers the §5.2a row that lookup already owns. No new refusal class, no second
+ * site to keep in step with the first. */
 static void project_included(const unsigned char *buf, size_t len, size_t inc_map_pos, int pass) {
     cbor_rd r={buf,len,inc_map_pos}; int maj; uint64_t n;
     if (cbor_head(&r,&maj,&n)!=0 || maj!=5) return;
@@ -836,6 +851,12 @@ static void project_included(const unsigned char *buf, size_t len, size_t inc_ma
         if (have_d && kl==33) {
             const unsigned char *dp=NULL; size_t dl=0;
             if (cbor_value_slice(buf,len,df.pos,&dp,&dl)!=0 || !dp) { if(cbor_skip(&r))return; continue; }
+            /* §3.1: the key MUST equal content_hash({type,data}). Fails closed —
+             * an entry that cannot be recomputed is not projected either. */
+            unsigned char rec[33];
+            if (!etype[0] || ec_entity_hash(etype,dp,dl,rec)!=0 || memcmp(rec,key,33)!=0) {
+                if(cbor_skip(&r))return; continue;
+            }
             if (pass==1 && !strcmp(etype,"system/peer")) project_peer(key,dp,dl);
             if (pass==2 && !strcmp(etype,"system/signature")) project_sig(dp,dl);
             if (pass==2 && !strcmp(etype,"system/capability/token")) project_cap(key,buf,len,df.pos);

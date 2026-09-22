@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run.sh — drive `f68-probe` against a generated peer, with the ONE launch change
+# run.sh — drive `arc-probe` against a generated peer, with the ONE launch change
 # the measurement requires and no others.
 #
 # WHY THIS FILE EXISTS, AND WHY IT IS NOT JUST A COMMAND. AGENTS.md: "a reproduction
@@ -25,23 +25,32 @@
 # REAL, conformant, shipped grant — not a synthetic narrow one authored for this
 # probe. That matters: the result is about the peers as they ship.
 #
-#   tools/f68-probe/run.sh python                 # one peer
-#   tools/f68-probe/run.sh python csharp ocaml    # several
+#   tools/arc-probe/run.sh python                 # one peer
+#   tools/arc-probe/run.sh python csharp ocaml    # several
 #
-# Reports land in output/scratch/f68/<peer>.json (gitignored).
+# NOBUILD is forwarded from the environment when set, because the two wasm peers
+# cannot build under --network=none (their cargo build reaches index.crates.io)
+# and `run-cohort-census.sh` measures them from their committed artifact for the
+# same reason. Forwarding it GENERALLY rather than special-casing those two keeps
+# the decision at the call site, where it is visible — a per-peer build mode
+# buried in the measurement tooling is how the `apl` exclusion survived for
+# months. Before using it, check the artifact against its source:
+#   find <peer>/src ../rust/src -newer <peer>/out/peer.wasm -name '*.rs' | wc -l
+#
+# Reports land in output/scratch/arc/<peer>.json (gitignored).
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 REPO="$PWD"
-OUT="$REPO/output/scratch/f68"
+OUT="$REPO/output/scratch/arc"
 # Two levels below the repo root, because every harness resolves REPO_ROOT as
 # `dirname($0)/../..`. A patched copy at any other depth computes the wrong root
 # and dies on its own `podman-caps.sh` source line.
-PATCHED="$REPO/output/f68-harness"
+PATCHED="$REPO/output/arc-harness"
 mkdir -p "$OUT" "$PATCHED"
 
-[ -x "$REPO/output/s4-oracles/f68-probe" ] || {
-  echo "run.sh: build it first — tools/build-probes.sh f68-probe" >&2; exit 2; }
+[ -x "$REPO/output/s4-oracles/arc-probe" ] || {
+  echo "run.sh: build it first — tools/build-probes.sh arc-probe" >&2; exit 2; }
 
 failed=""
 for peer in "$@"; do
@@ -69,8 +78,8 @@ for peer in "$@"; do
   # whether the script EXECUTES podman, not on whether the word appears — every
   # harness names its own `podman run` line in a header comment.
   if grep -vE '^[[:space:]]*#' "$dst" | grep -q 'podman run'; then
-    ORACLE=/work/output/s4-oracles/f68-probe \
-      bash "$dst" -json-out "/work/output/scratch/f68/$peer.json" -peer "$peer" || true
+    ORACLE=/work/output/s4-oracles/arc-probe ${NOBUILD:+NOBUILD="$NOBUILD"} \
+      bash "$dst" -json-out "/work/output/scratch/arc/$peer.json" -peer "$peer" || true
   else
     # The image-name pattern carries `_` and the capture is guarded, and BOTH
     # halves are the same defect. `asm-x86_64-toolchain` is the one image in the
@@ -90,9 +99,9 @@ for peer in "$@"; do
     . "$REPO/tools/podman-caps.sh"
     podman run $PODMAN_RUN_CAPS --rm --network=none --security-opt label=disable \
       -v "$REPO":/work:Z -w /work \
-      -e ORACLE=/work/output/s4-oracles/f68-probe \
-      "$img" bash "/work/output/f68-harness/$peer-run-s4.sh" \
-      -json-out "/work/output/scratch/f68/$peer.json" -peer "$peer" || true
+      -e ORACLE=/work/output/s4-oracles/arc-probe ${NOBUILD:+-e NOBUILD="$NOBUILD"} \
+      "$img" bash "/work/output/arc-harness/$peer-run-s4.sh" \
+      -json-out "/work/output/scratch/arc/$peer.json" -peer "$peer" || true
   fi
 done
 

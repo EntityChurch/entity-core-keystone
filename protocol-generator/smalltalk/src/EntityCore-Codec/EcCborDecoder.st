@@ -15,7 +15,7 @@ The decoder is a WriteStream-free cursor walker; #cursor advances an index over 
 | pkg cls |
 pkg := 'EntityCore-Codec'.
 
-cls := ((Object << #EcCborDecoder) slots: { #bytes. #pos }; package: pkg; install).
+cls := ((Object << #EcCborDecoder) slots: { #bytes. #pos. #salvage }; package: pkg; install).
 
 cls class compile: 'decode: aByteArray
 	"Public entry: full-consume decode of one canonical value."
@@ -26,6 +26,24 @@ cls class compile: 'decode: aByteArray
 	^ value'.
 
 cls compile: 'setBytes: aByteArray  bytes := aByteArray. pos := 1. ^ self'.
+cls compile: 'setSalvage: aBoolean  salvage := aBoolean. ^ self'.
+
+"decodeSalvage: — a LENIENT decode of a frame the STRICT decoder has ALREADY rejected,
+ used for one purpose only: recovering the request_id so the refusal can be correlated
+ (ENTITY-CBOR-ENCODING section 6.3, whose second half is that rejection returns a STATUS,
+ not silence). It differs from #decode: in exactly one respect — a major-type-6 tag head is
+ SKIPPED and its content returned, instead of signalling. Everything else stays strict:
+ minimal heads, key ordering, the float ladder, full-consume.
+
+ THIS MAY NEVER REACH AN INGESTION PATH. Its only caller builds a 400 and discards
+ everything else it read, so the tag is never interpreted, nothing is stored, and the
+ section 6.3 MUST NOT strip / preserve / interpret rules all still hold."
+cls class compile: 'decodeSalvage: aByteArray
+	| d value |
+	d := self new setBytes: aByteArray; setSalvage: true; yourself.
+	value := d decodeNode.
+	d atEnd ifFalse: [ ^ TruncatedInputError signal: ''trailing bytes'' ].
+	^ value'.
 cls compile: 'atEnd  ^ pos > bytes size'.
 cls compile: 'remaining  ^ bytes size - pos + 1'.
 
@@ -82,7 +100,12 @@ cls compile: 'readHead
 cls compile: 'decodeNode
 	| m0 head major arg |
 	m0 := self nextByte bitShift: -5.
-	m0 = 6 ifTrue: [ ^ TagRejectedError signal: ''major-type-6 tag rejected (N2)'' ].
+	m0 = 6 ifTrue: [
+		"Salvage only (see #decodeSalvage:): consume the tag head and answer its CONTENT,
+		 so an already-rejected frame can still yield its request_id. Never reached from
+		 the strict path, where a tag at any depth kills the whole datum."
+		salvage == true ifTrue: [ self readHead. ^ self decodeNode ].
+		^ TagRejectedError signal: ''major-type-6 tag rejected (N2)'' ].
 	m0 = 7 ifTrue: [ ^ self decodeSimple ].
 	head := self readHead.
 	major := head key. arg := head value.

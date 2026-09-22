@@ -108,6 +108,9 @@ ec_unsupported_chf:   .asciz "unsupported_content_hash_format"
 	.lcomm ch_resp,  64
 	# §6.3 put-admission scratch: the recomputed content_hash of the SUBMITTED entity.
 	.lcomm ch_admit, 64
+	.lcomm ch_bind,  64              # §3.1 included-key bind: recomputed content_hash
+                                         # (fork-per-connection, so a process global is
+                                         # one frame at a time — same argument as ch_admit)
 	.lcomm b_nonce,  32
 	.lcomm b_ts,     16
 	.lcomm b_hdr,    8
@@ -8480,8 +8483,91 @@ grants_attenuated:
 	pop  %rbx
 	ret
 
+# included_key_binds(rdi = entity value ptr, rsi = key33) -> rax = 1 if the entity
+# actually hashes to the key it is filed under, else 0.
+#
+# §3.1 RESOLUTION INTEGRITY. The key is wire-supplied and so is the value, so a byte
+# compare on the key alone makes `included` an attacker-chosen address book: whoever
+# knows a victim's identity hash files their OWN system/peer under it, signs with
+# their own key, and is attributed the victim's authority — every signature in the
+# exchange genuine. Measured on the wire 2026-09-14: this peer answered 200.
+#
+# Fails CLOSED on anything it cannot check (no type, no data, FFI error): an entry
+# that cannot be verified is not a resolution.
+	.type included_key_binds, @function
+included_key_binds:
+	push %rbp
+	mov  %rsp, %rbp
+	push %rbx
+	push %r12
+	push %r13
+	push %r14
+	push %r15
+	and  $-16, %rsp                  # 16B-align the ec_content_hash FFI call OURSELVES.
+                                         # The file's usual "odd number of pushes" idiom
+                                         # couples a callee's correctness to its caller's
+                                         # frame; included_find_by_key pushes four (even),
+                                         # and a future edit there must not be able to
+                                         # silently misalign an FFI call here.
+	mov  %rdi, %rbx                  # entity
+	mov  %rsi, %r15                  # key33
+	# type
+	mov  %rbx, %rdi
+	lea  k_type(%rip), %rsi
+	mov  $4, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Likb_no
+	mov  %rax, %rdi
+	call get_text                    # rax = bytes, rdx = len
+	mov  %rax, %r12
+	mov  %rdx, %r13
+	# data (verbatim canonical span)
+	mov  %rbx, %rdi
+	lea  k_data(%rip), %rsi
+	mov  $4, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Likb_no
+	mov  %rax, %r14
+	mov  %rax, %rdi
+	call skip_value
+	sub  %r14, %rax                  # rax = data len
+	# ec_content_hash(type, tlen, data, dlen, out33)
+	mov  %r12, %rdi
+	mov  %r13, %rsi
+	mov  %r14, %rdx
+	mov  %rax, %rcx
+	lea  ch_bind(%rip), %r8
+	call ec_content_hash
+	test %eax, %eax
+	jnz  .Likb_no
+	lea  ch_bind(%rip), %rdi
+	mov  %r15, %rsi
+	mov  $33, %rcx
+	call memeq                       # rax = 1 | 0
+	jmp  .Likb_ret
+.Likb_no:
+	xor  %eax, %eax
+.Likb_ret:
+	lea  -40(%rbp), %rsp             # undo the alignment AND, restoring the push area
+	pop  %r15
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	pop  %rbp
+	ret
+
 # included_find_by_key(rdi = included map, rsi = key33 ptr) -> rax = value entity ptr | 0.
-# `included` is keyed by 33-byte content hashes; returns the value whose key bytes match.
+# `included` is keyed by 33-byte content hashes; returns the value whose key bytes match
+# AND which actually hashes to that key (§3.1 — see included_key_binds).
+#
+# The bind is HERE, at the single read site all ten callers go through, rather than as a
+# separate envelope-wide rung. That is mechanism (b) of §1.8 — discard the key, resolve
+# by validated content_hash — so a forged address produces a MISS rather than a new
+# refusal class, and each caller's existing rung answers the §5.2a row that lookup
+# already owns. 0.8.2.23 ruled that a uniform verdict MUST NOT be required.
 	.type included_find_by_key, @function
 included_find_by_key:
 	push %rbx
@@ -8514,6 +8600,11 @@ included_find_by_key:
 	dec  %rbx
 	jmp  .Lifk_l
 .Lifk_found:
+	mov  %r12, %rdi                  # value entity ptr
+	mov  %r13, %rsi                  # key33
+	call included_key_binds          # §3.1
+	test %rax, %rax
+	jz   .Lifk_no                    # mis-keyed → MISS, not a second refusal class
 	mov  %r12, %rax                  # value ptr (cursor sits at value)
 	jmp  .Lifk_ret
 .Lifk_no:
