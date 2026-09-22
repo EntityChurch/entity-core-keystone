@@ -12,11 +12,19 @@
 #   podman run $PODMAN_RUN_CAPS --rm --network=none -v "$PWD":/work:Z \
 #     entity-core-keystone/odin-toolchain:latest \
 #     sh /work/protocol-generator/odin/run-s4.sh -profile core \
-#        -json-out /work/protocol-generator/odin/status/CONFORMANCE-REPORT.json
+#        -json-out /work/protocol-generator/odin/the JSON report (scratch by default; see JSON_OUT below)
 #
 # Default args: -profile core (the extension-free categories; the oracle
 # auto-allowlists the §9.0 extension-carve-out skips). ORACLE/PORT/NOBUILD/
 # CONFORMANCE env overrides.
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 
 set -eu
 PORT="${PORT:-7777}"
@@ -115,7 +123,7 @@ done
 head -1 /tmp/host.out
 
 if [ "$#" -eq 0 ]; then
-  set -- -profile core -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
+  set -- -profile core -json-out "${JSON_OUT:-/tmp/ec-s4-odin.json}"
 fi
 # NOTE: the S2 codec report is preserved at status/CONFORMANCE-REPORT-S2.{md,json};
 # CONFORMANCE-REPORT.{md,json} is the S4 validate-peer result (the live gate).

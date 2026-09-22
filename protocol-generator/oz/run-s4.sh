@@ -15,6 +15,14 @@
 #
 # Default args: -profile core. Pass args to override (e.g. a single -category).
 # ORACLE / PORT / VALIDATE / ORACLE_TIMEOUT are env overrides.
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 set -eu
 
 if [ ! -d /work/protocol-generator/oz ]; then
@@ -120,7 +128,7 @@ head -1 /tmp/host.out
 # each request is several IPC round-trips — the same budget-exhaustion cascade the
 # Rexx/dart/prolog peers widen for).
 if [ "$#" -eq 0 ]; then
-  set -- -profile core -timeout "${ORACLE_TIMEOUT:-10m}" -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
+  set -- -profile core -timeout "${ORACLE_TIMEOUT:-10m}" -json-out "${JSON_OUT:-/tmp/ec-s4-oz.json}"
 fi
 
 . /work/protocol-generator/shared/tools/refpeer.sh

@@ -22,6 +22,14 @@
 # ORACLE_TIMEOUT overrides the run budget.
 #
 # When NOT already inside the container (no /work), re-exec self under capped podman.
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 set -eu
 
 if [ ! -d /work/protocol-generator/fortran ]; then
@@ -134,7 +142,7 @@ head -1 /tmp/host.out
 # wall-clock). Fortran is compiled and sub-ms/op, so a modest 5m budget is ample even for
 # concurrency.t2_1's ~10k-request flood. Override with ORACLE_TIMEOUT.
 if [ "$#" -eq 0 ]; then
-  set -- -profile core -timeout "${ORACLE_TIMEOUT:-5m}" -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
+  set -- -profile core -timeout "${ORACLE_TIMEOUT:-5m}" -json-out "${JSON_OUT:-/tmp/ec-s4-fortran.json}"
 fi
 
 . /work/protocol-generator/shared/tools/refpeer.sh

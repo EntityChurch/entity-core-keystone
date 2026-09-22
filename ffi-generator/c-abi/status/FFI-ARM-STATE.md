@@ -108,6 +108,49 @@ goes, §4.1 must **declare the failure set** so the next impl is not a third opi
 failure-set divergence cannot pass a green run again; (c) audit the remaining codec consumers
 for the unchecked-return-code shape.
 
+### Progress 2026-09-08 — (a) and (b) DONE, (c) MEASURED, (d) open
+
+**(a) THE SPEC SETTLES IT, AND THE SENTENCE WAS ALREADY THERE.** This entry called the choice
+"a genuine design question, not a bug to patch", and that was true of the C-ABI spec, which
+declared no failure set. It is not true of the protocol: `ENTITY-CBOR-ENCODING.md` **§9.2
+*Decoder Requirements* item 5 — "Validate UTF-8 in text strings"** — is a normative MUST, and
+an entity's `type` is a CBOR major-3 text string (§9.1's table: *"Length in bytes (UTF-8)"*).
+ECF carrying a non-UTF-8 `type` is bytes no conformant decoder may accept, so an encoder that
+produces them has produced invalid ECF and a content hash over it addresses nothing. **Rust's
+refusal is the conformant reading.** Declared in `spec/ENTITY-CODEC-C-ABI-V1.md` **§4.1b**,
+with the failure set, the *"on non-`EC_OK` the output buffer is UNSPECIFIED and MUST NOT be
+read"* rule, and a four-step migration.
+
+**(b) THE DIFFERENTIAL DRIVES REFUSALS NOW.** `abi_differential.c` gained an 8-case
+`ec_content_hash` refusal block asserting **same rc on both impls** (not "both refuse"), and
+`run-ffi-gate.sh` prints the divergence count and each divergent case **every run**. Measured
+at that gate: probes **101 → 104**, and the same **5 of 8** divergences reproduce
+independently of the one-off probe. It **reports** rather than fails, on purpose and per the
+migration: the C impl may not start refusing until step (c) is closed, or a silently-hashed
+input becomes an unwritten buffer compared as a hash.
+
+**(c) THE C-FAMILY CONSUMERS ARE CLEAN; THE THREE ISA PEERS ARE NOT, AND THE COUNT IS 28
+EACH.** Every `.c`/`.h`/`.cpp`/`.inc` call site across the 18 linking peers binds or tests the
+return code — the 13 hits an unchecked-return scan reports are `extern` **declarations** and
+one deliberate abort-stub, not calls. In assembly the picture is different: `asm-x86_64`,
+`asm-arm64` and `riscv64` each make **28 `ec_content_hash` calls with no return-code test
+within four instructions**. `admit_put` was the 29th and is fixed (2026-09-07).
+
+**Do not read that 28 as 28 vulnerabilities, and do not read it as harmless either.** The
+majority are AUTHORING sites where `type` is a compile-time constant string the peer supplies
+(a response entity, a token, a signature) — a non-UTF-8 `type` is unreachable there and the
+output buffer is the peer's own. The security-relevant subset is the sites whose `type` comes
+off the **wire**, which is the §6.3 admit path, and that is the one already closed. The rest
+are defence-in-depth against a *capacity* failure (`EC_OUT_OF_SPACE` from the native
+`codec.s`), which is the exact shape that produced `400 hash_mismatch` — an accusation about
+the submitter for a refusal that was ours.
+
+**(d) OPEN, and deliberately not done at the end of a long session:** check the return at the
+84 asm sites (28 × 3, authored once and ported twice), then flip the C impl to refuse and turn
+the differential's refusal block from `report` to `bad`. That is a behaviour change for 34
+linking peers and needs its own measurement cycle — a full census before and after — not a
+tail-end edit.
+
 ## One thing that is NOT a defect, recorded so it is not "fixed" twice
 
 `ec_entity_original_bytes` is exported by C and absent from Rust. **Spec §4.1 says MAY /

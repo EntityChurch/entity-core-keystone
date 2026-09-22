@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""harness-gate — two structural invariants of every `protocol-generator/*/run-s4.sh`.
+"""harness-gate — three structural invariants of every `protocol-generator/*/run-s4.sh`.
 
 A. TEARDOWN MUST WAIT, not merely signal.
 B. THE CALLER ARGS MUST REACH THE ORACLE.
+C. A BARE RUN MUST NOT DEFAULT ITS REPORT ONTO THE TRACKED ONE.
 
 Both were cohort-wide defects found on 2026-09-02, both were invisible to every other
 gate in the repo, and both fail in the direction where the harness still reports success.
@@ -78,6 +79,24 @@ twice (`check-set-gate`'s Path.stem collision, `coherence-gate`'s banner pattern
 the peer count is asserted against the roster, not merely reported.
 
 Exit 0 clean, 1 on any failure.  `--self-test` runs the regression suite.
+
+────────────────────────────────────────────────────────────────────────────────────
+C. A BARE RUN MUST NOT DEFAULT ITS REPORT ONTO THE TRACKED ONE
+
+`run-s4.sh` with no arguments used to default `-json-out` to this peer's TRACKED
+`status/CONFORMANCE-REPORT.json` — the signed-off record `CONFORMANCE-MATRIX.md`
+publishes and `check-set-gate --tracked` gates. So a human diagnostic run silently
+republished a number nobody had reviewed, and it fired on exactly the invocation where
+overwriting is most wrong: the census always passes an explicit destination, so it is
+only the by-hand run that was affected. Found 2026-09-04 when a `t1_1_concurrent_demux`
+flake was banked over a committed PASS; closed cohort-wide 2026-09-08 (44 harnesses).
+
+This is invariant B in a second shape. There the harness IGNORED the caller's args;
+here it DEFAULTED to the published path — same consequence, opposite mechanism.
+
+WHAT IT CHECKS: no harness may name `status/CONFORMANCE-REPORT.json` anywhere in its
+CODE (comments are free, and several explain the rule). Writing the tracked report is
+deliberate: `tools/run-cohort-census.sh --to-status <peer>`, or an explicit `JSON_OUT=`.
 """
 import pathlib
 import re
@@ -163,6 +182,14 @@ def check(path, seen=None):
             return ["re-execs into a container but the block is not terminated with "
                     "argv forwarding (`' bash \"$@\"`) — \"$@\" is empty inside it"]
         seen["reexec_argv"] = seen.get("reexec_argv", 0) + 1
+
+    # C. a bare run must not default onto the tracked report.
+    tracked = [l for l in code if "status/CONFORMANCE-REPORT.json" in l]
+    if tracked:
+        return ["names the TRACKED status/CONFORMANCE-REPORT.json in code — a bare run "
+                "would republish a signed-off number; default to scratch and let "
+                "`--to-status` or an explicit JSON_OUT= write it: " + tracked[0].strip()[:90]]
+    seen["scratch_default"] = seen.get("scratch_default", 0) + 1
     return []
 
 
@@ -195,9 +222,11 @@ def run(quiet=False, pg=PG):
         return 1
     # Every anchor a check depends on is counted, and the counts are asserted. A regex
     # that silently matched nothing would otherwise print this same OK line.
-    if seen.get("wait") != len(peers) or seen.get("forwards") != len(peers):
+    if (seen.get("wait") != len(peers) or seen.get("forwards") != len(peers)
+            or seen.get("scratch_default") != len(peers)):
         print(f"harness-gate: ERROR anchors not found on every harness — "
-              f"waited={seen.get('wait', 0)} forwarded={seen.get('forwards', 0)} of "
+              f"waited={seen.get('wait', 0)} forwarded={seen.get('forwards', 0)} "
+              f"scratch_default={seen.get('scratch_default', 0)} of "
               f"{len(peers)}", file=sys.stderr)
         return 1
     if not seen.get("reexec"):
@@ -207,7 +236,9 @@ def run(quiet=False, pg=PG):
     if not quiet:
         print(f"harness-gate: OK — {seen['wait']} harnesses wait for the peer to exit, "
               f"{seen['forwards']} forward caller args to the oracle, "
-              f"{seen['reexec_argv']} of those hand argv across a container boundary")
+              f"{seen['reexec_argv']} of those hand argv across a container boundary, "
+              f"{seen['scratch_default']} default their report to scratch not to the "
+              f"tracked one")
     return 0
 
 
@@ -246,11 +277,25 @@ def self_test():
 
     # B. caller args. `go` is a plain harness, `java` re-execs into podman, and the
     # two fail through different mechanisms — plant on both, not on whichever is handy.
+    # The literal here must track the harness. It did NOT: `-reference-peer` was folded
+    # into every harness on 2026-09-03, which put `$REFPEER_FLAG` between the address and
+    # `"$@"`, and this plant silently stopped matching -- so from that day the self-test
+    # reported `plant changed nothing` and FAILED, and nothing noticed because `make lint`
+    # ran the gate and not its regression suite. Both halves fixed 2026-09-08: the plant
+    # is anchored on the part that cannot drift, and `--self-test` is now in `make lint`.
     attempt("hardcode the oracle args instead of forwarding \"$@\"", "go",
-            lambda s: s.replace('"$ORACLE" -addr "127.0.0.1:$PORT" "$@"',
-                                '"$ORACLE" -addr "127.0.0.1:$PORT" -profile core'))
+            lambda s: s.replace('$REFPEER_FLAG "$@"', '$REFPEER_FLAG -profile core'))
     attempt("re-exec block stops forwarding argv across the boundary", "java",
             lambda s: s.replace('  \' bash "$@"\n', "  '\n"))
+
+    # C. the tracked-report default. Two victims for the two forms the default takes:
+    # `go` sets it inline in the `set --` line, `ada` via a JSON_OUT= assignment.
+    attempt("default -json-out back onto the TRACKED report (inline form)", "go",
+            lambda s: s.replace('-json-out "${JSON_OUT:-/tmp/ec-s4-go.json}"',
+                                '-json-out "$PROJ/status/CONFORMANCE-REPORT.json"'))
+    attempt("default -json-out back onto the TRACKED report (JSON_OUT= form)", "ada",
+            lambda s: s.replace('JSON_OUT="${JSON_OUT:-/tmp/ec-s4-ada.json}"',
+                                'JSON_OUT="/work/protocol-generator/ada/status/CONFORMANCE-REPORT.json"'))
 
     attempt("unmodified tree is accepted", "go", lambda s: s + "\n# touched\n",
             expect_fail=False)

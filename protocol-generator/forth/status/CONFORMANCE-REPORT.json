@@ -1,14 +1,14 @@
 {
   "peer_addr": "127.0.0.1:7777",
   "peer_id": "2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg",
-  "timestamp": "2026-09-03T21:55:20Z",
+  "timestamp": "2026-09-08T19:34:27Z",
   "summary": {
-    "total": 758,
-    "passed": 316,
+    "total": 778,
+    "passed": 334,
     "warned": 337,
     "failed": 0,
-    "skipped": 105,
-    "elapsed_ms": 13629,
+    "skipped": 107,
+    "elapsed_ms": 14518,
     "self_checks": 4
   },
   "checks": [
@@ -204,11 +204,99 @@
     },
     {
       "category": "connectivity",
+      "name": "connect_authenticate_bad_signature",
+      "severity": "PASS",
+      "message": "an authenticate with an invalid (non-verifying) signature rejected with (401 authentication_failed) (§4.7 satisfied)",
+      "spec_ref": "V7 §4.7",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "connectivity",
+      "name": "connect_authenticate_identity_mismatch",
+      "severity": "PASS",
+      "message": "an authenticate whose peer_id is not derived from its (validly-signed) public_key rejected with (401 identity_mismatch) (§4.7 satisfied)",
+      "spec_ref": "V7 §4.7",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "connectivity",
+      "name": "connect_second_hello_after_established",
+      "severity": "PASS",
+      "message": "a second hello after the handshake has completed rejected with (409 connection_already_established) (§4.7 satisfied)",
+      "spec_ref": "V7 §4.7",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "connectivity",
+      "name": "connect_incompatible_protocol",
+      "severity": "PASS",
+      "message": "a hello advertising only an unsupported protocol version rejected with (400 incompatible_protocol) (§4.7 satisfied)",
+      "spec_ref": "V7 §4.7",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "connectivity",
+      "name": "connect_unknown_operation",
+      "severity": "PASS",
+      "message": "a connect EXECUTE naming an unknown operation rejected with (400 invalid_request) (§4.7 satisfied)",
+      "spec_ref": "V7 §4.7",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "connectivity",
+      "name": "connect_unknown_operation_established",
+      "severity": "PASS",
+      "message": "an unknown connect operation on an ESTABLISHED connection rejected with (400 invalid_request) (§4.7 satisfied)",
+      "spec_ref": "V7 §4.7",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "connectivity",
+      "name": "connect_absent_protocols",
+      "severity": "PASS",
+      "message": "a hello carrying an empty protocols set rejected with (400 invalid_request) (§4.7 satisfied)",
+      "spec_ref": "V7 §4.7",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "connectivity",
+      "name": "connect_second_hello_mid_handshake",
+      "severity": "PASS",
+      "message": "a second hello mid-handshake (before authenticate) rejected with (409 connection_sequence_error) (§4.7 satisfied)",
+      "spec_ref": "V7 §4.7",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "connectivity",
+      "name": "connect_ping_before_hello",
+      "severity": "SKIP",
+      "message": "peer does not serve §5.1 ping once established, so a pre-hello ping is an UNKNOWN operation to it → row 10's 400 invalid_request, not the 409 this row asserts; the 'implemented op, forbidden state' discrimination does not apply.",
+      "spec_ref": "V7 §4.7",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "connectivity",
+      "name": "connect_authenticate_peer_id_mismatch_hello",
+      "severity": "PASS",
+      "message": "an authenticate whose (valid) peer_id differs from the hello's peer_id rejected with (401 identity_mismatch) (§4.7 satisfied)",
+      "spec_ref": "V7 §4.7",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "connectivity",
+      "name": "execute_before_established_refused",
+      "severity": "PASS",
+      "message": "a non-connect EXECUTE (system/tree:get) before the handshake completes rejected with (401 authentication_failed) (§4.7 satisfied)",
+      "spec_ref": "V7 §4.7",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "connectivity",
       "name": "request_id_echoed",
       "severity": "PASS",
       "message": "request_id echoed on EXECUTE_RESPONSE (\"rid-echo-probe-7f3a2c91\", status 200)",
       "spec_ref": "V7 §6.11(b) / §3.3:742 (request_id correlation)",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "connectivity",
@@ -217,6 +305,22 @@
       "message": "outside --profile core (NETWORK-extension keepalive, V7 §9.0)",
       "spec_ref": "EXTENSION-NETWORK §5.1/§12.1 (Amendment 12 rung 2)",
       "elapsed_ms": 0
+    },
+    {
+      "category": "connectivity",
+      "name": "unsupported_operation_on_registered_handler",
+      "severity": "PASS",
+      "message": "unknown op on registered handler → 501/unsupported_operation (control get=200/\"\")",
+      "spec_ref": "V7 §3.3 / §9.1 (0.8.2.7)",
+      "elapsed_ms": 1
+    },
+    {
+      "category": "connectivity",
+      "name": "handler_not_found_on_unregistered_path",
+      "severity": "PASS",
+      "message": "no handler at local path → 404/handler_not_found (registered-path control=501/\"unsupported_operation\" discriminates)",
+      "spec_ref": "V7 §3.3 / §9.1 (0.8.2.7)",
+      "elapsed_ms": 1
     },
     {
       "category": "encoding",
@@ -392,7 +496,7 @@
       "severity": "WARN",
       "message": "compute/if absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 0
+      "elapsed_ms": 1
     },
     {
       "category": "type_system",
@@ -552,7 +656,7 @@
       "severity": "WARN",
       "message": "compute/numeric-cast absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 0
+      "elapsed_ms": 1
     },
     {
       "category": "type_system",
@@ -600,7 +704,7 @@
       "severity": "PASS",
       "message": "fetched system/type/core/entity",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 0
+      "elapsed_ms": 1
     },
     {
       "category": "type_system",
@@ -712,7 +816,7 @@
       "severity": "PASS",
       "message": "fetched system/type/primitive/int",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 0
+      "elapsed_ms": 1
     },
     {
       "category": "type_system",
@@ -920,7 +1024,7 @@
       "severity": "PASS",
       "message": "fetched system/type/system/capability/request",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1176,7 +1280,7 @@
       "severity": "WARN",
       "message": "system/compute/fold-args absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1192,7 +1296,7 @@
       "severity": "WARN",
       "message": "system/compute/group-by-args absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1208,7 +1312,7 @@
       "severity": "WARN",
       "message": "system/compute/install-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1224,7 +1328,7 @@
       "severity": "WARN",
       "message": "system/compute/install-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1240,7 +1344,7 @@
       "severity": "WARN",
       "message": "system/compute/map-args absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1256,7 +1360,7 @@
       "severity": "WARN",
       "message": "system/compute/range-args absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1272,7 +1376,7 @@
       "severity": "WARN",
       "message": "system/compute/scope-binding absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1288,7 +1392,7 @@
       "severity": "WARN",
       "message": "system/compute/store-args absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1304,7 +1408,7 @@
       "severity": "WARN",
       "message": "system/compute/subgraph absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1320,7 +1424,7 @@
       "severity": "WARN",
       "message": "system/connection absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1336,7 +1440,7 @@
       "severity": "WARN",
       "message": "system/content/blob absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1352,7 +1456,7 @@
       "severity": "WARN",
       "message": "system/content/chunk absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1368,7 +1472,7 @@
       "severity": "WARN",
       "message": "system/content/descriptor absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1384,7 +1488,7 @@
       "severity": "WARN",
       "message": "system/continuation absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1400,7 +1504,7 @@
       "severity": "WARN",
       "message": "system/continuation/abandon-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1416,7 +1520,7 @@
       "severity": "WARN",
       "message": "system/continuation/advance-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1432,7 +1536,7 @@
       "severity": "WARN",
       "message": "system/continuation/install-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1448,7 +1552,7 @@
       "severity": "WARN",
       "message": "system/continuation/join absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1464,7 +1568,7 @@
       "severity": "WARN",
       "message": "system/continuation/resume-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1480,7 +1584,7 @@
       "severity": "WARN",
       "message": "system/continuation/suspended absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1496,7 +1600,7 @@
       "severity": "WARN",
       "message": "system/continuation/transform absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1512,7 +1616,7 @@
       "severity": "WARN",
       "message": "system/continuation/transform-op absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1528,7 +1632,7 @@
       "severity": "PASS",
       "message": "fetched system/type/system/deletion-marker",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1544,7 +1648,7 @@
       "severity": "PASS",
       "message": "fetched system/type/system/delivery-spec",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1560,7 +1664,7 @@
       "severity": "WARN",
       "message": "system/discovery/announce-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1576,7 +1680,7 @@
       "severity": "WARN",
       "message": "system/discovery/announce-stop-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -1592,7 +1696,7 @@
       "severity": "WARN",
       "message": "system/discovery/candidate absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -2744,7 +2848,7 @@
       "severity": "WARN",
       "message": "system/registry/local-name/update-transports-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -3840,7 +3944,7 @@
       "severity": "PASS",
       "message": "system/handler/ listing returned 1 entries",
       "spec_ref": "V7 §6",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "handlers",
@@ -3976,7 +4080,7 @@
       "severity": "PASS",
       "message": "handler \"capability\" interface entity present",
       "spec_ref": "V7 §4",
-      "elapsed_ms": 2
+      "elapsed_ms": 0
     },
     {
       "category": "handlers",
@@ -4296,7 +4400,7 @@
       "severity": "PASS",
       "message": "entity-native echo body bound at app/validate/core-register/echo/expr",
       "spec_ref": "V7 §9.4, PROPOSAL v7.74 §10.1 step 1",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "handlers",
@@ -4342,7 +4446,7 @@
       "category": "handlers",
       "name": "core_register_grant_signature_at_invariant_path",
       "severity": "PASS",
-      "message": "grant signature at system/signature/00a954c4856276e4bf0cc36f580f543580692c1ca06503a87ba46946185410f5d8 targets grant.content_hash",
+      "message": "grant signature at system/signature/00e5b2c1d61f65eb05bc1bdd21e45dbb2ef16a33ea97673fa252e6db734b5fd551 targets grant.content_hash",
       "spec_ref": "V7 §3.5, v7.74 v0.4 §3.4; PROPOSAL v7.74 §10.1 step 4",
       "elapsed_ms": 0
     },
@@ -4358,7 +4462,7 @@
       "category": "handlers",
       "name": "core_register_unregister_signature_removed",
       "severity": "PASS",
-      "message": "signature at system/signature/00a954c4856276e4bf0cc36f580f543580692c1ca06503a87ba46946185410f5d8 removed by unregister",
+      "message": "signature at system/signature/00e5b2c1d61f65eb05bc1bdd21e45dbb2ef16a33ea97673fa252e6db734b5fd551 removed by unregister",
       "spec_ref": "v7.74 v0.4 §3.4 writer/unregister symmetry; PROPOSAL v7.74 §10.1 unregister teardown",
       "elapsed_ms": 0
     },
@@ -4390,7 +4494,7 @@
       "category": "capability",
       "name": "request_returns_grant",
       "severity": "PASS",
-      "message": "issued token ecf-sha256:67deef71a63e834f3bb90c23be3a5bbb725fcb39a5351e7a27919d6ecae70e75",
+      "message": "issued token ecf-sha256:16ccbb12d352a908366cab486b24558998501418b696cbcab95f6b1b853f9cfd",
       "spec_ref": "V7 §6.2 request → system/capability/grant",
       "elapsed_ms": 1
     },
@@ -4446,7 +4550,7 @@
       "category": "capability",
       "name": "configure_writes_policy_entry",
       "severity": "PASS",
-      "message": "configure wrote policy-entry at system/capability/policy/00e48e99b82ed77f7d7d3a7862596fa67893b62f176c0c4e7360649abf9d53cac1",
+      "message": "configure wrote policy-entry at system/capability/policy/00f56b4874cc96a88087a10408017697e586f0980cdd1b181a8fa9daa2182145ca",
       "spec_ref": "V7 v7.62 §6.2 §4 + closeout F8 — configure → entry bound at system/capability/policy/{peer_pattern}; fallback segment is literal \"default\" (renamed from \"*\")",
       "elapsed_ms": 1
     },
@@ -4462,7 +4566,7 @@
       "category": "capability",
       "name": "revoke_happy_path_writes_marker",
       "severity": "PASS",
-      "message": "revoke wrote marker at system/capability/revocations/0067deef71a63e834f3bb90c23be3a5bbb725fcb39a5351e7a27919d6ecae70e75 with revoked_at=1788472520236",
+      "message": "revoke wrote marker at system/capability/revocations/0016ccbb12d352a908366cab486b24558998501418b696cbcab95f6b1b853f9cfd with revoked_at=1788896068120",
       "spec_ref": "V7 v7.62 §5 + §6 — revoke writes marker at system/capability/revocations/{cap_hash_hex} with handler-set revoked_at",
       "elapsed_ms": 1
     },
@@ -4488,7 +4592,7 @@
       "severity": "PASS",
       "message": "peer stored the revocation marker at the lowercase content-hash-hex segment and not the uppercase one — segment is lowercase and case-sensitive (RT-14 §3.5)",
       "spec_ref": "V7 §3.5 / RT-14 — a peer-emitted content-hash-hex tree path segment MUST be lowercase (format-code byte included); an uppercase segment self-loopbacks but fails cross-peer",
-      "elapsed_ms": 2
+      "elapsed_ms": 1
     },
     {
       "category": "capability",
@@ -4502,7 +4606,7 @@
       "category": "capability",
       "name": "request_mint_temporal_ceiling",
       "severity": "PASS",
-      "message": "over-long request clamped to the caller cap exactly (expires_at=1788476120241) and returned 200 — CAP-5",
+      "message": "over-long request clamped to the caller cap exactly (expires_at=1788899668124) and returned 200 — CAP-5",
       "spec_ref": "V7 §6.2/§5.6 CAP-5 (0.8.1) — request over-long ttl_ms mints a CLAMPED token: 200 AND expires_at == MIN_DEFINED exactly (not a 403, not a `\u003c=` check)",
       "elapsed_ms": 1
     },
@@ -4512,7 +4616,7 @@
       "severity": "PASS",
       "message": "ttl_ms:0 mints an immediately-expired token (created_at, before the caller cap) and an overflowing ttl_ms drops out leaving the caller-cap ceiling — CAP-6; no-ceiling overflow minted NO expiry (term absent, not huge-finite/saturated)",
       "spec_ref": "V7 §5.6 CAP-6 (0.8.1) — ttl_ms:0 = expire immediately (created_at, before caller cap); overflow term drops out (no wrap, no saturate)",
-      "elapsed_ms": 4
+      "elapsed_ms": 3
     },
     {
       "category": "capability",
@@ -4624,7 +4728,7 @@
       "severity": "PASS",
       "message": "listing key is bare \"item\" — no namespace leak",
       "spec_ref": "V7 §1.4",
-      "elapsed_ms": 1
+      "elapsed_ms": 2
     },
     {
       "category": "tree_operations",
@@ -4952,7 +5056,7 @@
       "severity": "WARN",
       "message": "PUT deletion-marker → GET returns 404 (impl treats marker as full removal); listing omit is correct (v7.72 §9.5a CORE-TREE-DELETE-1 passes the listing-filter MUST; the GET-after-delete shape is open across impls per v7.70 §1.2 erratum)",
       "spec_ref": "V7 v7.72 §9.5a (CORE-TREE-DELETE-1) — system/deletion-marker semantics",
-      "elapsed_ms": 6
+      "elapsed_ms": 5
     },
     {
       "category": "tree_operations",
@@ -4977,6 +5081,54 @@
       "message": "failed to remove test entity (non-critical)",
       "spec_ref": "harness teardown (not a spec vector) — removes the category's test entities under system/validate/tree-ops/ so a re-run starts clean; WARNs rather than FAILs, since leftover state is a hygiene problem, not a conformance one",
       "elapsed_ms": 0
+    },
+    {
+      "category": "tree_operations",
+      "name": "put_error_control_valid_200",
+      "severity": "PASS",
+      "message": "valid put → 200 (control: the error probes below are attributable to their inputs)",
+      "spec_ref": "V7 §3.3 / EXTENSION-TREE Appendix A (v4.4)",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "tree_operations",
+      "name": "put_undecodable_400_invalid_request",
+      "severity": "PASS",
+      "message": "non-decoding entity → 400/invalid_request",
+      "spec_ref": "V7 §3.3 / EXTENSION-TREE Appendix A (v4.4)",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "tree_operations",
+      "name": "put_absent_content_hash_400_invalid_request",
+      "severity": "PASS",
+      "message": "absent content_hash → 400/invalid_request (structural, step 1)",
+      "spec_ref": "V7 §3.3 / EXTENSION-TREE Appendix A (v4.4)",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "tree_operations",
+      "name": "put_unsupported_content_hash_format_400",
+      "severity": "PASS",
+      "message": "unsupported content_hash format → 400/unsupported_content_hash_format",
+      "spec_ref": "V7 §3.3 / EXTENSION-TREE Appendix A (v4.4)",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "tree_operations",
+      "name": "put_hash_mismatch_400_hash_mismatch",
+      "severity": "PASS",
+      "message": "content-hash mismatch → 400/hash_mismatch",
+      "spec_ref": "V7 §3.3 / EXTENSION-TREE Appendix A (v4.4)",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "tree_operations",
+      "name": "put_cas_race_409_hash_mismatch",
+      "severity": "PASS",
+      "message": "stale expected_hash → 409/hash_mismatch",
+      "spec_ref": "V7 §3.3 / EXTENSION-TREE Appendix A (v4.4)",
+      "elapsed_ms": 1
     },
     {
       "category": "subscriptions",
@@ -5176,7 +5328,7 @@
       "severity": "WARN",
       "message": "no marker found under system/runtime/chain-errors/rejected/ — either this peer does not bind §3.10.3 rejected markers, or the tree is not readable with this identity. Not injectable via this path; not a verdict on the peer",
       "spec_ref": "EXTENSION-CONTINUATION §3.10.3 + arch ruling 13: wire-supplied marker coordinates MUST NOT be trusted as path components",
-      "elapsed_ms": 1
+      "elapsed_ms": 2
     },
     {
       "category": "security",
@@ -5424,7 +5576,7 @@
       "severity": "PASS",
       "message": "reference peer 127.0.0.1:7778 ready as B-role (core slice)",
       "spec_ref": "harness precondition (not a spec vector) — the reference peer completed its connectivity checks and is usable as the handshake half",
-      "elapsed_ms": 3
+      "elapsed_ms": 6
     },
     {
       "category": "origination",
@@ -5438,7 +5590,7 @@
       "category": "concurrency",
       "name": "t1_1_concurrent_demux",
       "severity": "PASS",
-      "message": "N=16 concurrent gets all returned + demuxed correctly; sequential baseline 11.758199ms \u003c 50ms floor, parallel-speedup signal suppressed (peer too fast for noise-free measurement)",
+      "message": "N=16 concurrent gets all returned + demuxed correctly; sequential baseline 11.592091ms \u003c 50ms floor, parallel-speedup signal suppressed (peer too fast for noise-free measurement)",
       "spec_ref": "V7 §6.11(a)(b) — multiplexed reader + per-id demux on one connection",
       "elapsed_ms": 35
     },
@@ -5448,15 +5600,15 @@
       "severity": "PASS",
       "message": "M=8 concurrent reentrant dispatch-outbound calls all round-tripped; validator-as-B served 8 inbound echos (exactly-one per dispatch under concurrency)",
       "spec_ref": "V7 §6.11 + §7a.2a — concurrent reentrant dispatch (--validate-gated)",
-      "elapsed_ms": 13
+      "elapsed_ms": 15
     },
     {
       "category": "concurrency",
       "name": "t1_3_no_head_of_line",
       "severity": "PASS",
-      "message": "fast.get latency p50 stable under contention: solo=874.711µs → while-slow=809.809µs (ratio 0.93 ≤ 4.0x)",
+      "message": "fast.get latency p50 stable under contention: solo=859.444µs → while-slow=722.685µs (ratio 0.84 ≤ 4.0x)",
       "spec_ref": "V7 §6.11(a) — fast not gated behind slow on one connection",
-      "elapsed_ms": 26
+      "elapsed_ms": 22
     },
     {
       "category": "concurrency",
@@ -5464,15 +5616,15 @@
       "severity": "PASS",
       "message": "RT-13b Part A: 64 concurrent distinct 16 KB responses over 3 windows all framed cleanly, demuxed by request_id, and were byte-identical — no frame-write splice detected. Best-effort detection; the RT-13b verdict is gated on each peer's Part-B atomicity attestation (keystone §8.4 vacuous-green guard).",
       "spec_ref": "V7 §6.11 a′ / RT-13b Part A — bytes of distinct response frames MUST NOT interleave on one connection under concurrent outbound (best-effort detection; verdict gated on each peer's Part-B attestation)",
-      "elapsed_ms": 210
+      "elapsed_ms": 211
     },
     {
       "category": "concurrency",
       "name": "t2_1_sustained_load",
       "severity": "PASS",
-      "message": "C=16 × K=10000 sustained load: zero drops; p50 stable across windows (first=11.177673ms, last=11.104535ms, ratio 0.99 ≤ 4.0x)",
+      "message": "C=16 × K=10000 sustained load: zero drops; p50 stable across windows (first=10.957492ms, last=10.941933ms, ratio 1.00 ≤ 4.0x)",
       "spec_ref": "V7 §6.11 robustness — no drops, no latency runaway under sustained C×K load",
-      "elapsed_ms": 6999
+      "elapsed_ms": 6951
     },
     {
       "category": "concurrency",
@@ -5480,15 +5632,15 @@
       "severity": "PASS",
       "message": "100 connect → handshake → 1 req → close cycles all succeeded (cycle 100 worked as well as cycle 1 — no observable per-connection resource leak)",
       "spec_ref": "V7 §6.11 robustness — accept loop + per-conn lifecycle across N cycles",
-      "elapsed_ms": 904
+      "elapsed_ms": 1819
     },
     {
       "category": "resource_bounds",
       "name": "r1_payload_over_limit",
       "severity": "PASS",
-      "message": "declared_max_payload=16777216 → wrote 16778240-byte length prefix; connection terminated without a 413 frame: read tcp 127.0.0.1:53194-\u003e127.0.0.1:7777: i/o timeout (spec-allowed: 'coded frame OR close'); reconnect + tree.get succeeded (keeps serving)",
+      "message": "declared_max_payload=16777216 → wrote 16778240-byte length prefix; connection terminated without a 413 frame: read tcp 127.0.0.1:37274-\u003e127.0.0.1:7777: i/o timeout (spec-allowed: 'coded frame OR close'); reconnect + tree.get succeeded (keeps serving)",
       "spec_ref": "V7 §4.10(a) (v7.75 §9.1 floor MUST) — oversize inbound → 413 payload_too_large + keeps serving",
-      "elapsed_ms": 5013
+      "elapsed_ms": 5023
     },
     {
       "category": "resource_bounds",
@@ -5496,7 +5648,7 @@
       "severity": "PASS",
       "message": "declared_max_chain_depth=64 → sent 65-deep chain → 400 chain_depth_exceeded; tree.get on the same connection still succeeded (keeps serving)",
       "spec_ref": "V7 §4.10(b) (v7.75 §9.1 floor MUST) — cap chain over max depth → 400 chain_depth_exceeded + keeps serving",
-      "elapsed_ms": 18
+      "elapsed_ms": 30
     },
     {
       "category": "resource_bounds",
@@ -5504,7 +5656,7 @@
       "severity": "WARN",
       "message": "admitted all 256 connections without refusal and kept serving — no self-imposed bound, so admission is delegated externally (systemd / proxy / OS fd limit) or absent; §4.10(c) is a SHOULD, so this is not gated",
       "spec_ref": "V7 §4.10(c) SHOULD (v7.75) — admission bound; clean refusal or external-delegation Warn",
-      "elapsed_ms": 289
+      "elapsed_ms": 314
     },
     {
       "category": "attestation",
@@ -5598,7 +5750,7 @@
       "category": "universal_address_space",
       "name": "local_peer_relative_equals_absolute",
       "severity": "PASS",
-      "message": "peer-relative \"system/validate/uas/local-relative-1\" ≡ absolute \"/2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg/system/validate/uas/local-relative-1\" (same entity, hash=ecf-sha256:d049b03bb5f991b0fd727b6142bc7bf8073742a0c7ca960f32748241389a567a)",
+      "message": "peer-relative \"system/validate/uas/local-relative-1\" ≡ absolute \"/2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg/system/validate/uas/local-relative-1\" (same entity, hash=ecf-sha256:e5490dc571c77894271995c1eb23bcfaeb2ed7db4b7ece0d6796bf72d3997c4e)",
       "spec_ref": "V7 §1.4 — peer-relative `foo` ≡ absolute `/{localPeerID}/foo` (canonicalization is bidirectional round-trip)",
       "elapsed_ms": 1
     },
@@ -5606,7 +5758,7 @@
       "category": "universal_address_space",
       "name": "local_absolute_equals_peer_relative",
       "severity": "PASS",
-      "message": "absolute \"/2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg/system/validate/uas/local-absolute-1\" ≡ peer-relative \"system/validate/uas/local-absolute-1\" (same entity, hash=ecf-sha256:f7f84c6d5b1bada295b33985b133526ce7317c339e62b343a58246dbc2c6474c)",
+      "message": "absolute \"/2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg/system/validate/uas/local-absolute-1\" ≡ peer-relative \"system/validate/uas/local-absolute-1\" (same entity, hash=ecf-sha256:e75cec43af60c57d8879bcda7d90d49a1836c195fe70fb8f31c9bf2f378314c4)",
       "spec_ref": "V7 §1.4 — absolute `/{localPeerID}/foo` ≡ peer-relative `foo` (inverse round-trip)",
       "elapsed_ms": 1
     },
@@ -5614,7 +5766,7 @@
       "category": "universal_address_space",
       "name": "foreign_namespace_publish_lands_at_absolute_path",
       "severity": "PASS",
-      "message": "foreign \"/1HtVqLgPqkScVxjVN8VFGFiH7T2P3aSDwJxQ8DGEoooo2z/system/validate/uas/probe-1\" binding round-trips (hash=ecf-sha256:cdc094906914a448b9c78ff16ed6317b1bbca7ca5b0f13c156b7f8760f7e6423, 61 bytes)",
+      "message": "foreign \"/1HtVqLgPqkScVxjVN8VFGFiH7T2P3aSDwJxQ8DGEoooo2z/system/validate/uas/probe-1\" binding round-trips (hash=ecf-sha256:0548502537b82f26d2afb6a56784f3c4e18259134c61e16508d3204f4ed8fa63, 61 bytes)",
       "spec_ref": "V7 §1.4 — `tree:put` with Resource.Targets[0]=`/{otherID}/foo` to `entity://localPeer/system/tree` lands a binding at that absolute path (universal address space slot is addressable)",
       "elapsed_ms": 1
     },
@@ -5726,7 +5878,7 @@
       "category": "peer_canonicalization",
       "name": "peer_canon_2_canonicalize_on_storage",
       "severity": "PASS",
-      "message": "PEER-CANON-2: two distinct wire forms (2KDdWMtR3vAeNDYVq3frDZiqYg3LkeujXaJcWVkPCJuF3q, 2KMc4DpukGsVQArRySMkDP4TGLp7cwJvd1TaAvBc5hZLWr) map to single canonical storage hash 000000000000…",
+      "message": "PEER-CANON-2: two distinct wire forms (2KFJz2FwMPnEpdexFhoBS6e4SsftDGjPRh9SKWDGFuioY3, 2KVtxFZEgthYGxaSfYKWuCb27jrNPVKpgMUCebG9ezV32c) map to single canonical storage hash 000000000000…",
       "spec_ref": "V7 §1.5 v7.65 §5 (PEER-CANON-2: non-canonical wire form decodes; storage form is canonical)",
       "elapsed_ms": 0
     },
@@ -5742,9 +5894,9 @@
       "category": "peer_canonicalization",
       "name": "peer_pattern_2_lazy_canon_mint",
       "severity": "PASS",
-      "message": "PEER-PATTERN-2: Base58 peer_pattern (2KBPQ7jyK4TraK2gAYbEVKCqEX7qbXCa5ugh59NxJFuNJL) accepted in pending-canonicalization state for unknown peer per v7.65 §3.6 rule 3",
+      "message": "PEER-PATTERN-2: Base58 peer_pattern (2K9Qurt4ShSkPAHdCmtiQ6Av2DABLVDnF2dGCYvJHp7thu) accepted in pending-canonicalization state for unknown peer per v7.65 §3.6 rule 3",
       "spec_ref": "V7 §3.6 v7.65 rule 3 (PEER-PATTERN-2: Base58 mint for unknown peer accepted in pending-canonicalization state)",
-      "elapsed_ms": 0
+      "elapsed_ms": 1
     },
     {
       "category": "peer_canonicalization",
@@ -5766,7 +5918,7 @@
       "category": "peer_canonicalization",
       "name": "composition_1_interleaved_chain",
       "severity": "PASS",
-      "message": "COMPOSITION-1: v7.64-shape (hash=00bb23880e…) and v7.65-shape (hash=00c8aafd63…) entities both valid; envelope interleave validates per v7.65 §2.4",
+      "message": "COMPOSITION-1: v7.64-shape (hash=00086ef5a2…) and v7.65-shape (hash=00effc56ce…) entities both valid; envelope interleave validates per v7.65 §2.4",
       "spec_ref": "V7 §1.3 v7.65 §2.4 (COMPOSITION-1: cap chain interleaving v7.64-shape and v7.65-shape system/peer entities — both shapes verify against their referenced content_hash)",
       "elapsed_ms": 0
     },
@@ -6084,6 +6236,14 @@
     },
     {
       "category": "relay",
+      "name": "skipped",
+      "severity": "SKIP",
+      "message": "category skipped: outside --profile core (V7 v7.72 §9.0 — extension-only category)",
+      "spec_ref": "",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "relay_store_bounds",
       "name": "skipped",
       "severity": "SKIP",
       "message": "category skipped: outside --profile core (V7 v7.72 §9.0 — extension-only category)",

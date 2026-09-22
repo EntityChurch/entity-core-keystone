@@ -14,6 +14,14 @@
 #
 # Default args: -profile core (the V7 v7.72 §9.0 core-profile gate) + JSON out.
 # Env overrides: ORACLE, PORT, NOBUILD (1=skip mvn), VALIDATE (1=on, 0=exercise SKIP path).
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -42,7 +50,7 @@ esac
   exit 3; }
 VALIDATE="${VALIDATE:-1}"
 NOBUILD="${NOBUILD:-0}"
-JSON_OUT="$WORKDIR/status/CONFORMANCE-REPORT.json"
+JSON_OUT="${JSON_OUT:-/tmp/ec-s4-java.json}"
 
 VALIDATE_FLAG=""
 [ "$VALIDATE" = "1" ] && VALIDATE_FLAG="--validate"

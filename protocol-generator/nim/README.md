@@ -108,7 +108,7 @@ builds fully **offline** (`--network=none`) once the toolchain image exists.
 . tools/podman-caps.sh   # from the keystone repo root — sets $PODMAN_RUN_CAPS (mandatory)
 
 sh protocol-generator/nim/run-wire-conformance.sh   # S2 codec gate: v0.8.0 ECF corpus 71/71 byte-identical + [2⁶³,2⁶⁴−1] self-test
-sh protocol-generator/nim/run-smoke.sh              # S3 peer machinery: two-peer loopback handshake + F31 auth-before-resolve + request_id demux
+sh protocol-generator/nim/run-s3.sh                 # S3 peer machinery: two-peer loopback handshake + F31 auth-before-resolve + request_id demux
 ```
 
 The S4 live-peer gate (`validate-peer --profile core`) and the origination-core reentry probe

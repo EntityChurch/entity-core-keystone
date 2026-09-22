@@ -7,7 +7,7 @@
 clean (`nim c --mm:orc --overflowChecks:on -d:release`); host binary builds; S2
 codec still 71/71 (no regression). One spec finding surfaced (A-NIM-009).
 
-## Smoke gate result (`src/smoke.nim`, `run-smoke.sh`)
+## Smoke gate result (`src/smoke.nim`, `run-s3.sh` — was `run-smoke.sh`; renamed 2026-09-08 so the S3 axis sweep reaches it)
 
 Two Nim peers over real loopback TCP, full machinery (asyncdispatch event loop +
 framing + dispatch + capability handshake):

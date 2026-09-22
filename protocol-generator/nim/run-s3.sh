@@ -14,7 +14,7 @@
 # peer floor is libsodium + hand-rolled/stdlib Nim, no nimble registry deps.
 #
 # Invoke from the repo root:
-#   sh protocol-generator/nim/run-smoke.sh
+#   sh protocol-generator/nim/run-s3.sh
 # (resource caps are mandatory; sourced from tools/podman-caps.sh)
 
 set -eu

@@ -9,7 +9,7 @@
 # allowlists the §9.0 extension carve-out skips). Do NOT hand-maintain a category list;
 # repeated -category flags do NOT accumulate (Go's flag parser: last wins).
 #
-#   ./run-s4.sh                        # full core gate → status/CONFORMANCE-REPORT.json
+#   ./run-s4.sh                        # full core gate → the JSON report (scratch by default; see JSON_OUT below)
 #   ./run-s4.sh -category authz -verbose
 #   ./run-s4.sh -profile core -verbose
 #
@@ -23,6 +23,14 @@
 #
 # Oracle pinned at cc1970f (tools/oracle-pin.env; gitignored binary in output/s4-oracles/,
 # (re)built via tools/oracle-bootstrap.sh). Cohort constant: 682·0F @ cc1970f.
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -50,7 +58,7 @@ esac
 EC_NAME="${EC_NAME:-conformance}"
 
 # Default: the full core-profile gate with the JSON report.
-if [ "$#" -eq 0 ]; then set -- -profile core -json-out "${JSON_OUT:-$WORKDIR/status/CONFORMANCE-REPORT.json}"; fi
+if [ "$#" -eq 0 ]; then set -- -profile core -json-out "${JSON_OUT:-/tmp/ec-s4-sql.json}"; fi
 
 podman run $PODMAN_RUN_CAPS --rm --network=none \
   -e ORACLE="$ORACLE" -e PORT="$PORT" -e EC_NAME="$EC_NAME" \

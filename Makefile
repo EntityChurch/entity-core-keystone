@@ -244,6 +244,31 @@ lint:
 	@python3 tools/fold-reference-peer.py --check
 	@echo "lint: gating skip provenance — every SKIP explained (read-only)…"
 	@python3 tools/skip-provenance-gate.py
+	@echo "lint: running every gate's OWN regression suite (read-only)…"
+	@# THE SUITES THAT PROVE THESE GATES WORK ARE NOW RUN, and until 2026-09-08 they were
+	@# not: `make lint` invoked each gate and never its `--self-test`, so a plant that
+	@# stopped matching failed silently. Measured that day — harness-gate's "hardcode the
+	@# oracle args" plant had been dead since 2026-09-03, when folding -reference-peer put
+	@# $$REFPEER_FLAG between the address and "$$@" and the plant's literal stopped
+	@# matching; the self-test had been reporting `plant changed nothing` and FAILING for
+	@# five days with nothing reading it. coherence-gate had a second, subtler one: its row
+	@# plant substituted the first match in the WHOLE document, and prose above §1 quoting
+	@# the same figures absorbed it.
+	@#
+	@# This is the repo's own "an axis's per-peer gates rot exactly where no cohort runner
+	@# reaches" rule, one level in: a REGRESSION SUITE NOBODY RUNS IS NOT A REGRESSION
+	@# SUITE, and the gates are exactly where that is least visible, because the gate
+	@# itself keeps passing.
+	@# Output is suppressed on BOTH streams: a self-test PLANTS the defects it is checking
+	@# for, so each one prints the gate's own FAIL text on stderr as evidence that the
+	@# plant worked. Left visible, `make lint` reads as broken while passing. The exit code
+	@# is the verdict; on a failure re-run the one that failed without the redirection:
+	@#   python3 tools/<name>-gate.py --self-test
+	@python3 tools/harness-gate.py --self-test >/dev/null 2>&1
+	@python3 tools/coherence-gate.py --self-test >/dev/null 2>&1
+	@python3 tools/kind-c-gate.py --self-test >/dev/null 2>&1
+	@python3 tools/skip-provenance-gate.py --self-test >/dev/null 2>&1
+	@echo "lint: 4 gate self-tests OK (harness, coherence, kind-c, skip-provenance)"
 	@echo "lint: gating the Kind C publication boundary (read-only)…"
 	@# The tenth gate, and the newest kind of thing in the tree. Kind C is a check
 	@# THIS repo authors, from the spec, at the same normative target as the oracle

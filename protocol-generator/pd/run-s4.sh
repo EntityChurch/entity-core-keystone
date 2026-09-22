@@ -29,6 +29,14 @@
 # That default let a bare invocation print a `Result:` line that reads exactly like
 # a gate verdict while never running the gate — corrected to match every sibling
 # harness's convention of defaulting to the real `-profile core` run.
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -66,7 +74,7 @@ EC_VALIDATE="${EC_VALIDATE:-1}"
 EC_NAME="${EC_NAME:-conformance}"
 
 # Default oracle args: the full core gate, same convention as every sibling harness.
-JSON_OUT="${JSON_OUT:-$WORKDIR/status/CONFORMANCE-REPORT.json}"
+JSON_OUT="${JSON_OUT:-/tmp/ec-s4-pd.json}"
 if [ "$#" -eq 0 ]; then set -- -profile core -json-out "$JSON_OUT"; fi
 
 # Oracle args ("$@") are forwarded as positional parameters into the container

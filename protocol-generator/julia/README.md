@@ -96,7 +96,7 @@ loads + precompiles fully **offline** (`--network=none`) once the image exists.
 
 ./run-conformance.sh     # S2 codec gate: v0.8.0 ECF corpus 71/71 byte-identical
 ./run-conformance.sh --tests   # full Test-stdlib suite (self-tests + corpus)
-./run-smoke.sh           # S3 peer machinery: two-peer loopback handshake + demux smoke
+./run-s3.sh              # S3 peer machinery: two-peer loopback handshake + demux smoke
 ./run-s4.sh              # S4 live-peer validate-peer --profile core (0 FAIL @ cc1970f)
 ```
 

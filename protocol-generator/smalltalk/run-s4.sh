@@ -17,6 +17,14 @@
 #
 # Default validate-peer args: -profile core. ORACLE / PORT / PEERNAME / ORACLE_TIMEOUT are
 # env overrides. When NOT already inside the container (no /work), re-exec self under podman.
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 set -eu
 
 if [ ! -d /work/protocol-generator/smalltalk ]; then
@@ -125,7 +133,7 @@ head -1 /tmp/host.out
 # (the real gate is the per-request cap). This peer crosses libffi for crypto per op and
 # concurrency streams many tree.gets — widen the overall budget as the cohort does.
 if [ "$#" -eq 0 ]; then
-  set -- -profile core -timeout "${ORACLE_TIMEOUT:-10m}" -json-out "${JSON_OUT:-$PROJ/status/CONFORMANCE-REPORT.json}"
+  set -- -profile core -timeout "${ORACLE_TIMEOUT:-10m}" -json-out "${JSON_OUT:-/tmp/ec-s4-smalltalk.json}"
 fi
 
 . /work/protocol-generator/shared/tools/refpeer.sh

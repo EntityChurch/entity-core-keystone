@@ -101,7 +101,17 @@ handshake cl = do
   let ident = clIdent cl
   -- hello (unauthenticated EXECUTE on system/protocol/connect)
   ridH <- nextReqId cl
-  let helloParams = makeEntity "primitive/any" (VMap [(VText "peer_id", VText (idPeerId ident))])
+  -- §4.5 makes `protocols` REQUIRED on a hello with NO default, so a client that omits it
+  -- is refused `400 invalid_request` by our own responder. This fixture omitted it and had
+  -- been red since the §4.7 connect-error ladder landed on this peer -- unswept, because
+  -- the peer had no run-s3.sh for the axis to reach. A test client is a peer too: every
+  -- in-tree site that BUILDS a hello has to carry the field. Key order is canonical
+  -- length-then-lex: peer_id(7) key_types(9) protocols(9) hash_formats(12).
+  let helloParams = makeEntity "primitive/any" (VMap
+        [ (VText "peer_id",      VText (idPeerId ident))
+        , (VText "key_types",    VArray [VText "ed25519"])
+        , (VText "protocols",    VArray [VText "entity-core/1.0"])
+        , (VText "hash_formats", VArray [VText "ecfv1-sha256"]) ])
       helloExec = makeExecute ridH "system/protocol/connect" "hello" helloParams Nothing (idIdentityHash ident) BS.empty
   helloResp <- sendOver (clHandle cl) (Envelope helloExec [(idIdentityHash ident, idPeerEntity ident)])
   okHello <- assertEq "handshake: hello → 200" 200 (statusOf helloResp)

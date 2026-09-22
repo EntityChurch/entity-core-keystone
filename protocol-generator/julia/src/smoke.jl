@@ -12,6 +12,10 @@
 #   4. §6.11 request_id DEMUX: 8 concurrently-issued authenticated requests, dispatched
 #      out-of-order on the responder's per-EXECUTE Tasks, each correlated back to its own
 #      request_id via its Channel (no cross-thread demux on the cooperative scheduler).
+#   5. §6.13 HOST SEAM: a community handler installed in-process with `register_handler!` is
+#      REACHED over the wire, and the built-in floor still answers first. Until 2026-09-08
+#      `p.handlers` was written and never read, so this leg is the thing that makes the
+#      seam a claim about the peer rather than about its documentation.
 #
 # Run (in-container): julia --project=. src/smoke.jl
 using Sockets
@@ -20,6 +24,8 @@ using .EntityCore
 using .EntityCore: Transport, Peer, Model
 using .EntityCore.Transport: Io, Session, serve_connection, dial, initiate, session_execute,
                              execute_raw, read_loop, close_io, status_of
+using .EntityCore.Peer: register_handler!
+using .EntityCore.Handlers: HandlerContext, HandlerResult, NO_INCLUDED
 using .EntityCore.Wire: empty_params
 using .EntityCore.Model: textfield
 
@@ -30,7 +36,7 @@ function check(name, ok)
 end
 
 function main()
-    responder = create_peer(fill(0x01, 32))
+    responder = create_peer(fill(0x01, 32); open_grants=true)
     initiator = create_peer(fill(0x02, 32))
 
     server = Sockets.listen(ip"127.0.0.1", 0)
@@ -71,6 +77,36 @@ function main()
     end
     correlated = count(r -> r !== nothing && status_of(r) == 404, results)
     check("$(N) interleaved authenticated requests each correlated → $(correlated)/$(N)", correlated == N)
+
+    println("§6.13 host seam (an installed handler is REACHED, and the floor still wins):")
+    # The witness is derived from BOTH registration-time state and a request field, so no
+    # built-in and no §6.13(a) entity-native `compute/literal` body can produce it: a peer
+    # that dispatched something else cannot pass this by coincidence.
+    installed_marker = "seam-" * string(hash("registration-time"), base = 16)
+    seam_calls = Ref(0)
+    register_handler!(responder, "system/host-seam-probe", function (ctx::HandlerContext)
+        seam_calls[] += 1
+        op = something(textfield(ctx.exec, "operation"), "")
+        (200, Model.make_entity("primitive/string", installed_marker * "/" * op), NO_INCLUDED)
+    end; operations=["probe"], name="HostSeamProbe")
+
+    rseam = session_execute(session, "/$(responder.peer_id)/system/host-seam-probe", "probe", empty_params())
+    seam_ok = rseam !== nothing && status_of(rseam) == 200
+    check("installed handler dispatched → 200", seam_ok)
+    check("  └ handler body actually ran (registration-time + request-derived witness)",
+          seam_calls[] == 1)
+
+    # THE FLOOR WINS. A callable installed AT a built-in pattern must not displace it —
+    # asserted on the CALL COUNT, not on the status, so a coincidence of 200s cannot pass
+    # it. This is what keeps `core_register_body_binding` measuring what it always did.
+    floor_calls = Ref(0)
+    register_handler!(responder, "system/tree", function (_ctx::HandlerContext)
+        floor_calls[] += 1
+        (200, Model.make_entity("primitive/string", "SEAM-TOOK-THE-FLOOR"), NO_INCLUDED)
+    end)
+    rfloor = session_execute(session, "/$(responder.peer_id)/system/tree", "get", empty_params())
+    check("built-in system/tree still answers (seam did NOT take the floor)",
+          rfloor !== nothing && floor_calls[] == 0)
 
     print("Teardown: ")
     close_io(io)

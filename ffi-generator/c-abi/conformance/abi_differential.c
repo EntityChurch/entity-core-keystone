@@ -218,6 +218,73 @@ static void eq_buf(const char *what, int32_t ra, const uint8_t *a, size_t la,
     ok(what);
 }
 
+
+/* ── refusal-input differential (spec 4.1b, added 2026-09-08) ────────────────
+ *
+ * WHY: every probe below this file's introduction drives VALID input, so the
+ * differential was structurally silent about what each impl does with input it
+ * REFUSES.  Two impls agreeing on every valid vector is a shared happy path, not
+ * interchangeability.  Measured 2026-09-07: for ec_content_hash the two disagree
+ * on 5 of 8 `type` inputs -- every divergent case a `type` whose bytes are not
+ * valid UTF-8, which ENTITY-CBOR-ENCODING sec.9.2 item 5 ("Validate UTF-8 in text
+ * strings") makes a decoder MUST.  It matters because `type` on the sec.6.3 put
+ * path is attacker-controlled wire bytes: CBOR major 3 does not enforce UTF-8.
+ *
+ * REPORTS, does not fail -- for now, and the reason is written into spec 4.1b's
+ * migration: the C impl may not start refusing until its consumers check the
+ * return code, or a silently-hashed input becomes an UNWRITTEN OUTPUT BUFFER
+ * compared as a hash, which answers 400 hash_mismatch -- an accusation about the
+ * submitter for a refusal that is ours.  When step 3 of that migration lands,
+ * change `report` to `bad` here and the divergence becomes a hard failure.
+ * ─────────────────────────────────────────────────────────────────────────── */
+static int g_diverge = 0;
+static void report(const char *what, const char *detail) {
+    g_diverge++;
+    printf("  DIVERGE %s — %s  (spec 4.1b migration step 4 pending; reported, not failed)\n",
+           what, detail);
+}
+
+static void refusal_differential(const lib *A, const lib *B) {
+    /* Each case is an input at least one impl is expected to refuse. The assertion
+     * is NOT "both refuse" -- it is "both answer the SAME rc", which is what
+     * interchangeability means and what spec 4.1b now declares. */
+    static const struct { const char *label; const char *type; size_t tlen; } cases[] = {
+        { "ascii type (control: both accept)", "primitive/bytes", 15 },
+        { "empty type",                        "",                 0 },
+        { "invalid utf-8 (ff fe)",             "\xff\xfe",         2 },
+        { "lone continuation (80)",            "\x80",             1 },
+        { "truncated 2-byte (c3)",             "\xc3",             1 },
+        { "overlong (c0 80)",                  "\xc0\x80",         2 },
+        { "utf-16 surrogate (ed a0 80)",       "\xed\xa0\x80",     3 },
+        { "embedded NUL (a\\0b)",              "a\x00b",           3 },
+    };
+    static const uint8_t data[] = { 0xa0 };   /* {} — a valid empty map */
+    printf("\n## refusal-input differential (spec 4.1b) — %zu ec_content_hash cases\n",
+           sizeof cases / sizeof cases[0]);
+    int agree = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        uint8_t oa[33], ob[33];
+        memset(oa, 0, sizeof oa); memset(ob, 0, sizeof ob);
+        int32_t ra = A->chash((const uint8_t *)cases[i].type, cases[i].tlen,
+                                     data, sizeof data, oa);
+        int32_t rb = B->chash((const uint8_t *)cases[i].type, cases[i].tlen,
+                                     data, sizeof data, ob);
+        char w[96]; snprintf(w, sizeof w, "ec_content_hash refusal[%zu] %s", i, cases[i].label);
+        if (ra != rb) {
+            char d[96]; snprintf(d, sizeof d, "A rc=%d, B rc=%d", ra, rb);
+            report(w, d);
+            continue;
+        }
+        /* Same rc. On EC_OK the digests must also agree; on a refusal the output
+         * buffer is UNSPECIFIED (4.1b) and is deliberately NOT compared. */
+        if (ra == 0 && memcmp(oa, ob, 33) != 0) { bad(w, "same rc, different digest"); continue; }
+        agree++;
+        ok(w);
+    }
+    printf("  refusal cases in agreement: %d/%zu   divergences: %d\n",
+           agree, sizeof cases / sizeof cases[0], g_diverge);
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) { fprintf(stderr, "usage: abi_differential <libA> <libB>\n"); return 2; }
     lib A = {0}, B = {0};
@@ -531,7 +598,14 @@ int main(int argc, char **argv) {
         }
     }
 
-    printf("\n# RESULT: %s (%d ok, %d fail)\n", g_fail ? "FAIL" : "PASS", g_pass, g_fail);
+    refusal_differential(&A, &B);
+
+    printf("\n# RESULT: %s (%d ok, %d fail, %d reported divergence(s))\n",
+           g_fail ? "FAIL" : "PASS", g_pass, g_fail, g_diverge);
+    if (g_diverge)
+        printf("# NOTE: %d failure-set divergence(s) — declared in spec 4.1b, migration\n"
+               "#       steps 3-4 open (FFI-ARM-STATE.md sec.3). Reported, not failed.\n",
+               g_diverge);
     dlclose(A.h); dlclose(B.h);
     return g_fail ? 1 : 0;
 }

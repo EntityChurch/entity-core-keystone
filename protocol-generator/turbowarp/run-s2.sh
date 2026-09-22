@@ -31,7 +31,11 @@ echo " (inherited from typescript; the edge is verified below)"
 echo "=============================================================="
 
 echo "── [1/2] inheritance edge ──"
-if ! grep -q '/work/protocol-generator/typescript' "$PEER/run-s4.sh"; then
+# ANCHOR THE WHOLE ASSIGNMENT, NOT THE SUBSTRING. `grep -q 'protocol-generator/typescript'`
+# is satisfied by `protocol-generator/typescriptX` -- so the check was vacuous against
+# exactly the mutation it exists to catch, which is what planting it showed (2026-09-08).
+# The gate matched, exit 0, "edge verified". Match the full quoted assignment.
+if ! grep -qF 'TS="/work/protocol-generator/typescript"' "$PEER/run-s4.sh"; then
   echo "    RED: turbowarp no longer builds its engine from the typescript peer."
   echo "    This peer was treated as having no codec of its own BECAUSE of that edge."
   echo "    If the seam now carries its own codec it needs its own S2 gate, not this one."

@@ -23,6 +23,14 @@
 #     protocol-generator/prolog/run-s4.sh
 #
 # The gate (binary): `Result: PASS` with summary.failed == 0.
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # repo root (/work)
@@ -48,7 +56,7 @@ esac
   echo "  repo. Clone it NEXT TO this one, then run tools/oracle-bootstrap.sh." >&2
   echo "  See the Quick start in README.md." >&2
   exit 3; }
-JSON_OUT="${JSON_OUT:-$PEER/status/CONFORMANCE-REPORT.json}"
+JSON_OUT="${JSON_OUT:-/tmp/ec-s4-prolog.json}"
 
 echo "=============================================================="
 echo " S4 conformance gate — entity-core-protocol-prolog"

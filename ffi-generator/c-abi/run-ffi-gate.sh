@@ -129,6 +129,13 @@ printf '  probes observed: %s\n' "$N"
   || bad "differential ran $N, floor $FLOOR_DIFFERENTIAL"
 printf '%s\n' "$OUT" | grep -q '^# RESULT: PASS' && good "differential PASS" \
   || bad "differential did not report PASS"
+# The refusal-input block (spec 4.1b) REPORTS rather than fails, because the C impl may
+# not start refusing until its consumers check the return code -- see the migration in
+# 4.1b. Reported means reported: surface the count here, every run, or "reports rather
+# than fails" degrades into "is not looked at".
+NDIV=$(printf '%s\n' "$OUT" | grep -c '^  DIVERGE ')
+printf '  failure-set divergences (spec 4.1b, migration steps 3-4 open): %s\n' "$NDIV"
+printf '%s\n' "$OUT" | grep '^  DIVERGE ' | sed 's/^/  /'
 
 stage 5 "LEAK GATE — ASan/LSan over the exported ABI (valid + malformed input)"
 OUT=$(podman run $CAPS --rm --network=none -v "$ROOT":/work:Z -w /work/ffi-generator/c-abi/conformance "$CIMG" bash -c '

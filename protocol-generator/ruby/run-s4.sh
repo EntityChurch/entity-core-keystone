@@ -7,7 +7,7 @@
 # Go uses 7778) and is started with --debug-open-grants (grant-gated categories
 # need it) + --validate (the §7a system/validate/* conformance handlers).
 #
-#   ./run-s4.sh            # validate-peer --profile core; writes status/CONFORMANCE-REPORT.json
+#   ./run-s4.sh            # validate-peer --profile core; writes the JSON report (scratch by default; see JSON_OUT below)
 #
 # Oracle pin: entity-core-go at the pinned oracle digest, vendored + built into
 # output/s4-oracles/{validate-peer,entity-peer} (gitignored). See
@@ -15,6 +15,14 @@
 # core probe (reference-peer-gated) runs separately via ./run-origination-core.sh.
 #
 # The gate (binary): `Result: PASS` with summary.failed == 0.
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -41,7 +49,7 @@ esac
   echo "  repo. Clone it NEXT TO this one, then run tools/oracle-bootstrap.sh." >&2
   echo "  See the Quick start in README.md." >&2
   exit 3; }
-JSON_OUT="${JSON_OUT:-/work/protocol-generator/ruby/status/CONFORMANCE-REPORT.json}"
+JSON_OUT="${JSON_OUT:-/tmp/ec-s4-ruby.json}"
 
 podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WORKDIR" "$IMAGE" \
   bash -c '

@@ -24,6 +24,14 @@
 # ~/.entity/peers/conformance/keypair — provisioned below with the cohort's
 # deterministic 0x11×32 seed so the validator's multisig accept-path probe can
 # co-sign AS the peer).
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -53,7 +61,7 @@ TARGET_VOL="${TARGET_VOL:-kc-dl-target}"
 
 # Default oracle args: the full --profile core gate (the profile IS the gate).
 if [ "$#" -eq 0 ]; then
-  set -- -profile core -json-out "$WORKDIR/status/CONFORMANCE-REPORT.json"
+  set -- -profile core -json-out "${JSON_OUT:-/tmp/ec-s4-datalog.json}"
 fi
 
 # Oracle args ("$@") ride into the container shell as positional parameters (bash -lc

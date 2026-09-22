@@ -146,6 +146,50 @@ All functions return `int32_t` (§7 error codes) unless noted. All buffers are `
 | `ec_hash_format_code_encode` | `(code:uint64, out_ptr,out_cap, out_len_ptr)` | LEB128-encode a format code (N1 primitive). |
 | `ec_hash_format_code_decode` | `(in_ptr,in_len, out_code:*uint64, out_consumed:*size_t)` | LEB128-decode a format code (N1 primitive). |
 
+#### 4.1b The FAILURE SET of the encode/hash entry points (v1.2, 2026-09-08)
+
+**Until this section existed, §4.1 declared a behaviour for each symbol and no failure set at
+all — so two conforming implementations refused different inputs and neither was violating
+anything written down.** Measured 2026-09-07 by `conformance/abi_failset_probe.c`, both
+libraries `dlopen`ed side by side: for `ec_content_hash` the two impls **disagree on 5 of 8
+`type` inputs**, every divergent case a `type` whose bytes are not valid UTF-8 — the Rust impl
+answers `EC_INVALID_ARGUMENT`, the C impl hashes the bytes as given.
+
+**The protocol settles it, and the sentence is normative.** `ENTITY-CBOR-ENCODING.md` §9.2
+*Decoder Requirements* item 5: **"Validate UTF-8 in text strings."** An entity's `type` is a CBOR
+major-3 text string (§9.1's table; major type 3 is *"Length in bytes (UTF-8)"*), so ECF that
+carries a non-UTF-8 `type` is bytes no conformant decoder may accept. An encoder that produces
+them has produced invalid ECF, and a content hash over invalid ECF addresses nothing.
+
+**Normative, therefore:**
+
+| Condition | Result |
+|---|---|
+| any required pointer argument is `NULL` | `EC_INVALID_ARGUMENT` |
+| `type` is not valid UTF-8 (`ENTITY-CBOR-ENCODING` §9.2 item 5) | `EC_INVALID_ARGUMENT` |
+| output buffer too small (variable-length forms only) | `EC_OUT_OF_SPACE`, required size at `out_len_ptr` |
+| unsupported `format_code` (`_with_format` only) | `EC_DECODE_ERROR` |
+| otherwise | `EC_OK` |
+
+**On any non-`EC_OK` return the output buffer is UNSPECIFIED and MUST NOT be read.** This is the
+half that bites: a caller which ignores the return code compares an unwritten buffer and answers
+`400 hash_mismatch` — *an accusation about the submitter's bytes for a refusal that is the
+peer's own*. Measured on `asm-x86_64` (2026-09-07) with `EC_OUT_OF_SPACE`; the same shape reaches
+every consumer the moment `EC_INVALID_ARGUMENT` becomes producible.
+
+**MIGRATION, STATED BECAUSE IT IS A BEHAVIOUR CHANGE FOR EVERY LINKING PEER AND NOT A PATCH.**
+The C impl is the one that moves. It MUST NOT move before its consumers check the return code,
+because today a non-UTF-8 `type` is silently hashed and afterwards it yields an untouched output
+buffer — trading a wrong answer for a *differently* wrong one. Order:
+
+1. this declaration (done);
+2. the cross-impl differential drives REFUSAL inputs and reports the divergence per run — a green
+   run over valid vectors only is a shared happy path, not interchangeability (done);
+3. audit every consumer of `ec_content_hash*` / `ec_encode_ecf` for an unchecked return code;
+4. then the C impl refuses, and the differential's refusal block becomes a hard failure.
+
+Steps 3–4 are open; `ffi-generator/c-abi/status/FFI-ARM-STATE.md` §3 tracks them.
+
 A standalone `ec_entity_original_bytes(bytes_ptr,len, out_ptr,out_len_ptr)` MAY be provided as a convenience that validates a single entity and returns its original-byte span; it is OPTIONAL because `ec_decode_entity` already satisfies N4.
 
 #### 4.1a Format-aware content_hash (v1.1)

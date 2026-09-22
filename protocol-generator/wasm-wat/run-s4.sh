@@ -13,6 +13,14 @@
 #
 # Identity is the hardcoded cohort conformance seed (0x11×32 → the same peer_id --name
 # conformance yields), so extra launch args (--name) are tolerated/ignored. --port is 7777.
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 set -eu
 PORT="${PORT:-7777}"
 ORACLE="${ORACLE:-/work/output/s4-oracles/validate-peer}"
@@ -112,7 +120,7 @@ head -1 /tmp/host.out
 # reentry) RUN and PASS — no allow-skip needed. This is true cohort parity: the dialer is a real
 # same-connection §6.11 reentrant outbound seam, not a declined opt-in. (See status/PHASE-S3.md.)
 if [ "$#" -eq 0 ]; then
-  set -- -profile core -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
+  set -- -profile core -json-out "${JSON_OUT:-/tmp/ec-s4-wasm-wat.json}"
 fi
 . /work/protocol-generator/shared/tools/refpeer.sh
 refpeer_up

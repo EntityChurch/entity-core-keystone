@@ -8,7 +8,7 @@
 # (grant-gated categories need it) + --validate (the §7a system/validate/*
 # conformance handlers).
 #
-#   ./run-s4.sh            # validate-peer --profile core; writes status/CONFORMANCE-REPORT.json
+#   ./run-s4.sh            # validate-peer --profile core; writes the JSON report (scratch by default; see JSON_OUT below)
 #
 # Oracle pin: entity-core-go at the pinned oracle digest, vendored + built into
 # output/s4-oracles/{validate-peer,entity-peer} (gitignored). See
@@ -21,6 +21,14 @@
 #
 # The gate (binary): `Result: PASS` with summary.failed == 0 AND the expected
 # total (N·0F @ <content digest>) — a skip is not a pass.
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -47,7 +55,7 @@ esac
   echo "  repo. Clone it NEXT TO this one, then run tools/oracle-bootstrap.sh." >&2
   echo "  See the Quick start in README.md." >&2
   exit 3; }
-JSON_OUT="${JSON_OUT:-/work/protocol-generator/python/status/CONFORMANCE-REPORT.json}"
+JSON_OUT="${JSON_OUT:-/tmp/ec-s4-python.json}"
 # Provision the peer's persistent identity at the standard on-disk location so the
 # validator's multisig accept-path probe (valid_2of3_peer_signed_accepted) can
 # find the peer's keypair and co-sign AS the peer — exercising genuine K-of-N

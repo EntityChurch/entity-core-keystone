@@ -29,6 +29,14 @@
 # is generous (default 15m, ORACLE_TIMEOUT overridable).
 #
 # When NOT already inside the container (no /work), re-exec self under capped podman.
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 set -eu
 
 if [ ! -d /work/protocol-generator/apl ]; then
@@ -155,7 +163,7 @@ head -1 /tmp/host.out
 # wall-clock). Interpreted APL is much slower than compiled Fortran, so a generous 15m budget
 # covers concurrency.t2_1's ~10k-request flood. Override with ORACLE_TIMEOUT.
 if [ "$#" -eq 0 ]; then
-  set -- -profile core -timeout "${ORACLE_TIMEOUT:-15m}" -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
+  set -- -profile core -timeout "${ORACLE_TIMEOUT:-15m}" -json-out "${JSON_OUT:-/tmp/ec-s4-apl.json}"
 fi
 
 . /work/protocol-generator/shared/tools/refpeer.sh

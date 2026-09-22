@@ -3,7 +3,7 @@
 # exercise §6.5 auth-before-resolve (401 vs 404) and §6.11 request_id demux, on the single-threaded
 # Task scheduler — inside the capped, offline julia-toolchain container. Exit 0 iff all legs PASS.
 #
-#   ./run-smoke.sh
+#   ./run-s3.sh
 #
 # Uses `julia --project=. src/smoke.jl` directly (A-JULIA-009: Pkg.test() would git-clone the
 # General registry, blocked by --network=none, even for a stdlib-only package). Loopback works

@@ -28,49 +28,49 @@
 # Columns: peer <TAB> tier <TAB> last_measured_pin <TAB> note
 #
 peer	tier	last_measured_pin	note
-go	M1	f313028	clean-room; independence check on the generator
-haskell	M1	f313028	STM substrate; cleanest conformance record
-lean	M1	f313028	the proof vector — the only formal-methods discovery channel
-ocaml	M1	f313028	the proven headline finder (A-OC-007)
-swift	M1	f313028	sharpest string/grapheme instrument; adoption anchor
-common-lisp	M2	f313028	proven finder (A-CL-009); pure-language full crypto
-csharp	M2	f313028	major ecosystem
-elixir	M2	f313028	production BEAM; native agility
-java	M2	f313028	major ecosystem
-kotlin	M2	f313028	JVM; sealed-Result + coroutines
-python	M2	f313028	clean-room; large-ecosystem adoption
-rust	M2	f313028	clean-room; compile-enforced store safety
-typescript	M2	f313028	major ecosystem
-ada	M3	f313028	structural store-safety via protected objects
-c	M3	f313028	ubiquitous; found A-C-009
-cobol	M3	f313028	FFI-hybrid; 756 · 0F
-cpp	M3	f313028	reach peer
-crystal	M3	f313028	CSP fibers; fixed-width int
-dart	M3	f313028	sealed-Result + Future; BigInt-web
-julia	M3	f313028	multiple-dispatch codec; JIT
-nim	M3	f313028	compile-time macro codec; compiles-to-C
-odin	M3	f313028	pure-Odin crypto; no-GC
-php	M3	f313028	event-loop store-safety
-prolog	M3	f313028	logic substrate; found A-PL-006
-ruby	M3	f313028	dynamic; native agility
-zig	M3	f313028	lightest supply chain
-apl	probe	f313028	array value-model; 756 · 0F — was carried as UNMEASURABLE for a toolchain claim that was false
-asm-arm64	probe	f313028	ISA port; 756 · 0F
-asm-x86_64	probe	f313028	lowest-level substrate; 756 · 0F
-datalog	probe	f313028	authority-as-query (Ascent); closes the logic frontier
-forth	probe	f313028	stack-machine/typeless generator stress
-fortran	probe	f313028	fixed-width signed-only integer model
-io	probe	f313028	pure-prototype OO; single-thread event loop
-oz	probe	f313028	dataflow-variable concurrency
-pd	probe	f313028	Pure Data — only visual probe to clear the full core gate
-rexx	probe	f313028	native-decimal number model
-riscv64	probe	f313028	ISA port; 756 · 0F
-rust-wasm	probe	f313028	compiled wasm32-wasip1, WasmEdge JIT
-rust-wasm-wasmtime	probe	f313028	same module under wasmtime AOT
-smalltalk	probe	f313028	pure-object/live-image message passing
-sql	probe	f313028	authority-as-query (SQLite)
-tcl	probe	f313028	EIAS / everything-is-a-string
-unison	probe	f313028	content-addressed; no C-FFI hatch
-wasm-wat	probe	f313028	hand-authored WebAssembly text
-node-red	exploratory	f313028	flow-graph visualization; delegates the TS engine — NOT a deployable peer
-turbowarp	exploratory	f313028	Scratch blocks; measured by block-interpreter — NOT a deployable peer
+go	M1	78db4a9	clean-room; independence check on the generator
+haskell	M1	78db4a9	STM substrate; cleanest conformance record
+lean	M1	78db4a9	the proof vector — the only formal-methods discovery channel
+ocaml	M1	78db4a9	the proven headline finder (A-OC-007)
+swift	M1	78db4a9	sharpest string/grapheme instrument; adoption anchor
+common-lisp	M2	78db4a9	proven finder (A-CL-009); pure-language full crypto
+csharp	M2	78db4a9	major ecosystem
+elixir	M2	78db4a9	production BEAM; native agility
+java	M2	78db4a9	major ecosystem
+kotlin	M2	78db4a9	JVM; sealed-Result + coroutines
+python	M2	78db4a9	clean-room; large-ecosystem adoption
+rust	M2	78db4a9	clean-room; compile-enforced store safety
+typescript	M2	78db4a9	major ecosystem
+ada	M3	78db4a9	structural store-safety via protected objects
+c	M3	78db4a9	ubiquitous; found A-C-009
+cobol	M3	78db4a9	FFI-hybrid; 756 · 0F
+cpp	M3	78db4a9	reach peer
+crystal	M3	78db4a9	CSP fibers; fixed-width int
+dart	M3	78db4a9	sealed-Result + Future; BigInt-web
+julia	M3	78db4a9	multiple-dispatch codec; JIT
+nim	M3	78db4a9	compile-time macro codec; compiles-to-C
+odin	M3	78db4a9	pure-Odin crypto; no-GC
+php	M3	78db4a9	event-loop store-safety
+prolog	M3	78db4a9	logic substrate; found A-PL-006
+ruby	M3	78db4a9	dynamic; native agility
+zig	M3	78db4a9	lightest supply chain
+apl	probe	78db4a9	array value-model; 756 · 0F — was carried as UNMEASURABLE for a toolchain claim that was false
+asm-arm64	probe	78db4a9	ISA port; 756 · 0F
+asm-x86_64	probe	78db4a9	lowest-level substrate; 756 · 0F
+datalog	probe	78db4a9	authority-as-query (Ascent); closes the logic frontier
+forth	probe	78db4a9	stack-machine/typeless generator stress
+fortran	probe	78db4a9	fixed-width signed-only integer model
+io	probe	78db4a9	pure-prototype OO; single-thread event loop
+oz	probe	78db4a9	dataflow-variable concurrency
+pd	probe	78db4a9	Pure Data — only visual probe to clear the full core gate
+rexx	probe	78db4a9	native-decimal number model
+riscv64	probe	78db4a9	ISA port; 756 · 0F
+rust-wasm	probe	78db4a9	compiled wasm32-wasip1, WasmEdge JIT
+rust-wasm-wasmtime	probe	78db4a9	same module under wasmtime AOT
+smalltalk	probe	78db4a9	pure-object/live-image message passing
+sql	probe	78db4a9	authority-as-query (SQLite)
+tcl	probe	78db4a9	EIAS / everything-is-a-string
+unison	probe	78db4a9	content-addressed; no C-FFI hatch
+wasm-wat	probe	78db4a9	hand-authored WebAssembly text
+node-red	exploratory	78db4a9	flow-graph visualization; delegates the TS engine — NOT a deployable peer
+turbowarp	exploratory	78db4a9	Scratch blocks; measured by block-interpreter — NOT a deployable peer

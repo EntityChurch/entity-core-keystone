@@ -389,14 +389,25 @@ def self_test():
     _head = HEADLINE.search(_first)
     assert _head is not None, f"§1 row carries no headline to plant against: {_first[:80]!r}"
 
+    # PLANT ON THE ROW, NOT ON THE DOCUMENT. These two used to `matrix_text.replace(x, y, 1)`,
+    # which replaces the first occurrence ANYWHERE — and §1's figures are also quoted in the
+    # prose above it. On 2026-09-08 a new disclosure paragraph quoted the cohort-standard
+    # `335P/336W/0F/107S`, the plant landed there instead of in a row, check_rows saw an
+    # unchanged §1 and reported 0 errors, and the self-test failed. The plant was never
+    # wrong about the gate; it was wrong about WHERE it was planting. Substitute inside the
+    # row line and splice that one line back, so no amount of prose can absorb it.
+    def _plant_in_row(old_line, new_line):
+        assert new_line != old_line, "planting failed — pattern absent in the row"
+        return matrix_text.replace(old_line, new_line, 1)
+
     # 1. a row whose number disagrees with its report
-    bad = matrix_text.replace(_pwfs, "595P/54W/0F/106S", 1)
-    assert bad != matrix_text, "planting failed — pattern absent"
+    bad = _plant_in_row(_first, _first.replace(_pwfs, "595P/54W/0F/106S", 1))
+    assert bad != matrix_text, "planting failed — row absent"
     expect("planted: row number drift", len(check_rows(reports, bad)[0]), 1)
 
     # 2. a row whose HEADLINE disagrees while its P/W/F/S is right
     _bump = _head.group(0).replace(f"{_head.group(2)}F", f"{int(_head.group(2)) + 3}F")
-    bad = matrix_text.replace(_head.group(0), _bump, 1)
+    bad = _plant_in_row(_first, _first.replace(_head.group(0), _bump, 1))
     assert bad != matrix_text
     expect("planted: headline drift", len(check_rows(reports, bad)[0]), 1)
 

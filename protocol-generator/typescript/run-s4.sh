@@ -14,6 +14,14 @@
 # Default validate-peer args: -profile core over the four single-peer-testable
 # required categories. Pass args to override (e.g. a single -category, or
 # -failures-only). ORACLE / PORT / NOBUILD are env overrides.
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 
 set -eu
 
@@ -116,7 +124,7 @@ head -1 /tmp/host.out
 # Default args: the full --profile core run (all 14 core-profile categories; the
 # oracle auto-allowlists the §9.0 extension-carve-out skips).
 if [ "$#" -eq 0 ]; then
-  set -- -profile core -json-out "${JSON_OUT:-$PROJ/status/CONFORMANCE-REPORT.json}"
+  set -- -profile core -json-out "${JSON_OUT:-/tmp/ec-s4-typescript.json}"
 fi
 
 . /work/protocol-generator/shared/tools/refpeer.sh

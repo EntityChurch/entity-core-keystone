@@ -46,7 +46,7 @@ esac
   exit 3; }
 VALIDATE="${VALIDATE:-1}"
 NOBUILD="${NOBUILD:-0}"
-JSON_OUT="/work/protocol-generator/ada/status/CONFORMANCE-REPORT.json"
+JSON_OUT="${JSON_OUT:-/tmp/ec-s4-ada.json}"
 
 VALIDATE_FLAG=""
 [ "$VALIDATE" = "1" ] && VALIDATE_FLAG="--validate"

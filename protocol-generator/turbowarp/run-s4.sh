@@ -13,6 +13,14 @@
 #   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm \
 #     --network=none -v "$PWD":/work:Z entity-core-keystone/node24:latest \
 #     sh /work/protocol-generator/turbowarp/run-s4.sh [validate-peer-args...]
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 
 set -eu
 
@@ -119,7 +127,7 @@ i=0; while [ "$i" -lt 100 ]; do grep -q "^PEER-CONNECTED" /tmp/bridge.out 2>/dev
 echo "BRIDGE + PEER up (tcp:$EC_PORT ws:$WS_PORT)"
 
 # 3. Oracle.
-if [ "$#" -eq 0 ]; then set -- -profile core -json-out "$TW/../status/CONFORMANCE-REPORT.json"; fi
+if [ "$#" -eq 0 ]; then set -- -profile core -json-out "${JSON_OUT:-/tmp/ec-s4-turbowarp.json}"; fi
 . /work/protocol-generator/shared/tools/refpeer.sh
 refpeer_up
 "$ORACLE" -addr "127.0.0.1:$EC_PORT" $REFPEER_FLAG "$@" || true

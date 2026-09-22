@@ -15,6 +15,14 @@
 #     entity-core-keystone/dotnet9:latest sh /work/protocol-generator/csharp/run-s4.sh [validate-peer-args...]
 #
 # Default args: -profile core. ORACLE/PORT/NOBUILD env overrides.
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 
 set -eu
 PORT="${PORT:-7777}"
@@ -102,7 +110,7 @@ done
 head -1 /tmp/host.out
 
 if [ "$#" -eq 0 ]; then
-  set -- -profile core -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
+  set -- -profile core -json-out "${JSON_OUT:-/tmp/ec-s4-csharp.json}"
 fi
 . /work/protocol-generator/shared/tools/refpeer.sh
 refpeer_up

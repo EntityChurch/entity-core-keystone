@@ -826,8 +826,40 @@ function dispatch_outcome(p::Peer_t, conn::Conn, env::Envelope)::HandlerResult
         return conformance_handler(p, conn, exec, stripped)
     end
     # a dynamically-registered handler: dispatch its entity-native body (§6.13(a)).
+    #
+    # THE ENTITY-NATIVE PATH ANSWERS FIRST, and the discriminator is `expression_path`
+    # rather than a status code. `core_register_body_binding` drives this branch on all 46
+    # peers by binding a handler entity that CARRIES an expression; an in-process install
+    # binds one that does not. So "has an expression_path" separates the two exactly, and
+    # a 501 from a handler that DOES have one is a real refusal that must not silently
+    # fall through to something else (checking `status == 501` would do precisely that).
     he = store_at(p.store, pattern)
-    (he !== nothing && he.typ == "system/handler") && return entity_native_dispatch(p, he)
+    if he !== nothing && he.typ == "system/handler" && textfield(he, "expression_path") !== nothing
+        return entity_native_dispatch(p, he)
+    end
+
+    # §6.13 HOST SEAM — a community-installed callable, consulted here and NOWHERE EARLIER.
+    #
+    # `register_handler!` is exported and `p.handlers` is a typed Dict with a documented
+    # contract in handler.jl — `(ctx::HandlerContext) -> HandlerResult` — and until now
+    # NOTHING READ THE DICT. It was written once, never consulted, and dispatch went
+    # straight from the entity-native body to 501. That is the dangerous shape: an
+    # exported entry point, a typed container and a doc comment naming it the seam, all
+    # of which read as satisfied from every artifact a reviewer would open.
+    #
+    # ORDER IS LOAD-BEARING AND IT IS THE typescript H7 RULE: the built-in handlers above
+    # and the §6.13(a) entity-native path answer FIRST, and the seam takes the FALLBACK
+    # arm. `core_register_body_binding` drives the entity-native branch on all 46 peers,
+    # so consulted BEFORE it an installed callable would silently own a check the peer is
+    # measured on; consulted after, a peer with nothing installed is byte-identical to the
+    # peer before this seam existed.
+    h = get(p.handlers, stripped, nothing)
+    if h !== nothing
+        author = let a = bytesfield(exec, "author")
+            a === nothing ? nothing : included_get(env, a)
+        end
+        return h(HandlerContext(p, conn, exec, env, author, make_reenter(conn)))
+    end
     return err(501, "no_handler_body")
 end
 
@@ -912,6 +944,33 @@ function create_peer(seed::AbstractVector{UInt8}; validate::Bool=false, open_gra
 end
 
 """Install a community handler at `pattern` (the extension seam)."""
-register_handler!(p::Peer_t, pattern::AbstractString, h::Function) = (p.handlers[String(pattern)] = h)
+#     register_handler!(p, pattern, h; operations=String[], name=pattern)
+#
+# Install a community handler at `pattern` (§6.13 host seam). `h` is any callable
+# `(ctx::HandlerContext) -> HandlerResult` — the contract in `handler.jl`.
+#
+# BINDS THE §3.7 ENTITIES AS WELL AS THE CALLABLE, and that is the half that was missing.
+# Writing the Dict alone left the handler UNREACHABLE by construction: §6.6 resolution
+# walks the store for a `system/handler` entity, so a pattern with no entity bound answers
+# `404 handler_not_found` and dispatch never reaches the map at all. The map was written
+# once, read never, and every artifact a reviewer would open — an exported function, a
+# typed `Dict{String,Function}`, a doc comment naming it the seam — read as satisfied.
+#
+# This is the same work the WIRE `system/handler:register` op does, and the two agree
+# deliberately: an in-process install and a wire install must produce the same peer, or
+# the in-process surface is a narrower one and the wire one is the only one under test.
+function register_handler!(p::Peer_t, pattern::AbstractString, h::Function;
+                           operations::Vector{String}=String[],
+                           name::AbstractString=String(pattern))
+    pat = String(pattern)
+    p.handlers[pat] = h
+    handler_e = make_entity("system/handler", CborMap(Pair[("interface" => "system/handler/$(pat)")]))
+    store_bind!(p.store, "/$(p.peer_id)/$(pat)", handler_e)
+    iface_e = make_entity("system/handler/interface",
+        CborMap(Pair[("pattern" => pat), ("name" => String(name)),
+                     ("operations" => operations_map(operations))]))
+    store_bind!(p.store, "/$(p.peer_id)/system/handler/$(pat)", iface_e)
+    return nothing
+end
 
 end # module Peer

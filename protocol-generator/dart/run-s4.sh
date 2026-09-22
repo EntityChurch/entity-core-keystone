@@ -21,6 +21,14 @@
 # single -category, or -failures-only). ORACLE / PORT / NOBUILD / VALIDATE are env overrides.
 #
 # PORT default 7787 — distinct from PHP's 7777 / cpp's 7777 (belt-and-suspenders).
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 set -eu
 
 PORT="${PORT:-7787}"
@@ -127,7 +135,7 @@ head -2 /tmp/host.out
 # sustained-load/churn ~50s) before the later categories surface; the wider window
 # lets every core category run to completion (full 665 total, none budget-skipped).
 if [ "$#" -eq 0 ]; then
-  set -- -profile core -timeout 5m -json-out "${JSON_OUT:-$PROJ/status/CONFORMANCE-REPORT.json}"
+  set -- -profile core -timeout 5m -json-out "${JSON_OUT:-/tmp/ec-s4-dart.json}"
 fi
 
 . /work/protocol-generator/shared/tools/refpeer.sh

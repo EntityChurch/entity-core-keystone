@@ -651,6 +651,15 @@ dispatch:
 	bl   send_error
 	b    .Ld_ret
 .Ld_unknown_notconnect:
+	// §3.3's 404 row, ordered BEFORE the 501/403 pair (§6.5 resolution-first).
+	mov  x0, x19                     // exec data map
+	bl   uri_handler_known
+	cbnz x0, .Ld_unknown_registered
+	mov  x0, #404
+	adr_l x1, ec_handler_not_found
+	bl   send_error
+	b    .Ld_ret
+.Ld_unknown_registered:
 	// An operation this peer doesn't route falls into two classes:
 	//  - a KNOWN vocabulary op (delegate/configure/revoke/register/unregister/put) we don't
 	//    (yet) implement gets an authorization decision — if the presented capability doesn't
@@ -973,6 +982,9 @@ ec_invalid_nonce: .asciz "invalid_nonce"
 ec_identity_mismatch: .asciz "identity_mismatch"
 ec_auth_failed: .asciz "authentication_failed"
 ec_not_found: .asciz "not_found"
+// §3.3's 404 RESOLUTION row (0.8.2.7). Distinct from ec_not_found above, which is the
+// neighbouring row: a bound-path miss INSIDE a handler that DID resolve.
+ec_handler_not_found: .asciz "handler_not_found"
 ec_payload_too_large: .asciz "payload_too_large"
 ec_not_impl:  .asciz "not_implemented"
 ec_unsupported_op: .asciz "unsupported_operation"
@@ -993,6 +1005,8 @@ ec_incompat_proto: .asciz "incompatible_protocol"
 ec_conn_seq:  .asciz "connection_sequence_error"
 ec_conn_already: .asciz "connection_already_established"
 va_sysconnect: .asciz "system/protocol/connect"
+s_systype_pfx: .asciz "system/type"
+s_syshand_pfx: .asciz "system/handler"
 ka_parent:   .asciz "parent"
 ka_threshold: .asciz "threshold"
 ka_signers:  .asciz "signers"
@@ -1058,6 +1072,8 @@ ka_ttl_ms:   .asciz "ttl_ms"
 	.lcomm g_hello_done, 8            // 0/1, set only on the ACCEPT path — a REFUSED hello
                                            // must leave the connection fresh so the caller may
                                            // retry with a conformant one.
+	.lcomm g_rel_ptr, 8              // uri_rel: the peer-relative handler path of data.uri
+	.lcomm g_rel_len, 8              // 0 = absent/unusable
 	.lcomm b_hello_peer, 128          // §4.7 row 8's second input: the peer_id this connection
 	.lcomm g_hello_peer_len, 8        // was greeted BY, for the authenticate-side comparison.
 	// ---- §7a dispatch-outbound reentry (bidirectional dispatch + demux) ----
@@ -5414,13 +5430,19 @@ check_hello_negotiation:
 // question left is which handler is named. derive_handler is NOT reusable here: it strips
 // the scheme form only and defaults everything else to system/tree, which is right for the
 // scope check it feeds and wrong for this. validate's own connectURI is the BARE form.
-	.type uri_is_connect, %function
-uri_is_connect:
+// uri_rel(x0 = exec data map) — set g_rel_ptr/g_rel_len to data.uri's PEER-RELATIVE
+// handler path, accepting all three §1.4 spellings. g_rel_len = 0 when there is no usable
+// path. Factored out of uri_is_connect so uri_handler_known below reads the same value:
+// two predicates deriving the same path independently is how they drift.
+	.type uri_rel, %function
+uri_rel:
 	stp  x29, x30, [sp, #-48]!
 	mov  x29, sp
 	stp  x19, x20, [sp, #16]
 	str  x21, [sp, #32]
-	mov  x21, #0                     // result
+	mov  x21, #0
+	adr_l x9, g_rel_len
+	str  x21, [x9]
 	adr_l x1, k_uri
 	mov  x2, #3
 	bl   map_find                    // x0 = exec
@@ -5457,18 +5479,125 @@ uri_is_connect:
 	add  x19, x19, #1                // past the slash that ends the peer segment
 	sub  x20, x20, #1
 .Luic_cmp:
-	cmp  x20, #23                    // "system/protocol/connect"
-	b.ne .Luic_ret
-	mov  x0, x19
-	adr_l x1, va_sysconnect
-	mov  x2, #23
-	bl   memeq
-	mov  x21, x0
+	adr_l x9, g_rel_ptr
+	str  x19, [x9]
+	adr_l x9, g_rel_len
+	str  x20, [x9]
 .Luic_ret:
-	mov  x0, x21
 	ldr  x21, [sp, #32]
 	ldp  x19, x20, [sp, #16]
 	ldp  x29, x30, [sp], #48
+	ret
+
+// uri_is_connect(x0 = exec data map) -> x0 = 1 if data.uri addresses the connect handler.
+	.type uri_is_connect, %function
+uri_is_connect:
+	stp  x29, x30, [sp, #-16]!
+	mov  x29, sp
+	bl   uri_rel
+	adr_l x9, g_rel_len
+	ldr  x9, [x9]
+	cmp  x9, #23                     // "system/protocol/connect"
+	b.ne .Luisc_no
+	adr_l x0, g_rel_ptr
+	ldr  x0, [x0]
+	adr_l x1, va_sysconnect
+	mov  x2, #23
+	bl   memeq
+	ldp  x29, x30, [sp], #16
+	ret
+.Luisc_no:
+	mov  x0, #0
+	ldp  x29, x30, [sp], #16
+	ret
+
+// rel_covered_by(x0 = pattern ptr, x1 = pattern len) -> x0 = 1 if the path in
+// g_rel_ptr/g_rel_len IS that pattern or sits UNDER it (pattern + '/'). §6.6 longest-prefix
+// containment, reduced to the membership test the 404 row needs.
+	.type rel_covered_by, %function
+rel_covered_by:
+	stp  x29, x30, [sp, #-48]!
+	mov  x29, sp
+	stp  x19, x20, [sp, #16]
+	str  x21, [sp, #32]
+	mov  x19, x0                     // pattern ptr
+	mov  x20, x1                     // pattern len
+	adr_l x9, g_rel_len
+	ldr  x21, [x9]                   // path len
+	cmp  x21, x20
+	b.lo .Lrcb_no
+	adr_l x0, g_rel_ptr
+	ldr  x0, [x0]
+	mov  x1, x19
+	mov  x2, x20
+	bl   memeq
+	cbz  x0, .Lrcb_no
+	cmp  x21, x20
+	b.eq .Lrcb_yes
+	adr_l x9, g_rel_ptr
+	ldr  x9, [x9]
+	add  x9, x9, x20
+	ldrb w10, [x9]
+	cmp  w10, #0x2f                  // must be '/', else this is a longer NAME
+	b.ne .Lrcb_no
+.Lrcb_yes:
+	mov  x0, #1
+	b    .Lrcb_ret
+.Lrcb_no:
+	mov  x0, #0
+.Lrcb_ret:
+	ldr  x21, [sp, #32]
+	ldp  x19, x20, [sp, #16]
+	ldp  x29, x30, [sp], #48
+	ret
+
+// uri_handler_known(x0 = exec data map) -> x0 = 1 if SOME handler of this peer governs
+// data.uri's path. See the x86_64 sibling for the full reasoning: this peer dispatches by
+// OPERATION rather than by a §6.6 tree walk, so without this it answered 501 for an
+// unregistered path and the oracle SKIPped §3.3's 404 row under its 0.8.2.8 total-handler
+// exception. A skip counts as a failure here.
+	.type uri_handler_known, %function
+uri_handler_known:
+	stp  x29, x30, [sp, #-16]!
+	mov  x29, sp
+	bl   uri_rel
+	adr_l x9, g_rel_len
+	ldr  x9, [x9]
+	cbz  x9, .Luhk_yes               // no usable path → not our call to refuse here
+	adr_l x0, va_sysconnect
+	mov  x1, #23
+	bl   rel_covered_by
+	cbnz x0, .Luhk_yes
+	adr_l x0, va_systree
+	mov  x1, #11
+	bl   rel_covered_by
+	cbnz x0, .Luhk_yes
+	adr_l x0, va_syscap
+	mov  x1, #17
+	bl   rel_covered_by
+	cbnz x0, .Luhk_yes
+	adr_l x0, s_systype_pfx
+	mov  x1, #11
+	bl   rel_covered_by
+	cbnz x0, .Luhk_yes
+	adr_l x0, s_syshand_pfx
+	mov  x1, #14
+	bl   rel_covered_by
+	cbnz x0, .Luhk_yes
+	adr_l x0, s_pat_echo
+	mov  x1, #20
+	bl   rel_covered_by
+	cbnz x0, .Luhk_yes
+	adr_l x0, s_pat_dout
+	mov  x1, #32
+	bl   rel_covered_by
+	cbnz x0, .Luhk_yes
+	mov  x0, #0
+	ldp  x29, x30, [sp], #16
+	ret
+.Luhk_yes:
+	mov  x0, #1
+	ldp  x29, x30, [sp], #16
 	ret
 
 // record_hello_peer(x0 = exec data map) — latch the accepted-hello state for §4.7 rows 8/9.

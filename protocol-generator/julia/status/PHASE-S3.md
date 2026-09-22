@@ -18,7 +18,7 @@ multiple-dispatch codec) ·
 | `smoke.jl` | The S3 gate — two Julia peers over loopback |
 | `bin/peer.jl` | The `validate-peer`-driven executable (`--name`/`--port`/`--validate`); loads the on-disk keypair, prints `LISTENING`, serves (S4 entry point) |
 
-## Smoke gate — `./run-smoke.sh` (in-container, `--network=none`, capped)
+## Smoke gate — `./run-s3.sh` (was `run-smoke.sh`; renamed 2026-09-08 so the S3 axis sweep reaches it) (in-container, `--network=none`, capped)
 
 ```
 Handshake (both directions):

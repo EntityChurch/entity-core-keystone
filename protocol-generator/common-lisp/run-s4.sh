@@ -17,6 +17,14 @@
 # NOTE: `(require :asdf)` / `(require :sb-bsd-sockets)` MUST each be their own
 # --eval before any form that *names* those packages — SBCL resolves package-
 # qualified symbols at read time (the run-s2/run-s3 lesson).
+#
+# JSON_OUT — WHERE A BARE RUN WRITES ITS REPORT (changed 2026-09-08)
+# A bare `./run-s4.sh` used to default `-json-out` to this peer's TRACKED
+# status/CONFORMANCE-REPORT.json — the signed-off record the matrix publishes — so a
+# human diagnostic run silently republished a number nobody had reviewed. The default is
+# now a scratch path. To refresh the tracked report, MEASURE it deliberately:
+#     tools/run-cohort-census.sh --to-status <peer>       (preferred)
+#     JSON_OUT=<path> ./run-s4.sh                          (explicit)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -44,7 +52,7 @@ esac
   echo "  See the Quick start in README.md." >&2
   exit 3; }
 VALIDATE="${VALIDATE:-1}"
-JSON_OUT="$WORKDIR/status/CONFORMANCE-REPORT.json"
+JSON_OUT="${JSON_OUT:-/tmp/ec-s4-common-lisp.json}"
 
 # --validate enables the §7a conformance handlers (system/validate/{echo,
 # dispatch-outbound}) so the validate_echo_dispatch probe runs live instead of

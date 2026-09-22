@@ -81,6 +81,66 @@ ALLOWLIST = {
     # -- while `admit_put` ignored the return code and compared an unwritten buffer. The
     # earlier "standalone call to the same .so returns the sender's hash" was true and
     # tested a DIFFERENT FUNCTION than the peer runs. Both halves fixed; the check PASSes.
+    #
+    # ---- connectivity/connect_ping_before_hello, ALL 46 PEERS, added 2026-09-08 (F59) ----
+    # NOT A PEER GAP, AND THE REFERENCE PEER SKIPS IT TOO -- which is what locates it
+    # upstream rather than in the cohort. §5.1 `ping` is a NETWORK-extension operation; a
+    # core peer does not serve it, so the row this check asserts (an implemented op arriving
+    # in a forbidden state -> 409 connection_sequence_error) is not drivable against one, and
+    # the check says so in its own message. §3.3's satisfaction mode (0.8.2.7) is explicit
+    # that a check MUST NOT be pinned to a row it cannot reach. What is missing is only the
+    # §9.0 profile carve-out marker, so the oracle counts the skip against the FAIL gate and
+    # ends `Result: FAIL (un-allowlisted skips)` with a JSON summary of `{"failed": 0}`.
+    #
+    # THE DISCLOSURE THIS ENTRY COMMITS TO: CONFORMANCE-MATRIX.md §1's skip note and F59 in
+    # research/stewardship/SPEC-FINDINGS-LOG.md. REMOVING THESE 46 LINES IS PART OF CLOSING
+    # F59 -- when the carve-out lands upstream the skip explains itself and the entries go.
+    ("ada", "connectivity", "connect_ping_before_hello"),
+    ("apl", "connectivity", "connect_ping_before_hello"),
+    ("asm-arm64", "connectivity", "connect_ping_before_hello"),
+    ("asm-x86_64", "connectivity", "connect_ping_before_hello"),
+    ("c", "connectivity", "connect_ping_before_hello"),
+    ("cobol", "connectivity", "connect_ping_before_hello"),
+    ("common-lisp", "connectivity", "connect_ping_before_hello"),
+    ("cpp", "connectivity", "connect_ping_before_hello"),
+    ("crystal", "connectivity", "connect_ping_before_hello"),
+    ("csharp", "connectivity", "connect_ping_before_hello"),
+    ("dart", "connectivity", "connect_ping_before_hello"),
+    ("datalog", "connectivity", "connect_ping_before_hello"),
+    ("elixir", "connectivity", "connect_ping_before_hello"),
+    ("forth", "connectivity", "connect_ping_before_hello"),
+    ("fortran", "connectivity", "connect_ping_before_hello"),
+    ("go", "connectivity", "connect_ping_before_hello"),
+    ("haskell", "connectivity", "connect_ping_before_hello"),
+    ("io", "connectivity", "connect_ping_before_hello"),
+    ("java", "connectivity", "connect_ping_before_hello"),
+    ("julia", "connectivity", "connect_ping_before_hello"),
+    ("kotlin", "connectivity", "connect_ping_before_hello"),
+    ("lean", "connectivity", "connect_ping_before_hello"),
+    ("nim", "connectivity", "connect_ping_before_hello"),
+    ("node-red", "connectivity", "connect_ping_before_hello"),
+    ("ocaml", "connectivity", "connect_ping_before_hello"),
+    ("odin", "connectivity", "connect_ping_before_hello"),
+    ("oz", "connectivity", "connect_ping_before_hello"),
+    ("pd", "connectivity", "connect_ping_before_hello"),
+    ("php", "connectivity", "connect_ping_before_hello"),
+    ("prolog", "connectivity", "connect_ping_before_hello"),
+    ("python", "connectivity", "connect_ping_before_hello"),
+    ("rexx", "connectivity", "connect_ping_before_hello"),
+    ("riscv64", "connectivity", "connect_ping_before_hello"),
+    ("ruby", "connectivity", "connect_ping_before_hello"),
+    ("rust-wasm-wasmtime", "connectivity", "connect_ping_before_hello"),
+    ("rust-wasm", "connectivity", "connect_ping_before_hello"),
+    ("rust", "connectivity", "connect_ping_before_hello"),
+    ("smalltalk", "connectivity", "connect_ping_before_hello"),
+    ("sql", "connectivity", "connect_ping_before_hello"),
+    ("swift", "connectivity", "connect_ping_before_hello"),
+    ("tcl", "connectivity", "connect_ping_before_hello"),
+    ("turbowarp", "connectivity", "connect_ping_before_hello"),
+    ("typescript", "connectivity", "connect_ping_before_hello"),
+    ("unison", "connectivity", "connect_ping_before_hello"),
+    ("wasm-wat", "connectivity", "connect_ping_before_hello"),
+    ("zig", "connectivity", "connect_ping_before_hello"),
 }
 
 

@@ -658,6 +658,21 @@ dispatch:
 	call send_error
 	jmp  .Ld_ret
 .Ld_unknown_notconnect:
+	# §3.3's 404 row, and §6.5's resolution-first order puts it BEFORE the 501/403 pair:
+	# an unregistered path is `404 handler_not_found` whatever the operation, while an
+	# unknown operation on a REGISTERED handler is `501 unsupported_operation`. The
+	# oracle's check drives both and discriminates with a control, so answering 501 for
+	# each made the 404 row undrivable and it SKIPped under the 0.8.2.8 total-handler
+	# exception. A skip counts as a failure here.
+	mov  %rbx, %rdi                  # exec data map
+	call uri_handler_known
+	test %rax, %rax
+	jnz  .Ld_unknown_registered
+	mov  $404, %rdi
+	lea  ec_handler_not_found(%rip), %rsi
+	call send_error
+	jmp  .Ld_ret
+.Ld_unknown_registered:
 	# An operation this peer doesn't route falls into two classes:
 	#  - a KNOWN vocabulary op (delegate/configure/revoke/register/unregister/put) we don't
 	#    (yet) implement gets an authorization decision — if the presented capability doesn't
@@ -986,6 +1001,9 @@ ec_invalid_nonce: .asciz "invalid_nonce"
 ec_identity_mismatch: .asciz "identity_mismatch"
 ec_auth_failed: .asciz "authentication_failed"
 ec_not_found: .asciz "not_found"
+# §3.3's 404 RESOLUTION row (0.8.2.7). Distinct from ec_not_found above, which is the
+# neighbouring row: a bound-path miss INSIDE a handler that DID resolve.
+ec_handler_not_found: .asciz "handler_not_found"
 ec_payload_too_large: .asciz "payload_too_large"
 ec_not_impl:  .asciz "not_implemented"
 ec_unsupported_op: .asciz "unsupported_operation"
@@ -1006,6 +1024,8 @@ ec_incompat_proto: .asciz "incompatible_protocol"
 ec_conn_seq:  .asciz "connection_sequence_error"
 ec_conn_already: .asciz "connection_already_established"
 va_sysconnect: .asciz "system/protocol/connect"
+s_systype_pfx: .asciz "system/type"
+s_syshand_pfx: .asciz "system/handler"
 ka_parent:   .asciz "parent"
 ka_threshold: .asciz "threshold"
 ka_signers:  .asciz "signers"
@@ -1039,6 +1059,8 @@ ka_ttl_ms:   .asciz "ttl_ms"
 	.lcomm g_hello_done, 8            # 0/1, set only on the ACCEPT path of build_hello_response
                                            # — a REFUSED hello must leave the connection fresh, so
                                            # the caller may retry with a conformant one.
+	.lcomm g_rel_ptr, 8              # uri_rel: the peer-relative handler path of data.uri
+	.lcomm g_rel_len, 8              # 0 = absent/unusable
 	.lcomm b_hello_peer, 128          # §4.7 row 8's second input: the peer_id this connection
 	.lcomm g_hello_peer_len, 8        # was greeted BY, for the authenticate-side comparison.
 	.lcomm b_err,        128
@@ -5512,12 +5534,16 @@ check_hello_negotiation:
 # question left is which handler is named. derive_handler is NOT reusable here: it strips
 # the scheme form only and defaults everything else to system/tree, which is right for the
 # scope check it feeds and wrong for this.
-	.type uri_is_connect, @function
-uri_is_connect:
+# uri_rel(rdi = exec data map) — set g_rel_ptr/g_rel_len to data.uri's PEER-RELATIVE
+# handler path, accepting all three §1.4 spellings. g_rel_len = 0 when there is no usable
+# path. Factored out of uri_is_connect so uri_handler_known below reads the same value:
+# two predicates deriving the same path independently is how they drift.
+	.type uri_rel, @function
+uri_rel:
 	push %rbx
 	push %r12
 	push %r13                        # 3 (odd) → keep calls 16B-aligned
-	xor  %r13d, %r13d
+	movq $0, g_rel_len(%rip)
 	lea  k_uri(%rip), %rsi
 	mov  $3, %rdx
 	call map_find                    # rdi = exec (preserved)
@@ -5557,17 +5583,127 @@ uri_is_connect:
 	inc  %rbx                        # past the '/' that ends the peer segment
 	dec  %r12
 .Luic_cmp:
-	cmp  $23, %r12                   # "system/protocol/connect"
-	jne  .Luic_ret
-	mov  %rbx, %rdi
+	mov  %rbx, g_rel_ptr(%rip)
+	mov  %r12, g_rel_len(%rip)
+.Luic_ret:
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	ret
+
+# uri_is_connect(rdi = exec data map) -> rax = 1 if data.uri addresses the connect handler.
+# A PREDICATE: §4.7's row 10 verdict stays at the call site.
+	.type uri_is_connect, @function
+uri_is_connect:
+	push %rbx                        # 1 (odd)
+	call uri_rel
+	cmpq $23, g_rel_len(%rip)        # "system/protocol/connect"
+	jne  .Luisc_no
+	mov  g_rel_ptr(%rip), %rdi
 	lea  va_sysconnect(%rip), %rsi
 	mov  $23, %rcx
 	call memeq
-	mov  %rax, %r13
-.Luic_ret:
-	mov  %r13, %rax
+	pop  %rbx
+	ret
+.Luisc_no:
+	xor  %eax, %eax
+	pop  %rbx
+	ret
+
+# rel_covered_by(rdi = pattern ptr, rsi = pattern len) -> rax = 1 if the path in
+# g_rel_ptr/g_rel_len IS that pattern or sits UNDER it (pattern + '/'). §6.6 longest-prefix
+# containment, reduced to the membership test the 404 row needs.
+	.type rel_covered_by, @function
+rel_covered_by:
+	push %rbx
+	push %r12
+	push %r13                        # 3 (odd)
+	mov  %rdi, %r12                  # pattern ptr
+	mov  %rsi, %r13                  # pattern len
+	mov  g_rel_len(%rip), %rbx
+	cmp  %r13, %rbx
+	jb   .Lrcb_no                    # shorter than the pattern → cannot be covered
+	mov  g_rel_ptr(%rip), %rdi
+	mov  %r12, %rsi
+	mov  %r13, %rcx
+	call memeq
+	test %rax, %rax
+	jz   .Lrcb_no
+	cmp  %r13, %rbx
+	je   .Lrcb_yes                   # exact hit
+	mov  g_rel_ptr(%rip), %rax
+	add  %r13, %rax
+	cmpb $0x2f, (%rax)               # the next byte must be '/', or this is a longer NAME
+	jne  .Lrcb_no
+.Lrcb_yes:
+	mov  $1, %eax
+	jmp  .Lrcb_ret
+.Lrcb_no:
+	xor  %eax, %eax
+.Lrcb_ret:
 	pop  %r13
 	pop  %r12
+	pop  %rbx
+	ret
+
+# uri_handler_known(rdi = exec data map) -> rax = 1 if SOME handler of this peer governs
+# data.uri's path. A PREDICATE; the 404 verdict stays at the call site.
+#
+# §3.3's 404 row (0.8.2.7) and §6.5's resolution-first order: an unregistered path answers
+# 404 handler_not_found and an unknown operation on a REGISTERED one answers 501
+# unsupported_operation, and the oracle's check asserts BOTH with a discrimination control.
+# This peer dispatches by OPERATION rather than by a §6.6 tree walk, so before this existed
+# it had no way to tell the two apart and answered 501 for everything — which the oracle
+# SKIPped under its 0.8.2.8 total-handler exception (it reads a peer that answers 501
+# everywhere as one that registers a catch-all). A skip counts as a failure here, so the
+# posture is closed rather than disclosed: the set below is exactly the handler set this
+# peer publishes as system/handler/* interface entities.
+	.type uri_handler_known, @function
+uri_handler_known:
+	push %rbx                        # 1 (odd)
+	call uri_rel
+	cmpq $0, g_rel_len(%rip)
+	je   .Luhk_yes                   # no usable path → not our call to refuse here
+	lea  va_sysconnect(%rip), %rdi
+	mov  $23, %rsi
+	call rel_covered_by
+	test %rax, %rax
+	jnz  .Luhk_yes
+	lea  va_systree(%rip), %rdi
+	mov  $11, %rsi
+	call rel_covered_by
+	test %rax, %rax
+	jnz  .Luhk_yes
+	lea  va_syscap(%rip), %rdi
+	mov  $17, %rsi
+	call rel_covered_by
+	test %rax, %rax
+	jnz  .Luhk_yes
+	lea  s_systype_pfx(%rip), %rdi
+	mov  $11, %rsi                   # "system/type"
+	call rel_covered_by
+	test %rax, %rax
+	jnz  .Luhk_yes
+	lea  s_syshand_pfx(%rip), %rdi
+	mov  $14, %rsi                   # "system/handler"
+	call rel_covered_by
+	test %rax, %rax
+	jnz  .Luhk_yes
+	lea  s_pat_echo(%rip), %rdi
+	mov  $20, %rsi                   # "system/validate/echo"
+	call rel_covered_by
+	test %rax, %rax
+	jnz  .Luhk_yes
+	lea  s_pat_dout(%rip), %rdi
+	mov  $32, %rsi                   # "system/validate/dispatch-outbound"
+	call rel_covered_by
+	test %rax, %rax
+	jnz  .Luhk_yes
+	xor  %eax, %eax
+	pop  %rbx
+	ret
+.Luhk_yes:
+	mov  $1, %eax
 	pop  %rbx
 	ret
 
