@@ -387,7 +387,7 @@ _handlers_register: procedure expose EC.
   ident = Peer_Identity(peer_h)
   pattern = Hnd_RegisterPattern(exec)
   if pattern == '' then return Hnd_RegisterPatternError(exec)
-  if Hnd_IsReservedPattern(pattern) then return Out_Err(403, 'forbidden_pattern', '§6.2: user-installed handlers MUST NOT register at system/* paths: ' || pattern)
+  if Hnd_IsReservedPattern(pattern) then return Out_Err(403, 'forbidden_pattern', 'section 6.2: user-installed handlers MUST NOT register at system/* paths: ' || pattern)
   req = Ent_EntityField(exec, 'params')
   if req == '' then return Out_Err(400, 'unexpected_params', 'register: missing params')
   if Ent_Type(req) \== 'system/handler/register-request' then return Out_Err(400, 'unexpected_params', 'register expects register-request')
@@ -617,7 +617,7 @@ Hnd_DispatchOutbound: procedure expose EC.
   inner = Ent_Make('primitive/any', inner_data)
   resource = Wire_ResourceTarget('system/handler/' || target)
   resp = Peer_OutboundDispatch(peer_h, Ctx_Conn(ctx), target, op, inner, cap, granter, cap_sig, resource)
-  if resp == '' then return Out_Err(503, 'no_outbound_seam', 'no live §6.11 reentry connection')
+  if resp == '' then return Out_Err(503, 'no_outbound_seam', 'no live section 6.11 reentry connection')
   root = Env_Root(resp)
   status = Ent_Uint(root, 'status')
   if status == '' then status = 0

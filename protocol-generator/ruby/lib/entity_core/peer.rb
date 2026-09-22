@@ -728,7 +728,7 @@ module EntityCore
         inner = Entity.make("primitive/any", inner_data)
         resource = Wire.resource_target("system/handler/#{target}")
         env = @peer.outbound_dispatch(ctx.conn, target, operation, inner, capability, granter_peer, cap_sig, resource)
-        return Outcome.err(503, "no_outbound_seam", "no live §6.11 reentry connection") if env.nil?
+        return Outcome.err(503, "no_outbound_seam", "no live section 6.11 reentry connection") if env.nil?
 
         status = env.root.uint("status")
         result_cbor = env.root.field("result") || {}

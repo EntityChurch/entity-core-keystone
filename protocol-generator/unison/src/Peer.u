@@ -721,7 +721,7 @@ registerHandler p exec = match registerPatternOf exec with
   None -> errMsg 400 "invalid_resource" "register requires system/handler/{pattern} target"
   Some pattern ->
     if isReservedSystemPattern pattern then
-      errMsg 403 "forbidden_pattern" ("§6.2: user-installed handlers MUST NOT register at system/* paths: " Text.++ pattern)
+      errMsg 403 "forbidden_pattern" ("section 6.2: user-installed handlers MUST NOT register at system/* paths: " Text.++ pattern)
     else match entityField exec "params" with
       None -> errMsg 400 "unexpected_params" "register: missing params"
       Some req -> doRegister p pattern req

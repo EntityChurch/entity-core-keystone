@@ -753,7 +753,7 @@ func (h handlersHandler) register(ctx *dispatchCtx) outcome {
 		return bad
 	}
 	if isReservedSystemPattern(pattern) {
-		return errOutcome(403, "forbidden_pattern", "§6.2: user-installed handlers MUST NOT register at system/* paths: "+pattern)
+		return errOutcome(403, "forbidden_pattern", "section 6.2: user-installed handlers MUST NOT register at system/* paths: "+pattern)
 	}
 	req, ok := paramsEntity(exec)
 	if !ok {
@@ -883,7 +883,7 @@ func (h dispatchOutboundHandler) handleOp(op string, ctx *dispatchCtx) outcome {
 	resource := ResourceTarget("system/handler/" + target)
 	env, ok := p.outboundDispatch(ctx.conn, target, operation, inner, capability, granterPeer, capSig, resource)
 	if !ok {
-		return errOutcome(503, "no_outbound_seam", "no live §6.11 reentry connection")
+		return errOutcome(503, "no_outbound_seam", "no live section 6.11 reentry connection")
 	}
 	status, _ := env.Root.Uint("status")
 	resultCbor, hasResult := env.Root.Field("result")

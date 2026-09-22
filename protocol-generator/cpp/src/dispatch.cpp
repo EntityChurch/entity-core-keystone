@@ -1014,7 +1014,7 @@ void Peer::h_validate_dispatch_outbound(Connection& conn, const Entity& exec,
         return;
     }
     if (!conn.seam) {
-        err(o, 503, "no_outbound_seam", "no live §6.11 reentry connection"); return;
+        err(o, 503, "no_outbound_seam", "no live section 6.11 reentry connection"); return;
     }
     // generic relay: forward `value` verbatim as the downstream EXECUTE's params data.
     auto inner = Entity::make("primitive/any", *value_v);

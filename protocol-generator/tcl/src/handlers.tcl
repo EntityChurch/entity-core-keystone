@@ -452,7 +452,7 @@ proc ::entity::core::handlers::_handlers_register {peer_h ctx} {
     set pattern [register_pattern $exec]
     if {$pattern eq ""} { return [register_pattern_error $exec] }
     if {[is_reserved_pattern $pattern]} {
-        return [err 403 forbidden_pattern "§6.2: user-installed handlers MUST NOT register at system/* paths: $pattern"]
+        return [err 403 forbidden_pattern "section 6.2: user-installed handlers MUST NOT register at system/* paths: $pattern"]
     }
     set req [::entity::core::entity::entity_field $exec params]
     if {$req eq ""} { return [err 400 unexpected_params "register: missing params"] }
@@ -706,7 +706,7 @@ proc ::entity::core::handlers::dispatch_outbound {peer_h operation ctx} {
     set resource [::entity::core::wire::resource_target "system/handler/$target"]
     set resp [::entity::core::peer::outbound_dispatch $peer_h [dict get $ctx conn] \
         $target $op $inner $cap $granter $cap_sig $resource]
-    if {$resp eq ""} { return [err 503 no_outbound_seam "no live §6.11 reentry connection"] }
+    if {$resp eq ""} { return [err 503 no_outbound_seam "no live section 6.11 reentry connection"] }
     set root [::entity::core::envelope::root $resp]
     set status [::entity::core::entity::uint $root status]
     if {$status eq ""} { set status 0 }

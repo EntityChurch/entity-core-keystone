@@ -973,7 +973,7 @@ defmodule EntityCore.Peer do
 
       {:ok, pattern} ->
         if reserved_system_pattern?(pattern) do
-          err(403, "forbidden_pattern", "§6.2: user-installed handlers MUST NOT register at system/* paths: " <> pattern)
+          err(403, "forbidden_pattern", "section 6.2: user-installed handlers MUST NOT register at system/* paths: " <> pattern)
         else
           case entity_field(exec, "params") do
             nil ->
@@ -1168,7 +1168,7 @@ defmodule EntityCore.Peer do
                  capability_signature: capability_signature
                ) do
             nil ->
-              err(503, "no_outbound_seam", "no live §6.11 reentry connection")
+              err(503, "no_outbound_seam", "no live section 6.11 reentry connection")
 
             %Envelope{} = env ->
               status = Model.uint_field(env.root, "status") || 0

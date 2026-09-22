@@ -890,7 +890,7 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  args:innerData←(1+VIsMap value)⊃(VMapEmpty VmPut('value')value)(value)
  inner←'primitive/any'EntMake innerData
  →(fd≠0)/seam
- Z←OutErr(503)('no_outbound_seam')('no live §6.11 reentry connection') ⋄ →0
+ Z←OutErr(503)('no_outbound_seam')('no live section 6.11 reentry connection') ⋄ →0
  seam:resource←WireResourceTarget'system/handler/',target
  rid←'out-',⍕NextRidCtr
  exec←WireMakeExecute(rid)(target)(dop)(inner)(IdHash gIdent)(EntHash rcap)(resource)

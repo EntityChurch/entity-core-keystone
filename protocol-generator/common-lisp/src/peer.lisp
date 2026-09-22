@@ -759,7 +759,7 @@ Returns (values ENTITY NIL) when admitted, or (values NIL OUTCOME) when refused.
                      (resource (resource-target (concatenate 'string "system/handler/" target)))
                      (env (outbound-dispatch peer conn target operation inner
                                              capability granter-peer cap-sig :resource resource)))
-                (if (null env) (err 503 "no_outbound_seam" "no live §6.11 reentry connection")
+                (if (null env) (err 503 "no_outbound_seam" "no live section 6.11 reentry connection")
                     (let ((status (or (entity-uint (envelope-root env) "status") 0))
                           (result-cbor (or (entity-field (envelope-root env) "result") (make-cbor-map nil))))
                       (ok (make-entity "primitive/any"

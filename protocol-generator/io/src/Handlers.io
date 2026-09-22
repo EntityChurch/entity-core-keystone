@@ -660,7 +660,7 @@ DispatchOutboundHandler := Handler clone do(
         inner := Entity with("primitive/any", innerData)
         resource := EcMap with("targets", list(("system/handler/" .. target) asSymbol))
         resp := peer outboundDispatch(ctx at("conn"), target, op, inner, cap, granter, capSig, resource)
-        if(resp == nil, return fail(503, "no_outbound_seam", "no live §6.11 reentry connection"))
+        if(resp == nil, return fail(503, "no_outbound_seam", "no live section 6.11 reentry connection"))
         root := resp root
         status := root uint("status")
         if(status == nil, status = 0)

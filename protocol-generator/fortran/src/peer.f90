@@ -1312,7 +1312,7 @@ contains
     inner = ent_make('primitive/any', inner_data)
     ! the reentry connection IS the inbound connection this handler runs on.
     io = c_io(slot)
-    if (io == 0) then; oc = out_err(503, 'no_outbound_seam', 'no live §6.11 reentry connection'); return; end if
+    if (io == 0) then; oc = out_err(503, 'no_outbound_seam', 'no live section 6.11 reentry connection'); return; end if
     resource = wire_resource_target('system/handler/' // target)
     rid  = 'out-' // itoa(next_rid_ctr())
     exec = wire_make_execute(rid, target, op, inner, g_ident%id_hash, ent_hash(rcap), resource)

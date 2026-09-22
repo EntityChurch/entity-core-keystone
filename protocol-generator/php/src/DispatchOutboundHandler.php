@@ -51,7 +51,7 @@ final class DispatchOutboundHandler implements Handler
         $env = $this->peer->outboundDispatch($ctx->conn, $target, $operationField, $inner,
             $capability, $granterPeer, $capSig, $resource);
         if ($env === null) {
-            return Outcome::err(503, 'no_outbound_seam', 'no live §6.11 reentry connection');
+            return Outcome::err(503, 'no_outbound_seam', 'no live section 6.11 reentry connection');
         }
         $status = $env->root->uint('status') ?? \gmp_init(0);
         $resultCbor = $env->root->field('result') ?? Ecf::emptyMap();

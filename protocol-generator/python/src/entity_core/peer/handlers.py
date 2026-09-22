@@ -996,7 +996,7 @@ class DispatchOutboundHandler:
             ctx.conn, target, operation, inner, capability, granter_peer, cap_sig, resource
         )
         if env is None:
-            return Outcome.err(503, "no_outbound_seam", "no live §6.11 reentry connection")
+            return Outcome.err(503, "no_outbound_seam", "no live section 6.11 reentry connection")
         status = env.root.uint("status") or 0
         result_cbor = env.root.field("result")
         if not isinstance(result_cbor, dict):
