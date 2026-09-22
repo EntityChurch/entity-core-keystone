@@ -80,11 +80,13 @@ convergence** — they share a generation lineage and, for the FFI-hybrid peers,
 
 ## What's next
 
-1. **`authz_peers_target_from_uri`** — WARNs on 39 of 46 peers, and the "inconclusive by design,
+1. **`authz_peers_target_from_uri`** — WARNs on **40** of 46 peers, and the "inconclusive by design,
    needs a two-peer harness" label it carried since 2026-08-16 is **withdrawn**. Six peers PASS it
-   with a real three-row verdict, so a standalone peer can decide it; `go` WARNs because all three
-   rows return `404 handler_not_found` — unrouted, not undecidable. Read a PASS peer against `go`
-   and find out whether the 39 share one defect.
+   with a real three-row verdict (`asm-arm64` `asm-x86_64` `forth` `pd` `riscv64` `smalltalk`), so a
+   standalone peer can decide it; `go` WARNs because all three rows return `404 handler_not_found` —
+   unrouted, not undecidable. Read a PASS peer against `go` and find out whether the 40 share one
+   defect. *(This item read "39 of 46" until 2026-08-30; the finding said 40 and the finding was
+   right — counted across all 46 committed reports.)*
 2. ~~**The ISA trio's type-registry over-publication**~~ ✅ **CLOSED 2026-08-30**
    (`CONFORMANCE-MATRIX.md` ⁹). `typestore.s` published ~200 entries including whole
    standard-extension vocabularies, which the oracle scores *matched-if-present* — so 282
@@ -115,8 +117,28 @@ convergence** — they share a generation lineage and, for the FFI-hybrid peers,
    and missing one reintroduces exactly the overflow class that was just closed.
 5. **Regenerate the cohort against the `v0.8.2` spec snapshot.** Every peer in the tree was
    generated against `v0.8.0`; the snapshot has been pinned since 2026-08-21 and no peer has moved
-   to it. Tracked, not overlooked.
+   to it. Tracked, not overlooked — **but measured 2026-08-30, the gap is much smaller than "no
+   peer has been regenerated" implies, and it is a PROVENANCE gap far more than a BEHAVIOUR one.**
+   The pinned oracle post-dates the 0.8.1/0.8.2 work, so the conformance loop has already dragged
+   every peer onto the v0.8.2 reading of the surfaces it tests: F40 typed id-scope matching
+   (`f40_id_scope_include_control` / `_exclude_literal` / `_include_no_overgrant`), RT-14 lowercase
+   hex in path segments (`hash_hex_path_segment_lowercase`), RT-6 nonce single-use elevated to a
+   MUST (`handshake_nonce_single_use`), and the key_type gate — **all PASS on all 46 peers today.**
+   So regeneration buys the *untested corners*, the provenance of what each peer was authored
+   against, and confidence that nothing v0.8.2 says is unimplemented where no vector looks. Scope
+   it from the spec diff (≈197 changed lines in `ENTITY-CORE-PROTOCOL.md`, 29 in the CBOR encoding,
+   40 in the type system), not from the assumption that the cohort is a version behind on the wire.
 6. **Package-registry publish** and **Ed448/SHA-384 agility** stay demand-driven.
+
+**New this session — `tools/coherence-gate.py`, in `make lint`.** The sixth root-level gate, and
+the first that asks whether a document agrees with itself: all 46 primary-table rows and all 46
+per-peer prose banners must equal the peer's committed report. The other five ask whether numbers
+are comparable, whether anchors resolve, whether links reach real files — and all of them pass a
+tree publishing `595P/54W` for a peer whose own report says `313P/336W`. It found one defect
+immediately: 13 published banners were still anchored on a dead `dev` commit eight days after the
+tool that prevents that shipped. **It does not retire the hand-walk**, and notably does not catch
+the `§5` defect that motivated half of it — there is no way to distinguish "§5 of this file" from
+"§5 of the spec".
 
 **Closed 2026-08-30 — the cohort. `cobol` and the three ISA peers reached `755 · 0F`, and two of
 the four had been misdiagnosed.** `cobol`'s 30F was 24 cascade + 5 real + 1: an unchecked copy of
