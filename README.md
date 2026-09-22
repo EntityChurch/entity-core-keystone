@@ -157,7 +157,7 @@ architecture, never patched here. They are gitignored local tools, not committed
   **`--profile core` is the gating profile.**
 
 Every published number is **anchored on a content digest with its full breakdown** — the `go` peer
-reads `755 · 0F — 312P/337W/0F/106S @ 95edd774…` — never a bare percentage, and never a commit hash ([ADR-0012]
+reads `756 · 0F — 314P/336W/0F/106S @ d30c3dd0…` — never a bare percentage, and never a commit hash ([ADR-0012]
 Amendment 1: published commits are authored fresh at the release boundary, so a hash from our
 internal history resolves for no outside reader, while a digest of the oracle's own check set
 survives it — `CONFORMANCE-MATRIX.md` §"The pin" carries the full anchor set). A skip counts as a failure. A peer measured on a different set of
@@ -220,12 +220,18 @@ Both are verbatim, byte-for-byte, SHA-256-pinned snapshots with provenance in th
 
 ## Conformance state, honestly
 
-The whole cohort is measured at **one** pin — the 755-check set `95edd774…`, spec snapshot
-`v0.8.2` — with every row a fresh measurement at that pin:
+The whole cohort is measured at **one** pin — the 756-check set `d30c3dd0…`, spec snapshot
+`v0.8.2.3` — with every row a fresh measurement at that pin:
 
-- **All 46 peers pass `--profile core` 0-FAIL** (2026-08-30). Tiers M1 (5/5), M2 (8/8), M3 (13/13),
-  probes 18/18, exploratory 2/2. The cohort check-set gate exits 0 for the first time since the
-  755-check re-pin, over every peer in the tree with no exclusions.
+- **All 46 peers pass `--profile core` 0-FAIL** (2026-09-01, re-measured at the 756-check set).
+  Tiers M1 (5/5), M2 (8/8), M3 (13/13), probes 18/18, exploratory 2/2 — every peer in the tree,
+  with no exclusions, and every committed per-peer report at the same pin the matrix publishes.
+- **The 756th check is a privilege escalation, and five peers were live to it.** An inbound EXECUTE
+  naming *another* peer's namespace must be refused on the address, before any handler is resolved
+  (§1.4 / §6.5 step 3). Four peers instead stripped the foreign peer id, resolved their own handler
+  at what was left, and let the caller's grant authorize it — status **200**. A fifth refused, but
+  only by resolving locally and then failing the authorization check, which is the same defect with
+  a luckier outcome. All five now answer `400 invalid_request` at canonicalization.
 - **`cobol` was 30F, and 24 of those were a cascade behind one memory-safety defect** — an unchecked
   copy of wire data into a fixed field, which hardened libc turned into a process kill. The peer
   died on a 16 KiB `tree.put` and every later check reported connection-refused. Bounding the three

@@ -146,6 +146,9 @@ census_one() {
   local jout; jout="$(jout_for "$peer")"
   echo "=== $peer starting $(date -u +%H:%M:%S) [dest=$DEST] ===" > "$log"
   if [ "$DEST" = "probe" ]; then ORACLE="$(oracle_for "$peer")"; export ORACLE; fi
+  # When this run started. Used below to tell "this run wrote a report" from "a report
+  # from some EARLIER run is sitting there" -- see the STALE JSON branch.
+  local t0; t0=$(date +%s)
   local rc=0
   # PROBE-ONLY special case, and it exists because of a measured gap rather than a
   # preference: `lean` and `unison` re-exec into their container forwarding ONLY
@@ -266,6 +269,25 @@ census_one() {
   echo "=== $peer done rc=$rc $(date -u +%H:%M:%S) ===" >> "$log"
   local hostout; hostout="$(hostout_for "$peer")"
   if [ -f "$hostout" ]; then
+    # A REPORT THAT PREDATES THIS RUN IS NOT THIS RUN'S RESULT. The `-f` test alone cannot
+    # tell "the peer wrote a report" from "the write FAILED and an older report is still
+    # sitting there", and the difference is invisible in the summary line: it reports the
+    # stale file's numbers as though they were the measurement.
+    #
+    # Measured 2026-09-01: `swift` in a --to-status cohort run died with `permission denied`
+    # on both reading its own run-s4.sh and creating its report (a `:Z` SELinux relabel race
+    # against unrelated containers on the host -- CONCURRENCY=1 protects this script from
+    # itself, not from anything else). It printed
+    #   swift: rc=1 P/W/F/S total=755/312/337/0/106
+    # which is the committed report from 2026-08-24 at the RETIRED 755-check set, read back
+    # and presented as a fresh 756-check measurement. rc=1 was the only signal, and a
+    # non-zero rc is easy to skim past in a 46-line log. Re-run alone, swift measured
+    # 756 · 314P/336W/0F/106S.
+    local mt; mt=$(stat -c %Y "$hostout" 2>/dev/null || echo 0)
+    if [ "$mt" -lt "$t0" ]; then
+      echo "$peer: rc=$rc STALE JSON — this run wrote NO report; the file on disk predates it (see $log)"
+      return $rc
+    fi
     local summary
     summary=$(python3 -c "import json,sys; d=json.load(open('$hostout')); s=d.get('summary',{}); print(f\"{s.get('total','?')}\/{s.get('passed','?')}\/{s.get('warned','?')}\/{s.get('failed','?')}\/{s.get('skipped','?')}\")" 2>/dev/null || echo "unparseable")
     echo "$peer: rc=$rc P/W/F/S total=$summary"

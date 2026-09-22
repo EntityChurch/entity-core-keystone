@@ -916,6 +916,53 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   file as a defect. The full tree is clean apart from `cobol/src/core-types.dat`, which is data.
   **Generalize past NUL: before concluding a source-wide grep found nothing, confirm the grep could
   see the file.**
+- **"THE SPEC DOES NOT SAY" IS A CLAIM ABOUT YOUR SEARCH, AND WE PUBLISHED ONE AS A CLAIM ABOUT THE
+  SPEC — SEARCH THE SECTION THE BEHAVIOUR BELONGS TO, NOT THE WORDS THE QUESTION IS PHRASED IN.**
+  RATIFIED 2026-09-01: **second occurrence of the false-negative class in two days**, and the pair
+  is what earns it — the `dart`/`ruby` NUL byte above is a grep that **could not see** the file, this
+  is a grep that **looked in the wrong vocabulary**, and both publish as a confident negative that
+  reads identically to a real one.
+  **F51** (`protocol-generator/shared/findings/peers-dimension-reachability.md`) was routed to arch
+  on 2026-08-30 asking for a normative sentence on whether a core peer must resolve its own handler
+  for a URI naming a FOREIGN peer's namespace. It states *"The spec answers this nowhere we can
+  find"* — **four lines under a header citing `v0.8.2`, in which §1.4 line 300 reads *"the path MUST
+  target the local peer's namespace. If the peer ID does not match the local peer, the peer MUST
+  reject with status 400 (`invalid_request`)."*** Byte-identical in `v0.8.2.3`
+  (`sha256(line) = 376953b9…`), i.e. it was in the snapshot we were building the whole cohort
+  against.
+  **The mechanism is dull and entirely reusable.** The search used the vocabulary of the QUESTION —
+  `peers`, `target_peer`, `check_permission`, `extract_peer` — and the rule is written in the
+  vocabulary of ADDRESSING. It contains none of those four terms. The finding even names where it
+  expected the answer to be added (*"in §5.2 beside `extract_peer`, or in §6.6 beside handler
+  resolution"*) and **never read §1.4, the section it is named after.**
+  **Two things make it worse than an ordinary miss, and both are about direction.** (a) The finding's
+  leading argument — the `peers` default is dead weight under the majority reading, *"the strongest
+  argument we have that the minority of 6 is right"* — argued **against** settled normative text; it
+  survived only because it was explicitly framed as an argument from construction rather than from
+  the spec. (b) It is a **negative** claim, so nothing could contradict it: a wrong positive claim
+  about the spec gets caught by the next person to read the cited line, while *"the spec is silent"*
+  cites nothing and is never re-checked. It sat published for two days in the register, the matrix
+  and `docs/STATUS.md`.
+  **Say precisely what upstream did, because the flattering reading is available and is a second
+  error.** 0.8.2.2/0.8.2.3 added the code NAME and the explicit prohibition on both wrong
+  dispositions (§3.3's 400 table, §6.2's `handler_not_found` carve-out, §6.5 step 3's *"MUST NOT be
+  reached by resolving a local handler … and letting §5.2 decide"*). **The MUST itself predates the
+  finding.** So this is a WITHDRAWAL, not "arch resolved our ambiguity" — the sharpening is real and
+  it is not what we asked for.
+  **Enforcement, and it is a documentation rule rather than a grep, because a grep is what failed:**
+  a finding that asserts a spec gap MUST record **which sections it read**, by number. That turns an
+  unfalsifiable negative into a reviewable one — the next reader sees the hole instead of inheriting
+  the conclusion — and it costs one line. Corollary for the cheap direction: **before claiming
+  silence, read the section that OWNS the behaviour** (addressing rules live with addressing, not
+  with authorization), and grep the spec for the *disposition* you would expect (`invalid_request`)
+  as well as the *concept* — one `grep -c invalid_request` on `v0.8.2` returns 1 and it is the
+  answer.
+  *(Sub-lesson, measured the same session and worth its own line: **a WARN never meant a peer was
+  safe.** `wasm-wat` WARNed on the retired check and still carried the defect — it refused, but by
+  resolving locally and then failing authz. And **all six peers that PASSed the retired check needed
+  the new gate**, which is not a coincidence: passing required exactly the behaviour §6.5 step 3
+  forbids. A check whose PASS branch rewards a defect is worse than no check, and the oracle deleted
+  it rather than re-pointing it.)*
 - **A WIRE PROBE FAILS IN THE DIRECTION OF THE ANSWER IT IS LOOKING FOR — so a probe without a
   CONTROL is not a measurement, it is a rumour with a number attached.** RATIFIED 2026-08-30
   (three independent instances in one afternoon, building `tools/p47-probe` to measure the §4.7
@@ -1586,15 +1633,34 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   overlay, same file naming. **Enforcement, and it is the cheap one this repo already prescribes:
   when `tier-status.py` and `check-set-gate.py --tracked` disagree about which peers are green,
   suspect the INPUT before the peers.** They disagreed here, and the tracked gate was right.
-  **SUPERSEDED 2026-09-01 by the `0.8.2.3` re-pin — the `755 · 0F` cohort row below is HISTORY, not
-  current state. The pin is now `f313028` / 756 checks, and the sweep is IN PROGRESS at 41 of 46.**
-  Both anchors moved together (oracle `c1b0708 → f313028`, spec `v0.8.2 → v0.8.2.3`), two new core
-  checks landed (`connect_prehello_authenticate` FM-1, `dispatch_inbound_foreign_namespace_refused`
-  PD-1) and one was removed (`authz_peers_target_from_uri`, whose reference answer had INVERTED —
-  its PASS branch required the escalation). **Owed: `pd` `wasm-wat` `asm-x86_64` `asm-arm64`
-  `riscv64`, all still refusing a foreign namespace by resolving locally, and all 46 tracked
-  per-peer reports are a pin behind.** Full state, and what each remaining peer needs, in
-  `docs/status/HANDOFF-2026-09-01-0823-sweep-41-of-46.md`.
+  **CURRENT STATE 2026-09-01 — the `0.8.2.3` sweep is CLOSED at 46 of 46, `756 · 0F`, cohort-standard
+  row `314P/336W/0F/106S`. The `755 · 0F` cohort row below is HISTORY.** Both anchors moved together
+  (oracle `c1b0708 → f313028`, spec `v0.8.2 → v0.8.2.3`, executed set `95edd774… → d30c3dd0…`), two
+  new core checks landed (`connect_prehello_authenticate` FM-1,
+  `dispatch_inbound_foreign_namespace_refused` PD-1) and one was **deleted rather than re-pointed**
+  (`authz_peers_target_from_uri`, whose PASS branch required the escalation — see the F51 withdrawal
+  entry above). The last five peers (`pd` `wasm-wat` `asm-x86_64` `asm-arm64` `riscv64`) took the
+  §1.4 address gate; all 46 tracked reports and prose banners were **re-measured**, not copied, and
+  the matrix's own pin prose was a pin behind independently of the peers (`pin-gate` was red on
+  `check_set_digest` and the spec-snapshot hashes — the re-pin updated `oracle-pin.env` and the code,
+  and left the document that tells a reader what the pin IS).
+  **Two verification-tool defects fell out of the refresh, and their correct answers are OPPOSITE —
+  worth holding together, because "check the sibling for the same defect" argues for making them
+  match and that would be wrong.** Both read `output/scratch/census/`, which a `--to-status` run does
+  not write. `tier-status.py` is a status DISPLAY, so freshest-wins is right: it gained the tracked
+  reports as a third recency-ranked source (keyed by peer DIRECTORY — every tracked report is named
+  `CONFORMANCE-REPORT.json`, the `Path.stem` collision `check-set-gate` already shipped once).
+  `check-set-gate.py --tracked` is a GATE ON those reports, and its census read is exactly what keeps
+  the claim set independent of what it checks — deriving it from the tracked reports makes the gate
+  *"every tracked report at the pinned digest is at the pinned digest"*, the `oracle-bootstrap`
+  HAVE/WANT shape — so it REPORTS the drift instead. **A stale input is not always an override to
+  fix; sometimes it is the independence you were relying on. Ask what question the tool answers
+  before porting a sibling's fix into it.**
+  *(And a third, cheap: `coherence-gate --self-test` died on `assert bad != matrix_text` because its
+  planted defects named `755`-era literals. **That loud death is the design working** — a plant that
+  silently matched nothing would make those checks vacuous — but a regression suite needing a hand
+  edit on every re-pin is one nobody runs. **Derive plants from the file under test, never hardcode
+  the figures.**)*
   **CLOSED 2026-08-30 — every peer in the cohort is at `755 · 0F`. 46 of 46, no exclusions.** The
   last five landed in one pass: `asm-x86_64`, `asm-arm64`, `riscv64` (INVALID → 0F), `cobol`
   (30F → 0F) and `apl` (excluded → 0F).

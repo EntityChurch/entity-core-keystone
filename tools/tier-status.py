@@ -80,6 +80,30 @@ def verdicts():
     the same defect the same day" -- and the sibling is the file next to it that reads
     the same directory. An input that PREDATES what it supersedes is not an override, it
     is drift.
+
+    THIRD SOURCE, added 2026-09-01, and it is the same class ONE SOURCE OVER: the
+    docstring above fixed the overlay's recency and never asked whether the set of
+    sources was complete. It was not. `run-cohort-census.sh` has TWO destinations --
+    `output/scratch/census/` by default and the peers' TRACKED
+    `status/CONFORMANCE-REPORT.json` under `--to-status` -- and this function only ever
+    knew about the first. So a `--to-status` run, which is the documented way to refresh
+    the committed record, leaves `output/scratch/census/` untouched and this tool reports
+    the PREVIOUS census's verdicts indefinitely.
+
+    Measured 2026-09-01: the PD-1 fix took `pd` `asm-x86_64` `asm-arm64` `riscv64`
+    `wasm-wat` to 756 / 0F, the tracked reports said so, and `tier-status` printed
+    FAIL(1) for all five off pre-fix scratch files. The benign direction is the one we
+    hit; THE DANGEROUS DIRECTION IS THE INVERSE -- a peer that REGRESSED and was then
+    refreshed with `--to-status` would keep displaying its old GREEN verdict here, and
+    `--gate` would pass on it.
+
+    A tracked report is a MEASUREMENT (`--to-status` re-runs the peer; hand-copying a
+    census JSON onto it is forbidden precisely so this holds), so it ranks by recency
+    beside the other two rather than being a special case.
+
+    Keyed by the peer DIRECTORY, never by `Path.stem`: every tracked report is named
+    `CONFORMANCE-REPORT.json`, so `stem` collapses all 46 into one entry -- the exact
+    collision check-set-gate.py shipped and had to be fixed for.
     """
     def load(p):
         try:
@@ -109,6 +133,16 @@ def verdicts():
             v = load(p)
             if v is not None:
                 out[p.stem], seen_mtime[p.stem] = v, p.stat().st_mtime
+    # Tracked reports (`run-cohort-census.sh --to-status`), same newer-wins rule. Keyed
+    # by the peer directory -- p.stem is "CONFORMANCE-REPORT" for all 46.
+    for p in sorted((REPO / "protocol-generator").glob("*/status/CONFORMANCE-REPORT.json")):
+        peer = p.parent.parent.name
+        prev = seen_mtime.get(peer)
+        if prev is not None and p.stat().st_mtime <= prev:
+            continue
+        v = load(p)
+        if v is not None:
+            out[peer], seen_mtime[peer] = v, p.stat().st_mtime
     return out
 
 

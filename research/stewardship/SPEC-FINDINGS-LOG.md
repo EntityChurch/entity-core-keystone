@@ -26,7 +26,31 @@ Cross-language register of findings surfaced by keystone work. Per-language spec
 > weight should not be cited without that. No conformance number moves. **Sequencing: land the
 > ruling before the v0.8.2 regeneration or the ~6-peer sweep is done twice.**
 >
-> **OPEN, routed 2026-08-30 — F51: the §5.2 `peers` dimension is structurally unreachable in 40 of 46 peers.**
+> ⛔ **WITHDRAWN 2026-09-01 — F51 was not a spec gap. §1.4 answered it, in the snapshot the finding
+> cites in its own header, and we searched for the wrong words.**
+> `ENTITY-CORE-PROTOCOL.md` §1.4 line 300 — byte-identical in `v0.8.2` and `v0.8.2.3`,
+> `sha256(line) = 376953b9…` — reads *"the path MUST target the local peer's namespace. If the peer
+> ID does not match the local peer, the peer MUST reject with status 400 (`invalid_request`)."*
+> So the **majority** reading was right and the argument recorded below (that the `peers` default's
+> dead weight makes the minority of 6 correct) argued against settled normative text. Both groups
+> had the *disposition* wrong: the 40 answered `404 handler_not_found`, the 6 `403`/`200`, the spec
+> `400 invalid_request`. What 0.8.2.2/0.8.2.3 added is the code NAME and the explicit prohibition on
+> both wrong dispositions — the MUST itself predates the finding, so this is a **withdrawal, not an
+> upstream resolution**, and calling it the latter would be the flattering version of the same error.
+> **Root cause, and it generalizes past this finding:** the search used the vocabulary of the
+> *question* (`peers`, `target_peer`, `check_permission`, `extract_peer`) and the rule is written in
+> the vocabulary of *addressing* — it contains none of those four terms. This document even names
+> where it expected the answer to be added (§5.2 or §6.6) and never read §1.4, the section it is
+> named after. **"The spec does not say" is a claim about the search, and it published as a claim
+> about the spec.** Enforcement for the next negative claim about prose: read the SECTION the
+> behaviour belongs to, and record which sections you read, so a reader can see the hole instead of
+> inheriting the conclusion. Consequences all discharged — the check was deleted rather than
+> re-pointed (its PASS branch rewarded the forbidden resolution), its replacement
+> `dispatch_inbound_foreign_namespace_refused` passes on 46 of 46, and all six former-PASS peers
+> needed the new gate. Correction in the evidence file; the original text is preserved there and
+> below, unedited.
+>
+> **As originally routed 2026-08-30 — F51: the §5.2 `peers` dimension is structurally unreachable in 40 of 46 peers.**
 > Evidence: [`peers-dimension-reachability.md`](../../protocol-generator/shared/findings/peers-dimension-reachability.md)
 > — filed with the findings, not in `research/stewardship/`, because this register PUBLISHES and
 > `research/**` is stripped at release: an index whose evidence is deleted is the documented failure.

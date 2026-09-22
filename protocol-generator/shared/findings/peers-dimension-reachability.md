@@ -5,9 +5,80 @@
 **Spec snapshot:** `v0.8.2` (`ENTITY-CORE-PROTOCOL.md` `4be521f7…`)
 **Oracle:** the 755-check set, `core_executed_check_set_digest = 95edd774…`
 **Check:** `authz/authz_peers_target_from_uri`
-**Status:** open question — **not** a peer defect, and deliberately not fixed here
+**Status:** ⛔ **CLOSED 2026-09-01 — and the central premise below was WRONG.** See the
+correction immediately following. Everything after it is preserved unedited, because the
+error is the useful part.
 
 ---
+
+## CORRECTION AND CLOSURE (2026-09-01)
+
+**This finding asked for a normative sentence that was already in the snapshot it cites in
+its own header.** The question was real, the cohort measurement was correct, and the answer
+had been sitting in §1.4 — the section this document is *about* — the whole time.
+
+`ENTITY-CORE-PROTOCOL.md` §1.4 *URI and Path Model*, line 300, **byte-identical in `v0.8.2`
+and `v0.8.2.3`** (`sha256(line) = 376953b9…`):
+
+> **Inbound dispatch (wire listener).** When a peer receives an EXECUTE over the wire, the
+> path MUST target the local peer's namespace. If the peer ID does not match the local peer,
+> the peer MUST reject with status 400 (`invalid_request`).
+
+So the sentence *"The spec answers this nowhere we can find"*, four lines below, is false
+against our own pinned copy. **The majority reading was right — refuse at routing — and both
+sides of the cohort had the disposition wrong**: the 40 answered `404 handler_not_found`
+(including `go`), the 6 answered `403 capability_denied` or `200`, and the spec says `400
+invalid_request`. This document's leading argument — that the `peers` default is dead weight
+under the majority reading, therefore *"the strongest argument we have that the minority of 6
+is right"* — argued for the side the spec had already ruled against. It was explicitly framed
+as an argument from construction rather than from normative text, which is the one thing that
+kept it honest; it was still pointing the wrong way.
+
+**How it was missed, because the mechanism is reusable and dull.** The search was for the
+vocabulary of the question — `peers`, `target_peer`, `check_permission`, `extract_peer` — and
+this document even names where it expected the answer to be added: *"in §5.2 beside
+`extract_peer`, or in §6.6 beside handler resolution."* The actual rule is phrased in the
+vocabulary of **addressing**, not authorization, and lives in neither. It contains none of
+those four terms. **A negative claim about a document is only as good as the words you
+thought to search it for** — and "we could not find it" is a claim about the search, which is
+then published as a claim about the spec.
+
+**What the 0.8.2.2/0.8.2.3 line actually changed** — worth separating from what it settled,
+because they are not the same and the difference is the whole reason this looked open. The
+*status* (400) was already pinned. What arrived later is the **code name** and the explicit
+prohibition on the two wrong dispositions: §3.3's 400 table now names `invalid_request` for
+this case; §6.2 says a foreign path *"is refused earlier, at §1.4 canonicalization (§6.5
+step 3), with 400 `invalid_request`, and MUST NOT be reported as `handler_not_found`"*; §6.5
+step 3 forbids reaching the refusal *"by resolving a local handler for the foreign path and
+letting §5.2 decide"*. Reading that as *"the ambiguity was resolved upstream"* would be a
+second, more flattering error: **the sharpening is real, and the underlying MUST predates
+this finding.**
+
+**Consequences, all discharged:**
+
+- The oracle **deleted** `authz_peers_target_from_uri` rather than re-pointing it — its PASS
+  branch required the foreign-namespace resolution the spec forbids, so it was a check
+  rewarding the defect. It does not exist at the current pin (`strings validate-peer` → 0
+  occurrences, measured). Its replacement is `authz/dispatch_inbound_foreign_namespace_refused`.
+- **All six peers that PASSed this check needed the gate** — `forth` and `smalltalk` in the
+  0.8.2.3 sweep, `pd` `asm-x86_64` `asm-arm64` `riscv64` on 2026-09-01. That is not a
+  coincidence: passing required exactly the behaviour §6.5 step 3 forbids.
+- A seventh, `wasm-wat`, WARNed here and still needed it — it refused, but *by resolving
+  locally and then failing authz*. **A WARN on this check never meant a peer was safe**, only
+  that this check could not attribute its refusal.
+- `CONFORMANCE-MATRIX.md` §3's row is retired; the cohort is 46 of 46 at `756 · 0F`.
+
+**The durable lesson, and it is the second time in two days this shape has cost us.** The
+`dart`/`ruby` NUL-byte case was a grep that *could not see* the file and reported "absent".
+This is a grep that *looked in the wrong vocabulary* and reported "the spec does not say".
+Both publish as a confident negative. The standing rule — *prove a negative before you claim
+it* — needs its enforcement stated for prose: **search the SECTION the behaviour belongs to,
+not the words the question is phrased in**, and say which sections you read, so the next
+reader can see the hole rather than inherit the conclusion.
+
+---
+
+## Original finding, unedited below this line
 
 ## The ask, in one sentence
 

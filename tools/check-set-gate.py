@@ -154,24 +154,62 @@ def collect(args):
 def publishable_peers(expected):
     """Peers this repo currently CLAIMS are publishable: 0-FAIL on the pinned check set.
 
-    Read from the census, which is where the published matrix numbers come from. Returns None
-    if no census is present -- the claim set is then unknowable and --tracked reports without
-    gating rather than inventing a verdict. (tools/tier-status.py reads the census the same
-    way; both are gitignored-scratch-dependent by design.)
+    Read from the census, and DELIBERATELY NOT from the tracked reports this function's
+    caller is gating. That independence is the whole point: derive the claim set from the
+    same files being checked and the gate becomes "every tracked report at the pinned digest
+    is at the pinned digest", which is vacuous. AGENTS.md records the general form from
+    `oracle-bootstrap.sh`, where HAVE and WANT were both read off the install and agreed
+    trivially -- a self-consistency check reads exactly like a correctness check and is not
+    one.
+
+    Returns None if no census is present -- the claim set is then unknowable and --tracked
+    reports without gating rather than inventing a verdict.
+
+    STALENESS IS REPORTED, NEVER OVERRIDDEN (2026-09-01). `run-cohort-census.sh --to-status`
+    writes ONLY the tracked reports, so a to-status-only refresh leaves this directory at the
+    previous run and the claim set silently describes the past. Measured that day: the PD-1
+    fix took five peers to 0F via --to-status, and this gate went on reporting 41 publishable
+    against 46 green tracked reports. That direction is CONSERVATIVE -- a stale claim set can
+    only shrink what gets gated -- so it is a note, not a failure, and the fix is emphatically
+    not to start reading the tracked reports here.
+
+    (tools/tier-status.py reads the census too, but it is a status DISPLAY rather than a gate
+    on these files, so freshest-wins is right there and it was given the tracked reports as a
+    third recency-ranked source the same day. Same directory, opposite correct answer, because
+    the two tools are answering different questions -- worth stating, since "check the sibling
+    for the same defect" would otherwise argue for making them match.)
     """
     census = REPO / "output" / "scratch" / "census"
     if not census.is_dir():
         return None
     out = set()
     found = False
+    newest = 0.0
     for p in sorted(census.glob("*.json")):
         found = True
+        newest = max(newest, p.stat().st_mtime)
         try:
             doc = json.loads(p.read_text())
         except Exception:
             continue
         if doc.get("summary", {}).get("failed") == 0 and digest(check_set(doc)) == expected:
             out.add(p.stem)
+    if found:
+        fresher = sorted(
+            t.parent.parent.name
+            for t in REPO.glob(TRACKED_GLOB)
+            if t.stat().st_mtime > newest
+        )
+        if fresher:
+            print(
+                f"  NOTE: {len(fresher)} committed report(s) are NEWER than the whole census "
+                f"({', '.join(fresher[:6])}{'…' if len(fresher) > 6 else ''}).\n"
+                "        The publishable-claim set below is from the older census and may "
+                "understate it.\n"
+                "        Refresh with tools/run-cohort-census.sh (no --to-status) to re-derive "
+                "the claim set.",
+                file=sys.stderr,
+            )
     return out if found else None
 
 

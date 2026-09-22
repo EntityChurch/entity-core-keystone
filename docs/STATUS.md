@@ -1,6 +1,6 @@
 # entity-core-keystone — status
 
-_Updated: 2026-08-30 · oracle pin: the 755-check set `95edd774…` · spec snapshot `v0.8.2`_
+_Updated: 2026-09-01 · oracle pin: the 756-check set `d30c3dd0…` · spec snapshot `v0.8.2.3`_
 
 > **`CONFORMANCE-MATRIX.md` is authoritative for every per-peer number.** This file is a
 > short orientation note, deliberately kept thin. When the two disagree, the matrix wins.
@@ -24,8 +24,8 @@ evolving as spec amendments run through the generator.
 
 ## Conformance state
 
-**46 peers in the tree · 46 measured · all 46 at one pin — the 755-check set
-`95edd774…` (2026-08-21).** The pin is a content digest, not a commit; `CONFORMANCE-MATRIX.md`
+**46 peers in the tree · 46 measured · all 46 at one pin — the 756-check set
+`d30c3dd0…` (2026-09-01).** The pin is a content digest, not a commit; `CONFORMANCE-MATRIX.md`
 §"The pin" carries the full anchor set and why. Nothing is carried forward from an earlier pin.
 
 | State | Count | Peers |
@@ -34,9 +34,17 @@ evolving as spec amendments run through the generator.
 | Not measured | 0 | — |
 
 **The headline is one sentence: every peer in the cohort is at 0-FAIL, with no exclusions and no
-unmeasured row.** `--profile core` gained three `capability` checks
-at the 2026-08-21 re-pin; every unfixed peer failed exactly those three, and that uniformity
-held all the way through the cohort.
+unmeasured row.**
+
+The most recent re-pin added a check for a **privilege escalation**, and five peers were live to
+it. An inbound EXECUTE naming *another* peer's namespace must be refused on the address itself,
+before any handler is resolved. Four peers instead stripped the foreign peer id, resolved their
+own handler at what remained, and let the caller's grant authorize it — status **200**. A fifth
+refused, but reached the refusal by resolving locally and then failing the authorization check,
+which is the same defect with a luckier outcome and is why a passing-looking result meant
+nothing here. All five now refuse at canonicalization. The pattern is the recurring one in this
+repo: **a check that passes can be passing for a reason unrelated to what it tests**, in both
+directions.
 
 **Read the 46 as a statement about the wire, not about the peers.** They share a generation
 lineage and pass one author's vectors at one pinned check set: **cohort-consistent, not
@@ -80,13 +88,21 @@ convergence** — they share a generation lineage and, for the FFI-hybrid peers,
 
 ## What's next
 
-1. **`authz_peers_target_from_uri`** — WARNs on **40** of 46 peers, and the "inconclusive by design,
-   needs a two-peer harness" label it carried since 2026-08-16 is **withdrawn**. Six peers PASS it
-   with a real three-row verdict (`asm-arm64` `asm-x86_64` `forth` `pd` `riscv64` `smalltalk`), so a
-   standalone peer can decide it; `go` WARNs because all three rows return `404 handler_not_found` —
-   unrouted, not undecidable. Read a PASS peer against `go` and find out whether the 40 share one
-   defect. *(This item read "39 of 46" until 2026-08-30; the finding said 40 and the finding was
-   right — counted across all 46 committed reports.)*
+1. ~~**`authz_peers_target_from_uri`**~~ ✅ **CLOSED 2026-09-01 — and we had the answer the whole
+   time.** This item described a cohort split (40 WARN / 6 PASS) over whether a peer must resolve
+   its own handler for a URI naming *another* peer's namespace, and reported the spec as silent.
+   **It is not silent.** §1.4 *URI and Path Model* says an inbound EXECUTE's path **MUST** target
+   the local peer's namespace and a mismatch **MUST** be rejected with `400 invalid_request` — text
+   that is byte-identical across both spec snapshots we have been building against, in the very
+   section the question was about. Our search used the vocabulary of authorization (`peers`,
+   `target_peer`, `check_permission`); the rule is written in the vocabulary of addressing, and
+   contains none of those words. **A "the spec does not say" claim is a claim about the search.**
+   The upshot: refusing is correct, and *both* groups had the disposition wrong — the 40 answered
+   `404 handler_not_found`, the 6 answered `403` or `200`. The check has been retired in favour of
+   one that tests the refusal directly, all forty-six peers now pass it, and the escalation it
+   guards against (strip the foreign peer id, resolve locally, let a matching `peers` grant
+   authorize it) is closed cohort-wide. Full correction:
+   [`peers-dimension-reachability.md`](../protocol-generator/shared/findings/peers-dimension-reachability.md).
 2. ~~**The ISA trio's type-registry over-publication**~~ ✅ **CLOSED 2026-08-30**
    (`CONFORMANCE-MATRIX.md` ⁹). `typestore.s` published ~200 entries including whole
    standard-extension vocabularies, which the oracle scores *matched-if-present* — so 282
@@ -157,8 +173,8 @@ and CAP-6a were refused two gates before the mint they are named after, and abou
 chain vectors were passing because it refused every chain rather than because it evaluated one.
 The walk, §5.5a canonicalization on both the attenuation and dispatch surfaces, §5.6 attenuation
 including constraints/allowances and the nil-vs-finite expiry rule, delegation caveats, CAP-6a
-representability and §3.6 K-of-N all landed together; the row is now the cohort-standard
-312P/337W/0F/106S. Two of the mistakes along the way were found only by measuring: framing the
+representability and §3.6 K-of-N all landed together; the row reached what was then the
+cohort-standard 312P/337W/0F/106S. Two of the mistakes along the way were found only by measuring: framing the
 chain surface without the dispatch surface, and a pattern matcher that refused every root listing.
 
 **Closed 2026-08-29 — `turbowarp`, the other peer the propagation had not reached, took the

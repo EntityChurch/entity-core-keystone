@@ -373,13 +373,30 @@ def self_test():
     print(f"         ({n_ban} banners checked, {len(reports)} peers)")
     expect("clean tree, self-refs", len(check_secrefs()), 0)
 
+    # Plants 1 and 2 are DERIVED from a real §1 row, never hardcoded. They used to name the
+    # literals "313P/336W/0F/106S" and "**755 · 0F** — 313P/336W/0F/106S", which stopped
+    # existing at the 756-check re-pin: `assert bad != matrix_text` then fired and took the
+    # whole self-test down. That loud failure is correct behaviour — a planting pattern that
+    # silently matches nothing would make these two checks vacuous, which is the exact defect
+    # check 0's count assertion exists to catch — but a regression suite that must be
+    # hand-edited on every re-pin is one nobody runs. Derive the pattern from the file.
+    _first = next(
+        (ln for _, ln in live_lines(matrix_text) if ln.startswith("| **") and PWFS.search(ln)),
+        None,
+    )
+    assert _first is not None, "no §1 row to plant against"
+    _pwfs = PWFS.search(_first).group(0)
+    _head = HEADLINE.search(_first)
+    assert _head is not None, f"§1 row carries no headline to plant against: {_first[:80]!r}"
+
     # 1. a row whose number disagrees with its report
-    bad = matrix_text.replace("313P/336W/0F/106S", "595P/54W/0F/106S", 1)
+    bad = matrix_text.replace(_pwfs, "595P/54W/0F/106S", 1)
     assert bad != matrix_text, "planting failed — pattern absent"
     expect("planted: row number drift", len(check_rows(reports, bad)[0]), 1)
 
     # 2. a row whose HEADLINE disagrees while its P/W/F/S is right
-    bad = matrix_text.replace("**755 · 0F** — 313P/336W/0F/106S", "**755 · 3F** — 313P/336W/0F/106S", 1)
+    _bump = _head.group(0).replace(f"{_head.group(2)}F", f"{int(_head.group(2)) + 3}F")
+    bad = matrix_text.replace(_head.group(0), _bump, 1)
     assert bad != matrix_text
     expect("planted: headline drift", len(check_rows(reports, bad)[0]), 1)
 
