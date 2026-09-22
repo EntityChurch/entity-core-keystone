@@ -168,4 +168,98 @@ package Entity_Core.Protocol.Capability is
      (Local_Peer : String;
       Requested, Authorized : Entity_Core.Codec.Value.Ecf_Value) return Boolean;
 
+   ---------------------------------------------------------------------------
+   --  §1.4 PD-2: authorizing a locally-originated sub-dispatch (0.8.2.31).
+   ---------------------------------------------------------------------------
+
+   --  §5.5 dispatch-time chain verification in the LOCAL frame: the root is a
+   --  single-signature root whose `granter` resolves to this peer, or a §3.6
+   --  quorum root this peer is a validated member of.
+   --
+   --  Exported for the PD-2 unit gate's ANTECEDENT assertion. §1.4's
+   --  multi-signature clause is measured by a DENY, and a deny establishes
+   --  nothing on its own -- a malformed quorum would be refused for reasons that
+   --  have nothing to do with §1.4, which is F70 (our own ask against deny-only
+   --  checks) and is exactly how the wire's own multisig row passes vacuously.
+   --  The unit asserts the SAME quorum verifies here before asserting the foreign
+   --  frame refuses it.
+   --
+   --  Raises Errors.Unresolvable_Grantee for the §5.5 401 carve-out.
+   function Verify_Capability_Chain
+     (Local_Peer : String;
+      Store      : access Entity_Core.Protocol.Store.Safe_Store;
+      Cap        : Materialized_Entity;
+      Env        : Entity_Core.Protocol.Envelope.Protocol_Envelope) return Verdict;
+
+   --  §1.4's three spellings of one address onto the single form a grant can
+   --  match. `system/tree`, `/{peer}/system/tree` and `entity://{peer}/system/tree`
+   --  all answer `system/tree`, because a grant names HANDLERS and a handler
+   --  pattern never carries a peer segment -- matching a grant against the
+   --  absolute or schemed form matches nothing, silently, which reads at the wire
+   --  as an authority refusal rather than as a lookup miss.
+   --
+   --  ⛔ THE FIRST SEGMENT IS DROPPED ONLY WHEN IT IS A PEER_ID. An unconditional
+   --  strip turns `system/protocol/connect` into `protocol/connect` -- the standing
+   --  `smalltalk`/`forth` defect, where every self-minted grant became unusable
+   --  while the handshake stayed green because its own grants are all `*`.
+   function Peer_Relative_Of (Local_Peer : String; Uri : String) return String;
+
+   --  Store key of a handler's OWN grant (§6.8: system/capability/grants/{pattern}),
+   --  tolerant of Pattern arriving absolute or peer-relative.
+   --
+   --  §6.6's tree walk answers an ABSOLUTE pattern because store keys are absolute,
+   --  while the grant path is built from the PEER-RELATIVE one. The two are one
+   --  segment apart and concatenating the wrong one yields a doubled peer segment
+   --  whose lookup misses -- which fails closed as "no handler grant" and is
+   --  indistinguishable, at the wire, from a genuine authority verdict.
+   function Grant_Path_For (Local_Peer : String; Pattern : String) return String;
+
+   --  §1.4's PD-2 gate: check_permission run BEFORE a locally-originated
+   --  sub-dispatch LEAVES the peer, with all four dimensions applied.
+   --
+   --  ONE GATE AND ONE EXEMPTION, in §1.4's own words:
+   --    * the EXECUTING HANDLER'S GRANT decides all four dimensions (§6.8),
+   --      evaluated in the LOCAL frame, with Dimension 1's pattern the target
+   --      uri's PEER-RELATIVE path;
+   --    * a valid capability MINTED BY THE TARGET PEER naming this peer as
+   --      `grantee` relaxes Dimension 4 (`peers`) AND ONLY DIMENSION 4, to the
+   --      peers that capability covers, evaluated in the TARGET's frame.
+   --
+   --  "The target answers WHERE; the handler's grant answers WHAT." A credential
+   --  is NOT a grant: with no handler grant there is nothing to supply Dimensions
+   --  1-3, so the sub-dispatch is refused however good the credential is. That is
+   --  the COMPOSE, and the BYPASS it is distinguished from is a peer that treats
+   --  the credential as a standalone authorizer and steers past its own grant --
+   --  §6.8's confused-deputy substitution. Both obvious vectors agree under either
+   --  reading (sources agree -> allow, no source -> refuse), so the ONLY input that
+   --  separates them is a VALID credential presented to a handler whose own grant
+   --  does NOT cover the request, which MUST refuse.
+   --
+   --  A credential failing any verification clause relaxes NOTHING and the handler
+   --  grant gates unrelaxed -- it does not turn the verdict into an error.
+   --
+   --  Target_Peer is supplied by the CALLER rather than derived here: on the §6.11
+   --  reentry seam the uri may be peer-relative and the destination is the
+   --  connection's remote, so Extract_Peer would answer the LOCAL peer and
+   --  Dimension 4 would pass vacuously on §5.2's default {include:[local]} -- the
+   --  exemption would never be exercised and a bypass would read as a compose.
+   --
+   --  HAS_CRED IS ITS OWN BIT, because a Materialized_Entity has no null: the
+   --  AMBIENT arm (no credential at all) and a credential that happens to be an
+   --  empty map are different inputs, and collapsing them would make the ambient
+   --  arm look like a credential that relaxes nothing -- which is the same verdict
+   --  today and the wrong reason for it.
+   function Check_Outbound_Sub_Dispatch
+     (Local_Peer      : String;
+      Target_Peer     : String;
+      Handler_Pattern : String;
+      Operation       : String;
+      Store           : access Entity_Core.Protocol.Store.Safe_Store;
+      Handler_Grant   : Materialized_Entity;
+      Resource        : Entity_Core.Codec.Value.Ecf_Value;
+      Cred            : Materialized_Entity;
+      Has_Cred        : Boolean;
+      Env             : Entity_Core.Protocol.Envelope.Protocol_Envelope)
+      return Boolean;
+
 end Entity_Core.Protocol.Capability;

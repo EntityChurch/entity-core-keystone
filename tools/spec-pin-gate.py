@@ -103,7 +103,19 @@ PWFS = re.compile(r"\d{3}P/\d{2,3}W/\d+F/\d{3}S")
 # a plausible number). Over `b71b940f~1..HEAD`, the range this gate is run on: 17 matches
 # before, 18 after, and the single added commit is the fortran sweep. No other subject in
 # the range begins with "sweep".
-SWEEP_SUBJECT = r"^(sweep |vanguard)"
+#
+# BROADENED AGAIN 2026-09-17, THIRD SPELLING, AND IT IS THE SAME DEFECT THIS COMMENT WAS
+# WRITTEN ABOUT. `^(sweep |vanguard)` cannot see "second vanguard: python takes the same
+# shape…" — the python vanguard of the 0.8.2.31 arc — so closing that sweep reported
+# `python` as pin-advanced-but-never-touched and the claim had to be waved through with
+# --ack-unchanged, which is exactly the silent default the flag exists to prevent. A
+# pattern anchored at the start of the subject is keyed on the ONE word order that existed
+# when it was written; `vanguard` is a WORD in the subject, not a prefix of it.
+#
+# Hit lists diffed over both ranges rather than the counts trusted: `39273373~1..HEAD`
+# (this sweep) 22 -> 23, `b71b940f~1..HEAD` (the wider range) 41 -> 42, and in BOTH the
+# single addition is that one commit. Nothing else in either range contains the word.
+SWEEP_SUBJECT = r"^sweep |\bvanguard\b"
 
 
 def peer_dir(display):

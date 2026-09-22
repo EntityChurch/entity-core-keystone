@@ -26,13 +26,13 @@ BIN := build
 $(shell mkdir -p $(BIN))
 
 .PHONY: test cbor-unit codec-selftest model-test transport-test ident-test \
-        dispatch-test connect-test host clean
+        dispatch-test connect-test pd2-test host clean
 
 host:
 	$(COBC) -x $(COBFLAGS) -o $(BIN)/host bin/host.cob $(PEER_SRC) $(LINK)
 
 test: cbor-unit codec-selftest model-test transport-test ident-test \
-      dispatch-test connect-test
+      dispatch-test connect-test pd2-test
 	@echo "=== entity-core-protocol-cobol: all S2/S3-foundation tests passed ==="
 
 connect-test:
@@ -49,6 +49,14 @@ dispatch-test:
 	$(COBC) -x $(COBFLAGS) -o $(BIN)/dispatch-test \
 	    test/dispatch-test.cob $(PEER_SRC) $(LINK)
 	$(BIN)/dispatch-test
+
+# The §1.4 PD-2 outbound sub-dispatch gate (0.8.2.31). Nothing in the pinned
+# 778-check set measures it, and §1.4's multi-signature clause is measured by no
+# check set on any peer — see the driver's own header.
+pd2-test:
+	$(COBC) -x $(COBFLAGS) -o $(BIN)/pd2-test \
+	    test/pd2-test.cob $(PEER_SRC) $(LINK)
+	$(BIN)/pd2-test
 
 cbor-unit:
 	$(COBC) -x $(COBFLAGS) -o $(BIN)/cbor-unit test/cbor-unit.cob $(CODEC_SRC)

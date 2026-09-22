@@ -1473,8 +1473,45 @@ package body Entity_Core.Protocol.Handlers is
    --  2026-06-13 matrix ruling #2). No unwrap of the value: we forward the
    --  {value: X} bytes as-is and return what comes back.
    ---------------------------------------------------------------------------
+   --  §7a.1's PLURAL carrier [0.8.2.19], with the SINGULAR spelling accepted as
+   --  an array of one. Answers a null value when NEITHER spelling is present.
+   --
+   --  ⚠ TRANSITIONAL, AND THE FALLBACK IS NOT OPTIONAL: THE RENAME IS COUPLED TO
+   --  THE ORACLE PIN. The pinned oracle -- what all 46 tracked reports are
+   --  measured against -- sends the SINGULAR names, so a plural-only peer reads
+   --  the triple as ABSENT there, takes the ambient arm and refuses. Measured on
+   --  the `go` vanguard as 2 of 778 severities moving PASS -> FAIL
+   --  (dispatch_outbound_reentry, t1_2_concurrent_reentry); landing the rename
+   --  alone across the cohort would take every published row from 0F to 2F.
+   --  Accepting both keeps this peer 0-FAIL at BOTH check sets.
+   --
+   --  ⛔ REMOVE THIS FALLBACK AT THE ORACLE RE-PIN AND NOT BEFORE. The exit
+   --  condition is that tools/oracle-pin.env's `ref` names an oracle whose
+   --  dispatch-outbound probe sends the plural carriers.
+   function Reentry_Carrier
+     (P_Data : Ecf_Value; Plural : String; Singular : String) return Ecf_Value
+   is
+      A : constant Ecf_Value := Field (P_Data, Plural);
+      S : constant Ecf_Value := Field (P_Data, Singular);
+   begin
+      if Kind (A) = K_Array then
+         return A;
+      end if;
+      if Kind (S) = K_Map then
+         return Array_Of ((1 => S));
+      end if;
+      return Make_Null;
+   end Reentry_Carrier;
+
+   --  True iff a carrier is a NON-EMPTY array. An empty array is PARTIAL, not
+   --  present: it carries no credential, and reading it as present would take the
+   --  presented arm with nothing to present.
+   function Carrier_Present (V : Ecf_Value) return Boolean is
+     (Kind (V) = K_Array and then Array_Length (V) > 0);
+
    function Handle_Dispatch_Outbound
-     (Peer : Peer_Access; Conn : Conn_State; Exec : Materialized_Entity)
+     (Peer : Peer_Access; Conn : Conn_State; Exec : Materialized_Entity;
+      Env : Env_Pkg.Protocol_Envelope; Pattern : String)
       return Outcome
    is
       Params  : constant Ecf_Value := Field (Data (Exec), "params");
@@ -1483,25 +1520,46 @@ package body Entity_Core.Protocol.Handlers is
       Operation : constant String := Text_Field (P_Data, "operation");
       Value_V   : constant Ecf_Value := Field (P_Data, "value");
       Cap_V     : constant Ecf_Value := Field (P_Data, "reentry_capability");
-      Granter_V : constant Ecf_Value := Field (P_Data, "reentry_granter");
-      Sig_V     : constant Ecf_Value := Field (P_Data, "reentry_cap_signature");
+      Granters_V : constant Ecf_Value :=
+        Reentry_Carrier (P_Data, "reentry_granters", "reentry_granter");
+      Sigs_V     : constant Ecf_Value :=
+        Reentry_Carrier (P_Data, "reentry_cap_signatures", "reentry_cap_signature");
+      --  The triple is ALL-OR-NONE (§7a.1): three present selects the PRESENTED
+      --  arm, three absent the AMBIENT arm, and a PARTIAL set is 400
+      --  invalid_params -- a partial credential is malformed, not ambient.
+      N_Present : constant Natural :=
+        (if Kind (Cap_V) = K_Map then 1 else 0)
+        + (if Carrier_Present (Granters_V) then 1 else 0)
+        + (if Carrier_Present (Sigs_V) then 1 else 0);
+      Has_Cred  : constant Boolean := N_Present = 3;
    begin
       if Conn.Outbound = null then
          return Err (501, "no_reentry_channel",
                      "dispatch-outbound requires a connection reentry seam");
       end if;
-      if Target = "" or else Operation = ""
-        or else Kind (Cap_V) /= K_Map or else Kind (Granter_V) /= K_Map
-        or else Kind (Sig_V) /= K_Map
-      then
+      if Target = "" or else Operation = "" then
          return Err (400, "invalid_params",
-                     "dispatch-outbound requires target/operation/reentry-cap");
+                     "dispatch-outbound requires target/operation");
+      end if;
+      if N_Present /= 0 and then N_Present /= 3 then
+         return Err (400, "invalid_params",
+                     "dispatch-outbound reentry authority is all-or-none");
       end if;
       declare
-         --  Materialize the in-band reentry-authority entities.
-         Cap_E     : constant Materialized_Entity := Of_Cbor (Cap_V);
-         Granter_E : constant Materialized_Entity := Of_Cbor (Granter_V);
-         Sig_E     : constant Materialized_Entity := Of_Cbor (Sig_V);
+         --  Materialize the in-band reentry-authority entities. On the AMBIENT arm
+         --  Cap_E is a placeholder that is never read: Has_Cred is the bit that
+         --  says whether a credential exists, because a Materialized_Entity has no
+         --  null and an empty map is a different input from an absent field.
+         Cap_E : constant Materialized_Entity :=
+           (if Has_Cred then Of_Cbor (Cap_V) else Make ("primitive/any", Empty_Map));
+         --  `target` arrives as any of §1.4's three spellings and the validator
+         --  sends the SCHEMED ABSOLUTE form. Dimension 1 and the resource target
+         --  both want the PEER-RELATIVE path -- §1.4's PD-2 block says so for the
+         --  handler pattern, and a resource target carrying a scheme is not a path
+         --  at all. Latent for as long as nothing consulted it.
+         Rel_Target : constant String := Cap.Peer_Relative_Of (Local_Peer (Peer), Target);
+         Out_Res    : constant Ecf_Value :=
+           Wire.Resource_Target ("system/handler/" & Rel_Target);
          --  The outbound params is a primitive/any entity whose data is the
          --  forwarded {value: X} map (relay-verbatim).
          Out_Params : constant Materialized_Entity :=
@@ -1512,19 +1570,115 @@ package body Entity_Core.Protocol.Handlers is
            Wire.Make_Execute
              (Rid, Target, Operation, Out_Params,
               Author     => Id_Pkg.Identity_Hash (Peer.Id),
-              Capability => Hash (Cap_E));
+              Capability => (if Has_Cred then Hash (Cap_E) else Empty_Bytes),
+              Resource   => Out_Res);
          Out_Sig  : constant Materialized_Entity := Id_Pkg.Sign (Peer.Id, Out_Exec);
          Out_Env  : Env_Pkg.Protocol_Envelope := Env_Pkg.Of_Root (Out_Exec);
+         --  §7a.2a: the presented arm verifies against a BUNDLE MERGED FROM THE
+         --  PARENT ENVELOPE'S `included`. The credential, its granters and its
+         --  signatures arrive NESTED IN PARAMS (ratified shape (a), in-band), so
+         --  they are NOT in Env.Included, and a verifier handed that alone cannot
+         --  resolve a single link -- every credential then reads as invalid and
+         --  the legitimate reentry is refused. Env_Pkg.Add keys by the entity's
+         --  OWN content_hash and de-dups, which is what the §3.1 resolver reads.
+         Bundle   : Env_Pkg.Protocol_Envelope := Env;
          Ok_Out   : Boolean;
       begin
-         --  §5.8 authority chain travels in `included`: the reentry cap, its
-         --  granter (the validator), its signature, plus our identity + the
-         --  EXECUTE signature so the validator-as-B can verify the §3.5 PoP.
-         Env_Pkg.Add (Out_Env, Cap_E);
-         Env_Pkg.Add (Out_Env, Granter_E);
-         Env_Pkg.Add (Out_Env, Sig_E);
+         --  §5.8 authority chain travels in `included`: the reentry cap, every
+         --  granter and every link signature, plus our identity + the EXECUTE
+         --  signature so the validator-as-B can verify the §3.5 PoP. EVERY member
+         --  of the plural carriers goes in, because §5.5's chain walk resolves
+         --  granters and signers BY HASH out of that map -- a granter left out is
+         --  a link the verifier cannot reach, which fails closed and reads as the
+         --  peer refusing the credential FORM rather than as a carrier we
+         --  truncated.
+         if Has_Cred then
+            Env_Pkg.Add (Out_Env, Cap_E);
+            Env_Pkg.Add (Bundle, Cap_E);
+            for I in 1 .. Array_Length (Granters_V) loop
+               declare
+                  E : constant Materialized_Entity :=
+                    Of_Cbor (Array_Element (Granters_V, I));
+               begin
+                  Env_Pkg.Add (Out_Env, E);
+                  Env_Pkg.Add (Bundle, E);
+               end;
+            end loop;
+            for I in 1 .. Array_Length (Sigs_V) loop
+               declare
+                  E : constant Materialized_Entity :=
+                    Of_Cbor (Array_Element (Sigs_V, I));
+               begin
+                  Env_Pkg.Add (Out_Env, E);
+                  Env_Pkg.Add (Bundle, E);
+               end;
+            end loop;
+         end if;
          Env_Pkg.Add (Out_Env, Id_Pkg.Peer_Entity (Peer.Id));
          Env_Pkg.Add (Out_Env, Out_Sig);
+
+         --  §1.4 PD-2: check_permission runs BEFORE the sub-dispatch LEAVES the
+         --  peer, all four dimensions, on THIS handler's OWN grant -- with a
+         --  target-minted credential relaxing Dimension 4 and nothing else.
+         --  Consulting only the presented credential here is §6.8's
+         --  confused-deputy bypass, and §6.8 says outright that the substitution
+         --  is WIRE-INVISIBLE: "both readings produce a well-formed response and
+         --  differ only in which authority was consulted."
+         declare
+            Grant_Found : Boolean;
+            Own_Grant : constant Materialized_Entity :=
+              Peer.St.Get_At (Cap.Grant_Path_For (Local_Peer (Peer), Pattern),
+                              Grant_Found);
+            --  §1.4: target_peer = extract_peer(uri, local_peer_id). The validator
+            --  sends the absolute form, so the URI names the target. Where the uri
+            --  is PEER-RELATIVE there is no peer in it and the §6.11 seam's
+            --  destination is the connection's remote, so that is the fallback --
+            --  without it Dimension 4 passes VACUOUSLY on §5.2's default
+            --  {include:[local]}, the exemption is never exercised, and a bypass
+            --  would read as a compose.
+            From_Uri : constant String := Cap.Extract_Peer (Local_Peer (Peer), Target);
+            Target_Peer : constant String :=
+              (if From_Uri = Local_Peer (Peer) and then Conn.Hello_Pid_Len > 0
+               then Conn.Hello_Pid (1 .. Conn.Hello_Pid_Len)
+               else From_Uri);
+         begin
+            if not Grant_Found then
+               --  §6.8: a handler with no valid grant does not run. Fail CLOSED
+               --  rather than falling back to the credential, which is exactly the
+               --  substitution §6.8 forbids.
+               return Err (403, "capability_denied",
+                           "no handler grant for " & Pattern);
+            end if;
+            if not Cap.Check_Outbound_Sub_Dispatch
+                     (Local_Peer      => Local_Peer (Peer),
+                      Target_Peer     => Target_Peer,
+                      --  ⛔ DIMENSION 1'S PATTERN IS THE TARGET URI'S PEER-RELATIVE
+                      --  PATH, NOT THE EXECUTING HANDLER'S OWN. §1.4's PD-2 block
+                      --  says so in as many words, and the grant this gate reads
+                      --  names the handler the sub-dispatch is ABOUT TO REACH --
+                      --  `system/validate/echo` -- not the one holding the grant.
+                      --  Passing the executing handler's pattern refuses the
+                      --  legitimate reentry with a 403 that is indistinguishable at
+                      --  the wire from an authority verdict; measured as 2 of 778
+                      --  severities FAILing, and a source read clears it.
+                      Handler_Pattern => Rel_Target,
+                      Operation       => Operation,
+                      Store           => Peer.St,
+                      Handler_Grant   => Own_Grant,
+                      Resource        => Out_Res,
+                      Cred            => Cap_E,
+                      Has_Cred        => Has_Cred,
+                      Env             => Bundle)
+            then
+               --  §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A
+               --  generic transport- or gateway-class code would launder an
+               --  authorization verdict into a route fault, and the ambient and
+               --  presented branches would then disagree about what the same gate
+               --  decided.
+               return Err (403, "capability_denied",
+                           "outbound sub-dispatch not authorized by the handler grant");
+            end if;
+         end;
          declare
             Reply : constant Env_Pkg.Protocol_Envelope :=
               Conn.Outbound (Conn.Outbound_Ctx, Out_Env, Rid, Ok_Out);
@@ -1771,8 +1925,21 @@ package body Entity_Core.Protocol.Handlers is
                         --  here, but the value passed is the owner's because that
                         --  is what the parameter means. Carried from the dispatch
                         --  check rather than recomputed -- recomputing invites the
-                        --  two to drift, and §6.8 is explicit that the authority is
-                        --  selected by who named the path.
+                        --  two to drift.
+                        --
+                        --  ⛔ THIS COMMENT USED TO END "and §6.8 is explicit that
+                        --  the authority is selected by who named the path". That
+                        --  is the discriminator §6.8 CORRECTED at 0.8.2.22 and
+                        --  which §9.1's conformance floor kept publishing until
+                        --  .31 -- the floor is where this peer was built from, and
+                        --  the identical sentence was found at the identical kind
+                        --  of site in `go` and in `prolog` (arch's C-11, confirmed
+                        --  in our own source). §6.8 selects by WHOSE AUTHORITY IS
+                        --  BEING SPENT: an access in service of a caller's request
+                        --  needs the caller's verified capability AND the executing
+                        --  handler's own grant, and BOTH must pass. Not observable
+                        --  here because owner and runner coincide, which is why it
+                        --  sat; it was live on the reentry seam, where they do not.
                         if Operation = "get" then
                            return Handle_Tree_Get
                              (Peer, Exec, Caller_Cap, Caller_Cap_Found, Pattern);
@@ -1817,7 +1984,12 @@ package body Entity_Core.Protocol.Handlers is
                         end if;
                      elsif Stripped = "system/validate/dispatch-outbound" then
                         if Operation = "dispatch" then
-                           return Handle_Dispatch_Outbound (Peer, Conn, Exec);
+                           --  Env is threaded so §7a.2a's merged bundle can start
+                           --  from the PARENT envelope's `included`, and Pattern so
+                           --  the §1.4 PD-2 gate runs on the OWNING handler's own
+                           --  grant (§6.8) rather than on a grant it re-derives.
+                           return Handle_Dispatch_Outbound
+                                    (Peer, Conn, Exec, Env, Pattern);
                         else
                            return Err (501, "unsupported_operation", Operation);
                         end if;
@@ -1933,6 +2105,41 @@ package body Entity_Core.Protocol.Handlers is
       end;
    end Ops_Map;
 
+   --  A bootstrap handler's OWN grant (§6.8) -- the authority it spends when it
+   --  dispatches ONWARD, as distinct from any capability a caller presents. §6.8
+   --  row 1: an access in service of a caller's request needs the caller's
+   --  verified capability AND this grant, and BOTH must pass.
+   --
+   --  ⛔ NARROW BY DESIGN for `dispatch-outbound`, AND THE NARROWNESS IS WHAT MAKES
+   --  THE INTERSECTION MEASURABLE. §6.8 says its confused-deputy substitution is
+   --  WIRE-INVISIBLE, so with a WIDE grant consulting it and skipping it give the
+   --  same answer on every input: the discriminator cannot fire and a bypass reads
+   --  as conformant. GUIDE-CONFORMANCE §7a.1 makes narrowness a scaffold-contract
+   --  requirement for exactly this reason.
+   --
+   --  NO `peers` DIMENSION, ON PURPOSE. §5.2's default for an absent peers scope is
+   --  {include:[local]}, which is precisely the thing a target-minted credential has
+   --  to relax -- naming the target here would satisfy Dimension 4 directly and the
+   --  exemption would never be exercised.
+   --
+   --  Every OTHER bootstrap handler keeps the empty grants array: empty is right for
+   --  a handler that never dispatches onward, and wrong for one that does.
+   function Own_Grants (Pattern : String) return Ecf_Value is
+   begin
+      if Pattern = "system/validate/dispatch-outbound" then
+         declare
+            G : constant Ecf_Value :=
+              Grant (S1 ("system/validate/echo"),
+                     S1 ("system/handler/system/validate/echo"),
+                     S1 ("echo"));
+            V : constant Value_Vector (1 .. 1) := (1 => G);
+         begin
+            return Make_Array (V);
+         end;
+      end if;
+      return S0;
+   end Own_Grants;
+
    procedure Bootstrap_Handler_Entities
      (Peer : Peer_Access; Pattern : String; Name : String;
       Ops : Op_List := No_Ops) is
@@ -1949,7 +2156,11 @@ package body Entity_Core.Protocol.Handlers is
    begin
       Peer.St.Bind ("/" & Local_Peer (Peer) & "/" & Pattern, Hand);
       Peer.St.Bind ("/" & Local_Peer (Peer) & "/system/handler/" & Pattern, Iface);
-      Mint_Token (Peer, Id_Pkg.Identity_Hash (Peer.Id), S0, Empty_Bytes, Token, Sig);
+      --  §6.8: the grant MUST exist at system/capability/grants/{pattern} and a
+      --  handler with no valid grant does not run -- so this bind is the ceiling
+      --  row 1 intersects against, not bookkeeping.
+      Mint_Token (Peer, Id_Pkg.Identity_Hash (Peer.Id), Own_Grants (Pattern),
+                  Empty_Bytes, Token, Sig);
       Peer.St.Bind ("/" & Local_Peer (Peer) & "/system/capability/grants/" & Pattern, Token);
    end Bootstrap_Handler_Entities;
 

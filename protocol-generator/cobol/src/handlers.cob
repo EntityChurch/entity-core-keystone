@@ -109,6 +109,31 @@ working-storage section.
 01 t-iface pic x(24) value "system/handler/interface".
 01 t-iface-len pic 9(9) comp-5 value 24.
 01 s-hpfx pic x(15) value "system/handler/".
+*> ---- (3) the handler's OWN grant (§6.8) ----
+01 s-grants pic x(25) value "system/capability/grants/".
+01 idhash pic x(33).
+01 gscope pic x(524288).
+01 gslen  pic 9(9) comp-5.
+01 token  pic x(524288).  01 token-len pic 9(9) comp-5.  01 token-hash pic x(33).
+01 csig   pic x(524288).  01 csig-len pic 9(9) comp-5.   01 csig-hash pic x(33).
+01 mint-now pic s9(18) comp-5.
+01 no-exp pic 9(1) value 0.
+01 no-expv pic 9(18) comp-5 value 0.
+01 k-hdl  pic x(8)  value "handlers".
+01 k-hdl-len pic 9(9) comp-5 value 8.
+01 k-ops2 pic x(10) value "operations".
+01 k-ops2-len pic 9(9) comp-5 value 10.
+01 k-rsrc pic x(9)  value "resources".
+01 k-rsrc-len pic 9(9) comp-5 value 9.
+01 k-incl pic x(7)  value "include".
+01 k-incl-len pic 9(9) comp-5 value 7.
+01 p-dob  pic x(33) value "system/validate/dispatch-outbound".
+01 p-echo pic x(20) value "system/validate/echo".
+01 p-echo-len pic 9(9) comp-5 value 20.
+01 v-echo pic x(4)  value "echo".
+01 v-echo-len pic 9(9) comp-5 value 4.
+01 r-echo pic x(35) value "system/handler/system/validate/echo".
+01 r-echo-len pic 9(9) comp-5 value 35.
 linkage section.
 01 lk-pat2   pic x(64).
 01 lk-patlen pic 9(9) comp-5.
@@ -145,7 +170,63 @@ procedure division using lk-pat2 lk-patlen lk-name lk-namelen lk-ops lk-opslen.
     move ifacelen to rellen
     call "mkpath" using rel rellen path pathlen
     call "store-bind" using path pathlen ent entlen hash
+    *> (3) the handler's OWN GRANT at /{local}/system/capability/grants/{pattern}.
+    *>
+    *> §6.8 says the grant MUST exist there and that a handler with no valid grant
+    *> DOES NOT RUN -- so this bind is the ceiling row 1 intersects against, not
+    *> bookkeeping. THIS PEER BOUND NOTHING AT ALL for its bootstrap handlers: only
+    *> the §6.2 wire register op ever wrote a grant, so every built-in handler had
+    *> no own-authority record and §1.4's PD-2 gate would have had nothing to read.
+    perform bind-own-grant
     goback.
+
+*> An EMPTY grants array is the right default for a handler that never dispatches
+*> onward, and the WRONG one for a handler that does.
+*>
+*> ⛔ NARROW BY DESIGN for `dispatch-outbound`, AND THE NARROWNESS IS WHAT MAKES THE
+*> INTERSECTION MEASURABLE. §6.8 calls its confused-deputy substitution
+*> WIRE-INVISIBLE, so under a WIDE grant consulting it and skipping it give the same
+*> answer on every input: the discriminator cannot fire and a bypass reads as
+*> conformant. GUIDE-CONFORMANCE §7a.1 makes narrowness a scaffold-contract
+*> requirement for exactly that reason.
+*>
+*> NO `peers` DIMENSION, ON PURPOSE. §5.2's default for an absent peers scope is
+*> {include:[local]}, which is precisely the thing a target-minted credential has to
+*> relax -- naming the target here would satisfy Dimension 4 directly and the
+*> exemption would never be exercised.
+bind-own-grant.
+    move 0 to gslen
+    if lk-patlen = 33 and lk-pat2(1:33) = p-dob(1:33)
+        call "b-arr"  using gscope gslen n1
+        call "b-map"  using gscope gslen n3
+        call "b-text" using gscope gslen k-hdl k-hdl-len
+        call "b-map"  using gscope gslen n1
+        call "b-text" using gscope gslen k-incl k-incl-len
+        call "b-arr"  using gscope gslen n1
+        call "b-text" using gscope gslen p-echo p-echo-len
+        call "b-text" using gscope gslen k-ops2 k-ops2-len
+        call "b-map"  using gscope gslen n1
+        call "b-text" using gscope gslen k-incl k-incl-len
+        call "b-arr"  using gscope gslen n1
+        call "b-text" using gscope gslen v-echo v-echo-len
+        call "b-text" using gscope gslen k-rsrc k-rsrc-len
+        call "b-map"  using gscope gslen n1
+        call "b-text" using gscope gslen k-incl k-incl-len
+        call "b-arr"  using gscope gslen n1
+        call "b-text" using gscope gslen r-echo r-echo-len
+    else
+        call "b-arr" using gscope gslen n0
+    end-if
+    call "ps-idhash" using idhash
+    call "ec_now_ms" using mint-now
+    call "mint-token" using idhash gscope gslen
+        token token-len token-hash csig csig-len csig-hash
+        mint-now no-exp no-expv
+    move s-grants to rel(1:25)
+    move lk-pat2(1:lk-patlen) to rel(26:lk-patlen)
+    compute rellen = 25 + lk-patlen
+    call "mkpath" using rel rellen path pathlen
+    call "store-bind" using path pathlen token token-len token-hash.
 end program boot-handler.
 
 *> ---- op-spec : append {input_type?, output_type?} to a buffer ------
@@ -2002,6 +2083,57 @@ working-storage section.
 01 k-status pic x(6)  value "status".      01 k-status-len pic 9(9) comp-5 value 6.
 01 k-result pic x(6)  value "result".      01 k-result-len pic 9(9) comp-5 value 6.
 01 errc   pic x(32).  01 errcl pic 9(9) comp-5.
+*> --- §7a.1 reentry carriers (PLURAL at 0.8.2.19) ---
+01 k-cap   pic x(19) value "reentry_capability".
+01 k-cap-len pic 9(9) comp-5 value 18.
+01 k-grs   pic x(17) value "reentry_granters".
+01 k-grs-len pic 9(9) comp-5 value 16.
+01 k-gr1   pic x(16) value "reentry_granter".
+01 k-gr1-len pic 9(9) comp-5 value 15.
+01 k-sgs   pic x(24) value "reentry_cap_signatures".
+01 k-sgs-len pic 9(9) comp-5 value 22.
+01 k-sg1   pic x(23) value "reentry_cap_signature".
+01 k-sg1-len pic 9(9) comp-5 value 21.
+01 capoff pic 9(9) comp-5.  01 capfd pic 9(1).
+01 caplen2 pic 9(9) comp-5. 01 capend pic 9(9) comp-5.
+01 groff  pic 9(9) comp-5.  01 grfd pic 9(1).  01 grsingle pic 9(1).
+01 sgoff  pic 9(9) comp-5.  01 sgfd pic 9(1).  01 sgsingle pic 9(1).
+01 ngr    pic 9(9) comp-5.  01 nsg pic 9(9) comp-5.
+01 npresent pic 9(9) comp-5.  01 hascred pic 9(1).
+01 maj    pic 9(2) comp-5.  01 addl pic 9(2) comp-5.  01 carg pic 9(18) comp-5.
+*> --- §7a.2a merged verification bundle ---
+01 bun    pic x(524288).  01 bun-len pic 9(9) comp-5.
+01 bcnt   pic 9(18) comp-5.
+01 pcnt   pic 9(9) comp-5.
+01 pfirst pic 9(9) comp-5.  01 pspan pic 9(9) comp-5.
+01 c1     pic 9(9) comp-5.  01 c2 pic 9(9) comp-5.
+01 eoff   pic 9(9) comp-5.  01 eend pic 9(9) comp-5.  01 elen pic 9(9) comp-5.
+01 ei     pic 9(9) comp-5.
+01 h33    pic x(33).
+01 n33    pic 9(9) comp-5 value 33.
+01 bunroot pic 9(9) comp-5 value 1.
+*> --- §1.4 PD-2 gate ---
+01 rel-target pic x(900).  01 rel-target-len pic 9(9) comp-5.
+01 rel-pat  pic x(900).    01 rel-pat-len pic 9(9) comp-5.
+01 local  pic x(128).      01 locallen pic 9(9) comp-5.
+01 tpeer  pic x(128).      01 tpeerlen pic 9(9) comp-5.
+01 gpath  pic x(700).      01 gpathlen pic 9(9) comp-5.
+01 grel   pic x(700).      01 grellen pic 9(9) comp-5.
+01 grant  pic x(524288).   01 grantlen pic 9(9) comp-5.  01 grantfd pic 9(1).
+01 resmap pic x(524288).   01 resmap-len pic 9(9) comp-5.
+01 rtgt   pic x(900).      01 rtgtlen pic 9(9) comp-5.
+01 perm   pic 9(1).
+01 s-grants pic x(25) value "system/capability/grants/".
+01 s-hpfx2  pic x(15) value "system/handler/".
+01 k-tgts pic x(7) value "targets".  01 k-tgts-len pic 9(9) comp-5 value 7.
+01 n1x pic 9(18) comp-5 value 1.
+*> The credential in its OWN buffer at offset 1: cap-target-relax reads it as an
+*> entity wrapper (ent-field ... one), and credlen = 0 IS the ambient arm -- its
+*> own bit, because an absent credential and a credential carrying nothing are
+*> different inputs and collapsing them gives the right verdict for the wrong
+*> reason.
+01 credbuf pic x(524288).  01 credlen pic 9(9) comp-5.
+01 bfnd pic 9(1) value 1.
 linkage section.
 01 lk-env pic x(524288).
 01 lk-rootoff pic 9(9) comp-5.
@@ -2009,7 +2141,12 @@ linkage section.
 01 lk-res pic x(524288).
 01 lk-reslen pic 9(9) comp-5.
 01 lk-reshash pic x(33).
-procedure division using lk-env lk-rootoff lk-status lk-res lk-reslen lk-reshash.
+01 lk-incoff pic 9(9) comp-5.
+01 lk-incfnd pic 9(1).
+01 lk-hpat pic x(900).
+01 lk-hlen pic 9(9) comp-5.
+procedure division using lk-env lk-rootoff lk-status lk-res lk-reslen lk-reshash
+                        lk-incoff lk-incfnd lk-hpat lk-hlen.
     *> 1. locate the params entity, extract target/operation/value
     call "ent-field" using lk-env lk-rootoff k-params k-params-len poff pfd
     if pfd = 0 then perform bad-params goback end-if
@@ -2025,6 +2162,25 @@ procedure division using lk-env lk-rootoff lk-status lk-res lk-reslen lk-reshash
     call "cbor-skip" using lk-env vend st
     compute val-len = vend - voff
     move lk-env(voff:val-len) to val(1:val-len)
+
+    *> 1a. §7a.1's reentry authority triple, ALL-OR-NONE, and the §1.4 PD-2 gate.
+    perform read-carriers
+    if npresent not = 0 and npresent not = 3
+        perform bad-authority
+        goback
+    end-if
+    perform build-bundle
+    perform pd2-gate
+    if perm = 0
+        *> §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic
+        *> transport- or gateway-class code would launder an authorization verdict
+        *> into a route fault, and the ambient and presented branches would then
+        *> disagree about what the same gate decided.
+        move 403 to lk-status
+        move "capability_denied" to errc  move 17 to errcl
+        call "error-result" using errc errcl lk-res lk-reslen lk-reshash
+        goback
+    end-if
 
     *> 2. wrap `value` as the outbound params entity (primitive/any)
     call "b-entity" using t-prim l-prim val val-len pent pent-len pent-hash st
@@ -2102,6 +2258,202 @@ bad-params.
     move 400 to lk-status
     move "invalid_params" to errc move 14 to errcl
     call "error-result" using errc errcl lk-res lk-reslen lk-reshash.
+
+*> A PARTIAL triple is MALFORMED, not ambient: three present selects the
+*> PRESENTED arm, three absent the AMBIENT arm, and anything between is a
+*> credential the caller meant to send and did not.
+bad-authority.
+    move 400 to lk-status
+    move "invalid_params" to errc move 14 to errcl
+    call "error-result" using errc errcl lk-res lk-reslen lk-reshash.
+
+*> ---- read-carriers : §7a.1's PLURAL carriers [0.8.2.19] -------------
+*>
+*> Arrays, with the single-granter case an array of ONE. They were singular, which
+*> made §1.4's multi-signature-root rule ungateable on the wire: driving it needs
+*> two granter identities and two signatures, and a single-credential carrier
+*> cannot express that input.
+*>
+*> ⚠ TRANSITIONAL, AND THE FALLBACK IS NOT OPTIONAL: THE RENAME IS COUPLED TO THE
+*> ORACLE PIN. The pinned oracle -- what all 46 tracked reports are measured
+*> against -- sends the SINGULAR names, so a plural-only peer reads the triple as
+*> ABSENT there, takes the ambient arm and refuses. Measured on the `go` vanguard
+*> as 2 of 778 severities moving PASS -> FAIL. Accepting both keeps this peer
+*> 0-FAIL at BOTH check sets.
+*>
+*> ⛔ REMOVE THIS FALLBACK AT THE ORACLE RE-PIN AND NOT BEFORE: the exit condition
+*> is that tools/oracle-pin.env's `ref` names an oracle whose dispatch-outbound
+*> probe sends the plural carriers.
+*>
+*> An EMPTY array is PARTIAL, not present: it carries no credential, and reading it
+*> as present would take the presented arm with nothing to present.
+read-carriers.
+    move 0 to ngr  move 0 to nsg
+    move 0 to grsingle  move 0 to sgsingle
+    call "ent-field" using lk-env poff k-cap k-cap-len capoff capfd
+    move 0 to caplen2
+    if capfd = 1
+        move capoff to capend
+        call "cbor-skip" using lk-env capend st
+        compute caplen2 = capend - capoff
+    end-if
+    call "ent-field" using lk-env poff k-grs k-grs-len groff grfd
+    if grfd = 1
+        move groff to c1
+        call "cbor-read-head" using lk-env c1 maj addl carg st
+        if maj = 4 then move carg to ngr else move 0 to grfd end-if
+    end-if
+    if grfd = 0
+        call "ent-field" using lk-env poff k-gr1 k-gr1-len groff grfd
+        if grfd = 1 then move 1 to ngr  move 1 to grsingle end-if
+    end-if
+    call "ent-field" using lk-env poff k-sgs k-sgs-len sgoff sgfd
+    if sgfd = 1
+        move sgoff to c1
+        call "cbor-read-head" using lk-env c1 maj addl carg st
+        if maj = 4 then move carg to nsg else move 0 to sgfd end-if
+    end-if
+    if sgfd = 0
+        call "ent-field" using lk-env poff k-sg1 k-sg1-len sgoff sgfd
+        if sgfd = 1 then move 1 to nsg  move 1 to sgsingle end-if
+    end-if
+    move 0 to npresent
+    if capfd = 1 and caplen2 > 0 then add 1 to npresent end-if
+    if grfd = 1 and ngr > 0 then add 1 to npresent end-if
+    if sgfd = 1 and nsg > 0 then add 1 to npresent end-if
+    move 0 to hascred
+    if npresent = 3 then move 1 to hascred end-if
+    move 0 to credlen
+    if hascred = 1 and caplen2 > 0 and caplen2 <= 524288
+        move lk-env(capoff:caplen2) to credbuf(1:caplen2)
+        move caplen2 to credlen
+    end-if.
+
+*> ---- build-bundle : §7a.2a's MERGED verification bundle -------------
+*>
+*> The presented arm verifies against a bundle MERGED FROM THE PARENT ENVELOPE'S
+*> `included`. The credential, its granters and its signatures arrive NESTED IN
+*> PARAMS (ratified shape (a), in-band), so they are NOT in the parent's included
+*> map, and a verifier handed that alone cannot resolve a single link -- every
+*> credential then reads as invalid and the legitimate reentry is refused.
+*>
+*> The result is a plain CBOR map of {33-byte content_hash -> entity}, which is the
+*> shape cap-resolve/inc-find-hash read. It is never hashed and never sent, so key
+*> ORDER does not matter here; what does matter is that each key is the entity's own
+*> content_hash, because inc-find-hash RECOMPUTES it and requires the two to agree
+*> (§3.1). A forged key is therefore a MISS rather than a resolution.
+build-bundle.
+    move 0 to bun-len
+    move 0 to pcnt  move 0 to pspan
+    if lk-incfnd = 1
+        move lk-incoff to c1
+        call "cbor-read-head" using lk-env c1 maj addl carg st
+        if maj = 5
+            move carg to pcnt
+            move c1 to pfirst
+            move lk-incoff to c2
+            call "cbor-skip" using lk-env c2 st
+            compute pspan = c2 - pfirst
+        end-if
+    end-if
+    compute bcnt = pcnt
+    if hascred = 1 then compute bcnt = bcnt + 1 + ngr + nsg end-if
+    call "b-map" using bun bun-len bcnt
+    if pspan > 0
+        call "b-raw" using bun bun-len lk-env pfirst pspan
+    end-if
+    if hascred = 0 then exit paragraph end-if
+    call "ent-hash" using lk-env capoff h33
+    call "b-bytes" using bun bun-len h33 bunroot n33
+    call "b-raw"   using bun bun-len lk-env capoff caplen2
+    *> every granter and every link signature goes in, because §5.5's chain walk
+    *> resolves them BY HASH out of that map -- one left out is a link the verifier
+    *> cannot reach, which fails closed and reads as the peer refusing the
+    *> credential FORM rather than as a carrier we truncated.
+    if grsingle = 1
+        move groff to eoff
+        perform add-bundle-entry
+    else
+        move groff to c1
+        call "cbor-read-head" using lk-env c1 maj addl carg st
+        move c1 to eoff
+        perform varying ei from 1 by 1 until ei > ngr
+            perform add-bundle-entry
+            move eend to eoff
+        end-perform
+    end-if
+    if sgsingle = 1
+        move sgoff to eoff
+        perform add-bundle-entry
+    else
+        move sgoff to c1
+        call "cbor-read-head" using lk-env c1 maj addl carg st
+        move c1 to eoff
+        perform varying ei from 1 by 1 until ei > nsg
+            perform add-bundle-entry
+            move eend to eoff
+        end-perform
+    end-if.
+
+add-bundle-entry.
+    move eoff to eend
+    call "cbor-skip" using lk-env eend st
+    compute elen = eend - eoff
+    call "ent-hash" using lk-env eoff h33
+    call "b-bytes" using bun bun-len h33 bunroot n33
+    call "b-raw"   using bun bun-len lk-env eoff elen.
+
+*> ---- pd2-gate : §1.4's PD-2 check, BEFORE the sub-dispatch leaves ---
+*>
+*> check_permission with all four dimensions, on THIS handler's OWN grant, with a
+*> target-minted credential relaxing Dimension 4 and nothing else. Consulting only
+*> the presented credential here is §6.8's confused-deputy bypass.
+*>
+*> ⛔ DIMENSION 1'S PATTERN IS THE TARGET URI'S PEER-RELATIVE PATH, NOT THE
+*> EXECUTING HANDLER'S OWN. The grant read here names the handler the sub-dispatch
+*> is ABOUT TO REACH; passing the executing handler's pattern refuses the
+*> legitimate reentry with a 403 indistinguishable at the wire from an authority
+*> verdict (measured on `ada`, 2 of 778).
+*>
+*> ⚠ target_peer comes from extract_peer(uri) and the validator sends the SCHEMED
+*> ABSOLUTE form, so the URI names the target. Where a caller sends a PEER-RELATIVE
+*> uri there is no peer in it and this peer has no connection handle at this entry
+*> point to fall back to, so extract_peer answers the LOCAL peer and Dimension 4
+*> is satisfied by §5.2's own default -- which is correct for a self-dispatch and is
+*> the one input shape on which this gate cannot distinguish a self-dispatch from a
+*> remote one. Disclosed rather than guessed.
+pd2-gate.
+    move 0 to perm
+    call "ps-peerid" using local locallen
+    call "cap-peer-relative" using target target-len rel-target rel-target-len
+    call "cap-peer-relative" using lk-hpat lk-hlen rel-pat rel-pat-len
+    call "cap-extract-peer" using target target-len local locallen tpeer tpeerlen
+    *> the handler's own grant (§6.8), at system/capability/grants/{pattern}
+    move s-grants to grel(1:25)
+    move rel-pat(1:rel-pat-len) to grel(26:rel-pat-len)
+    compute grellen = 25 + rel-pat-len
+    call "mkpath" using grel grellen gpath gpathlen
+    call "store-get-at" using gpath gpathlen grant grantlen grantfd
+    if grantfd = 0
+        *> §6.8: a handler with no valid grant DOES NOT RUN. Fail closed rather
+        *> than falling back to the credential, which is the substitution §6.8
+        *> forbids.
+        exit paragraph
+    end-if
+    *> the resource the sub-dispatch is about to touch -- the SAME value the gate
+    *> authorizes and the only one it may authorize, built from the PEER-RELATIVE
+    *> target because a resource target carrying a scheme is not a path at all.
+    move s-hpfx2 to rtgt(1:15)
+    move rel-target(1:rel-target-len) to rtgt(16:rel-target-len)
+    compute rtgtlen = 15 + rel-target-len
+    move 0 to resmap-len
+    call "b-map"  using resmap resmap-len n1x
+    call "b-text" using resmap resmap-len k-tgts k-tgts-len
+    call "b-arr"  using resmap resmap-len n1x
+    call "b-text" using resmap resmap-len rtgt rtgtlen
+    call "cap-outbound-perm" using bun bunroot bfnd
+        tpeer tpeerlen rel-target rel-target-len op op-len
+        grant resmap credbuf credlen perm.
 
 reentry-bad.
     move 502 to lk-status

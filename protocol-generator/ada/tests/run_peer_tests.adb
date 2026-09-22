@@ -815,6 +815,246 @@ begin
              Text (Resp.Root, "request_id") = "x-1");
    end;
 
+   ---------------------------------------------------------------------------
+   Put_Line ("-- section 1.4 PD-2: the outbound sub-dispatch gate (0.8.2.31) --");
+   ---------------------------------------------------------------------------
+   --  NOTHING IN THE PINNED 778-CHECK SET NOR IN THE CANDIDATE 790 MEASURES THE
+   --  MULTI-SIGNATURE CLAUSE, and the §6.8 discriminator is measurable on the wire
+   --  only because the scaffold grant is narrow. This block is the gate for both.
+   declare
+      use type Cap.Verdict;
+
+      Id      : constant Entity_Core.Protocol.Identity.Peer_Identity := Hand.Identity (Peer);
+      Idh     : constant Byte_Array :=
+        Byte_Array (Entity_Core.Protocol.Identity.Identity_Hash (Id));
+      --  The TARGET peer: a second identity, so "minted by the target" is a real
+      --  foreign mint rather than a self-issued token wearing a different name.
+      T_Seed  : constant Entity_Core.Crypto.Seed_Bytes := (others => 16#2B#);
+      T_Id    : constant Entity_Core.Protocol.Identity.Peer_Identity :=
+        Entity_Core.Protocol.Identity.Of_Seed (T_Seed);
+      T_Pid   : constant String := Entity_Core.Protocol.Identity.Peer_Id (T_Id);
+      T_Idh   : constant Byte_Array :=
+        Byte_Array (Entity_Core.Protocol.Identity.Identity_Hash (T_Id));
+      --  A THIRD identity: the co-signer of the quorum root, and the granter of
+      --  the "minted by somebody else" credential.
+      X_Seed  : constant Entity_Core.Crypto.Seed_Bytes := (others => 16#7C#);
+      X_Id    : constant Entity_Core.Protocol.Identity.Peer_Identity :=
+        Entity_Core.Protocol.Identity.Of_Seed (X_Seed);
+      X_Idh   : constant Byte_Array :=
+        Byte_Array (Entity_Core.Protocol.Identity.Identity_Hash (X_Id));
+
+      --  The handler's OWN grant, as Bootstrap_Handler_Entities mints it for
+      --  dispatch-outbound: ONE handler, ONE operation, ONE resource, and no
+      --  `peers` dimension. The narrowness is the measurement.
+      Own_Grant : constant Materialized_Entity :=
+        Token_Of (Scope_Of (T1 ("system/validate/echo"), No_Strings),
+                  Scope_Of (T1 ("echo"), No_Strings),
+                  Scope_Of (T1 ("system/handler/system/validate/echo"), No_Strings));
+      Empty_Grant : constant Materialized_Entity :=
+        Make ("system/capability/token",
+          Map_Of (((Key => K ("granter"), Value => Make_Bytes (Idh)),
+                   (Key => K ("grantee"), Value => Make_Bytes (Idh)),
+                   (Key => K ("created_at"), Value => Make_Uint (1_700_000_000_000)),
+                   (Key => K ("grants"), Value => Array_Of (No_Strings)))));
+
+      Echo_Res : constant Ecf_Value :=
+        Resource_Of (T1 ("system/handler/system/validate/echo"), No_Strings);
+      Tree_Res : constant Ecf_Value :=
+        Resource_Of (T1 ("system/handler/system/tree"), No_Strings);
+
+      --  A credential ROOTED AT Granter_Id, granting `peers` = [Peers_Incl] to
+      --  Grantee_Hash. Root-only (no parent), so its granter IS its root.
+      function Cred_Of (Granter_Hash, Grantee_Hash : Byte_Array;
+                        Peers_Incl : String) return Materialized_Entity is
+        (Make ("system/capability/token",
+           Map_Of (((Key => K ("granter"), Value => Make_Bytes (Granter_Hash)),
+                    (Key => K ("grantee"), Value => Make_Bytes (Grantee_Hash)),
+                    (Key => K ("created_at"), Value => Make_Uint (1_700_000_000_000)),
+                    (Key => K ("grants"),
+                     Value => Array_Of
+                       ((1 => Map_Of
+                           (((Key => K ("handlers"),
+                              Value => Scope_Of (T1 ("*"), No_Strings)),
+                             (Key => K ("operations"),
+                              Value => Scope_Of (T1 ("*"), No_Strings)),
+                             (Key => K ("resources"),
+                              Value => Scope_Of (T1 ("*"), No_Strings)),
+                             (Key => K ("peers"),
+                              Value => Scope_Of (T1 (Peers_Incl), No_Strings)))))))))));
+
+      --  A §3.6 K-of-2 quorum root the LOCAL peer IS a member of, minted "at the
+      --  target" in the sense that the target co-signed it. §1.4: a multi-signature
+      --  root is a GROUP's authority and NEVER relaxes Dimension 4.
+      Quorum_Cred : constant Materialized_Entity :=
+        Make ("system/capability/token",
+          Map_Of (((Key => K ("granter"),
+                    Value => Map_Of
+                      (((Key => K ("signers"),
+                         Value => Array_Of ((Make_Bytes (Idh), Make_Bytes (T_Idh)))),
+                        (Key => K ("threshold"), Value => Make_Uint (2))))),
+                   (Key => K ("grantee"), Value => Make_Bytes (Idh)),
+                   (Key => K ("created_at"), Value => Make_Uint (1_700_000_000_000)),
+                   (Key => K ("grants"),
+                    Value => Array_Of
+                      ((1 => Map_Of
+                          (((Key => K ("handlers"),
+                             Value => Scope_Of (T1 ("*"), No_Strings)),
+                            (Key => K ("operations"),
+                             Value => Scope_Of (T1 ("*"), No_Strings)),
+                            (Key => K ("resources"),
+                             Value => Scope_Of (T1 ("*"), No_Strings)),
+                            (Key => K ("peers"),
+                             Value => Scope_Of (T1 (T_Pid), No_Strings))))))))));
+
+      Good_Cred : constant Materialized_Entity := Cred_Of (T_Idh, Idh, T_Pid);
+      --  Minted by a THIRD party, not by the target: relaxes nothing.
+      Wrong_Root_Cred : constant Materialized_Entity := Cred_Of (X_Idh, Idh, T_Pid);
+      --  Minted by the target FOR SOMEBODY ELSE: relaxes nothing.
+      Wrong_Grantee_Cred : constant Materialized_Entity := Cred_Of (T_Idh, X_Idh, T_Pid);
+
+      --  §7a.2a's MERGED BUNDLE. The credential, its granters and its signatures
+      --  arrive nested in params, so a verifier handed only the parent envelope's
+      --  `included` cannot resolve a single link -- every credential then reads as
+      --  invalid and the legitimate reentry is refused.
+      function Bundle_With (Cred : Materialized_Entity;
+                            Granter : Entity_Core.Protocol.Identity.Peer_Identity)
+                            return Env_Pkg.Protocol_Envelope
+      is
+         E : Env_Pkg.Protocol_Envelope :=
+           Env_Pkg.Of_Root (Make ("primitive/any", Empty_Map));
+      begin
+         Env_Pkg.Add (E, Cred);
+         Env_Pkg.Add (E, Entity_Core.Protocol.Identity.Peer_Entity (Granter));
+         Env_Pkg.Add (E, Entity_Core.Protocol.Identity.Peer_Entity (Id));
+         Env_Pkg.Add (E, Entity_Core.Protocol.Identity.Peer_Entity (X_Id));
+         Env_Pkg.Add (E, Entity_Core.Protocol.Identity.Sign (Granter, Cred));
+         return E;
+      end Bundle_With;
+
+      --  The quorum bundle carries BOTH signers' identities and BOTH signatures
+      --  over the root hash -- §5.5's M4 counts distinct signers with a valid
+      --  signature, and M6 requires the local peer among them.
+      function Quorum_Bundle return Env_Pkg.Protocol_Envelope is
+         E : Env_Pkg.Protocol_Envelope :=
+           Env_Pkg.Of_Root (Make ("primitive/any", Empty_Map));
+      begin
+         Env_Pkg.Add (E, Quorum_Cred);
+         Env_Pkg.Add (E, Entity_Core.Protocol.Identity.Peer_Entity (Id));
+         Env_Pkg.Add (E, Entity_Core.Protocol.Identity.Peer_Entity (T_Id));
+         Env_Pkg.Add (E, Entity_Core.Protocol.Identity.Sign (Id, Quorum_Cred));
+         Env_Pkg.Add (E, Entity_Core.Protocol.Identity.Sign (T_Id, Quorum_Cred));
+         return E;
+      end Quorum_Bundle;
+
+      No_Cred : constant Materialized_Entity := Make ("primitive/any", Empty_Map);
+      Empty_Env : constant Env_Pkg.Protocol_Envelope :=
+        Env_Pkg.Of_Root (Make ("primitive/any", Empty_Map));
+
+      --  ONE NAMED RESULT PER ASSERTION. A shared variable reused across checks in
+      --  one declarative region is how a binding from an earlier check survives
+      --  into a later one and makes it pass by coincidence -- the `prolog` fixture
+      --  defect from this same arc, in a language that would not have warned.
+      Ambient_Local   : constant Boolean := Cap.Check_Outbound_Sub_Dispatch
+        (Local, Local, "system/validate/echo", "echo", Hand.Store (Peer),
+         Own_Grant, Echo_Res, No_Cred, False, Empty_Env);
+      Ambient_Foreign : constant Boolean := Cap.Check_Outbound_Sub_Dispatch
+        (Local, T_Pid, "system/validate/echo", "echo", Hand.Store (Peer),
+         Own_Grant, Echo_Res, No_Cred, False, Empty_Env);
+      Presented_In    : constant Boolean := Cap.Check_Outbound_Sub_Dispatch
+        (Local, T_Pid, "system/validate/echo", "echo", Hand.Store (Peer),
+         Own_Grant, Echo_Res, Good_Cred, True, Bundle_With (Good_Cred, T_Id));
+      --  ⛔ THE DISCRIMINATOR. A VALID target-minted credential presented to a
+      --  handler whose OWN grant does not cover the request. Both obvious vectors
+      --  agree under either reading; this is the only input that separates the
+      --  compose from §6.8's confused-deputy substitution.
+      Presented_Out_Op : constant Boolean := Cap.Check_Outbound_Sub_Dispatch
+        (Local, T_Pid, "system/validate/echo", "put", Hand.Store (Peer),
+         Own_Grant, Echo_Res, Good_Cred, True, Bundle_With (Good_Cred, T_Id));
+      Presented_Out_H : constant Boolean := Cap.Check_Outbound_Sub_Dispatch
+        (Local, T_Pid, "system/tree", "echo", Hand.Store (Peer),
+         Own_Grant, Echo_Res, Good_Cred, True, Bundle_With (Good_Cred, T_Id));
+      Presented_Out_R : constant Boolean := Cap.Check_Outbound_Sub_Dispatch
+        (Local, T_Pid, "system/validate/echo", "echo", Hand.Store (Peer),
+         Own_Grant, Tree_Res, Good_Cred, True, Bundle_With (Good_Cred, T_Id));
+      Wrong_Root      : constant Boolean := Cap.Check_Outbound_Sub_Dispatch
+        (Local, T_Pid, "system/validate/echo", "echo", Hand.Store (Peer),
+         Own_Grant, Echo_Res, Wrong_Root_Cred, True,
+         Bundle_With (Wrong_Root_Cred, X_Id));
+      Wrong_Grantee   : constant Boolean := Cap.Check_Outbound_Sub_Dispatch
+        (Local, T_Pid, "system/validate/echo", "echo", Hand.Store (Peer),
+         Own_Grant, Echo_Res, Wrong_Grantee_Cred, True,
+         Bundle_With (Wrong_Grantee_Cred, T_Id));
+      No_Grant        : constant Boolean := Cap.Check_Outbound_Sub_Dispatch
+        (Local, T_Pid, "system/validate/echo", "echo", Hand.Store (Peer),
+         Empty_Grant, Echo_Res, Good_Cred, True, Bundle_With (Good_Cred, T_Id));
+      Multisig_Foreign : constant Boolean := Cap.Check_Outbound_Sub_Dispatch
+        (Local, T_Pid, "system/validate/echo", "echo", Hand.Store (Peer),
+         Own_Grant, Echo_Res, Quorum_Cred, True, Quorum_Bundle);
+      --  THE ANTECEDENT (F70). Without it the row above is a deny that establishes
+      --  nothing: a malformed quorum refuses for reasons unrelated to §1.4.
+      Multisig_Local_Verdict : Cap.Verdict := Cap.Deny;
+   begin
+      --  §1.4's three spellings onto the one form a grant can match.
+      Check ("peer_relative_of: a peer-relative path is unchanged",
+             Cap.Peer_Relative_Of (Local, "system/validate/echo")
+               = "system/validate/echo");
+      Check ("...the absolute form loses its peer segment",
+             Cap.Peer_Relative_Of (Local, "/" & Local & "/system/validate/echo")
+               = "system/validate/echo");
+      Check ("...and so does the schemed form",
+             Cap.Peer_Relative_Of (Local, "entity://" & Local & "/system/validate/echo")
+               = "system/validate/echo");
+      --  ⛔ The standing smalltalk/forth defect: an UNCONDITIONAL strip turns
+      --  system/protocol/connect into protocol/connect, and every self-minted
+      --  grant becomes unusable while the handshake stays green.
+      Check ("...and a NON-peer-id first segment is NOT stripped",
+             Cap.Peer_Relative_Of (Local, "/system/protocol/connect")
+               = "system/protocol/connect");
+      Check ("grant_path_for tolerates a peer-relative pattern",
+             Cap.Grant_Path_For (Local, "system/validate/echo")
+               = "/" & Local & "/system/capability/grants/system/validate/echo");
+      Check ("...and an ABSOLUTE one, which is what the section 6.6 walk answers",
+             Cap.Grant_Path_For (Local, "/" & Local & "/system/validate/echo")
+               = "/" & Local & "/system/capability/grants/system/validate/echo");
+
+      --  The AMBIENT arm: Dimension 4 is decided by the handler's grant alone, and
+      --  §5.2's default for an absent `peers` scope is {include:[local]}.
+      Check ("ambient: a request inside the handler grant, to THIS peer, is allowed",
+             Ambient_Local);
+      Check ("ambient: the SAME request to a FOREIGN peer is refused",
+             not Ambient_Foreign);
+
+      --  The PRESENTED arm.
+      Check ("presented: a target-minted credential relaxes Dimension 4",
+             Presented_In);
+      Check ("presented: an out-of-grant OPERATION is refused (section 6.8 bypass)",
+             not Presented_Out_Op);
+      Check ("presented: an out-of-grant HANDLER is refused (section 6.8 bypass)",
+             not Presented_Out_H);
+      Check ("presented: an out-of-grant RESOURCE is refused (section 6.8 bypass)",
+             not Presented_Out_R);
+      Check ("presented: a credential rooted at a THIRD party relaxes nothing",
+             not Wrong_Root);
+      Check ("presented: a credential granted to SOMEBODY ELSE relaxes nothing",
+             not Wrong_Grantee);
+      Check ("presented: with no handler grant a credential authorizes nothing",
+             not No_Grant);
+
+      --  §1.4's multi-signature clause, which NO check set measures.
+      begin
+         Multisig_Local_Verdict := Cap.Verify_Capability_Chain
+                                     (Local, Hand.Store (Peer), Quorum_Cred,
+                                      Quorum_Bundle);
+      exception
+         when Entity_Core.Errors.Unresolvable_Grantee =>
+            Multisig_Local_Verdict := Cap.Deny;
+      end;
+      Check ("antecedent: the SAME quorum root verifies in the LOCAL frame",
+             Multisig_Local_Verdict = Cap.Allow);
+      Check ("...and NEVER relaxes Dimension 4 in a foreign frame",
+             not Multisig_Foreign);
+   end;
+
    New_Line;
    Put_Line ("== peer self-tests:" & Natural'Image (Passed) & " passed,"
              & Natural'Image (Failed) & " failed, of" & Natural'Image (Checked)
@@ -823,9 +1063,9 @@ begin
    --  A GATE THAT EXAMINED ZERO THINGS PRINTS THE SAME WORD AS ONE THAT EXAMINED
    --  FORTY. The floor is asserted so a dropped block or a short-circuited run is
    --  a RED, not a silent green.
-   if Checked < 45 then
+   if Checked < 75 then
       Put_Line ("  FAIL: examined" & Natural'Image (Checked)
-                & " checks, floor is 45 -- the suite did not fully run");
+                & " checks, floor is 75 -- the suite did not fully run");
       Failed := Failed + 1;
    end if;
 

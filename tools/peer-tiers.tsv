@@ -52,32 +52,32 @@
 #   the readers and says nothing about how they parse.
 #
 peer	tier	last_measured_pin	spec_pin	note
-go	M1	78db4a9	0.8.2.25	clean-room; independence check on the generator
-haskell	M1	78db4a9	0.8.2.25	STM substrate; cleanest conformance record
-lean	M1	78db4a9	0.8.2.25	the proof vector — the only formal-methods discovery channel
-ocaml	M1	78db4a9	0.8.2.25	the proven headline finder (A-OC-007)
-swift	M1	78db4a9	0.8.2.25	sharpest string/grapheme instrument; adoption anchor
-common-lisp	M2	78db4a9	0.8.2.25	proven finder (A-CL-009); pure-language full crypto
-csharp	M2	78db4a9	0.8.2.25	major ecosystem
-elixir	M2	78db4a9	0.8.2.25	production BEAM; native agility
-java	M2	78db4a9	0.8.2.25	major ecosystem
-kotlin	M2	78db4a9	0.8.2.25	JVM; sealed-Result + coroutines
-python	M2	78db4a9	0.8.2.25	clean-room; large-ecosystem adoption
-rust	M2	78db4a9	0.8.2.25	clean-room; compile-enforced store safety
-typescript	M2	78db4a9	0.8.2.25	major ecosystem
-ada	M3	78db4a9	0.8.2.25	structural store-safety via protected objects
-c	M3	78db4a9	0.8.2.25	ubiquitous; found A-C-009
-cobol	M3	78db4a9	0.8.2.25	FFI-hybrid; 756 · 0F
-cpp	M3	78db4a9	0.8.2.25	reach peer
-crystal	M3	78db4a9	0.8.2.25	CSP fibers; fixed-width int
-dart	M3	78db4a9	0.8.2.25	sealed-Result + Future; BigInt-web
-julia	M3	78db4a9	0.8.2.25	multiple-dispatch codec; JIT
-nim	M3	78db4a9	0.8.2.25	compile-time macro codec; compiles-to-C
-odin	M3	78db4a9	0.8.2.25	pure-Odin crypto; no-GC
-php	M3	78db4a9	0.8.2.25	event-loop store-safety
-prolog	M3	78db4a9	0.8.2.25	logic substrate; found A-PL-006
-ruby	M3	78db4a9	0.8.2.25	dynamic; native agility
-zig	M3	78db4a9	0.8.2.25	lightest supply chain
+go	M1	78db4a9	0.8.2.31	clean-room; independence check on the generator
+haskell	M1	78db4a9	0.8.2.31	STM substrate; cleanest conformance record
+lean	M1	78db4a9	0.8.2.31	the proof vector — the only formal-methods discovery channel
+ocaml	M1	78db4a9	0.8.2.31	the proven headline finder (A-OC-007)
+swift	M1	78db4a9	0.8.2.31	sharpest string/grapheme instrument; adoption anchor
+common-lisp	M2	78db4a9	0.8.2.31	proven finder (A-CL-009); pure-language full crypto
+csharp	M2	78db4a9	0.8.2.31	major ecosystem
+elixir	M2	78db4a9	0.8.2.31	production BEAM; native agility
+java	M2	78db4a9	0.8.2.31	major ecosystem
+kotlin	M2	78db4a9	0.8.2.31	JVM; sealed-Result + coroutines
+python	M2	78db4a9	0.8.2.31	clean-room; large-ecosystem adoption
+rust	M2	78db4a9	0.8.2.31	clean-room; compile-enforced store safety
+typescript	M2	78db4a9	0.8.2.31	major ecosystem
+ada	M3	78db4a9	0.8.2.31	structural store-safety via protected objects
+c	M3	78db4a9	0.8.2.31	ubiquitous; found A-C-009
+cobol	M3	78db4a9	0.8.2.31	FFI-hybrid; 756 · 0F
+cpp	M3	78db4a9	0.8.2.31	reach peer
+crystal	M3	78db4a9	0.8.2.31	CSP fibers; fixed-width int
+dart	M3	78db4a9	0.8.2.31	sealed-Result + Future; BigInt-web
+julia	M3	78db4a9	0.8.2.31	multiple-dispatch codec; JIT
+nim	M3	78db4a9	0.8.2.31	compile-time macro codec; compiles-to-C
+odin	M3	78db4a9	0.8.2.31	pure-Odin crypto; no-GC
+php	M3	78db4a9	0.8.2.31	event-loop store-safety
+prolog	M3	78db4a9	0.8.2.31	logic substrate; found A-PL-006
+ruby	M3	78db4a9	0.8.2.31	dynamic; native agility
+zig	M3	78db4a9	0.8.2.31	lightest supply chain
 apl	probe	78db4a9	0.8.2.25	array value-model; 756 · 0F — was carried as UNMEASURABLE for a toolchain claim that was false
 asm-arm64	probe	78db4a9	0.8.2.25	ISA port; 756 · 0F
 asm-x86_64	probe	78db4a9	0.8.2.25	lowest-level substrate; 756 · 0F

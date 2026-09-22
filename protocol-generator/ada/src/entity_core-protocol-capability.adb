@@ -1007,11 +1007,34 @@ package body Entity_Core.Protocol.Capability is
       end;
    end Multisig_Root_Ok;
 
-   ----------------------------
-   -- Verify_Capability_Chain --
-   ----------------------------
-   function Verify_Capability_Chain
+   -----------------------------------
+   -- Verify_Capability_Chain_Rooted_At --
+   -----------------------------------
+   --  Verify_Capability_Chain with the expected ROOT granter named SEPARATELY
+   --  from the verifying peer.
+   --
+   --  §1.4's PD-2 presented-authority arm needs this: the credential it evaluates
+   --  is minted by the TARGET peer, so root-trust is relaxed away from the local
+   --  peer -- and every other clause (per-link signatures, grantee resolution,
+   --  temporal validity, attenuation) is unchanged. PARAMETERIZED rather than
+   --  forked, because a second copy of a chain walk is a second copy that drifts,
+   --  and the clauses below are where the authority decision actually lives.
+   --
+   --  ⛔ A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY (§1.4, 0.8.2.19). When
+   --  Root_Peer /= Local_Peer the quorum arm is REFUSED OUTRIGHT rather than
+   --  verified: "minted by the target" means the target SOLELY minted it, and a
+   --  K-of-N root is a GROUP's authority -- its co-signers authorized it too.
+   --  Verifying the quorum here and accepting it would let any one signer's target
+   --  confer the whole group's grant, which is E3/F66's over-acceptance. §5.5's M6
+   --  independently requires the LOCAL peer in the signer set, so the quorum arm
+   --  has no meaning in a foreign frame even on its own terms -- and that is
+   --  exactly why the wire cannot measure this clause: the oracle's K-of-2 root is
+   --  co-signed by the target and a third party and NOT by the local peer, so M6
+   --  refuses it first, for a reason that has nothing to do with §1.4. Planting
+   --  this guard out leaves the wire GREEN. The unit gate is what measures it.
+   function Verify_Capability_Chain_Rooted_At
      (Local_Peer : String;
+      Root_Peer  : String;
       Store      : access Entity_Core.Protocol.Store.Safe_Store;
       Cap        : Materialized_Entity;
       Env        : Env_Pkg.Protocol_Envelope) return Verdict
@@ -1049,6 +1072,12 @@ package body Entity_Core.Protocol.Capability is
          Root : constant Materialized_Entity := Chain (N);
       begin
          if Is_Multisig (Root) then
+            --  §1.4 (0.8.2.19): a multi-signature root NEVER relaxes Dimension 4,
+            --  so it is only ever valid in the LOCAL frame. Refuse outright rather
+            --  than verify -- see the header.
+            if Root_Peer /= Local_Peer then
+               return Deny;
+            end if;
             if not Multisig_Root_Ok (Local_Peer, Store, Env, Root) then
                return Deny;
             end if;
@@ -1068,7 +1097,7 @@ package body Entity_Core.Protocol.Capability is
                         begin
                            Root_Ok := Pk_Found and then Pk'Length = 32
                              and then Entity_Core.Protocol.Identity.Peer_Id_Of_Public
-                                        (Entity_Core.Crypto.Public_Bytes (Pk)) = Local_Peer;
+                                        (Entity_Core.Crypto.Public_Bytes (Pk)) = Root_Peer;
                         end;
                      end if;
                   end;
@@ -1189,6 +1218,23 @@ package body Entity_Core.Protocol.Capability is
       end loop;
 
       return (if Good then Allow else Deny);
+   end Verify_Capability_Chain_Rooted_At;
+
+   ----------------------------
+   -- Verify_Capability_Chain --
+   ----------------------------
+   --  §5.5 dispatch-time chain verification: the root must be LOCALLY rooted --
+   --  a single-signature root whose `granter` resolves to this peer, or a §3.6
+   --  quorum root this peer is a validated member of.
+   function Verify_Capability_Chain
+     (Local_Peer : String;
+      Store      : access Entity_Core.Protocol.Store.Safe_Store;
+      Cap        : Materialized_Entity;
+      Env        : Env_Pkg.Protocol_Envelope) return Verdict
+   is
+   begin
+      return Verify_Capability_Chain_Rooted_At
+               (Local_Peer, Local_Peer, Store, Cap, Env);
    end Verify_Capability_Chain;
 
    ---------------
@@ -1329,5 +1375,211 @@ package body Entity_Core.Protocol.Capability is
          end;
       end;
    end Verify_Request;
+
+   ---------------------------------------------------------------------------
+   --  §1.4 PD-2: outbound sub-dispatch authorization (0.8.2.31).
+   ---------------------------------------------------------------------------
+
+   ----------------------
+   -- Peer_Relative_Of --
+   ----------------------
+   --  See the spec file. The peer segment is dropped only when it IS a peer_id.
+   function Peer_Relative_Of (Local_Peer : String; Uri : String) return String is
+      pragma Unreferenced (Local_Peer);
+      P : constant String := Normalize_Uri (Uri);
+   begin
+      if P'Length = 0 or else P (P'First) /= '/' then
+         return P;  --  already peer-relative
+      end if;
+      declare
+         Rest  : constant String := P (P'First + 1 .. P'Last);
+         Slash : constant Natural := Ada.Strings.Fixed.Index (Rest, "/");
+      begin
+         if Slash > 0 and then Is_Peer_Id (Rest (Rest'First .. Slash - 1)) then
+            return Rest (Slash + 1 .. Rest'Last);
+         end if;
+         return Rest;
+      end;
+   end Peer_Relative_Of;
+
+   --------------------
+   -- Grant_Path_For --
+   --------------------
+   function Grant_Path_For (Local_Peer : String; Pattern : String) return String is
+      Prefix : constant String := "/" & Local_Peer & "/";
+      Rel    : constant String :=
+        (if Starts_With (Prefix, Pattern)
+         then Pattern (Pattern'First + Prefix'Length .. Pattern'Last)
+         else Pattern);
+   begin
+      return "/" & Local_Peer & "/system/capability/grants/" & Rel;
+   end Grant_Path_For;
+
+   -----------------------------------
+   -- Target_Minted_Peers_Relaxation --
+   -----------------------------------
+   --  Verify a presented reentry credential against §1.4's clauses and, where
+   --  they ALL hold, answer the `peers` scope Dimension 4 relaxes to. Relaxes is
+   --  False for "relaxes nothing", which is every failure mode -- a credential
+   --  failing a clause is not an error, it simply supplies nothing.
+   --
+   --  Every clause is required:
+   --    * the chain ROOT `granter` resolves to the TARGET peer, and is NOT a
+   --      multi-signature root (Verify_Capability_Chain_Rooted_At refuses the
+   --      quorum arm in a foreign frame, which is where that rule lands);
+   --    * the LEAF `grantee` is the LOCAL peer;
+   --    * valid (per-link signatures, temporal, attenuation) and not revoked.
+   function Target_Minted_Peers_Relaxation
+     (Local_Peer  : String;
+      Target_Peer : String;
+      Store       : access Entity_Core.Protocol.Store.Safe_Store;
+      Cred        : Materialized_Entity;
+      Env         : Env_Pkg.Protocol_Envelope;
+      Relaxes     : out Boolean) return Ecf_Value
+   is
+      Nothing : constant Ecf_Value := Make_Null;
+   begin
+      Relaxes := False;
+      if Target_Peer = Local_Peer then
+         --  Nothing to relax -- §5.2's default already covers this peer. Treating
+         --  a self-targeted credential as a relaxation would make the exemption
+         --  reachable with no foreign mint at all.
+         return Nothing;
+      end if;
+      --  THE CHAIN WALK IS CALLED IN A STATEMENT PART WITH ITS OWN HANDLER, NOT
+      --  FROM A DECLARATION. It raises Unresolvable_Grantee for a credential whose
+      --  grantee cannot be resolved, and an exception raised while elaborating a
+      --  block's DECLARATIVE part is NOT handled by that block's own handler
+      --  (Ada LRM 11.4) -- the standing `ada` defect, three instances of which
+      --  were found on the wire in this peer and by nothing else. Here it would
+      --  escape the PD-2 gate entirely and reach the dispatcher's catch-all as a
+      --  500, for an ordinary malformed credential that owes a 403.
+      declare
+         V : Verdict := Deny;
+      begin
+         begin
+            V := Verify_Capability_Chain_Rooted_At
+                   (Local_Peer, Target_Peer, Store, Cred, Env);
+         exception
+            when Entity_Core.Errors.Unresolvable_Grantee =>
+               V := Deny;
+         end;
+         if V /= Allow then
+            return Nothing;
+         end if;
+      end;
+      if Is_Revoked (Local_Peer, Store, Cred) then
+         return Nothing;
+      end if;
+      --  The LEAF grantee must be this peer: a credential minted at the target for
+      --  somebody ELSE relaxes nothing here.
+      declare
+         Ge_Found, Gr_Found, Pk_Found : Boolean;
+         Geh : constant Byte_Array := Byte_Field (Cred, "grantee", Ge_Found);
+      begin
+         if not Ge_Found then
+            return Nothing;
+         end if;
+         declare
+            Ge : constant Materialized_Entity := Resolve (Store, Env, Geh, Gr_Found);
+         begin
+            if not Gr_Found then
+               return Nothing;
+            end if;
+            declare
+               Pk : constant Byte_Array := Byte_Field (Ge, "public_key", Pk_Found);
+            begin
+               if not (Pk_Found and then Pk'Length = 32
+                       and then Entity_Core.Protocol.Identity.Peer_Id_Of_Public
+                                  (Entity_Core.Crypto.Public_Bytes (Pk)) = Local_Peer)
+               then
+                  return Nothing;
+               end if;
+            end;
+         end;
+      end;
+      --  The credential's OWN `peers` scope is what Dimension 4 relaxes TO. Absent
+      --  means the granter -- the target peer -- which is the ordinary reentry
+      --  shape: "you may dispatch back to me".
+      declare
+         Grants : constant Ecf_Value := Grants_Of (Cred);
+      begin
+         if Kind (Grants) /= K_Array or else Array_Length (Grants) = 0 then
+            return Nothing;
+         end if;
+         declare
+            G : constant Ecf_Value := Array_Element (Grants, 1);
+            P : constant Ecf_Value := Field (G, "peers");
+         begin
+            Relaxes := True;
+            if Kind (P) = K_Map then
+               return P;
+            end if;
+            return Map_Of ((1 => (Key => K ("include"),
+                                  Value => Text_Array1 (Target_Peer))));
+         end;
+      end;
+   end Target_Minted_Peers_Relaxation;
+
+   ---------------------------------
+   -- Check_Outbound_Sub_Dispatch --
+   ---------------------------------
+   --  See the spec file for the rule. The shape here is load-bearing: the
+   --  relaxation is COMPUTED FIRST and CONSULTED LAST, so no credential can stand
+   --  in for Dimensions 1-3.
+   function Check_Outbound_Sub_Dispatch
+     (Local_Peer      : String;
+      Target_Peer     : String;
+      Handler_Pattern : String;
+      Operation       : String;
+      Store           : access Entity_Core.Protocol.Store.Safe_Store;
+      Handler_Grant   : Materialized_Entity;
+      Resource        : Ecf_Value;
+      Cred            : Materialized_Entity;
+      Has_Cred        : Boolean;
+      Env             : Env_Pkg.Protocol_Envelope)
+      return Boolean
+   is
+      Relaxes  : Boolean := False;
+      Relax_To : Ecf_Value := Make_Null;
+      Grants   : constant Ecf_Value := Grants_Of (Handler_Grant);
+   begin
+      if Has_Cred then
+         Relax_To := Target_Minted_Peers_Relaxation
+                       (Local_Peer, Target_Peer, Store, Cred, Env, Relaxes);
+      end if;
+      if Kind (Grants) /= K_Array then
+         return False;
+      end if;
+      for I in 1 .. Array_Length (Grants) loop
+         declare
+            G : constant Ecf_Value := Array_Element (Grants, I);
+         begin
+            if Kind (G) = K_Map
+              and then Matches_Scope (Local_Peer, Handler_Pattern,
+                                      Field (G, "handlers"), Path_Scope)
+              and then Matches_Scope (Local_Peer, Operation,
+                                      Field (G, "operations"), Id_Scope)
+              and then Check_Resource_Scope (Local_Peer, Local_Peer, Resource,
+                                             Field (G, "resources"))
+            then
+               --  Dimension 4. §5.2's default for an absent `peers` scope is
+               --  {include:[local_peer_id]}, so a FOREIGN target fails unless this
+               --  grant names it or a target-minted credential relaxes it.
+               if Matches_Scope (Local_Peer, Target_Peer,
+                                 Peers_Or_Default (Local_Peer, G), Id_Scope)
+               then
+                  return True;
+               end if;
+               if Relaxes
+                 and then Matches_Scope (Local_Peer, Target_Peer, Relax_To, Id_Scope)
+               then
+                  return True;
+               end if;
+            end if;
+         end;
+      end loop;
+      return False;
+   end Check_Outbound_Sub_Dispatch;
 
 end Entity_Core.Protocol.Capability;

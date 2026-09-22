@@ -1183,10 +1183,12 @@ linkage section.
 01 lk-incfnd pic 9(1).
 01 lk-cap    pic x(524288).
 01 lk-caplen pic 9(9) comp-5.
+01 lk-rootpid pic x(128).
+01 lk-rootpidlen pic 9(9) comp-5.
 01 lk-verdict pic 9(1).
 01 lk-unres  pic 9(1).
 procedure division using lk-env lk-incoff lk-incfnd lk-cap lk-caplen
-                        lk-verdict lk-unres.
+                        lk-rootpid lk-rootpidlen lk-verdict lk-unres.
     move 0 to lk-verdict
     move 0 to lk-unres
     call "ps-peerid" using local locallen
@@ -1219,6 +1221,20 @@ procedure division using lk-env lk-incoff lk-incfnd lk-cap lk-caplen
     move voff to st
     call "cbor-read-head" using ws-ce-buf(ws-n) st maj addl arg cgl
     if maj = 5
+        *> §1.4 (0.8.2.19): A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY, so
+        *> a foreign root frame REFUSES the quorum arm OUTRIGHT rather than
+        *> verifying it. "Minted by the target" means the target SOLELY minted it;
+        *> a K-of-N root is a GROUP's authority and its co-signers authorized it
+        *> too, so accepting one here would let any single signer's target confer
+        *> the whole group's grant (E3/F66). §5.5's M6 independently requires the
+        *> LOCAL peer in the signer set, which is exactly why THE WIRE CANNOT
+        *> MEASURE THIS CLAUSE -- the oracle's K-of-2 root is not co-signed by us,
+        *> so M6 refuses it first for a reason unrelated to §1.4, and planting this
+        *> guard out leaves the row GREEN. The unit gate is what measures it.
+        if not (lk-rootpidlen = locallen
+                and lk-rootpid(1:lk-rootpidlen) = local(1:locallen))
+            goback
+        end-if
         call "cap-verify-msr" using lk-env lk-incoff lk-incfnd
             ws-ce-buf(ws-n) voff msrok
         if msrok = 0 then goback end-if
@@ -1232,7 +1248,12 @@ procedure division using lk-env lk-incoff lk-incfnd lk-cap lk-caplen
         call "read-bytes" using gp voff pub pbl
         if pbl not = 32 then goback end-if
         call "peer-id-of-pubkey" using pub n32 rpid rpidlen
-        if not (rpidlen = locallen and rpid(1:rpidlen) = local(1:locallen))
+        *> The root granter must resolve to the EXPECTED ROOT PEER, which is the
+        *> local peer for §5.5 dispatch and the TARGET for §1.4's PD-2 presented
+        *> arm. Parameterized rather than forked: a second copy of a chain walk is
+        *> a second copy that drifts, and every other clause below is unchanged.
+        if not (rpidlen = lk-rootpidlen
+                and rpid(1:rpidlen) = lk-rootpid(1:lk-rootpidlen))
             goback
         end-if
     end-if
@@ -1424,6 +1445,8 @@ working-storage section.
 01 exceeds pic 9(1).
 01 cverdict pic 9(1).
 01 unres   pic 9(1).
+01 vr-local pic x(128).
+01 vr-locallen pic 9(9) comp-5.
 01 gee     pic x(33).
 01 gel     pic 9(9) comp-5.
 01 voff    pic 9(9) comp-5.
@@ -1476,9 +1499,12 @@ procedure division using lk-env lk-rootoff lk-incoff lk-incfnd lk-verdict.
     *> §4.10(b) depth pre-check -> 400
     call "cap-chain-depth" using lk-env lk-incoff lk-incfnd capbuf caplen exceeds
     if exceeds = 1 then move 3 to lk-verdict  goback end-if
-    *> chain verification (raises unres -> 401)
+    *> chain verification (raises unres -> 401). §5.5 dispatch is LOCALLY ROOTED:
+    *> the expected root granter is this peer. §1.4's PD-2 presented arm is the one
+    *> call site that names a different root, and it names the TARGET.
+    call "ps-peerid" using vr-local vr-locallen
     call "cap-verify-chain" using lk-env lk-incoff lk-incfnd capbuf caplen
-        cverdict unres
+        vr-local vr-locallen cverdict unres
     if unres = 1 then move 4 to lk-verdict  goback end-if
     if cverdict = 0 then move 2 to lk-verdict  goback end-if
     *> grantee == author
@@ -2294,3 +2320,423 @@ procedure division using lk-env lk-cbuf lk-cframe lk-cframelen
     move 1 to lk-res
     goback.
 end program cap-is-attenuated.
+
+*> ---- cap-peer-relative : §1.4's three spellings -> the ONE form a grant
+*> can match ---------------------------------------------------------------
+*>
+*> `system/tree`, `/{peer}/system/tree` and `entity://{peer}/system/tree` are one
+*> address, and §1.4's PD-2 block requires Dimension 1's handler pattern to be the
+*> target uri's PEER-RELATIVE path -- a grant names HANDLERS, and a handler pattern
+*> never carries a peer segment. Matching a grant against the absolute or schemed
+*> form matches nothing, SILENTLY, which reads at the wire as an authority refusal
+*> rather than as a lookup miss.
+*>
+*> THE FIRST SEGMENT IS DROPPED ONLY WHEN IT IS A PEER_ID. An unconditional strip
+*> turns `system/protocol/connect` into `protocol/connect` -- the standing
+*> smalltalk/forth defect, where every self-minted grant became unusable while the
+*> handshake stayed green because its own grants are all `*`.
+identification division.
+program-id. cap-peer-relative.
+data division.
+working-storage section.
+01 s      pic x(900).
+01 slen   pic 9(9) comp-5.
+01 i      pic 9(9) comp-5.
+01 sl     pic 9(9) comp-5.
+01 seg    pic x(128).
+01 seglen pic 9(9) comp-5.
+01 ispid  pic 9(1).
+linkage section.
+01 lk-uri    pic x(900).
+01 lk-urilen pic 9(9) comp-5.
+01 lk-out    pic x(900).
+01 lk-outlen pic 9(9) comp-5.
+procedure division using lk-uri lk-urilen lk-out lk-outlen.
+    move spaces to lk-out
+    move 0 to lk-outlen
+    if lk-urilen <= 0 then goback end-if
+    *> strip the `entity://` scheme, leaving the absolute form
+    move spaces to s
+    if lk-urilen > 9 and lk-uri(1:9) = "entity://"
+        compute slen = lk-urilen - 9
+        move lk-uri(10:slen) to s(1:slen)
+    else
+        move lk-urilen to slen
+        move lk-uri(1:slen) to s(1:slen)
+        *> an absolute path keeps its leading slash; drop it for the scan below
+        if s(1:1) = "/"
+            compute slen = slen - 1
+            if slen > 0 then move lk-uri(2:slen) to s(1:slen) end-if
+        end-if
+    end-if
+    if slen <= 0 then goback end-if
+    *> first segment
+    move 0 to sl
+    perform varying i from 1 by 1 until i > slen
+        if s(i:1) = "/" and sl = 0 then move i to sl end-if
+    end-perform
+    if sl = 0
+        *> a single segment: nothing to strip -- and nothing that could be a
+        *> peer-relative path's leading `system` either
+        move slen to lk-outlen
+        move s(1:slen) to lk-out(1:slen)
+        goback
+    end-if
+    compute seglen = sl - 1
+    move spaces to seg
+    if seglen > 0 and seglen <= 128 then move s(1:seglen) to seg(1:seglen) end-if
+    call "cap-ispid" using seg seglen ispid
+    if ispid = 1
+        compute lk-outlen = slen - sl
+        if lk-outlen > 0 then move s(sl + 1:lk-outlen) to lk-out(1:lk-outlen) end-if
+    else
+        move slen to lk-outlen
+        move s(1:slen) to lk-out(1:slen)
+    end-if
+    goback.
+end program cap-peer-relative.
+
+*> ---- cap-path-scope-match : matches_scope for a PATH-SCOPE dimension ---
+*>
+*> §3.6 fixes the mapping and a grant does not get to restate it: `handlers` and
+*> `resources` are path-scope and are CANONICALIZED to absolute form (§1.4) before
+*> comparison; `operations` and `peers` are id-scope and are compared literally.
+*> "The two MUST NOT be interchanged -- a path dimension matched literally, or an
+*> id dimension canonicalized, is a conformance defect."
+*>
+*> cap-scope-match beside this one is the ID-scope matcher. This peer's §5.2
+*> dispatch check calls it for `handlers` too, under a comment asserting F40 made
+*> handlers id-scope; it did not. That is a PRE-EXISTING defect on a different rule
+*> (0.8.2.22) and is disclosed rather than smoothed into this tranche -- it is
+*> invisible for the patterns this peer writes, because a peer-relative value
+*> compared literally against a peer-relative pattern agrees with the canonicalized
+*> comparison, and it diverges on §5.4's leading-`/` universal reading and `/*/`
+*> interior peer-wildcard. The §1.4 gate below uses the CORRECT matcher for its own
+*> Dimension 1.
+identification division.
+program-id. cap-path-scope-match.
+data division.
+working-storage section.
+01 cv     pic x(900).
+01 cvlen  pic 9(9) comp-5.
+01 ioff   pic 9(9) comp-5.
+01 ifnd   pic 9(1).
+01 eoff   pic 9(9) comp-5.
+01 efnd   pic 9(1).
+01 cov    pic 9(1).
+01 st     pic s9(9) comp-5.
+01 k-incl pic x(7) value "include".
+01 k-incl-len pic 9(9) comp-5 value 7.
+01 k-excl pic x(7) value "exclude".
+01 k-excl-len pic 9(9) comp-5 value 7.
+linkage section.
+01 lk-buf    pic x(524288).
+01 lk-scopeoff pic 9(9) comp-5.
+01 lk-val    pic x(900).
+01 lk-vallen pic 9(9) comp-5.
+01 lk-frame  pic x(128).
+01 lk-framelen pic 9(9) comp-5.
+01 lk-res    pic 9(1).
+procedure division using lk-buf lk-scopeoff lk-val lk-vallen
+                        lk-frame lk-framelen lk-res.
+    move 0 to lk-res
+    call "cap-canon" using lk-val lk-vallen lk-frame lk-framelen cv cvlen
+    call "cbor-find-key" using lk-buf lk-scopeoff k-excl k-excl-len eoff efnd st
+    *> AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21), tested FIRST: the
+    *> coverage test below is correct in isolation and is simply never reached on a
+    *> sentinel, because cap-match answers 0.
+    if efnd = 1
+        call "cap-arr-unmatchable" using lk-buf eoff lk-frame lk-framelen cov
+        if cov = 1 then goback end-if
+    end-if
+    call "cbor-find-key" using lk-buf lk-scopeoff k-incl k-incl-len ioff ifnd st
+    if ifnd = 0 then goback end-if
+    call "cap-arr-covers" using lk-buf ioff cv cvlen lk-frame lk-framelen cov
+    if cov = 0 then goback end-if
+    if efnd = 1
+        call "cap-arr-covers" using lk-buf eoff cv cvlen lk-frame lk-framelen cov
+        if cov = 1 then goback end-if
+    end-if
+    move 1 to lk-res
+    goback.
+end program cap-path-scope-match.
+
+*> ---- cap-target-relax : §1.4's ONE EXEMPTION ---------------------------
+*>
+*> Verify a presented reentry credential against §1.4's clauses and, where they ALL
+*> hold, answer the `peers` scope Dimension 4 relaxes TO. lk-relaxes = 0 means
+*> "relaxes nothing", which is EVERY failure mode -- a credential failing a clause
+*> is not an error, it simply supplies nothing, and the handler grant then gates
+*> unrelaxed.
+*>
+*> Every clause is required:
+*>   * the chain ROOT `granter` resolves to the TARGET peer, and is NOT a
+*>     multi-signature root (cap-verify-chain refuses the quorum arm in a foreign
+*>     frame, which is where that rule lands);
+*>   * the LEAF `grantee` is the LOCAL peer -- a credential minted at the target
+*>     FOR SOMEBODY ELSE relaxes nothing here;
+*>   * valid (per-link signatures, temporal, attenuation) and not revoked.
+identification division.
+program-id. cap-target-relax.
+data division.
+working-storage section.
+01 local  pic x(128).
+01 locallen pic 9(9) comp-5.
+01 cverdict pic 9(1).
+01 unres  pic 9(1).
+01 revoked pic 9(1).
+01 voff   pic 9(9) comp-5.
+01 f      pic 9(1).
+01 gee    pic x(33).
+01 gel    pic 9(9) comp-5.
+01 gbuf   pic x(524288).
+01 gblen  pic 9(9) comp-5.
+01 found  pic 9(1).
+01 pub    pic x(32).
+01 pbl    pic 9(9) comp-5.
+01 gpid   pic x(128).
+01 gpidlen pic 9(9) comp-5.
+01 gsoff  pic 9(9) comp-5.
+01 gsf    pic 9(1).
+01 gcur   pic 9(9) comp-5.
+01 maj    pic 9(2) comp-5.
+01 addl   pic 9(2) comp-5.
+01 arg    pic 9(18) comp-5.
+01 gcnt   pic 9(9) comp-5.
+01 poff   pic 9(9) comp-5.
+01 pfnd     pic 9(1).
+01 pend   pic 9(9) comp-5.
+01 st     pic s9(9) comp-5.
+01 one    pic 9(9) comp-5 value 1.
+01 n32    pic 9(9) comp-5 value 32.
+01 n1     pic 9(18) comp-5 value 1.
+01 k-gre  pic x(7) value "grantee".
+01 k-gre-len pic 9(9) comp-5 value 7.
+01 k-pk   pic x(10) value "public_key".
+01 k-pk-len pic 9(9) comp-5 value 10.
+01 k-grants pic x(6) value "grants".
+01 k-grants-len pic 9(9) comp-5 value 6.
+01 k-peers pic x(5) value "peers".
+01 k-peers-len pic 9(9) comp-5 value 5.
+01 k-incl pic x(7) value "include".
+01 k-incl-len pic 9(9) comp-5 value 7.
+linkage section.
+01 lk-env    pic x(524288).
+01 lk-incoff pic 9(9) comp-5.
+01 lk-incfnd pic 9(1).
+01 lk-target pic x(128).
+01 lk-targetlen pic 9(9) comp-5.
+01 lk-cred   pic x(524288).
+01 lk-credlen pic 9(9) comp-5.
+01 lk-peers  pic x(4096).
+01 lk-peerslen pic 9(9) comp-5.
+01 lk-relaxes pic 9(1).
+procedure division using lk-env lk-incoff lk-incfnd lk-target lk-targetlen
+                        lk-cred lk-credlen lk-peers lk-peerslen lk-relaxes.
+    move 0 to lk-relaxes
+    move 0 to lk-peerslen
+    call "ps-peerid" using local locallen
+    *> NOTHING TO RELAX when the target IS this peer -- §5.2's default already
+    *> covers it, and treating a self-targeted credential as a relaxation would make
+    *> the exemption reachable with no foreign mint at all.
+    if lk-targetlen = locallen and lk-target(1:lk-targetlen) = local(1:locallen)
+        goback
+    end-if
+    *> the chain, rooted at the TARGET rather than at this peer
+    call "cap-verify-chain" using lk-env lk-incoff lk-incfnd lk-cred lk-credlen
+        lk-target lk-targetlen cverdict unres
+    if cverdict = 0 or unres = 1 then goback end-if
+    call "cap-is-revoked" using lk-env lk-incoff lk-incfnd lk-cred lk-credlen revoked
+    if revoked = 1 then goback end-if
+    *> the LEAF grantee must be this peer
+    call "ent-field" using lk-cred one k-gre k-gre-len voff f
+    if f = 0 then goback end-if
+    call "read-bytes" using lk-cred voff gee gel
+    if gel not = 33 then goback end-if
+    call "cap-resolve" using lk-env lk-incoff lk-incfnd gee gbuf gblen found
+    if found = 0 then goback end-if
+    call "ent-field" using gbuf one k-pk k-pk-len voff f
+    if f = 0 then goback end-if
+    call "read-bytes" using gbuf voff pub pbl
+    if pbl not = 32 then goback end-if
+    call "peer-id-of-pubkey" using pub n32 gpid gpidlen
+    if not (gpidlen = locallen and gpid(1:gpidlen) = local(1:locallen))
+        goback
+    end-if
+    *> The credential's OWN `peers` scope is what Dimension 4 relaxes TO. ABSENT
+    *> means the granter -- the target peer -- which is the ordinary reentry shape:
+    *> "you may dispatch back to me".
+    call "ent-field" using lk-cred one k-grants k-grants-len gsoff gsf
+    if gsf = 0 then goback end-if
+    move gsoff to gcur
+    call "cbor-read-head" using lk-cred gcur maj addl arg st
+    if maj not = 4 or arg = 0 then goback end-if
+    move arg to gcnt
+    call "cbor-find-key" using lk-cred gcur k-peers k-peers-len poff pfnd st
+    move 1 to lk-relaxes
+    if pfnd = 1
+        move poff to pend
+        call "cbor-skip" using lk-cred pend st
+        compute lk-peerslen = pend - poff
+        if lk-peerslen > 0 and lk-peerslen <= 4096
+            move lk-cred(poff:lk-peerslen) to lk-peers(1:lk-peerslen)
+            goback
+        end-if
+        *> over capacity: fail CLOSED rather than relax to something unread
+        move 0 to lk-peerslen
+        move 0 to lk-relaxes
+        goback
+    end-if
+    move 0 to lk-peerslen
+    call "b-map"  using lk-peers lk-peerslen n1
+    call "b-text" using lk-peers lk-peerslen k-incl k-incl-len
+    call "b-arr"  using lk-peers lk-peerslen n1
+    call "b-text" using lk-peers lk-peerslen lk-target lk-targetlen
+    goback.
+end program cap-target-relax.
+
+*> ---- cap-outbound-perm : §1.4's PD-2 gate ------------------------------
+*>
+*> check_permission run BEFORE a locally-originated sub-dispatch LEAVES the peer,
+*> with all four dimensions applied.
+*>
+*> ONE GATE AND ONE EXEMPTION, in §1.4's own words:
+*>   * the EXECUTING HANDLER'S GRANT decides all four dimensions (§6.8), evaluated
+*>     in the LOCAL frame, with Dimension 1's pattern the target uri's PEER-RELATIVE
+*>     path;
+*>   * a valid capability MINTED BY THE TARGET PEER naming this peer as `grantee`
+*>     relaxes Dimension 4 (`peers`) AND ONLY DIMENSION 4, to the peers that
+*>     capability covers.
+*>
+*> "The target answers WHERE; the handler's grant answers WHAT." A CREDENTIAL IS
+*> NOT A GRANT: with no handler grant there is nothing to supply Dimensions 1-3, so
+*> the sub-dispatch is refused however good the credential is. That is the COMPOSE,
+*> and the BYPASS it is distinguished from is a peer that treats the credential as a
+*> standalone authorizer and steers past its own grant -- §6.8's confused-deputy
+*> substitution, which §6.8 itself calls WIRE-INVISIBLE: "both readings produce a
+*> well-formed response and differ only in which authority was consulted." Both
+*> obvious vectors agree under either reading (sources agree -> allow, no source ->
+*> refuse), so the ONLY input that separates them is a VALID credential presented to
+*> a handler whose own grant does NOT cover the request, which MUST refuse.
+*>
+*> lk-credlen = 0 is the AMBIENT arm: Dimension 4 is decided by the handler's grant
+*> alone. It is its OWN BIT rather than an empty-map test, because an absent
+*> credential and a credential that happens to carry nothing are different inputs.
+*>
+*> lk-target is supplied by the CALLER rather than derived here: on the §6.11 seam
+*> the uri may be peer-relative and the destination is the connection's remote, so
+*> cap-extract-peer would answer the LOCAL peer and Dimension 4 would pass
+*> VACUOUSLY on §5.2's default {include:[local]} -- the exemption would never be
+*> exercised and a bypass would read as a compose.
+identification division.
+program-id. cap-outbound-perm.
+data division.
+working-storage section.
+01 local  pic x(128).
+01 locallen pic 9(9) comp-5.
+01 relaxes pic 9(1).
+01 relaxsc pic x(4096).
+01 relaxlen pic 9(9) comp-5.
+01 gsoff  pic 9(9) comp-5.
+01 gsf    pic 9(1).
+01 gcur   pic 9(9) comp-5.
+01 gmap   pic 9(9) comp-5.
+01 maj    pic 9(2) comp-5.
+01 addl   pic 9(2) comp-5.
+01 arg    pic 9(18) comp-5.
+01 gcnt   pic 9(9) comp-5.
+01 gi     pic 9(9) comp-5.
+01 soff   pic 9(9) comp-5.
+01 sf     pic 9(1).
+01 r      pic 9(1).
+01 st     pic s9(9) comp-5.
+01 ok     pic 9(1).
+01 one    pic 9(9) comp-5 value 1.
+01 k-grants pic x(6) value "grants".
+01 k-grants-len pic 9(9) comp-5 value 6.
+01 k-hdl  pic x(8) value "handlers".
+01 k-hdl-len pic 9(9) comp-5 value 8.
+01 k-ops  pic x(10) value "operations".
+01 k-ops-len pic 9(9) comp-5 value 10.
+01 k-peers pic x(5) value "peers".
+01 k-peers-len pic 9(9) comp-5 value 5.
+linkage section.
+01 lk-env    pic x(524288).
+01 lk-incoff pic 9(9) comp-5.
+01 lk-incfnd pic 9(1).
+01 lk-target pic x(128).
+01 lk-targetlen pic 9(9) comp-5.
+01 lk-hpat   pic x(900).
+01 lk-hlen   pic 9(9) comp-5.
+01 lk-op     pic x(64).
+01 lk-oplen  pic 9(9) comp-5.
+01 lk-grant  pic x(524288).
+01 lk-resbuf pic x(524288).
+01 lk-cred   pic x(524288).
+01 lk-credlen pic 9(9) comp-5.
+01 lk-verdict pic 9(1).
+procedure division using lk-env lk-incoff lk-incfnd lk-target lk-targetlen
+                        lk-hpat lk-hlen lk-op lk-oplen lk-grant lk-resbuf
+                        lk-cred lk-credlen lk-verdict.
+    move 0 to lk-verdict
+    call "ps-peerid" using local locallen
+    *> COMPUTED FIRST AND CONSULTED LAST, so no credential can stand in for
+    *> Dimensions 1-3.
+    move 0 to relaxes
+    move 0 to relaxlen
+    if lk-credlen > 0
+        call "cap-target-relax" using lk-env lk-incoff lk-incfnd
+            lk-target lk-targetlen lk-cred lk-credlen
+            relaxsc relaxlen relaxes
+    end-if
+    call "ent-field" using lk-grant one k-grants k-grants-len gsoff gsf
+    if gsf = 0 then goback end-if
+    move gsoff to gcur
+    call "cbor-read-head" using lk-grant gcur maj addl arg st
+    if maj not = 4 then goback end-if
+    move arg to gcnt
+    perform varying gi from 1 by 1 until gi > gcnt
+        move gcur to gmap
+        perform grant-ok
+        if ok = 1 then move 1 to lk-verdict  goback end-if
+        call "cbor-skip" using lk-grant gcur st
+    end-perform
+    goback.
+
+grant-ok.
+    move 0 to ok
+    *> Dimension 1 -- handlers, PATH-scope (§3.6 fixes the mapping).
+    call "cbor-find-key" using lk-grant gmap k-hdl k-hdl-len soff sf st
+    if sf = 0 then exit paragraph end-if
+    call "cap-path-scope-match" using lk-grant soff lk-hpat lk-hlen
+        local locallen r
+    if r = 0 then exit paragraph end-if
+    *> Dimension 2 -- operations, ID-scope (literal, no frame).
+    call "cbor-find-key" using lk-grant gmap k-ops k-ops-len soff sf st
+    if sf = 0 then exit paragraph end-if
+    call "cap-scope-match" using lk-grant soff lk-op lk-oplen r
+    if r = 0 then exit paragraph end-if
+    *> Dimension 3 -- resources. The grant is self-issued, so the §5.5a granter
+    *> frame and the local frame are the same peer on both sides.
+    call "cap-resource-match" using lk-resbuf one lk-grant gmap
+        local locallen local locallen r
+    if r = 0 then exit paragraph end-if
+    *> Dimension 4 -- peers. §5.2's default for an ABSENT peers scope is
+    *> {include:[local]}, so a FOREIGN target fails unless this grant names it or a
+    *> target-minted credential relaxes it.
+    call "cbor-find-key" using lk-grant gmap k-peers k-peers-len soff sf st
+    if sf = 1
+        call "cap-scope-match" using lk-grant soff lk-target lk-targetlen r
+        if r = 1 then move 1 to ok  exit paragraph end-if
+    else
+        if lk-targetlen = locallen
+           and lk-target(1:lk-targetlen) = local(1:locallen)
+            move 1 to ok
+            exit paragraph
+        end-if
+    end-if
+    if relaxes = 1
+        call "cap-scope-match" using relaxsc one lk-target lk-targetlen r
+        if r = 1 then move 1 to ok  exit paragraph end-if
+    end-if.
+end program cap-outbound-perm.

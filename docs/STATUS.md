@@ -1,8 +1,68 @@
 # entity-core-keystone — status
 
-_Updated: 2026-09-16 · oracle pin: the 778-check set `7aa6f3de…` · spec snapshot vendored: **`v0.8.2.28`** (2026-09-16) · spec snapshot the cohort IMPLEMENTS: **`0.8.2.25`**, all 46 rows_
+_Updated: 2026-09-17 · oracle pin: the 778-check set `7aa6f3de…` · spec snapshot vendored: **`v0.8.2.31`** · spec snapshot implemented: **`0.8.2.31`** on the 26 maintained-tier rows, **`0.8.2.25`** on the other 20_
 
-> **Two spec facts, deliberately apart.** `v0.8.2.28` is vendored and **not yet consumed** — the pin goes in before the work, which is what `v0.8.2.25`'s manifest asked for after that one was vendored behind 33 peers. `spec_pin` is `0.8.2.25` on all 46 roster rows and gated. Neither is the ORACLE pin, which is what peers are measured against and moves on its own schedule.
+> **Two spec facts, deliberately apart.** The vendored snapshot is what peers are WRITTEN against; the ORACLE pin is what turns a row red, and it moves on its own schedule. `v0.8.2.28` stays **vendored-and-never-implemented on purpose** — `.29` withdraws text `.28` carries, so a `.28` sweep would implement a shape already retracted. `spec_pin` is gated per peer (`tools/spec-pin-gate.py`).
+>
+> ⚠ **A `0.8.2.31` pin means SWEPT to `.31`, not that every `.31` rule is implemented.** Six behaviour items are outstanding cohort-wide and **none of them is gated by the pinned 778-check set**, so a `0F` row is silent about all six: `resolve_peer_scope` (0 of 46 name it; not driven), §7a.1b's per-call `deadline_ms` `[MUST]` (**0 of 46** — a wire field, so the name IS the property), §4.6 step 3's binding-not-form test, §4.11's bounded close, tag policy at any nesting depth (`pa-probe` `D5`), and `501`-only-after-`check_permission` (a confidentiality property; the `go` vanguard passes the candidate oracle's check for it, cohort unknown until driven). Enumerated per item in `CONFORMANCE-MATRIX.md` footnote ¹⁴.
+
+## 2026-09-17: the `0.8.2.31` sweep is **26 of 46** — every maintained tier, and M3 closed last
+
+**M1 5/5 · M2 8/8 · M3 13/13.** The 20 probe/exploratory peers are honestly at `0.8.2.25` and the
+gate reports the gap with a count rather than failing — tracked backlog, countable because
+`spec_pin` exists. Every swept peer measured at **both** check sets, per-check, with the denominator
+asserted non-zero and no `budget_exhausted`: **pinned `778 · 0F`, 0 of 778 severities moved** against
+its own committed report, and **candidate `790 · 0F`**.
+
+**THE SET-DIFFERENCE CONTROL, RUN BEFORE THE CLAIM AND NOT AFTER IT.** A sweep run tranche-by-tranche
+cannot see a peer no tranche touched, and every tranche reports honestly while it happens — that is
+what cost `fortran` and `unison` a false `0.8.2.25` row a day earlier. Diffing the roster's
+maintained tiers against every peer directory the sweep's own commits modified: **26 swept, 26
+maintained, both differences empty.**
+
+**And the reconciliation that proves it failed on us first, for the THIRD time in the same shape.**
+`spec-pin-gate --since` selects sweep commits by SUBJECT, and its pattern — already broadened once,
+under a comment explaining that a pattern keyed on one spelling misses the deviants systematically —
+was `^(sweep |vanguard)`. It cannot see **"second vanguard: python takes the same shape…"**, so
+closing this sweep reported `python` as pin-advanced-but-never-touched and the claim had to be waved
+through with `--ack-unchanged`, which is the silent default that flag exists to prevent. `vanguard`
+is a WORD in the subject, not a prefix of it. Broadened with the hit lists **diffed** rather than the
+counts trusted: 22 → 23 over this sweep's range, 41 → 42 over the wider one, and in both the single
+addition is that one commit.
+
+**The two peers closed last, and what each cost:**
+
+- **`ada`** — **Dimension 1's handler pattern is the TARGET URI's peer-relative path, and the first
+  cut passed the EXECUTING handler's own.** Measured as 2 FAIL refusing the oracle's legitimate
+  reentry with a `403` indistinguishable at the wire from an authority verdict. **One trace print
+  settled it and no amount of reading would have:** every input was correct and the relaxation
+  VERIFIED, so the refusal was in Dimensions 1–3 — the opposite end from where a 403 on a
+  credential-bearing request invites you to look. **The unit gate had it right while the call site
+  did not**, which is the standing rule about a control that constructs its own input shape, reached
+  from the side where the control was faithful. Also: `ada` carried the superseded §6.8 discriminator
+  in its dispatch source, the third peer after `go` and `prolog` (arch's **C-11**), and the §1.4 chain
+  call had to move out of a `declare`'s declarative part — in Ada an exception raised while
+  elaborating one is **not** handled by that block's own handler (LRM 11.4), the standing defect in
+  this very peer.
+- **`cobol`** — **`boot-handler` bound NO GRANT AT ALL.** Only the §6.2 wire register op ever wrote
+  one, so every built-in handler had no own-authority record at the path §6.8 says the grant MUST
+  exist at, and the gate could not be landed without first landing the thing it reads (the `nim`
+  shape). The candidate oracle had named the gap before the work started — `1F` on
+  `dispatch_outbound_ambient_refused`, with the F63 narrow-grant discriminator and the multisig row
+  SKIPPED behind it, which is the rule that a shared early answer hides an unknown number of causes.
+  Its §5.2 dispatch check also matches `handlers` with the **ID-scope** matcher under a comment
+  asserting F40 made it id-scope; §3.6 fixes the mapping and says a path dimension matched literally
+  is a conformance defect. **Disclosed at the new matcher's definition rather than smoothed into this
+  tranche** — it is a different rule (`0.8.2.22`), invisible for the patterns this peer writes, and
+  it diverges on §5.4's leading-`/` universal reading and `/*/` interior wildcard.
+
+**Two plants per peer, each reddening DISJOINT named cases**, and the multisig row carries its
+antecedent (**F70**): the same quorum root is asserted to verify in the LOCAL frame first, because a
+deny establishes nothing on its own. **No check set on any peer measures that clause** — the oracle's
+K-of-2 root is not co-signed by the local peer, so §5.5's M6 refuses it first for an unrelated reason
+and planting the §1.4 guard out leaves the row green.
+
+---
 
 ## ✅ CLOSED 2026-09-16: the `0.8.2.25` sweep is **46 of 46** — and it got there by being corrected to 44 first
 

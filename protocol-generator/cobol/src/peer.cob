@@ -480,8 +480,12 @@ do-chain.
             call "echo-handler" using lk-env root-off rstatus
                 res-ent res-len res-hash
         when splen = 33 and spat(1:33) = "system/validate/dispatch-outbound"
+            *> inc-off/inc-fnd are threaded so §7a.2a's merged bundle can start
+            *> from the PARENT envelope's `included`, and spat/splen so §1.4's
+            *> PD-2 gate reads the OWNING handler's own grant (§6.8) at
+            *> system/capability/grants/{pattern} rather than re-deriving one.
             call "dispatch-outbound-handler" using lk-env root-off rstatus
-                res-ent res-len res-hash
+                res-ent res-len res-hash inc-off inc-fnd spat splen
         when other
             perform resp-501-nobody
     end-evaluate.
