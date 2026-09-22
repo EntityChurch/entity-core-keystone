@@ -48,13 +48,19 @@ fn read_exact(stream: &mut impl Read, buf: &mut [u8]) -> Result<(), WireError> {
     Ok(())
 }
 
-/// Read one length-prefixed frame; returns the owned payload. The §4.10(a) bound
-/// is checked on the length prefix BEFORE the body is read.
+/// Read one length-prefixed frame under the default [`MAX_FRAME`] bound.
 pub fn read_frame(stream: &mut impl Read) -> Result<Vec<u8>, WireError> {
+    read_frame_limit(stream, MAX_FRAME)
+}
+
+/// Read one length-prefixed frame; returns the owned payload. The §4.10(a) bound
+/// (`max_frame_bytes`, the peer's configured budget — H6) is checked on the length
+/// prefix BEFORE the body is read.
+pub fn read_frame_limit(stream: &mut impl Read, max_frame_bytes: usize) -> Result<Vec<u8>, WireError> {
     let mut hdr = [0u8; 4];
     read_exact(stream, &mut hdr)?;
     let len = u32::from_be_bytes(hdr) as usize;
-    if len > MAX_FRAME {
+    if len > max_frame_bytes {
         return Err(WireError::PayloadTooLarge);
     }
     let mut payload = vec![0u8; len];

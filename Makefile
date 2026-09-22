@@ -310,6 +310,10 @@ lint:
 	@# stale block. It asserts `dispatch_read_site` specifically, because that is the
 	@# field H5 exists for and because a check scoped to the H1 keys alone once passed a
 	@# regeneration that had STRIPPED dispatch_read_site from 44 peers.
+	@# It also asserts that no `h1_status` rests on the wire probe (K-10, 2026-09-12:
+	@# the probe measures §6.13(a), which H1 excludes). Staleness needs the gitignored
+	@# probe reports; the properties do not, so a clean clone still gates them — until
+	@# 2026-09-12 this line exited 1 on any checkout without those reports.
 	@# Regression: plant a removed field, a corrupted verdict, or a deleted block.
 	@python3 tools/author-extension-host.py --check
 

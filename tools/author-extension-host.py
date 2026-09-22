@@ -9,9 +9,21 @@ block that looks right and names the wrong symbol.
 
 WHAT IS DERIVED vs WHAT IS AUTHORED, because the distinction is the honesty of the block:
 
-  * `status`, `h1_wire_verdict`, `verified_by` — DERIVED from the executed probe reports in
-    output/scratch/host-seam-probe/. Never from a source read. If the probe has not run, this
-    script refuses rather than writing `unknown` from nothing.
+  * `entity_native_status`, `entity_native_wire_verdict`, `entity_native_verified_by` —
+    DERIVED from the executed probe reports in output/scratch/host-seam-probe/. Never from a
+    source read. If the probe has not run, this script refuses rather than writing `unknown`
+    from nothing. THIS IS NOT H1: the probe registers a body over the WIRE and asserts it
+    evaluates, which is §6.13(a), and H1's own Observation excludes exactly that path.
+  * `h1_status`, `h1_verified_by` — from H1_EVIDENCE below: an EXECUTED H1 harness (a
+    language-native body installed through the public surface, reached by an EXECUTE from a
+    second peer). `unknown` for every peer no such harness has run against.
+
+    WHY THE SPLIT (2026-09-12, routed by entity-system-generator as their K-10). Until then
+    `h1_status = "host"` was derived from the wire probe's EVALUATES, so 26 profiles read
+    `host` on H1 — 17 of them while declaring no in-process install path at all, `rust`
+    among them. That is why the generator's 2026-09-06 rust measurement closed with nothing
+    moving: the gate said `rust` was already a host. A field named for the requirement it
+    does not measure is worse than no field, because every reader trusts the name.
   * `packaging_unit`, `package_name` — DERIVED from the peer's OWN `[publishing]` block. Not
     from an inventory of package-manager filenames a surveyor wrote down: that survey shape
     reports "absent" rather than "could not look", and it already produced a wrong cohort
@@ -54,9 +66,9 @@ T = {
  "go": ("none -- wire system/handler:register only; `handlers` is unexported and Peer exports only Identity/Store/LocalPeer",
         "entity-native: a system/handler entity with expression_path -> compute/literal",
         "Peer.dispatch -- p.handlers[stripped] for bootstrap bodies, else entityNativeDispatch via p.store.GetAt; src/peer/peer.go:426 and :317"),
- "rust": ("none -- no in-process API. Measured by the generator's compile-fail arm: register_handler and resolve_handler are PRIVATE (E0624) and `handlers` is not a field of Peer at all (E0609)",
-        "entity-native only; there is no handler container",
-        "Peer::dispatch -- match on stripped pattern (hardcoded system handlers), then self.store.get_at(&pattern) -> entity_native_dispatch; src/peer/core.rs:548-562"),
+ "rust": ("Peer::register_handler(Arc<dyn Handler>) -> Result<(), RegisterError> -- binds the same four §11.6.1 entities the wire register op binds, then the body; refuses invalid patterns and any pattern a handler is already bound at (H3); system/* is installable",
+        "impl Handler { fn handle(&self, &HandlerContext) -> HandlerResult } (FnHandler for closures); or entity-native expression_path, with Peer::set_expression_evaluator as the H7 fallback",
+        "Peer::route -- self.native_handlers.read().get(&stripped) after the §6.6 walk (resolve_handler) and before entity_native_dispatch; src/peer/core.rs:801"),
  "python": (None, None, None),      # block already authored; only the H1 fields are added
  "typescript": (None, None, None),  # ditto
  "java": ("none -- `handlers` is a private final HashMap; the wire register op is the only path",
@@ -202,17 +214,44 @@ CONSUMER = {
  "turbowarp": "inherits typescript's EmitBus.registerConsumer",
 }
 
+HANDLE_LIFECYCLE = {
+ "rust": "Peer::unregister_handler(pattern) -> bool -- unbinds the entities it bound; the wire unregister op also removes a native body",
+}
+
 FRAME_BUDGET = {"python": "DispatchCtx.frame_budget()", "typescript": "HandlerContext.frameBudget()",
+                "rust": "HandlerContext::frame_budget() -- the connection's value, peer default as fallback; configured with PeerConfig::max_frame_bytes",
                 "turbowarp": "inherits typescript's HandlerContext.frameBudget()"}
 
+# The wire probe's verdict → the entity-native (§6.13(a)) status. Deliberately NOT spelled
+# `host`: that word is H1's, and reusing it here is the K-10 defect.
 STATUS_OF = {
-    "EVALUATES": "host",
-    "EVALUATES-UNVERIFIED": "host",
+    "EVALUATES": "evaluates",
+    "EVALUATES-UNVERIFIED": "evaluates",
     "BOUND-NOT-EVALUATED": "not-yet",
     "REGISTER-DROPPED-EXPRESSION-PATH": "not-yet",
     "NOT-RESOLVED": "not-yet",
     "CONTROL-FAILED": "unknown",
     "UNTRUSTED": "unknown",
+}
+
+
+# H1 — EXECUTED evidence only. A peer absent from this table reads `unknown`, never a
+# status inferred from the wire probe or from a source trace.
+H1_UNKNOWN = ("unknown",
+              "no executed H1 harness for this peer. The entity_native_* fields are the "
+              "§6.13(a) wire measurement, which H1's Observation excludes")
+H1_EVIDENCE = {
+ "rust": ("host",
+          "protocol-generator/rust/tests/host_contract.rs h1_installed_body_is_reached_from_a_second_peer "
+          "(keystone, executed 2026-09-12: Peer::register_handler, EXECUTE from a second peer over "
+          "loopback, witness = request field + registration nonce; planting the read site reddens it)"),
+ "typescript": ("host",
+          "protocol-generator/shared/diagnostics/host-seam-probe-typescript.mjs + "
+          "protocol-generator/typescript/test/host-seam.test.ts (keystone, executed)"),
+ "python": ("not-yet",
+          "entity-system-generator gates/host-seam/probe-seam.py reaches a body through the public "
+          "`handlers` dict (executed), but the peer has no registration call, and H3: exposing the "
+          "raw container does not satisfy H1"),
 }
 
 
@@ -254,6 +293,7 @@ def build_block(peer, verdict, prof_text, have_section):
     """
     reg, pid = publishing(prof_text)
     trace = T.get(peer)
+    h1 = H1_EVIDENCE.get(peer, H1_UNKNOWN)
     lines = []
     if not have_section:
         lines.append("[extension_host]")
@@ -261,32 +301,75 @@ def build_block(peer, verdict, prof_text, have_section):
              "# H5 -- the keystone host contract's platform bindings. See",
              "# docs/spec/SPEC-KEYSTONE-PEER.md (H1..H9 @ 62e1a1dd...).",
              "#",
-             "# `status` and `h1_wire_verdict` are MEASURED on the wire, never read from source:",
-             "# a capability claim reads `unknown` until a harness executes it, and four peers in",
-             "# this cohort were once wrongly nominated as hosts from source reads by three",
-             "# different seats. `dispatch_read_site` is the load-bearing descriptive field --",
-             "# a profile naming only the registration call cannot tell a live host from a map",
-             "# nothing reads.",
-             kv("h1_status", STATUS_OF.get(verdict, "unknown")),
-             kv("h1_wire_verdict", verdict),
-             kv("h1_verified_by", PROBE_BASIS)]
+             "# TWO MEASUREMENTS, and until 2026-09-12 they shared one name. `h1_status` is H1:",
+             "# a LANGUAGE-NATIVE body installed through the public surface and reached by an",
+             "# EXECUTE from a second peer. It reads `unknown` until such a harness has executed,",
+             "# and `h1_verified_by` names it. `entity_native_*` is tools/host-seam-probe: a body",
+             "# registered over the WIRE is dispatched and evaluated -- §6.13(a), which H1's own",
+             "# Observation excludes. `dispatch_read_site` is the load-bearing descriptive field.",
+             kv("h1_status", h1[0]),
+             kv("h1_verified_by", h1[1]),
+             kv("entity_native_status", STATUS_OF.get(verdict, "unknown")),
+             kv("entity_native_wire_verdict", verdict),
+             kv("entity_native_verified_by", PROBE_BASIS)]
     if not have_section:
         # Only author the descriptive fields where no hand-authored block already
         # states them. Overwriting a hand-written `dispatch_read_site` with a
         # generated one would replace a traced fact with a table entry.
         if trace and trace[0]:
-            lines += [kv("status", STATUS_OF.get(verdict, "unknown")),
+            lines += [kv("status", h1[0]),
                       kv("handler_register_call", trace[0]),
                       kv("handler_body_shape", trace[1]),
                       kv("dispatch_read_site", trace[2])]
         lines.append(kv("consumer_register_call",
                         CONSUMER.get(peer, "none -- no in-process emit-consumer registration surface")))
         lines.append(kv("frame_budget_accessor", FRAME_BUDGET.get(peer, "absent")))
-        lines.append(kv("handle_lifecycle", "absent -- unregister is the wire op"))
+        lines.append(kv("handle_lifecycle", HANDLE_LIFECYCLE.get(peer, "absent -- unregister is the wire op")))
         lines.append(kv("packaging_unit", reg or "undeclared -- no [publishing] block"))
         lines.append(kv("package_name", pid or "undeclared"))
     lines.append(END)
     return "\n".join(lines) + "\n"
+
+
+def validate(peers):
+    """The properties the block exists for, asserted on the COMMITTED profiles.
+
+    Run in BOTH modes. The first cut ran these only after a write, so `--check` never
+    reached them: a planted `h1_status = "host"` resting on the wire probe was reported as
+    merely STALE, and on a clean clone -- where the gitignored probe reports do not exist
+    -- it was not reported at all. A discriminator that only runs on the writer's machine
+    is not an enforcement point.
+    """
+    import tomllib
+    bad = []
+    for p in peers:
+        with open(os.path.join(PG, p, "profile.toml"), "rb") as fh:
+            try:
+                d = tomllib.load(fh)
+            except Exception as e:
+                bad.append(f"{p}: does not parse: {e}")
+                continue
+        eh = d.get("extension_host")
+        if not isinstance(eh, dict):
+            bad.append(f"{p}: no [extension_host] table")
+        elif "h1_status" not in eh or "entity_native_wire_verdict" not in eh:
+            bad.append(f"{p}: [extension_host] missing the H1 or entity-native fields")
+        elif "h1_wire_verdict" in eh:
+            bad.append(f"{p}: [extension_host] still carries h1_wire_verdict (renamed entity_native_wire_verdict, K-10)")
+        elif eh["h1_status"] not in ("host", "not-yet", "declined", "unknown"):
+            bad.append(f"{p}: h1_status {eh['h1_status']!r} is not host | not-yet | declined | unknown")
+        elif eh["h1_status"] != "unknown" and "host-seam-probe @" in eh.get("h1_verified_by", ""):
+            # The K-10 discriminator, asserted: an H1 claim may not rest on the wire probe,
+            # because the probe measures the entity-native fallback H1 excludes.
+            bad.append(f"{p}: h1_status {eh['h1_status']!r} rests on tools/host-seam-probe, which is not an H1 harness")
+        elif "dispatch_read_site" not in eh:
+            # The load-bearing field. Checking only the H1 keys is how a regeneration
+            # that STRIPPED dispatch_read_site from 44 peers reported "0 problems" --
+            # a check must assert the proposition the artifact exists for.
+            bad.append(f"{p}: [extension_host] has no dispatch_read_site")
+        elif "spec" in d and "h1_status" in d.get("spec", {}):
+            bad.append(f"{p}: H1 fields leaked into [spec]")
+    return bad
 
 
 def main():
@@ -300,7 +383,11 @@ def main():
     peers = sorted(p for p in os.listdir(PG)
                    if os.path.isfile(os.path.join(PG, p, "profile.toml")))
     missing = [p for p in peers if p not in verdicts]
-    if missing:
+    if missing and check:
+        # Staleness needs the probe reports; the properties do not. Say which was skipped.
+        print(f"author-extension-host --check: no probe reports for {len(missing)} peer(s) -- "
+              f"staleness NOT compared for them; properties still validated")
+    elif missing:
         sys.exit(f"author-extension-host: no executed probe report for {missing}. "
                  f"Run tools/run-cohort-census.sh --probe host-seam-probe first — this script "
                  f"will not write a status it has not measured.")
@@ -316,6 +403,9 @@ def main():
             have_section = True           # hand-authored prose; only the H1 fields are ours
         else:
             have_section = re.search(r"^\[extension_host\]", text, re.M) is not None
+        if p not in verdicts:
+            skipped += 1
+            continue
         block = build_block(p, verdicts[p], text, have_section)
         marker = MEAS if have_section else FULL
         if marker in text:
@@ -342,6 +432,7 @@ def main():
         else:
             skipped += 1
     if check:
+        problems += validate(peers)
         for m in problems:
             print("  " + m)
         # Print the COUNT, always: a gate that examined zero things prints the same
@@ -352,27 +443,7 @@ def main():
     # cut of this script emitted the fields with NO `[extension_host]` header, so they
     # landed in whatever table each profile ends in (`[spec]`, in all 46). That is valid
     # TOML and completely wrong, and only parsing the result says so.
-    import tomllib
-    bad = []
-    for p in peers:
-        with open(os.path.join(PG, p, "profile.toml"), "rb") as fh:
-            try:
-                d = tomllib.load(fh)
-            except Exception as e:
-                bad.append(f"{p}: does not parse: {e}")
-                continue
-        eh = d.get("extension_host")
-        if not isinstance(eh, dict):
-            bad.append(f"{p}: no [extension_host] table")
-        elif "h1_status" not in eh or "h1_wire_verdict" not in eh:
-            bad.append(f"{p}: [extension_host] missing the measured H1 fields")
-        elif "dispatch_read_site" not in eh:
-            # The load-bearing field. Checking only the H1 keys is how a regeneration
-            # that STRIPPED dispatch_read_site from 44 peers reported "0 problems" --
-            # a check must assert the proposition the artifact exists for.
-            bad.append(f"{p}: [extension_host] has no dispatch_read_site")
-        elif "spec" in d and "h1_status" in d.get("spec", {}):
-            bad.append(f"{p}: H1 fields leaked into [spec]")
+    bad = validate(peers)
     for m in bad:
         print("  " + m)
     print(f"author-extension-host: {len(peers)} peer(s) examined, {wrote} written, "

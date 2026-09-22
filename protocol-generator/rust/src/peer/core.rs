@@ -12,13 +12,21 @@
 //! into [`Conn`] by the transport for the duration of a dispatch — the §7a
 //! dispatch-outbound handler originates back over the inbound connection through it.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 use crate::value::{Key, Value};
 
 use super::capability as cap;
+use super::handler::{
+    ExpressionEvaluator, ExpressionRequest, Handler, HandlerContext, HandlerResult, LocalExecute,
+    OperationSpec, RegisterError, MAX_LOCAL_DISPATCH_DEPTH,
+};
 use super::identity::{self, Identity};
 use super::model::{self, hex, Entity, Envelope};
+use super::seed_policy::{discovery_floor, owner_grants, SeedPolicy};
 use super::store::{ExecContext, Store};
 use super::type_defs;
 use super::wire;
@@ -28,7 +36,6 @@ use super::wire;
 pub type OutboundFn = dyn Fn(Envelope) -> Option<Envelope> + Send + Sync;
 
 /// Per-connection state (§4.2).
-#[derive(Default)]
 pub struct Conn {
     pub established: bool,
     pub issued_nonce: Option<[u8; 32]>,
@@ -36,6 +43,22 @@ pub struct Conn {
     /// §6.11 reentry seam, bound by the transport for the duration of a dispatch.
     pub outbound: Option<Arc<OutboundFn>>,
     pub out_counter: u32,
+    /// H6 — the inbound frame budget this connection enforces (§1.6 / §4.10(a)). The
+    /// transport stamps the peer's configured budget when it starts reading.
+    pub max_frame_bytes: usize,
+}
+
+impl Default for Conn {
+    fn default() -> Self {
+        Conn {
+            established: false,
+            issued_nonce: None,
+            hello_peer_id: None,
+            outbound: None,
+            out_counter: 0,
+            max_frame_bytes: wire::MAX_FRAME,
+        }
+    }
 }
 
 impl Conn {
@@ -45,11 +68,9 @@ impl Conn {
 }
 
 /// A handler outcome: status, the result entity, and protocol entities to bundle.
-struct Outcome {
-    status: u64,
-    result: Entity,
-    included: Vec<Entity>,
-}
+/// The public spelling is [`HandlerResult`]; core handlers and installed ones return
+/// the same type.
+type Outcome = HandlerResult;
 
 fn ok(result: Entity) -> Outcome {
     Outcome {
@@ -174,7 +195,7 @@ fn err_out(status: u64, code: &str, message: Option<&str>) -> Outcome {
     }
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -219,62 +240,53 @@ pub struct Peer {
     pub identity: Identity,
     pub store: Store,
     pub local_peer: String,
+    /// Whether the peer was built with the deprecated `open_grants` switch. The
+    /// policy actually in force is [`Peer::seed_policy`].
     pub open_grants: bool,
     pub conformance: bool,
+    seed_policy: SeedPolicy,
+    max_frame_bytes: usize,
+    /// H1 — language-native handler bodies, keyed by peer-relative pattern. Private
+    /// (H3): the only writers are `register_handler` / `unregister_handler` and the
+    /// wire register/unregister ops, and the only reader is `route`.
+    native_handlers: RwLock<HashMap<String, Arc<dyn Handler>>>,
+    /// H7 — the fallback evaluator for entity-native bodies.
+    evaluator: RwLock<Option<Arc<dyn ExpressionEvaluator>>>,
+    local_dispatch_counter: AtomicU64,
 }
 
 /// Builder options for [`Peer::create`].
 #[derive(Default)]
 pub struct CreateOptions {
     pub seed: [u8; 32],
+    /// DEPRECATED — selects [`SeedPolicy::debug_open`] when no
+    /// [`PeerConfig::seed_policy`] is supplied, and is ignored when one is.
     pub open_grants: bool,
     pub conformance: bool,
 }
 
-// ── grant construction (§4.4 / §5.4) ───────────────────────────────────────────
-
-fn scope_val(incl: &[&str]) -> Value {
-    model::map(vec![("include", model::text_array(incl))])
+/// Host-contract configuration for [`Peer::create_with`]. Separate from
+/// [`CreateOptions`] so that adding a knob never breaks a caller's struct literal;
+/// construct it with `PeerConfig::default()` and the builder methods.
+#[derive(Clone, Debug, Default)]
+pub struct PeerConfig {
+    /// The §6.9a seed policy. `None` = the standard policy, or the degenerate
+    /// `default → *` when `CreateOptions::open_grants` is set.
+    pub seed_policy: Option<SeedPolicy>,
+    /// The inbound frame budget in bytes (§1.6 / §4.10(a)). `None` = 16 MiB.
+    pub max_frame_bytes: Option<usize>,
 }
 
-fn grant_val(
-    handlers: &[&str],
-    resources: &[&str],
-    operations: &[&str],
-    peers: Option<&[&str]>,
-) -> Value {
-    let mut pairs = vec![
-        ("handlers", scope_val(handlers)),
-        ("resources", scope_val(resources)),
-        ("operations", scope_val(operations)),
-    ];
-    if let Some(p) = peers {
-        pairs.push(("peers", scope_val(p)));
+impl PeerConfig {
+    pub fn seed_policy(mut self, policy: SeedPolicy) -> PeerConfig {
+        self.seed_policy = Some(policy);
+        self
     }
-    model::map(pairs)
-}
 
-/// §4.4 discovery floor: every authenticated identity gets at least this.
-fn discovery_floor() -> Vec<Value> {
-    vec![
-        grant_val(
-            &["system/tree"],
-            &["system/type/*", "system/handler/*"],
-            &["get"],
-            None,
-        ),
-        grant_val(&["system/capability"], &[], &["request"], None),
-    ]
-}
-
-/// The degenerate `default → *` (= retired --debug-open-grants).
-fn open_grants_scope() -> Vec<Value> {
-    vec![grant_val(&["*"], &["*", "/*/*"], &["*"], Some(&["*"]))]
-}
-
-/// Full owner authority over the local namespace (§6.9a).
-fn owner_grants(local_peer: &str) -> Vec<Value> {
-    vec![grant_val(&["*"], &["*"], &["*"], Some(&[local_peer]))]
+    pub fn max_frame_bytes(mut self, bytes: usize) -> PeerConfig {
+        self.max_frame_bytes = Some(bytes);
+        self
+    }
 }
 
 // ── token minting (§4.4 / §5.4) ────────────────────────────────────────────────
@@ -350,9 +362,28 @@ fn min_defined(terms: [Option<u64>; 3]) -> Option<u64> {
 impl Peer {
     /// Build and bootstrap a peer (§6.9 + §6.9a). The peer owns its store + identity.
     pub fn create(opts: CreateOptions) -> Peer {
+        Peer::create_with(opts, PeerConfig::default())
+    }
+
+    /// [`Peer::create`] with host-contract configuration: a declared seed policy
+    /// (§6.9a) and the inbound frame budget (H6).
+    pub fn create_with(opts: CreateOptions, config: PeerConfig) -> Peer {
         let identity = Identity::of_seed(opts.seed);
         let store = Store::new();
         let local_peer = identity.peer_id.clone();
+        let seed_policy = config.seed_policy.unwrap_or_else(|| {
+            if opts.open_grants {
+                SeedPolicy::debug_open()
+            } else {
+                SeedPolicy::standard()
+            }
+        });
+        // A zero budget would refuse every frame, including the handshake; the length
+        // prefix is a u32, so nothing past u32::MAX can be expressed on the wire.
+        let max_frame_bytes = config
+            .max_frame_bytes
+            .unwrap_or(wire::MAX_FRAME)
+            .clamp(1, u32::MAX as usize);
 
         let peer = Peer {
             identity,
@@ -360,6 +391,11 @@ impl Peer {
             local_peer,
             open_grants: opts.open_grants,
             conformance: opts.conformance,
+            seed_policy,
+            max_frame_bytes,
+            native_handlers: RwLock::new(HashMap::new()),
+            evaluator: RwLock::new(None),
+            local_dispatch_counter: AtomicU64::new(0),
         };
 
         // local identity entity in the store (root-granter resolution + §3.13 self).
@@ -399,22 +435,192 @@ impl Peer {
             &owner.signature,
         );
 
-        let default_grants = if peer.open_grants {
-            open_grants_scope()
-        } else {
-            discovery_floor()
+        // the declared policy: `default` plus every named entry, as policy-entries.
+        let entry = |key: &str, grants: &[Value]| {
+            Entity::make(
+                "system/capability/policy-entry",
+                Value::Map(vec![
+                    (Key::Text("peer_pattern".into()), model::text(key)),
+                    (Key::Text("grants".into()), Value::Array(grants.to_vec())),
+                ]),
+            )
         };
-        let default_entry = Entity::make(
-            "system/capability/policy-entry",
-            Value::Map(vec![
-                (Key::Text("peer_pattern".into()), model::text("default")),
-                (Key::Text("grants".into()), Value::Array(default_grants)),
-            ]),
+        peer.store.bind(
+            &format!("{policy_base}default"),
+            &entry("default", peer.seed_policy.default_grants()),
         );
-        peer.store
-            .bind(&format!("{policy_base}default"), &default_entry);
+        for named in peer.seed_policy.named_entries() {
+            peer.store.bind(
+                &format!("{policy_base}{}", named.key),
+                &entry(&named.key, &named.grants),
+            );
+        }
 
         peer
+    }
+
+    // ── host contract surface (H1, H3, H6, H7) ─────────────────────────────────
+
+    /// The §6.9a seed policy this peer materialized at init.
+    pub fn seed_policy(&self) -> &SeedPolicy {
+        &self.seed_policy
+    }
+
+    /// H6 — the peer's configured inbound frame budget, in bytes. A handler body reads
+    /// the budget for its own request with `HandlerContext::frame_budget`.
+    pub fn max_frame_bytes(&self) -> usize {
+        self.max_frame_bytes
+    }
+
+    /// H1 — install a language-native handler body at a pattern the peer was not
+    /// compiled with.
+    ///
+    /// Does the same work the wire `system/handler:register` op does — binds the
+    /// `system/handler` entity at the pattern, the interface entity, the handler's
+    /// self-issued signed grant and that grant's signature at the §3.5 pointer — so
+    /// §6.6 resolution finds it, and then puts the body in the container `route`
+    /// reads. Install at composition time, before the peer begins listening.
+    ///
+    /// Refuses (H3) an invalid pattern and a pattern at which a handler — built-in, native
+    /// or wire-registered — is already bound. It does NOT refuse `system/*`: see the
+    /// module note in `handler.rs` (withdrawn at 0.8.2.13; SDK-OPERATIONS v1.12).
+    pub fn register_handler(&self, handler: Arc<dyn Handler>) -> Result<(), RegisterError> {
+        let pattern = handler.pattern().to_string();
+        if !is_concrete_pattern(&pattern) {
+            return Err(RegisterError::InvalidPattern(pattern));
+        }
+        let (name, operations, grants) = (
+            handler.name().to_string(),
+            OperationSpec::operations_value(&handler.operations()),
+            handler.grants(),
+        );
+        {
+            // Check and claim under the lock; bind after releasing it, because a bind
+            // fires emit consumers and a consumer may itself ask about handlers. Until
+            // the entities are bound the pattern does not resolve, so the claimed body
+            // is unreachable rather than half-installed.
+            let mut container = self.native_handlers.write().unwrap();
+            let bound = self.store.get_at(&format!("/{}/{pattern}", self.local_peer));
+            if container.contains_key(&pattern)
+                || bound.is_some_and(|e| e.typ == "system/handler")
+            {
+                return Err(RegisterError::AlreadyRegistered(pattern));
+            }
+            container.insert(pattern.clone(), handler);
+        }
+        self.bind_handler_entities(&pattern, &name, operations, None, None, None, grants);
+        Ok(())
+    }
+
+    /// Remove a handler installed with [`Peer::register_handler`], unbinding the
+    /// entities it bound. Returns `false` when no native handler was installed at the
+    /// pattern (a wire-registered handler is left to the wire `unregister` op).
+    pub fn unregister_handler(&self, pattern: &str) -> bool {
+        let removed = self.native_handlers.write().unwrap().remove(pattern).is_some();
+        if removed {
+            self.unbind_handler_entities(pattern);
+        }
+        removed
+    }
+
+    /// Whether a native handler body is installed at `pattern`.
+    pub fn has_native_handler(&self, pattern: &str) -> bool {
+        self.native_handlers.read().unwrap().contains_key(pattern)
+    }
+
+    /// H7 — install (or clear, with `None`) the evaluator for entity-native handler
+    /// bodies. The built-in `compute/literal` path still answers first; the evaluator
+    /// receives only bodies the peer would otherwise refuse with
+    /// `501 unsupported_expression`. Install once, before listening.
+    pub fn set_expression_evaluator(&self, evaluator: Option<Arc<dyn ExpressionEvaluator>>) {
+        *self.evaluator.write().unwrap() = evaluator;
+    }
+
+    /// The installed entity-native evaluator, if any.
+    pub fn expression_evaluator(&self) -> Option<Arc<dyn ExpressionEvaluator>> {
+        self.evaluator.read().unwrap().clone()
+    }
+
+    /// The §11.6.1 dispatch entities, bound identically by the wire register op and
+    /// by [`Peer::register_handler`], in the same order so the two emit the same
+    /// tree-change sequence.
+    fn bind_handler_entities(
+        &self,
+        pattern: &str,
+        name: &str,
+        operations: Value,
+        expression_path: Option<&str>,
+        internal_scope: Option<&Value>,
+        types: Option<&Value>,
+        grant_scope: Vec<Value>,
+    ) -> Entity {
+        let interface_rel = format!("system/handler/{pattern}");
+        // (1) handler manifest at the pattern path.
+        let mut hpairs = vec![("interface", model::text(&interface_rel))];
+        if let Some(ep) = expression_path {
+            hpairs.push(("expression_path", model::text(ep)));
+        }
+        if let Some(is) = internal_scope {
+            hpairs.push(("internal_scope", is.clone()));
+        }
+        let handler_e = Entity::make("system/handler", model::map(hpairs));
+        self.store
+            .bind(&format!("/{}/{pattern}", self.local_peer), &handler_e);
+
+        // (2) associated types.
+        if let Some(Value::Map(kvs)) = types {
+            for (k, v) in kvs {
+                if let Key::Text(tn) = k {
+                    let te = Entity::make("system/type", v.clone());
+                    self.store
+                        .bind(&format!("/{}/system/type/{tn}", self.local_peer), &te);
+                }
+            }
+        }
+
+        // (3)+(4) self-issued signed handler grant + grant-signature at the §3.5 pointer.
+        let minted = mint_token(
+            &self.identity,
+            &self.identity.identity_hash,
+            None,
+            grant_scope,
+        );
+        self.store.bind(
+            &format!("/{}/system/capability/grants/{pattern}", self.local_peer),
+            &minted.token,
+        );
+        let thex = hex(&minted.token.hash);
+        self.store.bind(
+            &format!("/{}/system/signature/{thex}", self.local_peer),
+            &minted.signature,
+        );
+
+        // (5) handler interface entity (discovery index).
+        let iface_e = Entity::make(
+            "system/handler/interface",
+            model::map(vec![
+                ("pattern", model::text(pattern)),
+                ("name", model::text(name)),
+                ("operations", operations),
+            ]),
+        );
+        self.store
+            .bind(&format!("/{}/{interface_rel}", self.local_peer), &iface_e);
+        minted.token
+    }
+
+    fn unbind_handler_entities(&self, pattern: &str) {
+        let grant_path = format!("/{}/system/capability/grants/{pattern}", self.local_peer);
+        if let Some(g) = self.store.get_at(&grant_path) {
+            let ghex = hex(&g.hash);
+            self.store
+                .unbind(&format!("/{}/system/signature/{ghex}", self.local_peer));
+            self.store.unbind(&grant_path);
+        }
+        self.store
+            .unbind(&format!("/{}/{pattern}", self.local_peer));
+        self.store
+            .unbind(&format!("/{}/system/handler/{pattern}", self.local_peer));
     }
 
     // ── bootstrap helper (§6.2) ─────────────────────────────────────────────────
@@ -520,26 +726,41 @@ impl Peer {
             cap::ReqVerdict::Allow => {}
         }
 
-        let norm = cap::normalize_uri(&uri);
-        let path = cap::canonicalize(&self.local_peer, &norm);
+        let caller_cap = exec
+            .bytes_field("capability")
+            .and_then(|ch| env.included_get(ch).cloned());
         // (The §1.4 address gate that used to sit here has moved ABOVE the verdict —
         // §4.7 0.8.2.6 orders it before authentication. Reaching this line at all now
         // means the path is local.)
+        self.route(conn, env, exec, caller_cap.as_ref(), 0)
+    }
+
+    /// §6.6 resolution → §5.2 `check_permission` → body selection, shared by a wire
+    /// EXECUTE (after §5.2 `verify_request`) and an in-process `dispatch_execute`.
+    /// `env` is the envelope the ORIGINATING request arrived in; it is read only to
+    /// resolve the capability's granter frame (§PR-8) and by a body for `included`.
+    fn route(
+        &self,
+        conn: &mut Conn,
+        env: &Envelope,
+        exec: &Entity,
+        caller_cap: Option<&Entity>,
+        depth: u32,
+    ) -> Outcome {
+        let uri = exec.text_field("uri").unwrap_or("");
+        let path = cap::canonicalize(&self.local_peer, &cap::normalize_uri(uri));
         let pattern = match self.resolve_handler(&path) {
             Some(p) => p,
             None => return err_out(404, "handler_not_found", Some(&path)),
         };
 
         // check_permission at the granter frame (§5.2 / §PR-8).
-        let caller_cap = exec
-            .bytes_field("capability")
-            .and_then(|ch| env.included_get(ch).cloned());
-        let cc = match &caller_cap {
-            Some(c) => c.clone(),
+        let cc = match caller_cap {
+            Some(c) => c,
             None => return err_out(403, "capability_denied", None),
         };
-        let granter_peer = cap::granter_frame(env, &self.store, &self.local_peer, &cc);
-        if cap::check_permission(&self.local_peer, &granter_peer, exec, &cc, &pattern)
+        let granter_peer = cap::granter_frame(env, &self.store, &self.local_peer, cc);
+        if cap::check_permission(&self.local_peer, &granter_peer, exec, cc, &pattern)
             == cap::Verdict::Deny
         {
             return err_out(403, "capability_denied", None);
@@ -548,22 +769,157 @@ impl Peer {
         let stripped = self.strip_local(&pattern);
         match stripped.as_str() {
             "system/tree" => self.tree_handler(exec),
-            "system/capability" => self.capability_handler(exec, caller_cap.as_ref()),
+            "system/capability" => self.capability_handler(exec, caller_cap),
             "system/handler" => self.handlers_handler(exec),
             "system/type" => err_out(501, "unsupported_operation", exec.text_field("operation")),
             _ => {
                 if self.conformance && stripped.starts_with("system/validate/") {
                     return self.conformance_handler(conn, exec, &stripped);
                 }
-                // a dynamically-registered handler: dispatch its entity-native body.
-                if let Some(handler_entity) = self.store.get_at(&pattern) {
-                    if handler_entity.typ == "system/handler" {
-                        return self.entity_native_dispatch(&handler_entity);
-                    }
+                let handler_entity = match self.store.get_at(&pattern) {
+                    Some(e) if e.typ == "system/handler" => e,
+                    _ => return err_out(501, "no_handler_body", Some(&stripped)),
+                };
+                let ctx = HandlerContext {
+                    peer: self,
+                    envelope: env,
+                    execute: exec,
+                    pattern: stripped.clone(),
+                    suffix: path
+                        .get(pattern.len()..)
+                        .unwrap_or("")
+                        .trim_start_matches('/')
+                        .to_string(),
+                    caller_capability: caller_cap,
+                    handler_grant: self.handler_grant(&stripped),
+                    conn,
+                    depth,
+                };
+                // H1 — THE READ SITE. A language-native body installed for the resolved
+                // pattern answers first. The Arc is cloned out so the container lock is
+                // not held while third-party code runs (a body may itself register).
+                let native = self.native_handlers.read().unwrap().get(&stripped).cloned();
+                if let Some(h) = native {
+                    return guarded(|| h.handle(&ctx));
                 }
-                err_out(501, "no_handler_body", Some(&stripped))
+                // a dynamically-registered handler: dispatch its entity-native body.
+                self.entity_native_dispatch(&handler_entity, &ctx)
             }
         }
+    }
+
+    fn handler_grant(&self, pattern: &str) -> Option<Entity> {
+        self.store.get_at(&format!(
+            "/{}/system/capability/grants/{pattern}",
+            self.local_peer
+        ))
+    }
+
+    /// K-5 — `HandlerContext::dispatch_execute`. The authority and bounds rules are
+    /// documented there; this is their implementation.
+    pub(crate) fn dispatch_local(&self, parent: &HandlerContext<'_>, req: LocalExecute) -> Outcome {
+        let depth = parent.depth + 1;
+        if depth > MAX_LOCAL_DISPATCH_DEPTH {
+            return err_out(
+                429,
+                "bounds_exceeded",
+                Some("local dispatch depth exceeds the peer's bound"),
+            );
+        }
+        let capability = match req.capability.or_else(|| parent.caller_capability.cloned()) {
+            Some(c) => c,
+            None => {
+                return err_out(403, "capability_denied", Some("no capability for local dispatch"))
+            }
+        };
+        if !self.local_capability_admissible(parent, &capability) {
+            return err_out(
+                403,
+                "capability_denied",
+                Some("local dispatch capability is not the caller's, the handler's grant, or a valid token this peer issued"),
+            );
+        }
+
+        let path = cap::canonicalize(&self.local_peer, &cap::normalize_uri(&req.uri));
+        if cap::extract_peer(&self.local_peer, &path) != self.local_peer {
+            return err_out(
+                400,
+                "invalid_request",
+                Some("local dispatch targets the local peer only; a foreign namespace is the outbound seam"),
+            );
+        }
+        if self.strip_local(&path) == "system/protocol/connect" {
+            return err_out(
+                400,
+                "invalid_request",
+                Some("the connect handler serves a connection, not a local dispatch"),
+            );
+        }
+
+        let n = self.local_dispatch_counter.fetch_add(1, Ordering::Relaxed);
+        let request_id = format!("{}/local-{n}", parent.request_id());
+        let author = parent
+            .author()
+            .map(|a| a.to_vec())
+            .unwrap_or_else(|| self.identity.identity_hash.clone());
+        let exec = wire::make_execute(wire::ExecuteFields {
+            request_id: &request_id,
+            uri: &req.uri,
+            operation: &req.operation,
+            params: req.params,
+            resource: req.resource,
+            author: Some(&author),
+            capability: Some(&capability.hash),
+        });
+        let mut sub_conn = Conn {
+            established: true,
+            outbound: parent.conn.outbound.clone(),
+            max_frame_bytes: parent.conn.max_frame_bytes,
+            ..Conn::default()
+        };
+        self.route(&mut sub_conn, parent.envelope, &exec, Some(&capability), depth)
+    }
+
+    /// Which capabilities an in-process dispatch may run under. The caller's verified
+    /// capability and the handler's own grant are admissible by identity; any other
+    /// token must be one THIS peer issued, with its signature verifiable at the §3.5
+    /// pointer, inside its temporal bounds, and unrevoked.
+    fn local_capability_admissible(&self, parent: &HandlerContext<'_>, c: &Entity) -> bool {
+        if parent.caller_capability.is_some_and(|cc| cc.hash == c.hash)
+            || parent.handler_grant.as_ref().is_some_and(|g| g.hash == c.hash)
+        {
+            return true;
+        }
+        if c.typ != "system/capability/token"
+            || c.bytes_field("granter") != Some(self.identity.identity_hash.as_slice())
+        {
+            return false;
+        }
+        let sig_path = format!("/{}/system/signature/{}", self.local_peer, hex(&c.hash));
+        let signed = self
+            .store
+            .get_at(&sig_path)
+            .is_some_and(|sig| identity::verify_signature(&sig, &self.identity.peer_entity));
+        if !signed {
+            return false;
+        }
+        // CAP-6a: a present-but-unrepresentable temporal field is refused, never read
+        // as absent.
+        let now = now_ms();
+        for (field, in_bounds) in [
+            ("expires_at", (|v: u64, now: u64| now <= v) as fn(u64, u64) -> bool),
+            ("not_before", |v, now| v <= now),
+        ] {
+            if c.field(field).is_some() && !c.uint_field(field).is_some_and(|v| in_bounds(v, now)) {
+                return false;
+            }
+        }
+        let revoked = format!(
+            "/{}/system/capability/revocations/{}",
+            self.local_peer,
+            hex(&c.hash)
+        );
+        self.store.get_at(&revoked).is_none()
     }
 
     /// §6.5 dispatcher-level signature ingestion: persist signatures + their signer
@@ -918,7 +1274,7 @@ impl Peer {
     ///
     /// Slots a core request does not carry are READ FROM THE WIRE and left `None`, never
     /// invented.
-    fn exec_context(&self, exec: &Entity, handler_pattern: &str) -> ExecContext {
+    pub(crate) fn exec_context(&self, exec: &Entity, handler_pattern: &str) -> ExecContext {
         // The handler's own grant — the second authority a write runs under, distinct
         // from the caller's. Bound at bootstrap/registration.
         let handler_grant = self
@@ -1223,13 +1579,13 @@ impl Peer {
 
     fn handlers_handler(&self, exec: &Entity) -> Outcome {
         match exec.text_field("operation").unwrap_or("") {
-            "register" => self.register_handler(exec),
-            "unregister" => self.unregister_handler(exec),
+            "register" => self.wire_register(exec),
+            "unregister" => self.wire_unregister(exec),
             op => err_out(501, "unsupported_operation", Some(op)),
         }
     }
 
-    fn register_handler(&self, exec: &Entity) -> Outcome {
+    fn wire_register(&self, exec: &Entity) -> Outcome {
         let pattern = match register_pattern(exec) {
             Ok(p) => p,
             Err(o) => return o,
@@ -1277,91 +1633,42 @@ impl Peer {
             },
         };
 
-        let interface_rel = format!("system/handler/{pattern}");
-        // (1) handler manifest at the pattern path.
-        let mut hpairs = vec![("interface", model::text(&interface_rel))];
-        if let Some(ep) = &expression_path {
-            hpairs.push(("expression_path", model::text(ep)));
-        }
-        if let Some(is) = &internal_scope {
-            hpairs.push(("internal_scope", is.clone()));
-        }
-        let handler_e = Entity::make("system/handler", model::map(hpairs));
-        self.store
-            .bind(&format!("/{}/{pattern}", self.local_peer), &handler_e);
-
-        // (2) associated types.
-        if let Some(Value::Map(kvs)) = req.field("types") {
-            for (k, v) in kvs {
-                if let Key::Text(tn) = k {
-                    let te = Entity::make("system/type", v.clone());
-                    self.store
-                        .bind(&format!("/{}/system/type/{tn}", self.local_peer), &te);
-                }
-            }
-        }
-
-        // (3)+(4) self-issued signed handler grant + grant-signature at the §3.5 pointer.
-        let minted = mint_token(
-            &self.identity,
-            &self.identity.identity_hash,
-            None,
+        // The tree is the source of truth: a wire registration at a pattern that had a
+        // native body replaces that handler, exactly as it replaces an entity-native one.
+        self.native_handlers.write().unwrap().remove(&pattern);
+        let token = self.bind_handler_entities(
+            &pattern,
+            &name,
+            operations,
+            expression_path.as_deref(),
+            internal_scope.as_ref(),
+            req.field("types"),
             grant_scope,
         );
-        self.store.bind(
-            &format!("/{}/system/capability/grants/{pattern}", self.local_peer),
-            &minted.token,
-        );
-        let thex = hex(&minted.token.hash);
-        self.store.bind(
-            &format!("/{}/system/signature/{thex}", self.local_peer),
-            &minted.signature,
-        );
-
-        // (5) handler interface entity (discovery index).
-        let iface_e = Entity::make(
-            "system/handler/interface",
-            model::map(vec![
-                ("pattern", model::text(&pattern)),
-                ("name", model::text(&name)),
-                ("operations", operations),
-            ]),
-        );
-        self.store
-            .bind(&format!("/{}/{interface_rel}", self.local_peer), &iface_e);
 
         let result = Entity::make(
             "system/handler/register-result",
             Value::Map(vec![
                 (Key::Text("pattern".into()), model::text(&pattern)),
-                (Key::Text("grant".into()), minted.token.data.clone()),
+                (Key::Text("grant".into()), token.data.clone()),
             ]),
         );
         ok(result)
     }
 
-    fn unregister_handler(&self, exec: &Entity) -> Outcome {
+    fn wire_unregister(&self, exec: &Entity) -> Outcome {
         let pattern = match register_pattern(exec) {
             Ok(p) => p,
             Err(o) => return o,
         };
-        let grant_path = format!("/{}/system/capability/grants/{pattern}", self.local_peer);
-        if let Some(g) = self.store.get_at(&grant_path) {
-            let ghex = hex(&g.hash);
-            self.store
-                .unbind(&format!("/{}/system/signature/{ghex}", self.local_peer));
-            self.store.unbind(&grant_path);
-        }
-        self.store
-            .unbind(&format!("/{}/{pattern}", self.local_peer));
-        self.store
-            .unbind(&format!("/{}/system/handler/{pattern}", self.local_peer));
+        self.native_handlers.write().unwrap().remove(&pattern);
+        self.unbind_handler_entities(&pattern);
         ok(wire::empty_params())
     }
 
     // ── entity-native handler dispatch (§6.13(a)) ───────────────────────────────
 
-    fn entity_native_dispatch(&self, handler_entity: &Entity) -> Outcome {
+    fn entity_native_dispatch(&self, handler_entity: &Entity, ctx: &HandlerContext<'_>) -> Outcome {
         let expr_path_rel = match handler_entity.text_field("expression_path") {
             Some(p) => p,
             None => {
@@ -1387,6 +1694,23 @@ impl Peer {
                 ]),
             );
             return ok(result);
+        }
+        // H7 — the installed evaluator takes the fallback arm, AFTER the built-in floor,
+        // so a peer with none installed is byte-identical to the peer before the seam.
+        // It discriminates on the body, never on a status: `None` is "not mine".
+        if let Some(evaluator) = self.expression_evaluator() {
+            let request = ExpressionRequest {
+                expression_path: &expr_path,
+                expression: &expr,
+                handler_entity,
+            };
+            match catch_unwind(AssertUnwindSafe(|| evaluator.evaluate(&request, ctx))) {
+                Ok(Some(result)) => return result,
+                Ok(None) => {}
+                Err(_) => {
+                    return err_out(500, "internal_error", Some("expression evaluator panicked"))
+                }
+            }
         }
         err_out(501, "unsupported_expression", Some(&expr.typ))
     }
@@ -1596,6 +1920,25 @@ fn path_flex_ok(target: &str) -> bool {
     }
     body.split('/')
         .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+}
+
+/// Run an installed body, answering a panic with `500 internal_error` (§4.9(c)): the
+/// body is third-party code on the dispatch path and must not take the connection —
+/// or the connection's mutex — down with it.
+fn guarded<F: FnOnce() -> Outcome>(f: F) -> Outcome {
+    catch_unwind(AssertUnwindSafe(f))
+        .unwrap_or_else(|_| err_out(500, "internal_error", Some("handler panicked")))
+}
+
+/// A concrete peer-relative handler pattern: non-empty segments, no `.`/`..`, no
+/// wildcard, no NUL, not absolute.
+fn is_concrete_pattern(pattern: &str) -> bool {
+    !pattern.is_empty()
+        && !pattern.starts_with('/')
+        && !pattern.contains('\0')
+        && pattern
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != ".." && !seg.contains('*'))
 }
 
 /// §6.2: user-installed handlers MUST NOT register at system/* paths.

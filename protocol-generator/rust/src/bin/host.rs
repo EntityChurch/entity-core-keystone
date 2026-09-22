@@ -13,8 +13,14 @@
 //!                        convention). Without --name a random seed is used.
 //!   --validate           register the §7a system/validate/* conformance handlers
 //!                        (OFF by default — dispatch-outbound is a standing dialer).
-//!   --debug-open-grants  the degenerate `default → *` seed policy (deprecated;
-//!                        routed through the real §6.9a mechanism, not a fork).
+//!   --seed-policy PATH   the §6.9a seed policy, read from a keystone seed-policy
+//!                        JSON file (protocol-generator/shared/seed-policy/). Without
+//!                        it the standard policy applies (`default` = the §4.4
+//!                        discovery floor).
+//!   --debug-open-grants  DEPRECATED. The degenerate `default → *` seed policy,
+//!                        routed through the real §6.9a mechanism, not a fork. Still
+//!                        accepted, with a warning; ignored when --seed-policy is
+//!                        also given (a declared policy wins).
 //!   --help               print usage and exit.
 //! ```
 //!
@@ -25,13 +31,14 @@ use std::process::exit;
 use std::sync::Arc;
 
 use entity_core_protocol::peer::transport;
-use entity_core_protocol::peer::{CreateOptions, Peer};
+use entity_core_protocol::peer::{CreateOptions, Peer, PeerConfig, SeedPolicy};
 
 fn main() {
     let mut port: u16 = 7777;
     let mut open_grants = false;
     let mut validate = false;
     let mut seed = random_seed();
+    let mut seed_policy: Option<(String, SeedPolicy)> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -49,10 +56,18 @@ fn main() {
                 seed = load_seed_from_name(&name);
             }
             "--validate" => validate = true,
+            "--seed-policy" => {
+                let path = args
+                    .next()
+                    .unwrap_or_else(|| die("--seed-policy requires a file path"));
+                let policy = SeedPolicy::from_file(&path)
+                    .unwrap_or_else(|e| die(&format!("--seed-policy: {e}")));
+                seed_policy = Some((path, policy));
+            }
             "--debug-open-grants" => open_grants = true,
             "-h" | "--help" => {
                 println!(
-                    "usage: entity-peer-host [--port N] [--name NAME] [--validate] [--debug-open-grants]"
+                    "usage: entity-peer-host [--port N] [--name NAME] [--validate] [--seed-policy PATH] [--debug-open-grants]"
                 );
                 return;
             }
@@ -60,11 +75,35 @@ fn main() {
         }
     }
 
-    let peer = Arc::new(Peer::create(CreateOptions {
-        seed,
-        open_grants,
-        conformance: validate,
-    }));
+    if open_grants {
+        if seed_policy.is_some() {
+            eprintln!(
+                "warning: --debug-open-grants is DEPRECATED and is IGNORED because --seed-policy was given (a declared policy wins)"
+            );
+        } else {
+            eprintln!(
+                "warning: --debug-open-grants is DEPRECATED (v7.74 section 6.9a) - it selects the degenerate `default -> *` seed policy. Prefer --seed-policy PATH (protocol-generator/shared/seed-policy/examples/debug-open.json is the equivalent file)."
+            );
+        }
+    }
+    let mut config = PeerConfig::default();
+    if let Some((path, policy)) = seed_policy {
+        eprintln!(
+            "seed-policy: {path} (default entry: {} grant(s), {} named entr(ies))",
+            policy.default_grants().len(),
+            policy.named_entries().len()
+        );
+        config = config.seed_policy(policy);
+    }
+
+    let peer = Arc::new(Peer::create_with(
+        CreateOptions {
+            seed,
+            open_grants,
+            conformance: validate,
+        },
+        config,
+    ));
 
     let listener = transport::listen(port).unwrap_or_else(|e| die(&format!("listen failed: {e}")));
     let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);

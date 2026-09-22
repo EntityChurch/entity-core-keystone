@@ -12,6 +12,9 @@
 //! - [`core`]       — the `Peer`: bootstrap, the four MUST handlers, the §6.6 dispatch
 //!   chain, §6.9a seed-policy, §7a conformance handlers.
 //! - [`transport`]  — TCP listener/dialer, the §6.11 reader-demux, two-peer loopback.
+//! - [`handler`]    — the extension-host surface: native handler install (H1/H3), the
+//!   frame budget (H6), the entity-native evaluator seam (H7), local dispatch.
+//! - [`seed_policy`] — the §6.9a seed policy as a value, and its keystone file format.
 //!
 //! Idiom: `std::thread` + `std::sync` (no async runtime — A-RUST-003), `Result`/
 //! `Option` over the fallible surface, exhaustive `match` on the verdict ADTs. The
@@ -20,12 +23,20 @@
 
 pub mod capability;
 pub mod core;
+pub mod handler;
 pub mod identity;
+mod json;
 pub mod model;
+pub mod seed_policy;
 pub mod store;
 pub mod transport;
 pub mod type_defs;
 pub mod wire;
 
-pub use core::{Conn, CreateOptions, Peer};
+pub use core::{Conn, CreateOptions, Peer, PeerConfig};
+pub use handler::{
+    ExpressionEvaluator, ExpressionRequest, FnHandler, Handler, HandlerContext, HandlerResult,
+    LocalExecute, OperationSpec, RegisterError,
+};
 pub use model::{Entity, Envelope};
+pub use seed_policy::{SeedPolicy, SeedPolicyEntry};

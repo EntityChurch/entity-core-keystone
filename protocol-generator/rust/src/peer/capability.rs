@@ -273,6 +273,33 @@ pub fn check_permission(
     Verdict::Deny
 }
 
+/// H9 — the public path-permission predicate: is `operation` on `path`, served by the
+/// handler at `handler_pattern`, permitted by some single grant in `token`?
+///
+/// **Resources match against the local peer with NO granter frame.** This is the §6.3
+/// tree handler's defense-in-depth check and the one an extension whose target lives
+/// in its params needs; it is deliberately not the dispatch-boundary check (which takes
+/// the granter frame for resources, §PR-8) and not chain attenuation (a different
+/// function again). Adding a frame here is the over-scoping defect this cohort has
+/// recorded three times.
+///
+/// It answers about the token's grants only; the token's signature, chain, temporal
+/// bounds and revocation are `verify_request`'s, and must already have held.
+pub fn check_path_permission(
+    operation: &str,
+    path: &str,
+    token: &Entity,
+    handler_pattern: &str,
+    local_peer: &str,
+) -> bool {
+    let cp = canonicalize(local_peer, path);
+    grants_of_token(token).iter().any(|g| {
+        matches_scope(local_peer, handler_pattern, &g.handlers, ScopeKind::Path)
+            && matches_scope(local_peer, operation, &g.operations, ScopeKind::Id)
+            && matches_scope(local_peer, &cp, &g.resources, ScopeKind::Path)
+    })
+}
+
 // ── §5.5 / §5.6 chain verification + attenuation ───────────────────────────────
 
 pub fn resolve(env: &Envelope, st: &Store, h: &[u8]) -> Option<Entity> {

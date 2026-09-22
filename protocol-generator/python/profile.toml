@@ -294,15 +294,17 @@ oracle_commit     = "e8524ed"                     # recorded for S4 byte-validat
 # H5 -- the keystone host contract's platform bindings. See
 # docs/spec/SPEC-KEYSTONE-PEER.md (H1..H9 @ 62e1a1dd...).
 #
-# `status` and `h1_wire_verdict` are MEASURED on the wire, never read from source:
-# a capability claim reads `unknown` until a harness executes it, and four peers in
-# this cohort were once wrongly nominated as hosts from source reads by three
-# different seats. `dispatch_read_site` is the load-bearing descriptive field --
-# a profile naming only the registration call cannot tell a live host from a map
-# nothing reads.
-h1_status               = "host"
-h1_wire_verdict         = "EVALUATES"
-h1_verified_by          = "tools/host-seam-probe @ 2026-09-09, oracle 78db4a9 / executed set 7aa6f3de…, H1 v1.0 @ 62e1a1dd…"
+# TWO MEASUREMENTS, and until 2026-09-12 they shared one name. `h1_status` is H1:
+# a LANGUAGE-NATIVE body installed through the public surface and reached by an
+# EXECUTE from a second peer. It reads `unknown` until such a harness has executed,
+# and `h1_verified_by` names it. `entity_native_*` is tools/host-seam-probe: a body
+# registered over the WIRE is dispatched and evaluated -- §6.13(a), which H1's own
+# Observation excludes. `dispatch_read_site` is the load-bearing descriptive field.
+h1_status               = "not-yet"
+h1_verified_by          = "entity-system-generator gates/host-seam/probe-seam.py reaches a body through the public `handlers` dict (executed), but the peer has no registration call, and H3: exposing the raw container does not satisfy H1"
+entity_native_status    = "evaluates"
+entity_native_wire_verdict = "EVALUATES"
+entity_native_verified_by = "tools/host-seam-probe @ 2026-09-09, oracle 78db4a9 / executed set 7aa6f3de…, H1 v1.0 @ 62e1a1dd…"
 # <<< extension_host <<<
 # The keystone HOST CONTRACT bindings (H1-H7) for this language. See the block of the
 # same name in typescript/profile.toml for why it is `extension_host` and not `[host]`,
@@ -313,8 +315,11 @@ h1_verified_by          = "tools/host-seam-probe @ 2026-09-09, oracle 78db4a9 / 
 # from this file -- every §11.6.1 write is the caller's, through public entry points
 # (`store.bind`, `mint_token`, the `handlers` dict). A host program installs by writing
 # the entities and then binding the body; the peer offers no method that does both.
-status                  = "host"             # host | not-yet | declined | unknown. MEASURED, not read -- see verified_by.
-verified_by             = "entity-system-generator gates/host-seam/probe-seam.py (4 controls, H1 MEASURED PASS) + tests/peer/test_frame_budget.py"
+status                  = "not-yet"          # host | not-yet | declined | unknown. MEASURED, not read -- see verified_by.
+# Was "host" until 2026-09-12. The generator's probe reaches a body through the public
+# `handlers` dict, and that measurement stands -- but H3 says exposing the raw container
+# does not satisfy H1, and this peer has no registration call. Tracked as G-2.
+verified_by             = "entity-system-generator gates/host-seam/probe-seam.py (4 controls: the dict IS reached) + tests/peer/test_frame_budget.py"
 
 # H1 -- a handler installed after construction is reachable by dispatch.
 handler_register_call   = "none -- peer.handlers[pattern] = body, after peer.store.bind of the §11.6.1 entities"

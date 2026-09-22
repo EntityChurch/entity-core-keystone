@@ -18,6 +18,7 @@ from __future__ import annotations
 from .identity import Identity, peer_id_of_public_key, verify_signature
 from .model import Entity, Envelope, Included
 from .peer import GrantSpec, Peer
+from .seed_policy import SeedPolicy, SeedPolicyEntry, SeedPolicyError
 from .store import ContentEvent, ExecContext, Store, TreeEvent
 from .transport import (
     ClientConnection,
@@ -40,6 +41,9 @@ from .wire import (
 __all__ = [
     "Peer",
     "GrantSpec",
+    "SeedPolicy",
+    "SeedPolicyEntry",
+    "SeedPolicyError",
     "Identity",
     "peer_id_of_public_key",
     "verify_signature",

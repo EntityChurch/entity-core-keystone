@@ -256,16 +256,18 @@ oracle_commit     = "cc1970f"                 # go oracle for S4 (public HEAD, r
 # H5 -- the keystone host contract's platform bindings. See
 # docs/spec/SPEC-KEYSTONE-PEER.md (H1..H9 @ 62e1a1dd...).
 #
-# `status` and `h1_wire_verdict` are MEASURED on the wire, never read from source:
-# a capability claim reads `unknown` until a harness executes it, and four peers in
-# this cohort were once wrongly nominated as hosts from source reads by three
-# different seats. `dispatch_read_site` is the load-bearing descriptive field --
-# a profile naming only the registration call cannot tell a live host from a map
-# nothing reads.
-h1_status               = "host"
-h1_wire_verdict         = "EVALUATES"
-h1_verified_by          = "tools/host-seam-probe @ 2026-09-09, oracle 78db4a9 / executed set 7aa6f3de…, H1 v1.0 @ 62e1a1dd…"
-status                  = "host"
+# TWO MEASUREMENTS, and until 2026-09-12 they shared one name. `h1_status` is H1:
+# a LANGUAGE-NATIVE body installed through the public surface and reached by an
+# EXECUTE from a second peer. It reads `unknown` until such a harness has executed,
+# and `h1_verified_by` names it. `entity_native_*` is tools/host-seam-probe: a body
+# registered over the WIRE is dispatched and evaluated -- §6.13(a), which H1's own
+# Observation excludes. `dispatch_read_site` is the load-bearing descriptive field.
+h1_status               = "unknown"
+h1_verified_by          = "no executed H1 harness for this peer. The entity_native_* fields are the §6.13(a) wire measurement, which H1's Observation excludes"
+entity_native_status    = "evaluates"
+entity_native_wire_verdict = "EVALUATES"
+entity_native_verified_by = "tools/host-seam-probe @ 2026-09-09, oracle 78db4a9 / executed set 7aa6f3de…, H1 v1.0 @ 62e1a1dd…"
+status                  = "unknown"
 handler_register_call   = "none -- wire register op only"
 handler_body_shape      = "entity-native: expression_path -> compute/literal"
 dispatch_read_site      = "::entity::core::peer::_entity_native_dispatch -- entity text $he expression_path; src/peer.tcl:237"

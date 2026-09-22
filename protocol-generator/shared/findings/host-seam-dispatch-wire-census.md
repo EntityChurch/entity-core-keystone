@@ -1,7 +1,19 @@
-# H1 on the wire — 26 of 46 peers can dispatch an installed handler body
+# §6.13(a) on the wire — 26 of 46 peers can dispatch a wire-registered entity-native body
 
 **Date:** 2026-09-09 · **From:** `entity-core-keystone` · **Instrument:** `tools/host-seam-probe`
 (Kind A probe — `docs/VERIFICATION-ARCHITECTURE.md`)
+
+> **Correction, 2026-09-12 — this finding was titled and filed as H1, and it does not measure H1.**
+> H1's own Observation installs a **language-native** body through the peer's public surface and
+> says *"no `compute/literal` entity-native body can produce such a value, so a peer with no live
+> index cannot pass on the fallback path."* This probe registers a body **over the wire** and
+> asserts a `compute/literal` evaluates — which is exactly that fallback path. Every number below
+> stands; its label did not. Deriving `h1_status = "host"` from `EVALUATES` put 26 profiles on
+> record as H1 hosts, 17 of them declaring no in-process install path at all, and hid the gap on
+> `rust` for a week. The profile fields are now `entity_native_*`, and `h1_status` reads `unknown`
+> for any peer no executed H1 harness has run against (2 `host`, 1 `not-yet`, 43 `unknown`).
+> Found by `entity-system-generator` starting a real extension port on `rust`. Where the text
+> below says "H1", read "the entity-native install path".
 
 **Surface:** `docs/spec/SPEC-KEYSTONE-PEER.md` **H1** v1.0 @ `62e1a1dd…` — *a handler installed after
 construction is reachable by dispatch* — in the **entity-native (model 3)** shape.

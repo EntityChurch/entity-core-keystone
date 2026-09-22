@@ -3,6 +3,34 @@
 All notable changes to this peer. Spec-version tracked literally per keystone lifecycle
 (S5 §Version-pin). Format loosely follows Keep a Changelog.
 
+## [Unreleased]
+
+### Added — the extension host surface
+- **Handler installation (H1/H3).** `Peer::register_handler(Arc<dyn Handler>)` installs a
+  language-native body after construction, binding the same four §11.6.1 entities the wire
+  `system/handler:register` op binds; `Peer::unregister_handler` removes it. Refuses malformed
+  patterns and any pattern a handler (built-in, native or wire-registered) is already bound at;
+  `system/*` is installable, since the §6.2 reservation was withdrawn at 0.8.2.13. A panicking
+  body answers `500 internal_error` and the connection survives. Previously there was no
+  in-process install path at all.
+- **Frame budget (H6).** `HandlerContext::frame_budget()`; configurable with
+  `PeerConfig::max_frame_bytes`, and the transport enforces the same number.
+- **Entity-native evaluator (H7).** `Peer::set_expression_evaluator`, consulted after the built-in
+  `compute/literal` path and before `501 unsupported_expression`.
+- **Path predicate (H9).** `capability::check_path_permission`, local frame, no granter frame.
+- **Local dispatch.** `HandlerContext::dispatch_execute(LocalExecute)` runs an in-process EXECUTE
+  through §6.6 resolution, `check_permission` and body selection under the caller's capability (or
+  the handler's own grant, or a valid token this peer issued); depth-bounded
+  (`429 bounds_exceeded`), local namespace only.
+- **Seed policy as a value.** `SeedPolicy` (`standard`, `debug_open`, `of`, `from_json`,
+  `from_file`) and `Peer::create_with(CreateOptions, PeerConfig)`; the host gains
+  `--seed-policy PATH`. `CreateOptions::open_grants` and `--debug-open-grants` keep working as the
+  deprecated selector of `default → *`, and a declared policy wins over both.
+
+`Peer::create(CreateOptions)` and `CreateOptions` are unchanged. `--profile core` is unchanged:
+`778 · 335P/336W/0F/107S @ 7aa6f3de…` (the executed core check set), and not one of the 778
+per-check severities moved against the previous report.
+
 ## [0.1.0-pre]
 
 **Tracks V7 ENTITY-CORE-PROTOCOL-V7 spec-data v7.75. Codec corpus v0.8.0 (byte-identical

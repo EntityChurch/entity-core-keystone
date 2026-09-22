@@ -79,8 +79,9 @@ comment quotes the withdrawn sentence. Under 0.8.2.13 this is *permitted* — it
 check the pinned oracle still gates at 46 of 46. The cohort cannot follow the current spec text and
 the current check set at the same time. That is the finding.
 
-**It also touches the host track.** H1 measured 26 of 46 peers able to dispatch a third-party
-installed body (`host-seam-dispatch-wire-census.md`). Every standard extension owns a
+**It also touches the host track.** The §6.13(a) wire probe measured 26 of 46 peers able to
+dispatch a wire-registered entity-native body (`host-seam-dispatch-wire-census.md`; filed as H1
+until 2026-09-12, which it is not — see that finding's correction). Every standard extension owns a
 `system/{ext}/…` namespace, so under the old rule a conformant peer could not host one at its own
 path by the wire route at all — which is the interaction `SDK-OPERATIONS` v1.12 is describing from
 the other side.

@@ -37,6 +37,14 @@ from .identity import Identity, peer_id_of_public_key, verify_signature
 from .model import Entity, Envelope
 from .store import Store
 from .typedefs import core_type_entities
+from .seed_policy import (
+    GrantSpec,
+    SeedPolicy,
+    _discovery_floor,
+    _grants_cbor,
+    _open_grants_scope,
+    _scope_cbor,
+)
 from .wire import MAX_FRAME, error_result, make_execute, make_response
 
 
@@ -56,44 +64,9 @@ class Conn:
 
 
 # ── grant construction (§4.4 / §5.4) ──────────────────────────────────────────
-def _scope_cbor(incl: list[str], excl: list[str] | None = None) -> dict:
-    d: dict[str, Any] = {"include": list(incl)}
-    if excl:
-        d["exclude"] = list(excl)
-    return d
-
-
-@dataclass(frozen=True, slots=True)
-class GrantSpec:
-    handlers: list[str]
-    resources: list[str]
-    operations: list[str]
-    peers: list[str] | None = None
-
-    def to_cbor(self) -> dict:
-        d: dict[str, Any] = {
-            "handlers": _scope_cbor(self.handlers),
-            "resources": _scope_cbor(self.resources),
-            "operations": _scope_cbor(self.operations),
-        }
-        if self.peers is not None:
-            d["peers"] = _scope_cbor(self.peers)
-        return d
-
-
-def _grants_cbor(*specs: GrantSpec) -> list:
-    return [gs.to_cbor() for gs in specs]
-
-
-def _discovery_floor() -> list[GrantSpec]:
-    return [
-        GrantSpec(["system/tree"], ["system/type/*", "system/handler/*"], ["get"]),
-        GrantSpec(["system/capability"], [], ["request"]),
-    ]
-
-
-def _open_grants_scope() -> list[GrantSpec]:
-    return [GrantSpec(["*"], ["*", "/*/*"], ["*"], ["*"])]
+# The scopes and the grant-entry builder live in ``seed_policy`` (their single home, so
+# the policy value and the peer cannot carry two copies of the discovery floor); they are
+# re-exported here under their historical names.
 
 
 class Peer:
@@ -104,13 +77,31 @@ class Peer:
         seed: bytes,
         *,
         open_grants: bool = False,
+        seed_policy: SeedPolicy | None = None,
         conformance: bool = False,
         max_frame_bytes: int = MAX_FRAME,
     ) -> None:
+        """``seed_policy`` is the §6.9a identity -> capability seed policy materialized at
+        L0 and consulted at §4.6 authenticate (the ``with_seed_policy`` builder
+        affordance; see :class:`SeedPolicy`).  When omitted, the conformant
+        :meth:`SeedPolicy.standard` applies -- or, when ``open_grants`` is set,
+        :meth:`SeedPolicy.debug_open` (``default -> *``).
+
+        ``open_grants`` is DEPRECATED: it selects the degenerate ``default -> *`` policy
+        (the retired ``--debug-open-grants`` behaviour, routed through the real §6.9a
+        mechanism) and is IGNORED when ``seed_policy`` is supplied -- a declared policy
+        wins.
+        """
         self.identity = Identity.of_seed(seed)
         self.store = Store()
         self.local_peer = self.identity.peer_id
         self.open_grants = open_grants
+        if seed_policy is not None:
+            self.seed_policy = seed_policy
+        elif open_grants:
+            self.seed_policy = SeedPolicy.debug_open()
+        else:
+            self.seed_policy = SeedPolicy.standard()
         self.conformance = conformance
         #: §4.10(a): this peer's inbound frame bound.  The transport enforces it
         #: per connection and stamps it onto each :class:`Conn`, so the number a
@@ -448,15 +439,19 @@ class Peer:
             "/" + self.local_peer + "/system/signature/" + owner_token.hash.hex(), owner_sig
         )
 
-        if self.open_grants:
-            default_grants = _grants_cbor(*_open_grants_scope())
-        else:
-            default_grants = _grants_cbor(*_discovery_floor())
+        # The default scope template, then any explicitly-named operator/admin/reader
+        # entries (§6.9a.1), each a policy-entry at its key -- all from the declared
+        # seed policy, never a hardcoded fork.
         default_entry = Entity.make("system/capability/policy-entry", {
             "peer_pattern": "default",
-            "grants": default_grants,
+            "grants": list(self.seed_policy.default_grants),
         })
         self.store.bind(policy_base + "default", default_entry)
+        for named in self.seed_policy.named_entries:
+            self.store.bind(policy_base + named.key, Entity.make("system/capability/policy-entry", {
+                "peer_pattern": named.key,
+                "grants": list(named.grants),
+            }))
 
         # §7a conformance handlers — only under --validate.
         if self.conformance:

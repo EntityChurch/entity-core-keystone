@@ -202,13 +202,19 @@ independent check for §6.6 index/walk equivalence: 46 peers, one reading, and i
 §6.13(a) evaluator none of the seven has is a **separate** item, and is the honest `501` rather
 than a defect.
 
-**B. The extension-host track — H1 measured, the repairs sized, Track A closed.** All 46 profiles
-carry an `[extension_host]` block whose `h1_status` is **measured on the wire**, not read from
-source: **26 of 46 peers dispatch a third-party-installed body, 20 do not.** None of that is a
+**B. The extension-host track — the wire census is not H1, and H1 is executed on two peers.** All
+46 profiles carry an `[extension_host]` block. Its **`entity_native_*`** fields are measured on the
+wire: **26 of 46 peers dispatch a wire-registered entity-native body, 20 do not.** None of that is a
 conformance failure — §6.13(a) is an extension surface — but two of the three failure shapes report
 success for a registration that can never be dispatched, and one of them turned out to be item A.
-Read `host` precisely: the entity-native path works, **not** that a language-native callable can be
-installed in-process. H2/H6/H7 are traced, not measured; a wire probe cannot reach an in-process API.
+**Until 2026-09-12 that verdict was written into `h1_status`, and it is not H1**: H1's Observation
+installs a *language-native* body through the public surface and names the entity-native path as
+the one that cannot satisfy it. So 26 profiles read `host` on H1, 17 of them declaring no in-process
+install path — `rust` among them, which is why the generator's rust measurement closed with nothing
+moving. `h1_status` now comes only from an executed H1 harness: **`rust` and `typescript` `host`,
+`python` `not-yet` (its container is reachable but H3 excludes a raw container), 43 `unknown`.**
+`rust` gained the whole surface the same day — H1/H3, H6, H7, H9, a local `dispatch_execute` seam
+and a seed policy as a value — each with a two-peer test and a plant that reddens it.
 
 **C. The architecture backlog — seventeen items, consolidated and routed.** One front door rather
 than seventeen packets, grouped by the kind of answer each needs. The four worth taking first are

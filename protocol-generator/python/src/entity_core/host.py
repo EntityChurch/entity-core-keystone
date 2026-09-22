@@ -10,9 +10,16 @@ Flags:
     --port N             TCP port to listen on (0 = auto-assign)
     --seed HEX           hex 32-byte Ed25519 seed (alternative to --name;
                          default: a fixed dev seed)
-    --debug-open-grants  mint the degenerate [default -> *] seed (reach write
-                         ops past the F27 owner-authority gap; deprecated shape,
-                         routed through the real §6.9a mechanism)
+    --seed-policy PATH   the §6.9a seed policy, read from a keystone seed-policy
+                         JSON file (protocol-generator/shared/seed-policy/).
+                         Without it the standard policy applies (default = the
+                         §4.4 discovery floor).  A file that cannot be
+                         materialized as written is refused: stderr + exit 2,
+                         nothing is bound.
+    --debug-open-grants  DEPRECATED.  The degenerate [default -> *] seed policy,
+                         routed through the real §6.9a mechanism.  Still accepted,
+                         with a warning; IGNORED when --seed-policy is also given
+                         (a declared policy wins).
     --validate           bootstrap the §7a system/validate/* conformance handlers
     --help               show this help
 
@@ -29,7 +36,7 @@ import signal
 import sys
 import threading
 
-from .peer import Peer, listen
+from .peer import Peer, SeedPolicy, SeedPolicyError, listen
 
 
 def _fixed_dev_seed() -> bytes:
@@ -67,8 +74,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=0, help="TCP port (0 = auto-assign)")
     parser.add_argument("--seed", help="hex 32-byte Ed25519 seed (default: fixed dev seed)")
     parser.add_argument(
+        "--seed-policy", metavar="PATH",
+        help="load the §6.9a seed policy from a keystone seed-policy JSON file",
+    )
+    parser.add_argument(
         "--debug-open-grants", action="store_true",
-        help="mint the degenerate [default -> *] seed (deprecated)",
+        help="DEPRECATED: the degenerate [default -> *] seed policy "
+             "(ignored when --seed-policy is given)",
     )
     parser.add_argument(
         "--validate", action="store_true",
@@ -90,11 +102,34 @@ def main(argv: list[str] | None = None) -> int:
     else:
         seed = _fixed_dev_seed()
 
-    if args.debug_open_grants:
-        print("host: WARNING --debug-open-grants is deprecated (v7.74); "
-              "prefer --seed-policy with a wide-open default", file=sys.stderr)
+    seed_policy = None
+    if args.seed_policy is not None:
+        try:
+            seed_policy = SeedPolicy.from_file(args.seed_policy)
+        except SeedPolicyError as exc:
+            # Refuse before binding anything: a policy that cannot be materialized as
+            # written must not fall back to some other policy and listen anyway.
+            print(f"host: error: --seed-policy: {exc}", file=sys.stderr)
+            return 2
 
-    peer = Peer(seed, open_grants=args.debug_open_grants, conformance=args.validate)
+    open_grants = args.debug_open_grants
+    if open_grants:
+        if seed_policy is not None:
+            print("host: WARNING --debug-open-grants is DEPRECATED and is IGNORED because "
+                  "--seed-policy was given (a declared policy wins)", file=sys.stderr)
+            open_grants = False
+        else:
+            print("host: WARNING --debug-open-grants is deprecated (v7.74); "
+                  "prefer --seed-policy with a wide-open default "
+                  "(protocol-generator/shared/seed-policy/examples/debug-open.json "
+                  "is the file form)", file=sys.stderr)
+    if seed_policy is not None:
+        print(f"seed-policy: {args.seed_policy} (default entry: "
+              f"{len(seed_policy.default_grants)} grant(s), "
+              f"{len(seed_policy.named_entries)} named entr(ies))", file=sys.stderr)
+
+    peer = Peer(seed, open_grants=open_grants, seed_policy=seed_policy,
+                conformance=args.validate)
     ln = listen(peer, args.port)
 
     print(f"LISTENING {ln.port}", flush=True)

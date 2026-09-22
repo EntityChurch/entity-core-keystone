@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import * as net from "node:net";
 import { PeerIdentity } from "./identity/index.js";
 import { ContentStore, EntityTree } from "./store/index.js";
@@ -14,7 +15,7 @@ import {
   ValidateEchoHandler,
   ValidateDispatchOutboundHandler,
 } from "./handlers/index.js";
-import { CapabilityToken, type GrantEntry, SeedPolicy } from "./capability/index.js";
+import { CapabilityToken, type GrantEntry, SeedPolicy, SeedPolicyError } from "./capability/index.js";
 import { EmitBus } from "./emit/index.js";
 import { Entity, Ecf, TypeNames, hashHex } from "./model/index.js";
 import { Dispatcher } from "./dispatch/index.js";
@@ -269,6 +270,31 @@ export class Peer implements PeerServices {
       await conn.dispose();
     }
     this.#connections.clear();
+  }
+}
+
+/**
+ * Load a keystone seed-policy file (`--seed-policy <path>`; convention README §5
+ * `with_seed_policy_from_file`) and return it as a {@link Peer} options fragment:
+ *
+ *     new Peer({ identity, ...withSeedPolicyFromFile("policy.json") })
+ *
+ * Parsing and every refusal are {@link SeedPolicy.fromJson}'s; this adds only the read,
+ * and prefixes any error with the path. Lives in the Node layer (beside `node:net`) so
+ * `capability/` stays free of `node:*` imports for the browser bundle.
+ */
+export function withSeedPolicyFromFile(path: string): { seedPolicy: SeedPolicy } {
+  let text: string;
+  try {
+    // Fatal decode: invalid UTF-8 is refused, not replaced with U+FFFD.
+    text = new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(path));
+  } catch (err) {
+    throw new SeedPolicyError(`${path}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    return { seedPolicy: SeedPolicy.fromJson(text) };
+  } catch (err) {
+    throw new SeedPolicyError(`${path}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

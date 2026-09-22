@@ -1,4 +1,10 @@
-# `host-seam-probe` — the H1 dispatch census · **Kind A (probe)**
+# `host-seam-probe` — the §6.13(a) entity-native dispatch census · **Kind A (probe)**
+
+> **This probe does not measure H1, and until 2026-09-12 its verdict was recorded as H1.** It
+> registers a body over the wire and asserts a `compute/literal` evaluates; H1's Observation
+> installs a LANGUAGE-NATIVE body through the public surface and names this path as the one that
+> cannot satisfy it. Its verdict lands in `[extension_host] entity_native_*`; `h1_status` comes
+> only from an executed H1 harness. The text below predates the correction.
 
 Kind and obligations: `docs/VERIFICATION-ARCHITECTURE.md`. A probe measures; it does not judge, it
 does not gate, and it never appears in a published conformance number.

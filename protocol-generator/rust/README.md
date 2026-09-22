@@ -114,7 +114,7 @@ never cd'd into it) — the conformance *tool*, not peer source. Rebuild it per 
 The peer ships a runnable host (the S4 conformance driver and a general single-peer listener):
 
 ```
-entity-peer-host --port N [--name NAME] [--validate] [--debug-open-grants] [--help]
+entity-peer-host --port N [--name NAME] [--validate] [--seed-policy PATH] [--debug-open-grants] [--help]
 ```
 
 - `--name NAME` — load (or provision) the peer's persistent identity at
@@ -122,7 +122,14 @@ entity-peer-host --port N [--name NAME] [--validate] [--debug-open-grants] [--he
   fixes a deterministic `peer_id`. Emits a `LISTENING …` line once the listener is up.
 - `--validate` — enable the §7a `system/validate/{echo,dispatch-outbound}` conformance handlers
   (so the validator's probes run live instead of honest-SKIP).
-- `--debug-open-grants` — the degenerate open seed-policy the grant-gated probe categories need.
+- `--seed-policy PATH` — the §6.9a seed policy, read from a keystone seed-policy JSON file
+  (`protocol-generator/shared/seed-policy/`, with examples). Without it the standard policy
+  applies: every authenticated identity gets the §4.4 discovery floor. A file the peer cannot
+  materialize exactly (an unknown key, `bounds`, a `self` entry, a malformed grantee) is refused
+  and the host exits 2 rather than starting on a policy nobody wrote.
+- `--debug-open-grants` — **deprecated**: the degenerate `default → *` seed policy the
+  grant-gated probe categories need. Still accepted, with a warning; ignored when
+  `--seed-policy` is also given. `examples/debug-open.json` is its file equivalent.
 
 There is also `wire-conformance --input <corpus.cbor> [--out …] [--json …]` (the Go
 `emit-canonical` analogue) for the S2 codec gate.
@@ -138,9 +145,41 @@ use entity_core_protocol::{cbor, content_hash, peer_id, signature, value::Value}
 let bytes = cbor::encode(&value)?;                  // canonical ECF bytes (Result idiom)
 let h     = content_hash::content_hash(&bytes);     // 0x00 || SHA-256(ECF)
 // Tier 2 — full peer
-use entity_core_protocol::peer;
-let p = peer::Peer::new(/* seed, config */)?;       // boot a peer, then serve over TCP
+use entity_core_protocol::peer::{CreateOptions, Peer, PeerConfig, SeedPolicy};
+let p = Peer::create_with(
+    CreateOptions { seed, ..Default::default() },
+    PeerConfig::default().seed_policy(SeedPolicy::from_file("policy.json")?),
+);                                                  // then serve with peer::transport
 ```
+
+### Hosting an extension
+
+A constructed peer can host extension code in-process (the keystone host contract,
+`docs/spec/SPEC-KEYSTONE-PEER.md`):
+
+```rust
+use std::sync::Arc;
+use entity_core_protocol::peer::{FnHandler, HandlerContext, HandlerResult, LocalExecute, OperationSpec};
+
+// H1 — install a language-native body at a pattern the peer was not compiled with. This binds
+// the same handler, interface, grant and signature entities the wire register op binds.
+p.register_handler(Arc::new(FnHandler::new(
+    "app/content", "content", vec![OperationSpec::typed("get", "app/content/get-request", "app/content/get-result")],
+    |ctx: &HandlerContext<'_>| {
+        let budget = ctx.frame_budget();            // H6 — size the response to the connection
+        // an in-process EXECUTE to a local handler, under the caller's capability
+        let r = ctx.dispatch_execute(LocalExecute::new("system/tree", "get", ctx.params().unwrap()).with_target("app/data/x"));
+        HandlerResult::ok(r.result)
+    },
+)))?;
+p.set_expression_evaluator(Some(Arc::new(my_evaluator)));   // H7 — fallback after compute/literal
+```
+
+Installed bodies cannot replace a built-in handler and an installed evaluator never sees a
+`compute/literal` body, so hosting an extension cannot move a `--profile core` result.
+`capability::check_path_permission` is the public path predicate (H9); `Store::register_tree_consumer`
+registers an emit consumer (H2). Every one of these is exercised from a second peer in
+`tests/host_contract.rs`.
 
 Exact entry points carry `///` rustdoc on the exported surfaces (`cargo doc`). The codec
 internals (`cbor`, `base58`, `varint`) are `pub` for the conformance harness but are

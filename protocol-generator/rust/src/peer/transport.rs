@@ -152,8 +152,12 @@ pub fn listen(port: u16) -> std::io::Result<TcpListener> {
 /// thread. Runs until the connection closes / a frame ends it. `read_stream` is a
 /// dedicated read-half clone so reads never contend with the write mutex.
 pub fn read_loop(peer: Arc<Peer>, conn: Arc<Mutex<Conn>>, io: Arc<Io>, mut read_stream: TcpStream) {
+    // H6 — this connection enforces the peer's configured budget, and a handler body
+    // reads the same number back from its context.
+    let budget = peer.max_frame_bytes();
+    conn.lock().unwrap().max_frame_bytes = budget;
     // Closed / PayloadTooLarge / Io ends the loop.
-    while let Ok(payload) = wire::read_frame(&mut read_stream) {
+    while let Ok(payload) = wire::read_frame_limit(&mut read_stream, budget) {
         let env = match model::envelope_of_frame(&payload) {
             Ok(e) => e,
             Err(_) => {
