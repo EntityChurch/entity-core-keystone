@@ -80,7 +80,8 @@ the one between what the ecosystem hands down and what a repo earns for itself.*
 > there are three. Three repos did exactly what they were told and produced
 > `DOCTRINE-CRASH-FORENSICS.md`, `DOCTRINE-COHORT-STATE-TRACKING.md` and
 > `DOCTRINES-BROWSER-SUBSTRATE.md`. **The ambiguity was ours; the renames are theirs, routed,
-> and no repo is at fault for following canon.** `conform-audit` **R34** holds the line now.
+> and no repo is at fault for following canon.** A gate holds the line now: `DOCTRINE-*` is a
+> reserved filename and a repo's own procedures are `WORKFLOW-*`.
 
 Two supporting kinds, not part of the methodology proper but load-bearing beside it:
 
@@ -181,7 +182,8 @@ outward in `GUIDE-IMPL-DISCIPLINE.md`.
 > entirely. So two different D12s exist in the fleet, and the repo that minted one was
 > following canon, not drifting from it. **The ambiguity was ours.** Numbering is now fixed:
 > universal is D1–D12 and native is D13 upward, which is what `entity-system-architecture`
-> already did without being asked. `conform-audit` **R33** enforces both halves.
+> already did without being asked. **A gate enforces both halves** — that D1–D12 are not
+> re-minted locally, and that a repo's own disciplines start at D13.
 
 | # | Discipline | The invariant |
 |---|---|---|
