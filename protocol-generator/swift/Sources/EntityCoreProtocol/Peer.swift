@@ -269,7 +269,7 @@ public actor Peer {
         let canonURI = Capability.canonicalize(uri, frame: localPeerID)
         let targetPeer = Capability.extractPeer(canonURI, localPeerID: localPeerID)
         if targetPeer != localPeerID {
-            return (try? errorResponse(requestID: reqID, status: 400, code: "wrong_peer")) ?? fallbackError()
+            return (try? errorResponse(requestID: reqID, status: 400, code: "invalid_request")) ?? fallbackError()
         }
 
         // Resolve handler (§6.6 longest-prefix tree walk).

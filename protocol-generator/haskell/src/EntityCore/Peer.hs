@@ -824,7 +824,7 @@ dispatch p conn env = do
               ReqAllow -> do
                 let path = canonicalize (peerLocal p) (normalizeUri uri)
                 if extractPeer (peerLocal p) path /= peerLocal p
-                  then pure (errMsg 404 "handler_not_found" "not local peer")
+                  then pure (errMsg 400 "invalid_request" "not local peer")
                   else do
                     mres <- resolveHandler p path
                     case mres of

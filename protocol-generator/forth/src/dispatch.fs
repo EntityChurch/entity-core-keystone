@@ -85,6 +85,21 @@ variable uri-addressed
   ua uu 0 slash-from dup 0< if drop ua uu exit then  \ no '/': one segment, keep
   { i } ua i 1+ +  uu i 1+ - ;                       \ drop "<peer>/"
 
+\ uri-targets-local? ( ua uu -- flag )  §1.4 inbound dispatch: does this URI address THIS
+\ peer? True for a bare/peer-relative path (no addressing prefix at all) and for an addressed
+\ one whose peer segment equals our own peer_id. This is the companion of uri->handler-path
+\ and MUST be asked BEFORE that word throws the peer segment away.
+: uri-targets-local? { ua uu -- flag }
+  false uri-addressed !
+  ua uu s" entity://" str-starts if ua 9 + uu 9 - to uu to ua true uri-addressed ! then
+  ua uu s" /" str-starts if ua 1+ uu 1- to uu to ua true uri-addressed ! then
+  uri-addressed @ 0= if true exit then          \ bare path: peer-relative, always local
+  \ Segment length: up to the first '/', or the whole remainder when there is none.
+  \ Both branches leave EXACTLY one cell, so the locals group below has a known depth.
+  ua uu 0 slash-from dup 0< if drop uu then { seglen }
+  seglen id-peerid nip <> if false exit then          \ lengths differ -> not us
+  ua seglen id-peerid drop seglen compare 0= ;
+
 : dispatch-execute { conn exec -- status raddr ru }
   exec exec-uri uri->handler-path { hpa hpu }
   hpa hpu s" system/protocol/connect" str-starts if
@@ -94,6 +109,15 @@ variable uri-addressed
   \ 1. integrity/authn first (an unsigned request is 401 whatever the path).
   exec incA-addr incA-len incA-n cap-verify-authn { averdict }
   averdict VERDICT-ALLOW <> if averdict cap-verdict-error exit then
+  \ 1a. §1.4 / §6.5 step 3 — the ADDRESS gate, BEFORE resolution and BEFORE authz.
+  \     uri->handler-path above drops the peer segment unconditionally, which is exactly
+  \     the route §6.5 forbids: strip the foreign peer id, resolve the LOCAL handler at
+  \     the remaining path, and let §5.2 Dimension 4 decide. That answers 403/404 for what
+  \     is specified as 400 — and ALLOWS the request outright whenever the presented grant
+  \     carries a matching `peers` scope. Measured before this gate: status 200, the live
+  \     foreign-namespace escalation.
+  exec exec-uri uri-targets-local? 0= if
+    400 s" invalid_request" 0 0 error-result exit then
   \ 2. resolve the handler by the URI (§6.6 tree-walk); miss -> 404 (resolution-first: 404
   \    beats 403 for an unregistered path).
   hpa hpu resolve-handler dup 0= if 2drop 404 s" handler_not_found" 0 0 error-result exit then

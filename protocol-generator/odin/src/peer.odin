@@ -1217,7 +1217,7 @@ dispatch_outcome :: proc(p: ^Peer, conn: ^Conn, env: Envelope) -> Outcome {
 	// §1.4: inbound dispatch must target the local peer.
 	tp := extract_peer(p.local_peer, path)
 	if tp != p.local_peer {
-		return err_out(404, "handler_not_found", "not local peer")
+		return err_out(400, "invalid_request", "not local peer")
 	}
 	pattern, has_pattern := resolve_handler(p, path)
 	if !has_pattern {

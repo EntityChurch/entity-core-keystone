@@ -743,7 +743,7 @@ non-EXECUTE root (§3.3 server side ignores non-EXECUTE)."
                               (let ((path (canonicalize (peer-local-peer peer) (normalize-uri uri))))
                                 ;; §1.4: inbound dispatch must target the local peer.
                                 (if (not (string= (extract-peer (peer-local-peer peer) path) (peer-local-peer peer)))
-                                    (err 404 "handler_not_found" "not local peer")
+                                    (err 400 "invalid_request" "not local peer")
                                     (multiple-value-bind (pattern suffix) (resolve-handler peer path)
                                       (declare (ignore suffix))
                                       (if (null pattern) (err 404 "handler_not_found" path)

@@ -233,7 +233,10 @@ proc connectHandler(p: Peer; conn: Conn; exec: Entity; env: Envelope): Outcome =
     return okOut(hello)
   elif op == "authenticate":
     if conn.established: return errOut(409, "connection_already_established")
-    if conn.issuedNonce.len == 0: return errOut(400, "connection_sequence_error")
+    # FM-1 (§4.2, §4.7 row 6, 0.8.2.1): a pre-hello authenticate is a captured
+    # authenticate replayed onto a fresh connection — 401 invalid_nonce, the same
+    # status as the established-connection replay one line above, not a 400.
+    if conn.issuedNonce.len == 0: return errOut(401, "invalid_nonce")
     if paramsE.isNone: return errOut(401, "authentication_failed")
     let a = paramsE.get
     let echoed = a.bytesField("nonce")

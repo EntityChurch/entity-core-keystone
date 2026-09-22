@@ -265,7 +265,7 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  eDeny:Z←OutErr(403)('capability_denied')('') ⋄ →0
  eDeep:Z←OutErr(400)('chain_depth_exceeded')('') ⋄ →0
  eInvalid:Z←OutErr(400)('invalid_path')('') ⋄ →0
- eNotLocal:Z←OutErr(404)('handler_not_found')('not local peer') ⋄ →0
+ eNotLocal:Z←OutErr(400)('invalid_request')('not local peer') ⋄ →0
  eNoHandler:Z←OutErr(404)('handler_not_found')(path)
 ∇
 

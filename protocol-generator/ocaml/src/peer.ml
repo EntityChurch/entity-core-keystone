@@ -772,7 +772,7 @@ let dispatch (t : t) (conn : conn) (env : Model.envelope) : Model.envelope optio
             let path = Capability.canonicalize ~local_peer:t.local_peer (Capability.normalize_uri uri) in
             (* §1.4: inbound dispatch must target the local peer *)
             if not (String.equal (Capability.extract_peer ~local_peer:t.local_peer path) t.local_peer) then
-              err 404 "handler_not_found" ~message:"not local peer"
+              err 400 "invalid_request" ~message:"not local peer"
             else
               match resolve_handler t path with
               | None -> err 404 "handler_not_found" ~message:path

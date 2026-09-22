@@ -106,8 +106,44 @@ pub fn main() !void {
     _ = try stdout.write(line);
 
     // accept loop — each connection served on its own thread (§4.8)
+    //
+    // A TRANSIENT accept() error MUST NOT end the loop. This used to be
+    // `server.accept() catch break`, which treated every AcceptError as fatal —
+    // and most of that error set is recoverable:
+    //
+    //   ConnectionAborted       the peer sent SYN then closed before we accepted
+    //                           (ECONNABORTED). Rapid open→close churn MANUFACTURES
+    //                           this race; §7b t2_2 does 100 such cycles.
+    //   ProcessFdQuotaExceeded  EMFILE — transient, clears as connections drain
+    //   SystemFdQuotaExceeded   ENFILE — likewise, host-wide
+    //   SystemResources         ENOBUFS/ENOMEM under socket-buffer pressure
+    //   WouldBlock              EAGAIN on a non-blocking listener
+    //
+    // Breaking on any of those stops the peer LISTENING while the process stays
+    // alive and healthy, so every later connection gets `connection refused` and
+    // the peer reads as crashed. Measured here: a census run failed
+    // t2_2_connection_churn at cycle 53 and then failed 27 downstream checks with
+    // connection-refused, while an isolated re-run of the same binary passed —
+    // the timing of the client's close decides whether the race fires, so the
+    // defect presents as flakiness. It is not flakiness: a client that opens and
+    // immediately aborts one connection can permanently kill this listener.
+    //
+    // Only a genuinely fatal condition ends the loop — the listening socket is
+    // gone or was never a listening socket, which is the shutdown path the old
+    // `break` was actually written for.
     while (true) {
-        const accepted = server.accept() catch break;
+        const accepted = server.accept() catch |err| switch (err) {
+            error.ConnectionAborted, error.WouldBlock, error.ProtocolFailure => continue,
+            // Resource exhaustion: retry, but yield first so we do not spin hot
+            // against a full descriptor table.
+            error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded, error.SystemResources => {
+                std.Thread.sleep(10 * std.time.ns_per_ms);
+                continue;
+            },
+            // FileDescriptorNotASocket, SocketNotListening, BlockedByFirewall,
+            // Unexpected — the listener is unusable; stop.
+            else => break,
+        };
         const th = std.Thread.spawn(.{}, serveConnection, .{ &peer, gpa, accepted.stream }) catch {
             accepted.stream.close();
             continue;

@@ -460,7 +460,10 @@ impl Peer {
         // §6.6 handler resolution as the Datalog longest-prefix selection.
         let path = canonicalize(&self.local_peer, &normalize_uri(&uri));
         if extract_peer(&self.local_peer, &path) != self.local_peer {
-            return err_out(404, "handler_not_found");
+            // §1.4 / §6.5 step 3 — a gate on the ADDRESS, ahead of handler
+            // resolution and check_permission: 400 invalid_request, never a
+            // handler or authz verdict (0.8.2.2).
+            return err_out(400, "invalid_request");
         }
         let pattern = match self.resolve_handler(&path) {
             Some(p) => p,

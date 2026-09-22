@@ -384,9 +384,14 @@ func (p *Peer) runChain(c *conn, env Envelope, exec Entity, uri string) outcome 
 	if !pathOK {
 		return errOutcome(400, "invalid_path", uri)
 	}
-	// §1.4: inbound dispatch must target the local peer.
+	// §1.4 / §6.5 step 3: inbound dispatch must target the local peer. This is a
+	// gate on the ADDRESS, evaluated before handler resolution and before
+	// check_permission, so the refusal is 400 invalid_request and never an authz
+	// or handler verdict — a 404 here would assert "this peer has no such
+	// handler", which is false of a peer that has it and is refusing the address
+	// (§6.2, 0.8.2.2).
 	if extractPeer(p.localPeer, path) != p.localPeer {
-		return errOutcome(404, "handler_not_found", "not local peer")
+		return errOutcome(400, "invalid_request", "not local peer")
 	}
 	pattern, ok := p.resolveHandler(path)
 	if !ok {

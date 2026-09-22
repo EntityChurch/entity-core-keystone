@@ -848,6 +848,74 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   violates deliver-or-signal (§4.9(c)). Two peers landed this independently: Oz (`""` IS `nil` → a
   raise escaped a narrow catch, hung the request; also never use `== nil` as a string sentinel —
   A-OZ-005) and Smalltalk (one `doesNotUnderstand:` cascaded 229 FAILs — A-ST-016). Cohort rule.
+- **"FLAKY" AND "LOAD" ARE NOT DIAGNOSES — THEY ARE THE NAMES WE GIVE A RACE WE HAVE NOT LOOKED
+  FOR YET. RE-RUN N TIMES AND COUNT.** RATIFIED 2026-09-01 (`zig`), and it is the sharpest process
+  failure this repo has recorded because the wrong explanation was *written into a commit message*
+  before anyone objected. A census run came back `756 · 288P/27F` — `t2_2_connection_churn` failing
+  at cycle 53, then 27 downstream checks reporting connection-refused. An isolated re-run passed,
+  and that single passing re-run was published as *"external load, not the change"*. It was not.
+  **Re-run five times on an idle host: 3 of 5 FAILED.** Load was never the variable.
+  **The intermittency was TWO independent remotely-triggerable process aborts**, and the peer's own
+  `--profile core` suite had been carrying them for months:
+  - **A use-after-free**: `readLoop` spawns a DETACHED thread per inbound EXECUTE holding a `*Io`
+    and `*Conn` that point INTO the connection's `ConnState`, then returns the moment the client
+    closes — and the caller frees that state immediately. `Segmentation fault … io.gpa.destroy(ctx)`.
+  - **A panic inside a call documented as best-effort**: `setNoDelay` carried *"a failure just
+    leaves Nagle on, not fatal"* and a `catch {}`, and aborted the process anyway, because
+    `std.posix.setsockopt` maps `BADF`/`NOTSOCK`/`INVAL`/`FAULT` to **`unreachable`** (the stdlib's
+    own comment on those arms is *"always a race condition"*) and `unreachable` is a PANIC, which
+    no `catch` can intercept.
+  **THE MEASUREMENT IS THE METHOD, and the middle row is the lesson:**
+  `before 3/5 FAIL · after fix 1 → 1/6 FAIL · after fix 2 → 0/22 FAIL`. **Fix 1 alone reads as
+  "mostly fixed" and ships a peer that still aborts** — one bug masked the other, and only counting
+  over repeated runs could tell them apart. A single green re-run is not evidence a race is gone; it
+  is one sample from a distribution nobody has measured.
+  **Why churn specifically, and why months of green runs missed it:** 100 open → request → close
+  cycles is a loop that closes the connection *mid-dispatch by construction*. A sequential suite
+  never opens that window. **When a check that stresses lifecycle is the one that fails, suspect a
+  lifetime bug, not the harness.**
+  **Enforcement, and it is a rule about the report rather than the code: an intermittent result may
+  not be attributed to anything until it has been re-run and the failure rate recorded.** Cite the
+  count (`3 of 5`), never an adjective. If the mechanism is not named, the finding is "not
+  root-caused", which is an honest state; "flaky" and "load" are claims, and both were false here.
+  *(Sub-lesson, cheap and general: **a detached worker must not outlive the state it borrows.**
+  Register the in-flight count BEFORE the spawn — the thread can finish before `spawn()` returns —
+  release it LAST in the worker's teardown, because the owner may free everything the instant it
+  reaches zero, and await it before the owner frees. And: **a "best-effort" wrapper is only
+  best-effort if its failure path returns; check whether the library panics on the errno you are
+  ignoring.**)*
+  **Residual, named rather than folded into the win:** `resource_bounds/r3_connection_flood` failed
+  **2 of those 22** post-fix runs and is a DIFFERENT intermittent — churn is 0/22 — not root-caused,
+  handed off. Reporting a partial fix as a whole one is the same defect as reporting a race as load.
+- **A TRANSIENT `accept()` ERROR MUST NOT END THE ACCEPT LOOP — a peer that stops LISTENING while
+  the process stays alive and healthy reads as a crash and is invisible to every liveness check.**
+  Candidate, two shapes found in one sweep (2026-09-01). `zig` had `server.accept() catch break`,
+  fatal on its entire `AcceptError` set; `c` had `if (errno == EINTR) continue; break;` under a
+  comment saying *"socket closed → stop"* — the intent is right, the code stops on `ECONNABORTED`,
+  `EMFILE`, `ENFILE`, `ENOBUFS` and `EAGAIN` too, all recoverable. `ECONNABORTED` is the routine one:
+  the client sends SYN then closes before the server accepts, which rapid churn manufactures. So one
+  aborted connection can permanently kill the listener. **Say honestly what this was NOT: fixing
+  both accept loops did not fix zig's churn failure** (the two entries above did) — it is a real
+  defect in its own right, and conflating it with the bug found alongside it would have been the
+  easy overclaim. Enforcement: `git grep -nE "accept\(\)? *(catch|orelse) *(break|return)"` plus a
+  read of every `accept()` call site's error arm; the rest of the cohort (`cobol` `fortran` `rexx`
+  `pd` `sql`) already skips a failed accept and keeps looping.
+- **A RAW CONTROL BYTE IN A SOURCE FILE MAKES IT INVISIBLE TO EVERY GREP-BASED AUDIT — and the
+  audit reports "absent", not "could not look".** RATIFIED 2026-09-01, two peers, same session.
+  `dart/lib/src/peer/peer.dart` and `ruby/lib/entity_core/peer.rb` each wrote `"\x00"` as a
+  **literal NUL byte** rather than the escape, in the same helper (`path_flex_ok?` /
+  `_pathFlexOk` — a check for an embedded NUL in a path, correct at runtime). `file` calls both
+  `data`; `grep` treats them as binary and, in a pipeline, prints nothing at all.
+  **What it cost: the cohort-wide survey for the §1.4 gate put BOTH peers in the "no gate" bucket
+  when both had one.** Acting on that would have added a second, redundant gate to each and
+  published a wrong count of how many peers were missing the feature. Only the oracle caught it.
+  This is the `vendor-unmatched` shape one level down — **a could-not-look that presents as a
+  clean answer** — and it is the same reason `spec corpus --vendor` reports rather than passes.
+  **Enforcement, and `grep -P '\x00'` is NOT it (it does not reliably match a NUL):** scan tracked
+  files in Python — `b'\x00' in open(f,'rb').read()` — and treat any hit outside a declared data
+  file as a defect. The full tree is clean apart from `cobol/src/core-types.dat`, which is data.
+  **Generalize past NUL: before concluding a source-wide grep found nothing, confirm the grep could
+  see the file.**
 - **A WIRE PROBE FAILS IN THE DIRECTION OF THE ANSWER IT IS LOOKING FOR — so a probe without a
   CONTROL is not a measurement, it is a rumour with a number attached.** RATIFIED 2026-08-30
   (three independent instances in one afternoon, building `tools/p47-probe` to measure the §4.7
@@ -1518,6 +1586,15 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   overlay, same file naming. **Enforcement, and it is the cheap one this repo already prescribes:
   when `tier-status.py` and `check-set-gate.py --tracked` disagree about which peers are green,
   suspect the INPUT before the peers.** They disagreed here, and the tracked gate was right.
+  **SUPERSEDED 2026-09-01 by the `0.8.2.3` re-pin — the `755 · 0F` cohort row below is HISTORY, not
+  current state. The pin is now `f313028` / 756 checks, and the sweep is IN PROGRESS at 41 of 46.**
+  Both anchors moved together (oracle `c1b0708 → f313028`, spec `v0.8.2 → v0.8.2.3`), two new core
+  checks landed (`connect_prehello_authenticate` FM-1, `dispatch_inbound_foreign_namespace_refused`
+  PD-1) and one was removed (`authz_peers_target_from_uri`, whose reference answer had INVERTED —
+  its PASS branch required the escalation). **Owed: `pd` `wasm-wat` `asm-x86_64` `asm-arm64`
+  `riscv64`, all still refusing a foreign namespace by resolving locally, and all 46 tracked
+  per-peer reports are a pin behind.** Full state, and what each remaining peer needs, in
+  `docs/status/HANDOFF-2026-09-01-0823-sweep-41-of-46.md`.
   **CLOSED 2026-08-30 — every peer in the cohort is at `755 · 0F`. 46 of 46, no exclusions.** The
   last five landed in one pass: `asm-x86_64`, `asm-arm64`, `riscv64` (INVALID → 0F), `cobol`
   (30F → 0F) and `apl` (excluded → 0F).
@@ -1609,6 +1686,21 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   including the §6.2 register guard that reached 44 of 45 peers on 2026-08-17 with `apl` the sole
   omission. **An excluded peer does not hold still; it accumulates every debt the cohort pays
   down**, so the cost of an exclusion grows with exactly the thing that makes it feel safe to keep.)*
+- **A REFUSAL REACHED BY `throw` INTO A GENERIC CATCH IS NOT THE REFUSAL THE SOURCE APPEARS TO
+  STATE — and the clause that states it can be DEAD CODE that has never once run.** Candidate
+  (`prolog` 2026-09-01, but it is the standing "a source grep is not a conformance census" rule
+  with the sharpest example yet). `authorized_dispatch/5` did `throw(not_local)` for the §1.4
+  foreign-namespace case, and the clause *directly below it* answered `404 handler_not_found`
+  (later `400 invalid_request`) — which reads, to any reader and to any grep, as the refusal.
+  **A `throw/1` does not fall through to the next clause.** It unwound to `dispatch/4`'s
+  `catch`, where the generic `chain_error_outcome/2` turned it into **`500 internal_error`**.
+  Measured on the wire; a source read clears the peer completely.
+  The second clause had never executed in the peer's entire history, and nothing noticed because
+  no vector exercised the input until PD-1 landed one. **Enforcement: for any refusal implemented
+  as a raised/thrown condition, name the handler that catches it and check that the handler
+  produces the status the refusal intends** — a generic catch-all is a 500 factory, and in a
+  language with clause-indexed dispatch a fallback clause beside a `throw` is the shape most
+  likely to be mistaken for one.
 - **A REFUSAL THAT EXISTS BUT CANNOT BE REACHED IS A §4.9(c) SILENT DROP — check that the answer
   path is REACHABLE, not just present.** Candidate (`apl` 2026-08-30, but it is the third time in
   three days that a §4.9(c) drop has been the finding, after the ISA op-ladder and `cobol`). `apl`

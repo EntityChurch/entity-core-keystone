@@ -50,7 +50,10 @@ extension Peer {
 
         case "authenticate":
             guard session.helloReceived else {
-                return (try? errorResponse(requestID: requestID, status: 400, code: "connection_sequence_error")) ?? fallbackError()
+                // FM-1 (§4.2, §4.7 row 6, 0.8.2.1): a pre-hello authenticate is a
+                // captured authenticate replayed onto a fresh connection — an
+                // authentication failure, not a malformed request.
+                return (try? errorResponse(requestID: requestID, status: 401, code: "invalid_nonce")) ?? fallbackError()
             }
             guard let p = params(root) else {
                 return (try? errorResponse(requestID: requestID, status: 401, code: "authentication_failed")) ?? fallbackError()

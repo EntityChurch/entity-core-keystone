@@ -875,7 +875,12 @@ static void dispatch_frame(int fd, conn_state *cs, const unsigned char *buf, siz
             (void)handle_hello(fd, rid, cs, buf, len); return;
         }
         if (strcmp(op,"authenticate")==0) {
-            if (!cs->nonce_set) { (void)emit_error(fd,rid,400,"connection_sequence_error"); return; }
+            /* FM-1 (§4.2, §4.7 row 6, 0.8.2.1): an authenticate arriving before any
+             * hello nonce was issued is a captured authenticate replayed onto a fresh
+             * connection — an authentication failure, so 401 invalid_nonce (the same
+             * status handle_authenticate gives the established-connection replay), not
+             * the out-of-order 400. §4.7's out-of-order row no longer names this input. */
+            if (!cs->nonce_set) { (void)emit_error(fd,rid,401,"invalid_nonce"); return; }
             (void)handle_authenticate(fd, rid, cs, buf, len); return;
         }
         (void)emit_error(fd, rid, 400, "connection_sequence_error"); return;
@@ -889,6 +894,27 @@ static void dispatch_frame(int fd, conn_state *cs, const unsigned char *buf, siz
     if (strncmp(uri,"entity://",9)==0) snprintf(nuri,sizeof nuri,"/%s",uri+9);
     else if (uri[0]=='/') snprintf(nuri,sizeof nuri,"%s",uri);
     else snprintf(nuri,sizeof nuri,"/%s/%s",g_peer_id,uri);
+
+    /* §1.4 / §6.5 step 3: the ADDRESS gate. An inbound EXECUTE naming another
+     * peer's namespace is refused here — after canonicalization, BEFORE handler
+     * resolution and before the authority ladder runs — with 400 invalid_request.
+     *
+     * This is a gate, not an ordering preference (§6.5, 0.8.2.2). Reaching the
+     * refusal by resolving the local handler at the remaining path and letting
+     * §5.2 Dimension 4 deny is explicitly forbidden: it answers 403/404 for what
+     * is specified as 400, and it ALLOWS the request outright whenever the
+     * presented grant happens to carry a matching `peers` scope — a foreign-
+     * namespace privilege escalation. Measured here before the gate existed:
+     * (404, "not_found"), reached by resolution miss rather than by address. */
+    {
+        const char *seg = nuri + 1;                 /* nuri is always "/{peer}/…" */
+        const char *end = strchr(seg, '/');
+        size_t seglen = end ? (size_t)(end - seg) : strlen(seg);
+        size_t locallen = strlen(g_peer_id);
+        if (seglen != locallen || memcmp(seg, g_peer_id, locallen) != 0) {
+            (void)emit_error(fd, rid, 400, "invalid_request"); return;
+        }
+    }
 
     /* §6.5: project the §5.8 chain, ask verify_ladder.sql for the (status,code) verdict. */
     char status[8], code[64];

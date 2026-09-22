@@ -10,6 +10,20 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <AssemblyName>EntityCore.Protocol.Host</AssemblyName>
     <RootNamespace>EntityCore.Protocol.Host</RootNamespace>
+    <!-- An OutputType=Exe project asks NuGet for a platform apphost pack
+         (Microsoft.NETCore.App.Host.<rid>) purely to emit the native launcher
+         stub. run-s4.sh never uses it — it runs `dotnet <...>.Host.dll`
+         framework-dependent — so the pack is a build-time dependency on a
+         package this peer does not consume.
+
+         It was resolving from the live nuget.org feed and stopped:
+         `Microsoft.NETCore.App.Host.fedora.43-x64` is not on nuget.org and is
+         not in the SDK's library-packs, so the offline `dotnet build` fails
+         NU1101 and csharp produced NO REPORT AT ALL. That is the standing
+         rot class in a package manager where nothing was watching, and the
+         fix is the same shape as the dart pubspec one: do not chase the
+         floating dependency, remove the need for it. -->
+    <UseAppHost>false</UseAppHost>
   </PropertyGroup>
 
   <ItemGroup>

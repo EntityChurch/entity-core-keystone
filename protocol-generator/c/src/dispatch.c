@@ -1974,7 +1974,7 @@ ec_status ec_peer_dispatch(ec_peer *p, ec_conn *conn, const ec_envelope *env,
         if (ec_extract_peer(p->local, path, &target_peer) != EC_OK ||
             strcmp(target_peer, p->local) != 0) {
             free(path); free(target_peer);
-            outcome_err(&o, 404, "handler_not_found", "not local peer");
+            outcome_err(&o, 400, "invalid_request", "not local peer");
             goto respond;
         }
         free(target_peer);

@@ -146,6 +146,15 @@ cls compile: 'dispatch: anExec envelope: anEnvelope on: aConn
 	"1. integrity / authn first (an unsigned request is 401 whatever the path)."
 	authn := EcCapability verifyAuthn: anExec in: anEnvelope.
 	authn = #allow ifFalse: [ ^ self verdictError: authn ].
+	"1a. §1.4 / §6.5 step 3 — the ADDRESS gate, BEFORE handler resolution and before
+	     authz. handlerPathOf: strips the addressing prefix unconditionally, which is
+	     exactly what §6.5 forbids reaching the refusal by: strip the foreign peer id,
+	     resolve the LOCAL handler at the remaining path, and let §5.2 Dimension 4
+	     decide. That answers 403/404 for what is specified as 400 — and it ALLOWS the
+	     request outright whenever the presented grant carries a matching `peers` scope.
+	     Measured before this gate existed: status 200, the live escalation."
+	(self uriTargetsLocalPeer: uri) ifFalse: [
+		^ EcHandlerResult error: 400 code: ''invalid_request'' message: ''not local peer'' ].
 	"2. resolve the handler by URI (§6.6); miss -> 404 (resolution-first)."
 	resolved := self resolveHandler: handlerPath.
 	resolved isNil ifTrue: [ ^ EcHandlerResult error: 404 code: ''handler_not_found'' message: ''no handler resolved'' ].
@@ -171,6 +180,20 @@ cls compile: 'handlerPathOf: aUri
 	idx := u indexOf: $/.
 	idx = 0 ifTrue: [ ^ u ].
 	^ u copyFrom: idx + 1 to: u size'.
+
+"uriTargetsLocalPeer: — §1.4 inbound dispatch: does this URI address THIS peer? True for a
+ bare/peer-relative path (no addressing prefix at all) and for an addressed one whose peer
+ segment is our own peer id. The companion of handlerPathOf:, and it MUST be asked before
+ that method throws the peer segment away."
+cls compile: 'uriTargetsLocalPeer: aUri
+	| u idx seg |
+	u := aUri.
+	(u beginsWith: ''entity://'') ifTrue: [ u := u copyFrom: 10 to: u size ]
+		ifFalse: [ (u beginsWith: ''/'') ifTrue: [ u := u copyFrom: 2 to: u size ]
+			ifFalse: [ ^ true ] ].
+	idx := u indexOf: $/.
+	seg := idx = 0 ifTrue: [ u ] ifFalse: [ u copyFrom: 1 to: idx - 1 ].
+	^ seg = identity peerId'.
 
 "runHandler:exec:envelope:on: — invoke a registered handler block with a fresh context."
 cls compile: 'runHandler: aHandlerPath exec: anExec envelope: anEnvelope on: aConn

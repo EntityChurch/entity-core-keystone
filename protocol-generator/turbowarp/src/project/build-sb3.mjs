@@ -176,7 +176,10 @@ const connectHelloBody = [
 const connectAuthenticateBody = [
   // §4.6 sequence: already-established (409, defensive — the pre-auth gate excludes it) → hello-first.
   guard(ext("established", { CONN: vvar(V.conn) }), errTerminal(409, "connection_already_established", "connection already established")),
-  guard(notB(ext("helloReceivedOn", { CONN: vvar(V.conn) })), errTerminal(400, "connection_sequence_error", "authenticate before hello")),
+  // FM-1 (§4.2, §4.7 row 6, 0.8.2.1): a pre-hello authenticate is a captured
+  // authenticate replayed onto a fresh connection — an authentication failure,
+  // so 401 invalid_nonce, not the out-of-order 400 (§4.7's row no longer names it).
+  guard(notB(ext("helloReceivedOn", { CONN: vvar(V.conn) })), errTerminal(401, "invalid_nonce", "authenticate before hello")),
   guard(notB(ext("isAuthenticateParams", { H: vvar(V.exec) })), errTerminal(400, "connection_sequence_error", "expected an authenticate entity")),
   // §4.6 PoP: echo the challenge nonce (401) → key family (400) → id-vs-key (401) → signature (401).
   guard(notB(ext("authNonceEchoes", { H: vvar(V.exec), CONN: vvar(V.conn) })), errTerminal(401, "invalid_nonce", "authenticate nonce does not echo the challenge")),

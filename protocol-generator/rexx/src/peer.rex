@@ -364,7 +364,7 @@ _dispatch_inner: procedure expose EC.
     otherwise nop
   end
   path = Cap_Canonicalize(Peer_LocalPeer(h), Cap_NormalizeUri(uri))
-  if Cap_ExtractPeer(Peer_LocalPeer(h), path) \== Peer_LocalPeer(h) then return Out_Err(404, 'handler_not_found', 'not local peer')
+  if Cap_ExtractPeer(Peer_LocalPeer(h), path) \== Peer_LocalPeer(h) then return Out_Err(400, 'invalid_request', 'not local peer')
   pattern = _resolve_handler(h, path)
   if pattern == '' then return Out_Err(404, 'handler_not_found', path)
   cap_h = Ent_Bytes(exec, 'capability')

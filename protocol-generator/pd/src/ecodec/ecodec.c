@@ -1907,6 +1907,36 @@ static const char *extract_peer(const char *uri, const char *local_pid, char *ou
     return out;
 }
 
+/* [uri_targets_local( — §1.4 / §6.5 step 3: the ADDRESS gate. Does the EXECUTE's
+ * data.uri address THIS peer? extract_peer above returns the local peer id for a
+ * bare/peer-relative uri and for any first segment that is not peer-id-shaped, so
+ * those all answer 1; only a real FOREIGN peer id answers 0.
+ *
+ * This is a PREDICATE, not a decision — it emits [uri_local_ok 0|1( and the canvas
+ * owns the verdict (FLOW-DESIGN's wrapper-guard: the §5.2/§6.5 sequence is authored
+ * on the canvas, the seam only does the string work). Same shape as [op_supported(
+ * directly below.
+ *
+ * Why it exists: every other rung on the ladder canonicalizes the uri and works with
+ * what is left, which drops a foreign peer id and resolves OUR handler at the
+ * remaining path — the exact route §6.5 step 3 forbids, because the presented grant's
+ * `peers` scope then authorizes a foreign namespace. Measured before this gate: status
+ * 200, the live foreign-namespace privilege escalation. The refusal is on the ADDRESS,
+ * so the canvas answers 400 invalid_request — not a 404 (which would claim this peer
+ * has no such handler, false of a peer that has it and is refusing the address) and
+ * not a 403 (which would make it an authz verdict when no capability question was
+ * asked). It sits between the §5.2 validity rung and the §6.6 walk, so it runs after
+ * authentication and before this peer resolves anything. */
+static void ecodec_uri_targets_local(t_ecodec *x)
+{
+    ec_init_identity();
+    char peer[128];
+    const char *tp = extract_peer(g_dec.uri, g_peer_id, peer, sizeof peer);
+    int ok = (tp && !strcmp(tp, g_peer_id));
+    t_atom a; SETFLOAT(&a, ok);
+    outlet_anything(x->x_out, gensym("uri_local_ok"), 1, &a);
+}
+
 /* The resolved handler pattern (peer-relative), stashed by [op_supported( so the
  * subsequent [authz_check_perm( bang can read it without re-plumbing the pattern
  * through the op-existence gate on the canvas (avoids the A-PD-007 route→$1 trap). */
@@ -3915,6 +3945,7 @@ void ecodec_setup(void)
     class_addmethod(ecodec_class, (t_method)ecodec_authz_check_grantee_resolvable, gensym("authz_check_grantee_resolvable"), 0);
     class_addmethod(ecodec_class, (t_method)ecodec_authz_check_capchain,     gensym("authz_check_capchain"),     0);
     class_addmethod(ecodec_class, (t_method)ecodec_authz_check_validity,     gensym("authz_check_validity"),     0);
+    class_addmethod(ecodec_class, (t_method)ecodec_uri_targets_local,        gensym("uri_targets_local"),        0);
     class_addmethod(ecodec_class, (t_method)ecodec_op_supported,             gensym("op_supported"),             A_DEFSYM, 0);
     class_addmethod(ecodec_class, (t_method)ecodec_authz_check_perm,         gensym("authz_check_perm"),         A_DEFSYM, 0);
     /* §6.6 path-dispatch primitives */

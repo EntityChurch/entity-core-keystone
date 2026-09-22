@@ -225,7 +225,7 @@ Peer := Object clone do(
         path := Capability canonicalize(localPeer, Capability normalizeUri(uri))
         // §1.4 inbound dispatch must target the local peer
         if(Capability extractPeer(localPeer, path) != localPeer,
-            return Outcome err(404, "handler_not_found", "not local peer"))
+            return Outcome err(400, "invalid_request", "not local peer"))
         pattern := store resolveHandlerPattern(path)
         if(pattern == nil, return Outcome err(404, "handler_not_found", path))
         capH := exec bytes("capability")

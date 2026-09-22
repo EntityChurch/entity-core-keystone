@@ -661,7 +661,7 @@ function dispatch_outcome(p::Peer_t, conn::Conn, env::Envelope)::HandlerResult
 
     path = canonicalize(p.peer_id, Capability.normalize_uri(uri))
     tp = extract_peer(p.peer_id, path)
-    tp == p.peer_id || return err(404, "handler_not_found")     # §1.4 must target local peer
+    tp == p.peer_id || return err(400, "invalid_request")     # §1.4 must target local peer
     pattern = resolve_handler(p, path)
     pattern === nothing && return err(404, "handler_not_found")
 

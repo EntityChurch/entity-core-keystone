@@ -294,7 +294,7 @@ proc ::entity::core::peer::_dispatch_inner {h conn_h env exec} {
     set path [::entity::core::capability::canonicalize [local_peer $h] [::entity::core::capability::normalize_uri $uri]]
     # §1.4: inbound dispatch must target the local peer.
     if {[::entity::core::capability::extract_peer [local_peer $h] $path] ne [local_peer $h]} {
-        return [outcome_err 404 handler_not_found "not local peer"]
+        return [outcome_err 400 invalid_request "not local peer"]
     }
     set pattern [_resolve_handler $h $path]
     if {$pattern eq ""} { return [outcome_err 404 handler_not_found $path] }

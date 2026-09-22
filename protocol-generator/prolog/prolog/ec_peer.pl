@@ -213,13 +213,22 @@ authorized_dispatch(Peer, Env, Exec, Outbound, Outcome) :-
     ( ent_text(Exec, "uri", Uri) -> true ; Uri = "" ),
     normalize_uri(Uri, NU),
     canonicalize(Local, NU, Path),
-    ( extract_peer(Local, Path, Local)
-    -> true
-    ;  throw(not_local) ),
-    ( resolve_handler(Peer, Path, Pattern)
+    % §1.4 / §6.5 step 3 — the ADDRESS gate, ahead of handler resolution and
+    % check_permission: 400 invalid_request, never a handler or authz verdict
+    % (§6.2, 0.8.2.2).
+    %
+    % This used to be `throw(not_local)` with a second authorized_dispatch/5
+    % clause below answering the refusal. That clause was DEAD CODE and always
+    % had been: a throw/1 does not fall through to the next clause, it unwinds to
+    % dispatch/4's catch, where the generic chain_error_outcome/2 turned it into
+    % 500 internal_error. So the refusal a source read finds — a tidy fallback
+    % clause naming the right status — was never the answer on the wire. Measured
+    % at oracle f313028: (500, "internal_error").
+    ( \+ extract_peer(Local, Path, Local)
+    -> error_result("invalid_request", "not local peer", R), Outcome = outcome(400, R, [])
+    ;  resolve_handler(Peer, Path, Pattern)
     -> permission_then_handle(Peer, Env, Exec, Pattern, Outbound, Outcome)
     ;  error_result("handler_not_found", Path, R), Outcome = outcome(404, R, []) ).
-authorized_dispatch(_, _, _, _, outcome(404, R, [])) :- error_result("handler_not_found", "not local peer", R).
 
 permission_then_handle(Peer, Env, Exec, Pattern, Outbound, Outcome) :-
     peer_local_peer(Peer, Local),
@@ -278,6 +287,15 @@ handle_authenticate(Peer, Env, Exec, Outcome) :-
     % still-cached nonce and re-issue a grant) — the nonce is documented
     % single-use. Reject outright, before any nonce/signature work.
     ( conn_established(Env)
+    -> error_result("invalid_nonce", "", R), Outcome = outcome(401, R, [])
+    % FM-1 (§4.2, §4.7 row 6, 0.8.2.1): an authenticate arriving before any hello
+    % nonce was issued is the SAME input as the replay above — a captured
+    % authenticate replayed onto a fresh connection — so it is 401 invalid_nonce.
+    % Without this clause the frame falls through to authenticate_ok/4 failing and
+    % surfaces as 401 authentication_failed: the right STATUS reached by a later
+    % check, with a code that names the wrong failure. (Absence of a guard does not
+    % predict which later check catches the frame — measured, not assumed.)
+    ; \+ conn_issued_nonce(Env, _)
     -> error_result("invalid_nonce", "", R), Outcome = outcome(401, R, [])
     ; ent_entity(Exec, "params", Auth), unsupported_key_type(Auth)
     -> error_result("unsupported_key_type", "", R), Outcome = outcome(400, R, [])

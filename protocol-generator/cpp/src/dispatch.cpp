@@ -920,7 +920,7 @@ std::optional<Envelope> Peer::dispatch(Connection& conn, const Envelope& env) {
     auto path = cap::canonicalize(local_, norm);
     if (!path) { err(o, 400, "invalid_path", uri); return respond(); }
     if (cap::extract_peer(local_, *path) != local_) {
-        err(o, 404, "handler_not_found", "not local peer"); return respond();
+        err(o, 400, "invalid_request", "not local peer"); return respond();
     }
     auto pattern = resolve_handler_path(*path);
     if (!pattern) { err(o, 404, "handler_not_found", uri); return respond(); }

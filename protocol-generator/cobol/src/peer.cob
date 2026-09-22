@@ -260,7 +260,7 @@ do-chain.
     *> §1.4 inbound must target the local peer
     call "cap-extract-peer" using path pathlen local locallen tp tplen
     if not (tplen = locallen and tp(1:tplen) = local(1:locallen))
-        perform resp-404  exit paragraph
+        perform resp-400-invreq  exit paragraph
     end-if
     call "resolve-handler" using path pathlen pat patlen hfound
     if hfound = 0 then perform resp-404  exit paragraph end-if
@@ -314,6 +314,15 @@ do-chain.
 resp-404.
     move 404 to rstatus
     move "handler_not_found" to errcode move 17 to errcode-len
+    call "error-result" using errcode errcode-len res-ent res-len res-hash.
+
+*> §1.4 / §6.5 step 3 — the ADDRESS gate, ahead of handler resolution and
+*> check_permission. Its own paragraph rather than resp-404's: a 404 here would
+*> assert "this peer has no such handler", which is false of a peer that has it
+*> and is refusing the address (§6.2, 0.8.2.2).
+resp-400-invreq.
+    move 400 to rstatus
+    move "invalid_request" to errcode move 15 to errcode-len
     call "error-result" using errcode errcode-len res-ent res-len res-hash.
 
 resp-403.

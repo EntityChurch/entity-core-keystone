@@ -1026,7 +1026,7 @@ public final class Peer {
         String path = Capability.canonicalize(localPeer, Capability.normalizeUri(uri));
         // §1.4: inbound dispatch must target the local peer.
         if (!Capability.extractPeer(localPeer, path).equals(localPeer)) {
-            return Outcome.err(404, "handler_not_found", "not local peer");
+            return Outcome.err(400, "invalid_request", "not local peer");
         }
         String pattern = resolveHandler(path);
         if (pattern == null) {

@@ -441,6 +441,12 @@ dispatch:
 	sd   a0, 0(t0)
 	lla  t0, g_rid_len
 	sd   a2, 0(t0)
+	# §1.4 / §6.5 step 3 — the ADDRESS gate, before the op ladder (which is where this peer
+	# resolves a handler at all) and therefore before any capability question is asked. Sited
+	# after the request_id is saved so the 400 can carry it. See uri_targets_local.
+	mv   a0, s1                     # exec data map
+	call uri_targets_local
+	bnez a0, .Ld_ret                # foreign address → 400 invalid_request already sent
 	# operation
 	mv   a0, s1
 	lla  a1, k_op
@@ -950,6 +956,7 @@ ec_cap_denied: .asciz "capability_denied"
 ec_forbidden_pattern: .asciz "forbidden_pattern"
 ec_unresolvable_grantee: .asciz "unresolvable_grantee"
 ec_chain_depth: .asciz "chain_depth_exceeded"
+ec_invalid_request: .asciz "invalid_request"
 ka_parent:   .asciz "parent"
 ka_threshold: .asciz "threshold"
 ka_signers:  .asciz "signers"
@@ -7074,6 +7081,60 @@ derive_handler:
 	ld   ra, 8(sp)
 	ld   s0, 0(sp)
 	addi sp, sp, 48
+	ret
+
+# =====================================================================
+# uri_targets_local(a0 = exec data map) -> a0 = 0 local / 1 foreign (400 already sent).
+#
+# §1.4 / §6.5 step 3 — the ADDRESS gate, and it is the companion of derive_handler directly
+# above: that routine strips "entity://<peer_id>/" UNCONDITIONALLY, which IS the bug. §6.5
+# step 3 forbids exactly that route — drop a FOREIGN peer id, resolve OUR handler at the
+# remaining path, and let §5.2 Dimension 4 decide — because the presented grant's `peers`
+# scope then authorizes a foreign namespace. Measured before this gate: status 200, the live
+# foreign-namespace privilege escalation.
+#
+# The refusal is on the ADDRESS, so it is 400 invalid_request and never 403/404: a 404 would
+# assert "this peer has no such handler", which is false of a peer that HAS it and is
+# refusing the address, and a 403 would make it an authz verdict when no capability question
+# was asked. Called from `dispatch` before the op ladder — i.e. before this peer resolves
+# anything — since the ladder is where an asm peer's handler resolution actually happens.
+#
+# This is a VALUE comparison (two byte strings), not a flag test, so it ports to RISC-V
+# unchanged — unlike the §5.6 rule-3 overflow check, which had to be restated because this
+# ISA has no condition-flags register.
+#
+# derive_handler defaults g_target_peer_* to our own peer id whenever the uri is absent,
+# carries no "entity://" scheme, or has no peer-id-shaped first segment, so every one of
+# those passes the gate untouched — hello/authenticate carry no uri and are unaffected.
+	.type uri_targets_local, @function
+uri_targets_local:
+	addi sp, sp, -16
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	mv   s0, sp
+	call derive_handler             # a0 = exec (→ g_target_peer_ptr/len)
+	adr_l t0, g_target_peer_len
+	ld   t1, 0(t0)
+	adr_l t0, g_peerid_len
+	ld   t0, 0(t0)
+	bne  t1, t0, .Lutl_foreign      # lengths differ → not us
+	mv   a2, t0
+	adr_l t0, g_target_peer_ptr
+	ld   a0, 0(t0)
+	adr_l a1, g_peerid
+	call memeq
+	beqz a0, .Lutl_foreign
+	li   a0, 0                      # local
+	j    .Lutl_ret
+.Lutl_foreign:
+	li   a0, 400
+	adr_l a1, ec_invalid_request
+	call send_error
+	li   a0, 1
+.Lutl_ret:
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 16
 	ret
 # =====================================================================
 # verify_get_scope(a0 = exec data map) -> a0 = 0 authorized, 1 rejected (403 sent).

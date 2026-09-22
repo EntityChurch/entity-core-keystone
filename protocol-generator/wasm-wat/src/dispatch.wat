@@ -73,6 +73,7 @@
   (data $b_capden   "capability_denied") (data $b_chaind "chain_depth_exceeded")
   (data $b_invpath  "invalid_path") (data $b_notfound "not_found") (data $b_unresg "unresolvable_grantee")
   (data $b_paytoobig "payload_too_large")  ;; §4.10(a) 413 code
+  (data $b_invreq "invalid_request")       ;; §1.4/§6.5 step 3 address-gate code
   (data $b_entity "entity") (data $b_exphash "expected_hash") (data $b_hashmm "hash_mismatch")  ;; §6.3 tree put
   (data $b_scheme   "entity://")   (data $b_star   "*")          (data $b_slashstar "/*")
   ;; store: paths, keys, values, types
@@ -497,6 +498,7 @@
     (memory.init $b_configure (i32.const 0x462b40) (i32.const 0) (i32.const 9))
     (memory.init $b_invparams (i32.const 0x462b80) (i32.const 0) (i32.const 14))
     (memory.init $b_hexchars  (i32.const 0x462bc0) (i32.const 0) (i32.const 16))
+    (memory.init $b_invreq    (i32.const 0x462c00) (i32.const 0) (i32.const 15))
     ;; ===== §9.5 Core Type Floor string constants =====
     (memory.init $t_000 (i32.const 0x463000) (i32.const 0) (i32.const 11))
     (memory.init $t_001 (i32.const 0x463040) (i32.const 0) (i32.const 23))
@@ -3053,6 +3055,26 @@
         (global.set $g_hptr (local.get $cur))
         (global.set $g_hlen (i32.sub (local.get $end) (local.get $cur))))))
 
+  ;; §1.4 / §6.5 step 3 — the ADDRESS gate, and it is the companion of $derive_handler directly
+  ;; above: that function strips "entity://<peer_id>/" UNCONDITIONALLY, which IS the bug. §6.5
+  ;; step 3 forbids exactly that route — drop a FOREIGN peer id, resolve OUR handler at the
+  ;; remaining path, and let §5.2 Dimension 4 decide. This peer already refused the vector, but
+  ;; with 403 capability_denied: the refusal was REACHED BY RESOLVING LOCALLY and then failing
+  ;; authz, which §6.5 step 3 forbids as an ordering — a peer whose grant happened to carry a
+  ;; matching `peers` scope would have answered 200. A right answer for the wrong reason.
+  ;;
+  ;; The refusal is on the ADDRESS, so it is 400 invalid_request and never 403/404: a 404 would
+  ;; assert "this peer has no such handler", which is false of a peer that HAS it and is refusing
+  ;; the address, and a 403 makes it an authz verdict when no capability question was asked.
+  ;;
+  ;; $derive_handler defaults g_tpp/g_tplen to local_peer_id whenever the uri is absent, carries
+  ;; no "entity://" scheme, or has no peer-id-shaped first segment, so all of those pass the gate
+  ;; untouched — hello/authenticate carry no uri and are unaffected.
+  (func $uri_targets_local (param $edp i32) (result i32)
+    (call $derive_handler (local.get $edp))
+    (if (i32.ne (global.get $g_tplen) (i32.load (i32.const 0x4202F0))) (then (return (i32.const 0))))
+    (call $streq (global.get $g_tpp) (global.get $g_tplen) (i32.const 0x420200) (i32.load (i32.const 0x4202F0))))
+
   (func $seg_ok (param $p i32) (param $len i32) (result i32)
     (if (i32.and (i32.eq (local.get $len) (i32.const 1)) (i32.eq (i32.load8_u (local.get $p)) (i32.const 0x2e))) (then (return (i32.const 0))))
     (if (i32.and (i32.eq (local.get $len) (i32.const 2))
@@ -4687,6 +4709,12 @@
       (br_if $echo (i32.eq (local.get $opvp) (i32.const -1)))
       (local.set $op (call $rd_head (local.get $opvp)))
       (local.set $oplen (i32.wrap_i64 (global.get $g_arg)))
+      ;; §1.4 / §6.5 step 3 — the ADDRESS gate, before the op ladder (which is where this peer
+      ;; resolves a handler at all) and therefore before any capability question is asked. Sited
+      ;; after the request_id is read so the 400 can carry it. See $uri_targets_local.
+      (if (i32.eqz (call $uri_targets_local (local.get $edp)))
+        (then (return (call $build_error (local.get $out) (i32.const 0x462c00) (i32.const 15)
+                            (i32.const 400) (local.get $rid) (local.get $rlen)))))
       (if (call $streq (local.get $op) (local.get $oplen) (i32.const 0x4600d0) (i32.const 5))   ;; "hello"
         (then
           (local.set $nrej (call $hello_neg (local.get $edp) (local.get $out) (local.get $rid) (local.get $rlen)))

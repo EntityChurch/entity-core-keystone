@@ -122,7 +122,12 @@ internal sealed class ConnectHandler : IHandler
         }
         if (!conn.HelloReceived)
         {
-            return Error(ctx, Status.BadRequest, "connection_sequence_error", "authenticate before hello");
+            // FM-1 (§4.2, §4.7 row 6, 0.8.2.1): an authenticate arriving before any
+            // hello nonce was issued is the SAME input as the replay handled directly
+            // above — a captured authenticate replayed onto a fresh connection is
+            // exactly this — so it is an authentication failure, not a malformed
+            // request. §4.7's out-of-order row no longer names it.
+            return Error(ctx, Status.Unauthorized, "invalid_nonce", "authenticate before hello");
         }
 
         Entity authenticate = ctx.Params;

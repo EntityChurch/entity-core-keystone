@@ -408,6 +408,13 @@ dispatch:
 	call get_text                    # rax=ptr, rdx=len
 	mov  %rax, g_rid_ptr(%rip)
 	mov  %rdx, g_rid_len(%rip)
+	# §1.4 / §6.5 step 3 — the ADDRESS gate, before the op ladder (which is where this peer
+	# resolves a handler at all) and therefore before any capability question is asked. Sited
+	# after the request_id is saved so the 400 can carry it. See uri_targets_local.
+	mov  %rbx, %rdi                  # exec data map
+	call uri_targets_local
+	test %rax, %rax
+	jnz  .Ld_ret                     # foreign address → 400 invalid_request already sent
 	# operation
 	mov  %rbx, %rdi
 	lea  k_op(%rip), %rsi
@@ -927,6 +934,7 @@ ec_cap_denied: .asciz "capability_denied"
 ec_forbidden_pattern: .asciz "forbidden_pattern"
 ec_unresolvable_grantee: .asciz "unresolvable_grantee"
 ec_chain_depth: .asciz "chain_depth_exceeded"
+ec_invalid_request: .asciz "invalid_request"
 ka_parent:   .asciz "parent"
 ka_threshold: .asciz "threshold"
 ka_signers:  .asciz "signers"
@@ -6781,6 +6789,51 @@ derive_handler:
 	pop  %r14
 	pop  %r13
 	pop  %r12
+	pop  %rbx
+	ret
+
+# =====================================================================
+# uri_targets_local(rdi = exec data map) -> rax = 0 local / 1 foreign (400 already sent).
+#
+# §1.4 / §6.5 step 3 — the ADDRESS gate, and it is the companion of derive_handler directly
+# above: that routine strips "entity://<peer_id>/" UNCONDITIONALLY, which IS the bug. §6.5
+# step 3 forbids exactly that route — drop a FOREIGN peer id, resolve OUR handler at the
+# remaining path, and let §5.2 Dimension 4 decide — because the presented grant's `peers`
+# scope then authorizes a foreign namespace. Measured before this gate: status 200, the live
+# foreign-namespace privilege escalation.
+#
+# The refusal is on the ADDRESS, so it is 400 invalid_request and never 403/404: a 404 would
+# assert "this peer has no such handler", which is false of a peer that HAS it and is
+# refusing the address, and a 403 would make it an authz verdict when no capability question
+# was asked. Called from `dispatch` before the op ladder — i.e. before this peer resolves
+# anything — since the ladder is where an asm peer's handler resolution actually happens.
+#
+# derive_handler defaults g_target_peer_* to our own peer id whenever the uri is absent,
+# carries no "entity://" scheme, or has no peer-id-shaped first segment, so every one of
+# those passes the gate untouched — hello/authenticate carry no uri and are unaffected. Only
+# a first segment that is_peer_id accepts can ever differ from ours, which is what makes
+# this a gate on a real foreign address rather than on a malformed one.
+	.type uri_targets_local, @function
+uri_targets_local:
+	push %rbx                        # 1 push (odd) → 16B-align the send_error call
+	call derive_handler              # rdi = exec (→ g_target_peer_ptr/len)
+	mov  g_target_peer_len(%rip), %rax
+	cmp  g_peerid_len(%rip), %rax
+	jne  .Lutl_foreign               # lengths differ → not us
+	mov  g_target_peer_ptr(%rip), %rdi
+	lea  g_peerid(%rip), %rsi
+	mov  %rax, %rcx
+	call memeq
+	test %rax, %rax
+	jz   .Lutl_foreign
+	xor  %eax, %eax                  # local
+	pop  %rbx
+	ret
+.Lutl_foreign:
+	mov  $400, %rdi
+	lea  ec_invalid_request(%rip), %rsi
+	call send_error
+	mov  $1, %eax
 	pop  %rbx
 	ret
 

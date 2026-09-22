@@ -1343,7 +1343,7 @@ package body Entity_Core.Protocol.Handlers is
       begin
          --  §1.4: inbound dispatch must target the local peer.
          if Cap.Extract_Peer (Local_Peer (Peer), Path) /= Local_Peer (Peer) then
-            return Err (404, "handler_not_found", "not local peer");
+            return Err (400, "invalid_request", "not local peer");
          end if;
          declare
             Pattern : constant String := Resolve_Handler (Peer, Path);

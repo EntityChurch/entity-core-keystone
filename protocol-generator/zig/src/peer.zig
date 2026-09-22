@@ -936,7 +936,7 @@ fn dispatchOutcome(p: *Peer, a: std.mem.Allocator, conn: *Conn, env: Envelope) E
     const path = try cap.canonicalize(a, p.local_peer, norm);
     // §1.4: inbound dispatch must target the local peer
     const tp = try cap.extractPeer(a, p.local_peer, path);
-    if (!std.mem.eql(u8, tp, p.local_peer)) return errOut(a, 404, "handler_not_found", "not local peer");
+    if (!std.mem.eql(u8, tp, p.local_peer)) return errOut(a, 400, "invalid_request", "not local peer");
     const pattern = resolveHandler(p, path) orelse return errOut(a, 404, "handler_not_found", path);
 
     const caller_cap = blk: {

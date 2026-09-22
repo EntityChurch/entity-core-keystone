@@ -743,7 +743,7 @@ dispatchAllowed :
 dispatchAllowed p conn env exec uri resolve =
   path = canonicalize (Peer.pLocal p) (normalizeUri uri)
   if not ((extractPeer (Peer.pLocal p) path) == (Peer.pLocal p)) then
-    errMsg 404 "handler_not_found" "not local peer"
+    errMsg 400 "invalid_request" "not local peer"
   else match resolveHandler p path with
     None -> errMsg 404 "handler_not_found" path
     Some pattern -> match optIncludedResolve env (bytesField exec "capability") with

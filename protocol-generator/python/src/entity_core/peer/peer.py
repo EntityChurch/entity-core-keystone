@@ -317,7 +317,7 @@ class Peer:
         if path is None:
             return Outcome.err(400, "invalid_path", uri)
         if extract_peer(self.local_peer, path) != self.local_peer:
-            return Outcome.err(404, "handler_not_found", "not local peer")
+            return Outcome.err(400, "invalid_request", "not local peer")
         pattern = self._resolve_handler(path)
         if pattern is None:
             return Outcome.err(404, "handler_not_found", path)

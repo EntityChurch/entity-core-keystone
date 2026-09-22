@@ -409,7 +409,7 @@ impl Peer {
         // §1.4: inbound dispatch must target the local peer.
         let tp = cap::extract_peer(&self.local_peer, &path);
         if tp != self.local_peer {
-            return err_out(404, "handler_not_found", Some("not local peer"));
+            return err_out(400, "invalid_request", Some("not local peer"));
         }
         let pattern = match self.resolve_handler(&path) {
             Some(p) => p,

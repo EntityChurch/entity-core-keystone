@@ -400,7 +400,7 @@ contains
     end select
     call cap_canonicalize(g_local, cap_normalize_uri(uri), path, invalid)
     if (invalid) then; oc = out_err(400, 'invalid_path', ''); return; end if
-    if (cap_extract_peer(g_local, path) /= g_local) then; oc = out_err(404, 'handler_not_found', 'not local peer'); return; end if
+    if (cap_extract_peer(g_local, path) /= g_local) then; oc = out_err(400, 'invalid_request', 'not local peer'); return; end if
     pattern = resolve_handler(path)
     if (len(pattern) == 0) then; oc = out_err(404, 'handler_not_found', path); return; end if
     cap_h = ent_bytes(exec, 'capability')

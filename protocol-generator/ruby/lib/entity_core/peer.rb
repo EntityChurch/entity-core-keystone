@@ -741,7 +741,9 @@ module EntityCore
 
       path = Capability.canonicalize(@local_peer, Capability.normalize_uri(uri))
       # §1.4: inbound dispatch must target the local peer.
-      return Outcome.err(404, "handler_not_found", "not local peer") unless Capability.extract_peer(@local_peer, path) == @local_peer
+      # §1.4 / §6.5 step 3 — the ADDRESS gate, ahead of handler resolution and
+      # check_permission: 400 invalid_request, never a handler verdict (§6.2, 0.8.2.2).
+      return Outcome.err(400, "invalid_request", "not local peer") unless Capability.extract_peer(@local_peer, path) == @local_peer
 
       pattern = resolve_handler(path)
       return Outcome.err(404, "handler_not_found", path) if pattern.nil?
@@ -850,7 +852,7 @@ module EntityCore
     end
 
     def self.path_flex_ok?(target)
-      return false if target.include?(" ")
+      return false if target.include?("\x00")
 
       segs0 = target.split("/", -1)
       if target.start_with?("/")

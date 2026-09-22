@@ -370,7 +370,7 @@ final class Peer
         $path = Capability::canonicalize($this->localPeer, Capability::normalizeUri($uri));
         // §1.4: inbound dispatch must target the local peer.
         if (Capability::extractPeer($this->localPeer, $path) !== $this->localPeer) {
-            return Outcome::err(404, 'handler_not_found', 'not local peer');
+            return Outcome::err(400, 'invalid_request', 'not local peer');
         }
         $pattern = $this->resolveHandler($path);
         if ($pattern === null) {

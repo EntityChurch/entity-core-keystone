@@ -25,6 +25,7 @@
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <errno.h>
+#include <time.h>   /* nanosleep — accept() resource-exhaustion backoff */
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <stdlib.h>
@@ -438,8 +439,33 @@ static void *accept_loop(void *arg)
     while (!l->stop) {
         int client = accept(l->server_fd, NULL, NULL);
         if (client < 0) {
-            if (errno == EINTR) { continue; }
-            break;               /* socket closed → stop */
+            /* A TRANSIENT accept() error MUST NOT end the loop. This used to be
+             * `if (errno == EINTR) continue; break;` — the comment said "socket
+             * closed -> stop", which is the intent, but the code stopped on every
+             * other errno too, and most of them are recoverable:
+             *
+             *   ECONNABORTED  peer sent SYN then closed before we accepted. Rapid
+             *                 open->close churn MANUFACTURES this race (§7b t2_2
+             *                 runs 100 such cycles).
+             *   EMFILE/ENFILE descriptor table full — clears as connections drain
+             *   ENOBUFS/ENOMEM socket-buffer pressure
+             *   EAGAIN         non-blocking listener with nothing pending
+             *   EPROTO         protocol error on the queued connection
+             *
+             * Stopping on any of those leaves the PROCESS alive and healthy while
+             * it is no longer LISTENING, so every later connection gets
+             * connection-refused and the peer reads as crashed. Latent here; the
+             * identical defect fired on zig, where a census run failed
+             * t2_2_connection_churn at cycle 53 and then failed 27 downstream
+             * checks, and an isolated re-run of the same binary passed. */
+            if (errno == EINTR || errno == ECONNABORTED || errno == EPROTO
+                || errno == EAGAIN || errno == EWOULDBLOCK) { continue; }
+            if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM) {
+                struct timespec ts = { 0, 10 * 1000 * 1000 };  /* 10ms, do not spin hot */
+                nanosleep(&ts, NULL);
+                continue;
+            }
+            break;               /* EBADF / EINVAL — listener gone, stop */
         }
         serve_state *ss = calloc(1, sizeof(*ss));
         if (!ss) {

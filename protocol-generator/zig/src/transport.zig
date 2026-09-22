@@ -45,6 +45,29 @@ pub const Io = struct {
     pending: std.StringHashMapUnmanaged(*PendingSlot) = .{},
     closed: bool = false,
 
+    /// Detached §4.8 dispatch threads currently running against THIS connection.
+    ///
+    /// readLoop spawns one per inbound EXECUTE and detaches it; each holds a `*Io`
+    /// and a `*Conn` that point INTO the connection's ConnState, which
+    /// host.serveConnection frees as soon as readLoop returns. Without this
+    /// counter, a client that closes right after sending a request makes readLoop
+    /// return while a dispatch thread is still running, and that thread then
+    /// dereferences freed memory — a use-after-free that SEGFAULTS the whole
+    /// process, taking every other connection with it.
+    ///
+    /// Measured, not theorised: 3 of 5 consecutive `--profile core` runs on an
+    /// otherwise idle host died with `Segmentation fault ... transport.zig:
+    /// io.gpa.destroy(ctx)` during t2_2_connection_churn (100 open → request →
+    /// close cycles, which is precisely the shape that closes the connection
+    /// mid-dispatch), then reported 27 downstream checks as connection-refused.
+    inflight: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+
+    /// Block until every dispatch thread spawned for this connection has finished.
+    /// MUST be called before the owner frees the ConnState these threads point at.
+    pub fn awaitInflight(self: *Io) void {
+        while (self.inflight.load(.acquire) != 0) std.Thread.yield() catch {};
+    }
+
     pub fn init(gpa: std.mem.Allocator, stream: std.net.Stream) Io {
         return .{ .gpa = gpa, .stream = stream };
     }
@@ -147,6 +170,10 @@ fn dispatchExecuteThread(ctx: *DispatchCtx) void {
     defer {
         env.deinit(io.gpa);
         io.gpa.destroy(ctx);
+        // Release LAST: readLoop's awaitInflight() may free the ConnState (and
+        // therefore `io` itself) the instant this reaches zero, so nothing may
+        // touch `io` after this line.
+        _ = io.inflight.fetchSub(1, .release);
     }
     // Bind the §6.11 reentry seam so a §7a dispatch-outbound handler can originate.
     ctx.conn.outbound = &outboundShim;
@@ -213,7 +240,11 @@ pub fn readLoop(peer: *Peer, conn: *Conn, io: *Io) void {
                 continue;
             };
             ctx.* = .{ .peer = peer, .conn = conn, .io = io, .env = env };
+            // Register BEFORE spawning: the thread can finish before spawn() even
+            // returns here, and a count taken afterwards could miss it entirely.
+            _ = io.inflight.fetchAdd(1, .acquire);
             const th = std.Thread.spawn(.{}, dispatchExecuteThread, .{ctx}) catch {
+                _ = io.inflight.fetchSub(1, .release);
                 env.deinit(gpa);
                 gpa.destroy(ctx);
                 continue;
@@ -221,6 +252,10 @@ pub fn readLoop(peer: *Peer, conn: *Conn, io: *Io) void {
             th.detach();
         }
     }
+    // The reader is done, but detached dispatch threads may still be holding this
+    // `*Io` and the `*Conn` beside it. host.serveConnection frees that state the
+    // moment we return, so waiting here is what makes the free safe (§4.8).
+    io.awaitInflight();
     io.close();
 }
 
@@ -237,12 +272,33 @@ pub fn listen(port: u16) Error!std.net.Server {
 /// connection — which dominated connection churn at ~340ms/cycle (keystone §7b
 /// t2_2). Best-effort: a failure just leaves Nagle on, not fatal.
 pub fn setNoDelay(stream: std.net.Stream) void {
-    std.posix.setsockopt(
+    const one = std.mem.toBytes(@as(c_int, 1));
+    // Deliberately the RAW syscall, not std.posix.setsockopt, and the `catch {}`
+    // this replaced was never able to make it best-effort.
+    //
+    // std.posix.setsockopt maps BADF / NOTSOCK / INVAL / FAULT to `unreachable`
+    // — its own source comments them "always a race condition" — and in a safe
+    // build `unreachable` is a PANIC, which no `catch` can intercept. So the
+    // moment the kernel disagrees about this socket's state, a call documented
+    // as "not fatal" aborts the entire process, killing every other connection.
+    //
+    // And that race is routine here, not exotic: this runs on the per-connection
+    // thread, so between accept() returning the fd and this line executing, the
+    // client may already have closed or reset. §7b t2_2 does 100 open → request →
+    // close cycles and manufactures exactly that window. Measured: 2 of 8
+    // otherwise-clean runs died with `panic: reached unreachable code ...
+    // posix.zig setsockopt`, then reported 27 downstream checks as
+    // connection-refused — which reads as a peer that crashed for no reason.
+    //
+    // Nagle is a latency optimisation. Failing to disable it must cost latency,
+    // never the process.
+    _ = std.posix.system.setsockopt(
         stream.handle,
-        std.posix.IPPROTO.TCP,
-        std.posix.TCP.NODELAY,
-        &std.mem.toBytes(@as(c_int, 1)),
-    ) catch {};
+        @as(i32, std.posix.IPPROTO.TCP),
+        @as(u32, std.posix.TCP.NODELAY),
+        &one,
+        @as(std.posix.socklen_t, @sizeOf(c_int)),
+    );
 }
 
 // ── high-level handshake (§4.1) + session ────────────────────────────────────

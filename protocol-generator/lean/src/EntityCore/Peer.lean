@@ -828,7 +828,7 @@ def dispatch (peer : Peer) (conn : Conn) (env : Envelope) : IO (Option Envelope)
         | .allow => do
           let path := canonPath peer.localPeer (EntityCore.Capability.normalizeUri uri)
           if EntityCore.Capability.extractPeer peer.localPeer path != peer.localPeer then
-            pure (err 404 "handler_not_found" (some "not local peer"))
+            pure (err 400 "invalid_request" (some "not local peer"))
           else match ← resolveHandler peer path with
           | none => pure (err 404 "handler_not_found" (some path))
           | some (pattern, _suffix) =>

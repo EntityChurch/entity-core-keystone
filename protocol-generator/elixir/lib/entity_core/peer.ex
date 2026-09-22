@@ -1121,7 +1121,7 @@ defmodule EntityCore.Peer do
 
     # §1.4: inbound dispatch must target the local peer.
     if Capability.extract_peer(t.local_peer, path) != t.local_peer do
-      err(404, "handler_not_found", "not local peer")
+      err(400, "invalid_request", "not local peer")
     else
       case resolve_handler(t, path) do
         nil ->

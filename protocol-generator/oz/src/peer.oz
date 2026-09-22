@@ -253,7 +253,7 @@ define
             else
                local Path = {Hp.canonicalize P.localPeer {Hp.normalizeUri Uri}} in
                   if {Hp.extractPeer P.localPeer Path} \= P.localPeer then
-                     {OutErr 404 "handler_not_found" "not local peer"}
+                     {OutErr 400 "invalid_request" "not local peer"}
                   else
                      local Pattern = {ResolveHandler P Path} in
                         if Pattern == absent then {OutErr 404 "handler_not_found" Path}
