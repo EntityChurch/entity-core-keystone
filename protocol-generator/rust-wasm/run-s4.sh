@@ -45,6 +45,23 @@ PROJ=/work/protocol-generator/rust-wasm
 PEERFLAGS="${PEERFLAGS:---debug-open-grants --validate}"
 cd "$PROJ"
 
+# The peer's identity is compiled in (the cohort seed 0x11 x 32), but the VALIDATOR
+# needs the same key ON DISK at the peer-manager location to co-sign AS the peer for
+# the M6 root-at-local multisig accept path. Without it those three checks SKIP:
+#   "accept-path requires the peer's on-disk key (M6 root-at-local): peer keypair not found"
+# That is not a --profile core carve-out, it is an unconfigured surface -- and a skip
+# counts as a FAIL ([ADR-0012]). These two peers were the ONLY 2 of 46 harnesses with no
+# keypair provisioning, which is why they alone reported 109 skips against the cohort's
+# 106 while publishing 0-FAIL. Found 2026-09-03 by asking, of every tracked report,
+# which skips are NOT explained by a declared carve-out.
+NAME="${PEERNAME:-conformance}"
+KPDIR="${HOME:-/root}/.entity/peers/$NAME"
+mkdir -p "$KPDIR"
+printf '%s\n%s\n%s\n' \
+  '-----BEGIN ENTITY PRIVATE KEY-----' \
+  'ERERERERERERERERERERERERERERERERERERERERERE=' \
+  '-----END ENTITY PRIVATE KEY-----' > "$KPDIR/keypair"
+
 [ "${NOBUILD:-0}" = "1" ] || make peer >/dev/null
 
 # --enable-jit is load-bearing (the wasm-wat finding): WasmEdge's interpreter runs one

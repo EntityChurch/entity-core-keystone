@@ -86,9 +86,22 @@ axis_script() {
 }
 axis_desc() {
   case "$1" in
-    s2)          echo "codec / crypto-agility unit + corpus gate" ;;
+    s2)          echo "codec / crypto-agility corpus gate" ;;
     s3)          echo "two-direction loopback interop against the Go reference peer" ;;
-    origination) echo "§10.2 / §6.11 origination-core reentry probe (reference-peer-gated)" ;;
+    origination) echo "§6.11 origination-core reentry (the oracle, reference-peer-gated)" ;;
+  esac
+}
+# EVERY AXIS NAMES ITS AUTHORITY. GUIDE-CONFORMANCE.md §7.0 recognises exactly
+# three kinds of artifact -- an oracle check authored by entity-core-go, a fixture
+# corpus authored by architecture, and an impl-internal unit test which is "that
+# repo, its own concern" -- and says outright that "entity-core-keystone authors
+# none of these". An axis that cannot name an authority is NOT conformance and
+# must not be reported as though it were.
+axis_authority() {
+  case "$1" in
+    s2)          echo "ARCHITECTURE — vendored fixture corpora, digest-pinned (guide §2, §6); plus our DERIVED type-registry drift target" ;;
+    s3)          echo "OURS — hand-written assertions, 17 of 18 with no oracle behind them; impl-internal (guide §7.0 row 3), NOT conformance" ;;
+    origination) echo "entity-core-go ORACLE — validate-peer -category origination -reference-peer; the category a single-peer census cannot reach" ;;
   esac
 }
 ALL_AXES="s2 s3 origination"
@@ -111,8 +124,10 @@ while [ "$#" -gt 0 ]; do
       printf '%-14s %-46s %s\n' '-------------' '---------------------------------------------' '-----------'
       for a in $ALL_AXES; do
         printf '%-14s %-46s %s\n' "$a" "protocol-generator/*/$(axis_script "$a")" "$(axis_desc "$a")"
+        printf '%-14s %-46s authority: %s\n' '' '' "$(axis_authority "$a")"
       done
       printf '%-14s %-46s %s\n' 's4' 'protocol-generator/*/run-s4.sh' 'conformance — has its own runner: tools/run-cohort-census.sh'
+      printf '%-14s %-46s authority: %s\n' '' '' 'entity-core-go ORACLE — validate-peer --profile core, pinned by content digest'
       exit 0 ;;
     --tier) TIER_SEL="$2"; shift 2 ;;
     --tier=*) TIER_SEL="${1#*=}"; shift ;;

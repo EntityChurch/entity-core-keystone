@@ -88,7 +88,10 @@ help:
 	@echo "           snapshot(s); generated peers are linted per-toolchain, in-container"
 	@echo "  fmt      no-op at root — generated src is formatted by its own toolchain;"
 	@echo "           spec-data is byte-pinned and MUST NOT be reformatted"
-	@echo "  check    lint + test (the green gate)"
+	@echo "  check    lint + test — STATIC ONLY; verifies no peer behaviour"
+	@echo "  gate     THE gate: lint + S2 + S3 + origination + the S4 census,"
+	@echo "           one command, one verdict (~2-4 h, census-dominated)"
+	@echo "  gate-sweeps   the fast three axes, no census — reports INCOMPLETE"
 	@echo "  clean    remove every built keystone toolchain image"
 	@echo "  caps     print the resolved resource caps + toolchain list"
 
@@ -227,6 +230,8 @@ lint:
 	@#   the tracked, signed-off report it was meant to be diagnosed against.
 	@# Regression suite: `python3 tools/harness-gate.py --self-test`.
 	@python3 tools/harness-gate.py --quiet
+	@echo "lint: gating skip provenance — every SKIP explained (read-only)…"
+	@python3 tools/skip-provenance-gate.py
 
 # fmt = autoformat (writes). Intentionally a no-op: generated source is formatted
 # by its own toolchain, and spec-data/<version>/ is a SHA-256-pinned immutable
@@ -237,6 +242,27 @@ fmt:
 
 # check = the green gate (lint + test).
 check: lint test
+
+# gate = THE gate. Every verification axis, one command, one verdict.
+#
+# There is no "re-run S2" or "re-run S3" as a separate act. `check` above is a
+# static gate only -- `test` prints a paragraph and verifies nothing -- and until
+# 2026-09-03 there was no target at all that ran the verification. That is how a
+# tree publishing 46 of 46 at `756 · 0F` was simultaneously carrying 21 failures
+# on two axes nobody swept.
+#
+# Runs: lint, S2 (arch's vendored fixture corpora), S3 (our loopback smoke),
+# origination (the oracle's own category, which a single-peer census cannot
+# reach), and the S4 conformance census. Sequentially -- concurrent containers
+# relabel each other's :Z mount and manufacture false REDs.
+#
+# ~2-4 h, dominated by the census. `make gate-sweeps` is the fast three and
+# announces itself as INCOMPLETE, because it is not the gate.
+gate:
+	@tools/run-gate.sh
+
+gate-sweeps:
+	@tools/run-gate.sh --sweeps-only
 
 # clean = remove every built keystone toolchain image (base + per-language).
 clean:

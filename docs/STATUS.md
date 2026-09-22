@@ -93,18 +93,52 @@ other three were measured per-peer, by hand, whenever someone happened to touch 
 say they rotted, invisibly, behind a green conformance number that was never wrong. The inventory is
 now data in `tools/run-axis-sweep.sh` (`--list`); an axis absent from it has no cohort runner.
 
-| Axis | What it asks | Runner | State |
+**Run them with one command: `make gate`.** There is no "re-run S2" or "re-run S3" as a separate
+act. `make check` is static only — it runs `lint` plus a `test` target that prints a paragraph and
+verifies no peer behaviour — and until 2026-09-03 no target ran the verification at all. That is
+how a tree publishing 46 of 46 could carry 21 failures on two axes simultaneously.
+
+**Where each axis gets its authority.** This matters because keystone **authors no conformance**:
+`GUIDE-CONFORMANCE.md` §7.0 (architecture-owned, pinned `f7d4191d…` in the `v0.8.2.3` manifest)
+names three kinds of artifact — oracle checks authored by `entity-core-go`, fixture corpora authored
+by architecture, and impl-internal unit tests which are "that repo's own concern" — and says
+outright that *"`entity-core-keystone` authors none of these"*, that asking it for a vector *"asks
+the scorer to write the exam."*
+
+| Axis | What it asks | Authority | State |
 |---|---|---|---|
-| **S2** codec / crypto-agility | does the codec match the corpus | `run-axis-sweep.sh s2` | 46 GREEN · 0 RED |
-| **S3** loopback interop | do two peers talk, both directions | `run-axis-sweep.sh s3` | 17 GREEN · **1 RED** · 28 no gate |
-| **origination** §10.2/§6.11 reentry | does the peer originate outbound | `run-axis-sweep.sh origination` | 31 GREEN · 0 RED · 15 no gate |
-| **S4** conformance | the published number | `run-cohort-census.sh` | 46 GREEN · 0 RED |
+| **S2** codec / crypto-agility | do our bytes match the corpus | **architecture** — ECF + crypto-agility fixture corpora, vendored byte-identical, digest-pinned (guide §2, §6) | 46 GREEN · 0 RED |
+| **S4** conformance | the published number | **`entity-core-go`** — the `validate-peer` oracle, `--profile core`, pinned by content digest | 46 GREEN · 0 RED |
+| **origination** §6.11 reentry | does the peer originate outbound | **the same oracle** — `-category origination -reference-peer`; not a separate suite, it is the category a single-peer census structurally cannot reach | 31 GREEN · 0 RED · 15 no gate |
+| **S3** loopback interop | do two peers talk, both directions | **ours** — hand-written assertions, 17 of 18 with no oracle behind them | 17 GREEN · **1 RED** · 28 no gate |
+
+So three of the four axes are consumption of somebody else's ground truth, and nothing in them is
+invented here. One is not, and it is the one that rotted.
+
+**S3 is the open question, and it should be answered rather than carried.** Under the guide's
+taxonomy it is row three — an impl-internal test, explicitly legitimate and explicitly *not*
+conformance. It must never be reported as though it were conformance.
+
+> **This paragraph used to end by recommending that S3 be retired in favour of the oracle's
+> `-peers` surface. That recommendation was measured and withdrawn the same day (item 8), and the
+> withdrawal did not reach this section for a further day.** `-peers` does not extend a core run; it
+> switches to a different 200-check suite that is entirely standard-extension territory we
+> deliberately do not build. The flag has now been run — that much of the old text is simply out of
+> date — and what it measures is not ours. **What S3 needs is a decision about what it IS (item 9),
+> not a replacement.** The durable form of the answer is `docs/CONTRACT-LAYERS.md`: S3's *content*
+> is verification of a keystone-specific peer property, and its *authority* is ours, which is a
+> legitimate combination and the one that carries the highest rot risk.
+
+**Why the hand-written axis is the one that went stale is not a coincidence.** An assertion with an
+oracle behind it moves when the oracle is re-pinned, and the check-set digest makes that visible.
+An assertion we wrote ourselves has nothing watching it: `apl`'s passed an absolute path where the
+peer takes a stripped one, `sql`'s never signs its post-auth requests. Both peers are `756 · 0F` on
+the wire. **A test with no authority behind it drifts against the code it is meant to check, silently.**
 
 **First sweep of S3 and origination found 21 failures** — a third of the authored S3 gates and half
-the authored origination gates — on a tree publishing 46 of 46 at `756 · 0F`. Fifteen were one class
-(an entry point that only worked the way its author invoked it), one was an unpinned Go reference
-built from the wrong sibling checkout, two were units that had gone stale under peers that kept
-getting fixed. Twenty are closed; `sql`'s S3 selftest is the one that is not (below).
+the authored origination gates. Fifteen were one class (an entry point that only worked the way its
+author invoked it), one was an unpinned Go reference built from the wrong sibling checkout, two were
+the stale assertions above. Twenty are closed; `sql`'s S3 selftest is the one that is not.
 
 **A `NO-GATE` column entry is backlog, not an exemption.** It means that peer has no harness on that
 axis; the count is printed on every run so it cannot quietly become an exclusion, which is the
@@ -167,10 +201,19 @@ standing `apl` lesson.
    no runnable gate here, which is a bigger finding than this one. **No published conformance number
    moves**: the agility corpus is not in `--profile core`, and a second axis was red on two peers
    while the gated axis was green.
-3b. **`zig`'s intermittent process abort** — OPEN, root-caused 2026-09-02, not fixed. **5 aborts in
-   60 full `--profile core` runs.** A detached thread's mapping is reused while its previous thread
-   is still tearing down, and `std.Thread`'s own completion state machine aborts the process; it is
-   a lifetime race one level below peer code. Four earlier investigations reported "no crash, empty
+3b. **`zig`'s intermittent process abort** — **MECHANISM REMOVED 2026-09-02 (`3d5db91`); the rate
+   cannot be re-measured, and that is the honest state.** *(This item read "OPEN … not fixed" until
+   2026-09-03, which was stale by a few hours — the fix landed the same session it was filed. The
+   row asserting work is owed is the row people re-read, so it should have been the first thing
+   corrected.)* The peer now `join()`s its dispatch threads instead of `detach()`ing them, so the
+   `std.Thread` `Instance`-reuse window is gone by construction; the enforcement is a grep
+   (`detach()` appears in `zig/src/` only inside comments explaining its removal). **The
+   justification is structural, not statistical, and the numbers are why:** the abort measured
+   **5 in 60** runs in the morning, and by the afternoon it would not reproduce at all — 0 of 130
+   sequential runs, 0 of 100 category runs, on the *unfixed* source. So post-fix greens prove
+   nothing here and are not claimed. What *was* measurable: the same change removed a 20.6-second
+   `t2_2_connection_churn` stall, unfixed **7 of 100**, fixed **0 of 100**, with a half-fix build
+   scoring **10 of 100** to isolate the cause. Four earlier investigations reported "no crash, empty
    stderr" because `run-s4.sh` writes the peer's stderr to a path inside a `--rm` container — the
    evidence was being deleted every run. **Closed separately in the same session:** the peer had no
    §4.10(c) admission bound at all, so a 256-connection flood became 256 concurrent threads and `r3`
@@ -206,6 +249,51 @@ standing `apl` lesson.
    it from the spec diff (≈197 changed lines in `ENTITY-CORE-PROTOCOL.md`, 29 in the CBOR encoding,
    40 in the type system), not from the assumption that the cohort is a version behind on the wire.
 6. **Package-registry publish** and **Ed448/SHA-384 agility** stay demand-driven.
+7. **Fold `-reference-peer` into the census; the origination axis then ceases to exist.** Measured
+   2026-09-03 against the reference peer: `--profile core` alone executes **756** checks, and
+   `--profile core -reference-peer <addr>` executes **758** — the three `origination` checks
+   (`dispatch_outbound_reentry`, `reference_connect`, `reference_ready`) replacing the single
+   `origination: skipped` placeholder. **Our census has never passed that flag**, which is the only
+   reason a separate `run-origination-core.sh` exists on 31 peers and is absent on 15. Folding the
+   flag in retires an entire axis and 31 scripts, and gives the 15 uncovered peers the checks for
+   free. Cost: the executed check set moves 756 → 758, so `core_executed_check_set_digest` re-pins
+   and **all 46 peers re-census** with tracked reports, banners and matrix rows refreshed — large
+   but wholly mechanical, and the tooling for it already exists (`--to-status`, `status-banner.py`,
+   `coherence-gate`).
+8. ~~**Retire S3 in favour of `validate-peer -peers`**~~ ❌ **WITHDRAWN 2026-09-03, same day it was
+   proposed — measure before recommending.** The proposal was that the oracle's Live-peer-matrix
+   surface should replace our hand-written S3 assertions. Measured: `-peers` does **not** extend a
+   core run, it switches to a **different 200-check suite**, and that suite is *entirely* standard
+   extension territory — its 38 skips are `convergence` (10), `route` (8), `relay_source_route` (6),
+   `relay_offline_delivery` (5), `cross_peer_http_subscription` (5), `relay_multi_peer` (4), and its
+   one FAIL is `relay_offline_delivery_registry` needing a peer started with `--inbox-relay-registry`.
+   **RELAY, NETWORK and SUBSCRIPTION are explicitly out of scope for this repo** (`AGENTS.md`), so
+   adopting `-peers` would mean measuring surfaces we deliberately do not build. It is not the
+   replacement for S3 and running it is not owed. *(The underlying observation still stands and is
+   still worth recording: that flag has never been run here. What it measures is simply not ours.)*
+9. ~~**Decide what S3 IS**~~ ✅ **SETTLED 2026-09-03 — option (a): keep it, labelled.** It is
+   implementation-internal detail the spec permits, which `GUIDE-CONFORMANCE.md` §7.0 files as row
+   three — *"that repo, its own concern"* — and which the guide's §7 surface map immediately
+   qualifies with *"wire conformance doesn't exempt it."* So it stays, it is **never reported as
+   conformance**, and the 28 `NO-GATE` peers are **not backlog**. What it is *not* is a lesser gate:
+   it remains the only axis whose checks have gone stale under peers that kept getting fixed
+   (`apl`, `sql`, both `756 · 0F` on the wire throughout), because an assertion with no external
+   authority has nothing watching it. The general form of that boundary — what binds every peer,
+   what binds only the peers we generate, and what binds only this repo — is now
+   **`docs/CONTRACT-LAYERS.md`**.
+10. **Run the Lean proof gate here — a fifth axis, and it is invoked by nothing.**
+   `lake build EntityCoreProofs` is called *the proof check* in three of our own documents
+   (`lean/profile.toml:118`, `lean/status/PHASE-S2.md:52`, `lean/status/PHASE-S3.md:6`) and **no
+   Makefile, script or harness builds that target** — `run-s2.sh:43` builds the peer, `run-s4.sh:65`
+   builds `host`. Verified here 2026-09-03. Worse, the claim itself is false for two of three failure
+   modes: `entity-core-formalization` built all three in **our own pinned toolchain** and measured
+   that a `sorry` is a *warning* (`lake build` exits **0**) and a hand-written `axiom` substituted
+   for a proof exits 0 with no warning at all; only a type-check failure is caught. **The gate
+   already exists** — they built it (37 `#print axioms` declarations graded against a declared axiom
+   set, 1 green + 5 negative controls) and routed the ask that keystone run it. `AGENTS.md` calls the
+   Lean proof vector *"the highest-signal channel"*; it has been ungated for its whole life while
+   describing a guarantee it does not provide. **Do not add it to `run-axis-sweep.sh` until it
+   actually runs here** — a row that cannot execute is the defect, not the fix.
 
 **New this session — `tools/coherence-gate.py`, in `make lint`.** The sixth root-level gate, and
 the first that asks whether a document agrees with itself: all 46 primary-table rows and all 46

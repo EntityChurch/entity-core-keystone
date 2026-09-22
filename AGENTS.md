@@ -315,6 +315,48 @@ Two conformance **oracles** are ground truth (built from `entity-core-go`, see B
   `rust-wasm`/`rust-wasm-wasmtime` carry neither string yet return **401** (they are thin
   transport seams over the `rust` crate and inherit its fix — corroboration, not independent
   data points). Ask the running peer.
+- **AN EXPORTED SYMBOL IS NOT A REACHABLE SEAM — reachability is decided at the PACKAGING BOUNDARY,
+  and that boundary is a different construct in every language.** RATIFIED 2026-09-03 (the
+  source-grep class again, in a new surface, and **two of the wrong calls were ours**). Answering
+  `entity-system-generator`'s peer host contract — *can a third party install a handler into a
+  constructed peer* — four peers were nominated as satisfying it from source reads, by three
+  different seats, and **three of the four were wrong, each at a different boundary**:
+  - `cpp` — **class scope.** We cited `include/entity_core/peer.hpp:91`; `private:` is at line 75, so
+    `register_handler`, `lookup_handler`, `handlers_` **and the `Handler` typedef itself** are
+    private. An external caller cannot even name the body type. Verified.
+  - `csharp` — **assembly scope.** We cited a `public RegisterHandler` at `Peer.cs:177`. It is a
+    public member of `internal sealed class Peer` (`:23`), and every type in the assembly is
+    `internal` bar ten exception classes and `PeerId`. Verified: the public type list is exceptions.
+  - `julia` — **a live public entry point onto a container nothing reads.** `register_handler!` is
+    exported and writes a `Dict{String,Function}` commented *"extension seam"*; the dict is
+    **declared once, written once, never read** — dispatch resolves through the store instead. This
+    is the dangerous shape, because it reads as satisfied from every artifact a reviewer would open:
+    an exported symbol, a typed container, and a doc comment naming it the seam.
+  **Two rules, and the second is the general one.** (a) **The entry point is not the seam; the seam
+  is the line that READS the container.** A census that reads the registration site and stops cannot
+  distinguish a working host from a dead map. (b) **"Is the member public" is the wrong question —
+  ask whether it is reachable across the packaging boundary**, which is the class in C++, the
+  **assembly** in C#, the module in Go, and the `exports` map in npm. Four nominations, four
+  boundaries, three misses.
+  **Enforcement, and it is the standing `unknown`-until-executed rule earning itself in advance: a
+  capability claim about a peer reads `unknown` until a harness executes it.** The check that settles
+  it installs through the public surface only, drives an EXECUTE from a second peer, and asserts a
+  witness value derived from a request field **and** registration-time state — no `compute/literal`
+  entity-native body can produce that, so a peer with no live index cannot pass on the fallback path.
+  Both controls required (mutated harness → RED, unmutated → GREEN). One peer of 46 is measured.
+- **NAME THE CONTRACT LAYER BEFORE WRITING THE ENFORCEMENT — `docs/CONTRACT-LAYERS.md`.** Three
+  layers: **core protocol conformance** (binds every implementation; authority is arch + the go
+  oracle; we consume and author none of it), **the keystone peer contract** (binds only the peers we
+  generate; ours; four kinds — a convention filling a spec-delegated gap like `seed-policy/`, a
+  transcription of a normative rule like `scope-matching/`, a derived drift target like
+  `type-registry/`, and an additional obligation the protocol deliberately does not impose, which is
+  where the host contract lives), and **project discipline** (binds this repo, no peer). A rule that
+  cannot name a layer is either an unrouted spec finding — which belongs upstream — or a preference.
+  **The load-bearing consequence: the fourth kind has NO upstream referent, so nothing can supersede
+  it and nothing watches it.** The standing measured rule is that the one axis with no external
+  authority (S3) is the one whose checks went stale, silently, while the peers stayed `756 · 0F`.
+  **So a requirement of that kind ships with its executable gate or it does not ship** — not a census
+  document, not a table, not a source read.
 - **Peer startup convention: `--name NAME`** loads the peer's Ed25519 identity from
   `~/.entity/peers/NAME/keypair` (entity-core PEM = base64 of a 32-byte seed) — persistent
   identity + peer-manager interop. `--validate` enables the `system/validate/*` conformance
@@ -2375,6 +2417,80 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   prints it), `run-s2-sweep.sh`-style copies are not made per axis, and **an axis absent from that
   table has no cohort runner, which is an exclusion nobody declared.** S4 is deliberately excluded and
   says why in the file: it has its own runner plus three gates on the comparability of what it emits.
+- **EVERY VERIFICATION AXIS MUST NAME ITS AUTHORITY, AND THE ONE THAT CANNOT IS THE ONE THAT GOES
+  STALE.** RATIFIED 2026-09-03, prompted by the operator asking the question nobody in this repo had
+  asked in writing: *where did these gates come from, and did architecture specify them?* The answer
+  was mostly reassuring and the exception was the whole finding.
+  **`GUIDE-CONFORMANCE.md` §7.0 settles the taxonomy** (arch-owned, `guides/` in
+  `entity-system-architecture`, pinned `f7d4191d…` in the `v0.8.2.3` manifest and verified
+  byte-identical): there are exactly three kinds of artifact — a **`validate-peer` check** authored by
+  `entity-core-go`, a **fixture corpus** authored by architecture, and an **impl-internal unit test**
+  which is *"that repo, its own concern"* — and it states outright that **"`entity-core-keystone`
+  authors none of these"** and that asking keystone for a vector *"asks the scorer to write the exam."*
+  Mapped onto our four axes: **S4** is the oracle; **origination** is *the same oracle*
+  (`-category origination -reference-peer`) — **not a separate suite at all, but the category a
+  single-peer census structurally cannot reach**; **S2** is arch's two vendored corpora plus our
+  `type-registry/` drift target, which is explicitly labelled derived and non-normative. **S3 is
+  ours**: 17 of its 18 harnesses are hand-written assertions with no oracle behind them.
+  **The correlation is the lesson and it is exact: the only axis with no external authority is the
+  only axis whose checks went stale.** `apl`'s selftest handed `CapCheckPermission` an absolute path
+  where the peer passes the stripped one; `sql`'s never signs its post-auth requests. Both peers are
+  `756 · 0F` on the wire. An assertion with an oracle behind it MOVES when the oracle is re-pinned and
+  `check_set_digest` makes that visible; **an assertion we wrote ourselves has nothing watching it**,
+  so it drifts against the code it exists to check and fails in the direction that looks like a peer bug.
+  **And the guide already offers the replacement, which we have never run.** §7's surface map lists a
+  **Live peer matrix** — *"integration bugs (handler routing, identity resolution, cross-peer
+  convergence) fixtures can't reach"* — verified by `validate-peer -peers <addrs>`. `grep -rn '\-peers '`
+  across every harness and tool returns **nothing**. S3 is a hand-rolled approximation of a surface the
+  oracle covers properly and we have never measured.
+  **Enforcement, and it is a documentation rule because the defect is one of provenance rather than of
+  code: an axis in `tools/run-axis-sweep.sh` must carry, in the file, the authority its checks derive
+  from — oracle, vendored corpus, or "ours, impl-internal".** An axis that cannot name one is not
+  conformance and must never be reported as though it were. Corollary for the reverse direction:
+  **before authoring a check here, look for the oracle flag that already drives that surface** — three
+  of our four axes are consumption, and the fourth exists partly because nobody checked.
+  **AND THE COROLLARY IMMEDIATELY PAID OUT AND IMMEDIATELY BIT: `-reference-peer` IS THE ORIGINATION
+  AXIS, AND `-peers` IS NOT THE S3 REPLACEMENT I HAD JUST RECOMMENDED.** Measured 2026-09-03 against
+  the reference peer, one flag at a time — the only way to tell these apart, because each flag's
+  effect is invisible from its help text:
+  | invocation | executed | skips |
+  |---|---:|---:|
+  | `--profile core` (every census row) | **756** | 106 |
+  | `+ -corpus <ecf.cbor>` | 756 | 106 — **no effect; `conformance` is not a core category** |
+  | `+ -reference-peer <addr>` | **758** | **105** |
+  | `+ -peers a,b` | **200** — a DIFFERENT suite | 38 |
+  - **`-reference-peer` adds exactly three checks** (`origination/dispatch_outbound_reentry`,
+    `reference_connect`, `reference_ready`) in place of one `origination: skipped` placeholder. **That
+    is the whole origination axis.** The census has never passed the flag, which is the only reason
+    31 peers carry a `run-origination-core.sh` and 15 do not. Folding it in retires an axis, deletes
+    31 scripts, and covers the 15 for free — at the cost of a 756 → 758 re-pin and a 46-peer
+    re-census. **A separate harness that exists because a flag was never passed is not an axis, it is
+    a workaround with a directory.**
+  - **`-corpus` changes nothing under core**, so S2 is genuinely independent rather than a
+    hand-rolled duplicate of an oracle category — worth knowing before "simplifying" it away.
+  - **`-peers` does not extend a core run; it switches to a 200-check multi-peer suite that is
+    ENTIRELY standard-extension surface** — 38 skips across `convergence` (10), `route` (8),
+    `relay_source_route` (6), `relay_offline_delivery` (5), `cross_peer_http_subscription` (5),
+    `relay_multi_peer` (4), and one FAIL in `relay_offline_delivery_registry` **against go's own
+    reference peer** (B not started with `--inbox-relay-registry`). RELAY / NETWORK / SUBSCRIPTION are
+    out of scope here, so adopting it would mean measuring what we deliberately do not build.
+  **THE PROCESS LESSON IS THE ONE TO KEEP, AND IT IS ABOUT MY OWN OUTPUT.** *"Retire S3 in favour of
+  `validate-peer -peers`"* was recommended in writing, with a rationale, hours before anyone measured
+  it — and it was wrong in the direction that would have cost the most: it proposed deleting a working
+  (if unauthored) axis in favour of one measuring surfaces we do not implement. The standing rule is
+  *"verify a routed claim before acting on it, especially the exculpatory half"*, already broadened
+  once to *"the exculpation most likely to be wrong is the one WE wrote, because nothing routes it back
+  for review."* **Broaden it again: a RECOMMENDATION is an exculpation about future work** — it says
+  which effort is unnecessary — and it is read once, acted on, and never re-derived. **Measure the flag
+  before proposing the migration.** One `podman run` with four invocations answered it in ninety
+  seconds and reversed the conclusion.
+  *(Sub-lesson, cheap and general: **a `PARTIAL … do not cite this total` banner can be a property of
+  YOUR INVOCATION rather than of the peer.** An ad-hoc run against a peer started `-open-access` with
+  no `--name`/keypair prints exactly that banner, reports `Result: FAIL (un-allowlisted skips)`, and
+  inflates passes 314P/336W → 650P/0W via the type-registry matched-if-present effect. Our census logs
+  emit `Result: PASS (with warnings)` and no banner — checked, not assumed. I had drafted this as a
+  cohort-wide overclaim finding before reading `output/scratch/census-logs/go.log`. **Compare against
+  the harness the number actually came from, never against a hand-rolled invocation of the same tool.**)*
 - **A PER-PEER ENTRY POINT ONLY WORKS THE WAY ITS AUTHOR HAPPENED TO INVOKE IT, AND NOTHING FINDS
   THAT UNTIL SOMETHING INVOKES IT DIFFERENTLY — this one class was 15 of the 21 failures across two
   axes.** RATIFIED 2026-09-02, and it is the third and largest occurrence of the shape already

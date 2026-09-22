@@ -125,6 +125,19 @@ title = "Status — where the keystone stands"
 blurb = "The rolling orientation note: cohort state at the current pin, what is publishable, and what is next. Deliberately thin — CONFORMANCE-MATRIX.md is authoritative for every per-peer number and wins when the two disagree."
 group = "Overview"
 
+# Declared because the alternative is worse, and because of what it says. `docs/STATUS.md`
+# (published) cites it, and a published file naming a path the release strips is the exact
+# defect `link-gate` check 2 exists to catch. On the merits: this repo is the conformance
+# anchor, so a rule we invent for our own peers reads to an outsider as a rule the protocol
+# imposes. A reader who cannot tell those apart cannot correctly scope what a ground-up
+# implementation owes — which is Layer 1 and nothing else. Saying so in public is the
+# anti-overclaim move, not a commitment to the in-flight contract it describes.
+[[doc]]
+path  = "docs/CONTRACT-LAYERS.md"
+title = "Contract layers — what binds every peer, what binds a keystone peer, what binds this repo"
+blurb = "The boundary between core protocol conformance (binds every implementation), the keystone peer contract (binds only peers this repo generates), and this repo's own project discipline. States what a ground-up implementation does and does not owe."
+group = "Overview"
+
 # ── Conformance ─────────────────────────────────────────────────────────────
 [[doc]]
 path  = "CONFORMANCE-MATRIX.md"
