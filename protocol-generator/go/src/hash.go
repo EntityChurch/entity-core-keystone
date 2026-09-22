@@ -20,7 +20,7 @@ import (
 const (
 	FormatECFv1SHA256 = 0x00 // ecfv1-sha256 — Active (Required)
 	FormatECFv1SHA384 = 0x01 // ecfv1-sha384 — Reserved
-	FormatECFv1SHA512 = 0x02 // ecfv1-sha512 — Reserved
+	FormatECFv1SHA512 = 0x02 // ecfv1-sha512 — Reserved; NOT verified (see supportedHashFormat)
 )
 
 // ErrUnsupportedHashFormat is returned by the hash *verification* surface when
@@ -79,9 +79,6 @@ func digestFor(formatCode uint64, ecf []byte) ([]byte, error) {
 		return h[:], nil
 	case FormatECFv1SHA384:
 		h := sha512.Sum384(ecf)
-		return h[:], nil
-	case FormatECFv1SHA512:
-		h := sha512.Sum512(ecf)
 		return h[:], nil
 	default:
 		// Forward-compat construction (content_hash.4): a caller-supplied
@@ -147,19 +144,29 @@ func HashDigestLen(formatCode uint64) (int, bool) {
 		return sha256.Size, true
 	case FormatECFv1SHA384:
 		return sha512.Size384, true
-	case FormatECFv1SHA512:
-		return sha512.Size, true
 	default:
 		return 0, false
 	}
 }
 
 // supportedHashFormat reports whether formatCode is one this peer can verify.
-// Only the active code 0x00 is REQUIRED; reserved-but-known 0x01/0x02 are
-// computable, so they verify. Anything else is rejected on the verify path.
+//
+// 0x00 (Production) and 0x01 (Validated) only. 0x02 ECFv1-SHA-512 is ALLOCATED by
+// §1.5 with a defined digest length, and this peer used to verify it on the reasoning
+// that an allocated code with a known algorithm is computable, so it should. That
+// reading is withdrawn: §1.5 marks 0x02 *Reserved*, and all three ground-up
+// implementations (go, rust, py) read Reserved as not-implemented and refuse it.
+// Three independent implementations converging is the evidence here — not the wire
+// vector that surfaced the difference, which by itself would be authoring against the
+// oracle. §1.5's Status column has no stated normative force; that gap is routed.
+//
+// The asymmetry is deliberate and is the standing rule: NAME THE CODES A PEER CAN
+// VERIFY, not the codes its construction path will serialise. An unimplemented code
+// still serialises its prefix on the forward-compat construction path (§4.7); it is
+// refused here, on ingest, which is the surface that decides interop.
 func supportedHashFormat(formatCode uint64) bool {
 	switch formatCode {
-	case FormatECFv1SHA256, FormatECFv1SHA384, FormatECFv1SHA512:
+	case FormatECFv1SHA256, FormatECFv1SHA384:
 		return true
 	default:
 		return false
@@ -173,9 +180,6 @@ func digestForVerify(formatCode uint64, ecf []byte) ([]byte, error) {
 		return h[:], nil
 	case FormatECFv1SHA384:
 		h := sha512.Sum384(ecf)
-		return h[:], nil
-	case FormatECFv1SHA512:
-		h := sha512.Sum512(ecf)
 		return h[:], nil
 	default:
 		return nil, ErrUnsupportedHashFormat

@@ -25,7 +25,19 @@ func (h connectHandler) handleOp(op string, ctx *dispatchCtx) outcome {
 	case "authenticate":
 		return h.authenticate(ctx)
 	default:
-		return op501(op)
+		// §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+		// 400 invalid_request, not the 501 every other handler answers. The table
+		// separates a STATE conflict from an UNKNOWN operation because they select
+		// different remedies — "an unknown connect operation is not out of order at
+		// all; it exists in no state". Row 10 is scoped "in any state", so this arm
+		// covers pre-handshake AND established; the sequence cases are refused
+		// earlier, in hello/authenticate, with 409.
+		//
+		// Scoped to this handler deliberately: the generic registered-handler rule
+		// (unknown op on a registered handler -> 501 unsupported_operation) is a
+		// different contract and is separately gated. Moving op501 itself would
+		// trade one green check for another.
+		return errOutcome(400, "invalid_request", op)
 	}
 }
 
@@ -48,6 +60,15 @@ func (h connectHandler) hello(ctx *dispatchCtx) outcome {
 	if c.established {
 		return errOutcome(409, "connection_already_established", "")
 	}
+	// §4.7 out-of-order row: a second hello on a HALF-OPEN connection (hello done,
+	// authenticate not yet) is an operation we implement arriving in a state that
+	// forbids it — the same class as connection_already_established above, and it
+	// takes the same 409. A half-open connection is NOT established, so the row
+	// above cannot reach it; §4.7's 0.8.2.8 note names this gap explicitly because
+	// two adjacent rules each look like they cover it and neither does.
+	if c.issuedNonce != nil {
+		return errOutcome(409, "connection_sequence_error", "")
+	}
 	// §4.5 negotiation: reject disjoint hash_formats / key_types up front.
 	if f, ok := strArray(exec, "hash_formats"); ok && !contains(f, "ecfv1-sha256") {
 		return errOutcome(400, "incompatible_hash_format", "")
@@ -58,6 +79,53 @@ func (h connectHandler) hello(ctx *dispatchCtx) outcome {
 	var initiatorPeer string
 	if params, ok := paramsEntity(exec); ok {
 		initiatorPeer, _ = params.Text("peer_id")
+	}
+	// §4.5 mutual verifiability, responder side. key_types is an ACCEPT-SET, not a
+	// value to collapse: "each peer's own identity key_type MUST appear in the other
+	// peer's advertised key_types set … the responder MUST reject with 400
+	// unsupported_key_type". The initiator's OWN key_type is not in the key_types
+	// array at all — it rides in its peer_id — so a hello may advertise a perfectly
+	// good accept-set and still name an identity we cannot verify. Checking only the
+	// array leaves this MUST unenforced at hello, which is where §4.5 wants it (the
+	// "symmetric earliest-reject guarantee"); authenticate would catch it one leg
+	// later, which is conformant but is the non-canonical reject point.
+	//
+	// An UNPARSEABLE peer_id is deliberately left alone: it is not a key_type we
+	// cannot verify, it is a malformed field, and authenticate already refuses it.
+	if initiatorPeer != "" {
+		if parsed, err := entitycore.ParsePeerID(initiatorPeer); err == nil &&
+			parsed.KeyType != entitycore.KeyTypeEd25519 {
+			return errOutcome(400, "unsupported_key_type", "")
+		}
+	}
+	// §4.5 `protocols`. It is the one negotiated field that is Required with NO
+	// default, so there is no floor to fall back to, and its two failure modes
+	// carry different codes on purpose (§4.5 table row / §4.7 row 1):
+	//
+	//   absent or empty     -> 400 invalid_request        (a malformed hello)
+	//   non-empty, disjoint -> 400 incompatible_protocol  (we compared, share nothing)
+	//
+	// "a caller that named no version cannot be told the comparison failed" — the
+	// remedies differ (send the field vs change the version) and §4.7 exists so the
+	// code selects the remedy. The vocabulary is §8.4's protocol version
+	// identifiers, today the single value entity-core/1.0 — NOT this document's
+	// section numbering, which §4.5 names as the plausible wrong value.
+	//
+	// ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY. §4.5 states no
+	// precedence between the three, so a hello that is disjoint in more than one
+	// dimension may be refused on any of them — but the choice is observable, and
+	// the reference peer refuses key_types first. Checking protocols first is
+	// equally spec-legal and makes AGILITY-UNKNOWN-1 answer incompatible_protocol,
+	// because that probe's own hello carries protocols ["entity-core/v7"] — a
+	// spec-line name, not a §8.4 identifier. Matching the reference's precedence is
+	// the interoperable choice; the probe's identifier is routed separately, since
+	// it makes that check's result depend on an unruled precedence.
+	protos, hasProtos := strArray(exec, "protocols")
+	if !hasProtos || len(protos) == 0 {
+		return errOutcome(400, "invalid_request", "protocols")
+	}
+	if !contains(protos, "entity-core/1.0") {
+		return errOutcome(400, "incompatible_protocol", "")
 	}
 	nonce := randomBytes(32)
 	c.helloPeerID = initiatorPeer
