@@ -786,19 +786,101 @@ module EntityCore
         target = p.text("target") || ""
         operation = p.text("operation") || ""
         value = p.field("value")
+        # GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the
+        # single-granter case is an array of ONE. They were singular, which made §1.4's
+        # multi-signature-root rule ungateable on the wire: driving it needs two granter
+        # identities and two signatures, and a single-credential carrier cannot express
+        # that input.
+        #
+        # TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one,
+        # because THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle
+        # sends the SINGULAR names; a plural-only peer reads the triple as absent there,
+        # takes the ambient arm and refuses — measured on the `go` vanguard as 2 of 778
+        # severities moving PASS -> FAIL. REMOVE THIS FALLBACK AT THE ORACLE RE-PIN.
         capability = p.entity_field("reentry_capability")
-        granter_peer = p.entity_field("reentry_granter")
-        cap_sig = p.entity_field("reentry_cap_signature")
-        unless value && capability && granter_peer && cap_sig
-          return Outcome.err(400, "invalid_params", "dispatch-outbound requires value + reentry authority")
+        granters = Peer.entity_list_field(p, "reentry_granters", "reentry_granter")
+        cap_sigs = Peer.entity_list_field(p, "reentry_cap_signatures", "reentry_cap_signature")
+        return Outcome.err(400, "invalid_params", "dispatch-outbound requires value") if value.nil?
+
+        # The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED arm,
+        # all three absent selects the AMBIENT arm, and a PARTIAL set is 400
+        # invalid_params — a partial credential is malformed, not ambient. An empty array
+        # is partial, not present.
+        n_present = (capability ? 1 : 0) + (granters.empty? ? 0 : 1) + (cap_sigs.empty? ? 0 : 1)
+        unless [0, 3].include?(n_present)
+          return Outcome.err(400, "invalid_params", "dispatch-outbound reentry authority is all-or-none")
         end
+
+        has_cred = n_present == 3
+        cred = has_cred ? capability : nil
+        granter_list = has_cred ? granters : []
+        sig_list = has_cred ? cap_sigs : []
 
         # §7a.1 generic relay: the `value` field is the bytes of the downstream's
         # params entity data and MUST be forwarded verbatim, never re-wrapped.
         inner_data = value.is_a?(::Hash) ? value : { "value" => value }
         inner = Entity.make("primitive/any", inner_data)
-        resource = Wire.resource_target("system/handler/#{target}")
-        env = @peer.outbound_dispatch(ctx.conn, target, operation, inner, capability, granter_peer, cap_sig, resource)
+        # `target` arrives as any of §1.4's three spellings and the validator sends the
+        # SCHEMED ABSOLUTE form. Both the handler-pattern dimension and the resource
+        # target want the PEER-RELATIVE path — §1.4's PD-2 block says so for Dimension 1,
+        # and a resource target carrying a scheme is not a path at all.
+        rel_target = Capability.peer_relative_of(target)
+        resource = Wire.resource_target("system/handler/#{rel_target}")
+
+        # §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer, all
+        # four dimensions, on THIS handler's own grant — with a target-minted credential
+        # relaxing Dimension 4 and nothing else. Consulting only the presented credential
+        # here is the §6.8 confused-deputy bypass.
+        own_grant = @peer.store.get_at(
+          Capability.grant_path_for(@peer.local_peer, ctx.handler_pattern.to_s)
+        )
+        if own_grant.nil?
+          # §6.8: a handler with no valid grant does not run. Fail closed rather than
+          # falling back to the credential, which is the substitution §6.8 forbids.
+          return Outcome.err(403, "capability_denied", "no handler grant for #{ctx.handler_pattern}")
+        end
+
+        # §7a.2a: the credential, its granters and its signatures arrive NESTED IN PARAMS
+        # (ratified shape (a), in-band), so they are NOT in ctx.included and a verifier
+        # handed that alone cannot resolve a single link.
+        bundle = ctx.included.dup
+        if has_cred
+          ([cred] + granter_list + sig_list).each do |e|
+            bundle << Envelope::Included.new(hash: e.content_hash, entity: e)
+          end
+        end
+        # §1.4: target_peer = extract_peer(uri, local_peer_id). The validator sends the
+        # absolute form, so the URI names the target. Where the uri is PEER-RELATIVE there
+        # is no peer in it and the §6.11 seam's destination is the connection's remote, so
+        # that is the fallback — without it Dimension 4 passes vacuously.
+        uri_peer = Capability.extract_peer(@peer.local_peer, target)
+        target_peer = if uri_peer == @peer.local_peer && ctx.conn.hello_peer_id
+                        ctx.conn.hello_peer_id
+                      else
+                        uri_peer
+                      end
+        have_relax = false
+        relax_scope = nil
+        if has_cred
+          revoked = !@peer.store.get_at(
+            "/#{@peer.local_peer}/system/capability/revocations/#{Peer.hex(cred.content_hash)}"
+          ).nil?
+          have_relax, relax_scope = Capability.target_minted_peers_relaxation(
+            @peer.local_peer, target_peer, @peer.store, cred, bundle, revoked
+          )
+        end
+        unless Capability.check_outbound_sub_dispatch(
+          @peer.local_peer, target_peer, rel_target, operation, own_grant, resource,
+          have_relax, relax_scope
+        )
+          # §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic
+          # transport- or gateway-class code would launder an authorization verdict into
+          # a route fault.
+          return Outcome.err(403, "capability_denied",
+                             "outbound sub-dispatch not authorized by the handler grant")
+        end
+
+        env = @peer.outbound_dispatch(ctx.conn, target, operation, inner, cred, granter_list, sig_list, resource)
         return Outcome.err(503, "no_outbound_seam", "no live section 6.11 reentry connection") if env.nil?
 
         status = env.root.uint("status")
@@ -809,22 +891,75 @@ module EntityCore
 
     # ── §6.13(b) handler-facing outbound dispatch ──────────────────────────────
 
-    def outbound_dispatch(conn, uri, operation, params, capability, granter_peer, cap_sig, resource)
+    # A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward, as
+    # distinct from any capability a caller presents. §6.8 row 1: an access in service of a
+    # caller's request needs the caller's verified capability AND this grant, and BOTH must
+    # pass. Narrow for +dispatch-outbound+; empty for everything else.
+    def self.own_grants_for(pattern)
+      return [] unless pattern == "system/validate/dispatch-outbound"
+
+      scope = ->(v) { { "include" => [v] } }
+      [{
+        "handlers" => scope.call("system/validate/echo"),
+        "operations" => scope.call("echo"),
+        "resources" => scope.call("system/handler/system/validate/echo")
+      }]
+    end
+
+    # +granter_peers+/+cap_sigs+ are PLURAL (GUIDE-CONFORMANCE §7a.1, 0.8.2.19) so a
+    # K-of-N root can present every granter identity and every link signature. Every
+    # member goes into +included+ because §5.5's chain walk resolves granters and signers
+    # BY HASH out of that map — a granter left out is a link the verifier cannot reach.
+    #
+    # +capability+ nil is the AMBIENT arm: the EXECUTE carries no +capability+ field at
+    # all. An empty hash would NOT do — that is a present field resolving to nothing,
+    # which §5.2 reads as an unresolvable capability rather than as its absence.
+    def outbound_dispatch(conn, uri, operation, params, capability, granter_peers, cap_sigs, resource)
       send_fn = conn.outbound
       return nil if send_fn.nil?
 
       request_id = "out-#{conn.next_out_counter}"
       exec = Wire.make_execute(request_id, uri, operation, params,
-                               author: @identity.identity_hash, capability: capability.content_hash, resource: resource)
+                               author: @identity.identity_hash,
+                               capability: capability&.content_hash, resource: resource)
       exec_sig = @identity.sign(exec)
-      included = [
-        Envelope::Included.new(hash: capability.content_hash, entity: capability),
-        Envelope::Included.new(hash: granter_peer.content_hash, entity: granter_peer),
-        Envelope::Included.new(hash: @identity.identity_hash, entity: @identity.peer_entity),
-        Envelope::Included.new(hash: cap_sig.content_hash, entity: cap_sig),
-        Envelope::Included.new(hash: exec_sig.content_hash, entity: exec_sig)
-      ]
+      included = []
+      if capability
+        ([capability] + granter_peers + cap_sigs).each do |e|
+          included << Envelope::Included.new(hash: e.content_hash, entity: e)
+        end
+      end
+      included << Envelope::Included.new(hash: @identity.identity_hash, entity: @identity.peer_entity)
+      included << Envelope::Included.new(hash: exec_sig.content_hash, entity: exec_sig)
       send_fn.call(Envelope.new(exec, included))
+    end
+
+    # Decode an ARRAY of nested entities at +key+, falling back to the SINGULAR spelling
+    # as a list of one (the §7a.1 transitional carriers).
+    #
+    # An EMPTY array means absent, not-a-list, or a MALFORMED array (a member that does
+    # not decode) — never a silently shorter list, because the caller's all-or-none test
+    # would then read a partial credential as a complete one.
+    def self.entity_list_field(e, key, singular)
+      v = e.field(key)
+      if v.is_a?(::Array)
+        out = []
+        v.each do |item|
+          return [] unless item.is_a?(::Hash)
+
+          d = begin
+            Entity.from_cbor(item)
+          rescue StandardError
+            nil
+          end
+          return [] if d.nil?
+
+          out << d
+        end
+        return out
+      end
+      one = e.entity_field(singular)
+      one ? [one] : []
     end
 
     # ── tree listing (§3.9) ────────────────────────────────────────────────────
@@ -1065,7 +1200,10 @@ module EntityCore
       @store.bind("/#{@local_peer}/#{pattern}", Entity.make("system/handler", { "interface" => "system/handler/#{pattern}" }))
       @store.bind("/#{@local_peer}/system/handler/#{pattern}",
                   Entity.make("system/handler/interface", { "pattern" => pattern, "name" => name, "operations" => operations }))
-      minted = mint_token(@identity.identity_hash, [], nil)
+      # §6.8: the grant MUST exist at `system/capability/grants/{pattern}` and a handler
+      # with no valid grant does not run — so this bind is the ceiling row 1 intersects
+      # against, not bookkeeping. NARROW for dispatch-outbound (GUIDE-CONFORMANCE §7a.1).
+      minted = mint_token(@identity.identity_hash, self.class.own_grants_for(pattern), nil)
       @store.bind("/#{@local_peer}/system/capability/grants/#{pattern}", minted.token)
     end
 

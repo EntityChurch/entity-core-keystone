@@ -727,23 +727,44 @@ bool chainExceedsDepth(Store store, Entity capability, List<Included> included) 
 }
 
 Future<Verdict> verifyCapabilityChain(
-    String localPeer, Store store, Entity capability, List<Included> included) async {
+        String localPeer, Store store, Entity capability, List<Included> included) =>
+    verifyCapabilityChainRootedAt(localPeer, localPeer, store, capability, included);
+
+/// [verifyCapabilityChain] with the expected ROOT granter named separately from the
+/// verifying peer.
+///
+/// §1.4's PD-2 presented-authority arm needs this: the credential it evaluates is minted
+/// by the TARGET peer, so root-trust is relaxed away from the local peer — and every
+/// other clause (per-link signatures, grantee resolution, temporal validity, attenuation,
+/// caveats) is unchanged. Parameterized rather than forked because a second copy of a
+/// chain walk is a second copy that drifts.
+///
+/// A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY (§1.4, 0.8.2.19). When [rootPeer]
+/// differs from [localPeer] the quorum arm is REFUSED outright rather than verified:
+/// *minted by the target* means the target SOLELY minted it, and a K-of-N root is a
+/// GROUP's authority — its co-signers authorized it too. Accepting it would let any one
+/// signer's target confer the whole group's grant, which is E3/F66's over-acceptance.
+/// §5.5's M6 also requires the LOCAL peer in the signer set, so the quorum arm has no
+/// meaning in a foreign frame even on its own terms.
+Future<Verdict> verifyCapabilityChainRootedAt(String localPeer, String rootPeer,
+    Store store, Entity capability, List<Included> included) async {
   Entity? resolve(Uint8List h) => capResolve(included, store, h);
   final c = _collectChain(capability, resolve);
   if (!c.ok) return Verdict.deny;
   final chain = c.chain!;
   final root = chain.last;
-  // Root authority: a single-sig root must root at the local peer; a §3.6 M3
-  // multi-sig root (root-only) must pass k-of-n quorum validation.
+  // Root authority: a single-sig root must root at [rootPeer]; a §3.6 M3 multi-sig root
+  // (root-only) must pass k-of-n quorum validation, LOCAL frame only.
   final rootMg = multiGranterOf(root);
   final bool rootOk;
   if (rootMg != null) {
-    rootOk = await _verifyMultiSigRoot(localPeer, resolve, root, rootMg, included);
+    rootOk = rootPeer == localPeer &&
+        await _verifyMultiSigRoot(localPeer, resolve, root, rootMg, included);
   } else {
     final rgh = root.bytes('granter');
     final g = rgh == null ? null : resolve(rgh);
     final pk = g?.bytes('public_key');
-    rootOk = pk != null && Identity.peerIdOfPublicKey(pk) == localPeer;
+    rootOk = pk != null && Identity.peerIdOfPublicKey(pk) == rootPeer;
   }
   if (!rootOk) return Verdict.deny;
 
@@ -866,4 +887,122 @@ Future<RequestVerdict> verifyRequest(
   }
   if (isRevoked(localPeer, store, cap, included)) return RequestVerdict.authzDeny;
   return RequestVerdict.allow;
+}
+
+
+// ── §1.4 PD-2: outbound sub-dispatch authorization ──────────────────────────────
+
+/// Strip the §1.4 scheme and leading peer segment, answering the PEER-RELATIVE path.
+///
+/// §1.4 admits three spellings of one address — `system/tree`, `/{peer}/system/tree` and
+/// `entity://{peer}/system/tree` — and §1.4's PD-2 block requires Dimension 1's handler
+/// pattern to be the target uri's peer-relative path, because a grant names HANDLERS and
+/// a handler pattern never carries a peer segment. Matching a grant against the absolute
+/// or schemed form matches nothing, silently, which reads at the wire as an authority
+/// refusal.
+///
+/// The first segment is dropped ONLY when it is a peer_id. A peer-relative
+/// `system/protocol/connect` must not lose `system` — the standing defect on `smalltalk`
+/// and `forth`, where an unconditional strip made every self-minted grant unusable while
+/// the handshake stayed green.
+String peerRelativeOf(String uri) {
+  final p = normalizeUri(uri);
+  if (!p.startsWith('/')) return p;
+  final body = p.substring(1);
+  final slash = body.indexOf('/');
+  final first = slash < 0 ? body : body.substring(0, slash);
+  if (!isPeerId(first)) return body;
+  return slash < 0 ? '' : body.substring(slash + 1);
+}
+
+/// Store key of a handler's OWN grant (§6.8: `system/capability/grants/{pattern}`),
+/// tolerant of the pattern arriving absolute or peer-relative.
+///
+/// §6.6's tree walk answers an ABSOLUTE pattern because store keys are absolute, while
+/// the grant path is built from the PEER-RELATIVE one. The two are one segment apart and
+/// concatenating the wrong one yields a doubled peer segment whose lookup misses — which
+/// fails closed as "no handler grant" and is indistinguishable, at the wire, from a
+/// genuine authority refusal.
+String grantPathFor(String localPeer, String pattern) {
+  final prefix = '/$localPeer/';
+  final rel = pattern.startsWith(prefix) ? pattern.substring(prefix.length) : pattern;
+  return '/$localPeer/system/capability/grants/$rel';
+}
+
+/// The result of [targetMintedPeersRelaxation]: whether every §1.4 clause held, and the
+/// `peers` scope Dimension 4 relaxes to.
+///
+/// THE PAIR IS THE POINT. A null [scope] with [verified] true is a legitimate RESULT —
+/// an absent `peers` dimension relaxes to the TARGET, the ordinary reentry shape — so a
+/// lone `Scope?` return would collapse it into "relaxes nothing", which is the
+/// absent-vs-present conflation §6.2's CAP-6a records for temporal accessors.
+final class PeersRelaxation {
+  const PeersRelaxation(this.verified, this.scope);
+  final bool verified;
+  final Scope? scope;
+}
+
+/// Verify a presented reentry credential against §1.4's clauses.
+///
+/// Every clause is required: the chain ROOT granter resolves to the TARGET peer and is
+/// NOT a multi-signature root; the LEAF grantee is the local peer; the chain is valid and
+/// not revoked.
+Future<PeersRelaxation> targetMintedPeersRelaxation(String localPeer, String targetPeer,
+    Store store, Entity cred, List<Included> included) async {
+  // Nothing to relax — the default already covers this peer.
+  if (targetPeer == localPeer) return const PeersRelaxation(false, null);
+  if (await verifyCapabilityChainRootedAt(localPeer, targetPeer, store, cred, included) !=
+      Verdict.allow) {
+    return const PeersRelaxation(false, null);
+  }
+  if (isRevoked(localPeer, store, cred, included)) {
+    return const PeersRelaxation(false, null);
+  }
+  final gh = cred.bytes('grantee');
+  if (gh == null) return const PeersRelaxation(false, null);
+  final ge = capResolve(included, store, gh);
+  final pk = ge?.bytes('public_key');
+  if (pk == null || Identity.peerIdOfPublicKey(pk) != localPeer) {
+    return const PeersRelaxation(false, null);
+  }
+  final gs = grantsOfToken(cred);
+  if (gs.isEmpty) return const PeersRelaxation(false, null);
+  return PeersRelaxation(true, gs.first.peers);
+}
+
+/// §1.4's PD-2 gate: `check_permission` run before a locally-originated sub-dispatch
+/// LEAVES the peer, with all four dimensions applied.
+///
+/// ONE GATE AND ONE EXEMPTION, in §1.4's own words: the EXECUTING HANDLER'S GRANT decides
+/// all four dimensions (§6.8), evaluated in the LOCAL frame, with Dimension 1's pattern
+/// the target uri's PEER-RELATIVE path; and a valid capability MINTED BY THE TARGET PEER
+/// naming this peer as `grantee` relaxes Dimension 4 (`peers`) AND ONLY DIMENSION 4.
+///
+/// *"The target answers WHERE; the handler's grant answers WHAT."* A credential is NOT a
+/// grant: with no handler grant there is nothing to supply Dimensions 1-3, so the
+/// sub-dispatch is refused however good the credential is. That is the COMPOSE, and the
+/// BYPASS it is distinguished from is a peer that treats the credential as a standalone
+/// authorizer and steers past its own grant — §6.8's confused-deputy substitution. Both
+/// obvious vectors agree under either reading, so the only input that separates them is a
+/// VALID credential presented to a handler whose own grant does NOT cover the request.
+///
+/// An unverified [relax] is the ambient arm: Dimension 4 is decided by the grant alone.
+bool checkOutboundSubDispatch(String localPeer, String targetPeer, String handlerPattern,
+    String operation, Entity handlerGrant, EcfMap resource, PeersRelaxation relax) {
+  for (final g in grantsOfToken(handlerGrant)) {
+    if (!matchesScope(localPeer, handlerPattern, g.handlers, ScopeKind.path)) continue;
+    if (!matchesScope(localPeer, operation, g.operations, ScopeKind.id)) continue;
+    if (!checkResourceScope(localPeer, localPeer, resource, g.resources)) continue;
+    // Dimension 4. §5.2's default for an absent `peers` scope is
+    // {include: [local_peer_id]}, so a foreign target fails unless this grant names it or
+    // a target-minted credential relaxes it.
+    final peers = g.peers ?? Scope([localPeer], const []);
+    if (matchesScope(localPeer, targetPeer, peers, ScopeKind.id)) return true;
+    if (relax.verified) {
+      final rs = relax.scope;
+      if (rs == null) return true; // absent `peers` relaxes to the granter
+      if (matchesScope(localPeer, targetPeer, rs, ScopeKind.id)) return true;
+    }
+  }
+  return false;
 }

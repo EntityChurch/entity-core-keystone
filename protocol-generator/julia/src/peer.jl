@@ -35,7 +35,8 @@ using ..TypeDefs: publish_types!
 using ..Capability
 using ..Capability: verify_request, check_permission, granter_frame, find_signature,
                     grants_of_token, grant_subset_local, canonicalize, extract_peer,
-                    matches_pattern
+                    matches_pattern, peer_relative_of, grant_path_for,
+                    target_minted_peers_relaxation, check_outbound_sub_dispatch
 using ..Handlers: HandlerContext, HandlerResult, NO_INCLUDED
 using ..Wire: make_response, make_execute, error_result, empty_params
 
@@ -783,10 +784,32 @@ function echo_handler(exec::Entity)::HandlerResult
     return okr(params)
 end
 
+"""Decode an ARRAY of nested entities at `key`, falling back to the SINGULAR spelling as a
+list of one (the §7a.1 transitional carriers).
+
+An EMPTY vector means absent, not-a-list, or a MALFORMED array (a member that does not
+decode) — never a silently shorter list, because the caller's all-or-none test would then
+read a partial credential as a complete one."""
+function entity_list_field(e::Entity, key::AbstractString, singular::AbstractString)::Vector{Entity}
+    v = efield(e, key)
+    if v isa AbstractVector
+        out = Entity[]
+        for item in v
+            d = item isa CborMap ? (try entity_ofcbor(item) catch; nothing end) : nothing
+            d === nothing && return Entity[]
+            push!(out, d)
+        end
+        return out
+    end
+    one = entityfield(e, singular)
+    return one === nothing ? Entity[] : Entity[one]
+end
+
 """§7a system/validate/dispatch-outbound: originate one outbound EXECUTE via the §6.11
 reentry seam back to the caller and return the downstream response (proves the target can
 ORIGINATE). The reentry authority is caller-minted, carried in-band."""
-function dispatch_outbound_handler(p::Peer_t, conn::Conn, exec::Entity)::HandlerResult
+function dispatch_outbound_handler(p::Peer_t, conn::Conn, env::Envelope, exec::Entity,
+                                   handler_pattern::AbstractString)::HandlerResult
     out_fn = conn.outbound
     out_fn === nothing && return err(503, "no_outbound_seam")
     params = entityfield(exec, "params")
@@ -794,13 +817,75 @@ function dispatch_outbound_handler(p::Peer_t, conn::Conn, exec::Entity)::Handler
     target = textfield(params, "target"); target === nothing && return err(400, "unexpected_params")
     operation = textfield(params, "operation"); operation === nothing && return err(400, "unexpected_params")
     value = efield(params, "value"); value === nothing && return err(400, "unexpected_params")
-    cap_e = entityfield(params, "reentry_capability"); cap_e === nothing && return err(400, "unexpected_params")
-    granter_e = entityfield(params, "reentry_granter"); granter_e === nothing && return err(400, "unexpected_params")
-    capsig_e = entityfield(params, "reentry_cap_signature"); capsig_e === nothing && return err(400, "unexpected_params")
+    # GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the single-granter
+    # case is an array of ONE. They were singular, which made §1.4's multi-signature-root
+    # rule ungateable on the wire: driving it needs two granter identities and two
+    # signatures, and a single-credential carrier cannot express that input.
+    #
+    # TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one, because
+    # THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle sends the SINGULAR
+    # names; a plural-only peer reads the triple as absent there, takes the ambient arm and
+    # refuses — measured on the `go` vanguard as 2 of 778 severities moving PASS -> FAIL.
+    # REMOVE THIS FALLBACK AT THE ORACLE RE-PIN.
+    cap_e = entityfield(params, "reentry_capability")
+    granters = entity_list_field(params, "reentry_granters", "reentry_granter")
+    cap_sigs = entity_list_field(params, "reentry_cap_signatures", "reentry_cap_signature")
+    # The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED arm, all
+    # three absent selects the AMBIENT arm, and a PARTIAL set is 400 invalid_params — a
+    # partial credential is malformed, not ambient. An empty array is partial, not present.
+    n_present = (cap_e === nothing ? 0 : 1) + (isempty(granters) ? 0 : 1) + (isempty(cap_sigs) ? 0 : 1)
+    (n_present == 0 || n_present == 3) ||
+        return err(400, "invalid_params")
+    has_cred = n_present == 3
+    cred = has_cred ? cap_e : nothing
+    granter_list = has_cred ? granters : Entity[]
+    sig_list = has_cred ? cap_sigs : Entity[]
 
     # §7a.1: `value` IS the outbound params entity data — pass it through (no re-wrap).
     inner = make_entity("primitive/any", value)
-    req = build_reentry_execute(p, conn, target, operation, inner, cap_e, granter_e, capsig_e)
+    # `target` arrives as any of §1.4's three spellings and the validator sends the SCHEMED
+    # ABSOLUTE form. Both the handler-pattern dimension and the resource target want the
+    # PEER-RELATIVE path — §1.4's PD-2 block says so for Dimension 1, and a resource target
+    # carrying a scheme is not a path at all.
+    rel_target = peer_relative_of(target)
+    resource_v = CborMap(Pair[("targets" => Any["system/handler/$(rel_target)"])])
+
+    # §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer, all four
+    # dimensions, on THIS handler's own grant — with a target-minted credential relaxing
+    # Dimension 4 and nothing else. Consulting only the presented credential here is the
+    # §6.8 confused-deputy bypass.
+    own_grant = store_at(p.store, grant_path_for(p.peer_id, handler_pattern))
+    # §6.8: a handler with no valid grant does not run. Fail closed rather than falling
+    # back to the credential, which is the substitution §6.8 forbids.
+    own_grant === nothing && return err(403, "capability_denied")
+    # §7a.2a: the credential, its granters and its signatures arrive NESTED IN PARAMS
+    # (ratified shape (a), in-band), so they are NOT in `env` and a verifier handed that
+    # alone cannot resolve a single link.
+    bundle_inc = copy(env.included)
+    if has_cred
+        for e in vcat(Entity[cred], granter_list, sig_list)
+            push!(bundle_inc, e.hash => e)
+        end
+    end
+    bundle = Envelope(env.root, bundle_inc)
+    # §1.4: target_peer = extract_peer(uri, local_peer_id). The validator sends the absolute
+    # form, so the URI names the target. Where the uri is PEER-RELATIVE there is no peer in
+    # it and the §6.11 seam's destination is the connection's remote, so that is the
+    # fallback — without it Dimension 4 passes vacuously.
+    uri_peer = extract_peer(p.peer_id, target)
+    target_peer = (uri_peer == p.peer_id && conn.hello_peer_id !== nothing) ?
+        conn.hello_peer_id : uri_peer
+    have_relax, relax_scope = has_cred ?
+        target_minted_peers_relaxation(bundle, p.store, p.peer_id, target_peer, cred) :
+        (false, nothing)
+    if !check_outbound_sub_dispatch(p.peer_id, target_peer, rel_target, operation,
+                                    own_grant, resource_v, have_relax, relax_scope)
+        # §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic transport-
+        # or gateway-class code would launder an authorization verdict into a route fault.
+        return err(403, "capability_denied")
+    end
+
+    req = build_reentry_execute(p, conn, target, rel_target, operation, inner, cred, granter_list, sig_list)
     resp = out_fn(req)
     resp === nothing && return err(504, "outbound_timeout")
     status = uintfield(resp.root, "status"); status = status === nothing ? 0 : status
@@ -809,18 +894,35 @@ function dispatch_outbound_handler(p::Peer_t, conn::Conn, exec::Entity)::Handler
     return okr(out)
 end
 
-function build_reentry_execute(p::Peer_t, conn::Conn, target::AbstractString, operation::AbstractString,
-                               inner::Entity, cap_e::Entity, granter_e::Entity, capsig_e::Entity)::Envelope
+"""`granters`/`cap_sigs` are PLURAL (GUIDE-CONFORMANCE §7a.1, 0.8.2.19) so a K-of-N root
+can present every granter identity and every link signature. Every member goes into
+`included` because §5.5's chain walk resolves granters and signers BY HASH out of that map.
+
+`cred === nothing` is the AMBIENT arm: the EXECUTE carries no `capability` field at all. An
+empty hash would NOT do — that is a present field resolving to nothing, which §5.2 reads as
+an unresolvable capability rather than as its absence."""
+function build_reentry_execute(p::Peer_t, conn::Conn, target::AbstractString,
+                               rel_target::AbstractString, operation::AbstractString,
+                               inner::Entity, cred, granters::Vector{Entity},
+                               cap_sigs::Vector{Entity})::Envelope
     conn.out_counter += 1
     rid = "ro-$(conn.out_counter)"
-    resource = CborMap(Pair[("targets" => Any["system/handler/$(target)"])])
-    exec = make_execute(request_id=rid, uri=String(target), operation=String(operation), params=inner,
-                        author=p.identity.peer_entity.hash, capability=cap_e.hash)
+    resource = CborMap(Pair[("targets" => Any["system/handler/$(rel_target)"])])
+    exec = cred === nothing ?
+        make_execute(request_id=rid, uri=String(target), operation=String(operation), params=inner,
+                     author=p.identity.peer_entity.hash) :
+        make_execute(request_id=rid, uri=String(target), operation=String(operation), params=inner,
+                     author=p.identity.peer_entity.hash, capability=cred.hash)
     # attach the resource-target field (make_execute doesn't carry it; rebuild with it)
     exec = attach_resource(exec, resource)
     exec_sig = sign_entity(p.identity, exec)
-    inc = Inc[cap_e.hash => cap_e, granter_e.hash => granter_e,
-              capsig_e.hash => capsig_e, exec_sig.hash => exec_sig]
+    inc = Inc[]
+    if cred !== nothing
+        push!(inc, cred.hash => cred)
+        for g in granters; push!(inc, g.hash => g); end
+        for sg in cap_sigs; push!(inc, sg.hash => sg); end
+    end
+    push!(inc, exec_sig.hash => exec_sig)
     return Envelope(exec, inc)
 end
 
@@ -831,9 +933,12 @@ function attach_resource(exec::Entity, resource::CborMap)::Entity
     return make_entity(exec.typ, CborMap(ps))
 end
 
-function conformance_handler(p::Peer_t, conn::Conn, exec::Entity, stripped::AbstractString)::HandlerResult
+function conformance_handler(p::Peer_t, conn::Conn, env::Envelope, exec::Entity, stripped::AbstractString)::HandlerResult
     stripped == "system/validate/echo" && return echo_handler(exec)
-    stripped == "system/validate/dispatch-outbound" && return dispatch_outbound_handler(p, conn, exec)
+    # §1.4 PD-2 needs the OWNING handler's peer-relative pattern (Dimension 1 is matched
+    # peer-relative) and the parent envelope (the §7a.2a bundle base).
+    stripped == "system/validate/dispatch-outbound" &&
+        return dispatch_outbound_handler(p, conn, env, exec, stripped)
     return err(501, "no_handler_body")
 end
 
@@ -922,7 +1027,7 @@ function dispatch_outcome(p::Peer_t, conn::Conn, env::Envelope)::HandlerResult
     stripped == "system/handler" && return handlers_handler(p, exec)
     stripped == "system/type" && return type_handler(exec)
     if p.validate && startswith(stripped, "system/validate/")
-        return conformance_handler(p, conn, exec, stripped)
+        return conformance_handler(p, conn, env, exec, stripped)
     end
     # a dynamically-registered handler: dispatch its entity-native body (§6.13(a)).
     #
@@ -1022,6 +1127,18 @@ const CONFORMANCE_HANDLERS = BootHandler[
 # operations map: {op_name → operation-spec DATA map (empty)}.
 operations_map(ops::Vector{String}) = CborMap(Pair[(String(o) => CborMap(Pair[])) for o in ops])
 
+"""A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward, as
+distinct from any capability a caller presents. §6.8 row 1: an access in service of a
+caller's request needs the caller's verified capability AND this grant, and BOTH must
+pass. Narrow for `dispatch-outbound`; empty for everything else."""
+function own_grants_for(pattern::AbstractString)::Vector{Any}
+    pattern == "system/validate/dispatch-outbound" || return Any[]
+    scope(v) = CborMap(Pair[("include" => Any[v])])
+    return Any[CborMap(Pair[("handlers" => scope("system/validate/echo")),
+                            ("operations" => scope("echo")),
+                            ("resources" => scope("system/handler/system/validate/echo"))])]
+end
+
 function bootstrap_handler!(p::Peer_t, bh::BootHandler)
     handler_e = make_entity("system/handler", CborMap(Pair[("interface" => "system/handler/$(bh.pattern)")]))
     store_bind!(p.store, "/$(p.peer_id)/$(bh.pattern)", handler_e)
@@ -1029,7 +1146,10 @@ function bootstrap_handler!(p::Peer_t, bh::BootHandler)
         CborMap(Pair[("pattern" => bh.pattern), ("name" => bh.name),
                      ("operations" => operations_map(bh.operations))]))
     store_bind!(p.store, "/$(p.peer_id)/system/handler/$(bh.pattern)", iface_e)
-    token, _ = mint_token(p, p.identity.peer_entity.hash, nothing, Any[])
+    # §6.8: the grant MUST exist at `system/capability/grants/{pattern}` and a handler with
+    # no valid grant does not run — so this bind is the ceiling row 1 intersects against,
+    # not bookkeeping. NARROW for dispatch-outbound (GUIDE-CONFORMANCE §7a.1).
+    token, _ = mint_token(p, p.identity.peer_entity.hash, nothing, own_grants_for(bh.pattern))
     store_bind!(p.store, "/$(p.peer_id)/system/capability/grants/$(bh.pattern)", token)
     return nothing
 end

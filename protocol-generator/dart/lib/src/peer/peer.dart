@@ -111,6 +111,17 @@ final class Peer {
     return _Minted(token, signature);
   }
 
+  /// Mint a capability naming [granteeHash] — LIBRARY-INTERNAL, exposed only so the
+  /// two-peer smoke can build the CROSS-PEER reentry credential §1.4's PD-2 exemption
+  /// requires (one minted BY THE TARGET, naming the dispatching peer as grantee). Before
+  /// 0.8.2.31 nothing checked the credential's root, so the smoke could pass the session
+  /// cap — minted by the DISPATCHER, not the target — and still reach the outbound
+  /// primitive; §1.4 now correctly refuses that, and a test cannot construct the right
+  /// input without a mint.
+  Future<_Minted> mintForReentryTest(
+          Uint8List granteeHash, List<EcfMap> grants) =>
+      _mintToken(granteeHash, grants, null);
+
   /// _mintTokenAt at the current instant with no §5.6 ceiling. Used by the paths
   /// that mint a self-issued grant from local authority (bootstrap, handler
   /// registration, the §4.4 handshake), where no MIN_DEFINED term is in play.
@@ -858,6 +869,46 @@ final class Peer {
 
   // ── §7a conformance: dispatch-outbound (the §6.13(b)/§6.11 outbound seam) ──
 
+  /// Decode an ARRAY of nested entities at [key], falling back to the SINGULAR spelling
+  /// as a list of one (the §7a.1 transitional carriers).
+  ///
+  /// An EMPTY list means absent, not-a-list, or a MALFORMED array (a member that does not
+  /// decode) — never a silently shorter list, because the caller's all-or-none test would
+  /// then read a partial credential as a complete one.
+  List<Entity> _entityListField(Entity e, String key, String singular) {
+    final v = e.field(key);
+    if (v is EcfArray) {
+      final out = <Entity>[];
+      for (final item in v.items) {
+        if (item is! EcfMap) return const [];
+        try {
+          out.add(Entity.ofCbor(item));
+        } catch (_) {
+          return const [];
+        }
+      }
+      return out;
+    }
+    final one = e.entityField(singular);
+    return one == null ? const [] : [one];
+  }
+
+  /// A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward, as
+  /// distinct from any capability a caller presents. §6.8 row 1: an access in service of
+  /// a caller's request needs the caller's verified capability AND this grant, and BOTH
+  /// must pass. Narrow for `dispatch-outbound`; empty for everything else.
+  List<EcfMap> _ownGrantsFor(String pattern) {
+    if (pattern != 'system/validate/dispatch-outbound') return const [];
+    EcfMap scope(String v) => cmap(['include', EcfArray([EcfText(v)])]);
+    return [
+      cmap([
+        'handlers', scope('system/validate/echo'),
+        'operations', scope('echo'),
+        'resources', scope('system/handler/system/validate/echo'),
+      ])
+    ];
+  }
+
   Future<Outcome> _dispatchOutbound(HandlerContext ctx) async {
     final p = ctx.params();
     if (p == null) {
@@ -867,16 +918,37 @@ final class Peer {
     final target = p.text('target') ?? '';
     final operationField = p.text('operation') ?? '';
     final value = p.field('value');
+    // GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the
+    // single-granter case is an array of ONE. They were singular, which made §1.4's
+    // multi-signature-root rule ungateable on the wire: driving it needs two granter
+    // identities and two signatures, and a single-credential carrier cannot express
+    // that input.
+    //
+    // TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one, because
+    // THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle sends the
+    // SINGULAR names; a plural-only peer reads the triple as absent there, takes the
+    // ambient arm and refuses — measured on the `go` vanguard as 2 of 778 severities
+    // moving PASS -> FAIL. REMOVE THIS FALLBACK AT THE ORACLE RE-PIN.
     final capability = p.entityField('reentry_capability');
-    final granterPeer = p.entityField('reentry_granter');
-    final capSig = p.entityField('reentry_cap_signature');
-    if (!(value != null &&
-        capability != null &&
-        granterPeer != null &&
-        capSig != null)) {
-      return Outcome.err(400, 'invalid_params',
-          'dispatch-outbound requires value + reentry authority');
+    final granters = _entityListField(p, 'reentry_granters', 'reentry_granter');
+    final capSigs = _entityListField(p, 'reentry_cap_signatures', 'reentry_cap_signature');
+    if (value == null) {
+      return Outcome.err(400, 'invalid_params', 'dispatch-outbound requires value');
     }
+    // The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED arm,
+    // all three absent selects the AMBIENT arm, and a PARTIAL set is 400 invalid_params —
+    // a partial credential is malformed, not ambient. An empty array is partial.
+    final nPresent = (capability != null ? 1 : 0) +
+        (granters.isEmpty ? 0 : 1) +
+        (capSigs.isEmpty ? 0 : 1);
+    if (nPresent != 0 && nPresent != 3) {
+      return Outcome.err(400, 'invalid_params',
+          'dispatch-outbound reentry authority is all-or-none');
+    }
+    final hasCred = nPresent == 3;
+    final cred = hasCred ? capability : null;
+    final granterList = hasCred ? granters : const <Entity>[];
+    final sigList = hasCred ? capSigs : const <Entity>[];
     // §7a.1 generic relay: the `value` field is the bytes of the downstream's
     // params entity data and MUST be forwarded verbatim, never re-wrapped. The
     // validator already shaped it as echo's {value: X} params; a faithful relay
@@ -885,9 +957,57 @@ final class Peer {
     final valueMap = asMap(value);
     final innerData = valueMap ?? cmap(['value', value]);
     final inner = Entity.make('primitive/any', innerData);
-    final resource = wire.resourceTarget(['system/handler/$target']);
+    // `target` arrives as any of §1.4's three spellings and the validator sends the
+    // SCHEMED ABSOLUTE form. Both the handler-pattern dimension and the resource target
+    // want the PEER-RELATIVE path — §1.4's PD-2 block says so for Dimension 1, and a
+    // resource target carrying a scheme is not a path at all.
+    final relTarget = cap.peerRelativeOf(target);
+    final resource = wire.resourceTarget(['system/handler/$relTarget']);
+
+    // §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer, all four
+    // dimensions, on THIS handler's own grant — with a target-minted credential relaxing
+    // Dimension 4 and nothing else. Consulting only the presented credential here is the
+    // §6.8 confused-deputy bypass.
+    final ownGrant = store.getAt(cap.grantPathFor(localPeer, ctx.pattern));
+    if (ownGrant == null) {
+      // §6.8: a handler with no valid grant does not run. Fail closed rather than falling
+      // back to the credential, which is the substitution §6.8 forbids.
+      return Outcome.err(403, 'capability_denied',
+          'no handler grant for ${ctx.pattern}');
+    }
+    // §7a.2a: the credential, its granters and its signatures arrive NESTED IN PARAMS
+    // (ratified shape (a), in-band), so they are NOT in ctx.included and a verifier
+    // handed that alone cannot resolve a single link.
+    final bundle = <Included>[...ctx.included];
+    if (hasCred) {
+      for (final e in [cred!, ...granterList, ...sigList]) {
+        bundle.add(Included(e.hash(), e));
+      }
+    }
+    // §1.4: target_peer = extract_peer(uri, local_peer_id). The validator sends the
+    // absolute form, so the URI names the target. Where the uri is PEER-RELATIVE there is
+    // no peer in it and the §6.11 seam's destination is the connection's remote, so that
+    // is the fallback — without it Dimension 4 passes vacuously.
+    final uriPeer = cap.extractPeer(localPeer, target);
+    final targetPeer = (uriPeer == localPeer && ctx.conn.helloPeerId != null)
+        ? ctx.conn.helloPeerId!
+        : uriPeer;
+    var relax = const cap.PeersRelaxation(false, null);
+    if (hasCred) {
+      relax = await cap.targetMintedPeersRelaxation(
+          localPeer, targetPeer, store, cred!, bundle);
+    }
+    if (!cap.checkOutboundSubDispatch(localPeer, targetPeer, relTarget, operationField,
+        ownGrant, resource, relax)) {
+      // §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic
+      // transport- or gateway-class code would launder an authorization verdict into a
+      // route fault.
+      return Outcome.err(403, 'capability_denied',
+          'outbound sub-dispatch not authorized by the handler grant');
+    }
+
     final env = await _outboundDispatch(ctx.conn, target, operationField, inner,
-        capability, granterPeer, capSig, resource);
+        cred, granterList, sigList, resource);
     if (env == null) {
       return Outcome.err(503, 'no_outbound_seam',
           'no live §6.11 reentry connection');
@@ -905,9 +1025,9 @@ final class Peer {
     String uri,
     String operation,
     Entity params,
-    Entity capability,
-    Entity granterPeer,
-    Entity capSig,
+    Entity? capability,
+      List<Entity> granterPeers,
+      List<Entity> capSigs,
     EcfMap resource,
   ) async {
     final send = conn.outbound;
@@ -915,14 +1035,22 @@ final class Peer {
     final requestId = 'out-${conn.nextOutCounter()}';
     final exec = wire.makeExecute(requestId, uri, operation, params,
         author: identity.identityHash(),
-        capability: capability.hash(),
+        // The AMBIENT arm carries no credential, so the EXECUTE carries no
+        // `capability` field. An empty hash would NOT do — that is a present field
+        // resolving to nothing, which §5.2 reads as an unresolvable capability rather
+        // than as its absence.
+        capability: capability?.hash(),
         resource: resource);
     final execSig = await identity.sign(exec);
-    final included = [
-      Included(capability.hash(), capability),
-      Included(granterPeer.hash(), granterPeer),
+    final included = <Included>[
+      // Every granter and every signature: §5.5's chain walk resolves them BY HASH out
+      // of `included` — a granter left out is a link the verifier cannot reach.
+      if (capability != null) ...[
+        Included(capability.hash(), capability),
+        for (final g in granterPeers) Included(g.hash(), g),
+        for (final sg in capSigs) Included(sg.hash(), sg),
+      ],
       Included(identity.identityHash(), identity.peerEntity),
-      Included(capSig.hash(), capSig),
       Included(execSig.hash(), execSig),
     ];
     return send(Envelope(exec, included));
@@ -1114,7 +1242,10 @@ final class Peer {
         '/$localPeer/system/handler/$pattern',
         Entity.make('system/handler/interface',
             cmap(['pattern', pattern, 'name', name, 'operations', operations])));
-    final m = await _mintToken(identity.identityHash(), const [], null);
+    // §6.8: the grant MUST exist at `system/capability/grants/{pattern}` and a handler
+    // with no valid grant does not run — so this bind is the ceiling row 1 intersects
+    // against, not bookkeeping. NARROW for dispatch-outbound (GUIDE-CONFORMANCE §7a.1).
+    final m = await _mintToken(identity.identityHash(), _ownGrantsFor(pattern), null);
     store.bind('/$localPeer/system/capability/grants/$pattern', m.token);
   }
 

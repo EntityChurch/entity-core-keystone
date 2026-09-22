@@ -80,6 +80,23 @@ SPEC_RC=$?
 set -e
 echo
 
+# ── 3b. The 0.8.2.31 section 1.4 PD-2 outbound sub-dispatch gate ─────────────
+# ITS OWN STEP AND ITS OWN EXIT CODE, for the same reason as [3/4] above.
+#
+# THIS IS THE ONLY THING THAT MEASURES THE RULE. Section 6.8 states that its
+# confused-deputy substitution is WIRE-INVISIBLE -- "both readings produce a well-formed
+# response and differ only in which authority was consulted" -- so the oracle's
+# dispatch_outbound_* checks going green is not evidence for it. The discriminating input
+# is a VALID credential presented to a handler whose own grant does not cover the request,
+# and nothing on the wire drives one. Deleting this step does not turn a number red; it
+# silently stops measuring a security rule.
+echo "── [3b/4] section 1.4 PD-2 outbound sub-dispatch gate (0.8.2.31) ──"
+set +e
+swipl -q -g run_spec0831_main -t 'halt(2)' "$PEER/test/spec0831.pl"
+PD2_RC=$?
+set -e
+echo
+
 # ── 4. Two-peer loopback smoke gate ──────────────────────────────────────────
 echo "── [4/4] two-peer loopback smoke ──"
 set +e
@@ -89,8 +106,11 @@ set -e
 echo
 
 echo "=============================================================="
-echo " type-registry rc=$TR_RC   spec-0825 rc=$SPEC_RC   smoke rc=$SMOKE_RC"
-if [ "$TR_RC" -eq 0 ] && [ "$SPEC_RC" -eq 0 ] && [ "$SMOKE_RC" -eq 0 ]; then
+echo " type-registry rc=$TR_RC   spec-0825 rc=$SPEC_RC   spec-0831 rc=$PD2_RC   smoke rc=$SMOKE_RC"
+# EVERY rc REACHES THIS CONDITION. A step whose exit code is printed and not tested is a
+# gate that cannot go red -- the shape recorded on smalltalk, whose sibling make targets
+# each printed their own "FAILED" verdict while nothing read it and the target exited 0.
+if [ "$TR_RC" -eq 0 ] && [ "$SPEC_RC" -eq 0 ] && [ "$PD2_RC" -eq 0 ] && [ "$SMOKE_RC" -eq 0 ]; then
     echo " S3 GATE: GREEN"
     exit 0
 else

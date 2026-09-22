@@ -45,7 +45,13 @@
             check_path_permission/5,    % +LocalPeer, +Operation, +Path, +Token, +HandlerPattern (semidet)
             extract_peer/3,             % +LocalPeer, +Uri, -TargetPeer
             is_peer_id/1,               % +Seg (semidet: looks like a peer_id)
-            cap_resolve/4               % +Envelope, +StoreId, +Hash, -Entity (semidet)
+            cap_resolve/4,              % +Envelope, +StoreId, +Hash, -Entity (semidet)
+            % §1.4 PD-2 outbound sub-dispatch gate
+            verify_capability_chain_rooted_at/5,
+            peer_relative_of/2,         % +Uri, -PeerRelativePath
+            grant_path_for/3,           % +LocalPeer, +Pattern, -GrantStorePath
+            target_minted_peers_relaxation/6,
+            check_outbound_sub_dispatch/7
           ]).
 
 :- use_module(ec_codec).
@@ -135,11 +141,30 @@ collect_chain_(Ctx, Cap, Depth, [Cap|Rest]) :-
     ;  Rest = [] ).
 
 verify_capability_chain(LocalPeer, StoreId, Cap, Included) :-
+    verify_capability_chain_rooted_at(LocalPeer, LocalPeer, StoreId, Cap, Included).
+
+% verify_capability_chain with the expected ROOT granter named separately from the
+% verifying peer.
+%
+% §1.4's PD-2 presented-authority arm needs this: the credential it evaluates is minted by
+% the TARGET peer, so root-trust is relaxed away from the local peer — and every other
+% clause (per-link signatures, grantee resolution, temporal validity, attenuation,
+% caveats) is unchanged. Parameterized rather than forked because a second copy of a chain
+% walk is a second copy that drifts.
+%
+% A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY (§1.4, 0.8.2.19). When RootPeer
+% differs from LocalPeer the quorum arm is REFUSED outright rather than verified: "minted
+% by the target" means the target SOLELY minted it, and a K-of-N root is a GROUP's
+% authority — its co-signers authorized it too. Accepting it would let any one signer's
+% target confer the whole group's grant, which is E3/F66's over-acceptance. §5.5's M6 also
+% requires the LOCAL peer in the signer set, so the quorum arm has no meaning in a foreign
+% frame even on its own terms.
+verify_capability_chain_rooted_at(LocalPeer, RootPeer, StoreId, Cap, Included) :-
     envelope_with_included(Included, Env),
     Ctx = ctx(Env, StoreId),
     collect_chain(Ctx, Cap, Chain),
     last(Chain, Root),
-    root_authority_ok(LocalPeer, Ctx, Root),
+    root_authority_ok(LocalPeer, RootPeer, Ctx, Root),
     verify_chain(LocalPeer, Ctx, Chain).
 
 % wrap a bare included-list as a query-able pseudo-envelope for cap_resolve.
@@ -147,14 +172,15 @@ envelope_with_included(Included, envelope(_, Included)).
 
 % root authority (§5.5): a single-sig root must root at the LOCAL peer; a §3.6 M3
 % multi-sig root must pass k-of-n quorum.
-root_authority_ok(LocalPeer, Ctx, Root) :-
+root_authority_ok(LocalPeer, RootPeer, Ctx, Root) :-
     ( is_multisig(Root)
-    -> verify_multisig_root(LocalPeer, Ctx, Root)
+    -> RootPeer == LocalPeer,               % §1.4: a quorum root is LOCAL-frame only
+       verify_multisig_root(LocalPeer, Ctx, Root)
     ;  Ctx = ctx(Env, StoreId),
        ent_bytes(Root, "granter", GH),
        cap_resolve(Env, StoreId, GH, G),
        ent_bytes(G, "public_key", PK),
-       peer_id_of_pubkey(PK, LocalPeer) ).
+       peer_id_of_pubkey(PK, RootPeer) ).
 
 % verify_chain — the recursive relation over links. A 1-element chain (the root)
 % has no link obligations beyond root_authority_ok + its own self-consistency.
@@ -685,3 +711,101 @@ revocation_at(LocalPeer, StoreId, Hash) :-
     store_hash_at(StoreId, Path, _).
 
 atomics_to_string(List, S) :- atomic_list_concat(List, A), atom_string(A, S).
+
+
+% ── §1.4 PD-2: outbound sub-dispatch authorization ──────────────────────────
+
+% peer_relative_of(+Uri, -Rel): strip the §1.4 scheme and leading peer segment.
+%
+% §1.4 admits three spellings of one address — "system/tree", "/{peer}/system/tree" and
+% "entity://{peer}/system/tree" — and §1.4's PD-2 block requires Dimension 1's handler
+% pattern to be the target uri's peer-relative path, because a grant names HANDLERS and a
+% handler pattern never carries a peer segment. Matching a grant against the absolute or
+% schemed form matches nothing, silently, which reads at the wire as an authority refusal.
+%
+% The first segment is dropped ONLY when it is a peer_id. A peer-relative
+% "system/protocol/connect" must not lose "system" — the standing defect on smalltalk and
+% forth, where an unconditional strip made every self-minted grant unusable while the
+% handshake stayed green.
+peer_relative_of(Uri, Rel) :-
+    normalize_uri(Uri, P),
+    ( string_concat("/", Body, P)
+    -> ( split_string(Body, "/", "", [First|Rest]), Rest \== [], is_peer_id(First)
+       -> atomic_list_concat(Rest, '/', RelAtom), atom_string(RelAtom, Rel)
+       ;  Rel = Body )
+    ;  Rel = P ).
+
+% grant_path_for(+LocalPeer, +Pattern, -Path): the store key of a handler's OWN grant
+% (§6.8), tolerant of the pattern arriving absolute or peer-relative.
+%
+% §6.6's tree walk answers an ABSOLUTE pattern because store keys are absolute, while the
+% grant path is built from the PEER-RELATIVE one. The two are one segment apart and
+% concatenating the wrong one yields a doubled peer segment whose lookup misses — which
+% fails closed as "no handler grant" and is indistinguishable, at the wire, from a genuine
+% authority refusal.
+grant_path_for(LocalPeer, Pattern, Path) :-
+    atomics_to_string(["/", LocalPeer, "/"], Prefix),
+    ( string_concat(Prefix, Rel, Pattern) -> true ; Rel = Pattern ),
+    atomics_to_string(["/", LocalPeer, "/system/capability/grants/", Rel], Path).
+
+% target_minted_peers_relaxation(+LocalPeer, +TargetPeer, +StoreId, +Cred, +Included,
+%                                -Relax)
+%
+% Relax is `relax(Scope)` when every §1.4 clause holds and the credential names a `peers`
+% scope, `relax_to_target` when it holds and the credential does NOT (an absent `peers`
+% dimension relaxes to the TARGET — the ordinary reentry shape, "you may dispatch back to
+% me"), and `no_relax` otherwise.
+%
+% THREE ATOMS, NOT A SCOPE-OR-FAIL. A missing scope is a legitimate RESULT, so a predicate
+% that simply failed would collapse it into "relaxes nothing" — the absent-vs-present
+% conflation §6.2's CAP-6a records for temporal accessors, one layer up and in the
+% direction that REFUSES a valid reentry.
+target_minted_peers_relaxation(LocalPeer, TargetPeer, StoreId, Cred, Included, Relax) :-
+    (   TargetPeer \== LocalPeer,
+        verify_capability_chain_rooted_at(LocalPeer, TargetPeer, StoreId, Cred, Included),
+        \+ is_revoked(LocalPeer, StoreId, Cred, Included),
+        envelope_with_included(Included, Env),
+        ent_bytes(Cred, "grantee", GH),
+        cap_resolve(Env, StoreId, GH, GE),
+        ent_bytes(GE, "public_key", PK),
+        peer_id_of_pubkey(PK, LocalPeer),
+        grants_of(Cred, [G|_])
+    ->  ( ent_field_or_default(G, "peers", Scope)
+        -> Relax = relax(Scope)
+        ;  Relax = relax_to_target )
+    ;   Relax = no_relax ).
+
+% check_outbound_sub_dispatch(+LocalPeer, +TargetPeer, +HandlerPattern, +Operation,
+%                             +HandlerGrant, +Resource, +Relax) (semidet)
+%
+% §1.4's PD-2 gate: check_permission run before a locally-originated sub-dispatch LEAVES
+% the peer, with all four dimensions applied.
+%
+% ONE GATE AND ONE EXEMPTION, in §1.4's own words: the EXECUTING HANDLER'S GRANT decides
+% all four dimensions (§6.8), evaluated in the LOCAL frame, with Dimension 1's pattern the
+% target uri's PEER-RELATIVE path; and a valid capability MINTED BY THE TARGET PEER naming
+% this peer as grantee relaxes Dimension 4 (peers) AND ONLY DIMENSION 4.
+%
+% "The target answers WHERE; the handler's grant answers WHAT." A credential is NOT a
+% grant: with no handler grant there is nothing to supply Dimensions 1-3, so the
+% sub-dispatch is refused however good the credential is. That is the COMPOSE, and the
+% BYPASS it is distinguished from is a peer that treats the credential as a standalone
+% authorizer and steers past its own grant — §6.8's confused-deputy substitution. Both
+% obvious vectors agree under either reading, so the only input that separates them is a
+% VALID credential presented to a handler whose own grant does NOT cover the request.
+%
+% Relax = no_relax is the ambient arm: Dimension 4 is decided by the grant alone.
+check_outbound_sub_dispatch(LocalPeer, TargetPeer, HandlerPattern, Operation,
+                            HandlerGrant, Resource, Relax) :-
+    grants_of(HandlerGrant, Grants),
+    member(G, Grants),
+    grant_field(G, "handlers", HScope), matches_scope(LocalPeer, HandlerPattern, HScope, path),
+    grant_field(G, "operations", OScope), matches_scope(LocalPeer, Operation, OScope, id),
+    check_resource_scope(LocalPeer, LocalPeer, Resource, G),
+    % Dimension 4. §5.2's default for an absent `peers` scope is {include:[local]}, so a
+    % foreign target fails unless this grant names it or a target-minted credential
+    % relaxes it.
+    (   peer_scope_ok(LocalPeer, TargetPeer, G)
+    ;   Relax == relax_to_target
+    ;   Relax = relax(RScope), matches_scope(LocalPeer, TargetPeer, RScope, id)
+    ), !.

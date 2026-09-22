@@ -208,14 +208,49 @@ final class Peer
      * return the correlated response envelope, or null if there is no live
      * outbound seam / the wait fails. Called by the §7a dispatch-outbound handler.
      */
+
+    /**
+     * A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward,
+     * as distinct from any capability a caller presents. §6.8 row 1: an access in service
+     * of a caller's request needs the caller's verified capability AND this grant, and
+     * BOTH must pass. Narrow for `dispatch-outbound`; empty for everything else.
+     *
+     * @return list<EcfMap>
+     */
+    private static function ownGrantsFor(string $pattern): array
+    {
+        if ($pattern !== 'system/validate/dispatch-outbound') {
+            return [];
+        }
+        $scope = static fn (string $v): EcfMap => Ecf::map('include', [$v]);
+        return [Ecf::map(
+            'handlers', $scope('system/validate/echo'),
+            'operations', $scope('echo'),
+            'resources', $scope('system/handler/system/validate/echo'),
+        )];
+    }
+
+    /**
+     * `$granterPeers`/`$capSigs` are PLURAL (GUIDE-CONFORMANCE §7a.1, 0.8.2.19) so a
+     * K-of-N root can present every granter identity and every link signature. Every
+     * member goes into `included` because §5.5's chain walk resolves granters and signers
+     * BY HASH out of that map — a granter left out is a link the verifier cannot reach.
+     *
+     * `$capability === null` is the AMBIENT arm: the EXECUTE carries no `capability`
+     * field at all. An empty hash would NOT do — that is a present field resolving to
+     * nothing, which §5.2 reads as an unresolvable capability rather than as its absence.
+     *
+     * @param  list<Entity>  $granterPeers
+     * @param  list<Entity>  $capSigs
+     */
     public function outboundDispatch(
         Conn $conn,
         string $uri,
         string $operation,
         Entity $params,
-        Entity $capability,
-        Entity $granterPeer,
-        Entity $capSig,
+        ?Entity $capability,
+        array $granterPeers,
+        array $capSigs,
         EcfMap $resource,
     ): ?Envelope {
         $send = $conn->outbound;
@@ -224,15 +259,16 @@ final class Peer
         }
         $requestId = 'out-' . $conn->nextOutCounter();
         $exec = Wire::makeExecute($requestId, $uri, $operation, $params,
-            $this->identity->identityHash(), $capability->hash(), $resource);
+            $this->identity->identityHash(), $capability?->hash(), $resource);
         $execSig = $this->identity->sign($exec);
-        $included = [
-            Envelope::inc($capability),
-            Envelope::inc($granterPeer),
-            Envelope::inc($this->identity->peerEntity),
-            Envelope::inc($capSig),
-            Envelope::inc($execSig),
-        ];
+        $included = [];
+        if ($capability !== null) {
+            foreach (\array_merge([$capability], $granterPeers, $capSigs) as $e) {
+                $included[] = Envelope::inc($e);
+            }
+        }
+        $included[] = Envelope::inc($this->identity->peerEntity);
+        $included[] = Envelope::inc($execSig);
         return $send(new Envelope($exec, $included));
     }
 
@@ -458,7 +494,11 @@ final class Peer
             Ecf::map('interface', "system/handler/{$pattern}")));
         $this->store->bind("/{$this->localPeer}/system/handler/{$pattern}", Entity::make('system/handler/interface',
             Ecf::map('pattern', $pattern, 'name', $name, 'operations', $operations)));
-        $m = $this->mintToken($this->identity->identityHash(), [], null);
+        // §6.8: the grant MUST exist at `system/capability/grants/{pattern}` and a
+        // handler with no valid grant does not run — so this bind is the ceiling row 1
+        // intersects against, not bookkeeping. NARROW for dispatch-outbound
+        // (GUIDE-CONFORMANCE §7a.1).
+        $m = $this->mintToken($this->identity->identityHash(), self::ownGrantsFor($pattern), null);
         $this->store->bind("/{$this->localPeer}/system/capability/grants/{$pattern}", $m['token']);
     }
 

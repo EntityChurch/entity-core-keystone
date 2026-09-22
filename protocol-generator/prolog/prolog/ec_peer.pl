@@ -288,9 +288,23 @@ permission_then_handle(Peer, Env, Exec, Pattern, Outbound, Outcome) :-
           % recomputed: Pattern is the resolved OWNING handler pattern and CallerCap the
           % capability check_permission/6 just ran against, which is exactly what
           % check_path_permission/5 needs. Recomputing either inside the handler invites
-          % the two to drift, and §6.8 is explicit that the authority is selected by who
-          % named the path. For the tree handler owner and runner coincide, so the
-          % distinction is not observable here, but the argument is named for the owner.
+          % the two to drift.
+          %
+          % ⛔ THIS COMMENT USED TO END "and §6.8 is explicit that the authority is
+          % selected by who named the path." THAT DISCRIMINATOR WAS SUPERSEDED AT 0.8.2.22
+          % and §9.1's conformance floor kept publishing it until 0.8.2.31 — which is
+          % where we read it. The same superseded sentence was quoted at the same kind of
+          % site in the `go` peer, found while landing this arc. §6.8 selects the
+          % authority by WHOSE HANDLER IS EXECUTING, not by who named the path: a
+          % locally-originated sub-dispatch runs under the EXECUTING HANDLER'S own grant
+          % (see handler_own_grants/2 and the §1.4 PD-2 gate), and the caller's capability
+          % answers only what the caller may ask of this handler. Under the withdrawn
+          % reading a handler steered by a caller-named path runs on the caller's
+          % authority, which is the confused-deputy substitution §6.8 now forbids.
+          %
+          % For the tree handler owner and runner coincide, so the distinction is still
+          % not observable HERE — which is exactly why a wrong rule could sit at this site
+          % for as long as it did. The argument is named for the owner.
           handle_op(Stripped, Op, ctx(Peer, Env, Exec, CallerCap, Outbound, Pattern), Outcome)
        ;  error_result("capability_denied", "", R), Outcome = outcome(403, R, []) )
     ;  error_result("capability_denied", "", R), Outcome = outcome(403, R, []) ).
@@ -917,41 +931,166 @@ handle_op("system/validate/echo", "echo", ctx(_, _, Exec, _, _, _), Outcome) :- 
 % reentry direction can only be authorized by the caller, who carries the cap it
 % minted for this peer in-band (reentry_capability + its granter peer + its sig).
 handle_op("system/validate/dispatch-outbound", "dispatch",
-          ctx(Peer, _, Exec, _, Outbound, _), Outcome) :- !,
+          ctx(Peer, Env, Exec, _, Outbound, Pattern), Outcome) :- !,
     ( ent_entity(Exec, "params", P),
       ent_text(P, "target", Target), ent_text(P, "operation", Op),
-      ent_field(P, "value", Value),
-      ent_entity(P, "reentry_capability", Cap),
-      ent_entity(P, "reentry_granter", GranterPeer),
-      ent_entity(P, "reentry_cap_signature", CapSig)
-    -> ( dispatch_outbound(Peer, Outbound, Target, Op, Value, Cap, GranterPeer, CapSig, RespEnv)
-       -> envelope_root(RespEnv, RRoot),
-          ( ent_uint(RRoot, "status", St) -> true ; St = 0 ),
-          ( ent_field(RRoot, "result", ResultV) -> true ; ResultV = map([]) ),
-          make_entity("primitive/any", map(["status"-int(St), "result"-ResultV]), ResultE),
-          Outcome = outcome(200, ResultE, [])
-       ;  error_result("no_outbound_seam", "no live §6.11 reentry connection", R),
-          Outcome = outcome(503, R, []) )
-    ;  error_result("invalid_params", "dispatch-outbound requires value + reentry authority", R),
+      ent_field(P, "value", Value)
+    -> reentry_authority(P, Auth),
+       ( Auth == partial
+       -> error_result("invalid_params",
+                       "dispatch-outbound reentry authority is all-or-none", R),
+          Outcome = outcome(400, R, [])
+       ;  outbound_gated(Peer, Env, Pattern, Outbound, Target, Op, Value, Auth, Outcome) )
+    ;  error_result("invalid_params", "dispatch-outbound requires target, operation and value", R),
        Outcome = outcome(400, R, []) ).
 
+% reentry_authority(+Params, -Auth): read §7a.1's reentry triple.
+%
+% Auth is cred(Cap, Granters, Sigs) when all three are present, `ambient` when all three
+% are absent, and `partial` otherwise.
+%
+% THE TRIPLE IS ALL-OR-NONE. All three present selects the PRESENTED arm; all three absent
+% selects the AMBIENT arm, where Dimension 4 is decided by the handler's own grant alone;
+% a PARTIAL set is 400 invalid_params, because a half-supplied credential is MALFORMED and
+% not ambient — silently treating it as ambient would answer a caller who believes they
+% presented authority as though they had not. An EMPTY array is partial, not present: it
+% carries no credential.
+%
+% ⚠ THE CARRIERS ARE PLURAL SINCE 0.8.2.19 (GUIDE-CONFORMANCE §7a.2a, `e9fcdac`) and the
+% SINGULAR spellings are still accepted here, as an array of one. THAT IS TRANSITIONAL AND
+% IT IS NOT COSMETIC: the PINNED oracle — the one all 46 tracked reports are measured
+% against — sends the SINGULAR names, so a plural-only peer reads the triple as absent
+% there, takes the ambient arm and refuses. Measured on the `go` vanguard as 2 of 778
+% severities moving PASS → FAIL, i.e. landing the rename alone across the cohort would take
+% every published row from 0F to 2F. Accepting both keeps this peer 0-FAIL at BOTH check
+% sets, which is strictly better evidence than either alone.
+% ⛔ REMOVE THE SINGULAR FALLBACK AT THE ORACLE RE-PIN AND NOT BEFORE. The exit condition
+% is that `tools/oracle-pin.env`'s `ref` names an oracle whose dispatch-outbound probe
+% sends the plural carriers. Do not "clean this up" while that is false.
+%
+% Why plural at all, in one line: §1.4's multi-signature-root rule is UNGATEABLE with a
+% single-credential carrier — driving it needs two granter identities and two signatures,
+% and the singular shape cannot express that input.
+reentry_authority(P, Auth) :-
+    (   ent_entities(P, "reentry_granters", Gs0) -> Granters = Gs0
+    ;   ent_entity(P, "reentry_granter", G1)     -> Granters = [G1]
+    ;   Granters = (-) ),
+    (   ent_entities(P, "reentry_cap_signatures", Ss0) -> Sigs = Ss0
+    ;   ent_entity(P, "reentry_cap_signature", S1)     -> Sigs = [S1]
+    ;   Sigs = (-) ),
+    ( ent_entity(P, "reentry_capability", Cap) -> true ; Cap = (-) ),
+    findall(x, ( member(X, [Cap, Granters, Sigs]), X \== (-), X \== [] ), Present),
+    length(Present, N),
+    (   N =:= 3 -> Auth = cred(Cap, Granters, Sigs)
+    ;   N =:= 0 -> Auth = ambient
+    ;   Auth = partial ).
+
+% ent_entities(+E, +Key, -Entities): a CBOR array of entity maps. Arrays are plain lists
+% on this substrate and a map is the distinct term map/1, so the two cannot be confused.
+% A non-map element makes the WHOLE carrier unreadable rather than silently shortening
+% the list: dropping the bad element would let a caller present two granters and have one
+% quietly ignored, and a credential verified against a SUBSET of the signers it claims is
+% the §1.4 multi-signature rule defeated by a decoding convenience.
+ent_entities(E, Key, Entities) :-
+    ent_field(E, Key, L), is_list(L), entities_of_values(L, Entities).
+
+entities_of_values([], []).
+entities_of_values([map(Pairs)|T], [Ent|ET]) :-
+    entity_of_cbor(map(Pairs), Ent), entities_of_values(T, ET).
+
+% §1.4 PD-2: check_permission runs BEFORE the sub-dispatch LEAVES this peer, on all four
+% dimensions, against THIS HANDLER'S OWN GRANT — with a valid target-minted credential
+% relaxing Dimension 4 and nothing else. Consulting only the presented credential here is
+% §6.8's confused-deputy substitution, and it is the bypass this whole clause exists to
+% close: "the target answers WHERE; the handler's grant answers WHAT."
+outbound_gated(Peer, Env, Pattern, Outbound, Target, Op, Value, Auth, Outcome) :-
+    peer_local_peer(Peer, Local),
+    peer_store(Peer, StoreId),
+    % `target` arrives as any of §1.4's three spellings and the validator sends the SCHEMED
+    % ABSOLUTE form. Both the handler-pattern dimension and the resource target want the
+    % PEER-RELATIVE path — §1.4's PD-2 block says so for Dimension 1, and a resource target
+    % carrying a scheme is not a path at all.
+    peer_relative_of(Target, RelTarget),
+    atomics_to_string(["system/handler/", RelTarget], ResPath),
+    resource_target([ResPath], Resource),
+    % §1.4: target_peer = extract_peer(uri, local_peer_id). Where the uri is PEER-RELATIVE
+    % there is no peer in it, and the §6.11 seam's destination is the CONNECTION'S REMOTE —
+    % so that is the fallback. Without it Dimension 4 passes VACUOUSLY, because a target
+    % equal to the local peer satisfies §5.2's default {include:[local]} on any grant.
+    ( extract_peer(Local, Target, TP0) -> true ; TP0 = Local ),
+    (   TP0 == Local,
+        conn_key(Outbound, CK), conn_hello_peer_key(CK, HPid),
+        HPid \== (-), HPid \== Local
+    ->  TargetPeer = HPid
+    ;   TargetPeer = TP0 ),
+    % §6.8: a handler with no valid grant DOES NOT RUN. Fail closed rather than falling
+    % back to the credential — that fallback IS the substitution §6.8 forbids.
+    grant_path_for(Local, Pattern, GrantPath),
+    (   store_get_at(StoreId, GrantPath, OwnGrant)
+    ->  outbound_relaxation(Local, TargetPeer, StoreId, Env, Auth, Relax),
+        (   check_outbound_sub_dispatch(Local, TargetPeer, RelTarget, Op,
+                                        OwnGrant, Resource, Relax)
+        ->  outbound_send(Peer, Outbound, Target, Op, Value, Auth, Resource, Outcome)
+            % §7a.1a: the surfaced code is the AUTHORIZATION domain's. A generic transport-
+            % or gateway-class code would launder an authorization verdict into a route
+            % fault, and the ambient and presented branches would then disagree about what
+            % the same gate decided.
+        ;   error_result("capability_denied",
+                         "outbound sub-dispatch not authorized by the handler grant", R),
+            Outcome = outcome(403, R, []) )
+    ;   error_result("capability_denied", Pattern, R),
+        Outcome = outcome(403, R, []) ).
+
+% §7a.2a: the presented arm verifies against a BUNDLE MERGED FROM THE PARENT ENVELOPE'S
+% `included`. The credential, its granters and its signatures arrive NESTED IN PARAMS
+% (ratified shape (a), in-band), so they are NOT in the parent's included and a verifier
+% handed that alone cannot resolve a single link — every credential then reads as invalid
+% and the legitimate reentry is refused.
+outbound_relaxation(_, _, _, _, ambient, no_relax) :- !.
+outbound_relaxation(Local, TargetPeer, StoreId, Env, cred(Cap, Granters, Sigs), Relax) :-
+    envelope_included(Env, ParentInc),
+    append([Cap], Granters, L1), append(L1, Sigs, Extra),
+    included_pairs(Extra, ExtraPairs),
+    append(ParentInc, ExtraPairs, Bundle),
+    target_minted_peers_relaxation(Local, TargetPeer, StoreId, Cap, Bundle, Relax).
+
+outbound_send(Peer, Outbound, Target, Op, Value, Auth, Resource, Outcome) :-
+    ( dispatch_outbound(Peer, Outbound, Target, Op, Value, Auth, Resource, RespEnv)
+    -> envelope_root(RespEnv, RRoot),
+       ( ent_uint(RRoot, "status", St) -> true ; St = 0 ),
+       ( ent_field(RRoot, "result", ResultV) -> true ; ResultV = map([]) ),
+       make_entity("primitive/any", map(["status"-int(St), "result"-ResultV]), ResultE),
+       Outcome = outcome(200, ResultE, [])
+    ;  error_result("no_outbound_seam", "no live §6.11 reentry connection", R),
+       Outcome = outcome(503, R, []) ).
+
 % build, sign (as the local peer), and send an outbound EXECUTE through the §6.11
-% reentry seam (Outbound = call(Outbound, ReqEnv, RespEnv)). The downstream cap is
-% the one the caller minted for us; we author as ourselves under it.
-dispatch_outbound(Peer, Outbound, Target, Op, Value, Cap, GranterPeer, CapSig, RespEnv) :-
+% reentry seam (Outbound = call(Outbound, ReqEnv, RespEnv)). On the PRESENTED arm the
+% downstream cap is the one the caller minted for us and we author as ourselves under it;
+% on the AMBIENT arm no capability rides at all — make_execute/6 omits the field for a
+% `(-)` option, so the ambient arm needs no wire change.
+%
+% The Resource is computed by the GATE and threaded in, not recomputed here: the request
+% that leaves must carry the SAME resource §1.4's check_permission just authorized.
+% Recomputing it invites the two to drift, which is the defect whose whole symptom is that
+% nothing looks wrong at either site.
+dispatch_outbound(Peer, Outbound, Target, Op, Value, Auth, Resource, RespEnv) :-
     Outbound \== no_outbound,
     peer_identity(Peer, Identity),
     identity_hash(Identity, AuthorHash),
     identity_peer_entity(Identity, AuthorPeer),
-    entity_hash(Cap, CapHash),
+    ( Auth = cred(Cap, Granters, Sigs)
+    -> entity_hash(Cap, CapHash),
+       append([Cap|Granters], Sigs, CredEnts)
+    ;  CapHash = (-), CredEnts = [] ),
     % the §7a value IS the outbound params data — pass it through verbatim.
     make_entity("primitive/any", Value, InnerParams),
-    resource_target([Target], Resource),   % NB: target rides as a handler-relative pattern
     out_request_id(ReqId),
     make_execute(ReqId, Target, Op, InnerParams,
                  [author=AuthorHash, capability=CapHash, resource=Resource], Exec),
     sign_entity(Identity, Exec, ExecSig),
-    included_pairs([Cap, GranterPeer, AuthorPeer, CapSig, ExecSig], Included),
+    append(CredEnts, [AuthorPeer, ExecSig], IncEnts),
+    included_pairs(IncEnts, Included),
     envelope(Exec, Included, ReqEnv),
     call(Outbound, ReqEnv, RespEnv),
     RespEnv \== (-).
@@ -1190,9 +1329,36 @@ bootstrap_handler_entities(PeerId, Identity, StoreId, Pattern, Name, Ops) :-
                 map(["pattern"-Pattern, "name"-Name, "operations"-OpsMap]), IfaceE),
     store_bind(StoreId, IfacePath, IfaceE),
     identity_hash(Identity, IdHash),
-    mint_token(Identity, IdHash, [], Token, _Sig),
+    handler_own_grants(Pattern, OwnGrants),
+    mint_token(Identity, IdHash, OwnGrants, Token, _Sig),
     atomics_to_string(["/", PeerId, "/system/capability/grants/", Pattern], GrantPath),
     store_bind(StoreId, GrantPath, Token).
+
+% handler_own_grants(+Pattern, -Grants): §6.8's HANDLER-OWN grant — the authority a
+% LOCALLY-ORIGINATED sub-dispatch runs under. That is a different question from what a
+% caller may ask this handler to do, and the two are answered by different tokens.
+%
+% EMPTY IS RIGHT FOR A HANDLER THAT NEVER DISPATCHES ONWARD, and wrong for one that does.
+% Every bootstrap handler here minted `[]`, which was invisible for exactly as long as
+% nothing ran a check_permission against it — the same shape the go and python vanguards
+% carried, and one worse on `nim`, which had no grant entity at all.
+%
+% ⭐ THE GRANT IS NARROW ON PURPOSE, AND THE NARROWNESS IS THE MEASUREMENT.
+% GUIDE-CONFORMANCE §7a pins it (`274c566`). §6.8 says outright that its confused-deputy
+% substitution is WIRE-INVISIBLE — "both readings produce a well-formed response and
+% differ only in which authority was consulted" — so a scaffold handler granted `*` passes
+% under the correct reading AND under the bypass, and the discriminator cannot fire.
+% Naming exactly the one handler, the one operation and the one resource the §7a scaffold
+% legitimately reenters is what makes an out-of-scope sub-dispatch fail under the correct
+% reading and succeed under the bypass. Widening this grant switches that check off.
+%
+% NO `peers` DIMENSION, ALSO ON PURPOSE. §5.2's default for an absent `peers` scope is
+% {include:[local_peer_id]}, so a FOREIGN target is refused unless a target-minted
+% credential relaxes Dimension 4 — which is precisely the §1.4 PD-2 exemption this grant
+% exists to gate. Writing a `peers` scope here would pre-authorize the thing under test.
+handler_own_grants("system/validate/dispatch-outbound", [G]) :- !,
+    grant(["system/validate/echo"], ["system/handler/system/validate/echo"], ["echo"], G).
+handler_own_grants(_, []).
 
 % operations: map of OpName → {input_type?, output_type?} (absent fields omitted).
 operations_map(Ops, map(Pairs)) :-

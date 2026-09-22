@@ -152,7 +152,7 @@ Future<void> _runExtensibilityScenario(
 
       // §6.11 dispatch-outbound REENTRY (B→A echo over the inbound connection)
       check('§6.11 dispatch-outbound reentry round-trips (B→A echo over inbound)',
-          await _runReentryProbe(s, remote));
+          await _runReentryProbe(s, remote, initiator, responder));
     } finally {
       s.close();
     }
@@ -172,16 +172,37 @@ Future<void> _runExtensibilityScenario(
 /// outbound primitive).
 ///
 /// Accept outer 200 (A served the reentrant EXECUTE and B round-tripped it).
-Future<bool> _runReentryProbe(Session s, String remote) async {
+Future<bool> _runReentryProbe(
+    Session s, String remote, Peer initiator, Peer responder) async {
+  // §1.4 PD-2: the credential that relaxes Dimension 4 must be minted BY THE TARGET —
+  // here the INITIATOR (A), naming the responder (B) as grantee, because B is the peer
+  // dispatching back to A. This used to pass `s.capability`, the SESSION cap B minted for
+  // A: granter B, not the target, so under 0.8.2.31 it relaxes NOTHING and the gate
+  // refuses. It always was the wrong credential; nothing checked until §1.4's PD-2 arm
+  // landed, and the comment above admitted it was standing in "to prove the seam parses".
+  //
+  // The grant carries NO `peers` scope on purpose: absent means the granter, so Dimension
+  // 4 relaxes to A — exactly "you may dispatch back to me".
+  EcfMap scope(String v) => cmap(['include', EcfArray([EcfText(v)])]);
+  final minted = await initiator.mintForReentryTest(
+      responder.identity.identityHash(), [
+    cmap([
+      'handlers', scope('system/validate/echo'),
+      'operations', scope('echo'),
+      'resources', scope('system/handler/system/validate/echo'),
+    ])
+  ]);
   final params = Entity.make(
       'primitive/any',
       cmap([
         'target', 'system/validate/echo',
         'operation', 'echo',
         'value', cmap(['ping', EcfInt.of(7)]),
-        'reentry_capability', s.capability!.toCbor(),
-        'reentry_granter', s.granterPeer!.toCbor(),
-        'reentry_cap_signature', s.capSignature!.toCbor(),
+        'reentry_capability', minted.token.toCbor(),
+        // PLURAL carriers (GUIDE-CONFORMANCE §7a.1, 0.8.2.19): the single-granter case is
+        // an array of ONE.
+        'reentry_granters', EcfArray([initiator.identity.peerEntity.toCbor()]),
+        'reentry_cap_signatures', EcfArray([minted.signature.toCbor()]),
       ]));
   final r = await s.execute(
       '/$remote/system/validate/dispatch-outbound', 'dispatch', params, null);

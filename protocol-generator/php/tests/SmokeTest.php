@@ -164,7 +164,7 @@ final class SmokeTest extends TestCase
                 // §6.11 dispatch-outbound REENTRY: B originates an outbound EXECUTE
                 // back over THIS inbound connection to A; A's reader dispatches it.
                 $this->check('§6.11 dispatch-outbound reentry round-trips (B→A echo over inbound conn)',
-                    $this->runReentryProbe($s, $remote));
+                    $this->runReentryProbe($s, $remote, $initiator, $responder));
             } finally {
                 $s->close();
             }
@@ -173,15 +173,34 @@ final class SmokeTest extends TestCase
         }
     }
 
-    private function runReentryProbe(Session $s, string $remote): bool
+    private function runReentryProbe(Session $s, string $remote, Peer $initiator, Peer $responder): bool
     {
+        // §1.4 PD-2: the credential that relaxes Dimension 4 must be minted BY THE TARGET
+        // — here the INITIATOR (A), naming the responder (B) as grantee, because B is the
+        // peer dispatching back to A. This used to pass `$s->capability`, the SESSION cap
+        // B minted for A: granter B, not the target, so under 0.8.2.31 it relaxes NOTHING
+        // and the gate refuses. It always was the wrong credential; nothing checked until
+        // §1.4's PD-2 arm landed. This is what validate-peer actually sends.
+        //
+        // The grant carries NO `peers` scope on purpose: absent means the granter, so
+        // Dimension 4 relaxes to A — exactly "you may dispatch back to me".
+        $scope = static fn (string $v): \EntityCore\EcfMap => Ecf::map("include", [$v]);
+        $reentryGrant = Ecf::map(
+            'handlers', $scope('system/validate/echo'),
+            'operations', $scope('echo'),
+            'resources', $scope('system/handler/system/validate/echo'),
+        );
+        $minted = $initiator->mintToken(
+            $responder->identity->identityHash(), [$reentryGrant], null);
         $params = Entity::make('primitive/any', Ecf::map(
             'target', 'system/validate/echo',
             'operation', 'echo',
             'value', Ecf::map('ping', 7),
-            'reentry_capability', $s->capability->toCbor(),
-            'reentry_granter', $s->granterPeer->toCbor(),
-            'reentry_cap_signature', $s->capSignature->toCbor(),
+            'reentry_capability', $minted['token']->toCbor(),
+            // PLURAL carriers (GUIDE-CONFORMANCE §7a.1, 0.8.2.19): the single-granter
+            // case is an array of ONE.
+            'reentry_granters', [$initiator->identity->peerEntity->toCbor()],
+            'reentry_cap_signatures', [$minted['signature']->toCbor()],
         ));
         $r = $s->execute("/{$remote}/system/validate/dispatch-outbound", 'dispatch', $params, null);
         if ($r === null) {

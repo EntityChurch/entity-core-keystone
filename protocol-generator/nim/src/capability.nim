@@ -484,22 +484,46 @@ proc verifyMultiSigRoot(cap: CapabilityToken; env: Envelope; localPeerId: string
         valid.incl hexLower(signerHash); break
   uint64(valid.len) >= mg.threshold
 
+proc verifyCapabilityChainRootedAt*(cap: CapabilityToken; env: Envelope;
+                                    localPeerId, rootPeerId: string; nowMs: uint64): bool
+
 proc verifyCapabilityChain*(cap: CapabilityToken; env: Envelope; localPeerId: string; nowMs: uint64): bool =
   ## §5.5 dispatch-time chain verdict. True (ALLOW) only if the chain roots at the
   ## local peer (single-sig) or passes k-of-n (multi-sig root), every link's
   ## signature verifies, grantees resolve, temporal validity holds, and each
   ## delegation is a valid attenuation of its parent.
+  verifyCapabilityChainRootedAt(cap, env, localPeerId, localPeerId, nowMs)
+
+proc verifyCapabilityChainRootedAt*(cap: CapabilityToken; env: Envelope;
+                                    localPeerId, rootPeerId: string; nowMs: uint64): bool =
+  ## `verifyCapabilityChain` with the expected ROOT granter named separately from the
+  ## verifying peer.
+  ##
+  ## §1.4's PD-2 presented-authority arm needs this: the credential it evaluates is
+  ## minted by the TARGET peer, so root-trust is relaxed away from the local peer — and
+  ## every other clause (per-link signatures, grantee resolution, temporal validity,
+  ## attenuation, caveats) is unchanged. Parameterized rather than forked because a
+  ## second copy of a chain walk is a second copy that drifts.
+  ##
+  ## A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY (§1.4, 0.8.2.19). When `rootPeerId`
+  ## differs from `localPeerId` the quorum arm is REFUSED outright rather than verified:
+  ## *minted by the target* means the target SOLELY minted it, and a K-of-N root is a
+  ## GROUP's authority — its co-signers authorized it too. Accepting it would let any one
+  ## signer's target confer the whole group's grant, which is E3/F66's over-acceptance.
+  ## §5.5's M6 also requires the LOCAL peer in the signer set, so the quorum arm has no
+  ## meaning in a foreign frame even on its own terms.
   let chainOpt = collectAuthorityChain(cap, env)
   if chainOpt.isNone: return false
   let chain = chainOpt.get
   let root = chain[^1]
   if root.isMultiSig:
+    if rootPeerId != localPeerId: return false
     if not verifyMultiSigRoot(root, env, localPeerId, nowMs): return false
   else:
     let rootGranter = env.includedGet(root.granter)
     if rootGranter.isNone: return false
     let pid = peerEntityId(rootGranter.get)
-    if pid.isNone or pid.get != localPeerId: return false
+    if pid.isNone or pid.get != rootPeerId: return false
   for i in 0 ..< chain.len:
     let current = chain[i]
     if current.isMultiSig:
@@ -668,4 +692,116 @@ proc checkPathPermission*(operation, path: string; cap: CapabilityToken;
     if not grant.operations.matches(operation, localPeerId, skId): continue
     if not grant.resources.matches(cp, localPeerId, skPath): continue
     return true
+  false
+
+
+# ── §1.4 PD-2: outbound sub-dispatch authorization ────────────────────────────
+
+proc peerRelativeOf*(uri: string): string =
+  ## Strip the §1.4 scheme and leading peer segment, answering the PEER-RELATIVE path.
+  ##
+  ## §1.4 admits three spellings of one address — `system/tree`, `/{peer}/system/tree`
+  ## and `entity://{peer}/system/tree` — and §1.4's PD-2 block requires Dimension 1's
+  ## handler pattern to be the target uri's peer-relative path, because a grant names
+  ## HANDLERS and a handler pattern never carries a peer segment. Matching a grant
+  ## against the absolute or schemed form matches nothing, silently, which reads at the
+  ## wire as an authority refusal.
+  ##
+  ## The first segment is dropped ONLY when it is a peer_id. A peer-relative
+  ## `system/protocol/connect` must not lose `system` — the standing defect on
+  ## `smalltalk` and `forth`, where an unconditional strip made every self-minted grant
+  ## unusable while the handshake stayed green.
+  let p = normalizeUri(uri)
+  if p.len == 0 or p[0] != '/': return p
+  let body = p[1 .. ^1]
+  let slash = body.find('/')
+  let first = if slash >= 0: body[0 ..< slash] else: body
+  if isPeerId(first):
+    result = if slash >= 0: body[slash + 1 .. ^1] else: ""
+  else:
+    result = body
+
+proc grantPathFor*(localPeerId, pattern: string): string =
+  ## Store key of a handler's OWN grant (§6.8: `system/capability/grants/{pattern}`),
+  ## tolerant of the pattern arriving absolute or peer-relative.
+  ##
+  ## §6.6's tree walk answers an ABSOLUTE pattern because store keys are absolute, while
+  ## the grant path is built from the PEER-RELATIVE one. The two are one segment apart and
+  ## concatenating the wrong one yields a doubled peer segment whose lookup misses — which
+  ## fails closed as "no handler grant" and is indistinguishable, at the wire, from a
+  ## genuine authority refusal.
+  let prefix = "/" & localPeerId & "/"
+  # Open-coded rather than importing strutils: this module deliberately keeps its own
+  # prefix test private to avoid the name-clash surface (see the note at scopeFromEcf).
+  let rel =
+    if pattern.len >= prefix.len and pattern[0 ..< prefix.len] == prefix:
+      pattern[prefix.len .. ^1]
+    else:
+      pattern
+  "/" & localPeerId & "/system/capability/grants/" & rel
+
+proc targetMintedPeersRelaxation*(cred: CapabilityToken; env: Envelope;
+                                  localPeerId, targetPeerId: string; nowMs: uint64;
+                                  revoked: bool): tuple[ok: bool, scope: Option[Scope]] =
+  ## Verify a presented reentry credential against §1.4's clauses. `ok` is "did every
+  ## clause hold"; `scope` is the `peers` scope Dimension 4 relaxes to, and `none` there
+  ## means "the target itself" (an absent `peers` dimension is the ordinary reentry shape:
+  ## "you may dispatch back to me").
+  ##
+  ## THE PAIR IS THE POINT. A `none` scope is a legitimate RESULT, so a lone
+  ## `Option[Scope]` would collapse it into "relaxes nothing" — the absent-vs-present
+  ## conflation §6.2's CAP-6a records for temporal accessors, one layer up and in the
+  ## direction that REFUSES a valid reentry.
+  ##
+  ## Every clause is required: the chain ROOT granter resolves to the TARGET peer and is
+  ## NOT a multi-signature root; the LEAF grantee is the local peer; the chain is valid
+  ## and not revoked.
+  result = (false, none(Scope))
+  if targetPeerId == localPeerId: return
+  if not verifyCapabilityChainRootedAt(cred, env, localPeerId, targetPeerId, nowMs): return
+  if revoked: return
+  let ge = env.includedGet(cred.grantee)
+  if ge.isNone: return
+  let pid = peerEntityId(ge.get)
+  if pid.isNone or pid.get != localPeerId: return
+  if cred.grants.len == 0: return
+  let g0 = cred.grants[0]
+  result = (true, if g0.hasPeers: some(g0.peers) else: none(Scope))
+
+proc checkOutboundSubDispatch*(handlerGrant: CapabilityToken; localPeerId, targetPeerId,
+                               handlerPattern, operation: string;
+                               resource: ResourceTarget;
+                               relaxOk: bool; relaxScope: Option[Scope]): bool =
+  ## §1.4's PD-2 gate: `check_permission` run before a locally-originated sub-dispatch
+  ## LEAVES the peer, with all four dimensions applied.
+  ##
+  ## ONE GATE AND ONE EXEMPTION, in §1.4's own words: the EXECUTING HANDLER'S GRANT
+  ## decides all four dimensions (§6.8), evaluated in the LOCAL frame, with Dimension 1's
+  ## pattern the target uri's PEER-RELATIVE path; and a valid capability MINTED BY THE
+  ## TARGET PEER naming this peer as `grantee` relaxes Dimension 4 (`peers`) AND ONLY
+  ## DIMENSION 4.
+  ##
+  ## *"The target answers WHERE; the handler's grant answers WHAT."* A credential is NOT a
+  ## grant: with no handler grant there is nothing to supply Dimensions 1-3, so the
+  ## sub-dispatch is refused however good the credential is. That is the COMPOSE, and the
+  ## BYPASS it is distinguished from is a peer that treats the credential as a standalone
+  ## authorizer and steers past its own grant — §6.8's confused-deputy substitution. Both
+  ## obvious vectors agree under either reading, so the only input that separates them is
+  ## a VALID credential presented to a handler whose own grant does NOT cover the request.
+  ##
+  ## `relaxOk == false` is the ambient arm (and equally a credential that failed a clause):
+  ## Dimension 4 is decided by the handler's grant alone.
+  for grant in handlerGrant.grants:
+    if not grant.handlers.matches(handlerPattern, localPeerId, skPath): continue
+    if not grant.operations.matches(operation, localPeerId, skId): continue
+    if not checkResourceScope(resource, grant.resources, localPeerId, localPeerId): continue
+    # Dimension 4. §5.2's default for an absent `peers` scope is
+    # {include: [local_peer_id]}, so a foreign target fails unless this grant names it or
+    # a target-minted credential relaxes it.
+    if grant.effectivePeers(localPeerId).matches(targetPeerId, localPeerId, skId): return true
+    if relaxOk:
+      if relaxScope.isSome:
+        if relaxScope.get.matches(targetPeerId, localPeerId, skId): return true
+      else:
+        return true   # absent `peers` on the credential relaxes to the granter
   false

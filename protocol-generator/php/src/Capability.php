@@ -970,6 +970,29 @@ final class Capability
      */
     public static function verifyCapabilityChain(string $localPeer, Store $store, Entity $capability, array $included): Verdict
     {
+        return self::verifyCapabilityChainRootedAt($localPeer, $localPeer, $store, $capability, $included);
+    }
+
+    /**
+     * {@see verifyCapabilityChain} with the expected ROOT granter named separately from
+     * the verifying peer.
+     *
+     * §1.4's PD-2 presented-authority arm needs this: the credential it evaluates is
+     * minted by the TARGET peer, so root-trust is relaxed away from the local peer — and
+     * every other clause (per-link signatures, grantee resolution, temporal validity,
+     * attenuation, caveats) is unchanged. Parameterized rather than forked because a
+     * second copy of a chain walk is a second copy that drifts.
+     *
+     * A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY (§1.4, 0.8.2.19). When
+     * `$rootPeer` differs from `$localPeer` the quorum arm is REFUSED outright rather
+     * than verified: *minted by the target* means the target SOLELY minted it, and a
+     * K-of-N root is a GROUP's authority — its co-signers authorized it too. Accepting it
+     * would let any one signer's target confer the whole group's grant, which is
+     * E3/F66's over-acceptance. §5.5's M6 also requires the LOCAL peer in the signer set,
+     * so the quorum arm has no meaning in a foreign frame even on its own terms.
+     */
+    public static function verifyCapabilityChainRootedAt(string $localPeer, string $rootPeer, Store $store, Entity $capability, array $included): Verdict
+    {
         $resolve = static fn (string $h): ?Entity => self::capResolve($included, $store, $h);
         $c = self::collectChain($capability, $resolve);
         if (!$c['ok']) {
@@ -977,16 +1000,17 @@ final class Capability
         }
         $chain = $c['chain'];
         $root = $chain[\count($chain) - 1];
-        // Root authority: a single-sig root must root at the local peer; a §3.6
-        // M3 multi-sig root (root-only) must pass k-of-n quorum validation.
+        // Root authority: a single-sig root must root at $rootPeer; a §3.6 M3 multi-sig
+        // root (root-only) must pass k-of-n quorum validation, LOCAL frame only.
         $rootMg = self::multiGranterOf($root);
         if ($rootMg !== null) {
-            $rootOk = self::verifyMultiSigRoot($localPeer, $resolve, $root, $rootMg, $included);
+            $rootOk = $rootPeer === $localPeer
+                && self::verifyMultiSigRoot($localPeer, $resolve, $root, $rootMg, $included);
         } else {
             $rgh = $root->bytes('granter');
             $g = $rgh !== null ? $resolve($rgh) : null;
             $pk = $g?->bytes('public_key');
-            $rootOk = $pk !== null && Identity::peerIdOfPublicKey($pk) === $localPeer;
+            $rootOk = $pk !== null && Identity::peerIdOfPublicKey($pk) === $rootPeer;
         }
         if (!$rootOk) {
             return Verdict::Deny;
@@ -1132,4 +1156,149 @@ final class Capability
         }
         return RequestVerdict::Allow;
     }
+
+    // ── §1.4 PD-2: outbound sub-dispatch authorization ──────────────────────
+
+    /**
+     * Strip the §1.4 scheme and leading peer segment, answering the PEER-RELATIVE path.
+     *
+     * §1.4 admits three spellings of one address — `system/tree`,
+     * `/{peer}/system/tree` and `entity://{peer}/system/tree` — and §1.4's PD-2 block
+     * requires Dimension 1's handler pattern to be the target uri's peer-relative path,
+     * because a grant names HANDLERS and a handler pattern never carries a peer segment.
+     * Matching a grant against the absolute or schemed form matches nothing, silently,
+     * which reads at the wire as an authority refusal.
+     *
+     * The first segment is dropped ONLY when it is a peer_id. A peer-relative
+     * `system/protocol/connect` must not lose `system` — the standing defect on
+     * `smalltalk` and `forth`, where an unconditional strip made every self-minted grant
+     * unusable while the handshake stayed green.
+     */
+    public static function peerRelativeOf(string $uri): string
+    {
+        $p = self::normalizeUri($uri);
+        if ($p === '' || $p[0] !== '/') {
+            return $p;
+        }
+        $body = \substr($p, 1);
+        $slash = \strpos($body, '/');
+        $first = $slash === false ? $body : \substr($body, 0, $slash);
+        if (!self::isPeerId($first)) {
+            return $body;
+        }
+        return $slash === false ? '' : \substr($body, $slash + 1);
+    }
+
+    /**
+     * Store key of a handler's OWN grant (§6.8:
+     * `system/capability/grants/{pattern}`), tolerant of the pattern arriving absolute or
+     * peer-relative.
+     *
+     * §6.6's tree walk answers an ABSOLUTE pattern because store keys are absolute, while
+     * the grant path is built from the PEER-RELATIVE one. The two are one segment apart
+     * and concatenating the wrong one yields a doubled peer segment whose lookup misses —
+     * which fails closed as "no handler grant" and is indistinguishable, at the wire,
+     * from a genuine authority refusal.
+     */
+    public static function grantPathFor(string $localPeer, string $pattern): string
+    {
+        $prefix = "/{$localPeer}/";
+        $rel = \str_starts_with($pattern, $prefix) ? \substr($pattern, \strlen($prefix)) : $pattern;
+        return "/{$localPeer}/system/capability/grants/{$rel}";
+    }
+
+    /**
+     * Verify a presented reentry credential against §1.4's clauses. Answers
+     * `[verified, scope]`: `verified` is "did every clause hold", `scope` is the `peers`
+     * scope Dimension 4 relaxes to, and `null` there means "the target itself".
+     *
+     * THE PAIR IS THE POINT. A null scope is a legitimate RESULT, so a lone scope return
+     * would collapse "relaxes to the target" into "relaxes nothing" — the
+     * absent-vs-present conflation §6.2's CAP-6a records for temporal accessors, one
+     * layer up and in the direction that REFUSES a valid reentry.
+     *
+     * @param  list<array{hash: string, entity: Entity}>  $included
+     * @return array{0: bool, 1: ?array}
+     */
+    public static function targetMintedPeersRelaxation(string $localPeer, string $targetPeer, Store $store, Entity $cred, array $included): array
+    {
+        // Nothing to relax — the default already covers this peer.
+        if ($targetPeer === $localPeer) {
+            return [false, null];
+        }
+        if (self::verifyCapabilityChainRootedAt($localPeer, $targetPeer, $store, $cred, $included) !== Verdict::Allow) {
+            return [false, null];
+        }
+        if (self::isRevoked($localPeer, $store, $cred, $included)) {
+            return [false, null];
+        }
+        $gh = $cred->bytes('grantee');
+        if ($gh === null) {
+            return [false, null];
+        }
+        $ge = self::capResolve($included, $store, $gh);
+        $pk = $ge?->bytes('public_key');
+        if ($pk === null || Identity::peerIdOfPublicKey($pk) !== $localPeer) {
+            return [false, null];
+        }
+        $gs = self::grantsOfToken($cred);
+        if ($gs === []) {
+            return [false, null];
+        }
+        return [true, $gs[0]['peers'] ?? null];
+    }
+
+    /**
+     * §1.4's PD-2 gate: `check_permission` run before a locally-originated sub-dispatch
+     * LEAVES the peer, with all four dimensions applied.
+     *
+     * ONE GATE AND ONE EXEMPTION, in §1.4's own words: the EXECUTING HANDLER'S GRANT
+     * decides all four dimensions (§6.8), evaluated in the LOCAL frame, with Dimension
+     * 1's pattern the target uri's PEER-RELATIVE path; and a valid capability MINTED BY
+     * THE TARGET PEER naming this peer as `grantee` relaxes Dimension 4 (`peers`) AND
+     * ONLY DIMENSION 4.
+     *
+     * *"The target answers WHERE; the handler's grant answers WHAT."* A credential is NOT
+     * a grant: with no handler grant there is nothing to supply Dimensions 1-3, so the
+     * sub-dispatch is refused however good the credential is. That is the COMPOSE, and
+     * the BYPASS it is distinguished from is a peer that treats the credential as a
+     * standalone authorizer and steers past its own grant — §6.8's confused-deputy
+     * substitution. Both obvious vectors agree under either reading, so the only input
+     * that separates them is a VALID credential presented to a handler whose own grant
+     * does NOT cover the request.
+     *
+     * `$haveRelax === false` is the ambient arm (and equally a credential that failed a
+     * clause): Dimension 4 is decided by the handler's grant alone.
+     */
+    public static function checkOutboundSubDispatch(string $localPeer, string $targetPeer, string $handlerPattern, string $operation, Entity $handlerGrant, EcfMap $resource, bool $haveRelax, ?array $relaxScope): bool
+    {
+        foreach (self::grantsOfToken($handlerGrant) as $g) {
+            if (!self::matchesScope($localPeer, $handlerPattern, $g['handlers'], 'path')) {
+                continue;
+            }
+            if (!self::matchesScope($localPeer, $operation, $g['operations'], 'id')) {
+                continue;
+            }
+            if (!self::checkResourceScope($localPeer, $localPeer, $resource, $g['resources'])) {
+                continue;
+            }
+            // Dimension 4. §5.2's default for an absent `peers` scope is
+            // {include: [local_peer_id]}, so a foreign target fails unless this grant
+            // names it or a target-minted credential relaxes it.
+            $peers = $g['peers'] ?? ['incl' => [$localPeer], 'excl' => []];
+            if (self::matchesScope($localPeer, $targetPeer, $peers, 'id')) {
+                return true;
+            }
+            if ($haveRelax) {
+                if ($relaxScope === null) {
+                    return true;   // absent `peers` on the credential relaxes to the granter
+                }
+                if (self::matchesScope($localPeer, $targetPeer, $relaxScope, 'id')) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
 }

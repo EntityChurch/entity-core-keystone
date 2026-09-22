@@ -20,6 +20,8 @@ using ..Base58: base58decode
 
 export verify_request, check_permission, granter_frame, resolve, find_signature
 export matches_pattern, canonicalize, extract_peer, grant_subset_local, grants_of_token
+export peer_relative_of, grant_path_for, target_minted_peers_relaxation
+export check_outbound_sub_dispatch, verify_capability_chain_rooted_at
 export effective_targets, check_path_permission, matches_scope, matches_id_pattern
 export scope_subset, grant_subset, ScopeKind, ID_SCOPE, PATH_SCOPE, NEVER_MATCH, Scope, Grant
 export temporal_fields_representable, add_ttl
@@ -671,13 +673,35 @@ multi-sig root (root-only) passes k-of-n quorum. Returns `:allow`/`:deny`/`:unre
 (the §5.5 grantee-resolution 401 carve-out)."""
 function verify_capability_chain(env::Envelope, st::ContentStore, local_peer::AbstractString,
                                  capability::Entity)::Symbol
+    return verify_capability_chain_rooted_at(env, st, local_peer, local_peer, capability)
+end
+
+"""`verify_capability_chain` with the expected ROOT granter named separately from the
+verifying peer.
+
+§1.4's PD-2 presented-authority arm needs this: the credential it evaluates is minted by
+the TARGET peer, so root-trust is relaxed away from the local peer — and every other
+clause (per-link signatures, grantee resolution, temporal validity, attenuation, caveats)
+is unchanged. Parameterized rather than forked because a second copy of a chain walk is a
+second copy that drifts.
+
+A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY (§1.4, 0.8.2.19). When `root_peer`
+differs from `local_peer` the quorum arm is REFUSED outright rather than verified: *minted
+by the target* means the target SOLELY minted it, and a K-of-N root is a GROUP's
+authority — its co-signers authorized it too. Accepting it would let any one signer's
+target confer the whole group's grant, which is E3/F66's over-acceptance. §5.5's M6 also
+requires the LOCAL peer in the signer set, so the quorum arm has no meaning in a foreign
+frame even on its own terms."""
+function verify_capability_chain_rooted_at(env::Envelope, st::ContentStore,
+                                           local_peer::AbstractString, root_peer::AbstractString,
+                                           capability::Entity)::Symbol
     status, chain = collect_chain(env, st, capability)
     status == :ok || return :deny   # too_deep / unreachable → deny (depth pre-checked separately)
     root = chain[end]
     root_ok = begin
         mg = multi_granter_of(root)
         if mg !== nothing
-            verify_multisig_root(env, st, local_peer, root, mg) == :allow
+            root_peer == local_peer && verify_multisig_root(env, st, local_peer, root, mg) == :allow
         else
             gh = bytesfield(root, "granter")
             if gh === nothing
@@ -688,7 +712,7 @@ function verify_capability_chain(env::Envelope, st::ContentStore, local_peer::Ab
                     false
                 else
                     pk = bytesfield(g, "public_key")
-                    pk === nothing ? false : peerid_of_pubkey(pk) == local_peer
+                    pk === nothing ? false : peerid_of_pubkey(pk) == root_peer
                 end
             end
         end
@@ -779,6 +803,114 @@ local peer for an unresolvable/multisig granter."""
 function granter_frame(env::Envelope, st::ContentStore, local_peer::AbstractString, cap::Entity)::String
     g = resolve_granter_peer_id(env, st, cap)
     return g === nothing ? String(local_peer) : g
+end
+
+# ── §1.4 PD-2: outbound sub-dispatch authorization ────────────────────────────
+
+"""Strip the §1.4 scheme and leading peer segment, answering the PEER-RELATIVE path.
+
+§1.4 admits three spellings of one address — `system/tree`, `/{peer}/system/tree` and
+`entity://{peer}/system/tree` — and §1.4's PD-2 block requires Dimension 1's handler
+pattern to be the target uri's peer-relative path, because a grant names HANDLERS and a
+handler pattern never carries a peer segment. Matching a grant against the absolute or
+schemed form matches nothing, silently, which reads at the wire as an authority refusal.
+
+The first segment is dropped ONLY when it is a peer_id. A peer-relative
+`system/protocol/connect` must not lose `system` — the standing defect on `smalltalk` and
+`forth`, where an unconditional strip made every self-minted grant unusable while the
+handshake stayed green."""
+function peer_relative_of(uri::AbstractString)::String
+    p = normalize_uri(uri)
+    startswith(p, "/") || return String(p)
+    body = p[2:end]
+    slash = findfirst('/', body)
+    first_seg = slash === nothing ? body : body[1:slash-1]
+    is_peer_id(first_seg) || return String(body)
+    return slash === nothing ? "" : String(body[slash+1:end])
+end
+
+"""Store key of a handler's OWN grant (§6.8: `system/capability/grants/{pattern}`),
+tolerant of the pattern arriving absolute or peer-relative.
+
+§6.6's tree walk answers an ABSOLUTE pattern because store keys are absolute, while the
+grant path is built from the PEER-RELATIVE one. The two are one segment apart and
+concatenating the wrong one yields a doubled peer segment whose lookup misses — which
+fails closed as "no handler grant" and is indistinguishable, at the wire, from a genuine
+authority refusal."""
+function grant_path_for(local_peer::AbstractString, pattern::AbstractString)::String
+    prefix = "/$(local_peer)/"
+    rel = startswith(pattern, prefix) ? pattern[length(prefix)+1:end] : pattern
+    return "/$(local_peer)/system/capability/grants/$(rel)"
+end
+
+"""Verify a presented reentry credential against §1.4's clauses. Answers
+`(verified, scope)`: `verified` is "did every clause hold", `scope` is the `peers` scope
+Dimension 4 relaxes to, and `nothing` there means "the target itself".
+
+THE PAIR IS THE POINT. A `nothing` scope is a legitimate RESULT, so a lone scope return
+would collapse "relaxes to the target" into "relaxes nothing" — the absent-vs-present
+conflation §6.2's CAP-6a records for temporal accessors, one layer up and in the direction
+that REFUSES a valid reentry.
+
+Every clause is required: the chain ROOT granter resolves to the TARGET peer and is NOT a
+multi-signature root; the LEAF grantee is the local peer; the chain is valid and not
+revoked."""
+function target_minted_peers_relaxation(env::Envelope, st::ContentStore,
+                                        local_peer::AbstractString, target_peer::AbstractString,
+                                        cred::Entity)
+    # Nothing to relax — the default already covers this peer.
+    target_peer == local_peer && return (false, nothing)
+    verify_capability_chain_rooted_at(env, st, local_peer, target_peer, cred) == :allow ||
+        return (false, nothing)
+    is_revoked(env, st, local_peer, cred) && return (false, nothing)
+    gh = bytesfield(cred, "grantee")
+    gh === nothing && return (false, nothing)
+    ge = resolve(env, st, gh)
+    ge === nothing && return (false, nothing)
+    pk = bytesfield(ge, "public_key")
+    (pk === nothing || peerid_of_pubkey(pk) != local_peer) && return (false, nothing)
+    gs = grants_of_token(cred)
+    isempty(gs) && return (false, nothing)
+    return (true, gs[1].peers)
+end
+
+"""§1.4's PD-2 gate: `check_permission` run before a locally-originated sub-dispatch
+LEAVES the peer, with all four dimensions applied.
+
+ONE GATE AND ONE EXEMPTION, in §1.4's own words: the EXECUTING HANDLER'S GRANT decides all
+four dimensions (§6.8), evaluated in the LOCAL frame, with Dimension 1's pattern the
+target uri's PEER-RELATIVE path; and a valid capability MINTED BY THE TARGET PEER naming
+this peer as `grantee` relaxes Dimension 4 (`peers`) AND ONLY DIMENSION 4.
+
+*"The target answers WHERE; the handler's grant answers WHAT."* A credential is NOT a
+grant: with no handler grant there is nothing to supply Dimensions 1-3, so the
+sub-dispatch is refused however good the credential is. That is the COMPOSE, and the
+BYPASS it is distinguished from is a peer that treats the credential as a standalone
+authorizer and steers past its own grant — §6.8's confused-deputy substitution. Both
+obvious vectors agree under either reading, so the only input that separates them is a
+VALID credential presented to a handler whose own grant does NOT cover the request.
+
+`have_relax == false` is the ambient arm (and equally a credential that failed a clause):
+Dimension 4 is decided by the handler's grant alone."""
+function check_outbound_sub_dispatch(local_peer::AbstractString, target_peer::AbstractString,
+                                     handler_pattern::AbstractString, operation::AbstractString,
+                                     handler_grant::Entity, resource, have_relax::Bool,
+                                     relax_scope)::Bool
+    for g in grants_of_token(handler_grant)
+        matches_scope(local_peer, handler_pattern, g.handlers, PATH_SCOPE) || continue
+        matches_scope(local_peer, operation, g.operations, ID_SCOPE) || continue
+        check_resource_scope(local_peer, local_peer, resource, g.resources) || continue
+        # Dimension 4. §5.2's default for an absent `peers` scope is
+        # {include: [local_peer_id]}, so a foreign target fails unless this grant names it
+        # or a target-minted credential relaxes it.
+        peers = g.peers === nothing ? Scope([String(local_peer)], String[]) : g.peers
+        matches_scope(local_peer, target_peer, peers, ID_SCOPE) && return true
+        if have_relax
+            relax_scope === nothing && return true   # absent `peers` relaxes to the granter
+            matches_scope(local_peer, target_peer, relax_scope, ID_SCOPE) && return true
+        end
+    end
+    return false
 end
 
 end # module Capability

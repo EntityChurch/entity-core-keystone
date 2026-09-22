@@ -1334,8 +1334,64 @@ echo_handler :: proc(exec: Entity) -> Outcome {
 // dispatch-outbound (§7a): originate one outbound EXECUTE via the §6.11 reentry
 // seam back to the caller, invoking `operation` on `target` with `value`, and
 // return the downstream response. Proves the target can ORIGINATE.
+// Decode an ARRAY of nested entities at `key`, falling back to the SINGULAR spelling as a
+// list of one (the §7a.1 transitional carriers).
+//
+// An EMPTY slice means absent, not-a-list, or a MALFORMED array (a member that does not
+// decode) — never a silently shorter list, because the caller's all-or-none test would then
+// read a partial credential as a complete one.
 @(private = "file")
-dispatch_outbound_handler :: proc(p: ^Peer, conn: ^Conn, exec: Entity) -> Outcome {
+entity_list_field :: proc(e: Entity, key, singular: string, a: mem.Allocator) -> []Entity {
+	v, has := entity_field(e, key)
+	if has {
+		if arr, is_arr := v.(Ec_Array); is_arr {
+			out := make([]Entity, len(arr), a)
+			for item, i in arr {
+				d, derr := entity_of_cbor(item, a)
+				if derr != .None {
+					return nil
+				}
+				out[i] = d
+			}
+			return out
+		}
+	}
+	one, h1, _ := entity_field_entity(e, singular, a)
+	if !h1 {
+		return nil
+	}
+	single := make([]Entity, 1, a)
+	single[0] = one
+	return single
+}
+
+// A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward, as
+// distinct from any capability a caller presents. §6.8 row 1: an access in service of a
+// caller's request needs the caller's verified capability AND this grant, and BOTH must
+// pass. Narrow for `dispatch-outbound`; empty for everything else.
+@(private = "file")
+own_grants_for :: proc(pattern: string, a: mem.Allocator) -> []Ec_Value {
+	if pattern != "system/validate/dispatch-outbound" {
+		return nil
+	}
+	scope := proc(v: string, a: mem.Allocator) -> Ec_Value {
+		items := make([]Ec_Value, 1, a)
+		items[0] = text_val(v, a)
+		pairs := make([]Ec_Pair, 1, a)
+		pairs[0] = Ec_Pair{text_val("include", a), Ec_Array(items)}
+		return Ec_Map(pairs)
+	}
+	gp := make([]Ec_Pair, 3, a)
+	gp[0] = Ec_Pair{text_val("handlers", a), scope("system/validate/echo", a)}
+	gp[1] = Ec_Pair{text_val("operations", a), scope("echo", a)}
+	gp[2] = Ec_Pair{text_val("resources", a), scope("system/handler/system/validate/echo", a)}
+	out := make([]Ec_Value, 1, a)
+	out[0] = Ec_Map(gp)
+	return out
+}
+
+@(private = "file")
+dispatch_outbound_handler :: proc(p: ^Peer, conn: ^Conn, env: Envelope, exec: Entity, handler_pattern: string) -> Outcome {
 	a := context.temp_allocator
 	if conn.outbound_fn == nil {
 		return err_out(503, "no_outbound_seam", "dispatch-outbound requires a live §6.11 reentry connection")
@@ -1356,24 +1412,116 @@ dispatch_outbound_handler :: proc(p: ^Peer, conn: ^Conn, exec: Entity) -> Outcom
 	if !hv {
 		return err_out(400, "unexpected_params", "missing value")
 	}
+	// GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the single-granter
+	// case is an array of ONE. They were singular, which made §1.4's
+	// multi-signature-root rule ungateable on the wire: driving it needs two granter
+	// identities and two signatures, and a single-credential carrier cannot express that
+	// input.
+	//
+	// TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one, because
+	// THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle sends the
+	// SINGULAR names; a plural-only peer reads the triple as absent there, takes the
+	// ambient arm and refuses — measured on the `go` vanguard as 2 of 778 severities
+	// moving PASS -> FAIL. REMOVE THIS FALLBACK AT THE ORACLE RE-PIN.
 	cap_e, hc, _ := entity_field_entity(params, "reentry_capability", a)
-	granter_e, hg, _ := entity_field_entity(params, "reentry_granter", a)
-	capsig_e, hcs, _ := entity_field_entity(params, "reentry_cap_signature", a)
-	if !hc {
-		return err_out(400, "unexpected_params", "missing reentry_capability")
+	granters := entity_list_field(params, "reentry_granters", "reentry_granter", a)
+	cap_sigs := entity_list_field(params, "reentry_cap_signatures", "reentry_cap_signature", a)
+	// The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED arm, all
+	// three absent selects the AMBIENT arm, and a PARTIAL set is 400 invalid_params — a
+	// partial credential is malformed, not ambient. An empty array is partial.
+	n_present := 0
+	if hc {
+		n_present += 1
 	}
-	if !hg {
-		return err_out(400, "unexpected_params", "missing reentry_granter")
+	if len(granters) > 0 {
+		n_present += 1
 	}
-	if !hcs {
-		return err_out(400, "unexpected_params", "missing reentry_cap_signature")
+	if len(cap_sigs) > 0 {
+		n_present += 1
 	}
+	if n_present != 0 && n_present != 3 {
+		return err_out(400, "invalid_params", "dispatch-outbound reentry authority is all-or-none")
+	}
+	has_cred := n_present == 3
+	granter_list := has_cred ? granters : nil
+	sig_list := has_cred ? cap_sigs : nil
 
 	// §7a.1: the `value` field IS the outbound params entity data — pass it
 	// through (re-wrapping as {value} double-wraps).
 	inner, _ := entity_make("primitive/any", value_clone(value, a), a)
 
-	req, rerr := build_reentry_execute(p, conn, target, operation, inner, cap_e, granter_e, capsig_e)
+	// `target` arrives as any of §1.4's three spellings and the validator sends the
+	// SCHEMED ABSOLUTE form. Both the handler-pattern dimension and the resource target
+	// want the PEER-RELATIVE path — §1.4's PD-2 block says so for Dimension 1, and a
+	// resource target carrying a scheme is not a path at all.
+	rel_target := peer_relative_of(target)
+
+	// §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer, all four
+	// dimensions, on THIS handler's own grant — with a target-minted credential relaxing
+	// Dimension 4 and nothing else. Consulting only the presented credential here is the
+	// §6.8 confused-deputy bypass.
+	own_grant, has_grant := store_get_at(&p.store, grant_path_for(p.local_peer, handler_pattern, a))
+	if !has_grant {
+		// §6.8: a handler with no valid grant does not run. Fail closed rather than
+		// falling back to the credential, which is the substitution §6.8 forbids.
+		return err_out(403, "capability_denied", "no handler grant for this pattern")
+	}
+	// §7a.2a: the credential, its granters and its signatures arrive NESTED IN PARAMS
+	// (ratified shape (a), in-band), so they are NOT in `env` and a verifier handed that
+	// alone cannot resolve a single link.
+	extra := 0
+	if has_cred {
+		extra = 1 + len(granter_list) + len(sig_list)
+	}
+	bundle_inc := make([]Included, len(env.included) + extra, a)
+	bi := 0
+	for inc in env.included {
+		bundle_inc[bi] = inc
+		bi += 1
+	}
+	if has_cred {
+		bundle_inc[bi] = Included{key = cap_e.hash, entity = cap_e}
+		bi += 1
+		for g in granter_list {
+			bundle_inc[bi] = Included{key = g.hash, entity = g}
+			bi += 1
+		}
+		for sg in sig_list {
+			bundle_inc[bi] = Included{key = sg.hash, entity = sg}
+			bi += 1
+		}
+	}
+	bundle := Envelope{root = env.root, included = bundle_inc}
+	// §1.4: target_peer = extract_peer(uri, local_peer_id). The validator sends the
+	// absolute form, so the URI names the target. Where the uri is PEER-RELATIVE there is
+	// no peer in it and the §6.11 seam's destination is the connection's remote, so that
+	// is the fallback — without it Dimension 4 passes vacuously.
+	uri_peer := extract_peer(p.local_peer, target)
+	target_peer := uri_peer
+	if uri_peer == p.local_peer && conn.hello_peer_id != "" {
+		target_peer = conn.hello_peer_id
+	}
+	have_relax := false
+	relax_scope := Scope{}
+	relax_has := false
+	if has_cred {
+		have_relax, relax_scope, relax_has = target_minted_peers_relaxation(
+			bundle, &p.store, p.local_peer, target_peer, cap_e)
+	}
+	rt_arr := make([]Ec_Value, 1, a)
+	rt_arr[0] = text_val(strings.concatenate({"system/handler/", rel_target}, a), a)
+	rt_pairs := make([]Ec_Pair, 1, a)
+	rt_pairs[0] = Ec_Pair{text_val("targets", a), Ec_Array(rt_arr)}
+	if !check_outbound_sub_dispatch(p.local_peer, target_peer, rel_target, operation,
+		own_grant, Ec_Map(rt_pairs), have_relax, relax_scope, relax_has) {
+		// §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic
+		// transport- or gateway-class code would launder an authorization verdict into a
+		// route fault.
+		return err_out(403, "capability_denied", "outbound sub-dispatch not authorized by the handler grant")
+	}
+
+	req, rerr := build_reentry_execute(p, conn, target, rel_target, operation, inner,
+		cap_e, has_cred, granter_list, sig_list)
 	if rerr != .None {
 		return err_out(500, "internal_error", "")
 	}
@@ -1397,17 +1545,27 @@ dispatch_outbound_handler :: proc(p: ^Peer, conn: ^Conn, exec: Entity) -> Outcom
 }
 
 @(private = "file")
+// `granters`/`cap_sigs` are PLURAL (GUIDE-CONFORMANCE §7a.1, 0.8.2.19) so a K-of-N root
+// can present every granter identity and every link signature. Every member goes into
+// `included` because §5.5's chain walk resolves granters and signers BY HASH out of that
+// map.
+//
+// `has_cred` false is the AMBIENT arm: the EXECUTE carries no `capability` field at all.
+// An empty hash would NOT do — that is a present field resolving to nothing, which §5.2
+// reads as an unresolvable capability rather than as its absence.
 build_reentry_execute :: proc(
 	p: ^Peer,
 	conn: ^Conn,
-	target, operation: string,
-	inner, cap_e, granter_e, capsig_e: Entity,
+	target, rel_target, operation: string,
+	inner, cap_e: Entity,
+	has_cred: bool,
+	granters, cap_sigs: []Entity,
 ) -> (Envelope, Codec_Error) {
 	a := context.temp_allocator
 	conn.out_counter += 1
 	rid := fmt_ro(conn.out_counter, a)
 	t_arr := make([]Ec_Value, 1, a)
-	t_arr[0] = text_val(strings.concatenate({"system/handler/", target}, a), a)
+	t_arr[0] = text_val(strings.concatenate({"system/handler/", rel_target}, a), a)
 	rpairs := make([]Ec_Pair, 1, a)
 	rpairs[0] = Ec_Pair{text_val("targets", a), Ec_Array(t_arr)}
 	resource := Ec_Map(rpairs)
@@ -1419,7 +1577,8 @@ build_reentry_execute :: proc(
 		resource = resource,
 		has_resource = true,
 		author = p.identity.identity_hash,
-		capability = cap_e.hash,
+		// nil capability = the §1.4 PD-2 AMBIENT arm; make_execute omits the field.
+		capability = has_cred ? cap_e.hash : nil,
 	}, a)
 	if eerr != .None {
 		return Envelope{}, eerr
@@ -1428,21 +1587,37 @@ build_reentry_execute :: proc(
 	if serr != .None {
 		return Envelope{}, serr
 	}
-	included := make([]Included, 4, a)
-	included[0] = Included{key = cap_e.hash, entity = cap_e}
-	included[1] = Included{key = granter_e.hash, entity = granter_e}
-	included[2] = Included{key = capsig_e.hash, entity = capsig_e}
-	included[3] = Included{key = exec_sig.hash, entity = exec_sig}
+	n_inc := 1
+	if has_cred {
+		n_inc += 1 + len(granters) + len(cap_sigs)
+	}
+	included := make([]Included, n_inc, a)
+	ii := 0
+	if has_cred {
+		included[ii] = Included{key = cap_e.hash, entity = cap_e}
+		ii += 1
+		for g in granters {
+			included[ii] = Included{key = g.hash, entity = g}
+			ii += 1
+		}
+		for sg in cap_sigs {
+			included[ii] = Included{key = sg.hash, entity = sg}
+			ii += 1
+		}
+	}
+	included[ii] = Included{key = exec_sig.hash, entity = exec_sig}
 	return Envelope{root = exec, included = included}, .None
 }
 
 @(private = "file")
-conformance_handler :: proc(p: ^Peer, conn: ^Conn, exec: Entity, stripped: string) -> Outcome {
+conformance_handler :: proc(p: ^Peer, conn: ^Conn, env: Envelope, exec: Entity, stripped: string) -> Outcome {
 	if stripped == "system/validate/echo" {
 		return echo_handler(exec)
 	}
 	if stripped == "system/validate/dispatch-outbound" {
-		return dispatch_outbound_handler(p, conn, exec)
+		// §1.4 PD-2 needs the OWNING handler's peer-relative pattern (Dimension 1 is
+		// matched peer-relative) and the parent envelope (the §7a.2a bundle base).
+		return dispatch_outbound_handler(p, conn, env, exec, stripped)
 	}
 	return err_out(501, "no_handler_body", stripped)
 }
@@ -1599,7 +1774,7 @@ dispatch_outcome :: proc(p: ^Peer, conn: ^Conn, env: Envelope) -> Outcome {
 	case stripped == "system/type":
 		return types_handler(exec)
 	case p.conformance && strings.has_prefix(stripped, "system/validate/"):
-		return conformance_handler(p, conn, exec, stripped)
+		return conformance_handler(p, conn, env, exec, stripped)
 	}
 	// a dynamically-registered handler: dispatch its entity-native body.
 	if handler_entity, ok := store_get_at(&p.store, pattern); ok {
@@ -1729,7 +1904,10 @@ bootstrap_handler :: proc(p: ^Peer, bh: Boot_Handler, allocator := context.temp_
 	iface_e, _ := entity_make("system/handler/interface", Ec_Map(ipairs), a)
 	store_bind(&p.store, strings.concatenate({"/", p.local_peer, "/system/handler/", bh.pattern}, a), iface_e, context.allocator)
 
-	minted, _ := mint_token(p, p.identity.identity_hash, nil, false, {}, a)
+	// §6.8: the grant MUST exist at `system/capability/grants/{pattern}` and a handler
+	// with no valid grant does not run — so this bind is the ceiling row 1 intersects
+	// against, not bookkeeping. NARROW for dispatch-outbound (GUIDE-CONFORMANCE §7a.1).
+	minted, _ := mint_token(p, p.identity.identity_hash, nil, false, own_grants_for(bh.pattern, a), a)
 	store_bind(&p.store, strings.concatenate({"/", p.local_peer, "/system/capability/grants/", bh.pattern}, a), minted.token, context.allocator)
 }
 

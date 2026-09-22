@@ -632,14 +632,35 @@ module EntityCore
     private_class_method :find_signature_by
 
     def verify_capability_chain(local_peer, store, capability, included)
+      verify_capability_chain_rooted_at(local_peer, local_peer, store, capability, included)
+    end
+
+    # +verify_capability_chain+ with the expected ROOT granter named separately from the
+    # verifying peer.
+    #
+    # §1.4's PD-2 presented-authority arm needs this: the credential it evaluates is
+    # minted by the TARGET peer, so root-trust is relaxed away from the local peer — and
+    # every other clause (per-link signatures, grantee resolution, temporal validity,
+    # attenuation, caveats) is unchanged. Parameterized rather than forked because a
+    # second copy of a chain walk is a second copy that drifts.
+    #
+    # A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY (§1.4, 0.8.2.19). When +root_peer+
+    # differs from +local_peer+ the quorum arm is REFUSED outright rather than verified:
+    # *minted by the target* means the target SOLELY minted it, and a K-of-N root is a
+    # GROUP's authority — its co-signers authorized it too. Accepting it would let any one
+    # signer's target confer the whole group's grant, which is E3/F66's over-acceptance.
+    # §5.5's M6 also requires the LOCAL peer in the signer set, so the quorum arm has no
+    # meaning in a foreign frame even on its own terms.
+    def verify_capability_chain_rooted_at(local_peer, root_peer, store, capability, included)
       resolve = ->(h) { cap_resolve(included, store, h) }
       chain, ok = collect_chain(capability, resolve)
       return :deny unless ok
 
       root = chain.last
       if multisig?(root)
-        # §3.6 / §5.5 K-of-N quorum root (M3/M4/M6). No single granter.
-        return :deny unless multisig_root_ok?(local_peer, resolve, root, included)
+        # §3.6 / §5.5 K-of-N quorum root (M3/M4/M6). No single granter, LOCAL frame only.
+        return :deny unless root_peer == local_peer &&
+                            multisig_root_ok?(local_peer, resolve, root, included)
       else
         root_ok = false
         rgh = root.bytes("granter")
@@ -647,7 +668,7 @@ module EntityCore
           g = resolve.call(rgh)
           if g
             pk = g.bytes("public_key")
-            root_ok = !pk.nil? && Identity.peer_id_of_public_key(pk) == local_peer
+            root_ok = !pk.nil? && Identity.peer_id_of_public_key(pk) == root_peer
           end
         end
         return :deny unless root_ok
@@ -799,5 +820,119 @@ module EntityCore
       v = map[key]
       v if v.is_a?(::Integer)
     end
+
+    # ── §1.4 PD-2: outbound sub-dispatch authorization ────────────────────────
+
+    # Strip the §1.4 scheme and leading peer segment, answering the PEER-RELATIVE path.
+    #
+    # §1.4 admits three spellings of one address — +system/tree+, +/{peer}/system/tree+
+    # and +entity://{peer}/system/tree+ — and §1.4's PD-2 block requires Dimension 1's
+    # handler pattern to be the target uri's peer-relative path, because a grant names
+    # HANDLERS and a handler pattern never carries a peer segment. Matching a grant
+    # against the absolute or schemed form matches nothing, silently, which reads at the
+    # wire as an authority refusal.
+    #
+    # The first segment is dropped ONLY when it is a peer_id. A peer-relative
+    # +system/protocol/connect+ must not lose +system+ — the standing defect on
+    # +smalltalk+ and +forth+, where an unconditional strip made every self-minted grant
+    # unusable while the handshake stayed green.
+    def peer_relative_of(uri)
+      p = normalize_uri(uri)
+      return p unless p.start_with?("/")
+
+      body = p[1..]
+      slash = body.index("/")
+      first = slash ? body[0...slash] : body
+      return body unless peer_id?(first)
+
+      slash ? body[(slash + 1)..] : ""
+    end
+
+    # Store key of a handler's OWN grant (§6.8:
+    # +system/capability/grants/{pattern}+), tolerant of the pattern arriving absolute or
+    # peer-relative.
+    #
+    # §6.6's tree walk answers an ABSOLUTE pattern because store keys are absolute, while
+    # the grant path is built from the PEER-RELATIVE one. The two are one segment apart
+    # and concatenating the wrong one yields a doubled peer segment whose lookup misses —
+    # which fails closed as "no handler grant" and is indistinguishable, at the wire, from
+    # a genuine authority refusal.
+    def grant_path_for(local_peer, pattern)
+      prefix = "/#{local_peer}/"
+      rel = pattern.start_with?(prefix) ? pattern[prefix.length..] : pattern
+      "/#{local_peer}/system/capability/grants/#{rel}"
+    end
+
+    # Verify a presented reentry credential against §1.4's clauses. Answers
+    # <tt>[verified, scope]</tt>: +verified+ is "did every clause hold", +scope+ is the
+    # +peers+ scope Dimension 4 relaxes to, and +nil+ there means "the target itself".
+    #
+    # THE PAIR IS THE POINT. A nil scope is a legitimate RESULT, so a lone scope return
+    # would collapse "relaxes to the target" into "relaxes nothing" — the absent-vs-present
+    # conflation §6.2's CAP-6a records for temporal accessors, one layer up and in the
+    # direction that REFUSES a valid reentry.
+    def target_minted_peers_relaxation(local_peer, target_peer, store, cred, included, revoked)
+      # Nothing to relax — the default already covers this peer.
+      return [false, nil] if target_peer == local_peer
+      return [false, nil] unless verify_capability_chain_rooted_at(
+        local_peer, target_peer, store, cred, included
+      ) == :allow
+      return [false, nil] if revoked
+
+      gh = cred.bytes("grantee")
+      return [false, nil] if gh.nil?
+
+      ge = cap_resolve(included, store, gh)
+      return [false, nil] if ge.nil?
+
+      pk = ge.bytes("public_key")
+      return [false, nil] if pk.nil? || Identity.peer_id_of_public_key(pk) != local_peer
+
+      gs = grants_of_token(cred)
+      return [false, nil] if gs.empty?
+
+      [true, gs.first.peers]
+    end
+
+    # §1.4's PD-2 gate: +check_permission+ run before a locally-originated sub-dispatch
+    # LEAVES the peer, with all four dimensions applied.
+    #
+    # ONE GATE AND ONE EXEMPTION, in §1.4's own words: the EXECUTING HANDLER'S GRANT
+    # decides all four dimensions (§6.8), evaluated in the LOCAL frame, with Dimension 1's
+    # pattern the target uri's PEER-RELATIVE path; and a valid capability MINTED BY THE
+    # TARGET PEER naming this peer as +grantee+ relaxes Dimension 4 (+peers+) AND ONLY
+    # DIMENSION 4.
+    #
+    # *"The target answers WHERE; the handler's grant answers WHAT."* A credential is NOT
+    # a grant: with no handler grant there is nothing to supply Dimensions 1-3, so the
+    # sub-dispatch is refused however good the credential is. That is the COMPOSE, and the
+    # BYPASS it is distinguished from is a peer that treats the credential as a standalone
+    # authorizer and steers past its own grant — §6.8's confused-deputy substitution. Both
+    # obvious vectors agree under either reading, so the only input that separates them is
+    # a VALID credential presented to a handler whose own grant does NOT cover the request.
+    #
+    # +have_relax+ false is the ambient arm (and equally a credential that failed a
+    # clause): Dimension 4 is decided by the handler's grant alone.
+    def check_outbound_sub_dispatch(local_peer, target_peer, handler_pattern, operation,
+                                    handler_grant, resource, have_relax, relax_scope)
+      grants_of_token(handler_grant).each do |g|
+        next unless matches_scope(local_peer, handler_pattern, g.handlers, :path)
+        next unless matches_scope(local_peer, operation, g.operations, :id)
+        next unless check_resource_scope(local_peer, local_peer, resource, g.resources)
+
+        # Dimension 4. §5.2's default for an absent `peers` scope is
+        # {include: [local_peer_id]}, so a foreign target fails unless this grant names it
+        # or a target-minted credential relaxes it.
+        peers = g.peers || Scope.new([local_peer], [])
+        return true if matches_scope(local_peer, target_peer, peers, :id)
+
+        if have_relax
+          return true if relax_scope.nil?   # absent `peers` relaxes to the granter
+          return true if matches_scope(local_peer, target_peer, relax_scope, :id)
+        end
+      end
+      false
+    end
+
   end
 end

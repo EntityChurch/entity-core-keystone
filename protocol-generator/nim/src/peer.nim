@@ -823,8 +823,32 @@ proc validateEcho(params: Entity): Outcome =
   ## §7a echo: return the params entity verbatim (the literal value round-trips).
   okOut(params)
 
+proc entityListField(e: Entity; key, singular: string): seq[Entity] =
+  ## Decode an ARRAY of nested entities at `key`, falling back to the SINGULAR spelling
+  ## as a list of one (the §7a.1 transitional carriers).
+  ##
+  ## An EMPTY seq means absent, not-a-list, or a MALFORMED array (a member that does not
+  ## decode) — never a silently shorter list, because the caller's all-or-none test would
+  ## then read a partial credential as a complete one.
+  let v = e.field(key)
+  if v != nil and v.kind == ekArray:
+    var acc: seq[Entity] = @[]
+    try:
+      for item in v.arr:
+        acc.add entityOfValue(item)
+    except CatchableError:
+      return @[]
+    return acc
+  let one = e.field(singular)
+  if one == nil: return @[]
+  try:
+    return @[entityOfValue(one)]
+  except CatchableError:
+    return @[]
+
 proc validateDispatchOutbound(p: Peer; params: Entity; sender: OutboundSender;
-                              conn: Conn): Future[Outcome] {.async.} =
+                              conn: Conn; env: Envelope;
+                              handlerPattern: string): Future[Outcome] {.async.} =
   ## §7a dispatch-outbound: originate exactly one outbound EXECUTE back to the caller
   ## over the §6.11 reentry seam, invoking `operation` on `target` with `value`.
   if sender == nil:
@@ -832,36 +856,115 @@ proc validateDispatchOutbound(p: Peer; params: Entity; sender: OutboundSender;
   let target = params.textField("target")
   let operation = params.textField("operation")
   let value = params.field("value")
+  # GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the single-granter
+  # case is an array of ONE. They were singular, which made §1.4's multi-signature-root
+  # rule ungateable on the wire: driving it needs two granter identities and two
+  # signatures, and a single-credential carrier cannot express that input.
+  #
+  # TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one, because THE
+  # RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle sends the SINGULAR
+  # names; a plural-only peer reads the triple as absent there, takes the ambient arm and
+  # refuses — measured on the `go` vanguard as 2 of 778 severities moving PASS -> FAIL.
+  # REMOVE THIS FALLBACK AT THE ORACLE RE-PIN, and not before.
   let capV = params.field("reentry_capability")
-  let granterV = params.field("reentry_granter")
-  let capSigV = params.field("reentry_cap_signature")
-  if target.isNone or operation.isNone or value == nil or
-     capV == nil or granterV == nil or capSigV == nil:
+  let granters = entityListField(params, "reentry_granters", "reentry_granter")
+  let capSigs = entityListField(params, "reentry_cap_signatures", "reentry_cap_signature")
+  if target.isNone or operation.isNone or value == nil:
     return errOut(400, "invalid_params")
-  var capE, granterE, capSigE: Entity
-  try:
-    capE = entityOfValue(capV)
-    granterE = entityOfValue(granterV)
-    capSigE = entityOfValue(capSigV)
-  except CatchableError:
+  # The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED arm, all
+  # three absent selects the AMBIENT arm, and a PARTIAL set is 400 invalid_params — a
+  # partial credential is malformed, not ambient. An empty array is partial, not present.
+  var nPresent = 0
+  if capV != nil: inc nPresent
+  if granters.len > 0: inc nPresent
+  if capSigs.len > 0: inc nPresent
+  if nPresent != 0 and nPresent != 3:
     return errOut(400, "invalid_params")
+  let hasCred = nPresent == 3
+  # `Entity` is a value object on this peer, not a ref, so there is no nil to carry
+  # "absent" in — `hasCred` is the only presence flag and every use of capE is guarded by
+  # it. A default-constructed Entity would be a PRESENT entity with an empty type, which
+  # is exactly the absent-vs-empty conflation this arc keeps finding.
+  var capE: Entity
+  if hasCred:
+    try:
+      capE = entityOfValue(capV)
+    except CatchableError:
+      return errOut(400, "invalid_params")
+  let granterList = if hasCred: granters else: @[]
+  let sigList = if hasCred: capSigs else: @[]
   # §7a.1: the `value` field IS the outbound params entity data — pass through.
   let inner = makeEntity("primitive/any", value)
+  # `target` arrives as any of §1.4's three spellings and the validator sends the SCHEMED
+  # ABSOLUTE form. Both the handler-pattern dimension and the resource target want the
+  # PEER-RELATIVE path — §1.4's PD-2 block says so for Dimension 1, and a resource target
+  # carrying a scheme is not a path at all.
+  let relTarget = peerRelativeOf(target.get)
   let resource = mapV(@[EcPair(key: textV("targets"),
-    val: arrV(@[textV("system/handler/" & target.get)]))])
+    val: arrV(@[textV("system/handler/" & relTarget)]))])
+
+  # §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer, all four
+  # dimensions, on THIS handler's own grant — with a target-minted credential relaxing
+  # Dimension 4 and nothing else. Consulting only the presented credential here is the
+  # §6.8 confused-deputy bypass.
+  let ownGrantE = p.store.getAt(grantPathFor(p.localPeer, handlerPattern))
+  if ownGrantE.isNone:
+    # §6.8: a handler with no valid grant does not run. Fail closed rather than falling
+    # back to the credential, which is the substitution §6.8 forbids.
+    return errOut(403, "capability_denied", some("no handler grant for " & handlerPattern))
+  let ownGrant = parseToken(ownGrantE.get)
+  # §7a.2a: the credential, its granters and its signatures arrive NESTED IN PARAMS
+  # (ratified shape (a), in-band), so they are NOT in `env` and a verifier handed that
+  # alone cannot resolve a single link.
+  var bundleInc = env.included
+  if hasCred:
+    bundleInc.add (key: capE.hash, entity: capE)
+    for g in granterList: bundleInc.add (key: g.hash, entity: g)
+    for sg in sigList: bundleInc.add (key: sg.hash, entity: sg)
+  let bundle = Envelope(root: env.root, included: bundleInc)
+  # §1.4: target_peer = extract_peer(uri, local_peer_id). The validator sends the absolute
+  # form, so the URI names the target. Where the uri is PEER-RELATIVE there is no peer in
+  # it and the §6.11 seam's destination is the connection's remote, so that is the
+  # fallback — without it Dimension 4 passes vacuously.
+  let uriPeer = extractPeer(target.get, p.localPeer)
+  let targetPeer =
+    if uriPeer == p.localPeer and conn.helloPeerId.isSome: conn.helloPeerId.get else: uriPeer
+  var relaxOk = false
+  var relaxScope = none(Scope)
+  if hasCred:
+    let credTok = parseToken(capE)
+    let revoked = p.store.getAt(p.abs("system/capability/revocations/" & hexLower(capE.hash))).isSome
+    (relaxOk, relaxScope) = targetMintedPeersRelaxation(
+      credTok, bundle, p.localPeer, targetPeer, nowMs(), revoked)
+  if not checkOutboundSubDispatch(ownGrant, p.localPeer, targetPeer, relTarget,
+                                  operation.get,
+                                  ResourceTarget(targets: @["system/handler/" & relTarget], exclude: @[]),
+                                  relaxOk, relaxScope):
+    # §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic transport-
+    # or gateway-class code would launder an authorization verdict into a route fault.
+    return errOut(403, "capability_denied",
+                  some("outbound sub-dispatch not authorized by the handler grant"))
+
   inc conn.outCounter
   let rid = "ro-" & $conn.outCounter
+  # The AMBIENT arm carries no credential, so the EXECUTE carries no `capability` field.
+  # An empty hash would NOT do — that is a present field resolving to nothing, which §5.2
+  # reads as an unresolvable capability rather than as its absence.
   let outExec = makeExecute(rid, target.get, operation.get, inner,
-    author = some(p.identity.identityHash), capability = some(capE.hash),
+    author = some(p.identity.identityHash),
+    capability = (if hasCred: some(capE.hash) else: none(seq[byte])),
     resource = resource)
   let execSig = p.identity.signEntityHash(outExec)
-  let outEnv = Envelope(root: outExec, included: @[
-    (key: capE.hash, entity: capE),
-    (key: granterE.hash, entity: granterE),
-    (key: p.identity.identityHash, entity: p.identity.peerEntity),
-    (key: capSigE.hash, entity: capSigE),
-    (key: execSig.hash, entity: execSig),
-  ])
+  var outInc: seq[tuple[key: seq[byte], entity: Entity]] = @[]
+  if hasCred:
+    # Every granter and every signature: §5.5's chain walk resolves them BY HASH out of
+    # `included` — a granter left out is a link the verifier cannot reach.
+    outInc.add (key: capE.hash, entity: capE)
+    for g in granterList: outInc.add (key: g.hash, entity: g)
+    for sg in sigList: outInc.add (key: sg.hash, entity: sg)
+  outInc.add (key: p.identity.identityHash, entity: p.identity.peerEntity)
+  outInc.add (key: execSig.hash, entity: execSig)
+  let outEnv = Envelope(root: outExec, included: outInc)
   var resp: Envelope
   try:
     resp = await sender(rid, outEnv)
@@ -961,7 +1064,9 @@ proc dispatchOutcome(p: Peer; conn: Conn; env: Envelope; sender: OutboundSender)
     return errOut(501, "unsupported_operation", some(op))
   of "system/validate/dispatch-outbound":
     if op == "dispatch":
-      return await validateDispatchOutbound(p, params, sender, conn)
+      # §1.4 PD-2 needs the OWNING handler's peer-relative pattern and the parent
+      # envelope (the §7a.2a bundle base).
+      return await validateDispatchOutbound(p, params, sender, conn, env, pattern)
     return errOut(501, "unsupported_operation", some(op))
   else:
     return errOut(501, "no_handler_body", some(pattern))
@@ -1019,6 +1124,20 @@ proc handlerOps(pattern: string): seq[string] =
   of "system/validate/dispatch-outbound": @["dispatch"]
   else: @[]
 
+proc ownGrantsFor(pattern: string): seq[EcValue] =
+  ## A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward, as
+  ## distinct from any capability a caller presents. §6.8 row 1: an access in service of a
+  ## caller's request needs the caller's verified capability AND this grant, and BOTH must
+  ## pass. Narrow for `dispatch-outbound`; empty for everything else.
+  if pattern != "system/validate/dispatch-outbound": return @[]
+  proc scope(v: string): EcValue =
+    mapV(@[EcPair(key: textV("include"), val: arrV(@[textV(v)]))])
+  @[mapV(@[
+    EcPair(key: textV("handlers"), val: scope("system/validate/echo")),
+    EcPair(key: textV("operations"), val: scope("echo")),
+    EcPair(key: textV("resources"), val: scope("system/handler/system/validate/echo")),
+  ])]
+
 proc bindHandler(p: Peer; pattern: string) =
   ## Bind a MUST core handler (§6.2): the dispatch manifest at the pattern path +
   ## the interface index at system/handler/{pattern} (so tree:get resolves it).
@@ -1035,6 +1154,16 @@ proc bindHandler(p: Peer; pattern: string) =
     EcPair(key: textV("operations"), val: mapV(opsPairs)),
   ]))
   p.store.bindAt(p.abs("system/handler/" & pattern), ifaceE)
+  # §6.8: the grant MUST exist at `system/capability/grants/{pattern}` and a handler with
+  # no valid grant does not run. THIS BIND WAS ABSENT ENTIRELY — `bindHandler` wrote the
+  # manifest and the interface index and NO grant, so every bootstrap handler on this peer
+  # had none. Nothing read one before §1.4's PD-2 arm, which is why it was invisible.
+  # NARROW for dispatch-outbound: with a wide grant, consulting it and skipping it give
+  # the same answer on every input, so the confused-deputy discriminator cannot fire
+  # (GUIDE-CONFORMANCE §7a.1 makes the narrowness a scaffold-contract requirement).
+  let minted = mintTokenRaw(p, p.identity.identityHash, ownGrantsFor(pattern))
+  p.store.bindAt(p.abs("system/capability/grants/" & pattern), minted.token)
+  p.store.bindAt(p.abs("system/signature/" & hexLower(minted.token.hash)), minted.signature)
 
 proc bootstrap(p: Peer) =
   for pattern in BootstrapHandlers:
