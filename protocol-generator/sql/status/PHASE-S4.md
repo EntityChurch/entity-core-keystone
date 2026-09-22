@@ -84,7 +84,7 @@ correct). `make check` → **71/71** wire corpus (79 with self-tests).
    (tree_operations green). The heavier PATTERN-overlap arm + `is_attenuated` scope_subset are
    still only exercised by delegate-handler-gated ext vectors a core peer honest-SKIPs — carry
    forward as a documented completion item, not a gap.
-3. **Route A-SQL-008 / A-SQL-007** to arch as `research/stewardship/HANDOFF-TO-ARCH-*` (the
+3. **Route A-SQL-008 / A-SQL-007** to arch as a packet in `docs/outbox/` (the
    id-scope/path-scope two-strategy clarification + GLOB segment-anchoring) — the probe's
    spec-shaped payoff, unchanged by S4.
 4. **Tier-tracking**: this is an exploratory ‡ probe, not a Tier-1 lockstep peer. Re-run

@@ -9,7 +9,7 @@
 #
 # CLEAN-ROOM NOTE: the Go peer is built from the spec; the oracle binaries under
 # output/s4-oracles/ are the conformance TOOL (built from entity-core-go at the pinned
-# oracle content digest — tools/oracle-pin.env; the commit is internal, see README
+# oracle content digest — tools/oracle-pin.env; the commit is internal — built
 # in an isolated temp dir, NOT read as source while building the peer). The peer
 # is byte-VALIDATED against the oracle here, not derived from it.
 #

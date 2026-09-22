@@ -6,6 +6,85 @@ _Updated: 2026-09-17 · oracle pin: the 778-check set `7aa6f3de…` · spec snap
 >
 > ⚠ **A `0.8.2.31` pin means SWEPT to `.31`, not that every `.31` rule is implemented.** Six behaviour items are outstanding cohort-wide and **none of them is gated by the pinned 778-check set**, so a `0F` row is silent about all six: `resolve_peer_scope` (0 of 46 name it; not driven), §7a.1b's per-call `deadline_ms` `[MUST]` (**0 of 46** — a wire field, so the name IS the property), §4.6 step 3's binding-not-form test, §4.11's bounded close, tag policy at any nesting depth (`pa-probe` `D5`), and `501`-only-after-`check_permission` (a confidentiality property; the `go` vanguard passes the candidate oracle's check for it, cohort unknown until driven). Enumerated per item in `CONFORMANCE-MATRIX.md` footnote ¹⁴.
 
+## 2026-09-17: the doc standard, adopted — `AGENTS.md` is 508 KiB → 26 KiB and nothing was deleted
+
+The 2026-09 ecosystem doc/memory/routing standard is in force here. The headline is a byte count and
+the headline is not the point: **`AGENTS.md` was 508,792 B against a 30,720 B budget because it was
+the only file whose name invited a session to put what it had just learned somewhere.** Cutting it
+would have been the wrong move and the standard says so — one fleet sibling cut its own from 4,663
+lines to 289 and was back to 5,037 twenty-one days later, because nothing had changed about where a
+session puts a finding. **The fix is a destination, not a cleanup.**
+
+**[`docs/agents/memory/`](agents/memory/INDEX.md) — thirteen files, one per part of the system, all
+published.** Split on the existing entries and **moved, not rewritten**: every one of the 171 entry
+bodies was verified present verbatim in the new tree before the old one was cut, plus 12 blocks
+relocated out of the setup, build and boundary sections (those were carrying memory inline, which is
+why the lessons move alone only reached 64 KiB). Each file opens with an ***Arrive here when*** line,
+because a reader arrives with a symptom rather than a filename, and `AGENTS.md` now routes by symptom
+instead of carrying the content. **They publish deliberately**: this is the durable answer to *"we
+implemented one protocol in 46 substrates, what did that teach"*, it is the same material this repo
+already published inside `AGENTS.md`, and undeclared it would be stripped at a cut.
+
+**The promotion question is asked next, not during the split** — *could a test, a lint rule or a gate
+make this impossible instead of merely documented?* Mixing a move with a rewrite turns a two-hour job
+into a week and arrives unreviewable. Most entries already name their enforcement point; several of
+`make lint`'s gates started life as one of them.
+
+**`docs/outbox/` — 46 packets, never declared canonical**, because routing is
+internal and publishing the corpus is the expensive mistake. Old `HANDOFF-TO-*` names are **not
+renamed**: they are cited by dated records elsewhere, and back-editing a dated snapshot destroys its
+value as evidence of what was believed then. Our addressable name is stated in `AGENTS.md`.
+
+⭐ **The watermark scan returned a packet on its first run, and the fetch is the load-bearing half.**
+Each tracker now carries *"Last read X's outbox through `<date>`, at `<ref>` @ `<sha>`"*. Scanning
+seven counterparts at `origin/dev` surfaced `entity-system-architecture`'s `ROUTING-2026-09-17-b`,
+addressed to us and dated that day — §5.3a folded and **binding now**, the disclosure analyzer built,
+**nothing asked of us**, and our `F88` closed by being acted on rather than answered. **Two
+counterpart checkouts were behind `origin/dev`**, which is precisely the hazard the convention names:
+a checkout you have not pulled lists nothing new and looks exactly like a clean scan, after which the
+watermark advances *past* packets never seen. And `git ls-tree origin/dev` is the right question, not
+`ls` — several seats have an outbox on disk that has not reached their own tip.
+
+⚠ **The set-difference control found two missing counterparts, and both had open items against us.**
+Six seats keep a `TRACKER-entity-core-keystone.md`; we kept five. `entity-core-py` and
+`entity-core-rust` — the two ground-up lineages — both track us and we had no file for either, so
+every packet they addressed to us was **an absent row in an absent table**. Fourth occurrence of that
+shape, and the control was already written down here and had not been run. Both trackers are open now
+with their inbound recorded. `entity-core-py`'s standing note is carried verbatim because it is a
+finding about **us**: they declined an arm on the ground that *refusing where a sibling accepts
+partitions the cohort* — having polled two of three families. Our 46 peers already required the
+field, so **they were the partition and could not see it.** The obligation that puts on us is to be
+greppable, not to route more.
+
+**Two stale claims fixed, both found by doing this rather than by any gate.** `AGENTS.md` asserted
+that it *"is not a published surface and is not in `coherence-gate` check 6's scope"* — it is
+declared, it ships on public `master`, and it is not in `PIN_EXEMPT`, so **both clauses were false**
+and check 6 had been gating it all along. That is the pin-paragraph class with the subject changed
+from a number to a **scope**, and a scope sentence is an *exculpation*, which is the kind nobody
+re-reads. And `docs/STATUS.md` — this file — cited two packets **by path** under a directory the
+release strips, which is the index-shipped-and-the-evidence-did-not shape in the one document a
+reader opens for status. Both now cite the routing date.
+
+**The clone test, actually run.** `master` and `dev` cloned into clean directories: **319 relative
+links resolve**, `make lint` is green from a fresh clone, and `tools/oracle-bootstrap.sh` with the
+documented `GO_REPO=` override builds all three oracles and exits 0. One confidently-wrong line
+found and fixed — a de-SHA sweep had spliced *"the commit is internal, see README"* into the middle
+of *"built in an isolated temp dir"* in the `go` harness header, leaving a sentence that parses as
+nonsense.
+
+**Enforcement — `tools/doc-standard-gate.py`, in `make lint`, offline, ten checks.** Required set
+present **and declared** · `CLAUDE.md` is a shim · every declared doc exists · outbox never declared
+· the memory index agrees with the directory **in both directions** · every memory file declared and
+carrying its symptom line · no file named for a category of feeling · `AGENTS.md` against its budget
+· every tracker carrying a watermark that **names a tip** · the counterpart set derived from the
+**world** rather than from the trackers we already keep · Tier-1 make verbs · dated docs placed.
+**Every check prints the count it examined.** 13 plants, 13 caught, and the self-test refuses to run
+against a red baseline because a `CAUGHT` from an already-failing tree proves nothing. The
+`AGENTS.md` budget is **advisory this release and blocking from the next**; we are at **89%** of it.
+
+**Unchanged by any of this:** all 46 peers at `778 · 0F`, the pin, the matrix, the axis sweeps. This
+was a documentation and routing pass; not one line of peer source moved.
+
 ## 2026-09-17: the `0.8.2.31` sweep is **26 of 46** — every maintained tier, and M3 closed last
 
 **M1 5/5 · M2 8/8 · M3 13/13.** The 20 probe/exploratory peers are honestly at `0.8.2.25` and the
@@ -664,8 +743,8 @@ actually carry rather than from what we imagined they would.
    matching `splitOn` and not one theorem** among them; `splitOnAux` is `@[irreducible]`, well-founded
    over raw byte positions, with `extract` cutting a `ByteArray` under a UTF-8 validity proof — and
    the proofs target is deliberately mathlib-free. So the comment was wrong about scope *and* wrong
-   about cost, and only the first was routed to us. Reply, with both new digests for their ledger:
-   `research/stewardship/HANDOFF-TO-FORMALIZATION-2026-09-06-hframed-adopted-and-the-proof-gate-closed.md`.
+   about cost, and only the first was routed to us. Reply, with both new digests for their ledger,
+   routed to `entity-core-formalization` on 2026-09-06.
    The shipping-library edit in the same commit (`String.dropRight` → `dropEnd`, deprecated in
    4.29.1) was re-measured rather than assumed: **0 of 758 severities moved.**
 
@@ -687,8 +766,7 @@ actually carry rather than from what we imagined they would.
    The fix removed the failure mode and changed nothing else.
 
 12. ~~**Note to `entity-core-go`: a bare `-peers` core run is red against their own reference peer**~~
-   ✅ **DRAFTED 2026-09-03** at
-   `research/stewardship/HANDOFF-TO-ARCH-2026-09-03-peers-core-run-red-on-reference.md`, in flight.
+   ✅ **DRAFTED 2026-09-03**, routed to `entity-core-go` that day, in flight.
    `validate-peer -profile core -peers a,b` against two instances of the pinned `entity-peer`
    returns `200 total, 161 passed, 1 failed, 38 skipped` — the FAIL naming a missing
    `--inbox-relay-registry`. Reads as a harness/config gap their own `validate-complete.sh` exists

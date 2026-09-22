@@ -162,7 +162,7 @@ A-SQL-010 (compound-failure verdict precedence). See `SPEC-AMBIGUITY-LOG.md`.
    `is_attenuated` scope_subset for the delegate-handler-gated attenuation vectors (currently
    honest-SKIP for a core peer). Consider the §6.9a policy-table lookup as a SQL query (moves the
    authenticate-grant verdict INTO SQL — a natural authority-as-query extension).
-4. **Route A-SQL-008 (and A-SQL-007)** as `research/stewardship/HANDOFF-TO-ARCH-*` — the path/id-scope
+4. **Route A-SQL-008 (and A-SQL-007)** as a packet in `docs/outbox/` — the path/id-scope
    two-strategy clarification is the probe's spec-shaped payoff.
 5. **`--profile core` target:** 682·0F (per the profile `[conformance]`). Rebuild oracle, run
    `run-s4.sh` (single-peer honest-SKIPs the reference-peer-gated origination-core probes; run those

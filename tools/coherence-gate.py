@@ -348,6 +348,10 @@ def pin_facts():
 PIN_EXEMPT = (
     "docs/status/",
     "docs/archive/",
+    # A SENT PACKET IS A DATED RECORD OF WHAT WE TOLD SOMEONE ON A DAY. Back-editing one to
+    # name the current pin would rewrite the claim the recipient acknowledged — the same
+    # argument as docs/status/, reached through the outbox. Never edit a packet in place.
+    "docs/outbox/",
     "CHANGELOG.md",
     "protocol-generator/shared/spec-data/",
     "protocol-generator/shared/findings/",

@@ -42,6 +42,7 @@ Then, depending on what you came for:
 | Read the adversarial review of our own claims | [`protocol-generator/shared/syntheses/`](protocol-generator/shared/syntheses/README.md) |
 | Add a peer in your language | [Adding a peer](#adding-a-peer) ↓ |
 | Work in this repo as an agent or contributor | [`AGENTS.md`](AGENTS.md) + [`AGENTS-STANDARD.md`](AGENTS-STANDARD.md) |
+| Know what goes wrong before it goes wrong for you | [`docs/agents/memory/`](docs/agents/memory/INDEX.md) — every durable finding this work has earned, filed by the **symptom** you would arrive with |
 
 ---
 
@@ -199,8 +200,12 @@ implementations — `entity-core-codec-ffi-{rust,c}`, both building the same `li
 it; native-codec languages cross-check against it. It is what makes the long tail of the language
 landscape reachable at all.
 
-Plus `containers/` (per-toolchain Podman images), `ops/` (CI + release), `tools/` (the census and pin
-tooling), and `skills/entity-rosetta/`.
+Plus `containers/` (per-toolchain Podman images), `tools/` (the census, the pin tooling, and the
+read-only gates `make lint` runs), `skills/entity-rosetta/`, and
+[`docs/agents/memory/`](docs/agents/memory/INDEX.md) (every durable finding this work has earned,
+filed by symptom). CI is **per peer**, at `protocol-generator/<lang>/.github/workflows/` where a peer
+has it — 15 of 46 do, and the other 31 are measured identically, just not on a hosted runner.
+Release is not in this repo at all ([ADR-0031]); `ops/README.md` says where each actually lives.
 
 **Out of scope:** standard-extension implementations (TREE, CONTENT, IDENTITY, ATTESTATION, QUORUM,
 REGISTRY, RELAY). The community installs those atop a generated peer.

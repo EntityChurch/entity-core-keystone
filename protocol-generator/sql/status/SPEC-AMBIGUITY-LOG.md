@@ -99,7 +99,7 @@ implicit in the CASE arms — does the spec pin the 401-vs-403-vs-unresolvable p
 tightly enough for a declarative encoding, or is it prose-ordered?"). The profile's
 `authority_interior_expressibility` table tracks hypothesis → outcome → finding per element.
 **Escalation:** arch — any element that is awkward/impossible/cleaner-than-implied is a
-proposal candidate; route via `research/stewardship/HANDOFF-TO-ARCH-*` (the F32–F39 channel).
+proposal candidate; route via a packet in `docs/outbox/` (the F32–F39 channel).
 
 ---
 
@@ -315,5 +315,5 @@ as non-blocking cosmetic / substrate-fit / generator notes.
 core` gate (the exercised core cap set is byte-exact under the current encoding).
 They are the probe's spec-shaped payoff — surfaced *because* the relational encoding
 is sharper than the prose. The overseer is authoring the
-`research/stewardship/HANDOFF-TO-ARCH-*`; architecture pulls it in on its own
+a packet in `docs/outbox/`; architecture pulls it in on its own
 schedule (never a cross-repo edit). No architecture repo is touched from here.

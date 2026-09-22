@@ -11,6 +11,37 @@ Work since the initial public research-preview. No release has been cut; this se
 running record, not a version claim. **`CONFORMANCE-MATRIX.md` is the authoritative per-peer
 state** — the entries here are a summary of what moved and why, and they defer to it on numbers.
 
+### Agent docs restructured to the 2026-09 doc standard (2026-09-17)
+
+**`AGENTS.md` went from 508,792 B to 26,467 B and nothing was deleted.** It had grown to that size
+because it was the only file whose name invited a session to record what it had just learned. The
+durable findings now live in **`docs/agents/memory/`** — thirteen files, one per part of the system,
+each opening with an *"Arrive here when"* line so it is findable by the symptom a reader arrives
+with, indexed by `docs/agents/memory/INDEX.md`, and all declared canonical.
+
+- **Moved, not rewritten.** All 171 entry bodies were verified present verbatim in the new tree
+  before the old section was cut, plus 12 blocks relocated out of the setup, build and boundary
+  sections. Nothing was summarised, condensed or dropped.
+- **They publish, deliberately.** This is the durable answer to *"one protocol, 46 substrates, what
+  did that teach"* — the same material the repo already published inside `AGENTS.md`.
+- **The directory is bounded by one rule:** an entry that could become a check should become one,
+  and is then deleted from memory. Memory is where a finding waits while it is still only prose; it
+  is not where findings retire.
+- **`docs/outbox/`** now holds the cross-repo routing packets, and is never declared canonical.
+  Existing packet filenames are unchanged — they are cited by dated records, and back-editing a
+  dated snapshot destroys its value as evidence.
+- **`CANONICAL-DOCS.toml`** gained `[[area]]` and `[[living]]` declarations describing what each
+  directory *is*, so a check that assumes one layout does not fire on ours.
+- **New gate — `tools/doc-standard-gate.py`**, in `make lint`: ten checks, each printing the count
+  it examined, with a 13-plant regression suite that refuses to run against a red baseline.
+
+Two stale claims were corrected in the process. `AGENTS.md` asserted it was neither published nor in
+`coherence-gate` check 6's scope; it is declared, ships on public `master`, and is not exempt, so
+both clauses were false. And `docs/STATUS.md` cited two escalation packets by a path the release
+strips — now cited by routing date instead.
+
+No peer source changed and no conformance number moved: all 46 peers remain at `778 · 0F`.
+
 ### A gate for internal coherence (2026-08-30) — the hole the other five could not see
 
 `make lint` gained `tools/coherence-gate.py`. The five existing gates ask whether numbers are

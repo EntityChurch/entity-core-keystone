@@ -11,8 +11,8 @@
              lake env lean /work/protocol-generator/shared/diagnostics/a4-idscope-widening-sweep.lean'
 
   MEASURED 2026-09-16 at keystone dev @ 458be817, against entity-core-formalization
-  ROUTING-2026-09-16-b (their dev @ 6b111eb).  Routed back in
-  docs/status/ROUTING-2026-09-16-d-entity-core-formalization-...
+  ROUTING-2026-09-16-b (their dev @ 6b111eb).  Routed back to entity-core-formalization
+  on 2026-09-16 (packet d; the outbox is internal, so this cites the date, not a path).
 
   EXPECTED OUTPUT -- a run that does not reproduce these has stopped measuring:
     SWEEP pairs=576 disagree=30 narrowed=22 widened=8 widenedUnderStar=8 widenedOther=0

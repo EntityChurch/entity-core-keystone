@@ -73,5 +73,5 @@ over the general cohort.
   permitted write scope — `protocol-generator/sql/` only). Proposed row content is
   reported to the overseer.
 - **A-SQL-007 / A-SQL-008 → arch:** the overseer is authoring the
-  `research/stewardship/HANDOFF-TO-ARCH-*` (the id-scope/path-scope two-strategy
+  a packet in `docs/outbox/` (the id-scope/path-scope two-strategy
   clarification + the GLOB segment-anchoring note). Escalated to arch, overseer-routed.

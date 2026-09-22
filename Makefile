@@ -211,6 +211,17 @@ lint:
 	@# because this repo keeps those deliberately as evidence. Regression suite:
 	@# `python3 tools/coherence-gate.py --self-test`. The hand-walk stays mandatory.
 	@python3 tools/coherence-gate.py --quiet
+	@echo "lint: gating the doc + memory + routing standard (read-only, offline)…"
+	@# The 2026-09 ecosystem doc standard, enforced HERE rather than only at a cut.
+	@# A cut is the wrong moment to learn that AGENTS.md went undeclared or that a memory
+	@# file was added and never indexed: the tree has moved on and the author is gone.
+	@# Every invariant it checks is decidable from this tree alone, offline, in ~0.2 s.
+	@# It is also this repo's own rule applied to a document standard — a discipline with
+	@# no enforcement point is theater — and what was a paragraph in AGENTS.md for one day
+	@# is a check from the next. The AGENTS.md 30 KiB budget is ADVISORY here and blocking
+	@# from the next release; `--strict` turns it blocking now.
+	@# Regression suite: `python3 tools/doc-standard-gate.py --self-test` (14 plants).
+	@python3 tools/doc-standard-gate.py --quiet
 	@echo "lint: gating container recipe reproducibility (read-only, offline)…"
 	@# Fifth root-level invariant. Every image in containers/ is a recipe an adopter has
 	@# to be able to run, and until 2026-08-27 nothing asked whether they still could:
@@ -294,7 +305,8 @@ lint:
 	@python3 tools/keystone-spec-gate.py --self-test >/dev/null 2>&1
 	@python3 tools/ascii-wire-gate.py --self-test >/dev/null 2>&1
 	@python3 tools/spec-pin-gate.py --self-test >/dev/null 2>&1
-	@echo "lint: 7 gate self-tests OK (harness, coherence, kind-c, skip-provenance, keystone-spec, ascii-wire, spec-pin)"
+	@python3 tools/doc-standard-gate.py --self-test >/dev/null 2>&1
+	@echo "lint: 8 gate self-tests OK (harness, coherence, kind-c, skip-provenance, keystone-spec, ascii-wire, spec-pin, doc-standard)"
 	@echo "lint: gating the Kind C publication boundary (read-only)…"
 	@# The tenth gate, and the newest kind of thing in the tree. Kind C is a check
 	@# THIS repo authors, from the spec, at the same normative target as the oracle
