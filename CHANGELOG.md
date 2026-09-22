@@ -7,6 +7,8 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.8.3] — 2026-09-22
+
 A running record, not a version claim. **`CONFORMANCE-MATRIX.md` is the authoritative
 per-peer state** — the entries here are a summary of what moved and why, and they defer to
 it on numbers.
@@ -17,12 +19,12 @@ This section used to open *"no release has been cut."* That was wrong when it wa
 and it is corrected here. **Two releases have been published: `0.8.0`, the initial public
 research preview, and `0.8.2`, published 2026-08-24** — the release in which the research
 corpus became readable, and the one that took the published tree from 1,368 to 2,720 files.
-Neither was ever given a heading in this file, so every entry below has been sitting under
-*Unreleased* whether or not you already downloaded it.
+Neither had a heading in this file until this release, which adds them: everything under
+`0.8.2` below is what that release shipped, and everything above it is new here.
 
 **The boundary is exact: everything from *Release readiness (2026-08-23)* downward is what
-`0.8.2` shipped. Everything above it is new since.** `VERSION` is corrected to `0.8.2` in
-the same change, having been left at `0.8.0` through that release.
+`0.8.2` shipped. Everything above it is new since.** `VERSION` was corrected to `0.8.2` in
+that change, having been left at `0.8.0` through that release; it reads `0.8.3` here.
 
 ### Changed in ways that can break an existing caller
 
@@ -318,6 +320,8 @@ closed. §5.6's MIN_DEFINED mint ceiling was absent in **every** peer — `mintT
 liveness cascade), the `asm-x86_64`/`asm-arm64`/`riscv64` trio (INVALID measurements, a
 connection-pressure family), `wasm-wat` 2F and `turbowarp` 3F (hand-authored / exploratory,
 unstarted), and `apl` (upstream-blocked, unmeasured). None of them is the mint ceiling.
+
+## [0.8.2] — 2026-08-24
 
 ### Release readiness (2026-08-23) — the published tree is what we actually claim it is
 
