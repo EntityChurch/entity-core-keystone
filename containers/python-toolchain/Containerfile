@@ -101,6 +101,22 @@ COPY protocol-generator/python/requirements.txt /tmp/requirements.txt
 RUN pip install --upgrade 'pip==25.*' \
     && pip install --require-hashes -r /tmp/requirements.txt
 
+# ── The TEST closure, from the peer's own dev lockfile ───────────────────────
+# Resolving only the RUNTIME closure is the defect this line fixes, and it is the
+# same one ghc-toolchain had (2026-09-02): the image looks complete, the peer
+# builds, and only the gate is missing its dependencies. The peer's tests
+# `import pytest` at module scope, pytest was declared as a pyproject `dev` extra
+# and installed nowhere, so `python -m unittest discover` in this image died with
+# ModuleNotFoundError and the python S2 suite had never run in its own container.
+#
+# Seeded from the peer's OWN requirements-dev.txt, hash-pinned, so the image's
+# test closure and the tree's lockfile cannot drift — never from a restatement of
+# the pins here. Kept as a SEPARATE install from requirements.txt so the shipped
+# runtime closure stays exactly one dependency.
+COPY protocol-generator/python/requirements-dev.txt /tmp/requirements-dev.txt
+RUN pip install --require-hashes -r /tmp/requirements-dev.txt \
+    && python -c 'import pytest; print("pytest", pytest.__version__)'
+
 # ── Verify the cryptography EdDSA backend is live (Ed25519 + Ed448 BOTH present) ──
 # Fails the build loudly if the bundled OpenSSL didn't wire Ed448 into cryptography.
 # This closes the A-PY-002 risk at container-build time: Ed448 is the crypto-agility

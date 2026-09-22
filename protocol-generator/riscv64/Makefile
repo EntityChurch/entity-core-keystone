@@ -77,9 +77,20 @@ $(BIN)/host: $(HOST_OBJS) codec | $(BIN)
 # protocol-generator/shared/findings/peers-grant-dimension-oracle-gap.md), so
 # this drives derive_handler/grant_scope_ok directly against hand-encoded CBOR fixtures — no
 # FFI/.so link needed (dispatch.o's unrelated externs are stubbed in the test file itself).
+#
+# THIS TARGET IS THE ONE PLACE THIS PEER ACTUALLY COMPILES C, which is why it needs an
+# include flag nothing else here does. $(CC) is described above as a LINK DRIVER only, and
+# for the peer itself that is true. The Debian riscv64 sysroot is MULTIARCH (headers under
+# usr/include/riscv64-linux-gnu) while the Fedora cross-gcc is not multiarch-aware, so a bare
+# compile dies on `bits/libc-header-start.h: No such file or directory` -- which reads like a
+# broken image and is not. The codec's riscv64-cross-toolchain.cmake has carried exactly this
+# flag, with exactly this explanation, since the sysroot was built; it was simply never needed
+# here until something tried to run this unit.
+CROSS_INC := -I$(SYSROOT)/usr/include/riscv64-linux-gnu
+
 .PHONY: peers-scope-test
 peers-scope-test: $(OBJ)/dispatch.o $(OBJ)/cbor.o | $(BIN)
-	$(CC) $(LDFLAGS) -O0 -o $(BIN)/peers-scope-test tools/peers-scope-test.c $(OBJ)/dispatch.o $(OBJ)/cbor.o
+	$(CC) $(LDFLAGS) $(CROSS_INC) -O0 -o $(BIN)/peers-scope-test tools/peers-scope-test.c $(OBJ)/dispatch.o $(OBJ)/cbor.o
 	QEMU_LD_PREFIX=$(SYSROOT) $(QEMU) $(BIN)/peers-scope-test
 
 .PHONY: clean

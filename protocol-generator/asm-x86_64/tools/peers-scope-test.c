@@ -32,7 +32,24 @@ void ec_ed25519_sign(void) { abort(); }
 void ec_peerid_format(void) { abort(); }
 void ec_peerid_parse(void) { abort(); }
 void write_all(void) { abort(); }
-void mcpy(void) { abort(); }
+/* mcpy is NOT an FFI/host call -- it is this peer's own leaf byte-copy helper
+ * (host.s: mcpy(dst, src, len) -> dst + len). It gets a REAL implementation rather
+ * than an aborting stub.
+ *
+ * It used to abort with the rest, under the header's blanket assumption that the
+ * three functions under test "never call the FFI/host externs". The §1.4 address
+ * gate (2026-09-01) put an mcpy on grant_scope_ok's path, the assumption broke, and
+ * abort() fired exactly as designed -- but nothing ran this unit, so the gate that
+ * caught it went unread for a day. The abort was correct and the stub list was too
+ * coarse: lumping a pure memory helper in with ec_ed25519_sign means any future
+ * refactor that copies bytes reads as a crash. The genuinely off-limits externs
+ * (crypto, peerid, write_all) still abort, which is the property worth keeping.
+ */
+void *mcpy(void *dst, const void *src, size_t n)
+{
+    memcpy(dst, src, n);
+    return (char *)dst + n;
+}
 void strlen_unused_marker(void) { } /* real strlen() comes from libc via <string.h> below */
 /* type_table/type_table_count: typestore.o data, unrelated to the peers-scope path (also
  * pulled in transitively since dispatch.o is linked as one unit). */
@@ -110,7 +127,22 @@ static size_t build_token_data(uint8_t *buf, const char *op, const char *handler
         p = w_scope_incl1(p, peers_elem);
     }
     p = w_text(p, "resources");
-    p = w_scope_incl1(p, "*");
+    // Absolute all-peers form, NOT a bare star: this fixture is about the PEERS
+    // dimension, so its resources grant must cover the target regardless of framing.
+    // Section 5.5a makes a bare star GRANTER-LOCAL, never universal -- it canonicalizes
+    // to "/<granter>/" + star. While grant_scope_ok used the unframed resource_matches
+    // that was invisible; f3acd7f swapped in the 5.5a-aware resources_cover_target, which
+    // frames the pattern against g_dfr (the presented cap's granter, .lcomm and so not
+    // settable from here), the synthetic token carries no granter, and both ACCEPT cases
+    // began failing on the RESOURCES dimension while claiming to test PEERS.
+    //
+    // Bisected rather than assumed: 11/0 at ab00ccf and 041443c, 9/2 from f3acd7f onward,
+    // one line of diff in grant_scope_ok. The peer was never wrong -- and the REJECT
+    // directions passed throughout, which is why nothing else noticed.
+    //
+    // (Written with // deliberately: the pattern below contains star-slash, which ends a
+    // block comment early. That is how the first version of this note broke the build.)
+    p = w_scope_incl1(p, "/*/*");
     return (size_t)(p - buf);
 }
 

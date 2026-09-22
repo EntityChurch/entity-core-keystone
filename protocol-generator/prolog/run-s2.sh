@@ -9,13 +9,31 @@
 #   3. Run the 69-vector wire-conformance corpus through the foreign codec.
 #   4. Run the crypto KAT (Ed25519/Ed448/SHA-256/384) pins.
 #
-# Invoke from the repo root (the mount point /work) on the host:
-#   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm --network=none -v "$PWD":/work:Z -w /work \
-#     entity-core-keystone/prolog-toolchain:latest \
-#     protocol-generator/prolog/run-s2.sh
+# Invoke from the HOST, like every sibling:
+#   ./run-s2.sh
+# It relaunches itself inside the prolog-toolchain container. Set INCONTAINER=1
+# to skip the relaunch (already inside).
 #
-# All paths are relative to the repo root (/work).
+# This script used to be inside-container ONLY, while all 21 sibling run-s2.sh
+# drive podman themselves. That is not a stylistic difference: the S2 axis is
+# swept by running each peer's run-s2.sh, so the odd one out fails the sweep with
+# `swipl: command not found` — which reads as a broken toolchain or a missing
+# image and points the reader at the tree instead of at the invocation. The same
+# shape the charter already records for a guard that tests a CONTAINER path from
+# the host. Uniform entry point, so a cohort sweep can drive all of them.
+#
+# All paths inside are relative to the repo root (the mount point /work).
 set -euo pipefail
+
+if [ "${INCONTAINER:-0}" != "1" ]; then
+  HOSTREPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  . "$HOSTREPO/tools/podman-caps.sh"
+  exec podman run $PODMAN_RUN_CAPS --rm --network=none \
+    -e INCONTAINER=1 \
+    -v "$HOSTREPO":/work:Z -w /work \
+    entity-core-keystone/prolog-toolchain:latest \
+    bash /work/protocol-generator/prolog/run-s2.sh "$@"
+fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # repo root (/work)
 PEER="$ROOT/protocol-generator/prolog"

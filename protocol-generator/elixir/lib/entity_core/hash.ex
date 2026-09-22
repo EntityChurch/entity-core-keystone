@@ -23,6 +23,44 @@ defmodule EntityCore.Hash do
     Varint.encode(format_code) <> digest
   end
 
+  # ECFv1-SHA-256 — the §9.1 conformance floor, and the format the `system/peer`
+  # identity entity is pinned to unconditionally (§4.5a item 1a).
+  @peer_identity_floor_format 0x00
+  @peer_identity_type "system/peer"
+
+  @doc """
+  The §4.5a **authoring** entry point — use this wherever the peer *creates* an
+  entity under a chosen `content_hash_format`, as opposed to merely computing a
+  digest.
+
+  `content_hash/2` is the raw primitive: hand it a format code and it hashes.
+  This adds the one normative constraint on *which* format an author may choose.
+
+  **§4.5a item 1a** — a `system/peer` identity entity is authored under
+  ECFv1-SHA-256 (`0x00`) **unconditionally**: on every connection, whatever the
+  active format, and whatever the peer's home format. Its data is wholly
+  recoverable from the public peer-id, so every consumer *derives* its hash
+  rather than fetching it. A `system/peer` under any other format is not a form
+  to be preserved but a construction that cannot exist.
+
+  This is the constructor the `hash-format-sha-384.2` agility vector requires the
+  refusal to be observed through. That vector used to assert the *opposite* and
+  stayed green only because verifiers hand-built the entity instead of routing
+  through the code that forbids it — a fixture that exercises a forbidden
+  construction and passes by bypassing the guard certifies the opposite of the
+  rule (`GUIDE-CONFORMANCE` §2.4a).
+  """
+  @spec author_content_hash(map(), non_neg_integer()) ::
+          {:ok, binary()} | {:error, {:peer_entity_not_at_floor, non_neg_integer()}}
+  def author_content_hash(entity, format_code) when is_map(entity) do
+    if Map.get(entity, "type") == @peer_identity_type and
+         format_code != @peer_identity_floor_format do
+      {:error, {:peer_entity_not_at_floor, format_code}}
+    else
+      {:ok, content_hash(entity, format_code)}
+    end
+  end
+
   # Allocated content-hash format codes (V7 §1.2 / §4.3 registry — active set).
   @allocated_formats %{0 => :sha256, 1 => :sha384}
 

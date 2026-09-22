@@ -39,6 +39,13 @@ data CodecError
     UnsupportedKeyType !Integer
   | -- | Unsupported content-hash format code.
     UnsupportedHashFormat !Integer
+  | -- | §4.5a item 1a: a @system\/peer@ identity entity was authored under a
+    -- @content_hash_format@ other than the ECFv1-SHA-256 floor (@0x00@). The
+    -- identity entity is pinned to the floor unconditionally — on every
+    -- connection, whatever the active format, whatever the peer's home format —
+    -- so a non-floor form is a construction the protocol does not admit. Carries
+    -- the offending format code.
+    PeerEntityNotAtFloor !Integer
   | -- | Base58 decode hit a character outside the Bitcoin alphabet.
     BadBase58 !String
   deriving (Eq, Show, Generic)

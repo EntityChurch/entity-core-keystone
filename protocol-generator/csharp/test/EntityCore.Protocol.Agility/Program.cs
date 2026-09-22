@@ -86,10 +86,15 @@ Console.WriteLine("\nHASH-FORMAT-SHA-384-1 (experimental-test 0xFE, 0xAA×64):")
     // construction and passes by bypassing the code that forbids it certifies the
     // opposite of the rule" (GUIDE-CONFORMANCE §2.4a). This harness did exactly that.
     //
-    // OWED, and deliberately not faked here: the NEGATIVE half — asserting that
-    // BuildPeer(..., HashFormats.Sha384) is REFUSED. It is not, today. Writing that
-    // assertion requires BuildPeer to reject a non-floor home format for
-    // `system/peer`, which is a peer-behaviour change and not a test edit.
+    // The NEGATIVE half is asserted below. It was owed from 2026-09-01 to
+    // 2026-09-02 with this comment standing in for it — exactly the shape the
+    // charter names: a deferral comment is a conformance claim with no gate on it.
+    // `Entity.Create` now refuses a non-floor content_hash_format for
+    // `system/peer` (a peer-behaviour change, not a test edit), so the refusal is
+    // observed through the pinned constructor as the corpus's
+    // `verifier_requirement` demands.
+    CheckThrows("hash-format-sha-384.2 — authoring system/peer under SHA-384 (0x01) is REFUSED",
+        () => BuildPeer(exp, pub, HashFormats.Sha384));
 }
 
 // ── Phase 2: matrix peer identities (M2 / M3 / M6, peers A & B) ───────────────

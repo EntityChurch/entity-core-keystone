@@ -1812,6 +1812,178 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   transcription site must name the corpus artifact it came from so the next reader can diff it.
   *(Detail, including the one peer predicted-failing and unmeasurable and the negative half nobody
   implements: `protocol-generator/shared/findings/superseded-corpus-duplicate-and-transcribed-pins.md`.)*
+- **RATIFIED, second occurrence on the same peer and the sharper one: THE PEER'S OWN STDERR GOES TO
+  A FILE INSIDE THE CONTAINER AND DIES WITH IT — four investigations found "no crash" because
+  nobody had kept the evidence.** 2026-09-02, closing the `zig` `r3_connection_flood` item. Every
+  `run-s4.sh` in the cohort launches the peer as `./host … >/tmp/host.out 2>/tmp/host.err &`. Those
+  are **container** paths on a `--rm` container: when the run ends the stderr is gone, so a peer that
+  aborts leaves a harness log reading *"connection refused"* and nothing else. Adding
+  `cat /tmp/host.err` after the oracle call — one line — turned *"not root-caused, no crash, empty
+  stderr"* into a stack trace on the first reproduction. **Before concluding a peer did not crash,
+  confirm you kept its stderr.** (Pairs with the standing *"a source grep is not a conformance
+  census"*: here the missing evidence was not in the tree at all.)
+  **What it found, and it is a lifetime bug BELOW peer code:** `thread NNNNN panic: reached
+  unreachable code` at `std/Thread.zig:1377` — `entryFn`'s `completion.swap(.completed, .seq_cst)`
+  landing on the `.completed => unreachable` arm. That state is only reachable if a detached thread's
+  `Instance` mapping was **reused while its previous thread was still inside that `defer`**:
+  `detach()` makes the thread `freeAndExit()` its own stack+TLS+Instance mapping, and a concurrent
+  `spawn()` can be handed the same address. This is the standing zig entry's *"a detached worker must
+  not outlive the state it borrows"* with the stdlib's own bookkeeping as the victim rather than
+  ours — so **`detach()` is the hazard, not just what you hand it.**
+  **Measured: 5 aborts in 60 full `--profile core` runs (8%).** It presents first as
+  `t2_2_connection_churn` failing mid-cycle, and only then as `r3`.
+  **TWO REPORTING LESSONS, both about numbers we had already published:**
+  (a) **The previous record said `r3` 2/22 and churn **0/22**. Re-measuring gave 4/22 and 2/22 — so
+  churn was never 0**, and a "0" that came from too few samples had been carried forward as a fact
+  distinguishing two bugs. The standing rule (*re-run N times and count*) already covers the failing
+  case; extend it to the **passing** one: a 0-of-N is a rate estimate too, and its confidence is
+  bounded by N.
+  (b) **The oracle's failure text can name a mechanism that is not the mechanism.** `r3` reports
+  *"admitted 0/256 … admission slots leaked; the bound must release when connections close"* — a
+  precise, plausible, and completely wrong description of a peer that is simply **dead**. It is
+  inferring from `connection refused`. Read a check's prose as a description of what it OBSERVED,
+  never of what happened; the instrumented accept loop (which never exited) is what separated the
+  two.
+  **CLOSED separately in the same session, and do not let it absorb the above: `zig` had no §4.10(c)
+  admission bound at all**, so a 256-connection flood became 256 concurrent threads and `r3` FAILED
+  **9 of 30** runs with *"admitted all 256 … fell over on the serve probe … i/o timeout"* — plain
+  saturation, no crash, accept loop healthy. A 64-connection bound (**reserved BEFORE the spawn**,
+  because a detached thread can finish before `spawn()` returns; **released LAST in the worker's
+  teardown**, because a slot must never be free while its resources are held) eliminated that shape
+  entirely — **0 of 60** — and took `r3` WARN→PASS (`314P/336W → 315P/335W`). **Two independent
+  defects behind one intermittent check, and fixing the first one does not touch the second**: this
+  is the 2026-09-01 `zig` pattern (`3/5 → 1/6 → 0/22`) recurring, where one bug masked another and
+  only counting over repeated runs told them apart. Reporting the bound as "the fix" would have been
+  a partial fix sold as a whole one.
+  **LANDED COHORT-WIDE 2026-09-02, and the sweep is the entry above one level up: only THREE of 46
+  harnesses kept the peer's stderr, and the survey that said otherwise was wrong twice.** The item was
+  deliberately deferred as "its own job"; doing it produced the defect it exists to catch, on the
+  first run. Two failed surveys first, both already-named shapes:
+  (a) `grep -l 'cat .*host\.err'` reported **39 of 46 already capturing.** Every one of those 39 cats
+  the file ONLY on the **startup-failure** path (`host exited before LISTENING`), which by
+  construction cannot fire for a peer that starts fine and dies mid-run — the only case the item is
+  about. **A grep can match the right token in the WRONG CONTROL-FLOW BRANCH, and that reads exactly
+  like a pass.** This is the fourth member of the false-negative family after the `dart`/`ruby` NUL
+  byte (could not SEE the file), F51 (wrong VOCABULARY) and the de-versioning sweep (pattern could not
+  SPAN the construction) — and it is the first that is a false POSITIVE, i.e. it manufactures
+  confidence rather than absence.
+  (b) Narrowing to `host.err` then reported 5 peers with **no stderr file at all**. They have one;
+  `io`/`pd`/`sql`/`turbowarp` merge stderr into a combined log under their own names and `node-red`
+  uses `/tmp/nr.err`. **The discriminator has to be STRUCTURAL — a `cat` of the peer's log AFTER the
+  last oracle invocation — not textual.** By that measure the real state was 3 of 46.
+  **Three shapes, decided by the harness and not by taste** (the same "the substrate decides" rule as
+  the §6.3 salvage flag): append after the oracle call (38 peers + `node-red`); **split the streams
+  first** where the launch merges them, since a combined log is never empty and a guard on it would
+  dump the log every run — and fix the startup-failure path to print BOTH, or the split moves the
+  evidence out from under the one guard that already worked; and **hold the exit code** on the five
+  whose oracle call has no `|| true` under `set -e` (`io pd sql python ruby`), where a naive append
+  runs only when the oracle SUCCEEDS and is therefore silently absent from every failing run.
+  **Verified by RUNNING** — all 46 `bash -n`, 10 peers driven through the census covering every shape,
+  then the full 46-peer census at `756`, 46/46 comparable. The guard was also observed FIRING
+  (`go python pd sql` print a startup banner on stderr), which is the half normally left unverified.
+- **RATIFIED — SECOND OCCURRENCE, DIFFERENT LANGUAGE, DIFFERENT ALLOCATOR: A DETACHED WORKER MUST NOT
+  OUTLIVE THE STATE IT BORROWS.** `c`, 2026-09-02, found by the stderr capture above on its first
+  cohort run: a 46-peer census in which 45 peers were 0F and `c` was **756 · 288P/335W/27F**, and the
+  peer's own dying words were `free(): chunks in smallbin corrupted`. `reader_loop` dispatches each
+  inbound EXECUTE on a **detached** thread whose job borrows `conn` and `io`, both living inside the
+  connection's `serve_state`; the reader returns the moment the client closes and `serve_reaper`
+  joined **only the reader** before freeing that state. `ec_io_free()` also `close()`s the fd, so a
+  late write can land on a descriptor **already recycled by a later `accept()`** — a cross-connection
+  write, not merely a lost response.
+  **The ordering IS the fix and every clause is load-bearing:** reserve BEFORE the spawn (the worker
+  can finish before `pthread_create` returns), release LAST in the worker (the owner may free
+  everything the instant the count reaches zero), drain before the owner frees. `ec_session_close`
+  carried the identical defect with a different owner and was fixed the same day — the standing
+  *"harden one anchor, check its siblings"* rule, which this repo has now failed twice.
+  **THE CATEGORY RUN DOES NOT REPRODUCE IT, AND THAT IS THE MEASUREMENT LESSON.** `-category
+  concurrency` alone: **0 of 20** on the unfixed binary. Heap corruption is layout-sensitive and the
+  crash needs the full suite, ~680 checks deep. On `--profile core`: **baseline 1 of 10 · fixed 0 of
+  20**. State the resolution rather than implying proof — against a ~10% base rate, 20 clean runs is
+  roughly 88% confidence. **Corollary to the standing "drive the starved category directly" advice:
+  that is right for COVERAGE and wrong for a RACE — an isolated category is a different heap.**
+- **PROSE IN A COMMENT IS CODE, IN ANY FORMAT WHERE PUNCTUATION TERMINATES A RECORD — and the errors
+  it produces are invisible if the peer logs to a file that dies with the container.** Candidate
+  (first occurrence, but the enforcement point is exact). `pd` had been printing three errors on every
+  load for months: `canvas: no method for 'not'` and two `established_ok: no such object`. A Pd record
+  ends at an **unescaped `,` or `;` including inside a `#X text` comment**, so the RT-6 anti-replay
+  note's ordinary English punctuation — *"must be REJECTED, not re-processed"*, *"auth_decode;
+  established_ok 0 -> 401"* — broke out of the comment and Pd **dispatched the remainder as messages**.
+  **Severity, in both directions, because both matter:** it moved **no check** (`pd` is `756 · 0F`
+  before and after; a per-check severity diff against `go` shows its only deficit is 7 `type_system`
+  entries, nowhere near the handshake ladder). But it was harmless **only because the words after the
+  separators named nothing** — the same defect one word over sends a live message to a live receiver
+  (`; net_listen`, `; buf_reset`) at load, and nothing would have reported that either.
+  **Enforcement: `protocol-generator/pd/tools/patchlint.py`, a prerequisite of `make external`**, so
+  every conformance run of that peer checks it; regression-tested by planting. It is a FILE and not an
+  inline recipe because the first cut was inline and Make+shell+python quoting mangled the backslash
+  class into one that flagged already-escaped separators — **it reported 6 findings where the truth
+  was 1, and a gate that returns the wrong answer is worse than no gate.** Generalize: **before
+  trusting a load-time-clean claim, confirm the loader's diagnostics are being kept**, and treat any
+  format where comments share a terminator with code (Pd, CSV-ish DSLs, some `.ini`) as executable.
+- **AN AXIS'S PER-PEER GATES ROT EXACTLY WHERE NO COHORT RUNNER REACHES — the NO-GATE column is not a
+  list of peers without tests, it is a list of tests nobody runs.** RATIFIED 2026-09-02, and it is the
+  entry below (*a second axis with no cohort gate*) proven a second time by its own leftovers. That
+  entry closed the S2 sweep at **37 GREEN / 0 RED / 9 NO-GATE** and recorded, in the same breath, that
+  *"they probably have no separate codec suite"* was **a hypothesis of the same shape as the four
+  claims this ratchet disproved.** It was. **Five of the nine had a real authored S2 surface, and four
+  of those five were RED:** `asm-x86_64` (`make diff` — an L2 native-codec differential against the
+  3-way-locked corpus, 71 vectors + 4 synthetic — plus parse-test and peers-scope-test), `asm-arm64`
+  and `riscv64` (FFI seam KAT + the only `peers`-dimension guard in the tree), `wasm-wat` (three
+  authored WAT test modules) and `unison` (a UCM corpus transcript + 15 pinned-invariant self-tests).
+  Sweep now **46 GREEN, 0 RED, 0 NO-GATE**.
+  **Four failure shapes, none of them visible to S4, and each is its own small lesson:**
+  - **A test's stub list can be too COARSE, and then the test's own guard reads as a crash.** The asm
+    trio's unit aborts if `grant_scope_ok` reaches a host/FFI extern — correct — but §5.5 put an
+    `mcpy` (the peer's own leaf byte-copy) on that path, so it aborted **before printing anything**,
+    because `abort()` does not flush stdio. Give the benign leaf a real implementation; keep the
+    genuinely off-limits externs (crypto, peerid, `write_all`) aborting.
+  - **BISECT THE UNIT, DO NOT ATTRIBUTE IT TO THE LAST INTERESTING COMMIT.** With the crash gone, two
+    ACCEPT assertions failed and the obvious culprit was the §1.4 address gate that had just landed on
+    exactly these peers. **It was not:** `0d2c45e` never touched `grant_scope_ok`. Measured 11/0 at
+    `ab00ccf` and `041443c`, 9/2 from `f3acd7f`, **one line of diff** — `resource_matches` →
+    the §5.5a-aware `resources_cover_target`. The fixture granted a bare `*`, which §5.5a makes
+    GRANTER-LOCAL, and the synthetic token has no granter: **a test about the PEERS dimension was
+    failing on RESOURCES.** The peer was never wrong, and both REJECT directions passed throughout,
+    which is why nothing else noticed.
+  - **A CROSS-COMPILE FLAG THAT ONE BUILD PATH ALREADY DOCUMENTS.** `riscv64` could not COMPILE its
+    unit: the Debian sysroot is multiarch and the Fedora cross-gcc is not, and the peer Makefile calls
+    `$(CC)` a *"LINK DRIVER only — no C compiled"*, true of everything except that one target. The
+    codec's `riscv64-cross-toolchain.cmake` has carried the exact `-I` with the exact explanation
+    since the sysroot was built. **When a build fails on a flag, grep the tree for that flag before
+    deriving it.**
+  - **A NON-ASSERT FAILURE IN AN ASSERT-CODED HARNESS READS AS A BROKEN BUILD.** `wasm-wat`'s
+    dispatch-test died with an out-of-bounds write (`offset 0x00a00000, boundary 0x007fffff`) and no
+    code-table entry: `dispatch.wat` keeps its store index at `0xA00000` while the unit grew memory to
+    8 MiB. The live peer never hit it because `host.wat` grows to 5632 pages for per-connection
+    buffers. **A unit that imports a module authored against a larger memory map inherits that map.**
+  - **A TRANSCRIPT THAT NO LONGER TYPE-CHECKS, with the proof sitting in the tree.** `unison`'s corpus
+    gate called `ed25519Sign` with two arguments after it became `(seed, pub, msg)`. The committed
+    `conformance.output.md` still shows the **old 2-arg signature** while `peer-compile.output.md`
+    shows the 3-arg — i.e. the repo contained, in two adjacent files, the evidence that the corpus
+    gate had not run since. It now runs **71/71** with its sha check.
+  **INHERITANCE MUST BE CHECKED, NOT ASSERTED — and that is what keeps it out of the exclusion trap.**
+  The other four (`rust-wasm`, `rust-wasm-wasmtime`, `node-red`, `turbowarp`) genuinely have no codec
+  of their own. Their `run-s2.sh` **verifies the dependency edge still exists** (`path = "../rust"`;
+  the harness building from `protocol-generator/typescript`) and then runs the PARENT's gate. Fork a
+  codec into a seam and the edge check goes RED — which is exactly the moment that peer would have an
+  unmeasured codec. Regression-tested by planting a broken edge. **This is how to encode "it inherits"
+  without a per-peer exclusion in the measurement tooling** (the `apl` lesson): the claim executes.
+  **And two harness rules the peers themselves taught:** a gate must not rewrite a **committed**
+  artifact (`ucm transcript X.md` writes `X.output.md`, and those are tracked — a gate that dirties
+  the tree is one people stop running, so drive from a scratch copy); and where the runner's exit
+  code is 0 for a completed-but-failing suite, **read the output text and print the COUNT** — the
+  `smalltalk` `make sunit` defect. My first matcher then found `FAIL` in every transcript, because a
+  ucm transcript **echoes its own source** and the source DEFINES the checker as
+  `(if ok then "PASS " else "FAIL ")`. Match the rendered RESULT shape, not the word.
+- **A "COMMITTED REPO OUTPUT" THAT IS GITIGNORED IS A BUILD THAT ONLY WORKS WHERE SOMETHING ELSE
+  ALREADY RAN.** Candidate (`asm-x86_64`, 2026-09-02). Its Makefile header called
+  `libentitycore_codec.so` a committed repo output; `ffi-generator/.../.gitignore` ignores `build/`.
+  Both ISA siblings have a `codec` target that builds it and x86_64 had none — the link succeeded on
+  any machine where another peer had already built the `.so`, and would fail on a clean clone. The
+  false comment is what made the missing target look deliberate. **Enforcement: for any artifact a
+  Makefile describes as committed, `git ls-files` it** — the same one-line check the `riscv64`
+  `reference/typestore/` and `forth` `bin/peer.fs` entries already prescribe, applied to a
+  build INPUT rather than an output.
 - **A PATH SWEEP'S FALSE NEGATIVE IS THE DIRECTORY AS A SEPARATE STRING — VERIFY THAT PATHS RESOLVE,
   NEVER THAT THE OLD STRING IS GONE.** Candidate, same session, and it is the third false-negative
   grep in this file after the `dart`/`ruby` NUL byte (a grep that could not SEE the file) and F51 (a
@@ -1838,6 +2010,15 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   agility sweep printed `rc=0` for five peers, two of which had failed outright (`ocaml`: target not
   found; `csharp`: NuGet restore failed). Same family as the gate that examined zero things — the
   loop was structurally incapable of reporting a failure. Use `${PIPESTATUS[0]}`, or do not pipe.
+  **RATIFIED 2026-09-02 — second occurrence, and it was committed to this file between them.** The
+  first probe of the peers with no S2 gate ran `podman run … "cmd | tail -30"` and reported `rc=0`
+  for **all five**; every one had failed — `go` on a wrong working directory, `rust` unable to resolve
+  a vendored crate, `python` with no pytest, `typescript` with two real failures, `swift` with a
+  compile error. **A written-down rule did not prevent the identical mistake**, which is the argument
+  for putting the check in the tool rather than in the prose: `tools/run-s2-sweep.sh` captures each
+  gate's status with no pipe at all and says so at the line where it would be tempting. The tell is
+  the shape of the result, not the code — **a batch in which every member passes is a claim to
+  distrust before reading it**, especially when the members share no toolchain.
 - **A `run-*.sh` whose guard tests a CONTAINER path must be INVOKED in the container — and its
   failure is indistinguishable from a missing dependency.** Candidate, and it is the standing
   *"a guard that was never executed is not a guard"* entry met from the caller's side rather than
@@ -1848,6 +2029,108 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   missing artifact, which is a diagnosis pointing at the tree instead of at the invocation. Each
   script's header carries the `podman run` line it expects — **read it before believing the error**,
   and prefer `rc=127`/`file missing` as a signal to re-check HOW you invoked it.
+  **RATIFIED 2026-09-02, and the fix is uniformity rather than documentation: `prolog`'s `run-s2.sh`
+  now re-execs itself into its container like the 21 siblings that already did.** A cohort axis is
+  swept by invoking one conventional entry point per peer; the odd one out does not fail *informatively*,
+  it fails as `command not found`, which is the single most misleading exit a sweep can produce.
+- **A SECOND AXIS WITH NO COHORT GATE IS AN EXCLUSION NOBODY DECLARED — and it will be defended by
+  the fact that the FIRST axis is green.** RATIFIED 2026-09-02, and it is the `apl` exclusion lesson
+  moved up one level: there, the one peer nobody could measure was the one peer the census refused to
+  attempt; here, an entire **axis** had no sweep, so the question was never asked of anyone.
+  `CONFORMANCE-MATRIX.md` published **46 of 46 at `756 · 0F`** while, on the S2 (codec /
+  crypto-agility) axis, **four peers were red or unrunnable and had been for a long time.** S4 has
+  `run-cohort-census.sh` plus three gates on its numbers; S2 had nothing, and every defect below sat
+  behind that one absence:
+  - `haskell` — **unrunnable at all.** Its S2 report claimed *"Offline … verified GREEN"* against a
+    warm store in a **gitignored in-tree `.cabal-home`** that one machine had warmed by hand, and only
+    for the LIBRARY deps. Once runnable: 1 real FAIL.
+  - `smalltalk` — `make sunit` died compiling its own driver, **and asserted nothing about the suite's
+    counts regardless** (a red suite printed `failures=3` and the target passed).
+  - `ocaml` — `test/selftest.exe` had been **FAILING** on a stale §7a expectation, unswept because the
+    peer had no `run-s2.sh` and its one host-invocable script never builds it.
+  - `typescript` — `npm test` ran `node --test dist/**` with **no build step**.
+  - `python` — its tests `import pytest`, declared as a pyproject `dev` extra and installed **nowhere**;
+    the suite had never run in its own image.
+  **THREE OF THOSE ARE ABSENCE DEFECTS, NOT RED GATES — the peer had no entry point on the swept path,
+  so it was neither measured nor reported as missing.** That is why `tools/run-s2-sweep.sh` reports
+  **NO-GATE as a first-class outcome** and prints the count of each; a sweep that silently skips what
+  it cannot find reproduces the exact hole it exists to close. Enforcement: `tools/run-s2-sweep.sh`
+  (`--gate` fails on RED; `--gate-missing` additionally requires full coverage), driven off
+  `peer-tiers.tsv` with **no per-peer exclusions in the measurement tooling** — a peer leaves the sweep
+  only by leaving the roster, where its absence reads as backlog. Result at ratification: **37 GREEN,
+  0 RED, 9 NO-GATE** of 46. The 9 are the hand-authored / thin-seam / exploratory groups (`unison`, the
+  ISA trio, `wasm-wat`, both `rust-wasm`, `node-red`, `turbowarp`); *"they probably have no separate
+  codec suite"* is a **hypothesis, and it is the same shape as the four claims this ratchet disproved.*
+  **CLOSED the same day, and the hypothesis was wrong: 5 of the 9 had a real authored S2 surface and
+  4 of those 5 were RED. Sweep is now 46 GREEN, 0 RED, 0 NO-GATE** — see the *"an axis's per-peer
+  gates rot exactly where no cohort runner reaches"* entry above for the four failure shapes and for
+  how the remaining 4 encode inheritance as an executable edge check rather than an exclusion.
+  **Generalize past S2: for every axis a number is published on, name the sweep AND the gate. An axis
+  with a per-peer harness and no cohort runner is one nobody is measuring.**
+- **AN IMAGE THAT RESOLVES THE LIBRARY CLOSURE AND NOT THE TEST CLOSURE LOOKS COMPLETE — the peer
+  builds, and only the GATE is missing its dependencies.** RATIFIED 2026-09-02: second and third
+  occurrence of the `dart-toolchain` class (*"any image that vendors a dependency closure must derive
+  it from the tree's own lockfile"*), and the new half is **which** closure.
+  - `ghc-toolchain` vendored **nothing**; the header claimed a resolve step that did not exist. The
+    closure lived in a gitignored `.cabal-home`, and `cabal test --offline` died with fourteen
+    `refusing to download the package` lines. Fixed by seeding `/opt/cabal-home` at image-build time
+    from the peer's **own** `cabal.project.freeze` **with `--enable-tests`** — that flag is the entire
+    defect: an unqualified `cabal build` resolves the library only.
+  - `python-toolchain` installed `requirements.txt` and stopped. pytest was declared under
+    `[project.optional-dependencies] dev` and installed nowhere. **A declared extra nobody installs is
+    a dependency that does not exist.** Fixed with a hash-pinned `requirements-dev.txt`, kept separate
+    from the runtime lock so the shipped closure stays one dependency, and installed in the image from
+    that file — never from a restatement of the pins in the Containerfile.
+  **Both prove completeness AT IMAGE BUILD**, by re-resolving `--offline` after the seed: an
+  unsatisfiable lockfile fails the image, which is the right place to find out. **Enforcement: for any
+  peer whose gate needs deps the peer itself does not, run the gate from a tree with the local caches
+  MOVED ASIDE** — `haskell` was verified with both `.cabal-home` and `dist-newstyle` renamed, because
+  "it works here" is not the question an adopter asks.
+- **A TEST SCRIPT THAT DOES NOT BUILD IS A GATE ON THE PAST.** Candidate (`typescript`, 2026-09-02),
+  and it is the standing stale-build-artifact rule reaching the *test runner* rather than the artifact.
+  `package.json` had `"test": "node --test dist/test/**"` with no compile step, so `npm test` graded
+  whatever was last built. Measured: `dist/test/corpus.js` still named
+  `test-vectors/v0.8.0/conformance-vectors-v1.cbor` — a directory **and** a filename both retired in
+  the 2026-09-01 de-versioning — while `test/corpus.ts` had been correctly updated the same day; 2 of
+  65 failed against a day-old build of correct source. Fixed with npm's `pretest`/`preconformance`
+  hooks; 65/65. **Enforcement: read every peer's test entry point for a build step, and treat its
+  absence as a defect even when the suite is green** — green is what it looks like right up until the
+  source changes. (`node-red`, which rebuilds `dist/` only when `index.js` is MISSING, is the same
+  shape already recorded.)
+  **AND THE SAME CLASS HAS AN mtime-GRANULARITY FORM THAT NO `--force` FIXES.** The first full S2 sweep
+  reported `elixir` RED with the source plainly correct. `mix` compares source mtime to artifact mtime
+  at **one-second resolution** and treats equal as up-to-date; the restored file and its `.beam` both
+  read `07:57:15`, so the previous build's code ran. `mix compile --force` did not help (different env);
+  only `rm -rf _build` did. **The direction that matters is the opposite one — the same mechanism
+  yields a false GREEN after a fix.** When a result contradicts a change you just made, suspect the
+  cache before the code, and `stat -c %Y` both sides.
+- **THE §2.4a NEGATIVE HALF NEEDS A CONSTRUCTOR, NOT AN ASSERTION — a refusal observed through the raw
+  primitive is the bypass the rule exists to forbid.** RATIFIED 2026-09-02 across five peers.
+  `hash-format-sha-384.2` was **inverted upstream**: it used to assert that re-hashing the fixture
+  `system/peer` under `content_hash_format = 0x01` SUCCEEDS; §4.5a **item 1a** pins `system/peer` to the
+  ECFv1-SHA-256 floor **unconditionally**, so the construction cannot exist and the vector now asserts
+  the refusal. The corpus's `verifier_requirement` is the load-bearing clause — *"The refusal MUST be
+  observed through the pinned peer-entity constructor"* — and every harness that touched this vector
+  called the **raw digest function**, which is exactly the hand-built bypass that let a forbidden
+  construction score green. So the work is a **peer change, not a test edit**: separate the §4.5a
+  AUTHORING entry point from the digest primitive and refuse there — `haskell`
+  `ContentHash.authorContentHash` (routed through by `Identity.identityOfSeed`, so the pin is a
+  constraint the peer EXECUTES rather than a property it happens to have), `ocaml`
+  `Peer_identity.build_peer` (result-typed; `~home` kept so the caller must still say what it is
+  authoring under), `csharp` `Entity.Create`, `elixir`/`ruby` `Hash.author_content_hash`.
+  **The guard goes on the AUTHORING path ONLY** — the receive path recomputes under the format an
+  entity declares, which is wire acceptance and a separate surface item 1a does not speak to.
+  **Two corollaries, and the second is the wider one.** (a) `ocaml` and `csharp` had carried this as a
+  *comment saying it was owed* — the standing "a deferral comment is a conformance claim with no gate
+  on it", in a file whose whole job is to be the gate. (b) **`elixir` and `ruby` dispatch on the
+  vector's `kind` and both ended in `_ -> []`, so when upstream changed the kind from
+  `content_hash_under_format` to `construct_reject` the branch SWALLOWED it** — no gate, no skip, no
+  message, and the suite reported the same confident green having never asked. An unhandled kind is now
+  a named FAILURE in both, and `haskell` asserts the corpus's full id set. **Enforcement: a
+  corpus-driven harness must fail on a vector it cannot drive, and a name-driven one must assert the
+  corpus's id set** — the count is the only thing that distinguishes "all pins pass" from "the pins I
+  happen to know about pass" (`elixir`/`ruby` went 34 → 36 gates, which is what said the vector was
+  being asked at all).
 - **MAINTENANCE TIERS ARE ACTIVE — do not run a 45-peer census for a re-pin.** (Turned on
   2026-08-17; the policy existed as prose since ~15 peers and was never honoured, because §4
   named 17 peers of a 46-peer cohort so "re-run Tier-1" was undefined for the other 29.) The

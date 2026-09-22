@@ -1,13 +1,14 @@
 # entity-core-protocol-asm-x86_64 — build interface (thin make over as + cc-driver).
 #
-# Runs inside containers/asm-x86_64-toolchain (fedora:43 + binutils + gcc). The FFI target
-# libentitycore_codec.{so,a} + the C-ABI header are committed repo outputs reached through
-# the mounted /work tree — NOT baked into the image (see the Containerfile). All builds are
+# Runs inside containers/asm-x86_64-toolchain (fedora:43 + binutils + gcc). The C-ABI
+# HEADER is committed; the FFI target libentitycore_codec.{so,a} is BUILT here by the
+# `codec` target from committed source under ffi-generator/ — reached through the
+# mounted /work tree, NOT baked into the image (see the Containerfile). All builds are
 # offline (--network=none).
 #
 # Verbs:
 #   make ffi-smoke   — de-risk the asm→C-ABI bridge (ec_sha256 KAT). S1/S2 seam.
-#   make s2          — codec conformance self-check (71-vector corpus via FFI).   [S2]
+#   make codec       — build libentitycore_codec.so (everything below links it).
 #   make host        — the live peer executable.                                   [S3]
 #   make diff        — L2 native-codec differential: ec_encode_bare_value (codec.s)
 #                      vs the pinned corpus golden bytes (tools/diff-harness.c).    [L2]
@@ -21,9 +22,14 @@ ASFLAGS := --64 -g -Isrc
 # -no-pie: hand-authored asm uses absolute/RIP-relative addressing (A-ASM-001).
 LDFLAGS := -no-pie
 
-# The codec C-ABI: committed build outputs under ffi-generator/, reached via the repo tree.
-# Overridable; defaults are relative to this peer dir (../../ = protocol-generator/..= repo root).
-CODEC_DIR ?= $(abspath ../../ffi-generator/c-abi/entity-core-codec-ffi-c/build)
+# The codec C-ABI. Its SOURCE is committed under ffi-generator/; its BUILD OUTPUT is
+# NOT -- ffi-generator/c-abi/entity-core-codec-ffi-c/.gitignore ignores `build/`. This
+# comment used to call the .so a "committed repo output", which is how the `codec`
+# target below came to be missing while both ISA siblings have one: the link worked on
+# any machine where something else had already built it, and would fail on a clean
+# clone. Overridable; defaults are relative to this peer dir.
+CODEC_SRC ?= $(abspath ../../ffi-generator/c-abi/entity-core-codec-ffi-c)
+CODEC_DIR ?= $(CODEC_SRC)/build
 INC_DIR   ?= $(abspath ../../ffi-generator/c-abi/spec)
 CODEC_LDFLAGS := -L$(CODEC_DIR) -lentitycore_codec -Wl,-rpath,$(CODEC_DIR)
 
@@ -38,12 +44,22 @@ $(OBJ) $(BIN):
 $(OBJ)/%.o: $(SRC)/%.s | $(OBJ)
 	$(AS) $(ASFLAGS) -o $@ $<
 
+# -- codec (build the native .so this peer links against) ---------------------
+# Mirrors asm-arm64 / riscv64, which have always had this; x86_64 did not, because
+# its header wrongly described the .so as committed. Everything that links
+# $(CODEC_LDFLAGS) depends on it, so a clean clone builds.
+.PHONY: codec
+codec: $(CODEC_DIR)/libentitycore_codec.so
+$(CODEC_DIR)/libentitycore_codec.so:
+	cmake -S $(CODEC_SRC) -B $(CODEC_DIR) -DCMAKE_BUILD_TYPE=Release
+	cmake --build $(CODEC_DIR) --target entitycore_codec -j4
+
 # -- ffi-smoke (de-risk) ------------------------------------------------------
 .PHONY: ffi-smoke
-ffi-smoke: $(BIN)/ffi-smoke
+ffi-smoke: $(BIN)/ffi-smoke codec
 	@LD_LIBRARY_PATH=$(CODEC_DIR) $(BIN)/ffi-smoke
 
-$(BIN)/ffi-smoke: $(OBJ)/ffi_smoke.o | $(BIN)
+$(BIN)/ffi-smoke: $(OBJ)/ffi_smoke.o | codec $(BIN)
 	$(CC) $(LDFLAGS) -o $@ $< $(CODEC_LDFLAGS)
 
 # -- host (live peer) ---------------------------------------------------------
@@ -56,7 +72,7 @@ $(OBJ)/host.o $(OBJ)/dispatch.o $(OBJ)/cbor.o: $(SRC)/macros.s
 
 .PHONY: host
 host: $(BIN)/host
-$(BIN)/host: $(HOST_OBJS) | $(BIN)
+$(BIN)/host: $(HOST_OBJS) | codec $(BIN)
 	$(CC) $(LDFLAGS) -o $@ $(HOST_OBJS) $(CODEC_LDFLAGS)
 
 # -- diff (L2 native-codec differential) --------------------------------------
@@ -64,7 +80,7 @@ $(BIN)/host: $(HOST_OBJS) | $(BIN)
 # harness against it directly. corpus_vectors.h is generated host-side from the
 # pinned .diag (container has no python3); regenerate with tools/gen-corpus-header.py.
 .PHONY: diff
-diff: $(OBJ)/codec.o | $(BIN)
+diff: $(OBJ)/codec.o | codec $(BIN)
 	$(CC) $(LDFLAGS) -O0 -I tools -o $(BIN)/diff tools/diff-harness.c $(OBJ)/codec.o $(CODEC_LDFLAGS)
 	$(BIN)/diff
 
@@ -73,7 +89,7 @@ diff: $(OBJ)/codec.o | $(BIN)
 # unit drives the base58/LEB128 DECODE accept-path + reject paths. codec.o's
 # ec_content_hash references ec_sha256, so link the .so too.
 .PHONY: parse-test
-parse-test: $(OBJ)/codec.o | $(BIN)
+parse-test: $(OBJ)/codec.o | codec $(BIN)
 	$(CC) $(LDFLAGS) -O0 -o $(BIN)/parse-test tools/peerid-parse-test.c $(OBJ)/codec.o $(CODEC_LDFLAGS)
 	LD_LIBRARY_PATH=$(CODEC_DIR) $(BIN)/parse-test
 

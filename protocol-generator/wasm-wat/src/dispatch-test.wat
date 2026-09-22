@@ -36,8 +36,17 @@
   (data $peerB "h82pJGF9p7kpzb6eU326EFZf2cDnimbTFVeJtx1qtBmUNJ")
 
   (func (export "_start")
-    (if (i32.lt_u (memory.size) (i32.const 128))
-      (then (drop (memory.grow (i32.sub (i32.const 128) (memory.size))))))
+    ;; 256 pages = 16 MiB. THIS NUMBER IS COUPLED TO dispatch.wat's MEMORY MAP, which is
+    ;; why it is not 128 any more: dispatch keeps its store INDEX at 0xA00000 and grows the
+    ;; entity ARENA upward from 0xA10000, so at 128 pages (8 MiB) the first store write ran
+    ;; off the end -- `out of bounds memory access ... offset 0x00a00000, boundary 0x007fffff`.
+    ;; That is not an assert failure and has no code-table entry; it reads as a broken merge.
+    ;; The live peer never hit it because host.wat grows to 5632 pages for its per-connection
+    ;; buffers; this unit imports the same dispatch.wasm with none of that. 16 MiB leaves the
+    ;; arena ~6 MiB, ample for a unit that stores a handful of entities, without reserving the
+    ;; peer's full 352 MiB in a test.
+    (if (i32.lt_u (memory.size) (i32.const 256))
+      (then (drop (memory.grow (i32.sub (i32.const 256) (memory.size))))))
     (call $disp_init)   ;; populates the "peers"/"include"/"exclude" rodata peers_scope_ok reads
 
     ;; --- is_peer_id_seg sanity ---------------------------------------------------

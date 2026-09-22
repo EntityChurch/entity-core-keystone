@@ -114,6 +114,48 @@ RUN set -eux; \
 
 ENV PATH=/opt/cabal/bin:$PATH
 
+# ── Vendored Hackage closure, DERIVED FROM THE PEER'S OWN LOCKFILE ────────────
+# The header above says "the one-time Hackage/cabal dependency resolve ... needs
+# network at BUILD time". It described an intention: no such step existed, and
+# the closure lived instead in a GITIGNORED `.cabal-home` inside the working tree
+# that somebody warmed by hand, once. That is a local accident, not a recipe —
+# a clean clone could not build the peer at all, and this host's copy had only
+# ever been warmed for the LIBRARY deps, so `cabal test` could not resolve hspec/
+# QuickCheck/HUnit offline and the peer's S2 gate was unrunnable. It had been in
+# that state long enough that the S2 report's "verified offline" claim could no
+# longer be reproduced by anyone.
+#
+# `--enable-tests` is the load-bearing flag and the exact defect that was here:
+# an unqualified `cabal build` resolves the LIBRARY closure only, so the image
+# looks complete, the peer builds, and only the gate is missing its dependencies.
+#
+# The closure is seeded from the peer's OWN `cabal.project` + `cabal.project.freeze`
+# + `.cabal`, never from a hand-maintained restatement of the top-level pins.
+# Same rule the dart-toolchain prefetch earned: an exact pin on the DIRECT deps is
+# not a pin on what lands in the cache, and a second copy of the pins drifts from
+# the first in silence. Here the lockfile IS the input, so the cache is its
+# closure by construction and an unsatisfiable lockfile fails the IMAGE BUILD —
+# which is the right place to find out.
+ENV CABAL_DIR=/opt/cabal-home
+COPY protocol-generator/haskell/cabal.project \
+     protocol-generator/haskell/cabal.project.freeze \
+     protocol-generator/haskell/entity-core-protocol-haskell.cabal \
+     /tmp/dep-closure/
+
+RUN set -eux; \
+    cd /tmp/dep-closure; \
+    cabal update; \
+    cabal build --only-dependencies --enable-tests; \
+    # Prove the closure is COMPLETE OFFLINE rather than assuming it. A second
+    # resolve with the network cut must find nothing left to fetch; if it does,
+    # the image is one that only works on the machine that built it, which is
+    # the state this whole step exists to end.
+    cabal build --only-dependencies --enable-tests --offline; \
+    # The .tar.gz is the download artifact of the index cabal already extracted
+    # to .tar — 138 MB of pure duplication in the layer.
+    rm -f "$CABAL_DIR"/packages/hackage.haskell.org/01-index.tar.gz; \
+    rm -rf "$CABAL_DIR"/logs /tmp/dep-closure
+
 WORKDIR /work
 
 LABEL org.entity-core-keystone.role="ghc-toolchain"

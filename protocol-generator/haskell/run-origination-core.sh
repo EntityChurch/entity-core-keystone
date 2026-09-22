@@ -32,8 +32,9 @@ RPORT="${RPORT:-7778}"   # reference (Go)
 ORACLE="${ORACLE:-/work/output/s4-oracles/validate-peer}"
 REFPEER="${REFPEER:-/work/output/s4-oracles/entity-peer}"
 
+# No CABAL_DIR override: the image carries the closure at /opt/cabal-home,
+# seeded from this peer's own cabal.project.freeze.
 podman run $PODMAN_RUN_CAPS --rm --network=none \
-  -e CABAL_DIR=/work/protocol-generator/haskell/.cabal-home \
   -v "$REPO_ROOT":/work:Z -w "$WORKDIR" "$IMAGE" \
   bash -c '
     set -eu

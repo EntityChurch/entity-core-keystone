@@ -27,8 +27,9 @@ import Test.Hspec
 
 import EntityCore.Base58 (base58Encode)
 import EntityCore.Codec.CBOR (decode)
+import EntityCore.Codec.Error (CodecError (..))
 import EntityCore.Codec.Value (Value (..))
-import EntityCore.ContentHash (contentHash)
+import EntityCore.ContentHash (authorContentHash, contentHash)
 import EntityCore.PeerId (PeerIdParts (..), derivePeerId, formatPeerId)
 import EntityCore.Signature (ed448PubkeyFromSeed, ed448Sign)
 
@@ -42,6 +43,30 @@ spec = describe "crypto-agility corpus (v0.8.0) — native Ed448 + SHA-384" $ do
     Left err -> it "loads the agility corpus" $ expectationFailure err
     Right vs -> do
       let v name = find ((== name) . vid) vs
+
+      -- Coverage, asserted rather than assumed. A harness that reads the corpus
+      -- by NAME silently ignores any vector it was not written for: the corpus
+      -- grows, the harness keeps reporting the same green count, and nothing
+      -- says a new pin went unmeasured. (The neighbouring cohort harnesses that
+      -- dispatch on `kind` have the same hole with a `_ -> []` fallthrough.)
+      -- Pinning the id set makes a re-vendor a loud failure that names the
+      -- vectors nobody has looked at yet.
+      it "corpus id set is fully accounted for" $
+        map vid vs
+          `shouldMatchList` [ "key-type-ed448.1.pubkey"
+                            , "key-type-ed448.2.peer_id"
+                            , "key-type-ed448.3.system_peer_entity"
+                            , "key-type-ed448.4.signature"
+                            , "hash-format-sha-384.1.inherited_sha256_pin"
+                            , "hash-format-sha-384.2.rehash"
+                            , "varint-multibyte.1"
+                            , "varint-reserved-ff.1.key_type"
+                            , "varint-reserved-ff.2.hash_format"
+                            , "format-code-interpretation.1"
+                            , "matrix.M2"
+                            , "matrix.M3"
+                            , "matrix.M6"
+                            ]
 
       it "key-type-ed448.1.pubkey — seed → 57-byte public key" $
         withVec (v "key-type-ed448.1.pubkey") $ \kvs -> do
@@ -95,16 +120,52 @@ spec = describe "crypto-agility corpus (v0.8.0) — native Ed448 + SHA-384" $ do
             Right ch -> ch `shouldBe` expected
             Left e -> expectationFailure (show e)
 
-      it "hash-format-sha-384.2.rehash — SHA-384 content_hash (format byte 0x01)" $
+      -- construct_reject (§2.4a negative half). This vector was INVERTED upstream:
+      -- it used to assert that re-hashing the fixture `system/peer` under
+      -- content_hash_format 0x01 SUCCEEDS, pinning `012e64bbde…`. §4.5a item 1a
+      -- pins the identity entity to the ECFv1-SHA-256 floor unconditionally, so
+      -- that construction cannot exist and the vector now asserts the REFUSAL.
+      --
+      -- The corpus's `verifier_requirement` is the load-bearing part and the
+      -- reason this is not a one-line assertion flip: "The refusal MUST be
+      -- observed through the pinned peer-entity constructor." The old assertion
+      -- called `contentHash 1` — the raw digest primitive — which is precisely
+      -- the hand-built bypass that let a forbidden construction score green. It
+      -- therefore goes through `authorContentHash`, the §4.5a authoring entry
+      -- point the peer's own `identityOfSeed` uses.
+      it "hash-format-sha-384.2.rehash — authoring system/peer off-floor is REFUSED" $
         withVec (v "hash-format-sha-384.2.rehash") $ \kvs -> do
           inp <- needMap "input" kvs
           typ <- needText "type" inp
           dataV <- needVal "data" inp
-          expected <- needBytes "canonical_content_hash" kvs
-          case contentHash 1 typ dataV of
-            Right ch -> do
-              BS.length ch `shouldBe` 49 -- 1 format byte + 48-byte SHA-384 digest
-              ch `shouldBe` expected
+          fmt <- needUInt "content_hash_format" inp
+          -- The vector's own guard: it must still be describing a refusal. If a
+          -- future re-vendor inverts it back, this fails loudly instead of
+          -- quietly testing nothing.
+          needText "kind" kvs >>= (`shouldBe` "construct_reject")
+          case authorContentHash fmt typ dataV of
+            Left (PeerEntityNotAtFloor got) -> got `shouldBe` fmt
+            Left e -> expectationFailure ("refused, but not as a floor pin: " <> show e)
+            Right ch ->
+              expectationFailure
+                ( "authored a system/peer under content_hash_format "
+                    <> show fmt
+                    <> " (§4.5a item 1a forbids it); got "
+                    <> show (BS.length ch)
+                    <> " bytes"
+                )
+
+      -- The positive half of the same pin: the floor form is the ONLY form this
+      -- fixture has. The corpus says so itself in `floor_form`, which names
+      -- hash-format-sha-384.1 — asserted above.
+      it "hash-format-sha-384.2 — the floor form IS authored (positive half)" $
+        withVec (v "hash-format-sha-384.2.rehash") $ \kvs -> do
+          inp <- needMap "input" kvs
+          typ <- needText "type" inp
+          dataV <- needVal "data" inp
+          floorPin <- withVecIO (v "hash-format-sha-384.1.inherited_sha256_pin") (needBytes "canonical_content_hash")
+          case authorContentHash 0 typ dataV of
+            Right ch -> ch `shouldBe` floorPin
             Left e -> expectationFailure (show e)
 
       it "Ed448 peer-id payload structure cross-check (key_type/hash_type/digest)" $
@@ -140,6 +201,12 @@ withVec :: Maybe Vec -> ([(Value, Value)] -> Expectation) -> Expectation
 withVec Nothing _ = expectationFailure "vector not found in corpus"
 withVec (Just vec) k = k (vkvs vec)
 
+-- | 'withVec' for a value-producing reader (used to pull one vector's pin while
+-- asserting inside another's example).
+withVecIO :: Maybe Vec -> ([(Value, Value)] -> IO a) -> IO a
+withVecIO Nothing _ = ioError (userError "vector not found in corpus")
+withVecIO (Just vec) k = k (vkvs vec)
+
 mlook :: Text -> [(Value, Value)] -> Maybe Value
 mlook name = lookup (VText name)
 
@@ -157,6 +224,11 @@ needText :: Text -> [(Value, Value)] -> IO Text
 needText name kvs = needVal name kvs >>= \case
   VText t -> pure t
   other -> ioError (userError ("field " ++ show name ++ " not text: " ++ take 40 (show other)))
+
+needUInt :: Text -> [(Value, Value)] -> IO Integer
+needUInt name kvs = needVal name kvs >>= \case
+  VUInt n -> pure (toInteger n)
+  other -> ioError (userError ("field " ++ show name ++ " not a uint: " ++ take 40 (show other)))
 
 needMap :: Text -> [(Value, Value)] -> IO [(Value, Value)]
 needMap name kvs = needVal name kvs >>= \case

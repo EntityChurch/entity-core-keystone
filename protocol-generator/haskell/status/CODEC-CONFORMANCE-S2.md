@@ -1,15 +1,45 @@
 # entity-core-protocol-haskell — S2 Conformance Report
 
 **Peer:** #8 (Haskell) · **Phase:** S2 (codec) ·
-**Spec basis:** v7.74 · **Codec corpus:** v7.71 (byte-stable at v7.74) ·
-**Status:** GREEN — **69/69 byte-identical**, agility corpus native, all
-selftests + QuickCheck properties pass.
+**Status (2026-09-02):** GREEN — **173 examples, 0 failures**, the whole suite
+run offline from a clean tree. ECF corpus **71/71** byte-identical, crypto-agility
+corpus native (Ed448 + SHA-384), type-registry 53/53, selftests + QuickCheck
+properties pass.
 
 Toolchain: GHC 9.8.4, cabal-install 3.14.2.0, crypton 1.0.4 (pinned), in the
-`entity-core-keystone/ghc-toolchain:latest` container. Built `-Wall -Werror`.
-Self-contained gate (no live Go oracle at S2): the corpus carries its own
-3-way-cross-blessed `canonical` bytes. Corpus sha256 verified by decoding
-(`41d68d2d…6a052`), not assumed.
+`entity-core-keystone/ghc-toolchain:latest` container. Built `-Wall -Werror`
+(`-f dev`). Self-contained gate (no live Go oracle at S2): the corpus carries its
+own cross-blessed `canonical` bytes.
+
+> ## Correction, 2026-09-02 — this report claimed a green it could not reproduce
+>
+> Everything below the correction dates from the original S2 run and is kept as
+> the record of it. Three of its claims were false by the time anyone checked:
+>
+> - **"69/69"** and **"Codec corpus v7.71"** — the ECF corpus is **71 vectors**
+>   and lives at `shared/test-vectors/ecf-conformance/` (the corpora were
+>   de-versioned 2026-09-01; a version stamp in a corpus directory name is now
+>   forbidden by `GUIDE-CONFORMANCE` §5.1). The pinned digest quoted below,
+>   `41d68d2d…`, is **retired** — it is the 69-vector corpus from before F29/F30.
+> - **"Offline … verified GREEN"** in §6 — **it was not runnable at all.** The
+>   image vendored no Hackage closure; the dependency store lived in a gitignored
+>   `.cabal-home` inside the working tree that had been warmed by hand on one
+>   machine, and only ever for the LIBRARY deps. `cabal test --offline` died with
+>   fourteen `refusing to download the package` lines (hspec, QuickCheck, HUnit,
+>   …). A claim of reproducibility that nobody re-ran is not evidence of
+>   anything, and this one had been false for long enough that no one could say
+>   when it stopped being true. The closure now ships in the image, derived from
+>   this peer's own `cabal.project.freeze`; §6 records the current recipe.
+> - **§2's `hash-format-sha-384.2.rehash` row** — that vector was **inverted
+>   upstream**. It no longer pins a SHA-384 `content_hash`; it asserts the
+>   construction is **REFUSED**, because §4.5a item 1a pins `system/peer` to the
+>   ECFv1-SHA-256 floor unconditionally. The old assertion passed by calling the
+>   raw digest primitive, which is exactly the hand-built bypass the vector's
+>   `verifier_requirement` forbids. See §2a.
+>
+> The peer's CODEC was never wrong about any of this — the one real FAIL that
+> surfaced once the suite could run was the inverted vector, and it was a test
+> asserting a retired pin, not a codec defect. What was wrong was the report.
 
 ## 1. ECF conformance corpus — 69/69 PASS
 
@@ -49,7 +79,7 @@ Phase-1 vectors, **7/7 PASS** — all native via crypton (no FFI, no defer):
 | `key-type-ed448.3.system_peer_entity` | system/peer ECF + SHA-256 content_hash | byte-equal |
 | `key-type-ed448.4.signature` | deterministic Ed448 sig (114 B) | byte-equal |
 | `hash-format-sha-384.1` | inherited SHA-256 content_hash pin | byte-equal |
-| `hash-format-sha-384.2.rehash` | **SHA-384** content_hash (49 B = `0x01` + 48 B digest) | byte-equal |
+| `hash-format-sha-384.2.rehash` | ~~**SHA-384** content_hash (49 B = `0x01` + 48 B digest)~~ | **withdrawn — see §2a** |
 | Ed448 peer-id payload cross-check | `[0x02,0x01] ‖ SHA256(pubkey)` structure | base58-equal |
 
 Haskell is the **2nd peer to pass the agility corpus natively** (after Common
@@ -59,6 +89,36 @@ Lisp's pure-Lisp ironclad) and the **first from an audited C-backed library**
 probes assert a §1.2 seed-table policy that lives at the peer/validate layer
 (the codec's `contentHash` accepts any format code and defaults unknown codes
 to SHA-256; rejection of unallocated codes is S4).
+
+## 2a. `hash-format-sha-384.2` — the §2.4a negative half (2026-09-02)
+
+The corpus vector this row used to pin was **inverted upstream**: it asserted that
+re-hashing the fixture `system/peer` under `content_hash_format = 0x01` succeeds,
+pinning `012e64bbde…3eef5a69`. `ENTITY-CORE-PROTOCOL` §4.5a **item 1a** pins the
+`system/peer` identity entity to the ECFv1-SHA-256 floor **unconditionally** — on
+every connection, whatever the active format, whatever the peer's home format —
+so that construction cannot exist. The vector now asserts the **refusal**.
+
+Upstream's own note on the retirement is the part worth carrying, because this
+harness was the thing it describes: the old vector *"stayed green only because the
+verifier hand-built the entity instead of routing through the constructor that
+would have refused it. A fixture that exercises a forbidden construction and
+passes by bypassing the code that forbids it certifies the opposite of the rule"*
+(`GUIDE-CONFORMANCE` §2.4a). `AgilitySpec` called `contentHash 1` — the raw digest
+primitive — which is precisely that bypass.
+
+What landed:
+
+| | |
+|---|---|
+| Peer | `EntityCore.ContentHash.authorContentHash` — the §4.5a **authoring** entry point, as distinct from the `contentHash` digest primitive. Refuses `system/peer` under any non-floor format with `PeerEntityNotAtFloor`. `Identity.identityOfSeed` routes through it, so the pin is a constraint the peer's own authoring path EXECUTES rather than a property it happens to have. |
+| Test | Both halves, per §2.4a — the refusal observed **through that constructor**, plus the positive half asserting the floor form still authors to the pin named by the vector's own `floor_form` field. Guarded by an assertion that the vector's `kind` is still `construct_reject`, so a re-vendor that inverts it back fails loudly instead of quietly testing nothing. |
+| Coverage | The suite now asserts the corpus's full **id set**. A harness that reads vectors by name silently ignores any it was not written for; the corpus can grow, the green count stays the same, and nothing says a new pin went unmeasured. |
+
+Regression-tested by planting the defect: with the floor check removed,
+`authorContentHash` produces the 49-byte SHA-384 form and the example fails with
+*"authored a system/peer under content_hash_format 1 (§4.5a item 1a forbids it);
+got 49 bytes"*.
 
 ## 3. Uncovered-range selftests (codec-review heuristic)
 
@@ -98,16 +158,38 @@ to SHA-256; rejection of unallocated codes is S4).
 
 ## 6. Reproduce
 
+From the repo root, on the host:
+
 ```
-podman run --rm -v $PWD:/work:Z \
-  -e HOME=/work/protocol-generator/haskell/.cabal-home \
-  -w /work/protocol-generator/haskell \
-  entity-core-keystone/ghc-toolchain:latest \
-  sh -c 'cabal test'
+protocol-generator/haskell/run-s2.sh
 ```
 
-Offline (warm store, after the one networked resolve — A-HS-005): add
-`--network=none` and `--offline`; build + test + exe all stay GREEN
-(verified). `cabal.project.freeze` is committed (pins the full closure;
-crypton 1.0.4, bytestring 0.12.1.0, text 2.1.1, hspec 2.11.17,
-QuickCheck 2.15.0.1).
+That is the whole recipe. It runs sealed-offline (`--network=none`) against the
+dependency closure vendored in the image, needs no host state, and was verified
+2026-09-02 from a genuinely clean tree — `.cabal-home` and `dist-newstyle` both
+moved aside first, because "it works here" is not the question an adopter is
+asking.
+
+**What this replaced, and why the replacement is the point.** The recipe that
+stood here named `-e HOME=…/.cabal-home` — a **gitignored directory inside the
+working tree**. A clone does not have it. The claim that followed it, *"Offline
+(warm store, after the one networked resolve): build + test + exe all stay GREEN
+(verified)"*, could therefore only ever have been true on the machine that
+authored it, and it was not even true there: the store had been warmed for the
+library closure and never for the test-suite closure, so `cabal test --offline`
+failed to resolve hspec, QuickCheck and HUnit. **An image nobody rebuilds from
+scratch is not a recipe, it is a local accident** — the same rule this repo
+already applies to RPM pins, met here in a language package manager.
+
+`containers/ghc-toolchain/Containerfile` now seeds `/opt/cabal-home` at image
+build time from this peer's **own** `cabal.project.freeze` with
+`--enable-tests`, and then re-resolves `--offline` to prove the closure is
+complete. An unsatisfiable lockfile fails the IMAGE BUILD, which is the right
+place to find out. `--enable-tests` is the load-bearing flag: without it the
+resolve covers the library only, the image looks complete, the peer builds, and
+only the gate is missing its dependencies.
+
+`cabal.project.freeze` remains the committed lockfile (crypton 1.0.4,
+bytestring 0.12.1.0, text 2.1.1, hspec 2.11.17, QuickCheck 2.15.0.1) and is the
+single source the image derives from — never a restatement of the pins in the
+Containerfile, which is how two copies drift.

@@ -83,15 +83,40 @@ duplicate makes the disagreement visible.
 
 ## Consequence for peers that transcribe pins instead of loading the corpus
 
-`ocaml` and `csharp` carry hand-transcribed agility KATs rather than reading the `.cbor`. Both assert
-all three retired values above, so both currently pin a `system/peer` `content_hash` under SHA-384 —
-a construction §4.5a item 1a forbids. **Neither is caught by `validate-peer`**: the agility corpus is
-not part of `--profile core`, so both peers are `756 · 0F` with the defect present. Tracked as a
-finding; see `research/stewardship/SPEC-FINDINGS-LOG.md`.
+`ocaml` and `csharp` carry hand-transcribed agility KATs rather than reading the `.cbor`. They used
+to assert all three retired values above — pinning a `system/peer` `content_hash` under SHA-384, a
+construction §4.5a item 1a forbids — and **neither was caught by `validate-peer`**, because the
+agility corpus is not part of `--profile core`: both peers were `756 · 0F` with the defect present.
 
 The general form: **a transcribed pin is a copy with no gate on it.** A peer that loads the corpus
 re-reads ground truth on every run; a peer that transcribes ground truth into its own source froze it
 at transcription time and nothing re-checks the copy.
+
+**Closed 2026-09-02**, and the second half took a peer-behaviour change rather than a test edit. The
+matrix pins were corrected to floor-form on 2026-09-01, but `hash-format-sha-384.2`'s new assertion
+— that the construction is **refused** — was left owed in both peers under a comment saying so. That
+is a conformance claim with no gate on it. What landed in each of the five peers that reach this
+vector:
+
+| Peer | The pinned constructor the refusal is observed through |
+|---|---|
+| `haskell` | `EntityCore.ContentHash.authorContentHash` (→ `PeerEntityNotAtFloor`) |
+| `ocaml` | `Peer_identity.build_peer` — now result-typed, `~home` retained so the caller must still say what it is authoring under |
+| `csharp` | `Entity.Create` (→ `EntityCodecException`) |
+| `elixir` | `EntityCore.Hash.author_content_hash` |
+| `ruby` | `EntityCore::Hash.author_content_hash` (→ `PeerEntityNotAtFloor`) |
+
+In every case the guard is on the **authoring** path only — the receive path recomputes under the
+format an entity declares, which is wire acceptance and a separate surface item 1a does not speak to.
+Both halves are asserted per `GUIDE-CONFORMANCE` §2.4a: the refusal, and the floor form still
+authoring to the pin the vector's own `floor_form` field names.
+
+**And the corpus-loading peers had a worse version of the same hole.** `elixir` and `ruby` dispatch
+on the vector's `kind` and both ended in `_ -> []`. When upstream changed this vector's kind from
+`content_hash_under_format` to `construct_reject`, that branch **swallowed it**: no gate, no skip, no
+message — the suite reported the same confident green having never asked. An unhandled kind is now a
+named FAILURE in both, and `haskell` asserts the corpus's full id set. Measured: `elixir` and `ruby`
+both went 34 → 36 agility gates, which is the count that says the vector is being asked at all.
 
 ## The latent-bug lesson (carried from the retired `v0.8.0/MANIFEST.md`)
 

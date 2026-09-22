@@ -17,6 +17,8 @@
 --     (@content_hash.4@): the digest is still SHA-256 but the prefix is 2 bytes.
 module EntityCore.ContentHash
   ( contentHash
+  , authorContentHash
+  , peerIdentityFloorFormat
   , entityContentHash
   , ecfOfEntity
   ) where
@@ -50,6 +52,39 @@ contentHash fmtCode typ dataV
           !digest = digestFor fmtCode preimage
           !prefix = varintEncode fmtCode
        in Right (prefix <> digest)
+
+-- | ECFv1-SHA-256 — the §9.1 conformance floor, and the format the @system/peer@
+-- identity entity is pinned to unconditionally (§4.5a item 1a).
+peerIdentityFloorFormat :: Integer
+peerIdentityFloorFormat = 0x00
+
+-- | The §4.5a __authoring__ entry point — use this wherever the peer *creates*
+-- an entity under a chosen @content_hash_format@, as opposed to merely computing
+-- a digest.
+--
+-- 'contentHash' is the raw primitive: give it a format code and it hashes. This
+-- function is the primitive plus the one normative constraint on *which* format
+-- an author may choose:
+--
+-- __§4.5a item 1a__ — the @system/peer@ identity entity is authored under
+-- ECFv1-SHA-256 (@0x00@) __unconditionally__: on every connection, whatever the
+-- active format, and whatever the peer's home format. Its data is
+-- @{peer_id, public_key, key_type}@, wholly recoverable from the public peer-id,
+-- so every consumer /derives/ its hash rather than fetching it. A @system/peer@
+-- under any other format is therefore not a form to be preserved but a
+-- construction that cannot exist, and authoring one is refused here.
+--
+-- This is the constructor the @hash-format-sha-384.2@ agility vector requires the
+-- refusal to be observed through. That vector used to assert the /opposite/ (that
+-- the SHA-384 rehash succeeds) and stayed green only because verifiers hand-built
+-- the entity instead of routing through the code that forbids it — a fixture that
+-- exercises a forbidden construction and passes by bypassing the guard certifies
+-- the opposite of the rule (@GUIDE-CONFORMANCE@ §2.4a).
+authorContentHash :: Integer -> Text -> Value -> Either CodecError BS.ByteString
+authorContentHash fmtCode typ dataV
+  | typ == "system/peer" && fmtCode /= peerIdentityFloorFormat =
+      Left (PeerEntityNotAtFloor fmtCode)
+  | otherwise = contentHash fmtCode typ dataV
 
 -- | The content_hash under the ecfv1-sha256 floor (format_code @0x00@): the
 -- total form 'makeEntity' uses (no error case — SHA-256 over @ECF{type,data}@,

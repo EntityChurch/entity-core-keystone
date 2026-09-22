@@ -207,11 +207,28 @@ let () =
       (Cbor.Map [ (Cbor.Text "operation", Cbor.Text "dispatch"); (Cbor.Text "params", Model.to_cbor do_params) ])
   in
   let dout = Peer.dispatch_outbound_handler cpeer conn do_exec in
+  (* The round-tripped entity's DATA *is* the value — not a {value: …} map.
+     §7a.1 passes the `value` field through as the outbound params entity data
+     (Peer.dispatch_outbound_handler, `let inner = Model.make ~typ:"primitive/any"
+     value`), because re-wrapping it double-wraps and makes the echo's
+     result.value come back as a map — keystone §7b t1_2.
+
+     This assertion read `Model.field (Model.of_cbor rc) "value"` — the
+     double-wrapped shape — from before that pass-through change, and had been
+     FAILING ever since. Nothing caught it because this peer had no run-s2.sh, so
+     `selftest.exe` was not on any swept path; the only host-invocable entry
+     point was run-agility.sh, which does not build or run it. Traced before
+     changing: status is 200 and the value arrives intact as
+     `primitive/any` / `Text "round-trip-99"`, so the peer is correct here and
+     the expectation was stale. Its S4 row (756 · 0F) agrees. *)
   check "§7a dispatch-outbound originates reentry + round-trips the value"
     (dout.Peer.status = 200
     &&
     match Model.field dout.Peer.result "result" with
-    | Some rc -> (match Model.field (Model.of_cbor rc) "value" with Some (Cbor.Text "round-trip-99") -> true | _ -> false)
+    | Some rc -> (
+        let inner = Model.of_cbor rc in
+        String.equal inner.Model.typ "primitive/any"
+        && match inner.Model.data with Cbor.Text "round-trip-99" -> true | _ -> false)
     | None -> false);
 
   (* ── §3.6 M3 multi-signature K-of-N — ACCEPT path. The validate-peer `multisig`

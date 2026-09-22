@@ -77,7 +77,7 @@ produce vid input =
       VMap kvs ->
         seed = optBytes (mapGet "seed" kvs)
         match mapGet "entity" kvs with
-          Some (VMap ekvs) -> ed25519Sign seed (ecfOfEntity (optText (mapGet "type" ekvs)) (optVal (mapGet "data" ekvs)))
+          Some (VMap ekvs) -> ed25519Sign seed (ed25519Pub seed) (ecfOfEntity (optText (mapGet "type" ekvs)) (optVal (mapGet "data" ekvs)))
           _ -> Bytes.empty
       _ -> Bytes.empty
   else encode input

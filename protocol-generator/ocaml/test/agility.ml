@@ -56,7 +56,7 @@ let () =
     (Peer_identity.derive_peer_id Ed448 ed448_pub);
   check "system/peer content_hash (SHA-256 home)"
     "002785b314436a82503829339cb2519b4efe795712406ea19ac185e31ae8c70748"
-    (hex (Peer_identity.build_peer Ed448 ed448_pub ~home:Sha256));
+    (hex (ok (Peer_identity.build_peer Ed448 ed448_pub ~home:Sha256)));
   let fixture_msg = "v7.67 Phase 1 cohort cross-impl Ed448 fixture" in
   let ed448_sig = ok (Key_types.sign Ed448 ~seed:ed448_seed fixture_msg) in
   check "Ed448 signature (114B, RFC 8032 deterministic)"
@@ -70,7 +70,7 @@ let () =
   let exp_pub = seed 0xAA 64 in
   check "content_hash at the ECFv1-SHA-256 floor (0x00) — the only form"
     "003d0c34b508c5bf9eca5f086f09aac10f44bd43fca1a091b6aa55a096ca8fcd45"
-    (hex (Peer_identity.build_peer Experimental_test exp_pub ~home:Sha256));
+    (hex (ok (Peer_identity.build_peer Experimental_test exp_pub ~home:Sha256)));
   (* The `content_hash under SHA-384 (0x01)` assertion that stood here, pinning
      `012e64bbde…3eef5a69`, is WITHDRAWN — the corpus vector it transcribed
      (`hash-format-sha-384.2`) was INVERTED upstream and now asserts the opposite.
@@ -83,12 +83,16 @@ let () =
      construction and passes by bypassing the code that forbids it certifies the
      opposite of the rule" (GUIDE-CONFORMANCE §2.4a). This harness did exactly that.
 
-     OWED, and deliberately not faked here: the NEGATIVE half — asserting that
-     `build_peer … ~home:Sha384` is REFUSED. It is not, today: this peer will still
-     construct it. Writing the refusal assertion requires changing
-     `Peer_identity.build_peer` to reject a non-floor home for `system/peer`, which
-     is a peer-behaviour change and not a test edit. Recorded as a gap rather than
-     papered over, because a half-implemented rule reads as done. *)
+     The NEGATIVE half is asserted below. It was owed from 2026-09-01 to
+     2026-09-02 with this comment standing in for it — which is exactly the shape
+     the charter names: a deferral comment is a conformance claim with no gate on
+     it. `Peer_identity.build_peer` now refuses a non-floor home (a peer-behaviour
+     change, not a test edit), so the refusal is observed through the pinned
+     constructor as the corpus's `verifier_requirement` demands. *)
+  check_rejects "hash-format-sha-384.2 — authoring system/peer under SHA-384 (0x01) is REFUSED"
+    (Peer_identity.build_peer Experimental_test exp_pub ~home:Sha384);
+  (* The positive half of the same pin: the floor form is the only form this
+     fixture has, asserted immediately above. Both halves, per §2.4a. *)
   (* Differential: the FFI ec_sha384 must agree byte-for-byte with the native
      digestif SHA-384 used by the live hashing path. Proves the C-ABI digest is
      interchangeable with the native one (the agility hashing path is native;
@@ -127,7 +131,7 @@ let () =
       let pub = ok (Key_types.public_key_from_seed algo (seed b n)) in
       check (label ^ " peer_id") peer_id (Peer_identity.derive_peer_id algo pub);
       check (label ^ " content_hash") ch
-        (hex (Peer_identity.build_peer algo pub ~home:Sha256)))
+        (hex (ok (Peer_identity.build_peer algo pub ~home:Sha256))))
     matrix;
 
   (* ── Reject paths (VARINT / FORMAT-CODE probes) ────────────────────────── *)

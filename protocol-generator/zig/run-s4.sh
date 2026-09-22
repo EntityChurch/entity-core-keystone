@@ -96,3 +96,15 @@ if [ "$#" -eq 0 ]; then
   set -- -profile core -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
 fi
 "$ORACLE" -addr "127.0.0.1:$PORT" "$@" || true
+
+# SURFACE THE PEER'S OWN STDERR. /tmp/host.err is a path INSIDE a --rm container, so
+# without this the peer's dying words are discarded with the container and an abort
+# leaves a log reading only "connection refused". That is not hypothetical: the
+# intermittent tracked in CONFORMANCE-MATRIX.md §3 survived four investigations
+# reported as "no crash, empty stderr" until this line existed, and then produced a
+# std.Thread stack trace on the first reproduction. Emitted on stderr so it cannot be
+# mistaken for oracle output, and only when non-empty so a clean run stays quiet.
+if [ -s /tmp/host.err ]; then
+  echo "--- peer stderr (/tmp/host.err) ---" >&2
+  cat /tmp/host.err >&2
+fi

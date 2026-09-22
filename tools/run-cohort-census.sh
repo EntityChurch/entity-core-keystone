@@ -221,8 +221,11 @@ census_one() {
     go)
       run_podman "$peer" entity-core-keystone/go:latest --network=none --security-opt label=disable >>"$log" 2>&1; rc=$? ;;
     haskell)
-      run_podman "$peer" entity-core-keystone/ghc-toolchain:latest --network=none \
-        -e CABAL_DIR=/work/protocol-generator/haskell/.cabal-home >>"$log" 2>&1; rc=$? ;;
+      # No CABAL_DIR override: the image carries the dependency closure at
+      # /opt/cabal-home, seeded from this peer's own cabal.project.freeze. It
+      # used to point at a gitignored in-tree `.cabal-home` that existed only on
+      # the machine that warmed it, and only for the library deps.
+      run_podman "$peer" entity-core-keystone/ghc-toolchain:latest --network=none >>"$log" 2>&1; rc=$? ;;
     julia)
       run_podman "$peer" entity-core-keystone/julia-toolchain:latest --network=none >>"$log" 2>&1; rc=$? ;;
     nim)

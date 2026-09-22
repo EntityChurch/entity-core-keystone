@@ -36,7 +36,36 @@ const ConnState = struct {
     conn: Conn,
 };
 
+// ── §4.10(c) connection-admission bound ──────────────────────────────────────
+//
+// This peer is thread-per-connection, so an unbounded accept loop turns a
+// connection flood into that many concurrent threads. It had no bound at all, and
+// `resource_bounds/r3_connection_flood` WARNed by design — §4.10(c) is a SHOULD,
+// and "no self-imposed bound, admission delegated externally" is an accepted
+// answer. It was not, however, a harmless one: measured over 22 full `--profile
+// core` runs, r3 FAILED 4 times with *"admitted all 256 connections without
+// refusal AND fell over on the serve probe … i/o timeout"*. The peer was not
+// crashing and the accept loop was not exiting (both are instrumented above and
+// stayed silent) — 256 live connection threads simply left it unable to answer the
+// post-flood probe inside the oracle's deadline. An intermittent whose mechanism is
+// saturation looks like flakiness and is not.
+//
+// THE RELEASE PATH IS THE WHOLE DESIGN. A counter that admits but never releases
+// presents as a DEAD peer, not an over-permissive one, so:
+//   * increment BEFORE the spawn — a detached thread can run to completion before
+//     `spawn()` even returns, and a post-spawn increment can therefore go negative
+//     or double-count;
+//   * decrement LAST in the worker's teardown, after the stream is closed and the
+//     state destroyed, so a slot is never free while its resources are still held.
+// Refusal is a clean immediate close, which is what §4.10(c) asks for and what the
+// oracle scores as self-bounded.
+const max_connections: u32 = 64;
+var live_connections = std.atomic.Value(u32).init(0);
+
 fn serveConnection(peer: *Peer, gpa: std.mem.Allocator, stream: std.net.Stream) void {
+    // Released LAST, and on every exit path including the early `create` failure.
+    defer _ = live_connections.fetchSub(1, .release);
+
     transport.setNoDelay(stream); // low-latency request/response (handshake churn — §7b t2_2)
     var cs = gpa.create(ConnState) catch {
         stream.close();
@@ -142,14 +171,68 @@ pub fn main() !void {
             },
             // FileDescriptorNotASocket, SocketNotListening, BlockedByFirewall,
             // Unexpected — the listener is unusable; stop.
-            else => break,
+            //
+            // SAY SO ON THE WAY OUT. A peer that stops accepting while the process
+            // stays alive is indistinguishable from a crash to every client — they
+            // all get `connection refused` — and indistinguishable from nothing at
+            // all to anyone reading stderr afterwards, which is exactly the state
+            // that made the r3/churn intermittent unattributable: no panic, no
+            // backtrace, empty stderr, and a listener that had quietly gone away.
+            // One line converts "not root-caused" into a named errno.
+            else => {
+                std.debug.print("host: accept loop EXITING on fatal error: {s}\n", .{@errorName(err)});
+                break;
+            },
         };
-        const th = std.Thread.spawn(.{}, serveConnection, .{ &peer, gpa, accepted.stream }) catch {
+        // §4.10(c): reserve the slot BEFORE spawning (see the note on the counter).
+        // Over the bound, refuse cleanly — close immediately, keep accepting — so a
+        // flood is shed rather than absorbed, and the peer stays answerable.
+        if (live_connections.fetchAdd(1, .acquire) >= max_connections) {
+            _ = live_connections.fetchSub(1, .release);
+            accepted.stream.close();
+            continue;
+        }
+
+        // A spawn failure closes the connection and keeps serving — correct, but it
+        // is ALSO a silent refusal, so name the errno for the same reason as the
+        // accept arm above. The reserved slot is released here because the worker
+        // that would have released it never started.
+        const th = std.Thread.spawn(.{}, serveConnection, .{ &peer, gpa, accepted.stream }) catch |err| {
+            std.debug.print("host: thread spawn refused a connection: {s}\n", .{@errorName(err)});
+            _ = live_connections.fetchSub(1, .release);
             accepted.stream.close();
             continue;
         };
+        // KNOWN RESIDUAL, root-caused here and NOT fixed — do not read the admission
+        // bound above as closing it. `detach()` hands the thread's own teardown the
+        // job of freeing its stack+TLS+Instance mapping, and that teardown aborts the
+        // PROCESS intermittently:
+        //
+        //   thread NNNNN panic: reached unreachable code
+        //   /opt/zig/lib/std/Thread.zig:1377:31 in entryFn
+        //       defer switch (self.thread.completion.swap(.completed, .seq_cst)) {
+        //
+        // That arm is `.completed => unreachable`, so the completion was ALREADY
+        // `.completed` when this thread finished — i.e. an `Instance` mapping was
+        // reused while its previous thread was still inside this `defer`. It is the
+        // detached-thread lifetime race one level below our code: `freeAndExit`
+        // munmaps the region, and a concurrent `spawn()` can be handed the same
+        // address.
+        //
+        // Measured, because "flaky" is not a diagnosis: over 60 full `--profile core`
+        // runs with the bound in place it aborted 5 times (8%), always first visible
+        // as `t2_2_connection_churn` failing mid-cycle with `broken pipe`, after which
+        // every later check reports `connection refused` — INCLUDING r3, whose
+        // "admission slots leaked" message is the oracle's inference from a dead peer
+        // and is not the mechanism. The accept-loop-exit line below never fires in
+        // those runs, which is what proves the process died rather than stopped
+        // listening.
+        //
+        // Fixing it means not detaching — owning the handles and joining them — which
+        // is real machinery and is not attempted here.
         th.detach();
     }
+    std.debug.print("host: accept loop has EXITED — no longer listening\n", .{});
 }
 
 fn randomSeed() [32]u8 {

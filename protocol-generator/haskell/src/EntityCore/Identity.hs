@@ -35,6 +35,7 @@ import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
 
 import EntityCore.Codec.Value (Value (..))
+import EntityCore.ContentHash (authorContentHash, peerIdentityFloorFormat)
 import EntityCore.Model (Entity (..), bytesField, makeEntity)
 import EntityCore.PeerId (derivePeerId, formatPeerId)
 import qualified EntityCore.Signature as Sig
@@ -67,13 +68,22 @@ identityOfSeed :: ByteString -> Either String Identity
 identityOfSeed seed = do
   publicKey <- either (Left . show) Right (Sig.ed25519PubkeyFromSeed seed)
   let peerEntity = peerEntityOfPubkey publicKey
+  -- §4.5a item 1a: the identity entity is authored at the ECFv1-SHA-256 floor
+  -- unconditionally. This goes through 'authorContentHash' rather than reading
+  -- the entity's precomputed 'entHash' so the pin is a constraint the peer's own
+  -- authoring path EXECUTES, not a property it happens to have. The two agree by
+  -- construction today; if a future change threads a format through here, this
+  -- refuses instead of silently minting a second identity form.
+  identityHash <-
+    either (Left . show) Right
+      (authorContentHash peerIdentityFloorFormat (entType peerEntity) (entData peerEntity))
   Right
     Identity
       { idSeed = seed
       , idPublicKey = publicKey
       , idPeerId = peerIdOfPubkey publicKey
       , idPeerEntity = peerEntity
-      , idIdentityHash = entHash peerEntity
+      , idIdentityHash = identityHash
       }
 
 -- | Sign an entity's content_hash; produce the @system/signature@ entity (§3.5):

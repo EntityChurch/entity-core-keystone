@@ -63,8 +63,20 @@ module EntityCore
           check_root_cap("#{id}.root_cap", vector)
       when "decode_reject"
         check_decode_reject(id, vector)
+      when "construct_reject"
+        check_construct_reject(id, vector)
+      when nil
+        [Result.new(id, :fail, { error: :vector_has_no_kind })]
       else
-        []
+        # A vector this runner does not know how to drive. It USED to be `[]`,
+        # which is the worst possible answer: the vector produced no gate at all,
+        # so the corpus could gain a pin, the harness would ignore it, and the
+        # suite would report the same confident green having never asked the
+        # question. That is precisely how `hash-format-sha-384.2` went unmeasured
+        # here after upstream inverted it — its kind changed from
+        # `content_hash_under_format` to `construct_reject` and this branch
+        # swallowed it. An unhandled vector is now a FAILURE that names itself.
+        [Result.new(id, :fail, { error: :unhandled_vector_kind, kind: vector["kind"] })]
       end
     end
     private_class_method :run_vector
@@ -136,6 +148,40 @@ module EntityCore
       end
     end
     private_class_method :check_decode_reject
+
+    # construct_reject — the §2.4a NEGATIVE half. The corpus asserts a
+    # construction is refused, and its `verifier_requirement` insists the refusal
+    # be observed through the pinned constructor rather than by hand-building the
+    # entity, which is exactly how the inverted predecessor of this vector stayed
+    # green while certifying the opposite of the rule.
+    #
+    # Both halves are scored: the positive half asserts the floor form named by
+    # the vector's own `floor_form` field still authors.
+    def check_construct_reject(id, vector)
+      input = vector["input"]
+      fmt = input["content_hash_format"]
+      entity = { "type" => input["type"], "data" => input["data"] }
+
+      negative =
+        begin
+          produced = Hash.author_content_hash(entity, fmt)
+          Result.new("#{id}.refused", :fail,
+                     { error: :constructed_instead_of_refusing, got: hexify(produced) })
+        rescue Hash::PeerEntityNotAtFloor
+          Result.new("#{id}.refused", :pass, nil)
+        end
+
+      positive =
+        begin
+          Hash.author_content_hash(entity, Hash::PEER_IDENTITY_FLOOR_FORMAT)
+          Result.new("#{id}.floor_form_still_authors", :pass, nil)
+        rescue Hash::PeerEntityNotAtFloor => e
+          Result.new("#{id}.floor_form_still_authors", :fail, { error: e.message })
+        end
+
+      [negative, positive]
+    end
+    private_class_method :check_construct_reject
 
     # A decode_reject gate PASSES when the registry lookup did NOT resolve (nil)
     # — i.e. the reserved/unallocated code is correctly refused.

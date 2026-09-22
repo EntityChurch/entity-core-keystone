@@ -126,6 +126,33 @@ convergence** — they share a generation lineage and, for the FFI-hybrid peers,
    parent is parked still count as live and the bound presents as a dead peer), and on **RISC-V the
    bound is a value comparison** rather than a compare-then-branch-on-flag, the same restatement
    §5.6 rule 3's overflow test needed.
+3a. ~~**The vector-layout migration**~~ ✅ **DONE (2026-09-02)** — and it was not the rename it
+   looked like. `GUIDE-CONFORMANCE.md` §5.1 forbids a version stamp in a corpus directory or
+   artifact name; `shared/test-vectors/v0.8.0/*-vectors-v1.*` broke that twice, across 90 functional
+   consumers that **no `run-s4.sh` reads**, so the S4 census could not have caught a mistake. The
+   corpora are now `ecf-conformance/`, `crypto-agility/` and a new keystone-owned `type-registry/`,
+   each with a changelog in place of a version integer. **What the move exposed:** the directory
+   held the crypto-agility corpus TWICE, and the copy the peers actually read had been **superseded**
+   upstream — `hash-format-sha-384.2` inverted (the re-hash it pinned is now a construction that MUST
+   be refused; §4.5a item 1a floor-pins `system/peer`) and the M3/M6 identity hashes moved to
+   floor-form. Nothing failed while both copies existed. `elixir` and `ruby`, which LOAD the corpus,
+   failed two gates each the moment the duplicate went; `ocaml` and `csharp`, which TRANSCRIBE the
+   pins, **passed while carrying the identical defect**, because peer and test were wrong in the
+   same direction. All four fixed and re-measured. `haskell` is predicted to fail and is
+   **unmeasured** — its image cannot resolve its own test-suite dependencies, so that peer's S2 has
+   no runnable gate here, which is a bigger finding than this one. **No published conformance number
+   moves**: the agility corpus is not in `--profile core`, and a second axis was red on two peers
+   while the gated axis was green.
+3b. **`zig`'s intermittent process abort** — OPEN, root-caused 2026-09-02, not fixed. **5 aborts in
+   60 full `--profile core` runs.** A detached thread's mapping is reused while its previous thread
+   is still tearing down, and `std.Thread`'s own completion state machine aborts the process; it is
+   a lifetime race one level below peer code. Four earlier investigations reported "no crash, empty
+   stderr" because `run-s4.sh` writes the peer's stderr to a path inside a `--rm` container — the
+   evidence was being deleted every run. **Closed separately in the same session:** the peer had no
+   §4.10(c) admission bound at all, so a 256-connection flood became 256 concurrent threads and `r3`
+   failed **9 of 30** runs on plain saturation; a 64-connection bound eliminated that shape (**0 of
+   60**) and took `r3` WARN→PASS, moving zig to `315P/335W`. Two independent defects behind one
+   check — the bound is not the fix for the abort.
 4. **`cobol`'s 8192-byte per-entity ceiling**, if a peer that can hold larger entities is wanted.
    Two concurrency probes stage 256 KiB and 16 KiB payloads; the first cannot fit its 65535-byte
    frame cap at all, and the second is refused with `413`. Raising the ceiling means raising every

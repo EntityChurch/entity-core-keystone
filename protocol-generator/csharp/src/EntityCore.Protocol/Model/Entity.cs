@@ -41,13 +41,51 @@ internal sealed class Entity
     public string ContentHashHex => Hashes.Hex(ContentHash);
 
     /// <summary>
+    /// The one entity type pinned to the ECFv1-SHA-256 floor regardless of the
+    /// active or home <c>content_hash_format</c> (§4.5a item 1a).
+    /// </summary>
+    internal const string PeerIdentityType = "system/peer";
+
+    /// <summary>
     /// Build an entity from <c>{type, data}</c>: canonical-encode the hashable form,
     /// derive the content hash under <paramref name="contentHashFormat"/> (default
     /// <c>0x00</c> SHA-256 — the §9.1 home format), and produce the full wire bytes.
     /// A non-default format is the agility path (e.g. a SHA-384 home network).
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// §4.5a item 1a — a <c>system/peer</c> identity entity is authored under
+    /// ECFv1-SHA-256 (<c>0x00</c>) <b>unconditionally</b>: on every connection,
+    /// whatever the active format, and whatever the peer's home format. Its data is
+    /// wholly recoverable from the public peer-id, so every consumer <i>derives</i>
+    /// its hash rather than fetching it. A <c>system/peer</c> under any other format
+    /// is not a form to be preserved but a construction that cannot exist, and
+    /// authoring one is refused here.
+    /// </para>
+    /// <para>
+    /// This is the constructor the <c>hash-format-sha-384.2</c> agility vector
+    /// requires the refusal to be observed through. That vector used to assert the
+    /// <i>opposite</i> — that the SHA-384 rehash succeeds — and stayed green only
+    /// because the verifier hand-built the entity instead of routing through the
+    /// code that forbids it. A fixture that exercises a forbidden construction and
+    /// passes by bypassing the guard certifies the opposite of the rule
+    /// (<c>GUIDE-CONFORMANCE</c> §2.4a).
+    /// </para>
+    /// <para>
+    /// The guard is deliberately on the AUTHORING path only. <see cref="Decode"/>
+    /// recomputes under the format an entity declares — that is wire acceptance, a
+    /// separate surface, and item 1a does not speak to it.
+    /// </para>
+    /// </remarks>
     public static Entity Create(string type, EcfValue data, ulong contentHashFormat = HashFormats.Sha256)
     {
+        if (type == PeerIdentityType && contentHashFormat != HashFormats.Sha256)
+        {
+            throw new EntityCodecException(
+                $"'{PeerIdentityType}' is pinned to the ECFv1-SHA-256 floor (V7 §4.5a item 1a); " +
+                $"refusing to author it under content_hash_format 0x{contentHashFormat:x2}");
+        }
+
         byte[] hashable = CanonicalCbor.Encode(Ecf.Map(("type", new EcfValue.Text(type)), ("data", data)));
         byte[] contentHash = HashFormats.ContentHash(contentHashFormat, hashable);
         byte[] wire = CanonicalCbor.Encode(new EcfValue.Map(new[]

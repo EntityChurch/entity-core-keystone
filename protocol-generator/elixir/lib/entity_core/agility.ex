@@ -88,6 +88,47 @@ defmodule EntityCore.Agility do
       check_root_cap("#{id}.root_cap", v)
   end
 
+  # construct_reject — the §2.4a NEGATIVE half. The corpus asserts that a
+  # construction is refused; the `verifier_requirement` insists the refusal be
+  # observed through the pinned constructor rather than by hand-building the
+  # entity, which is exactly how the inverted predecessor of this vector stayed
+  # green while certifying the opposite of the rule.
+  #
+  # Both halves are scored, not just the refusal: the positive half asserts the
+  # floor form named by the vector's own `floor_form` field still authors.
+  defp run_vector(%{"id" => id, "kind" => "construct_reject"} = v) do
+    input = v["input"]
+    fmt = input["content_hash_format"]
+    entity = %{"type" => input["type"], "data" => input["data"]}
+
+    negative =
+      case Hash.author_content_hash(entity, fmt) do
+        {:error, _} -> {"#{id}.refused", :pass}
+        {:ok, h} -> {"#{id}.refused", {:fail, {:constructed_instead_of_refusing, hex(h)}}}
+      end
+
+    positive =
+      case Hash.author_content_hash(entity, 0x00) do
+        {:ok, _} -> {"#{id}.floor_form_still_authors", :pass}
+        {:error, e} -> {"#{id}.floor_form_still_authors", {:fail, e}}
+      end
+
+    [negative, positive]
+  end
+
+  # A vector this runner does not know how to drive. It USED to be `[]`, which is
+  # the worst possible answer: the vector produced no gate at all, so the corpus
+  # could gain a pin, the harness would ignore it, and the suite would report the
+  # same confident green having never asked the question. That is precisely how
+  # `hash-format-sha-384.2` went unmeasured here after upstream inverted it —
+  # its `kind` changed from `content_hash_under_format` to `construct_reject` and
+  # this clause swallowed it. An unhandled vector is now a FAILURE that names
+  # itself, not silence.
+  defp run_vector(%{"id" => id, "kind" => kind}),
+    do: [{id, {:fail, {:unhandled_vector_kind, kind}}}]
+
+  defp run_vector(%{"id" => id}), do: [{id, {:fail, :vector_has_no_kind}}]
+
   defp run_vector(_other), do: []
 
   # ── Matrix root_cap (§3.6 cap-token shape, S3) ─────────────────────────────

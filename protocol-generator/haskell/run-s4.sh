@@ -3,14 +3,15 @@
 #
 # Runs inside the ghc-toolchain container (the Go validate-peer oracle is a
 # fedora:43 ELF that runs there too, so oracle + peer share one loopback; stays
-# sealed-offline with --network=none against the warm .cabal-home store). Builds
-# the peer host, launches it with --debug-open-grants, waits for its LISTENING
-# line, points validate-peer at it, tears the host down.
+# sealed-offline with --network=none against the image's vendored cabal store).
+# Builds the peer host, launches it with --debug-open-grants, waits for its
+# LISTENING line, points validate-peer at it, tears the host down.
 #
-# Invoke from the repo root (note: CABAL_DIR points at the warm workspace store
-# per the A-HS-005 offline pattern):
+# Invoke from the repo root. No CABAL_DIR override is needed or wanted: the
+# image carries the dependency closure at /opt/cabal-home, seeded from this
+# peer's own cabal.project.freeze. This used to name a gitignored in-tree
+# `.cabal-home` that existed only on the machine that had warmed it.
 #   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm --network=none \
-#     -e CABAL_DIR=/work/protocol-generator/haskell/.cabal-home \
 #     -v "$PWD":/work:Z \
 #     entity-core-keystone/ghc-toolchain:latest \
 #     sh /work/protocol-generator/haskell/run-s4.sh [validate-peer-args...]

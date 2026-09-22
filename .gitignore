@@ -105,6 +105,12 @@ containers/cargo/*
 **/*.install
 **/.merlin
 
+# Nim — compiled test binaries. `run-s2.sh` builds tests/tconformance.nim and
+# tests/tmultisig.nim into sibling `*_bin` executables (nimble's own `test` task
+# cannot run: its packageparser rejects this peer's `0.1.0-pre` version string).
+# The .nim sources are committed; the binaries are build output.
+protocol-generator/nim/tests/*_bin
+
 # IDE
 .idea/
 .vscode/
@@ -114,3 +120,8 @@ containers/cargo/*
 # OS
 .DS_Store
 Thumbs.db
+
+# QEMU/glibc core dumps from a crashing offline unit (an aborting test writes one
+# beside the peer; committing a core dump would be an accident nobody notices).
+*.core
+qemu_*.core

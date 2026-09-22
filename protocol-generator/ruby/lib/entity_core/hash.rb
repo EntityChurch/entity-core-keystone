@@ -35,6 +35,43 @@ module EntityCore
       Varint.encode(format_code) << digest
     end
 
+    # ECFv1-SHA-256 — the §9.1 conformance floor, and the format the system/peer
+    # identity entity is pinned to unconditionally (§4.5a item 1a).
+    PEER_IDENTITY_FLOOR_FORMAT = 0x00
+    PEER_IDENTITY_TYPE = "system/peer"
+
+    # Raised when an author asks for a system/peer under a non-floor format.
+    class PeerEntityNotAtFloor < StandardError; end
+
+    # The §4.5a AUTHORING entry point — use this wherever the peer *creates* an
+    # entity under a chosen content_hash_format, as opposed to merely computing a
+    # digest. +content_hash+ is the raw primitive; this adds the one normative
+    # constraint on *which* format an author may choose.
+    #
+    # §4.5a item 1a — a system/peer identity entity is authored under
+    # ECFv1-SHA-256 (0x00) UNCONDITIONALLY: on every connection, whatever the
+    # active format, and whatever the peer's home format. Its data is wholly
+    # recoverable from the public peer-id, so every consumer *derives* its hash
+    # rather than fetching it. A system/peer under any other format is not a form
+    # to be preserved but a construction that cannot exist.
+    #
+    # This is the constructor the `hash-format-sha-384.2` agility vector requires
+    # the refusal to be observed through. That vector used to assert the opposite
+    # and stayed green only because verifiers hand-built the entity instead of
+    # routing through the code that forbids it — a fixture that exercises a
+    # forbidden construction and passes by bypassing the guard certifies the
+    # opposite of the rule (GUIDE-CONFORMANCE §2.4a).
+    def author_content_hash(entity, format_code)
+      if entity["type"] == PEER_IDENTITY_TYPE && format_code != PEER_IDENTITY_FLOOR_FORMAT
+        raise PeerEntityNotAtFloor,
+              "#{PEER_IDENTITY_TYPE} is pinned to the ECFv1-SHA-256 floor " \
+              "(V7 §4.5a item 1a); refusing to author it under " \
+              "content_hash_format #{format_code}"
+      end
+
+      content_hash(entity, format_code)
+    end
+
     # Resolve an integer format code to its OpenSSL digest name (receive side).
     # Returns the name for an allocated code, or nil for an unsupported one.
     def resolve_format(code)

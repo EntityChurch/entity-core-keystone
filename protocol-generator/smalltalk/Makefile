@@ -58,7 +58,29 @@ $(PEERIMG): load.st $(wildcard src/*/*.st) tests/EntityCore-Tests/EcCodecTest.st
 	cp $(BASEIMG)/*.image ./$(PEERIMG)
 	cp $(BASEIMG)/*.changes ./entity-core.changes
 	cp $(BASEIMG)/*.sources . 2>/dev/null || true
-	$(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "Smalltalk compiler evaluate: (FileLocator workingDirectory / 'load.st') contents. Smalltalk compiler evaluate: (FileLocator workingDirectory / 'tests/EntityCore-Tests/EcCodecTest.st') contents. Smalltalk snapshot: true andQuit: false. 'built'" | grep -vi 'undeclared\|warning' || true
+	$(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "Smalltalk compiler evaluate: (FileLocator workingDirectory / 'load.st') contents. Smalltalk compiler evaluate: (FileLocator workingDirectory / 'tests/EntityCore-Tests/EcCodecTest.st') contents. Smalltalk snapshot: true andQuit: false. 'built'"
+	@$(MAKE) --no-print-directory load-verify
+
+# Assert the load POSTCONDITION rather than reading the loader's diagnostics.
+# The recipe above used to pipe through `grep -vi 'undeclared\|warning' || true`.
+# That was unsound in both halves: the `||true` swallowed a failing load, and the
+# filter hid the one diagnostic that matters. Pharo emits benign forward-reference
+# `NewUndeclaredWarning`s during a dependency-ordered file-in (EcMapEntry,
+# EcConnection — defined later in load order), and a class that genuinely failed
+# to compile produces a warning that looks EXACTLY the same. There is no way to
+# tell them apart by reading the text, so this asks the tree instead: every class
+# the sources install must be present in the snapshotted image. A typo'd or
+# uncompilable class is caught by ABSENCE, which is unambiguous.
+ST_CLASSES := $(shell grep -ho '<< *#[A-Za-z0-9_]*' src/*/*.st | sed 's/.*#//' | sort -u)
+load-verify:
+	@$(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "| want missing | \
+	  want := #($(ST_CLASSES)). \
+	  missing := want reject: [ :n | Smalltalk includesKey: n asSymbol ]. \
+	  missing isEmpty \
+	    ifTrue: [ 'load-verify: OK — ', want size printString, ' classes present' ] \
+	    ifFalse: [ 'load-verify: MISSING ', missing printString ]" \
+	  | tee /dev/stderr | grep -q 'load-verify: OK' \
+	  || { echo "make: *** load-verify failed — a src/*.st class did not install" >&2; exit 1; }
 
 # Full pinned-corpus conformance gate (69 vectors, byte-identical encode+decode+hash).
 test: image
@@ -81,9 +103,35 @@ multisig-accept: image
 # EcCapAuthz §5.2 `peers`-dimension regression suite (2026-08-13 fix; the oracle has zero
 # coverage of this dimension, see the class comment on EcCapAuthzTest). EcCapAuthzTest is
 # loaded JIT here, not baked into $(PEERIMG) (see the comment on that recipe above).
+#
+# Two things this target got wrong for as long as it existed, both of which made
+# it report success without measuring anything:
+#
+#  (a) The second eval both LOADED EcCapAuthzTest and referenced it by global
+#      name in ONE doit. Pharo compiles the whole doit before executing any of
+#      it, so the reference is undeclared at compile time even though the
+#      statement before it would have defined the class — `OCUndeclaredVariable
+#      Notice ... Undeclared variable->EcCapAuthzTest`, and the suite never ran.
+#      The class must be reached LATE-BOUND (`Smalltalk at: #EcCapAuthzTest`),
+#      which compiles to a runtime lookup and therefore sees the just-loaded class.
+#  (b) `pharo eval` exits 0 whatever the suite reports, so a red suite printed
+#      `failures=3` and the target passed. The counts are now ASSERTED.
 sunit: image
-	$(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "| r | r := EcCodecTest buildSuite run. 'SUnit runs=', r runCount printString, ' passes=', r passedCount printString, ' failures=', r failureCount printString, ' errors=', r errorCount printString"
-	$(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "| r | Smalltalk compiler evaluate: (FileLocator workingDirectory / 'tests/EntityCore-Tests/EcCapAuthzTest.st') contents. r := EcCapAuthzTest buildSuite run. 'SUnit runs=', r runCount printString, ' passes=', r passedCount printString, ' failures=', r failureCount printString, ' errors=', r errorCount printString"
+	@$(call st_suite,EcCodecTest,)
+	@$(call st_suite,EcCapAuthzTest,Smalltalk compiler evaluate: (FileLocator workingDirectory / 'tests/EntityCore-Tests/EcCapAuthzTest.st') contents.)
+
+# $(call st_suite,<TestCase class>,<setup statements>) — run an SUnit suite and
+# FAIL unless it reports zero failures and zero errors.
+define st_suite
+$(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "| r | $(2) \
+  r := (Smalltalk at: #$(1)) buildSuite run. \
+  '$(1): runs=', r runCount printString, \
+  ' passes=', r passedCount printString, \
+  ' failures=', r failureCount printString, \
+  ' errors=', r errorCount printString" \
+  | tee /dev/stderr | grep -q 'failures=0 errors=0' \
+  || { echo "make: *** $(1) SUnit suite is not green" >&2; exit 1; }
+endef
 
 # ── S5 packaging (deferred like the cohort; source distribution + Metacello baseline) ──
 # Pharo has NO binary package registry — distribution is a git repo + a Metacello baseline. The
