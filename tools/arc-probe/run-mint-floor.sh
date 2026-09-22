@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # run-mint-floor.sh — drive `arc-probe` against a peer through its OWN UNMODIFIED
-# harness, i.e. WITH `--debug-open-grants`, for the sake of the E family only.
+# harness, i.e. WITH `--debug-open-grants`, for the sake of the MINTED-CAPABILITY
+# families only: E, F and G.
 #
 # WHY A SECOND SETUP EXISTS, AND WHY IT IS NOT THE DEFAULT
 # --------------------------------------------------------
@@ -27,10 +28,32 @@
 # become measurable here; `forth` and `smalltalk` stay VOID for a reason that is
 # about the peer rather than about the floor, and that is worth saying separately.
 #
-# READ ONLY THE E FAMILY OUT OF THIS RUN. The A and B rows in the output are
-# measured under open grants and are NOT comparable with `run.sh`'s; they are left
-# in the report rather than suppressed, because a report that silently omits rows
-# is worse than one that says which rows it is for.
+# FAMILIES F AND G READ OUT OF THIS RUN TOO, BY THE SAME ARGUMENT AND WITH ONE
+# DIFFERENCE WORTH STATING. Both mint their own capability and both grade that
+# minted token's own scope, so the caller's floor decides only whether the mint is
+# permitted:
+#
+#   * family F's subject is the minted cap's `peers` dimension. F1 excludes THIS
+#     peer from a grant it then presents here; no floor can make that grant cover
+#     this peer. The F0 control (explicit local `peers`, same grant otherwise)
+#     proves the arm is live.
+#   * family G's subject is a minted capability covering qA and NOT qB. The G1
+#     antecedent — qB refused under that capability — is what proves the narrowing
+#     survived the wider floor, and it is checked on every row before G2 is read.
+#
+#   ⚠ ONE ROW CHANGES MEANING HERE AND IT IS GRADED, NOT HIDDEN. Family F's
+#   `F2_peers_foreign_only` is refused at MINT under the discovery floor (§6.2's
+#   subset check: a foreign `peers` include is not a subset of the floor's). Under
+#   `default -> *` the same grant MINTS, so the refusal — if it comes — comes from
+#   `check_permission` on use instead. Both are conformant and the verdict string
+#   says which gate answered, so an F2 row from this runner is a reading about L1
+#   where the same row from `run.sh` is a reading about L4. They are not the same
+#   measurement and must not be pooled into one count.
+#
+# READ ONLY THE E, F AND G FAMILIES OUT OF THIS RUN. The A and B rows in the
+# output are measured under open grants and are NOT comparable with `run.sh`'s;
+# they are left in the report rather than suppressed, because a report that
+# silently omits rows is worse than one that says which rows it is for.
 #
 #   tools/arc-probe/run-mint-floor.sh python           # one peer
 #   tools/arc-probe/run-mint-floor.sh --roster         # every peer in peer-tiers.tsv

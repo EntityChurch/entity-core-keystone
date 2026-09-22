@@ -2920,6 +2920,91 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   drives the peer's UNMODIFIED harness and says in its header that only that family may be read out
   of it. **Before concluding a family is unmeasurable, ask whether the precondition that blocks it is
   a property of the SUBJECT or of the setup** — five of the seven were the setup.)*
+- **A FAILURE COUNT CANNOT SAY WHETHER ANY PEER HAS THE MECHANISM AT ALL — CROSS-TABULATE AGAINST
+  THE NEIGHBOURING ROW, AND THE EMPTY CELL IS THE FINDING.** RATIFIED 2026-09-14, driving the cell
+  census's last two structural zeros (`tools/arc-probe` families F and G, `F84`/`F85`). `G2`
+  composes a caller `exclude` that VACATES the §5.2 dispatch check with a grant that does not cover
+  the excluded target, so §6.3's `check_path_permission` — which the spec calls *"not a secondary
+  check … the sole enforcement wherever the subject is derived after dispatch"* — is the only thing
+  standing. **33 of 43 peers served the uncovered path.** That number is a list of peers to fix and
+  it is the wrong reading. The 2×2 against `A3` (selection among two IN-GRANT targets) is the right
+  one:
+
+  | | `G2` conforms | `G2` discloses |
+  |---|---:|---:|
+  | **`A3` conforms** | **0** | **0** |
+  | **`A3` does not** | 10 | 33 |
+
+  `A3` is `no` on **45 of 45** — not one peer selects from the effective set — and **the top row is
+  EMPTY**: there is no peer where the selection is wrong and the path check catches it. So the
+  finding is not *33 peers have a bug*, it is *a layer the spec designates as sole enforcement has
+  zero working instances in the cohort*, which is a different claim with a different owner and a
+  different repair. **The 10 that look safe are safe for unrelated reasons** — a raw arity check
+  (the arm `F71` warns refuses a legitimate single-entry effective set), a raw-target count, a
+  blanket 403 — which is the standing *"a check can pass for the wrong reason"* rule, and only the
+  cross-tabulation exposes it. **Enforcement: whenever a probe row measures a BACKSTOP, tabulate it
+  against the row measuring the thing it backs up. A backstop is only demonstrated by a peer that
+  fails the primary and passes the backstop; if that cell is empty, nobody has it** — and a bare
+  failure count will read as though somebody does.
+- **BRING ONE OR TWO PEERS ALL THE WAY TO THE TARGET BEFORE SWEEPING 45 — IT IS THE ONLY THING THAT
+  ANSWERS "IS THE TEXT IMPLEMENTABLE AS WRITTEN", AND IT PAYS FOR ITSELF IN ONE CORRECTION.**
+  RATIFIED 2026-09-14 (`go` and `python` taken to `0.8.2.23`: the §3.3 ladder,
+  `check_path_permission`, the listing filter — ~90 lines each, the shape identical across a static
+  and a dynamic substrate). Three things came out of it that no amount of reading produced:
+  - **A frame error of ours.** The first `go` cut threaded the per-link GRANTER frame into
+    `check_path_permission` by analogy with §5.5a. §6.3's own block settles it —
+    `matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id)`, and **there is no
+    granter parameter to pass**. §5.5a governs chain ATTENUATION, where the subject is a pattern
+    compared against a parent's pattern; that call site compares a CONCRETE LOCAL PATH. **The
+    sibling `python` peer had it right and said so at the definition** (*"do not add a granter frame
+    to it"*) — the standing *"when a scope question has 45 answers in the tree, ask them"* rule,
+    reached from the side where the tree was right and we were not. Record that with the same weight
+    as a catch.
+  - **A genuine spec ambiguity, and the vanguard is what made it concrete rather than theoretical.**
+    §3.3 says an empty effective list IS the absent case; §6.3's grammar makes the listing route a
+    trailing-slash TARGET; and every peer answers an absent `resource` with a root listing while
+    nothing in the check set objects. **Both vanguards keep the shipped behaviour and say so at the
+    branch rather than resolving it unilaterally** — it is one sentence to ask now and a cohort-wide
+    change after 43 peers are swept. **A sweep is the most expensive possible place to discover an
+    ambiguity; a vanguard is the cheapest.**
+  - **The measurement that turns a coverage complaint into a fact: `0 of 778` severities moved on
+    EACH.** Two peers went from violating three landed MUSTs to conformant and the pinned check set
+    could not tell. That is the same shape as `F62` and the H1 census, and it is a sharper argument
+    for vectors than any count of uncovered cells.
+  **Enforcement: for any cohort-wide rule not yet gated by the oracle, land it on two peers in
+  DIFFERENT substrates and re-census both check-by-check before authoring the sweep.** Two is the
+  number: one proves it compiles, two proves the shape transfers.
+  *(Sub-lesson, and it is the examined-zero-things class in a new shape: **a count that disagrees
+  with the detail printed beside it is worse than no count.** `arc-probe`'s family-A tally tested
+  `Conforms == "yes"` while one row answers `"yes — total canonicalization…"`, so a fully conformant
+  peer scored **4 of 5** next to a row printing five yeses. Prefix, not equality — and the tell is
+  that the summary and the detail disagree, which is visible only because the detail was printed.)*
+- **CLASSIFY A PROBE REPORT BY WHAT IT CONTAINS, NOT BY WHEN IT WAS WRITTEN — AND A ROSTER RUNNER
+  THAT DIES PARTWAY MAY REPORT NOTHING.** RATIFIED 2026-09-14 (second occurrence of the stale-probe-
+  directory class, and the control that fixed it is stronger than the mtime check the standing rule
+  prescribes). A 46-peer roster run was launched as `nohup … &` inside a background runner — the
+  double-backgrounding trap this file already records — and was killed at peer 19. `output/scratch/
+  arc/` then held **45 well-formed JSONs**, 19 from the live binary and 26 from a run two hours
+  older that **did not contain the families being counted at all**. Nothing warned. Reading the
+  directory as a cohort picture would have published a table in which 26 rows were silently absent
+  rather than measured.
+  **The mtime check would have worked and the CONTENT check is better: ask whether each report
+  carries the rows you are about to count.** A report from an older binary is definitionally
+  missing them, and the check is indifferent to clock skew, to a peer re-run by hand mid-roster, and
+  to the case where two runs are minutes apart. One loop, no judgement.
+  **And the runner's own failure list did not name the peer that failed.** `unison` died on a
+  `permission denied` writing a TRACKED transcript output and left its previous report in place; the
+  content check is what surfaced it, and re-running it alone was clean — **a filesystem-permission
+  failure is contention until proven otherwise**, which the standing rule says and which held again.
+  **Enforcement: a cohort table is assembled by a loop that asserts the expected rows are present in
+  every report, and prints the count of reports it rejected.**
+  *(And a parser that cannot read a payload must say WHAT IT SAW. The listing reader reported
+  *"no readable entry list"* for a listing that was right there — `entries` is a MAP on the
+  reference peer, not an array — and separately for a peer whose `entries` map is **EMPTY**. Those
+  are three different facts (wrong shape assumed · nothing enumerable here · genuinely unreadable)
+  and **only one of them invalidates the control**; collapsing them sent the reader looking for a
+  parser bug in the one case where the peer was the answer. A failed parse reports the field names,
+  their types, and the first element's keys.)*
 - **A MATCHER THAT IS ALSO A PROOF SURFACE TAKES A WRAPPER, NOT A NEW CLAUSE; AND A PEER WITH NO
   CANONICAL STRING TAKES A PREDICATE, NOT A SENTINEL.** Candidate (2026-09-14, from landing one rule
   in 45 languages — the value is in the two peers where the uniform transcription would have been

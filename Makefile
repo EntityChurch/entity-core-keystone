@@ -160,6 +160,16 @@ lint:
 	done; \
 	[ -n "$$any" ] || { echo "  ERROR: no spec-data MANIFEST found" >&2; exit 1; }; \
 	echo "lint: spec-data integrity OK (peers are linted per-toolchain, in-container)"
+	@# Agent/worktree state stays out of the index. A linked worktree inside the tree is
+	@# staged by `git add -A` as a gitlink (mode 160000) to a commit no clone can fetch —
+	@# the parent meta repo shipped six that way on 2026-09-01. This repo has no submodules,
+	@# so ANY tracked gitlink is that defect, whatever directory it sits in.
+	@set -e; for p in .claude/x .worktrees/x .agents/x AGENTS.local.md; do \
+	  git check-ignore -q --no-index "$$p" || { echo "  ERROR: $$p is not gitignored" >&2; exit 1; }; \
+	done; \
+	links=$$(git ls-files -s | awk '$$1 == "160000" { print $$4 }'); \
+	[ -z "$$links" ] || { echo "  ERROR: tracked gitlink(s) — a worktree or nested repo was committed:" >&2; echo "$$links" >&2; exit 1; }; \
+	echo "lint: agent/worktree dirs ignored, 0 tracked gitlinks OK"
 	@echo "lint: gating COMMITTED per-peer conformance reports (read-only)…"
 	@# The second root-level invariant that is cheaply checkable read-only: a peer we
 	@# publish as 0-FAIL must have a COMMITTED status/CONFORMANCE-REPORT.json measured

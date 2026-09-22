@@ -21,6 +21,21 @@
 //	B — §1.8 / §3.1 resolution integrity                (0.8.2.23)
 //	C — §5.2 / §5.6 scope typing supplied by the call site (0.8.2.22)
 //	E — §5.2 unmatchable grant exclude denies everything   (0.8.2.21)
+//	F — §1.4 / §5.2 Dimension 4 `peers`, inbound half      (0.8.2.2)
+//	G — §6.3 check_path_permission, the handler-level path check (0.8.2.20/.21/.22)
+//
+// F AND G EXIST BECAUSE OF THE CELL CENSUS, AND THEY ARE ITS FALSIFIER.
+// `shared/findings/scope-algebra-cell-census.md` enumerates the §5 scope algebra
+// as 146 decision cells, finds 37 with a named vector, and names four structural
+// zeros — then predicts, in writing, that "the next finding will land in L2, the
+// `peers` dimension, or an exclude arm." Two of those four have now been driven
+// and BOTH produced a cohort-scale finding: the caller-exclude arm gave F68/F71,
+// and the grant-exclude arm gave F83 (four peers reading no grant exclude at
+// dispatch at all). The two that remain are this file's F (`peers`, 0 of 24) and
+// G (L2 `check_path_permission`, 0 of 28 — a whole LAYER with no vector, while
+// three consecutive revisions are about it). A prediction with two of four
+// quadrants unexamined is not a closed argument, in either direction: these
+// families are what make it answerable rather than merely plausible.
 //
 // THE LAUNCH CONFIGURATION IS PART OF THE MEASUREMENT. Families A and E are
 // authorization-shaped, and every `run-s4.sh` in the cohort boots its peer with
@@ -287,9 +302,177 @@ func treeGetGrant(hType, oType, rType string, rExcl []string) []byte {
 	)
 }
 
+// treeGetGrantPeers is treeGetGrant carrying an EXPLICIT Dimension 4. `peers` is
+// an id-scope dimension by §3.6's grant-entry table, so it is typed as one — the
+// same well-typedness family C measures, held constant here so family F's
+// answers are about the VALUE rather than about the type.
+func treeGetGrantPeers(incl, excl []string) []byte {
+	return cmap(
+		pair{txt("handlers"), scopeOf(pathScope, []string{"system/tree"}, nil)},
+		pair{txt("operations"), scopeOf(idScope, []string{"get"}, nil)},
+		pair{txt("resources"), scopeOf(pathScope, []string{pattern}, nil)},
+		pair{txt("peers"), scopeOf(idScope, incl, excl)},
+	)
+}
+
+// narrowResourceGrant covers exactly the resources named. Family G needs a
+// capability that genuinely does NOT cover qB: without that, a request that
+// reaches qB is explained by a wide grant and measures nothing about §6.3.
+func narrowResourceGrant(incl []string) []byte {
+	return cmap(
+		pair{txt("handlers"), scopeOf(pathScope, []string{"system/tree"}, nil)},
+		pair{txt("operations"), scopeOf(idScope, []string{"get"}, nil)},
+		pair{txt("resources"), scopeOf(pathScope, incl, nil)},
+	)
+}
+
 func requestParams(grants ...[]byte) []byte {
 	return entity("system/capability/request",
 		cmap(pair{txt("grants"), arr(grants...)}))
+}
+
+// listingDir is a DIRECTORY path — a trailing-slash `get`, which §6.9a's own
+// worked example uses to enumerate handlers ("no dedicated list operation is
+// needed because the handler index is tree data"). qA and qB are both under it,
+// which is what lets family G exclude one and look for it in the result.
+const listingDir = "system/type/primitive/"
+
+// listingOf reads the entries and the declared count out of a directory `get`.
+//
+// THE COHORT DOES NOT AGREE ON THE SHAPE and this probe does not get to pick
+// one: it reports what it found, and a payload it cannot parse grades
+// `unclassified` carrying the observed keys — never as a defect. A parser that
+// guessed would manufacture a disclosure finding out of an unfamiliar schema,
+// which is the false-negative family's arithmetic half pointed at a peer.
+func listingOf(env map[string]interface{}) (entries []string, count int, shape string, ok bool) {
+	res, _ := rootData(env)["result"].(map[string]interface{})
+	if res == nil {
+		return nil, 0, "no result", false
+	}
+	d, _ := res["data"].(map[string]interface{})
+	if d == nil {
+		return nil, 0, "result carries no data map", false
+	}
+	if c, isInt := d["count"].(uint64); isInt {
+		count = int(c)
+	}
+	keys := make([]string, 0, len(d))
+	for k := range d {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	// Any array-valued field is a candidate entry list. Entries are strings on
+	// some peers and maps on others; a map is read through whichever of the
+	// known path-ish keys it carries.
+	//
+	// A FAILED PARSE MUST SAY WHAT IT SAW. The first cut of this function
+	// returned "no array field" whenever an array yielded no usable strings,
+	// which sent the reader looking for a missing field that was in fact
+	// present — the diagnostic pointing at the wrong thing is the failure mode
+	// this probe exists to avoid, so the fallback describes the structure.
+	// A NAMED entry field is read first and is read EVEN WHEN EMPTY. An empty
+	// listing is a perfectly good parse and a materially different fact from an
+	// unreadable one: `asm-x86_64` enumerates nothing at this path, and the
+	// first cut of this function reported that as "no readable entry list",
+	// which points the reader at a parser bug instead of at the peer. The
+	// distinction matters because only one of the two invalidates the control.
+	for _, k := range []string{"entries", "children", "items", "bindings", "paths"} {
+		v, present := d[k]
+		if !present {
+			continue
+		}
+		if mv, isMap := v.(map[string]interface{}); isMap {
+			got := make([]string, 0, len(mv))
+			for ek := range mv {
+				got = append(got, ek)
+			}
+			sort.Strings(got)
+			return got, count, k + " (map keys)", true
+		}
+	}
+	saw := []string{}
+	for _, k := range keys {
+		av, isArr := d[k].([]interface{})
+		if !isArr {
+			saw = append(saw, fmt.Sprintf("%s:%T", k, d[k]))
+			continue
+		}
+		got := make([]string, 0, len(av))
+		for _, it := range av {
+			switch t := it.(type) {
+			case string:
+				got = append(got, t)
+			case map[string]interface{}:
+				for _, pk := range []string{"path", "name", "target", "key", "uri", "id"} {
+					if sv, is := t[pk].(string); is && sv != "" {
+						got = append(got, sv)
+						break
+					}
+				}
+			}
+		}
+		if len(got) > 0 {
+			return got, count, k, true
+		}
+		// An array we could not read: say how long it is and what its first
+		// element looks like, which is the whole of what a reader needs.
+		desc := fmt.Sprintf("%s:[%d]", k, len(av))
+		if len(av) > 0 {
+			if m0, is := av[0].(map[string]interface{}); is {
+				ek := make([]string, 0, len(m0))
+				for kk := range m0 {
+					ek = append(ek, kk)
+				}
+				sort.Strings(ek)
+				desc += " first-keys{" + joinStr(ek, ",") + "}"
+			} else {
+				desc += fmt.Sprintf(" first=%T", av[0])
+			}
+		}
+		saw = append(saw, desc)
+	}
+	return nil, count, "no readable entry list in result.data — observed " + joinStr(saw, " "), false
+}
+
+func joinStr(xs []string, sep string) string {
+	out := ""
+	for i, x := range xs {
+		if i > 0 {
+			out += sep
+		}
+		out += x
+	}
+	return out
+}
+
+// mentions reports whether a listing names `want`, by SUFFIX as well as exact
+// match: peers emit entries absolute (`/{peer}/system/type/...`), peer-relative,
+// or as the bare leaf, and all three name the same binding. A stricter test
+// would report a peer that correctly LEAKS the entry as having filtered it.
+func mentions(entries []string, want string) bool {
+	leaf := want
+	if i := lastSlash(want); i >= 0 {
+		leaf = want[i+1:]
+	}
+	for _, e := range entries {
+		if e == want || hasSuffixStr(e, "/"+leaf) || e == leaf || hasSuffixStr(e, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func lastSlash(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == '/' {
+			return i
+		}
+	}
+	return -1
+}
+
+func hasSuffixStr(s, suf string) bool {
+	return len(s) >= len(suf) && s[len(s)-len(suf):] == suf
 }
 
 // mint drives `system/capability:request` and returns the minted token's hash
@@ -322,16 +505,25 @@ func (s *session) mint(tag string, grants ...[]byte) (hash []byte, mat []pair, s
 // coverage does not, and nobody can tell.
 
 var notDriven = []string{
-	"§6.8 handler/caller authority INTERSECTION for derived paths (0.8.2.22) — the discovery " +
-		"floor cannot produce a PARTIALLY covered listing (its resources grant is whole " +
-		"subtrees), so there is nothing for filter_listing to filter. Driving it needs an " +
-		"authored grant, which this probe deliberately does not use: the point of the floor is " +
-		"that the result is about the peers as they ship.",
+	"§6.8 handler/caller authority INTERSECTION — which of the two authorities a derived path is " +
+		"checked against (0.8.2.22) is still not driven. Family G drives the CALLER side: G4 " +
+		"mints a capability excluding one enumerable entry, which is the partially-covering " +
+		"grant the discovery floor cannot produce (the floor's resources are whole subtrees). " +
+		"That is a deliberate departure from floor-only measurement, made because the alternative " +
+		"was leaving a landed MUST at zero coverage — but note what it costs: a minted grant is " +
+		"this probe's construction, so G3/G4 are a reading about the peer's FILTER, not about " +
+		"the peer as an adopter finds it configured. The HANDLER side of the intersection needs " +
+		"a handler whose own grant is narrower than the caller's, which no core peer ships.",
 	"§6.3 handler_pattern is the OWNING handler, REQUIRED and fail-closed (0.8.2.23) — a core " +
 		"peer has one path-resource handler (system/tree), so owner and runner coincide at every " +
 		"reachable call site and the wire cannot separate the readings. Source-level question.",
 	"§6.8 outbound sub-dispatch authorization, PD-2 (0.8.2.17/.18/.19) — needs a second peer and " +
-		"an outbound dispatch; that is validate-peer's `-reference-peer` surface, not a probe's.",
+		"an outbound dispatch; that is validate-peer's `-reference-peer` surface, not a probe's. " +
+		"Family F drives the INBOUND half of Dimension 4 and that distinction is load-bearing: " +
+		"§1.4 rules the inbound check UNREACHABLE-but-mandatory (`target_peer` is always local " +
+		"there, and implementations MUST NOT conclude the dimension is inert), while the " +
+		"dimension's actual working surface — which peers a grant may be spent AGAINST — is " +
+		"outbound and is not measured here. A green family F is not a green `peers` dimension.",
 	"§5.4 effective_targets returns RAW survivors, not canonical forms (0.8.2.21) — the value is " +
 		"consumed internally and no response field echoes it back. Unobservable from the wire.",
 	"§5.2a's author/capability rows are driven; the CHAIN granter/per-link signer and the " +
@@ -361,6 +553,37 @@ type runState struct {
 	mintBadCod string
 	mintOKSt   int
 	mintOKCod  string
+
+	// Family F. `remoteID` is the responder's own §1.5 peer id, derived from the
+	// handshake (see session.remotePeerID). Every F row needs it and a wrong one
+	// would make the control fail rather than produce a false finding, which is
+	// the ordering that makes the family safe.
+	remoteID    string
+	remoteIDErr string
+	fForeignSt  int
+	fForeignCod string
+	fExclSt     int
+	fExclCod    string
+
+	// Family G. The narrow capability every G row runs under, plus what the
+	// UNFILTERED listing contained — G4 can only claim an entry was leaked if
+	// the control proved that entry is there to leak.
+	narrowCap    []byte
+	narrowCapM   []pair
+	narrowMintSt int
+	narrowMintCd string
+	listCtlOK    bool
+	listCtlHasQB bool
+	listCtlCount int
+	listCtlShape string
+
+	// The FILTERED listing's parse, stashed from the runner because verdictFor
+	// grades from a caseResult and never sees the envelope.
+	list4OK    bool
+	list4HasQB bool
+	list4Count int
+	list4N     int
+	list4Shape string
 }
 
 var cases = []caseSpec{
@@ -554,6 +777,171 @@ var cases = []caseSpec{
 			return s.do(exec{tag: "e2", uri: "system/tree", op: "get", params: emptyParams(),
 				targets: []string{qA}, capHash: h, capMat: m})
 		}},
+
+	// ---- family F: Dimension 4 (`peers`), the inbound-reachable half ----
+	//
+	// The cell census records `peers` at 0 of 24 — the oldest zero in the table
+	// and the one nobody has driven. Most of the dimension genuinely is out of a
+	// probe's reach: §1.4 puts its working surface on OUTBOUND sub-dispatch,
+	// which needs a second peer (PD-2, and it stays in `notDriven`). But §1.4
+	// also rules, normatively, on the INBOUND path, and that half is one request:
+	//
+	//	"A grant carrying no `peers` scope defaults to {include: [local_peer_id]}
+	//	 and is STILL CHECKED. Implementations MUST NOT conclude from the inbound
+	//	 path's invariant that the dimension is inert and MUST NOT skip the check."
+	//
+	// A peer that skipped Dimension 4 on the ground that `target_peer` is always
+	// local would be invisible to every other family here and to all 778 checks.
+	{"F0_control_peers_names_local", "F", "control",
+		"mint 200, then get 200 — a grant whose `peers` names this peer authorizes at this peer",
+		"POSITIVE CONTROL, doing double duty. It proves the mint accepts an explicit Dimension 4 " +
+			"AND that the peer id derived from the handshake is the one this peer answers to. A " +
+			"wrong id makes THIS row fail rather than making F1/F2 produce a finding, which is " +
+			"the ordering that makes the family safe to publish.",
+		func(s *session, st *runState) (map[string]interface{}, error) {
+			id, err := s.remotePeerID()
+			if err != nil {
+				st.remoteIDErr = err.Error()
+				return nil, err
+			}
+			st.remoteID = id
+			h, m, code, msg := s.mint("f0mint", treeGetGrantPeers([]string{id}, nil))
+			if len(h) == 0 {
+				return nil, fmt.Errorf("mint did not return a token (%d %s)", code, msg)
+			}
+			return s.do(exec{tag: "f0", uri: "system/tree", op: "get", params: emptyParams(),
+				targets: []string{qA}, capHash: h, capMat: m})
+		}},
+	{"F1_peers_excludes_local", "F", "measurement",
+		"403 — a grant whose `peers` EXCLUDES this peer authorizes nothing here (§1.4, §5.2 D4)",
+		"`peers: {include: [this peer], exclude: [this peer]}`. The exclude arm is chosen over a " +
+			"foreign include because it is unambiguously MINTABLE — an exclude only narrows, so " +
+			"§6.2's subset check cannot refuse it, and a peer that answers 200 has not consulted " +
+			"Dimension 4 at all. Everything else about the grant is the control's.",
+		func(s *session, st *runState) (map[string]interface{}, error) {
+			if st.remoteID == "" {
+				return nil, fmt.Errorf("no responder peer id: %s", st.remoteIDErr)
+			}
+			h, m, code, msg := s.mint("f1mint",
+				treeGetGrantPeers([]string{st.remoteID}, []string{st.remoteID}))
+			st.fExclSt, st.fExclCod = code, msg
+			if len(h) == 0 {
+				return nil, fmt.Errorf("mint refused (%d %s) — a conformant answer, recorded", code, msg)
+			}
+			return s.do(exec{tag: "f1", uri: "system/tree", op: "get", params: emptyParams(),
+				targets: []string{qA}, capHash: h, capMat: m})
+		}},
+	{"F2_peers_foreign_only", "F", "measurement",
+		"refused at MINT (§6.2 subset) or 403 on use — a grant scoped to ANOTHER peer authorizes nothing here",
+		"`peers: {include: [a real, different §1.5 id]}`. BOTH dispositions are conformant and " +
+			"they measure different gates: a mint refusal is L4 `scope_subset` on Dimension 4 " +
+			"working, a 403 on use is L1 `check_permission` working. A 200 means neither ran.",
+		func(s *session, st *runState) (map[string]interface{}, error) {
+			h, m, code, msg := s.mint("f2mint", treeGetGrantPeers([]string{peerIDOf(impPub)}, nil))
+			st.fForeignSt, st.fForeignCod = code, msg
+			if len(h) == 0 {
+				return nil, fmt.Errorf("mint refused (%d %s) — a conformant answer, recorded", code, msg)
+			}
+			return s.do(exec{tag: "f2", uri: "system/tree", op: "get", params: emptyParams(),
+				targets: []string{qA}, capHash: h, capMat: m})
+		}},
+	{"F3_peers_absent", "F", "differential",
+		"200 — a grant with no `peers` scope is the shape 46 of 46 peers emit and MUST still work",
+		"DIFFERENTIAL. §1.4 says an absent `peers` DEFAULTS to {include: [local]} and is checked " +
+			"against that default. If F1/F2 are refused, this row says whether the refusal is " +
+			"about the VALUE of Dimension 4 or about the mere presence of a `peers` key — the " +
+			"same job C3 does for scope types, and the reason neither can be read alone.",
+		func(s *session, st *runState) (map[string]interface{}, error) {
+			h, m, code, msg := s.mint("f3mint", treeGetGrant(pathScope, idScope, pathScope, nil))
+			if len(h) == 0 {
+				return nil, fmt.Errorf("mint did not return a token (%d %s)", code, msg)
+			}
+			return s.do(exec{tag: "f3", uri: "system/tree", op: "get", params: emptyParams(),
+				targets: []string{qA}, capHash: h, capMat: m})
+		}},
+
+	// ---- family G: §6.3 check_path_permission, the handler-level path check ----
+	//
+	// The cell census records L2 at 0 of 28 — a whole LAYER with no vector —
+	// while 0.8.2.20, 0.8.2.21 and arch `98f2946` are three consecutive
+	// revisions of it. 0.8.2.20 promoted it from "a secondary check" to
+	// sole enforcement wherever the subject is derived after dispatch, and
+	// 0.8.2.21 closed the read carve-out. Both rows below are that layer.
+	{"G0_control_narrow_cap_in_range", "G", "control",
+		"mint 200, then get 200 on the ONE resource the narrow grant covers",
+		"POSITIVE CONTROL for every G row: it mints a capability covering qA and nothing else, " +
+			"and proves that capability works for what it does cover.",
+		func(s *session, st *runState) (map[string]interface{}, error) {
+			h, m, code, msg := s.mint("g0mint", narrowResourceGrant([]string{qA}))
+			st.narrowCap, st.narrowCapM, st.narrowMintSt, st.narrowMintCd = h, m, code, msg
+			if len(h) == 0 {
+				return nil, fmt.Errorf("mint did not return a token (%d %s)", code, msg)
+			}
+			return s.do(exec{tag: "g0", uri: "system/tree", op: "get", params: emptyParams(),
+				targets: []string{qA}, capHash: h, capMat: m})
+		}},
+	{"G1_antecedent_out_of_grant", "G", "antecedent",
+		"403 — qB is outside the narrow grant, so the ordinary dispatch check refuses it",
+		"ANTECEDENT. Without it a 200 in G2 is unattributable: it would be equally explained by " +
+			"the grant being wider than we think. This row proves the grant genuinely excludes " +
+			"qB, so a request that REACHES qB in G2 reached a path no authorization covered.",
+		func(s *session, st *runState) (map[string]interface{}, error) {
+			if len(st.narrowCap) == 0 {
+				return nil, fmt.Errorf("no narrow capability (mint %d %s)", st.narrowMintSt, st.narrowMintCd)
+			}
+			return s.do(exec{tag: "g1", uri: "system/tree", op: "get", params: emptyParams(),
+				targets: []string{qB}, capHash: st.narrowCap, capMat: st.narrowCapM})
+		}},
+	{"G2_dispatch_vacated_by_caller_exclude", "G", "measurement",
+		"NOT 200-on-qB — the handler MUST NOT act on a path the dispatch check skipped (§6.3, 0.8.2.20)",
+		"`targets:[qB,qA] exclude:[qB]` under the narrow grant. §5.2 evaluates the EFFECTIVE set, " +
+			"so the caller's own exclude removes qB from the dispatch check — the one path the " +
+			"grant does not cover is the one path dispatch no longer looks at. A peer that then " +
+			"indexes targets[0] serves qB having authorized nothing. This is F68's composition " +
+			"with the grant made the variable, and it is why 0.8.2.20 calls L2 'not a secondary " +
+			"check': L2 is the ONLY thing standing here. A 200 returning qB is a disclosure.",
+		func(s *session, st *runState) (map[string]interface{}, error) {
+			if len(st.narrowCap) == 0 {
+				return nil, fmt.Errorf("no narrow capability (mint %d %s)", st.narrowMintSt, st.narrowMintCd)
+			}
+			return s.do(exec{tag: "g2", uri: "system/tree", op: "get", params: emptyParams(),
+				targets: []string{qB, qA}, excludes: []string{qB},
+				capHash: st.narrowCap, capMat: st.narrowCapM})
+		}},
+	{"G3_control_unfiltered_listing", "G", "control",
+		"200, and the listing NAMES qB — the entry G4 then excludes is there to be leaked",
+		"POSITIVE CONTROL for the listing arm, and it is what makes G4 falsifiable. If the " +
+			"directory get does not work on this peer, or its result does not name qB, then G4's " +
+			"'qB absent' is the trivial truth and measures nothing. Run under the session " +
+			"capability, i.e. the peer's own shipped discovery floor.",
+		func(s *session, st *runState) (map[string]interface{}, error) {
+			env, err := s.do(exec{tag: "g3", uri: "system/tree", op: "get", params: emptyParams(),
+				targets: []string{listingDir}})
+			if err != nil {
+				return nil, err
+			}
+			ents, n, shape, ok := listingOf(env)
+			st.listCtlOK, st.listCtlCount, st.listCtlShape = ok, n, shape
+			st.listCtlHasQB = ok && mentions(ents, qB)
+			return env, nil
+		}},
+	{"G4_listing_filter", "G", "measurement",
+		"200 and qB OMITTED, with `count` reflecting the filtered total (§6.3 listing filter, 0.8.2.21/.22)",
+		"The same directory get under a capability whose resources EXCLUDE qB. §6.3: every entry " +
+			"of a multi-entry result MUST be individually checked with check_path_permission, " +
+			"entries that DENY MUST be omitted, and count MUST reflect the filtered count rather " +
+			"than the source tree's. This is the read path at its highest volume, which is the " +
+			"reason 0.8.2.21 refused to carve reads out. A listing naming qB here discloses a " +
+			"binding the caller's own capability excludes.",
+		func(s *session, st *runState) (map[string]interface{}, error) {
+			h, m, code, msg := s.mint("g4mint", treeGetGrant(pathScope, idScope, pathScope,
+				[]string{qB}))
+			if len(h) == 0 {
+				return nil, fmt.Errorf("mint refused (%d %s) — recorded", code, msg)
+			}
+			return s.do(exec{tag: "g4", uri: "system/tree", op: "get", params: emptyParams(),
+				targets: []string{listingDir}, capHash: h, capMat: m})
+		}},
 }
 
 // ---------- reading a response ----------
@@ -568,6 +956,7 @@ type caseResult struct {
 	Message  string `json:"message,omitempty"`
 	RType    string `json:"result_type,omitempty"`
 	Subject  string `json:"subject_acted_on,omitempty"`
+	Listing  string `json:"listing_observed,omitempty"`
 	Conforms string `json:"conforms"`
 	Note     string `json:"note"`
 	Err      string `json:"error,omitempty"`
@@ -616,11 +1005,123 @@ func which(subject string) string {
 func verdictFor(c caseSpec, r caseResult, st *runState) string {
 	switch c.id {
 	case "A0_control_single_target", "B0_control_correct_keys", "C0_control_welltyped_request",
-		"C3_scope_type_absent", "E0_control_minted_cap_works":
+		"C3_scope_type_absent", "E0_control_minted_cap_works",
+		"F0_control_peers_names_local", "F3_peers_absent", "G0_control_narrow_cap_in_range":
 		if r.Status == 200 {
 			return "yes"
 		}
 		return "CONTROL FAILED"
+
+	// ---- family F: Dimension 4 on the inbound path ----
+	case "F1_peers_excludes_local":
+		// A mint refusal is a conformant answer on the SAFETY question — nothing
+		// was authorized — and it is reported separately rather than pooled with
+		// a 403 on use, because it is a different gate (§6.2's subset check, not
+		// §5.2's Dimension 4) and because refusing a NARROWING is itself a
+		// reviewable reading: an exclude only ever shrinks a grant, so a subset
+		// check that rejects one is stricter than §6.2 asks. Recorded so the
+		// next reader can decide, not graded away.
+		if st.fExclSt != 0 && st.fExclSt != 200 {
+			return "yes (mint) — refused to MINT a grant excluding this peer (" +
+				fmt.Sprintf("%d %s", st.fExclSt, st.fExclCod) + "); nothing was authorized, " +
+				"though refusing a narrowing is a stricter reading than §6.2 requires"
+		}
+		switch {
+		case r.Status == 403:
+			return "yes — Dimension 4 denied a grant whose `peers` excludes this peer"
+		case r.Status == 200:
+			return "no — DIMENSION 4 IS NOT CHECKED ON THE INBOUND PATH: the grant's own " +
+				"`peers` scope excludes this peer and the request succeeded anyway"
+		case r.Status == 0:
+			return "unclassified — no response"
+		}
+		return "partial — refused " + fmt.Sprintf("%d %s", r.Status, r.Code) +
+			", not the 403 §5.2 pins for a dimension that does not match"
+	case "F2_peers_foreign_only":
+		// A mint refusal and a use refusal are DIFFERENT gates and both are
+		// conformant; saying only "refused" would throw away which one ran.
+		if st.fForeignSt != 0 && st.fForeignSt != 200 {
+			return "yes — refused at MINT (" + fmt.Sprintf("%d %s", st.fForeignSt, st.fForeignCod) +
+				"), i.e. §6.2's subset check covers Dimension 4"
+		}
+		switch {
+		case r.Status == 403:
+			return "yes — minted, then denied on use by Dimension 4"
+		case r.Status == 200:
+			return "no — a grant scoped to ANOTHER peer authorized a request at this one"
+		case r.Status == 0:
+			return "unclassified — no response"
+		}
+		return "partial — minted, then refused on use with " +
+			fmt.Sprintf("%d %s", r.Status, r.Code) + ", not the 403 §5.2 pins"
+
+	// ---- family G: the handler-level path check ----
+	case "G1_antecedent_out_of_grant":
+		switch {
+		case r.Status == 403:
+			return "yes"
+		case r.Status == 200:
+			return "ANTECEDENT FAILED — the narrow grant does not actually exclude qB, so G2 " +
+				"cannot attribute anything to the dispatch check being vacated"
+		case r.Status == 0:
+			return "ANTECEDENT FAILED — no response"
+		}
+		// Any refusal establishes what G2 needs: qB is not served under this
+		// capability. The code is reported because 404-for-out-of-grant is a
+		// weaker property than 403 and a reader should see which one held.
+		return "yes (refused " + fmt.Sprintf("%d %s", r.Status, r.Code) +
+			" rather than 403; qB is still not served under this capability)"
+	case "G2_dispatch_vacated_by_caller_exclude":
+		switch which(r.Subject) {
+		case "qA":
+			return "yes — answered from the effective set; the uncovered path was never touched"
+		case "qB":
+			return "no — SERVED A PATH NO AUTHORIZATION COVERED: the caller's own exclude " +
+				"removed qB from the dispatch check and the handler acted on it regardless"
+		}
+		if r.Status == 200 {
+			return "partial — 200 but the subject is " + r.Subject
+		}
+		if r.Status == 0 {
+			return "unclassified — no response"
+		}
+		// A refusal is safe on the question this row asks. It may still be the
+		// raw arity check F71 warned about, which family A grades; conflating
+		// the two would let an authorization row claim a selection result.
+		return "yes — refused " + fmt.Sprintf("%d %s", r.Status, r.Code) +
+			"; nothing uncovered was served (whether the SELECTION is right is family A's row)"
+	case "G3_control_unfiltered_listing":
+		switch {
+		case r.Status != 200:
+			return "CONTROL FAILED — the directory get answered " +
+				fmt.Sprintf("%d %s", r.Status, r.Code)
+		case !st.listCtlOK:
+			return "CONTROL FAILED — the result does not parse as a listing (" + st.listCtlShape + ")"
+		case !st.listCtlHasQB:
+			return "CONTROL FAILED — the UNFILTERED listing does not name qB, so its absence " +
+				"under a capability that excludes qB would be the trivial truth"
+		}
+		return "yes"
+	case "G4_listing_filter":
+		switch {
+		case r.Status == 0:
+			return "unclassified — no response"
+		case r.Status != 200:
+			return "partial — the listing was refused outright (" +
+				fmt.Sprintf("%d %s", r.Status, r.Code) + "); nothing is disclosed, but §6.3 asks " +
+				"for a FILTERED result and a caller holding a partially-covering capability " +
+				"can enumerate nothing"
+		case !st.list4OK:
+			return "unclassified — 200, but the result did not parse as a listing (" +
+				st.list4Shape + ")"
+		case st.list4HasQB:
+			return "no — THE LISTING NAMES AN ENTRY THE CALLER'S OWN CAPABILITY EXCLUDES"
+		case st.list4Count != 0 && st.list4Count != st.list4N:
+			return fmt.Sprintf("partial — qB is omitted, but `count` says %d against %d entries "+
+				"returned; §6.3 requires count to reflect the FILTERED total",
+				st.list4Count, st.list4N)
+		}
+		return "yes — qB omitted and the declared count agrees with the entries returned"
 	case "A1_effective_set_empty":
 		if r.Status == 400 && r.Code == "path_required" {
 			return "yes"
@@ -855,6 +1356,22 @@ func main() {
 			cr.Status, cr.Code, cr.RType = statusOf(env)
 			cr.Message = messageOf(env)
 			cr.Subject = subjectOf(env)
+			// The listing rows are graded on WHAT CAME BACK, not on a status, so
+			// the parse is recorded in the report: a reader can see the shape
+			// this probe read and the entry count it read it from.
+			if c.id == "G3_control_unfiltered_listing" || c.id == "G4_listing_filter" {
+				ents, n, shape, ok := listingOf(env)
+				if ok {
+					cr.Listing = fmt.Sprintf("%d entr(y/ies) from result.data.%s, declared count=%d, names-qB=%v",
+						len(ents), shape, n, mentions(ents, qB))
+				} else {
+					cr.Listing = "UNPARSED — " + shape
+				}
+				if c.id == "G4_listing_filter" {
+					state.list4OK, state.list4HasQB = ok, ok && mentions(ents, qB)
+					state.list4Count, state.list4N, state.list4Shape = n, len(ents), shape
+				}
+			}
 		}
 		cr.Conforms = verdictFor(c, cr, state)
 		r.Cases = append(r.Cases, cr)
@@ -879,6 +1396,19 @@ func main() {
 			}
 		}
 	}
+	// voidCase is the finer instrument: family G carries TWO independent controls
+	// (a narrow-capability arm and a listing arm) and a failure of one must not
+	// erase the other's reading. Voiding the whole family on the listing control
+	// would silently discard G2, which is the layer's sharpest row.
+	voidCase := func(id, why string) {
+		for i := range r.Cases {
+			// Never overwrite a void already recorded: the family-wide reason
+			// runs first and is the more fundamental of the two.
+			if r.Cases[i].ID == id && !hasPrefix(r.Cases[i].Conforms, "VOID") {
+				r.Cases[i].Conforms = "VOID — " + why
+			}
+		}
+	}
 	for _, cr := range r.Cases {
 		if cr.ID == "C0_control_welltyped_request" && cr.Status != 200 {
 			voidFamily("C", fmt.Sprintf("this peer refuses a well-typed `request` (%d %s), so a "+
@@ -887,6 +1417,32 @@ func main() {
 		if cr.ID == "E0_control_minted_cap_works" && cr.Status != 200 {
 			voidFamily("E", fmt.Sprintf("the mint-and-use control failed (%d %s), so nothing here "+
 				"is a reading about an unmatchable grant exclude", cr.Status, cr.Code))
+		}
+		// Family F's control carries the peer id. If it failed, this probe
+		// cannot name Dimension 4's subject, and a refusal below would be
+		// attributable to an id this peer never had.
+		if cr.ID == "F0_control_peers_names_local" && cr.Status != 200 {
+			why := fmt.Sprintf("the explicit-local control failed (%d %s), so a refusal of a "+
+				"foreign or excluded `peers` scope is not a reading about Dimension 4",
+				cr.Status, cr.Code)
+			if state.remoteIDErr != "" {
+				why = "this probe could not derive the responder's peer id from the handshake (" +
+					state.remoteIDErr + "), so Dimension 4's subject is unnameable here"
+			}
+			voidFamily("F", why)
+		}
+		if cr.ID == "G0_control_narrow_cap_in_range" && cr.Status != 200 {
+			voidFamily("G", fmt.Sprintf("the narrow-capability control failed (%d %s), so "+
+				"nothing here is a reading about the handler-level path check", cr.Status, cr.Code))
+		}
+	}
+	// The listing arm's own control, applied after the family-wide pass so it
+	// cannot be overwritten by it.
+	for _, cr := range r.Cases {
+		if cr.ID == "G3_control_unfiltered_listing" && !hasPrefix(cr.Conforms, "yes") {
+			voidCase("G4_listing_filter", "the unfiltered listing control did not establish "+
+				"that qB is enumerable here ("+cr.Conforms+"), so an absent qB below is not "+
+				"evidence of filtering")
 		}
 	}
 
@@ -923,7 +1479,12 @@ func main() {
 		"A4_pattern_subject", "A5_caller_exclude_unmatchable"}
 	aYes := 0
 	for _, id := range aRows {
-		if get(id).Conforms == "yes" {
+		// PREFIX, not equality. A1-A4 answer a bare "yes" and A5 answers
+		// "yes — total canonicalization…", so a strict comparison scored a
+		// fully conformant peer 4 of 5 while the row beside it printed five
+		// yeses. A count that disagrees with the detail it is summarising is
+		// worse than no count.
+		if hasPrefix(get(id).Conforms, "yes") {
 			aYes++
 		}
 	}
@@ -981,7 +1542,36 @@ func main() {
 		famE = "E (§5.2 grant exclude, 0.8.2.21): VOID — the mint control failed (" +
 			fmt.Sprintf("mint %d %s", state.mintOKSt, state.mintOKCod) + ")"
 	}
-	r.Families = []string{famA, famB, famC, famE}
+
+	f1, f2, f3 := get("F1_peers_excludes_local"), get("F2_peers_foreign_only"), get("F3_peers_absent")
+	famF := "F (§1.4/§5.2 Dimension 4 `peers`, INBOUND half only): excluded-local=" + f1.Conforms +
+		" · foreign-only=" + f2.Conforms + " · absent-control=" + f3.Conforms
+	if get("F0_control_peers_names_local").Conforms != "yes" {
+		famF = "F (§1.4/§5.2 Dimension 4 `peers`): VOID — " + get("F0_control_peers_names_local").Conforms
+	} else if f1.Status == 200 && f2.Status == 200 {
+		famF += " | ⛔ DIMENSION 4 IS NOT EVALUATED ON THIS PEER: both a peer-excluding and a " +
+			"foreign-scoped grant authorized an ordinary local request"
+	}
+	// The surface this family ranges over, stated in the row itself — the
+	// dimension's OUTBOUND half is where §1.4 says it does its work, and no
+	// single-peer probe reaches it.
+	famF += " | surface: the inbound `check_permission` evaluation only; the outbound " +
+		"sub-dispatch arm (PD-2) needs a second peer and is not driven here"
+
+	g1, g2, g4 := get("G1_antecedent_out_of_grant"), get("G2_dispatch_vacated_by_caller_exclude"),
+		get("G4_listing_filter")
+	famG := "G (§6.3 check_path_permission, 0.8.2.20/.21/.22): dispatch-vacated=" + g2.Conforms +
+		" · listing-filter=" + g4.Conforms
+	switch {
+	case get("G0_control_narrow_cap_in_range").Conforms != "yes":
+		famG = "G (§6.3 check_path_permission): VOID — the narrow-capability control failed (" +
+			fmt.Sprintf("mint %d %s", state.narrowMintSt, state.narrowMintCd) + ")"
+	case !hasPrefix(g1.Conforms, "yes"):
+		famG = "G (§6.3 check_path_permission): VOID — " + g1.Conforms
+	case g2.Status == 200 && which(g2.Subject) == "qB":
+		famG += " | ⛔ A PATH OUTSIDE THE CALLER'S CAPABILITY WAS SERVED"
+	}
+	r.Families = []string{famA, famB, famC, famE, famF, famG}
 
 	owed, void := 0, 0
 	for _, cr := range r.Cases {

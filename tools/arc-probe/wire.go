@@ -390,6 +390,67 @@ func peerIDOf(pub []byte) string {
 	return base58(append([]byte{0x01, 0x00}, pub...))
 }
 
+// remotePeerID derives the RESPONDER's §1.5 peer id from handshake material and
+// from nothing else. Family F needs it: Dimension 4 (`peers`) is a scope over
+// peer IDS, so a grant that names the wrong one measures the probe's arithmetic
+// rather than the peer's check.
+//
+// WHERE IT COMES FROM. The session capability is granted BY the responder, so
+// its granter IS the responder, and §5.2 resolution requires that granter's
+// `system/peer` entity to be resolvable — it is in the `authenticate` response's
+// `included` map, which this session already forwards verbatim. §3.5 makes that
+// entity `{public_key, key_type}`, so the id is a pure function of a value the
+// peer sent us.
+//
+// WHY NOT ASK THE PEER: no CORE operation returns it (`system/identity/peer-id`
+// is an extension surface and `pd` is on record as not carrying it), and reading
+// the harness's keypair file would make this probe depend on something no wire
+// client has — which would make its result untransferable to the ground-up
+// implementations.
+//
+// THE DISCRIMINATOR IS THE KEY, NOT THE HASH. Our own `system/peer` sits in that
+// same map (the probe puts it there), so one entry must be skipped. It is
+// skipped by PUBLIC KEY: the content hash is precisely the value family B forges,
+// and a helper that trusted the hash would inherit the defect that family exists
+// to find.
+//
+// Returns an error rather than a guess on zero or on more than one distinct
+// candidate — an ambiguous answer here would make family F's control pass for
+// the wrong reason, which is the failure mode this probe's controls are for.
+func (s *session) remotePeerID() (string, error) {
+	seen := map[string]bool{}
+	for _, e := range s.capMat {
+		v, _, err := dec(e.v, 0)
+		if err != nil {
+			continue
+		}
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if t, _ := m["type"].(string); t != "system/peer" {
+			continue
+		}
+		d, _ := m["data"].(map[string]interface{})
+		pub, _ := d["public_key"].([]byte)
+		if len(pub) == 0 || bytes.Equal(pub, s.pub) {
+			continue
+		}
+		seen[peerIDOf(pub)] = true
+	}
+	switch len(seen) {
+	case 1:
+		for id := range seen {
+			return id, nil
+		}
+	case 0:
+		return "", fmt.Errorf("no responder `system/peer` in the %d forwarded included entries "+
+			"— cannot name Dimension 4's subject without guessing", len(s.capMat))
+	}
+	return "", fmt.Errorf("%d distinct responder identities in the included map; refusing to "+
+		"guess which one Dimension 4 is about", len(seen))
+}
+
 // ---------- session ----------
 
 type session struct {

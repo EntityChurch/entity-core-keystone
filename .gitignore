@@ -3,6 +3,18 @@
 caps.local.mk
 caps.local.sh
 
+# Agent tool state and worktrees — never committed.
+# Tool-specific directories (.claude/ and the like) are local state, not project content.
+# Worktrees don't belong in the tree either: a linked worktree's `.git` is a FILE, so
+# `git add -A` stages it as a gitlink to a throwaway branch that no clone can fetch. That
+# already happened in the parent meta repo (2026-09-01). If a worktree must live inside the
+# tree, it goes under .worktrees/. Local agent context per [ADR-0020] is ignored too.
+# Enforced by `make lint` (check-ignore on these paths + no tracked gitlinks).
+/.claude/
+/.worktrees/
+/.agents/
+AGENTS.local.md
+
 # Build output
 **/output/
 **/target/

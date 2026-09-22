@@ -139,6 +139,36 @@ once. That is not a metaphor for the process; it is the process, measured.
 **The next finding will land in L2, the `peers` dimension, or an exclude arm.** If the next
 two land somewhere else, this census is measuring the wrong thing and should be said so.
 
+> ## ⛔ ANSWERED 2026-09-14 — ALL FOUR ZEROS DRIVEN. THREE HELD, `peers` DID NOT.
+>
+> Recorded here rather than back-edited above: the prediction is left exactly as written and
+> this box says what measuring it produced. Instrument: `tools/arc-probe` families **F** and
+> **G**; write-up `scope-algebra-zeros-l2-and-peers-wire-census.md`.
+>
+> | zero | driven by | result |
+> |---|---|---|
+> | **Z3** caller-exclude 0/5 | `tools/f68-probe` | **F68 / F71** |
+> | **Z4** grant-exclude 0/10 | `arc-probe` `E2` | **F83** — 4 peers read no grant exclude at all |
+> | **Z1** `check_path_permission` 0/28 | `arc-probe` family **G** | **F84** — and it is the biggest of the four |
+> | **Z2** `peers` 0/24 | `arc-probe` family **F** | **F85 — largely CLEAN: 39 conform, 4 do not** |
+>
+> **Three of four is a pass, not a clean sweep, and the miss is the honest half.** `peers` was
+> predicted to yield and mostly did not — 39 of 45 peers evaluate Dimension 4 on the inbound
+> path correctly. The correlation the census rests on (*coverage zero → finding*) is therefore
+> **strong but not deterministic**, and a reader should weight it that way.
+>
+> **Z1 is the vindication and it is larger than a cell.** `check_path_permission` is not a cell
+> family with a gap; it is a **layer §6.3 designates as "not a secondary check"** of which the
+> cohort contains **zero working instances**. `A3` — selection from the effective set — is `no`
+> on **45 of 45**, and the cross-tabulation `A3 conforms × G2 conforms` is **empty**: there is
+> no peer where the selection is wrong and the path check catches it. That is a fact no count of
+> cells could have produced and that only a drive could.
+>
+> **And it sharpens §2's own caveat about this table.** The coverage column is a source read and
+> is `unknown` until a harness drives it. Driven, `L2`'s 0/28 turned out to understate: the cells
+> are uncovered *and* the function they range over is unimplemented cohort-wide, which are two
+> different facts that a name-keyed table cannot separate.
+
 ---
 
 ## 3. F72 — the scope type is specified as a wire value and implemented as a call-site argument
