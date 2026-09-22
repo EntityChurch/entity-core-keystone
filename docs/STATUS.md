@@ -1,6 +1,6 @@
 # entity-core-keystone — status
 
-_Updated: 2026-09-04 · oracle pin: the 758-check set `c34abcae…` · spec snapshot `v0.8.2.3`_
+_Updated: 2026-09-05 · oracle pin: the 758-check set `c34abcae…` · spec snapshot `v0.8.2.3`_
 
 > **For where this is going — the seats keystone sits between, the state of every verification
 > axis, the measured size of the queued work and what freeze looks like — see
@@ -164,8 +164,9 @@ standing `apl` lesson.
 
 **Two live items, both measured. Everything below them is closed and kept for the record.**
 
-**A. The `0.8.2.7` catch-up — bounded, and it is not a regeneration.** Our snapshot is `v0.8.2.3`;
-the protocol is at `0.8.2.7` and arch has said regenerate on our own schedule, no flag day. Measured
+**A. The `0.8.2.9` catch-up — bounded, and it is not a regeneration.** Our snapshot is `v0.8.2.3`;
+the protocol is at **`0.8.2.9`**, and arch has consolidated the whole arc into **one vendor step**
+with no further core change queued on this track. No flag day. Measured
 rather than guessed: **1 of 3** normative files moved (`+80/−12`); the go oracle grew **+15 checks,
 13 of them in `catConnectivity` — a core category**; `core_gate_fingerprint` is **unchanged**, so it
 will not warn us, for the fifth time in this exact shape; the executed set goes **758 → 772**.
@@ -175,7 +176,9 @@ five failures among the new connect-path checks and nothing else moving. **Five 
 defects:** §4.5's `protocols` field is not enforced at all, the connect op ladder answers an unknown
 operation as a handler `501` where `0.8.2.4` pins `400 invalid_request`, and the second-hello state
 check misses mid-handshake (`409`). Separately, four peers (`asm-x86_64` `asm-arm64` `riscv64` `pd`)
-emit `not_implemented` at 501 where `0.8.2.7` rules the **slot** — remedy is one word. One authored
+emit `not_implemented` at 501 where the **slot** rule retires it — remedy is one word. Separately, the
+**404 slot** diverges on up to 8 peers (five confirmed emitting `not_found` where §3.3 pins
+`handler_not_found`), which is new and is ours. One authored
 fix propagated 46 times, the shape of the §5.6 sweep, then re-pin and re-census.
 
 **B. The keystone specification layer — unblocked and not started.** Three digest-pinned documents
@@ -332,7 +335,8 @@ three were wrong, each at a different packaging boundary, and `typescript` is th
    builds the target and **grades the axiom set**: no declaration may depend on `sorryAx` or on any
    axiom outside the Lean-standard three, and the count of graded declarations must meet a floor,
    because a module that stopped emitting `#print axioms` would pass every name check vacuously.
-   **Measured: 37 declarations graded, all clean.** Regression-tested by planting a `sorry` (caught)
+   **Measured: 40 declarations graded, all clean** (37 until 2026-09-06; the three §5.5a companion
+   theorems below took it to 40 and the floor moved with them). Regression-tested by planting a `sorry` (caught)
    and by raising the floor above reality — which was **not** caught on the first attempt, because
    the harness re-execs into its container and did not forward the variable, so the control could
    not run. Fixed and both plants now fire. The false parenthetical is corrected in all three
@@ -340,6 +344,29 @@ three were wrong, each at a different packaging boundary, and `typescript` is th
    the same declarations against a declared per-declaration axiom set and is the stronger check;
    this one is the keystone-side obligation — the target our own documents name is now built and
    graded by the axis that runs on every peer.)*
+
+   **CLOSED 2026-09-06 — the second half, and it found a real gap in our proof coverage.** The
+   companion proposal (`PROPOSAL-DRAFT-2026-08-30-KEYSTONE-HFRAMED`) had been sitting unadopted for
+   six days; both files it pinned by digest were still byte-identical, so its asks applied unchanged.
+   Its finding: `grantPattern_namespace_isolation` proves §5.5a namespace isolation for the
+   **peer-relative** pattern form only, and the `hframed` hypothesis that scopes it is **false** for
+   the absolute form — verified here by evaluation, `canonSegs "P" "/Q/*" = ["Q","*"]`. That is not a
+   defect in the peer: §5.5a *requires* cross-peer authority to be expressed absolutely, and the
+   pass-through branch implements it correctly. It is a theorem whose name reads wider than the
+   theorem, and our own comment calling the hypothesis *"mechanical stdlib plumbing"* is what created
+   that reading. **§5.5a now has a theorem per pattern form** — `absolutePattern_names_one_peer`
+   (asked for), plus `canonSegs_absolute_frame_independent` and `wildcardPattern_peer_agnostic`
+   (not asked for, and they complete the table). Each was witness-checked for non-vacuity, because a
+   theorem with an unsatisfiable hypothesis proves nothing.
+   **One ask was declined and the reason corrects the comment a second time:** discharging `hframed`
+   from a syntactic `¬ p.startsWith "/"` is not mechanical either. Core Lean ships **five constants
+   matching `splitOn` and not one theorem** among them; `splitOnAux` is `@[irreducible]`, well-founded
+   over raw byte positions, with `extract` cutting a `ByteArray` under a UTF-8 validity proof — and
+   the proofs target is deliberately mathlib-free. So the comment was wrong about scope *and* wrong
+   about cost, and only the first was routed to us. Reply, with both new digests for their ledger:
+   `research/stewardship/HANDOFF-TO-FORMALIZATION-2026-09-06-hframed-adopted-and-the-proof-gate-closed.md`.
+   The shipping-library edit in the same commit (`String.dropRight` → `dropEnd`, deprecated in
+   4.29.1) was re-measured rather than assumed: **0 of 758 severities moved.**
 
 11. ~~**`io` is RED at 28F**~~ ✅ **FIXED 2026-09-03, same day, and the defect was real.** The
    `-reference-peer` fold exposed it; it did not create it. **A response frame for a DIFFERENT

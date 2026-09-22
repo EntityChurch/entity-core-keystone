@@ -69,7 +69,11 @@ echo "── uncovered-range selftests ──"
 #     emitted no axiom lines at all would otherwise pass every name check
 #     vacuously -- this repo has shipped that defect six times.
 echo "── proofs (EntityCoreProofs: build + axiom grading) ──"
-PROOF_FLOOR="${PROOF_FLOOR:-}"; [ -n "$PROOF_FLOOR" ] || PROOF_FLOOR=37
+# 37 → 40 on 2026-09-06: the three §5.5a companion theorems adopted from
+# entity-core-formalization's hframed proposal (absolute-form isolation, absolute-form
+# frame-independence, wildcard peer-agnosticism). The floor tracks reality or it stops
+# being a floor.
+PROOF_FLOOR="${PROOF_FLOOR:-}"; [ -n "$PROOF_FLOOR" ] || PROOF_FLOOR=40
 proof_log=$(mktemp)
 lake build EntityCoreProofs >"$proof_log" 2>&1 || {
   echo "run-s2: ERROR EntityCoreProofs failed to build" >&2; cat "$proof_log" >&2; rm -f "$proof_log"; exit 1; }

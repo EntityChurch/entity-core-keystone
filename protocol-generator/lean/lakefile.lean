@@ -11,9 +11,22 @@ open Lake DSL System
                                               + @[extern] crypto/transport shell.
                                               Init/Std only; NO mathlib.
     * `EntityCoreProofs`  (srcDir "proofs") — Track B. Built deliberately with
-                                              `lake build EntityCoreProofs`; the
-                                              build IS the proof check (a `sorry`
-                                              or failed proof fails the build).
+                                              `lake build EntityCoreProofs`.
+                                              CORRECTED 2026-09-06: this used to
+                                              say "the build IS the proof check (a
+                                              `sorry` or failed proof fails the
+                                              build)". FALSE for two of three
+                                              failure modes — a `sorry` is a
+                                              WARNING (lake exits 0) and a
+                                              substituted `axiom` exits 0 with no
+                                              warning at all; only a proof that
+                                              fails to TYPE-CHECK is non-zero.
+                                              The proof check is this build PLUS
+                                              the `#print axioms` grading in
+                                              run-s2.sh, which is what catches the
+                                              other two. Measured by
+                                              entity-core-formalization in this
+                                              pinned toolchain.
                                               Core-Lean tactics only so far —
                                               mathlib stays unpinned/unused until
                                               a proof genuinely needs it.

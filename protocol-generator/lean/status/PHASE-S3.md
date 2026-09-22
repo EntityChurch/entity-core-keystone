@@ -3,6 +3,11 @@
 > **STATUS: Track A GREEN + Track B PROVEN.** Track A:
 > `validate-peer --profile core` = **576 total · 291 pass · 196 warn · 89 skip ·
 > 0 FAIL · PASS** on the go `62044c5` oracle; full peer live over TCP.
+> **CORRECTED 2026-09-06.** "green" below means the build succeeded, and **a green build was
+> never the proof check**: a `sorry` is a warning that still exits 0, and a substituted `axiom`
+> exits 0 with no warning at all. The `zero sorryAx` claim was and is true — it came from the
+> `#print axioms` lines, not from the exit code — but nothing *invoked* the target until
+> 2026-09-03, so it was true and ungated. The gate is now `run-s2.sh`'s axiom grading.
 > **Track B (the proofs) is done** — `lake build EntityCoreProofs` green, 9 new
 > theorems, **zero `sorryAx`**. Headline: **T5a attenuation-monotone is PROVEN**
 > (`matchesSeg` transitive, Classical-free; lifted to leaf-authority ⊆

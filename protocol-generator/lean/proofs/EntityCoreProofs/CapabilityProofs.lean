@@ -598,10 +598,32 @@ is **not covered by any grant pattern.** A peer-relative grant cannot authorize 
 foreign namespace; the byte-collapse that hid the 6-way bug (granter == verifier)
 is the only case where the heads coincide.
 
-`hframed` is the canonicalization contract — `canonSegs granterPeer p` roots a
-relative `p` at `/{granterPeer}/…`. Proving it from `String.splitOn` internals is
-mechanical stdlib plumbing (the same path-splitting boundary the running peer rides
-on); the SECURITY LOGIC — framing ⇒ namespace isolation — is what is proved here. -/
+`hframed` **scopes this theorem to §5.5a's peer-relative pattern form**, where
+`canonSegs granterPeer p` roots `p` at `/{granterPeer}/…`. It is deliberately NOT
+universal, and the name alone reads wider than the theorem is: §5.5a's absolute form
+(`/{q}/…`, `/*/…`) passes through `canonSegs` UNFRAMED — that is how the protocol
+requires cross-peer authority to be expressed (§5.5a: *"Cross-peer authority MUST be
+expressed in this form"*) — so `hframed` is FALSE there, not merely unproved.
+Counterexample, checked by evaluation: `canonSegs "P" "/Q/*" = ["Q", "*"]`, whose head
+is `"Q"`, and `matchesSeg ["Q", "foo"] ["Q", "*"] = true`. The hypothesis is
+load-bearing: remove it and the theorem is false. The isolation property for the
+absolute form is a DIFFERENT theorem — `absolutePattern_names_one_peer` below.
+
+Two corrections to what this comment used to say, both from
+`entity-core-formalization`'s `PROPOSAL-DRAFT-2026-08-30-KEYSTONE-HFRAMED`:
+it described `hframed` as plumbing and so implied §5.5a isolation was proved for
+grant patterns generally; it is proved for one of §5.5a's three pattern forms.
+And "mechanical stdlib plumbing" was wrong on its own terms even for the relative
+branch — measured 2026-09-06 in the pinned toolchain (Lean 4.29.1, no mathlib):
+core ships `String.splitOn` and `String.splitOnAux` and **zero theorems about
+either**, and `splitOnAux` is `@[irreducible]`, well-founded over raw byte
+positions, with `extract` carrying a UTF-8 validity proof. Discharging `hframed`
+from a syntactic `¬ p.startsWith "/"` is therefore a from-scratch string theory,
+not plumbing. What IS proved without it is `canonSegs_absolute_frame_independent`
+below — the frame-independence half, which needs no `splitOn` reasoning at all.
+
+What this theorem proves is the SECURITY LOGIC for the relative fragment: framing ⇒
+namespace isolation. -/
 theorem grantPattern_namespace_isolation
     (granterPeer otherPeer : String) (ct pats : List String)
     (hg : granterPeer ≠ "*") (hne : otherPeer ≠ granterPeer)
@@ -618,6 +640,59 @@ theorem grantPattern_namespace_isolation
   rw [htgt] at this
   exact hne (Option.some.inj this)
 
+/-- **§5.5a absolute form: canonicalization is frame-INDEPENDENT.** An absolute
+pattern (`/{q}/…`, `/*/…`, `/*/*`) passes through `canonSegs` untouched, so the frame
+it is canonicalized in cannot change what it denotes. This is the property §5.5a
+relies on for cross-peer authority — a grant naming another peer's namespace must
+mean the same thing at the granter and at the verifier — and it is the exact reason
+`hframed` is false for this form rather than unproved.
+
+No `splitOn` reasoning: both sides reduce to `splitSegs p` by the same branch. -/
+theorem canonSegs_absolute_frame_independent (f1 f2 p : String)
+    (hp : p.startsWith "/") : canonSegs f1 p = canonSegs f2 p := by
+  unfold canonSegs; rw [if_pos hp, if_pos hp]
+
+/-- **The absolute-form isolation theorem — the half `grantPattern_namespace_isolation`
+scopes OUT.** A pattern whose canonical head is a literal peer `q` covers only `q`'s
+namespace: a target resolved into any OTHER peer's namespace is not covered, in ANY
+frame. `frame` is universally quantified and never constrained, which is the
+frame-independence claim of `canonSegs_absolute_frame_independent` carried into the
+matcher.
+
+This is the form §5.5a MANDATES for cross-peer authority, and the form under which a
+mis-scoped grant would reach a foreign namespace. Requested by
+`entity-core-formalization` (`PROPOSAL-DRAFT-2026-08-30-KEYSTONE-HFRAMED` Ask 2),
+whose reading that `matchesSeg_head_lit` already does the whole argument was correct:
+this is shorter than the relative-form theorem because there is no framing step. -/
+theorem absolutePattern_names_one_peer
+    (frame q otherPeer : String) (ct : List String) (p : String)
+    (hq : q ≠ "*") (hne : otherPeer ≠ q)
+    (habs : (canonSegs frame p).head? = some q)
+    (htgt : ct.head? = some otherPeer) :
+    matchesSeg ct (canonSegs frame p) = false := by
+  rw [Bool.eq_false_iff, Ne]
+  intro hmatch
+  obtain ⟨tl, htl⟩ := head?_some_cons habs
+  rw [htl] at hmatch
+  have := matchesSeg_head_lit q ct tl hq hmatch
+  rw [htgt] at this
+  exact hne (Option.some.inj this)
+
+/-- **§5.5a wildcard form: the peer position is exactly what the wildcard erases.**
+For a pattern whose canonical head is `*` (`/*/…`, `/*/*`), coverage does not depend
+on the target's peer segment at all — the two targets differ only there and the
+matcher cannot tell them apart. The property to state for this form is DELIBERATE
+UNIVERSALITY, not isolation: it is the open-access form, and this says so as a
+theorem rather than leaving it as the absence of one.
+
+Completes the §5.5a table — relative (`grantPattern_namespace_isolation`), absolute
+named (`absolutePattern_names_one_peer`), absolute wildcard (here). -/
+theorem wildcardPattern_peer_agnostic (pt rest : List String) (c1 c2 : String) :
+    matchesSeg (c1 :: rest) ("*" :: pt) = matchesSeg (c2 :: rest) ("*" :: pt) := by
+  cases pt with
+  | nil => simp [matchesSeg]
+  | cons a t => simp [matchesSeg]
+
 /-- The resource gate's OWN deny-by-default: with no request targets, no resource
 access is authorized (`checkResourceScope` returns `false` via the `!targets.isEmpty`
 guard) — independent of the operations/handlers/peers deny-by-default. -/
@@ -629,6 +704,9 @@ theorem checkResourceScope_no_targets_deny (lp gp : String) (resource : EntityCo
 #print axioms matchesSeg_head_lit
 #print axioms head?_some_cons
 #print axioms grantPattern_namespace_isolation
+#print axioms canonSegs_absolute_frame_independent
+#print axioms absolutePattern_names_one_peer
+#print axioms wildcardPattern_peer_agnostic
 #print axioms checkResourceScope_no_targets_deny
 
 end EntityCore.Capability.Proofs

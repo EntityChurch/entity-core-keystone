@@ -151,10 +151,18 @@ inductive ScopeKind where
 — bare `*` and a trailing slash-star segment-prefix. None of the §5.4 path transforms
 apply, so a pattern carrying path syntax is matched as a literal string: a non-match,
 never a fault. -/
+-- `dropEnd`, not `dropRight`: the latter is deprecated in Lean 4.29.1 and the
+-- replacement returns a `String.Slice` rather than a `String`. That reads like a
+-- breaking change and is not one here — `String.startsWith` is generic over
+-- `String.Slice.Pattern.ForwardPattern`, so the slice is accepted directly with no
+-- `.toString` copy. Verified by differential evaluation over 21 inputs (segment-prefix
+-- hits and misses, bare `*`, `/*`, empty value, and 2- and 3-byte multi-byte prefixes):
+-- ZERO divergence from the `dropRight` form. Disclosed to us by
+-- entity-core-formalization, whose ledger pins this file by digest.
 def matchesIdPattern (value pattern : String) : Bool :=
   if pattern == "*" then true
   else if pattern.length ≥ 2 && pattern.endsWith "/*" then
-    value.startsWith (pattern.dropRight 1)
+    value.startsWith (pattern.dropEnd 1)
   else value == pattern
 
 def coveredId (value : String) (pats : List String) : Bool :=

@@ -1,6 +1,6 @@
 # The program — where keystone sits, what it owes, and how it ends
 
-_Updated 2026-09-04._
+_Updated 2026-09-05._
 
 **What this file is.** The single orientation document for keystone's **position and trajectory**:
 which seats it sits between, what flows each way, what is measured today, what is queued, and what
@@ -100,12 +100,20 @@ check — and it has no vendored crate closure, so its build needs the network.
 
 ## 3. What is queued, in order, with sizes
 
-### 3a. The `0.8.2.7` catch-up — **measured, bounded, and next**
+### 3a. The `0.8.2.9` catch-up — **measured, bounded, and next**
 
-Our snapshot is `v0.8.2.3`; the protocol is at `0.8.2.7`. Arch's `ROUTING-2026-09-03-d` says
-regenerate on our own schedule, no flag day, no divergence unit.
+Our snapshot is `v0.8.2.3`; the protocol is at **`0.8.2.9`** — six bumps. Arch's
+`ROUTING-2026-09-05-b` consolidates the whole arc into **one vendor step**, and states that no
+further core change is queued on this track. No flag day, no divergence unit: everything in it
+changes what a peer **emits**, never what it accepts. One snapshot picks up `.4` through `.9` plus
+five extension tables (`EXTENSION-TYPE` v1.3, `REGISTRY` v1.22, `DISCOVERY` v1.2, `REVISION` v3.13,
+`TREE` v4.4).
 
-**Measured rather than guessed** (method: attribute by *category*, never by commit subject):
+**Measured rather than guessed** (method: attribute by *category*, never by commit subject) — **and
+every figure in this block was taken at `0.8.2.7` against go `c42bbf3`, before the arc consolidated.
+They are a floor, not the `0.8.2.9` numbers**, which need re-measuring at the vendor step; go has
+moved twice since and the sweep now also carries `0.8.2.5`'s pre-establishment `401` and `0.8.2.8`'s
+half-open naming:
 
 - **1 of 3** normative files moved, `+80/−12`.
 - The go oracle grew **+15 checks, 0 removed**; **13 are `catConnectivity`, a core category**. The
@@ -135,9 +143,16 @@ Plus, separately and already confirmed in our tree: **the 501 slot.** Four peers
 **source audit**, not a check: `0.8.2.7` rules that a conformant peer cannot be made to fail
 internally on demand, so no conformance client can drive it.
 
+**A third item is ours and is newer than the packet: the 404 code slot.** §3.3 pins the 404 default
+`code` = `handler_not_found`, and `0.8.2.9` settles the consequence — *"an undefined spelling is
+non-conformant"*, with the **code slot** as the unit of conformance rather than any single spelling.
+**8 of 46 peers emit no `handler_not_found` anywhere in source**, five of them confirmed by direct
+read to emit `404 not_found` at the handler-resolution-miss site. It has never been measured here:
+the check that drives it is absent from all 46 committed reports and arrives with the re-pin.
+
 **This is not a regeneration.** It is the shape of the §5.6 mint-ceiling sweep that went across 36
-languages: author once, propagate, re-census. Order: vendor `v0.8.2.7` → fix → re-pin the oracle
-(758 → 772) → sweep 46 → re-measure the tracked reports.
+languages: author once, propagate, re-census. Order: vendor `v0.8.2.9` → fix → re-pin the oracle
+(758 → 772+) → sweep 46 → re-measure the tracked reports.
 
 ### 3b. The keystone specification layer — **unblocked, ours, not started**
 
@@ -199,7 +214,7 @@ cannot express it.
 - **The two FFI gaps** in §2.
 - **`AGENTS.md`'s relationship framing** (§1).
 - The cohort regeneration against a current snapshot — a provenance gap, still the wrong place to
-  start, and `0.8.2.7` does not change that.
+  start, and the `0.8.2.9` arc does not change that.
 
 ## 4. How this ends
 

@@ -60,9 +60,23 @@ reality directly (all confirmed):
 The proof check is `lake build EntityCoreProofs` **plus the axiom grading in `run-s2.sh`**, which
 asserts that no declaration depends on `sorryAx` or on any axiom outside the Lean-standard three,
 and that the number of graded declarations meets a floor (a module that stopped emitting
-`#print axioms` would otherwise pass every name check vacuously). Measured: **37 declarations
-graded**, all on `[propext, Classical.choice, Quot.sound]` or a subset — no `sorryAx`.
+`#print axioms` would otherwise pass every name check vacuously). Measured: **40 declarations
+graded** (37 until 2026-09-06; the three §5.5a companion theorems below took it to 40, and the
+floor moved with it), all on `[propext, Classical.choice, Quot.sound]` or a subset — no `sorryAx`.
 Regression-tested by planting a `sorry` and by raising the floor above reality; both are caught.
+
+**§5.5a now has a theorem per pattern form (2026-09-06).** Adopted from
+`entity-core-formalization`'s `PROPOSAL-DRAFT-2026-08-30-KEYSTONE-HFRAMED`, proof-side only — no
+change to `Capability.lean`'s executable definitions, so nothing the conformance suite gates moved.
+`grantPattern_namespace_isolation` was proved for the **peer-relative** form only; its `hframed`
+hypothesis is **false** for the absolute form (`canonSegs "P" "/Q/*" = ["Q","*"]`, verified by
+evaluation), which is not a defect — §5.5a *requires* cross-peer authority to be expressed
+absolutely, and `canonSegs`' pass-through branch implements that correctly. The two missing halves
+are now proved: `absolutePattern_names_one_peer` (a pattern naming peer `q` covers only `q`'s
+namespace, in any frame) and `wildcardPattern_peer_agnostic` (the `/*/…` form's deliberate
+universality), plus `canonSegs_absolute_frame_independent` for the frame-independence §5.5a relies
+on. **Not adopted: the proposal's Ask 1** (discharging `hframed` from a syntactic
+`¬ p.startsWith "/"`) — measured infeasible at the current cost, see §"Ask 1" in the reply packet.
 
 Full per-theorem ledger: `status/FORMALIZATION-REPORT.md`.
 
