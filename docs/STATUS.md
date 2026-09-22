@@ -1,13 +1,14 @@
 # entity-core-keystone — status
 
-_Updated: 2026-08-23 · oracle pin: the 755-check set `95edd774…` · spec snapshot `v0.8.2`_
+_Updated: 2026-08-29 · oracle pin: the 755-check set `95edd774…` · spec snapshot `v0.8.2`_
 
 > **`CONFORMANCE-MATRIX.md` is authoritative for every per-peer number.** This file is a
-> short orientation note, deliberately kept thin. When the two disagree, the matrix wins —
-> a dated status narrative is exactly the artifact that goes stale first, and the previous
-> revision of this file did — it sat six weeks and three oracle re-pins behind, still
-> advertising a "uniformly conformant" 28-peer cohort. It is archived internally rather than
-> corrected, because a status snapshot that gets back-edited stops being evidence of anything.
+> short orientation note, deliberately kept thin. When the two disagree, the matrix wins.
+> The revision this one replaces is archived verbatim at
+> `docs/archive/STATUS-2026-08-23-13-peer-95edd774.md` — it described a 13-publishable cohort
+> and listed "propagate the CAP fix to the remaining 32 peers" as the next step, both closed on
+> 2026-08-28. A superseded status revision is archived rather than corrected in place, because a
+> snapshot that gets back-edited stops being evidence of anything.
 
 ## Where it is
 
@@ -25,50 +26,65 @@ evolving as spec amendments run through the generator.
 
 **46 peers in the tree · 45 measured · all 45 measured at one pin — the 755-check set
 `95edd774…` (2026-08-21).** The pin is a content digest, not a commit; `CONFORMANCE-MATRIX.md`
-§“The pin” carries the full anchor set and why.
-Nothing is carried forward from an earlier pin.
+§"The pin" carries the full anchor set and why. Nothing is carried forward from an earlier pin.
 
 | State | Count | Peers |
 |---|---:|---|
-| **0-FAIL** — publishable | **13** | `go` `haskell` `lean` `ocaml` `swift` (**M1**, 5/5) · `common-lisp` `csharp` `elixir` `java` `kotlin` `python` `rust` `typescript` (**M2**, 8/8) |
-| CAP gap only (2F–4F) | 28 | the rest of the measured cohort |
-| CAP gap + a standing defect | 1 | `cobol` (30F = 3 + its standing 27) |
+| **0-FAIL** — publishable | **39** | M1 5/5 · M2 8/8 · M3 12/13 · probe 13/18 · exploratory 1/2 |
+| Standing defect + the CAP trio | 1 | `cobol` (30F = 3 + its standing 27) |
+| CAP gap, propagation not reached | 2 | `wasm-wat` (2F) · `turbowarp` (3F, never gates) |
 | **INVALID MEASUREMENT** — not scores | 3 | `asm-x86_64` · `asm-arm64` · `riscv64` |
 | Not measured | 1 | `apl` — upstream-blocked |
 
-The CAP-gap row splits 23 at 3F · 2 at 2F · 3 at 4F (`forth` `nim` `smalltalk`, one further
-`capability` check each). `CONFORMANCE-MATRIX.md` §1 is the row-by-row source.
+**The headline is one sentence: the CAP propagation is complete, and what remains is six
+separate problems rather than one.** `--profile core` gained three `capability` checks at the
+2026-08-21 re-pin; every unfixed peer failed exactly those three, and that uniformity held all
+the way through the cohort. None of the six peers still outstanding is failing on the mint
+ceiling — say it that way, because "6 peers still fail" invites the reader to assume a shared
+debt that is not there.
 
-**The headline is one sentence:** `--profile core` gained three `capability` checks at this
-pin, and every peer that has not been fixed fails exactly those. This is **one unimplemented
-spec feature (§5.6's MIN_DEFINED mint ceiling) measured across the cohort, not dozens of
-regressions.** The thirteen fixed peers show the fixed state and their diffs are the reference for
-the rest (`CONFORMANCE-MATRIX.md` §3).
+**The fix shape did not vary across thirty-six languages** — roughly 200 lines over five or six
+files, in the same five places every time (capability mint, codec salvage decode, wire `400`,
+read loop, policy lookup). That invariance is the strongest evidence the spec reading is right,
+rather than merely that the tests pass.
 
-**Recent work (2026-08-22) — tiers M1 and M2 are both complete.** `typescript` went 84F → 0F and
-`csharp` went from an unscoreable starved run to `755 · 0F` in 7.2 s (from 18 m 20 s) — both were the
-*same* defect, §6.3's missing `400 non_canonical_ecf` rejection status, in its two presentations
-(§1b/§1c). The remaining six M2 peers — `rust` `python` `java` `kotlin` `elixir` `common-lisp` —
-then took the same CAP fix and all landed 0F. Eight languages, one fix shape, no new defect classes:
-that repetition is itself the evidence the spec reading is right.
+**Two peers were carrying more than the CAP trio, and both were found the same way: fixing a
+wrong denial made the FAIL count go UP, and the new failures were the truth.** `sql` went
+2F → 7F → 0F once a §5.5a scope-canonicalization bug stopped standing in for two authorization
+checks it had never implemented; `datalog` was the same shape via an `entity://` URI-parsing
+defect. `nim` was the only peer that already *had* a §5.6 ceiling, and having a wrong one was
+worse than having none — it minted tokens that outlived their own authority by ten years and
+still returned `200`.
 
-**Publication rule is unchanged: "no green report → no publish."** Today that means those thirteen
-peers, and only those.
-
-Per [ADR-0012] these peers are **cohort-consistent, not independent convergence** — they
-share a generation lineage and, for the FFI-hybrid peers, one codec `.so`.
+**Publication rule is unchanged: "no green report → no publish."** Today that means those
+thirty-nine peers, and only those. Per [ADR-0012] they are **cohort-consistent, not independent
+convergence** — they share a generation lineage and, for the FFI-hybrid peers, one codec `.so`.
 
 ## What's next
 
-1. **Propagate the CAP fix to the remaining 32 peers** (tier M3, the probes, `node-red`/wasm).
-   Rules and thirteen reference commits are in `CONFORMANCE-MATRIX.md` §3; the fix shape is uniform
-   (~200 lines over 5–6 files) and has now held across **thirteen** languages unchanged.
-2. **The asm/ISA trio's connection-pressure family** — its own session (§1a). It is also why the
-   cohort-wide mode of `tools/check-set-gate.py` exits non-zero: their runs starved, so they are
-   not comparable and are quarantined rather than scored. (`--tracked`, the mode `make lint` runs,
-   gates only the publishable set and passes.)
-3. **`cobol`'s standing 27-FAIL liveness cascade** — a separate investigation.
-4. **Package-registry publish** and **Ed448/SHA-384 agility** stay demand-driven.
+1. **`wasm-wat` 2F** — diagnosed, not started. The mint is a literal call with hand-placed WAT
+   memory offsets, so adding `expires_at` is an arity + data-segment edit rather than a code
+   edit, and the §6.3 salvage wants a second decoder entry point in the same style.
+2. **`turbowarp` 3F** — the block-interpreter probe. Never gates; the CAP trio in Scratch blocks.
+3. **The asm/ISA trio's connection-pressure family** (§1a) — three ISAs of hand-written assembly,
+   one failure family: children block forever in `read(2)` with no idle deadline and there is no
+   §4.10(c) connection-admission cap. It is also why the cohort-wide mode of
+   `tools/check-set-gate.py` exits non-zero: those runs starved, so they are quarantined rather
+   than scored. (`--tracked`, the mode `make lint` runs, gates the publishable set and passes.)
+4. **`cobol`'s standing 27-FAIL liveness cascade** — a separate investigation.
+5. **`apl`** — upstream-blocked and unmeasured. GNU deleted the pinned 1.9 tarball when 2.0
+   shipped; the toolchain bump is its own piece of work.
+6. **Package-registry publish** and **Ed448/SHA-384 agility** stay demand-driven.
+
+**Closed 2026-08-28 — the CAP propagation, 13 publishable → 39.** All of M3 but `cobol`, 13 of
+the 18 probes, and `node-red`. Three of the peers in that count were **never broken**:
+`rust-wasm`, `rust-wasm-wasmtime` and `node-red` are thin seams over `../rust` and the
+`typescript` engine, both fixed on 2026-08-22, and were being measured against build artifacts a
+week older than the source they compile. A forced rebuild took all three to 0F on the first try.
+Fixing that surfaced a tooling defect worth naming: `tools/tier-status.py` was applying its
+reverify overlay unconditionally — the identical bug `tools/check-set-gate.py` had been fixed for
+six days earlier, in the file beside it, reading the same directory. It disagreed with the tracked
+gate about which peers were green; the tracked gate was right.
 
 **Closed 2026-08-23 — the release-readiness pass.** Three defects routed in from DevOps, plus five
 more found by walking the published tree by hand:
@@ -122,8 +138,9 @@ more found by walking the published tree by hand:
 `status/CONFORMANCE-REPORT.{md,json}` had drifted a full oracle pin behind the matrix, so a clone
 showed each peer contradicting its own published row. §1 was never wrong — it is census-backed — but
 nothing gated those files. All 13 publishable peers were **re-measured** (each reproduced its
-published number exactly) and `make lint` now runs `check-set-gate.py --tracked`. The 32 unfixed
-peers' reports stay behind by design — they owe the *fix*, not the paperwork.
+published number exactly) and `make lint` now runs `check-set-gate.py --tracked`. As of 2026-08-28
+all 39 publishable peers carry a committed report at the pinned check set; the remaining 6 stay
+behind by design — they owe the *fix*, not the paperwork.
 
 ## Where the detail lives
 

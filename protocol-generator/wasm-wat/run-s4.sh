@@ -43,6 +43,24 @@ PROJ=/work/protocol-generator/wasm-wat
 # dialer is a real same-connection §6.11 reentrant outbound seam (dispatch.wat serve_dispatch_
 # outbound + serve_resume). The scaffold stays OFF in the peer's production default (opt-in).
 PEERFLAGS="${PEERFLAGS:---debug-open-grants --validate}"
+
+# Provision the peer keypair at ~/.entity/peers/conformance/keypair (seed 0x11x32, base64
+# "ERER...") so the validator can co-sign AS this peer. host.wat hardcodes that same seed
+# ($seed, src/host.wat), so the file is a second copy of an identity the peer already has —
+# what it adds is the ORACLE's ability to author entities the peer will accept as granter-
+# signed. Without it four checks cannot construct their fixtures and SKIP: the three §3.6
+# multisig probes (M4 below-threshold pair + the M6 accept path) and CAP-6a
+# ingest_rejects_unrepresentable_expiry, whose control is a round-tripped token that must
+# carry a valid granter signature before temporal validation is ever reached.
+# Every other peer in the cohort has provisioned this since the multisig accept path landed;
+# wasm-wat never did, so its skips read as substrate limits rather than a missing setup file.
+KPDIR="${HOME:-/root}/.entity/peers/conformance"
+mkdir -p "$KPDIR"
+printf '%s\n%s\n%s\n' \
+  '-----BEGIN ENTITY PRIVATE KEY-----' \
+  'ERERERERERERERERERERERERERERERERERERERERERE=' \
+  '-----END ENTITY PRIVATE KEY-----' > "$KPDIR/keypair"
+
 cd "$PROJ"
 
 [ "${NOBUILD:-0}" = "1" ] || make peer >/dev/null

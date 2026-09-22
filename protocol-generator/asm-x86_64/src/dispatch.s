@@ -262,31 +262,30 @@ conn_serve:
 	call dispatch
 	jmp  .Lcs_loop
 .Lcs_oversize:
-	# §9.1/§4.10(a): an over-cap frame must not tear down the connection. Drain its body from
-	# the socket (into b_req in ≤1 MiB chunks) to keep the stream framed, answer 413
-	# payload_too_large, then keep serving. request_id is unknown (unparsed) → echo empty.
-	mov  %ecx, %r13d                 # remaining bytes to drain (zero-extended)
+	# §4.10(a): answer 413 payload_too_large NOW, then close. request_id is unknown
+	# (the body was never parsed) → echo empty, which the section's emission shape
+	# explicitly provides for: "SHOULD emit a 413 correlated by request_id when the
+	# id is available, and otherwise MAY close the connection after a best-effort
+	# coded frame".
+	#
+	# This used to DRAIN the whole declared body first — in <=1 MiB chunks, up to the
+	# 4 GiB a 32-bit length header can name — so the connection could stay framed and
+	# keep serving. That reads as the more conformant choice and is the opposite:
+	# §4.10(a) requires rejecting "BEFORE fully buffering or decoding it where the
+	# transport allows", and the drain is the fully-buffering it forbids, done one
+	# buffer at a time. A sender that declares 4 GiB and sends 1 KiB parks the child
+	# in read(2) for as long as it likes, and no 413 is ever emitted because the peer
+	# is still politely waiting for the payload it already knows it will refuse.
+	# Measured 2026-08-29: the oracle timed out reading the response every time and
+	# recorded "connection terminated without a 413 frame".
+	#
+	# Staying framed is worth nothing once the frame is known to be unservable, and
+	# the connection is the attacker's to waste, not ours.
 	movq $0, g_rid_len(%rip)
-.Lcs_drain:
-	test %r13, %r13
-	jz   .Lcs_drained
-	mov  %r13, %rdx
-	cmp  $1048576, %rdx
-	jbe  .Lcs_drain_sz
-	mov  $1048576, %edx
-.Lcs_drain_sz:
-	mov  %r12, %rdi
-	lea  b_req(%rip), %rsi
-	call read_full
-	test %rax, %rax
-	jle  .Lcs_done                   # EOF mid-drain → peer gone
-	sub  %rax, %r13
-	jmp  .Lcs_drain
-.Lcs_drained:
 	mov  $413, %rdi
 	lea  ec_payload_too_large(%rip), %rsi
 	call send_error
-	jmp  .Lcs_loop
+	jmp  .Lcs_done
 .Lcs_done:
 	mov  %r12, %rdi
 	ksys SYS_close

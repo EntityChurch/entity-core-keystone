@@ -11,6 +11,51 @@ Work since the initial public research-preview. No release has been cut; this se
 running record, not a version claim. **`CONFORMANCE-MATRIX.md` is the authoritative per-peer
 state** — the entries here are a summary of what moved and why, and they defer to it on numbers.
 
+### The CAP propagation (2026-08-28) — 13 publishable peers → 39 of 45
+
+One unimplemented spec feature, measured across the cohort, now closed everywhere it could be
+closed. §5.6's MIN_DEFINED mint ceiling was absent in **every** peer — `mintToken` set no
+`expires_at` at all — and no conformance vector exercised it until the 2026-08-21 re-pin.
+
+- **36 languages, one fix shape, unchanged.** Roughly 200 lines over five or six files, in the
+  same five places every time: capability mint, codec salvage decode, wire `400`, read loop,
+  policy lookup. **That invariance is the evidence the spec reading is right**, not merely that
+  the tests pass — a reading that needed 36 different shapes would be 36 different readings.
+- **Two peers were carrying more than the CAP trio, and both surfaced the same way — fixing a
+  wrong denial made the FAIL count go UP, and the new failures were the truth.** `sql` went
+  2F → 7F → 0F: a §5.5a scope-canonicalization bug had been denying every delegated capability,
+  and that wrong denial was answering five checks it had nothing to do with — the peer had no
+  chain-attenuation rung at all and no §6.2 mint-bound check anywhere. `datalog` was the same
+  shape via an `entity://` URI-parsing defect. **When a fix raises a peer's FAIL count, do not
+  revert to protect the row.**
+- **A partial implementation of a new rule is worse than its absence.** `nim` was the only peer
+  that already had a §5.6 ceiling, and it was wrong three independent ways: ttl-only, so a minted
+  token outlived the capability authorizing it by ten years; the clock sampled twice, so the
+  emitted `created_at` and the expiry derived from it were different instants; and an overflowing
+  ttl wrapped to an *earlier* expiry instead of dropping the term. All three still returned `200`
+  with a plausible-looking `expires_at`. **MIN_DEFINED is a value reached by construction, not a
+  bound verified by comparison** — grep for a comparison against the clamped value and treat a
+  hit as unimplemented.
+- **Three peers in the count were never broken.** `rust-wasm`, `rust-wasm-wasmtime` and
+  `node-red` are thin seams over `../rust` and the `typescript` engine, both fixed 2026-08-22.
+  They were measured against build artifacts a week older than the source they compile: the
+  census hardcodes `NOBUILD=1` for the wasm peers, and `node-red`'s harness rebuilds only when
+  its bundle is *missing*, never when it is merely stale. Forced rebuild → 0F, first try.
+- **`tools/tier-status.py` was applying its reverify overlay unconditionally** — the identical
+  defect `check-set-gate.py` was fixed for six days earlier, in the file beside it, reading the
+  same directory. Three reports from a retired pin therefore outranked the fresh census
+  indefinitely. Overlay now applies only when newer, and says so on stderr when it skips one.
+  **When two gates disagree about which peers are green, suspect the input before the peers.**
+- **`tools/status-banner.py`** generates each peer's prose `CONFORMANCE-REPORT.md` banner from
+  that peer's own committed JSON, and refuses to write one from a report that is not at the
+  pinned check set. A per-peer number that publishes now gets written by a tool that reads the
+  measurement, not by a person reading the measurement.
+
+**What remains is six separate problems, not one shared debt:** `cobol` 30F (its standing
+liveness cascade), the `asm-x86_64`/`asm-arm64`/`riscv64` trio (INVALID measurements, a
+connection-pressure family), `wasm-wat` 2F and `turbowarp` 3F (hand-authored / exploratory,
+unstarted), and `apl` (upstream-blocked, unmeasured). None of them is the mint ceiling.
+
 ### Release readiness (2026-08-23) — the published tree is what we actually claim it is
 
 No peer changed and no number moved. This was the pass that asked, for the first time, whether the

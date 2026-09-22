@@ -49,6 +49,7 @@ s_err_sock:   .asciz "FATAL: socket/bind/listen failed\n"
 	.globl g_opengrants
 	.lcomm g_opengrants, 8         # 0/1
 	.lcomm g_listenfd, 8
+	.lcomm g_live_conns, 8   # §4.10(c) admission counter (parent only)
 	.lcomm g_envp, 8
 	.globl g_seed
 	.globl g_pubkey
@@ -278,14 +279,7 @@ main:
 	# per accept lags behind a burst of short-lived connections and eventually exhausts the
 	# pid limit, at which point fork() fails and connections are dropped (broken pipe). Loop
 	# until wait4 reports no more reapable children (rax <= 0).
-.Lreap:
-	mov  $-1, %edi
-	xor  %esi, %esi                  # status = NULL
-	mov  $WNOHANG, %edx
-	xor  %r10d, %r10d
-	ksys SYS_wait4
-	test %rax, %rax
-	jg   .Lreap                      # reaped one (pid>0) → keep draining
+	call reap_children               # drain zombies before parking in accept4
 	mov  g_listenfd(%rip), %rdi
 	xor  %esi, %esi                  # addr = NULL
 	xor  %edx, %edx                  # addrlen = NULL
@@ -294,17 +288,48 @@ main:
 	test %rax, %rax
 	js   .Laccept                    # EINTR/again → retry
 	mov  %rax, %r14                  # connfd (callee-saved across fork)
+	# Reap AGAIN, here, before the admission decision — not only above.
+	#
+	# The reap above runs before a BLOCKING accept4, so every child that exits while
+	# the parent is parked in it is still counted as live when the parent wakes. At
+	# an idle peer that is invisible; at the bound it is fatal, and it is exactly how
+	# a working admission cap presents as a dead peer: measured 2026-08-29, the peer
+	# correctly refused 194 of 256 flood connections and then refused the ONE probe
+	# that followed, because the count still read 64 with every child already gone.
+	# The oracle named it outright — "admission slots leaked; the bound must release
+	# when connections close". A bound that never releases is not a bound, it is an
+	# outage with a threshold.
+	call reap_children
+	# §4.10(c) admission: over the bound, refuse by closing. The spec names close as
+	# an allowed refusal ("an implementation MAY instead refuse by closing"), and it
+	# is the only one available here — a 503 frame would need the request_id, which
+	# is not read until after admission. Refusing costs one close and keeps the
+	# accept loop hot, which is the property the check actually gates.
+	cmpq $MAX_CONNS, g_live_conns(%rip)
+	jl   .Ladmit
+	mov  %r14, %rdi
+	ksys SYS_close
+	jmp  .Laccept
+.Ladmit:
 	ksys SYS_fork
 	test %rax, %rax
 	js   .Lserve_inline              # fork FAILED (resource pressure) → serve in-process
 	jnz  .Lparent                    # parent: pid>0
 	# --- child ---
+	# The listening socket was inherited across the fork and is NOT this child's to
+	# hold. Measured 2026-08-17 and again 2026-08-29: every stuck child kept fd 3
+	# open on the parent's listen inode, so the port stayed bound by processes that
+	# were never going to serve it again. Close it first — before anything that can
+	# block — so it cannot outlive the decision to serve one connection.
+	mov  g_listenfd(%rip), %rdi
+	ksys SYS_close
 	mov  %r14, %rdi                  # connfd
 	mov  $IPPROTO_TCP, %esi
 	mov  $TCP_NODELAY, %edx
 	lea  .Lone(%rip), %r10
 	mov  $4, %r8d
 	ksys SYS_setsockopt
+	call set_conn_deadlines
 	mov  %r14, %rdi
 	call conn_serve                  # handles + closes the connection
 	xor  %edi, %edi
@@ -319,15 +344,74 @@ main:
 	lea  .Lone(%rip), %r10
 	mov  $4, %r8d
 	ksys SYS_setsockopt
+	call set_conn_deadlines
 	mov  %r14, %rdi
 	call conn_serve
 	mov  %r14, %rdi
 	ksys SYS_close
 	jmp  .Laccept
 .Lparent:
+	incq g_live_conns(%rip)          # admitted one; .Lreap decrements on exit
 	mov  %r14, %rdi                  # close our copy of connfd
 	ksys SYS_close
 	jmp  .Laccept
+
+
+# reap_children — wait4(WNOHANG) until dry, decrementing the live-connection count
+# once per reaped child. Called both before the blocking accept4 and again after it
+# returns, so the §4.10(c) count the admission test reads is never stale.
+	.type reap_children, @function
+reap_children:
+	push %r14                        # accept loop holds connfd here
+.Lrc_loop:
+	mov  $-1, %edi
+	xor  %esi, %esi                  # status = NULL
+	mov  $WNOHANG, %edx
+	xor  %r10d, %r10d
+	ksys SYS_wait4
+	test %rax, %rax
+	jle  .Lrc_done                   # 0 = none exited, <0 = ECHILD
+	decq g_live_conns(%rip)
+	jmp  .Lrc_loop
+.Lrc_done:
+	pop  %r14
+	ret
+
+# set_conn_deadlines(rdi = connfd) — an idle deadline on a served connection.
+#
+# Without one, a forked child that is waiting on bytes that never arrive blocks in
+# read(2) FOREVER: measured 2026-08-17 (wchan=wait_woken, unchanged 8 s later) and
+# again 2026-08-29 (children still in syscall 0 across every sample of a full run).
+# On a goroutine-per-connection peer that costs a parked goroutine; here it costs a
+# whole process holding a 16 MiB COW b_req, so it is an accumulation defect, and
+# §4.10's "rejection is clean, not collapse" is what it eventually breaks.
+#
+# This is a SOCKET-level idle deadline on a connection this child owns exclusively
+# and serves one frame at a time. It is deliberately NOT the §6.11(c) per-request
+# deadline, which that section requires and separately forbids being implemented as
+# a connection-wide primitive that races across concurrent in-flight requests —
+# there are no concurrent in-flight requests inside one child.
+#
+# 30 s is well above any inter-frame gap the suite produces and well below the point
+# at which stuck children matter. read_full already treats a short/failed read as
+# end-of-connection, so an expiry lands on the existing close-and-exit path.
+	.type set_conn_deadlines, @function
+set_conn_deadlines:
+	push %rdi
+	mov  $SOL_SOCKET, %esi
+	mov  $SO_RCVTIMEO, %edx
+	lea  .Lconn_timeo(%rip), %r10
+	mov  $16, %r8d
+	ksys SYS_setsockopt
+	pop  %rdi
+	push %rdi
+	mov  $SOL_SOCKET, %esi
+	mov  $SO_SNDTIMEO, %edx
+	lea  .Lconn_timeo(%rip), %r10
+	mov  $16, %r8d
+	ksys SYS_setsockopt
+	pop  %rdi
+	ret
 
 .Lfatal_open:
 	lea  s_err_open(%rip), %rdi
@@ -344,6 +428,8 @@ main:
 
 	.section .rodata
 .Lone:	.long 1
+	.balign 8
+.Lconn_timeo:	.quad 30, 0   # struct timeval { tv_sec = 30, tv_usec = 0 }
 
 # =====================================================================
 # print_listening — writes the LISTENING readiness line to stdout.
