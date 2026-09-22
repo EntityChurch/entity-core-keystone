@@ -409,6 +409,19 @@ Two conformance **oracles** are ground truth (built from `entity-core-go`, see B
   tranche commit's `0 of 15` was correct about its own peers. The cohort claim was assembled by
   addition, and addition cannot see an absent term — the arithmetic half of the false-negative
   family, in a work plan rather than in a count.
+  ⭐ **AND THE CLOSING CLAIM IS THEREFORE A ROSTER RUN, NEVER A SUM — RATIFIED 2026-09-16 WHEN IT
+  CAUGHT ME ONE PARAGRAPH AFTER I WROTE THIS RULE.** Closing `fortran` and `unison` made it tempting
+  to state the cohort as *yesterday's 44, plus these two* — which is this exact defect one level up.
+  Both instruments were re-driven across all 46 instead (`arc-probe` span **0.038 h**, `pa-probe`
+  span **0.046 h**, none missing, all `trusted`), **and the §4.11 line I had already written by
+  arithmetic said 44 peers at `0 of 6` where the roster run says 43.** The slip is left named in
+  `docs/STATUS.md`, because a section arguing that summed cohort claims go wrong must not carry one.
+  **Two checks make a roster run worth more than the count it prints:** assert the report set equals
+  the roster (a run that stops at peer 29 and names nothing is the standing hazard), and
+  **content-check each report for the rows you are about to count** — `assert "G2_…" in ids` — so a
+  report written by an older binary cannot be silently tallied. That second one is strictly stronger
+  than the mtime test the stale-probe-directory rule prescribes: it is indifferent to clock skew and
+  to a peer re-run by hand mid-roster, and it answers the question you actually have.
   (c) **THE PROBE DIRECTORY CONFIRMED THE ERROR RATHER THAN CATCHING IT.** `output/scratch/arc/`
   spanned **29.5 h** with **seven** peers' reports older than their own sweep commit, and the two
   unswept peers' reports were from the pre-sweep census — so reading it showed them failing and that
@@ -522,13 +535,26 @@ Per-language layout under `protocol-generator/<lang>/`: `src/` (generated source
 `run-origination-core.sh`.
 
 Shared, language-agnostic — `protocol-generator/shared/`: `spec-data/<version>/` (pinned
-spec snapshot — **`v0.8.2`** is the current pin as of 2026-08-21 (from `entity-core-protocol`
-`106834c`; `v0.8.0` retained as a point-in-time pin, `v7.*` retired at the V8 cutover). **No peer
-has been regenerated against `v0.8.2` yet** — every peer in the tree was generated against `v0.8.0`,
-which is a tracked gap, not an oversight; `pd`'s F37 `system/identity/peer-id` debt is its one known
-consequence. `GUIDE-CONFORMANCE.md` is now pinned BY HASH in that snapshot's `MANIFEST.md`
-(`7d59fee6…`, `Status: Draft`) — it stays out of `spec-data/` (non-normative, arch-owned) but
-"operator-carried" meant unpinned, and peers derive their whole conformance scaffolding from it), `lifecycle/` (S1–S5 phase prompts),
+spec snapshot — **`v0.8.2.28` is the newest, vendored 2026-09-16 from `entity-core-protocol`
+`3684c0b`**, and **`v0.8.2.25` is what the cohort currently IMPLEMENTS** (`spec_pin` on all 46
+roster rows, gated by `tools/spec-pin-gate.py`). `v0.8.2.11`, `v0.8.2.3`, `v0.8.2` and `v0.8.0` are
+retained as point-in-time pins; `v7.*` retired at the V8 cutover. **The two are separate facts and
+the gap between them is deliberate**: a snapshot is what peers are *written against*, and vendoring
+runs AHEAD of implementation on purpose after `v0.8.2.25` was vendored *behind* it (its `MANIFEST.md`
+records that as a provenance defect — *"the correct order is vendor, then implement"*). Neither is
+the **oracle** pin, which is what peers are *measured* against and moves independently.
+⚠ **DIFF A SNAPSHOT BY DIGEST, NEVER BY ITS `Version:` HEADER.** `ENTITY-NATIVE-TYPE-SYSTEM.md` is
+`4.2.1` at both `v0.8.2.25` and `v0.8.2.28` and its CONTENT MOVED (`043fc80d…` → `cb0a63e2…`, §10.2's
+signature basis). That is `entity-system-conformance`'s `F79`, and the header is not *wrong* — it is
+merely *unchanged*, so nothing reports an error. ⬜ *This paragraph itself read "`v0.8.2` is the
+current pin as of 2026-08-21 … no peer has been regenerated against `v0.8.2` yet" until 2026-09-16,
+i.e. four snapshots and a whole cohort sweep out of date, with every gated number correct throughout
+— the standing rule that **a pin is a claim and the sentence stating it rots while the numbers hold**,
+landing in this file. `coherence-gate` check 6 gates pin PARAGRAPHS in published prose; `AGENTS.md`
+is not a published surface and is not in its scope.*
+`GUIDE-CONFORMANCE.md` is pinned BY HASH in the snapshot's `MANIFEST.md` — it stays out of
+`spec-data/` (non-normative, arch-owned) but "operator-carried" meant unpinned, and peers derive
+their whole conformance scaffolding from it), `lifecycle/` (S1–S5 phase prompts),
 `seed-policy/` (peer-authority bootstrap convention, keystone-authored). FFI:
 `ffi-generator/c-abi/spec/` (canonical C-ABI), `ffi-generator/<shape>/output/`.
 
@@ -1568,6 +1594,28 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   peer, and the gap is one axis finer. **Enforcement: a multi-rule sweep records a rule × peer
   matrix, and the closing claim is per cell, not per peer** — `tools/pa-probe` over the whole roster
   is what produced this, and it is the instrument that answers the §4.11 column.
+- **A RETURN TYPE THAT COLLAPSES N EVENTS THE SPEC ANSWERS N WAYS CANNOT BE MADE CONFORMANT
+  DOWNSTREAM, HOWEVER THE LOOP IS WRITTEN — fix the signature, not the caller.** RATIFIED 2026-09-16
+  (`unison` and `fortran`, same session, two substrates, and the shape is identical in a pure
+  functional peer and a C net shim). `unison`'s framed read was `readFrame : Socket -> Optional
+  Bytes`, and `None` was **three different events** that §4.11 assigns three different answers: a
+  clean close at a frame boundary (owed **nothing**), a length prefix that never completes (owed
+  **400**), and an oversize declaration (owed **413**). No amount of care in `readLoop` recovers a
+  distinction the value it receives does not carry. The fix is a four-case `FrameRead`, plus a
+  `recvUpTo` that hands back the ACCUMULATED PREFIX — **because its SIZE is the discriminator: the
+  two ends-of-stream differ by exactly one buffered byte.** `fortran` needed the same event in C
+  (`EC_EV_TRUNCATED`) for the same reason.
+  **The tell that you have this rather than a missing branch: the correct behaviour is not
+  expressible at the call site.** If you find yourself wanting to know *why* a `None`/`nil`/`-1`
+  came back, the signature is the defect. **Enforcement: for any read that can end in more than one
+  way the protocol cares about, the return type enumerates them** — and keep the control that proves
+  you implemented the distinction instead of deleting it (pa-probe's `D3`: the cheapest way to pass
+  the truncation arm is to answer every short read, which turns an ordinary hangup into a refusal of
+  nothing).
+  *(And do not close on the peer's FIN while a refusal is owed. A FIN closes THEIR write side; ours
+  is still open, and closing on receipt makes the mandatory coded frame undeliverable — which is
+  Node's `allowHalfOpen` and the BEAM's `exit_on_close` arriving for free. On raw sockets we simply
+  do not do it: mark the read side closed, let the peer queue its refusal, flush, then drop.)*
 - **A §4.11 TEST WITH NO READ DEADLINE HANGS ON THE PLANT INSTEAD OF FAILING — because the
   non-conformant behaviour IS "no response".** RATIFIED 2026-09-14/15 (`ruby`, then `common-lisp`
   identically an hour later). This is the one place where the standing plant discipline turns on
@@ -3003,6 +3051,29 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   convention drift this file records for lockfiles and dependency pins, in a 10-line config. Verified
   no value in the file legitimately contains `#` before making comment-stripping general.
 
+- **"IS UPSTREAM STABILIZING?" IS A MEASURABLE QUESTION, AND THE REVISION COUNT IS THE WRONG
+  INSTRUMENT — ANSWER THE COST QUESTION WITH THE ORACLE, NEVER WITH THE SPEC'S VERSION NUMBER.**
+  Candidate (first occurrence, 2026-09-16, answering *"do we wait for the spec to settle?"*). Three
+  measurements, none of which is the revision count: **(a) the counterpart's own open-question
+  register** — the direct evidence of how much is queued, and it is in their tree, not ours
+  (`48 CQs filed, 12 closed, a new round filed the same day`); **(b) new `[MUST]`-markers per
+  revision**, which is the obligation rate rather than the edit rate (flat across thirteen
+  revisions, the latest tying the arc's high); **(c) whether the ORACLE's core category set moved**
+  — `coreProfileCategories`, unchanged at 16 across **59 oracle commits and +39 declared checks**.
+  So *"the spec moved five times today"* and *"the cohort owes one rename"* were **both true**, and
+  only (c) has a number a work plan can use. **The spec is what peers are WRITTEN against; the
+  oracle is what turns a row red.** Peg a sweep to the re-pin, not to the version header — which is
+  the vendored-snapshot/oracle-pin separation this file already declares, finally exercised under
+  pressure. **Enforcement: before sizing a sweep, diff the oracle's core category set and run the
+  candidate against ONE vanguard peer; publish the per-category attribution, never the raw
+  new-check count** (39 new checks, 10 reaching a core run, 4 failing, one cause).
+  *(Sub-lesson, the examined-zero-things class in a new carrier: **`strings <binary> | grep -x
+  <name>` ALWAYS reports missing.** A compiled binary packs string data contiguously, so there is
+  no whole line for `-x` to anchor to, and six checks I knew were present all read `MISSING` in one
+  confident column. Validate such an instrument against a name that must appear in BOTH sides
+  before believing either direction — the control is what said the binary was fine and the grep was
+  not.)*
+
 - **A GATE THAT EXAMINES ZERO THINGS PRINTS THE SAME WORD AS ONE THAT EXAMINES FORTY-SIX —
   always print the COUNT, and assert on it in the regression suite.** RATIFIED 2026-08-30
   (second occurrence of the vacuous-control class after `check-set-gate`'s `Path.stem`
@@ -3440,6 +3511,20 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   strict walker, no second pass. **Ask what the peer's existing failure set already distinguishes
   before deciding it distinguishes nothing**; the `apl` direction (the flag carries MORE than the
   spec's arms) and this one (it carries EXACTLY them, unread) are the same enumeration.
+  **RATIFIED 2026-09-16 — A THIRD DIRECTION, AND IT IS THE ONE THE SESSION WRITING THE RULE WALKED
+  INTO TWICE: THE CONSTRUCTOR'S NAME IS NOT THE MAPPING.** `fortran` and `unison` both carry decoder
+  error kinds whose names read like wire codes — `EC_NON_CANONICAL_ECF` / `NonCanonicalEcf` beside
+  `EC_TAG_REJECTED` / `TagRejected` — and both of my first cuts folded them together, because the
+  name matches the code `non_canonical_ecf`. **§4.11 scopes that code to CBOR TAG-POLICY VIOLATIONS
+  SPECIFICALLY**; an indefinite length, a non-minimal head or a duplicate key is a *framing* fault
+  owing `invalid_request`. Measured both times as pa-probe **`D6` WRONG CODE**, which is the arm that
+  exists for it. Same session, same hour, second peer — so the pull is the resemblance rather than
+  carelessness. **Enforcement: map the spec's CAUSES to codes in one function, and derive the
+  mapping from the section's own table, never from the constructor names.** `unison`'s §3.1 miskeyed
+  key was the same defect one step earlier — it was *filed* under `NonCanonicalEcf` at the raise site,
+  so no mapping could have recovered `hash_mismatch`; it needed its own `IncludedKeyMismatch` arm
+  (which `rust` has had all along). **A cause that two codes must distinguish needs two constructors,
+  and a shared one is a mapping that was decided before you got there.**
 - **RATIFIED, SECOND AND THIRD OCCURRENCE AND A NEW SHAPE — A PREDICATE WRITTEN FOR ONE SPELLING OF
   AN ADDRESS IS NOT REUSABLE BY A CALLER WITH ANOTHER, AND ON AN AUTHORIZATION DIMENSION IT DENIES
   EVERY CALLER-SUPPLIED GRANT WHILE THE SHIPPED CONFIGURATION HIDES IT.** The first occurrence was
@@ -3522,6 +3607,66 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   *(And where the ladder's refusals live matters: an effective list that is EMPTY or AMBIGUOUS is not
   an authorization question, so the dispatch stage neither authorizes nor refuses it — the handler
   answers it with the code the request's SHAPE earns, `path_required` or `ambiguous_resource`.)*
+  **AND A LADDER THAT SPLITS ONE CASE INTO TWO DROPS WHATEVER USED TO FALL BETWEEN THEM — ON THE
+  §3.3 LADDER THAT VALUE IS THE EMPTY STRING.** Candidate (2026-09-16, `fortran`, caught by the
+  census and by nothing else). Before the effective-set ladder, `len(target) == 0` was reached by an
+  ABSENT resource *and* by a present-but-empty target string, and both correctly took the root
+  listing. The ladder separates those two, so the empty STRING now needs saying out loud: it
+  canonicalizes to `/{local}/`, which is a DIRECTORY, and dropping it into the concrete-get arm
+  answers **404 for the root of the peer's own tree**. Measured as
+  `tree_operations/path_root_listing` PASS → FAIL on the first cut, and it is the only reason that
+  half of the change was not `0 of 778`. **Enforcement: when a ladder splits one branch into several,
+  enumerate the inputs the OLD branch accepted and place each one explicitly** — the reference peers
+  spell it `target == "" || target ends with "/"` in a single arm, and that `""` is doing work no
+  reader would guess.
+- **A REGISTER THAT RECORDS NON-RECEIPT WITHOUT EVER RE-CHECKING IT CONVERTS A TEN-MINUTE READ INTO
+  A STANDING ROW.** RATIFIED 2026-09-16, and it is the tracker convention's own failure mode rather
+  than a counterpart's. Three of our four outbound asks to `entity-core-formalization` (`A-1`, `A-2`,
+  `A-3`) had been **answered on 2026-09-06** in a packet sitting in their tree, and sat in our Open
+  column for **ten days**. Our own delivery note said *"receipt not established"* — which was true
+  when written, and which we treated as **a state to record rather than a question to resolve.**
+  They closed it for us, correctly calling it *"a receipt gap, not a work gap, which is the cheaper
+  kind and the kind neither of us can see from inside our own tree."*
+  **The shape generalizes past trackers: `not established` is the one status that never expires on
+  its own.** An open ASK gets re-read every time someone looks for work; a `pending receipt` row
+  reads as in-flight forever, and the thing that would clear it is a read of someone else's tree
+  that nobody is scheduled to do. **Enforcement: every `Delivery state: not established` row carries
+  the command that would settle it, and that command is run when the tracker is reconciled** — not
+  when the packet is sent. For us that is one `ls`/`grep` in the counterpart's `docs/status/`.
+  *(Their `INBOUND.md` has the mirror-image half — it reads sibling trees for packets addressed to
+  them and never checks whether their own answers LANDED — and they named it first. **A register
+  with no memory reports absence of a row as absence of the work, in whichever direction it is
+  pointed.**)*
+- **A RECONSTRUCTED "BEFORE" THAT *BORROWS* FUNCTIONS FROM THE CURRENT TREE IS ONLY FAITHFUL IF THE
+  BORROWED ONES DID NOT MOVE — AND THEY ARE NOT THE ONES A REVIEWER CHECKS.** Candidate (first
+  occurrence, 2026-09-16, verifying `entity-core-formalization`'s A-4 differential; enforcement
+  exact). They transcribed two of our functions at a named commit, said so, and asked us to check
+  the transcription — which is exactly right and is the ask we answered. **But `canonSegsPre` and
+  `scopeSubsetPre` call `splitSegs` and `matchesSeg`, which the file does NOT transcribe: it takes
+  them from the current tree it was built inside.** So the "before" is a HYBRID unless those two are
+  byte-identical across the interval, and nothing in the file said whether they were. Measured:
+  both unmoved (`3daa1bef718d`, `8c374edb1c12` at both commits) while the two transcribed functions
+  did move — so the reconstruction is genuine and their result stands.
+  **Enforcement: for any transcribed "before", list the symbols it CALLS but does not transcribe and
+  hash each across the interval.** The two functions a reviewer opens are the transcribed ones; the
+  two that can silently invalidate the whole differential are the others. Generalises past Lean to
+  any differential harness built inside a copy of someone else's tree.
+- **RATIFIED, SECOND OCCURRENCE AND FIRST IN A GATE — A SELECTOR KEYED ON ONE SPELLING OF A
+  CONVENTION ACCUSES THE COMMITS THAT DEVIATE FROM IT, AND THE DEVIANTS ARE THE ONES THAT HAD A
+  REASON TO.** The first was `run-s4.sh`'s argv sweep, where a `^"$ORACLE"` pattern skipped the five
+  (six) harnesses that hold the exit code. 2026-09-16 it reached `tools/spec-pin-gate.py`, whose
+  `--since` reconciliation selects sweep commits by SUBJECT with `^(sweep tranche|vanguard)`.
+  **The TAIL of a sweep is not a numbered tranche**: closing the last two peers produced
+  `sweep fortran to 0.8.2.25, …`, which matched nothing, so the gate reported both peers as
+  *pin-advanced-but-never-touched* — **it accused the two commits that closed the hole it exists to
+  catch.** Broadened to `^(sweep |vanguard)`.
+  **Enforcement is the standing detector rule and it is what makes the broadening safe: DIFF THE HIT
+  LIST, never the count.** Over the range the gate is run on: 17 matches before, 18 after, and the
+  single addition is the `fortran` sweep — no other subject in the range begins with `sweep`. A
+  loosening that swept in a whole unrelated class would also have produced a plausible number.
+  *(And the meta-lesson is about where to look for this: the defect lived in the ONE arm of the gate
+  that had never been run end-to-end against a real sweep. `--self-test` was green throughout,
+  because a self-test builds its own commits and therefore its own subjects.)*
 - **A READ-LOOP FIX IS NOT INHERITED BY A PEER THAT REIMPLEMENTS THE READ LOOP — and depending on
   the crate that holds the fix looks exactly like inheriting it.** RATIFIED 2026-09-14 (the §6.3
   silent-refusal sweep reaching `rust-wasm`, `rust-wasm-wasmtime` and `node-red`), and it is the

@@ -1,6 +1,8 @@
 # entity-core-keystone — status
 
-_Updated: 2026-09-16 · oracle pin: the 778-check set `7aa6f3de…` · spec snapshot **`v0.8.2.25`** (vendored 2026-09-15)_
+_Updated: 2026-09-16 · oracle pin: the 778-check set `7aa6f3de…` · spec snapshot vendored: **`v0.8.2.28`** (2026-09-16) · spec snapshot the cohort IMPLEMENTS: **`0.8.2.25`**, all 46 rows_
+
+> **Two spec facts, deliberately apart.** `v0.8.2.28` is vendored and **not yet consumed** — the pin goes in before the work, which is what `v0.8.2.25`'s manifest asked for after that one was vendored behind 33 peers. `spec_pin` is `0.8.2.25` on all 46 roster rows and gated. Neither is the ORACLE pin, which is what peers are measured against and moves on its own schedule.
 
 ## ✅ CLOSED 2026-09-16: the `0.8.2.25` sweep is **46 of 46** — and it got there by being corrected to 44 first
 
@@ -31,6 +33,15 @@ the §6.3 salvage decode turned three transport-drops into the `capability_denie
 asks for. Corroboration worth recording: `fortran`'s suite went **62.3 s → 2.1 s**, stable over two
 runs, because every dropped frame had been billing the caller a full read deadline. *Presents as
 slow, is actually wrong*, one more time.
+
+**And the closing claim is a ROSTER RUN, not a sum of tranche reports** — which is the correction
+this whole section is about. `tools/arc-probe` re-driven across all 46 after both peers landed:
+**46 of 46 reported, all `trusted`, report-age span 0.038 h, none missing**, and every report
+content-checked for the family-`G` rows so a report from an older binary cannot be silently counted.
+**46 of 46 at `0 of 15`.** The five peers that refuse `system/capability:request` under the §6.9a
+discovery floor report their `E`/`F`/`G` families VOID there and were driven through
+`run-mint-floor.sh` instead: four clean, and `sql` carries its one known **`F85`** row (Dimension 4
+not evaluated inbound), which is an open finding of ours and not a sweep gap.
 
 **The reconciliation is the test that this is closed, and it failed first — on us.**
 `tools/spec-pin-gate.py --since b71b940f~1` is supposed to go quiet once every advanced pin is
@@ -89,14 +100,21 @@ before the run, and the span includes one peer re-measured after a fix):
 
 | state | peers | |
 |---|---:|---|
-| **0 of 6 arms owed** | **42** | |
+| **0 of 6 arms owed** | **42** *(→ **43** after `fortran` and `unison` landed; re-driven 2026-09-16, span 0.046 h)* | |
 | substrate-limited, **disclosed not deferred** | 2 arms | `io` D2 — its `Socket` `close(2)`s the descriptor the instant a read returns zero, so there is no instant at which it both knows the stream ended mid-frame and can write; `smalltalk` D2 — `A-ST-018`, Pharo cannot write a half-closed socket |
 | **ruled NOT OWED** | 2 arms | `io` and `sql` D4. Both implement §1.8 mechanism **(b)** — discard the wire key, address by a validated `content_hash` — so a mis-keyed entry **misses** and §5.2a's own table answers `401`/`403`. §5.2a scopes `400 hash_mismatch` to a peer refusing at the **decode boundary**, which is mechanism (a); forcing it would abandon a conformant mechanism |
 | ~~**genuinely owed**~~ | ~~2 peers~~ | ✅ **CLOSED the same day** — `fortran` and `unison` were 5 of 6 each, the never-swept pair above; both are **0 of 6** now |
 
 ⇒ **Every §4.11 arm in the cohort is now conformant, disclosed as a substrate limit, or ruled not
-owed.** 44 peers at 0 of 6; the remaining four arms are the two `io`/`smalltalk` substrate limits and
-the two `io`/`sql` not-owed rulings. **No arm anywhere is owed-and-unexplained.**
+owed.** Re-driven across the whole roster after the two peers landed — **46 of 46 reported, all
+`trusted`, report-age span 0.046 h**, every report content-checked for the `D7` row so an older
+binary's output cannot be counted: **43 peers at 0 of 6**, and the remaining **four arms sit on three
+peers** — `io` (`D2` substrate limit + `D4` not owed), `smalltalk` (`D2` substrate limit), `sql`
+(`D4` not owed). **No arm anywhere is owed-and-unexplained.**
+
+*(The count in this line was 44 in its first draft and the roster run said 43. It is written from
+the measurement now — which is the whole argument of the section above it: a cohort number assembled
+by arithmetic is the one that goes wrong.)*
 
 **`ada` was the one undisclosed gap and it is closed.** It owed **3 of 6** — and it is *not* the
 never-swept shape: a tranche **did** touch it, it measured `0 of 15` on `arc-probe`, and its
