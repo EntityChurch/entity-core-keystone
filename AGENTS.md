@@ -129,6 +129,25 @@ distinction is stated precisely or not at all.
   passing means the recipes are well-formed, NOT that they work; only the cold build knows that.
   Run the cold build before any release and whenever `containers/` changes. All three are
   regression-tested against planted defects.
+  **AND NONE OF THE THREE ASKS WHETHER THE RECIPE STILL FITS THE TREE — the cold build proves the
+  image BUILDS, not that the peer still RUNS against it.** RATIFIED 2026-08-28 (second occurrence of
+  the incomplete-pin class, first in a non-RPM package manager, and it was introduced BY the
+  46/46-green container overhaul). `containers/dart-toolchain` seeded its offline `PUB_CACHE` from
+  its own throwaway pubspec pinning the three DIRECT deps exactly and letting every TRANSITIVE
+  float. The `--no-cache` rebuild re-resolved `source_maps 0.10.13 → 0.10.14` and
+  `vm_service 15.2.0 → 15.3.0` against pub.dev, the peer's committed `pubspec.lock` had not moved,
+  and `dart pub get --offline --enforce-lockfile` correctly refused: *"Unable to satisfy
+  pubspec.yaml using pubspec.lock"*. **The image built perfectly. The peer would not start.** Only
+  running it asks the question, and `dart` had not been run since.
+  **AN EXACT PIN ON THE DIRECT DEPS IS NOT A PIN ON WHAT LANDS IN THE CACHE** — the same statement
+  `koji-pin.py closure` enforces for RPMs, in a package manager where nothing was watching. **The
+  fix is never to regenerate the lockfile against whatever the image happened to resolve** (that
+  rewrites a committed record to match an accident and breaks again on the next rebuild): the
+  prefetch now seeds from the peer's OWN `pubspec.lock` with `--enforce-lockfile`, so the cache is
+  the lockfile's closure BY CONSTRUCTION, the two cannot drift, and an unsatisfiable lockfile fails
+  the IMAGE BUILD — which is the right place to find out. The second copy of the pins is deleted
+  rather than re-synced. **Generalize: any image that vendors a dependency closure must derive it
+  from the tree's own lockfile, not from a hand-maintained restatement of the top-level pins.**
 - **A GUARD THAT WAS NEVER EXECUTED IS NOT A GUARD — and "it's just a preflight" is exactly how
   one ships unrun.** Candidate (first occurrence here, but it is the `check-set-gate --tracked`
   shape again: a control that watches the wrong copy). The 2026-08-23 release sweep added an
@@ -453,6 +472,32 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   failure that neither responds nor is EOF — `envelopeOf*`/`decodeEnvelope` returning
   none/err with no `writeFramed` on that branch is the defect. Check the *reference* peer when
   unsure: `entity-peer` answers this check 6/6 in 1 ms.
+  **THE §6.3 FIX CAN PRODUCE THE CASCADE IT EXISTS TO REMOVE, and it presents as a catastrophic
+  regression.** `zig`'s first measurement after the fix came back **755 · 89F** — worse than the 3F
+  it started at. `wire.makeResponse` CONSUMES its `result` entity and deinits it; the new
+  `rejectFrame` also deferred a deinit on the same entity, so *answering* a rejected frame
+  double-freed and killed the connection. The peer was refusing correctly (CAP-6a scored "refused
+  all 6 variants") and then taking the connection down with it — `lean`'s shape exactly, reached
+  from the opposite direction. **The standing diagnostic found it in one step with no hypothesis
+  about zig at all**: first FAIL in RUN ORDER was idx 566 (`tree_operations/put_entity`, "broken
+  pipe"), and the last check before the first transport error was idx 562 — the CAP-6a check. The
+  gap between them is the defect; the 89 is noise. **Rule: on any peer whose response builder
+  CONSUMES its result entity, the salvage path must not also free it.**
+  **THE SALVAGE FLAG'S MECHANISM IS DECIDED BY THE PEER'S CONCURRENCY SHAPE, not by taste** — and
+  choosing wrong is a race, not a compile error. Measured across 23 peers: a field on the
+  cursor/decoder struct where one exists (`c c++ zig ada dart odin nim crystal php ruby io`); a
+  threaded PARAMETER where readers are real threads or the runtime has no mutable module state
+  (`oz` forks a thread per connection, `unison` a green thread per connection); a THREAD-LOCAL where
+  readers are threads but threading the flag would touch eight clause heads (`prolog`); a
+  namespace/global ONLY on a single-threaded event loop, where one frame is fully decoded before the
+  next is read (`tcl rexx forth`). In every global case both entry points must set the flag, or a
+  strict decode inherits a stale 1.
+  **AND ON A DECODER WRITTEN AS FREE FUNCTIONS, THREADING THE FLAG THROUGH THE RECURSION IS NOT
+  OPTIONAL — forgetting it fails silently in the only direction that matters.** `ruby`'s
+  `Cbor.decode_value` recurses into arrays and maps; passing the flag only at the top level leaves
+  every nested call strict, so the salvage decode still raises on the tag — **and the tag is always
+  nested, inside `root.data`**. A cursor-struct peer gets this for free; a free-function peer needs
+  it passed through the array arm, the map arm AND the map's key/value reads.
   **(a) and (c) are the SAME BUG but present as two different failure classes — and one of them
   does not look like a conformance failure at all.** Measured 2026-08-22 across `typescript` and
   `csharp`, whose census reports are identical where it counts: same 3 real FAILs at the same
@@ -501,6 +546,28 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   a negative. **On a bignum substrate the `>2^64` half is a DELIBERATE range check, not an overflow
   trap** — python/elixir/CL/java/kotlin integers do not wrap, so a peer that "just does the
   arithmetic" never fires §5.6 rule 3 and silently saturates instead of dropping the term.
+  **A THIRD SHAPE, and the greps above BOTH clear the peer that has it: the mechanism can be right
+  and the FIELD LIST short.** `pd` (2026-08-28) had carried the correct three-way accessor since it
+  was written — `entity_data_uint` returns 0 for absent, 1 for a uint64, **-1 for
+  present-but-not-major-0** — and `authz_check_validity` already refused on the -1. It simply never
+  ASKED about `created_at`: the guard covered `expires_at` and `not_before` only, the oracle probes
+  all three, and the peer honored a capability whose `created_at` was negative. **CAP-6a is THREE
+  fields. Grep the field list, not only the accessor** — an audit shaped around optional-typed
+  accessors clears `pd` completely.
+  **Fixed-width substrates need NO range test and writing one is dead code** — `unison`'s `Nat` and
+  `forth`'s 8-byte TV argument make a present uint64 representable by construction, and a bignum can
+  only arrive as a major-type-6 tag, rejected at decode. `forth` needs the opposite move instead:
+  its `ent-uint` applies the TV's SIGN byte and hands back a negative cell, so the guard reads the
+  tagged value directly because **the sign byte is exactly the bit the accessor discards**.
+- **UNSEQUENCED ARGUMENT EVALUATION IS THE C HAZARD THIS WORK KEEPS RE-CREATING, and it compiles
+  clean under `-std=c11 -pedantic -Wall -Wextra -Werror`.** Candidate — but it happened TWICE in one
+  session, once avoided at authoring time (`c`) and once reintroduced five commits later (`sql`),
+  which is the shape that earns a note. Folding a computed term into a MIN accumulator invites
+  `min_defined(add_ttl(created, ttl, &t), t, &acc, &have)` — which READS and WRITES `t` in one
+  unsequenced argument list. In `sql` it folded a garbage term, so `ttl_ms:0` minted the caller
+  cap's expiry instead of `created_at`, and the oracle reported it as a CAP-6 rule-2 failure with no
+  hint of undefined behaviour. **Rule: a term computed by an out-parameter lands in its own local
+  BEFORE the call that consumes it.**
 - **§5.5a's per-link granter frames scope the RESOURCE dimension ONLY — applying them to
   handlers/operations/peers is invisible until a DELEGATED cap arrives.** Found on swift 2026-08-21
   (candidate — one peer, but the enforcement point is exact and go/ocaml both carry the correct form
@@ -517,6 +584,86 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   `grep -n 'scopeSubset\|grantSubset' <peer>` and check that only the RESOURCES call receives the
   granter frames.** Symptom to recognize: several unrelated-looking capability checks failing at
   once with 403 while everything self-issued passes.
+  **RATIFIED 2026-08-28 — second occurrence (`sql`), and the enforcement grep is now cheap enough
+  that it was run across the whole remaining cohort in one pass (clean: only swift and sql ever had
+  it).** `sql`'s `sc` CTE canonicalized `dim IN ('handlers','resources')` against the granter frame,
+  which is the same defect reached from `check_permission` rather than from `grantSubset`. Identical
+  invisibility: 753 of 755 checks passed, because child and parent share a granter on every
+  self-issued path.
+  **AND THE CORRECT FRAME IS DIFFERENT ON DIFFERENT SURFACES — get this backwards and you fail in
+  the OPPOSITE direction, which is why the one-line grep is not the whole rule.** Measured on `sql`
+  and `datalog` the same day:
+  - **Dispatch-time resource match** and **chain attenuation** (§5.5a surfaces 1 and 2) take the
+    PER-LINK GRANTER frame. `datalog`'s `is_attenuated` passed `local` as BOTH frames, so a
+    foreign-granted bare `*` canonicalized to the VERIFIER's `/{local}/*` and falsely covered a leaf
+    naming the verifier's namespace — §5.5a names this exact failure ("canon-against-wrong-frame")
+    and pins three vectors at it.
+  - **The §6.2 MINT-TIME subset takes LOCAL on BOTH sides**, because that mint is self-issued and
+    the granter is this peer on both. `sql`'s first cut read the parent side through the
+    granter-framed CTE and **denied the CAP-5 probe outright**: the presented cap's
+    `resources: ["*"]` canonicalized to `/{caller}/*` while the identical requested pattern
+    canonicalized to `/{local}/*`.
+  So the failure modes are mirror images — over-applying the frame REFUSES legitimate delegated
+  caps, under-applying it ADMITS illegitimate ones — and a peer can have one without the other.
+  Check both call sites, not just the one the grep lands on first.
+- **A WRONG DENIAL CAN STAND IN FOR A MISSING CHECK, AND FIXING THE DENIAL IS THE ONLY THING THAT
+  EXPOSES IT — so a fix that makes a peer's FAIL COUNT GO UP is a finding, not a regression.**
+  Ratified 2026-08-28: two occurrences the same session, both in the peers that author the authority
+  interior in a query language, which is exactly where a *specific* wrong refusal is most likely to
+  land on a *specific* accept-path vector.
+  - `sql`: the handlers over-scoping above denied every delegated cap. That denial was answering
+    **three security vectors** (`authz_attenuation_foreign_granter_{1,deep,wildcard_leaf}`) and
+    **two authz vectors** (`request_rejects_scope_widening`, `authz_scope_exceeds_1`). Correcting
+    the frame took it 2F → **7F**, and the five new FAILs were the truth: the ladder had **no chain
+    attenuation rung at all** and the handler passed requested grants through **verbatim with no
+    §6.2 mint-bound check anywhere in the peer**. Both are now authored rungs; 0F.
+  - `datalog`: `strip_peer` never handled the `entity://` form (no leading slash after the scheme),
+    so the handlers dimension could not match any CONCRETE scope and delegated requests were denied
+    one rung early. Fixing it exposed the same missing §5.5a frame isolation.
+  **This is the INVERSE of "conformance-green can be vacuous", and the two are worth holding
+  together.** That rule is about a rejection-only category passing a fail-closed peer — nothing is
+  being asked. This one is about a peer answering the right question with the wrong mechanism: the
+  vector *is* exercised, the verdict *is* correct, and the reason is unrelated to what the vector
+  tests. Only a change that removes the wrong reason can tell them apart.
+  **Enforcement, and it is a rule about the number rather than about the code: when a fix raises a
+  peer's FAIL count, DO NOT revert to protect the row.** Read each new FAIL; if it names a check the
+  peer never implemented, the peer was never passing it. Reverting restores a lower number and a
+  worse peer, which is the overclaim this repo exists not to make.
+- **A PARTIAL IMPLEMENTATION OF A NEW RULE IS WORSE THAN ITS ABSENCE — it produces a plausible value
+  and reads as done.** Candidate (first occurrence, `nim` 2026-08-28, but the enforcement point is
+  exact). `nim` was the only peer in the cohort that ALREADY had a §5.6 ceiling, and it was wrong
+  three independent ways: (a) it carried only the request's `ttl_ms` term and never the caller
+  capability's absolute expiry, so an over-long ttl minted a token that **outlived the capability
+  authorizing it** — measured `expires_at 2102711331804` against a caller cap of `1787354931804`,
+  ten years past its own authority; (b) it sampled `nowMs()` in the handler and AGAIN inside
+  `mintTokenRaw` for `created_at`, so the emitted `created_at` and the expiry computed from it were
+  two different instants; (c) `nowMs() + ttl` **wraps** on uint64, so an overflowing ttl minted an
+  EARLIER expiry rather than dropping the term. Every one of those still emits an `expires_at` and
+  still returns 200.
+  **The general trap is in the oracle's own CAP-5 message and is worth quoting: *"a `<= caller_exp`
+  check would pass this; CAP-5 requires the exact clamped value"*.** MIN_DEFINED is a value reached
+  by CONSTRUCTION, not a bound verified by COMPARISON — any implementation that reaches it by
+  comparison satisfies a weaker test than the one the oracle runs. **Enforcement: for a rule
+  expressed as an exact computed value, grep the peer for a comparison against that value and treat
+  a hit as unimplemented.**
+- **THE "ABSENT" SPELLING IS A PER-PEER DECISION AND MUST BE READ FROM THE PEER — an accessor whose
+  "something" conflates absent with present is the CAP-6a defect one level up.** Candidate
+  (`smalltalk` 2026-08-28). The CAP-6a guard, written the obvious way as
+  `v := aCap field: k. v ifNotNil: [ ... ]`, **denied every capability the peer had ever been shown**:
+  176 FAILs, handshake still green, every authenticated request 403. `EcEntity>>field:` answers
+  `EcAbsent default` for a missing key, **never nil** — the pure-object absent sentinel this peer
+  uses throughout (A-ST-000) — so `ifNotNil:` is always true and every absent temporal field read as
+  present-but-unrepresentable.
+  CAP-6a is about an accessor whose *nothing* conflates ABSENT with MALFORMED. This is an accessor
+  whose *something* conflates ABSENT with PRESENT. Same shape, opposite polarity, same discipline:
+  **presence comes from the peer's own presence predicate** (`hasField:`, `hasKey`, `map_find != -1`),
+  never from the language's null. **Two things made it slow to find, both worth knowing for the next
+  live-image peer:** `make image` pipes the Pharo load through `grep -vi 'undeclared\|warning'`, so a
+  compile diagnostic in a new method is suppressed by construction and the build still says `built`;
+  and the failure presents as a mass 403 with a clean handshake, which reads like an authz regression.
+  **Probing the predicate directly in the image answered it in one send** (`EcCapAuthz
+  temporalFieldsRepresentable:` on an empty-data entity → `false`, expected `true`) where bisecting
+  the conformance run would have taken an hour.
 - **A REFUSAL IMPLEMENTED AT THE WRONG LAYER cascades exactly like a crash — and reads like one.**
   New shape of the standing cascade class, found on `lean` 2026-08-21 (candidate; the class is
   ratified, this *shape* is first-occurrence). Every prior instance was an *uncaught* fault — a bad
@@ -666,7 +813,19 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   missing destination, added to the *same* dispatch table rather than a second copy of it.
   **Refreshing a tracked report is a MEASUREMENT, never a file copy** — hand-copying
   `output/scratch/census/<peer>.json` onto a tracked report fabricates exactly the provenance the
-  census/status separation exists to protect. (All 13 publishable peers were re-measured, not copied,
+  census/status separation exists to protect.
+  **The PROSE sibling is what a human opens first, and nothing gated it — so it is GENERATED now,
+  not hand-written.** `tools/status-banner.py` (added 2026-08-28) writes the `CONFORMANCE-REPORT.md`
+  banner from that peer's own tracked JSON, and **refuses to write one from a report that is not at
+  the pinned check set** — a banner is a publication of a number, and publishing one off a stale or
+  starved measurement is the defect the tracked gate exists to prevent. It also declines to claim
+  *"everything below predates this measurement"* when there is nothing below (three peers had no
+  `.md` at all; the 2026-08-22 hand pass asserted exactly that falsehood for `lean`). **And it cites
+  the executed check-set DIGEST rather than the oracle commit** — these files publish, and a `dev`
+  SHA resolves for no outside reader ([ADR-0012] Am. 1). The 2026-08-22 hand pass wrote
+  `oracle entity-core-go @ c1b0708` into all thirteen; generating the banner is what stopped that
+  reaching the other twenty-six. **Rule: a per-peer number that publishes gets written by a tool that
+  reads the measurement, not by a person reading the measurement.** (All 13 publishable peers were re-measured, not copied,
   and each reproduced its published number exactly — which is also the strongest evidence the
   release numbers are real.) **Two sub-lessons worth their own greps:** (a) the new gate had a bug in
   the shape it exists to catch — `collect()` keyed reports by *path stem*, and every tracked report is
@@ -1025,6 +1184,35 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   Only **two** peers carry a defect outside the CAP family — `cobol` (27, standing) and the asm/ISA
   trio's shared connection-pressure family (1 visible + 2 starved). Everything else in the cohort is
   one feature. `typescript` and `csharp` are the same §6.3 fix (§1c), not two.
+  **CLOSED 2026-08-28 — the propagation is done. 39 of 45 measured peers are at `755 · 0F`, up from
+  13.** 23 peers fixed in one pass (all of M3 but `cobol`, 11 probes, `sql`), plus three that were
+  never broken (below). The fix shape did not vary across **thirty-six** languages. `make lint`'s
+  tracked gate reports **39 publishable, 0 stale**; the census is 23/23 comparable at the pinned
+  check set.
+  **What remains is SIX SEPARATE PROBLEMS, not one — say it that way, because "6 peers still fail"
+  invites the reader to assume it is the same debt.** `cobol` 30F (its standing liveness cascade),
+  the asm/ISA trio (INVALID, connection-pressure), `wasm-wat` 2F and `turbowarp` 3F (hand-authored /
+  exploratory, unstarted), `apl` unmeasurable. None of them is the mint ceiling.
+  **THREE OF THE PEERS IN THAT COUNT WERE NEVER BROKEN, AND THE CENSUS SAID THEY WERE.**
+  `rust-wasm`, `rust-wasm-wasmtime` and `node-red` are thin seams over `../rust` (a path dep) and the
+  `typescript` engine; both parents were fixed 2026-08-22. `out/peer.wasm` was dated 2026-08-17 —
+  **seven days older than the source it compiles** — and `run-cohort-census.sh` hardcodes `NOBUILD=1`
+  for the wasm peers, while `node-red`'s harness rebuilds `dist/` only when `index.js` is MISSING,
+  never when it is merely stale. A forced rebuild took all three to 0F on the first try. **This is
+  the standing stale-build-artifact rule firing on a plain SIBLING-CRATE fix rather than on an
+  isolated-worktree merge** — the trigger is broader than that entry says, and the check is the same
+  one second: `stat -c %Y` the artifact against `git log -1 --format=%cI` the source it derives from.
+  **Compounding it, `tools/tier-status.py` was applying `output/scratch/reverify/` UNCONDITIONALLY —
+  the identical defect `check-set-gate.py` was fixed for on 2026-08-22, in the file sitting next to
+  it, reading the same directory.** Three reports left there on 2026-08-17 at the retired 740-check
+  pin therefore outranked the fresh census indefinitely, and those same three peers displayed as
+  current-and-0-FAIL on eleven-day-old evidence measured against a different check set. Fixed the
+  same way (overlay applies only when NEWER, and says so on stderr when it skips one).
+  **This is the "harden one anchor, check its siblings the same day" rule failing on its own terms,
+  six days after it was written down.** The sibling was not a subtle one — same directory, same
+  overlay, same file naming. **Enforcement, and it is the cheap one this repo already prescribes:
+  when `tier-status.py` and `check-set-gate.py --tracked` disagree about which peers are green,
+  suspect the INPUT before the peers.** They disagreed here, and the tracked gate was right.
 - **MAINTENANCE TIERS ARE ACTIVE — do not run a 45-peer census for a re-pin.** (Turned on
   2026-08-17; the policy existed as prose since ~15 peers and was never honoured, because §4
   named 17 peers of a 46-peer cohort so "re-run Tier-1" was undefined for the other 29.) The

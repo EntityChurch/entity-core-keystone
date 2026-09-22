@@ -220,40 +220,40 @@ Both are verbatim, byte-for-byte, SHA-256-pinned snapshots with provenance in th
 
 ## Conformance state, honestly
 
-As of 2026-08-21 the whole cohort is measured at **one** pin — the 755-check set `95edd774…`,
-spec snapshot `v0.8.2` — from a single full census over all 45 measurable peers:
+The whole cohort is measured at **one** pin — the 755-check set `95edd774…`, spec snapshot
+`v0.8.2` — with every row a fresh measurement at that pin:
 
-- **13 peers pass `--profile core` 0-FAIL** — **tiers M1 and M2 are both complete**: `go` `haskell`
-  `lean` `ocaml` `swift` (M1, 5/5) and `common-lisp` `csharp` `elixir` `java` `kotlin` `python`
-  `rust` `typescript` (M2, 8/8, all fixed 2026-08-22). The maintenance-tier gate is green.
-- **25 more fail nothing but the new `capability` checks** — 23 at exactly 3F with a
-  byte-identical breakdown, 2 at 2F. That uniformity is the point: it is **one unimplemented spec
-  feature measured many times**, not many defects. (It was 31 before the M2 pass.)
-- **3 peers at 4F** — `forth` `nim` `smalltalk`: the CAP trio plus one further `capability` check.
-- **`cobol` 30F** is the CAP trio plus its standing 27-FAIL liveness cascade.
-  *(`typescript`'s 84F — 3 real + 81 cascade — was fixed 2026-08-22 and is now `755 · 0F`.)*
+- **39 of the 45 measurable peers pass `--profile core` 0-FAIL.** Tiers M1 (5/5) and M2 (8/8) since
+  2026-08-22; M3 12/13 and the probes 13/18 since 2026-08-28. The maintenance-tier gate is green.
+- **`cobol` 30F** — the CAP trio plus its standing 27-FAIL liveness cascade, a separate
+  investigation.
 - **3 peers produce INVALID MEASUREMENTS** (`asm-x86_64`, `asm-arm64`, `riscv64`) — starved runs
   that executed fewer checks than the pinned set. They are quarantined, not scored. A run measured
   on a different set of checks is not a worse score; it is not a score.
-  (**`csharp` was the fourth until 2026-08-22**, when it was root-caused as `typescript`'s bug in
-  its *hang*-form rather than its *close*-form and fixed: 18 m 20 s and 9 starved categories →
-  a clean, fully comparable `755 · 0F` in 7.2 s. Matrix §1c.)
+- **`wasm-wat` 2F** (hand-authored WebAssembly text) and **`turbowarp` 3F** (the block-interpreter
+  probe, which never gates) are the two the propagation did not reach.
 - `apl` remains upstream-blocked and unmeasured.
 
-**The failures were never regressions — they are a feature nobody had implemented.** §5.6's
+**The failures were never regressions — they were a feature nobody had implemented.** §5.6's
 MIN_DEFINED temporal ceiling (a minted capability's lifetime must be clamped by the caller's expiry
 and the policy's `ttl_ms`) was absent in every peer: `mintToken` set no `expires_at` at all, and no
 conformance vector exercised it until this pin. Fixing M1 also turned up a **fail-open** —
 `go`/`haskell`/`ocaml` *honored* a capability whose `expires_at` was negative — and a §6.3 rule every
 peer was breaking: a rejected frame is owed a `400 non_canonical_ecf`, not silence.
 
-> **The honest one-line summary: 13 of 45 peers are publishable today.** "No green report → no
-> publish" is unchanged, and it now withholds the other **32** — plus the unmeasured `apl`, which
-> has no green report either, so 33 of the 46 in the tree. (**It said 40 until 2026-08-23**, which
-> was right at the M1 pin and was not updated when M2 took the publishable count 5 → 13. Two
-> numbers in one sentence that must sum to the third is a shape that rots silently; it is written
-> as a subtraction now so the next reader can check it.) `CONFORMANCE-MATRIX.md` is authoritative —
-> its 2026-08-21 banner carries the full accounting, §1a the invalid measurements, §1b the cascade.
+**The fix shape did not vary across thirty-six languages** — roughly 200 lines over five or six
+files, in the same five places every time — and that invariance is the strongest evidence the spec
+reading is right, rather than merely that the tests pass. Two peers turned out to be carrying more
+than the CAP trio, and both were found the same way: **fixing a wrong denial made the FAIL count go
+UP, and the new failures were the truth.** `sql` went 2F → 7F → 0F once a scope-canonicalization bug
+stopped standing in for two authorization checks it had never implemented.
+
+> **The honest one-line summary: 39 of 45 measured peers are publishable today.** "No green report →
+> no publish" is unchanged, and it now withholds the other **6** — plus the unmeasured `apl`, which
+> has no green report either, so 7 of the 46 in the tree. (Written as a subtraction on purpose: two
+> numbers in one sentence that must sum to a third is a shape that rots silently, and this one has
+> been wrong before.) `CONFORMANCE-MATRIX.md` is authoritative — its banner carries the full
+> accounting, §1a the invalid measurements, §1b the cascade.
 
 ### On the word "independent"
 

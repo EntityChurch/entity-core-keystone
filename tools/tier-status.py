@@ -14,7 +14,7 @@ Sources, each with one canonical home:
     tools/peer-tiers.tsv    tier assignment + last_measured_pin   (the roster)
     tools/oracle-pin.env    the current pin (`ref`)
     output/scratch/census/  the verdicts from the last census     (gitignored)
-    output/scratch/reverify/ post-rebuild re-verifications, which win
+    output/scratch/reverify/ post-rebuild re-verifications, which win ONLY IF NEWER
 
 A peer whose last_measured_pin != the current ref is STALE. Stale is a tracked state, not a
 failure — it means "this peer's recorded verdict was true at an older oracle and has not been
@@ -58,21 +58,57 @@ def current_ref():
 
 
 def verdicts():
-    out = {}
-    for d in (CENSUS, REVERIFY):
-        if not d.is_dir():
-            continue
-        for p in sorted(d.glob("*.json")):
-            try:
-                doc = json.loads(p.read_text())
-            except Exception:
+    """Census verdicts, with the reverify overlay applied ONLY WHERE IT IS NEWER.
+
+    The overlay exists so a post-rebuild re-verification supersedes a stale census row
+    (an isolated-worktree fix whose build cache the census reused). That is right in
+    intent, and it was applied UNCONDITIONALLY -- which is wrong the moment the overlay
+    is the older file. `output/scratch/reverify/` is scoped to neither a run nor an
+    oracle pin, so a report left there survives every later census indefinitely.
+
+    Measured 2026-08-28: three reports written on 2026-08-17 at the retired de8f807
+    740-check pin were still overriding the 2026-08-21 c1b0708 census, so `node-red`,
+    `rust-wasm` and `rust-wasm-wasmtime` displayed as current-and-0-FAIL on 11-day-old
+    evidence measured against a DIFFERENT check set. The fresh census says 3F for all
+    three. Nothing published moved -- `check-set-gate.py --tracked` reads the committed
+    reports and correctly counted those three as behind the pin -- but `--gate` and the
+    tier counts here were reading the past over the present.
+
+    THIS IS THE IDENTICAL DEFECT check-set-gate.py CARRIED, FIXED THERE ON 2026-08-22,
+    AND NOT CHECKED FOR HERE. AGENTS.md states the rule that would have caught it in the
+    same breath as the first fix -- "when you harden one anchor, check its siblings for
+    the same defect the same day" -- and the sibling is the file next to it that reads
+    the same directory. An input that PREDATES what it supersedes is not an override, it
+    is drift.
+    """
+    def load(p):
+        try:
+            doc = json.loads(p.read_text())
+        except Exception:
+            return None
+        s = doc.get("summary", {})
+        starved = sorted({c["category"] for c in doc.get("checks", [])
+                          if "budget_exhausted" in (c.get("message") or "")})
+        return {"F": s.get("failed"), "total": s.get("total"),
+                "P": s.get("passed"), "W": s.get("warned"),
+                "S": s.get("skipped"), "starved": starved}
+
+    out, seen_mtime = {}, {}
+    if CENSUS.is_dir():
+        for p in sorted(CENSUS.glob("*.json")):
+            v = load(p)
+            if v is not None:
+                out[p.stem], seen_mtime[p.stem] = v, p.stat().st_mtime
+    if REVERIFY.is_dir():
+        for p in sorted(REVERIFY.glob("*.json")):
+            prev = seen_mtime.get(p.stem)
+            if prev is not None and p.stat().st_mtime <= prev:
+                print(f"tier-status: ignoring stale reverify overlay for {p.stem} "
+                      f"(older than the census report it would replace)", file=sys.stderr)
                 continue
-            s = doc.get("summary", {})
-            starved = sorted({c["category"] for c in doc.get("checks", [])
-                              if "budget_exhausted" in (c.get("message") or "")})
-            out[p.stem] = {"F": s.get("failed"), "total": s.get("total"),
-                           "P": s.get("passed"), "W": s.get("warned"),
-                           "S": s.get("skipped"), "starved": starved}
+            v = load(p)
+            if v is not None:
+                out[p.stem], seen_mtime[p.stem] = v, p.stat().st_mtime
     return out
 
 
