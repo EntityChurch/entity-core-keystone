@@ -86,9 +86,24 @@ ROW = re.compile(r"^\|\s*\*\*([^*]+)\*\*[^|]*\|")
 PWFS = re.compile(r"\d{3}P/\d{2,3}W/\d+F/\d{3}S")
 
 # Commit subjects that constitute a cohort sweep. Override with --sweep-grep. This is the
-# convention this repo already writes ("sweep tranche 9g: …", "vanguard: go and python to
-# 0.8.2.25, …") and a proxy is all a commit graph can offer — see swept_peers().
-SWEEP_SUBJECT = r"^(sweep tranche|vanguard)"
+# convention this repo already writes ("sweep tranche 9g: …", "sweep fortran to 0.8.2.25, …",
+# "vanguard: go and python to 0.8.2.25, …") and a proxy is all a commit graph can offer —
+# see swept_peers().
+#
+# BROADENED 2026-09-16 from `^(sweep tranche|vanguard)`, and the reason is this file's own
+# subject matter. The tail of a sweep is not a numbered tranche: closing `fortran` and
+# `unison` — the two peers this gate exists because nobody swept — produced subjects of the
+# form "sweep <peer> to <rev>", which the tranche-only pattern could not see. It then
+# reported both peers as pin-advanced-but-never-touched, i.e. it accused the commits that
+# closed the hole it was built for. A pattern keyed on the ONE spelling that existed when
+# it was written misses the deviants systematically, not randomly.
+#
+# The hit list was DIFFED across the change rather than the count being trusted (the
+# ascii-wire-gate lesson: a tightening that drops three whole syntax families still returns
+# a plausible number). Over `b71b940f~1..HEAD`, the range this gate is run on: 17 matches
+# before, 18 after, and the single added commit is the fortran sweep. No other subject in
+# the range begins with "sweep".
+SWEEP_SUBJECT = r"^(sweep |vanguard)"
 
 
 def peer_dir(display):

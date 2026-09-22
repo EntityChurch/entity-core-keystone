@@ -28,7 +28,7 @@ module entity_core_transport
 
   public :: tr_listen, tr_dial, tr_send_frame, tr_close, tr_shutdown, tr_poll
   public :: tr_pending_register, tr_pending_deliver, tr_pending_done, tr_pending_take
-  public :: EV_NONE, EV_ACCEPT, EV_FRAME, EV_CLOSED, EV_OVERSIZE
+  public :: EV_NONE, EV_ACCEPT, EV_FRAME, EV_CLOSED, EV_OVERSIZE, EV_TRUNCATED
 
 contains
 

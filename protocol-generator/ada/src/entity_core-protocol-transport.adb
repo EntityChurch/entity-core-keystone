@@ -281,11 +281,31 @@ package body Entity_Core.Protocol.Transport is
       Conn.Conn_St.Outbound_Ctx := Conn.all'Address;
       Read_Loop :
       loop
-         declare
-            At_Eof  : Boolean;
-            Payload : constant Byte_Array := Wire.Read_Frame (Conn.Socket, At_Eof);
+         --  THE HANDLER AT THE BOTTOM OF THIS BLOCK COULD NOT SEE `Read_Frame`, AND
+         --  THAT IS AN ADA SCOPE RULE RATHER THAN A MISSING ARM. `Read_Frame` used to
+         --  initialize `Payload` in this block's own DECLARATIVE PART, and an exception
+         --  raised while elaborating a block's declarations is propagated to the
+         --  ENCLOSING scope -- the block's own handler does not apply to it (LRM 11.4).
+         --  So `Payload_Too_Large` and `Truncated_Input` went straight past the
+         --  `when Framing : others` arm written to catch them BY NAME, killed
+         --  `Reader_Task`, and left the socket open with nothing on the wire: measured
+         --  by `tools/pa-probe` as D1 and D2 `DROPPED`, which is §4.11's weaker failure
+         --  and the one §4.9(c) also forbids. The code was correct, current, and
+         --  unreachable -- reading it clears the peer, which is why only the wire found
+         --  it.
+         --
+         --  The repair is structural and changes no logic: an OUTER block with NO
+         --  declarations, so its handler governs a statement sequence, and the frame
+         --  read moves into a nested block inside it. An exception in the nested
+         --  block's declarative part now propagates OUT of that block and INTO this
+         --  handler, which is exactly what the comment below always claimed happened.
          begin
-            exit Read_Loop when At_Eof or else Conn.Closed;
+            declare
+               At_Eof  : Boolean;
+               Payload : constant Byte_Array :=
+                 Wire.Read_Frame (Conn.Socket, At_Eof);
+            begin
+               exit Read_Loop when At_Eof or else Conn.Closed;
             begin
                declare
                   Env : constant Env_Pkg.Protocol_Envelope :=
@@ -342,6 +362,7 @@ package body Entity_Core.Protocol.Transport is
                   --  the only option left.
                   Reject_Frame (Conn, Payload, Rejected);
             end;
+            end;   --  closes the nested frame-read block opened above
          exception
             when Framing : others =>
                --  §4.11: an OVERSIZE prefix and a TRUNCATED frame are REFUSALS

@@ -422,9 +422,27 @@ listingEntryKV entry = match entry with
       None -> base
     (VText seg, entityToCbor (makeEntity "system/tree/listing-entry" (VMap withHash)))
 
-buildListing : Peer -> Text ->{IO} Outcome
-buildListing p path =
-  entries = listing (Peer.pStore p) path
+-- §6.3's per-entry listing check for one child segment (0.8.2.22). An unauthenticated
+-- context (no capability) is the bootstrap/internal path and is NOT filtered -- the
+-- filter's subject is "the caller's verified capability", and where there is none there
+-- is no caller to narrow.
+entryVisible : Peer -> Optional Entity -> Text -> Text -> Text -> Boolean
+entryVisible p callerCap pattern dir segment = match callerCap with
+  None -> true
+  Some cap ->
+    base = if textEndsWith "/" dir then dir else dir Text.++ "/"
+    checkPathPermission (Peer.pLocal p) "get" (base Text.++ segment) cap pattern
+
+buildListing : Peer -> Optional Entity -> Text -> Text ->{IO} Outcome
+buildListing p callerCap pattern path =
+  -- THE FILTER RUNS BEFORE `count` IS TAKEN, not after the map is built, so `count`
+  -- reflects the FILTERED set by construction rather than from a second walk over a list
+  -- the filter has already changed. §6.3: every entry of a multi-entry result MUST be
+  -- individually checked, entries that DENY MUST be omitted, and count MUST reflect the
+  -- filtered count -- a listing naming an entry the caller's own capability excludes
+  -- discloses a binding it is not entitled to see.
+  visible = e -> entryVisible p callerCap pattern path (at1of3 e)
+  entries = filterL visible (listing (Peer.pStore p) path)
   entryMap = List.map listingEntryKV entries
   listingData =
     [ (VText "path", VText path)
@@ -433,21 +451,62 @@ buildListing p path =
     , (VText "offset", VUInt 0) ]
   okOc (makeEntity "system/tree/listing" (VMap listingData))
 
+at1of3 : (a, b, c) -> a
+at1of3 t = match t with (x, _, _) -> x
+
 treeGetOne : Peer -> Text ->{IO} Outcome
 treeGetOne p path = match getAt (Peer.pStore p) path with
   Some e -> okOc e
   None -> errMsg 404 "not_found" path
 
-treeGet : Peer -> Optional Text ->{IO} Outcome
-treeGet p tgt =
+-- Is a resource target a §5.4 PATTERN rather than a concrete path? A resource-requiring
+-- operation takes a concrete path (0.8.2.20). A trailing "/" is a LISTING request, not a
+-- pattern -- only a `*` makes it one.
+isPatternPath : Text -> Boolean
+isPatternPath t = anyL (c -> c == ?*) (Text.toCharList t)
+
+treeGet : Peer -> Optional Entity -> Text -> Entity ->{IO} Outcome
+treeGet p callerCap pattern exec =
   rootPath = "/" Text.++ (Peer.pLocal p) Text.++ "/"
-  match tgt with
-    None -> buildListing p rootPath
-    Some target ->
-      if (Text.size target) == 0 then buildListing p rootPath
+  -- §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on `resource.targets`: a
+  -- handler that counts the effective list and then takes the head of `targets` has
+  -- implemented the arithmetic completely and is still reading a path no authorization
+  -- covered (F84).
+  match effectiveTargets (Peer.pLocal p) exec with
+    -- THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION IS WHAT
+    -- SAYS SO. §3.3's "an empty effective list IS the absent case" is scoped "for an
+    -- operation that REQUIRES a resource" (0.8.2.24 N7); `get` does not. For a
+    -- resource-OPTIONAL operation 0.8.2.25 (N10) decides the present-but-empty case by
+    -- whether the absent case is WIDER than the request, and requires the operation to
+    -- declare which it is. EXTENSION-TREE §2.2a is that declaration: `get` is
+    -- resource-OPTIONAL and BROAD-RESULT, absent -> the root listing, self-excluded ->
+    -- 400 path_required. Both arms are pinned by text; neither is this peer's choice.
+    None -> buildListing p callerCap pattern rootPath
+    Some [] ->
+      -- `resource` PRESENT, every target carved out by the caller's own exclude. Serving
+      -- the absent case here would answer a request for one excluded path with a listing
+      -- of the whole tree -- wider than what was asked for, which is BROAD-RESULT.
+      errMsg 400 "path_required" "tree: effective target list is empty"
+    Some [target] ->
+      if (Text.size target) == 0 then buildListing p callerCap pattern rootPath
       else if rejectCallerPath target then errMsg 400 "invalid_path" ("tree get: " Text.++ target)
-      else if textEndsWith "/" target then buildListing p (canonicalize (Peer.pLocal p) target)
-      else treeGetOne p (canonicalize (Peer.pLocal p) target)
+      else if textEndsWith "/" target then
+        buildListing p callerCap pattern (canonicalize (Peer.pLocal p) target)
+      else if isPatternPath target then errMsg 400 "malformed_resource" ("tree get: " Text.++ target)
+      else
+        path = canonicalize (Peer.pLocal p) target
+        -- §6.3: the handler MUST verify the CALLER's capability covers the path it is
+        -- about to read. Not a secondary check -- the dispatch-level check never saw this
+        -- path if the caller excluded it.
+        if pathAllowed p callerCap pattern "get" path then treeGetOne p path
+        else errOc 403 "capability_denied"
+    Some _ -> errMsg 400 "ambiguous_resource" "tree: more than one effective target"
+
+-- The §6.3 gate, with the no-capability case named once rather than at each call site.
+pathAllowed : Peer -> Optional Entity -> Text -> Text -> Text -> Boolean
+pathAllowed p callerCap pattern operation path = match callerCap with
+  None -> true
+  Some cap -> checkPathPermission (Peer.pLocal p) operation path cap pattern
 
 paramEntityField : Optional Entity -> Text -> Optional Entity
 paramEntityField mp key = match mp with
@@ -541,31 +600,49 @@ admitPut v =
       _ -> refuse "invalid_request" "put: entity.type absent, empty or not a text string"
     _ -> refuse "invalid_request" "put: entity is not a map"
 
-treePut : Peer -> Entity -> Optional Text ->{IO} Outcome
-treePut p exec tgt = match tgt with
-  None -> errMsg 400 "ambiguous_resource" "tree: missing resource target"
-  Some target ->
-    if rejectCallerPath target then errMsg 400 "invalid_path" ("tree put: " Text.++ target)
-    else
-      params = entityField exec "params"
-      canonPath = canonicalize (Peer.pLocal p) target
-      expected = paramBytesField params "expected_hash"
-      current = hashAt (Peer.pStore p) canonPath
-      if not (casAllowed expected current) then errMsg 409 "hash_mismatch" ("tree put: " Text.++ target)
-      else match paramRawField params "entity" with
-        Some raw -> match admitPut raw with
-          Right e ->
-            bind (Peer.pStore p) canonPath e
-            okOc (makeEntity "system/hash" (VBytes (Entity.ehash e)))
-          Left refusal -> refusal
-        None -> errMsg 400 "unexpected_params" "put: missing entity"
+treePut : Peer -> Optional Entity -> Text -> Entity ->{IO} Outcome
+treePut p callerCap pattern exec =
+  -- Same ladder as `get`, with the two empties COLLAPSED rather than split:
+  -- EXTENSION-TREE §2.2a declares `put` resource-REQUIRED, so §3.3's "an empty effective
+  -- list IS the absent case" applies in its unscoped form and both empties answer
+  -- path_required. Same table `get`'s branch cites, read one row down -- the field is
+  -- per-operation and neither answer is derivable from this handler's source.
+  --
+  -- Note the CODE change 0.8.2.20 forced: this branch answered `ambiguous_resource` for a
+  -- MISSING target, which 0.8.2.20 names as the exact inversion it forbids ("answering
+  -- ambiguous_resource for an absent resource inverts them"). The remedies differ --
+  -- *supply a resource* is not *disambiguate your request* -- and the code selects between
+  -- them.
+  match effectiveTargets (Peer.pLocal p) exec with
+    None -> errMsg 400 "path_required" "tree: put requires a resource target"
+    Some [] -> errMsg 400 "path_required" "tree: put requires a resource target"
+    Some [target] ->
+      if rejectCallerPath target then errMsg 400 "invalid_path" ("tree put: " Text.++ target)
+      else if isPatternPath target then errMsg 400 "malformed_resource" ("tree put: " Text.++ target)
+      else
+        canonPath = canonicalize (Peer.pLocal p) target
+        -- §6.3, as in `get`: the subject was derived AFTER dispatch, so this is the
+        -- enforcement rather than a restatement of it.
+        if not (pathAllowed p callerCap pattern "put" canonPath) then errOc 403 "capability_denied"
+        else
+          params = entityField exec "params"
+          expected = paramBytesField params "expected_hash"
+          current = hashAt (Peer.pStore p) canonPath
+          if not (casAllowed expected current) then errMsg 409 "hash_mismatch" ("tree put: " Text.++ target)
+          else match paramRawField params "entity" with
+            Some raw -> match admitPut raw with
+              Right e ->
+                bind (Peer.pStore p) canonPath e
+                okOc (makeEntity "system/hash" (VBytes (Entity.ehash e)))
+              Left refusal -> refusal
+            None -> errMsg 400 "unexpected_params" "put: missing entity"
+    Some _ -> errMsg 400 "ambiguous_resource" "tree: more than one effective target"
 
-treeHandler : Peer -> Entity ->{IO} Outcome
-treeHandler p exec =
+treeHandler : Peer -> Optional Entity -> Text -> Entity ->{IO} Outcome
+treeHandler p callerCap pattern exec =
   op = optOr (textField exec "operation") ""
-  tgt = resourceTarget exec
-  if op == "get" then treeGet p tgt
-  else if op == "put" then treePut p exec tgt
+  if op == "get" then treeGet p callerCap pattern exec
+  else if op == "put" then treePut p callerCap pattern exec
   else errMsg 501 "unsupported_operation" ("tree: " Text.++ op)
 
 -- ── capability handler (§6.2) ──────────────────────────────────────────────────
@@ -860,9 +937,12 @@ stripLocal p pattern =
   prefix = "/" Text.++ (Peer.pLocal p) Text.++ "/"
   if textStartsWith prefix pattern then Text.drop (Text.size prefix) pattern else pattern
 
-routeHandler : Peer -> Conn -> Entity -> Entity -> Text ->{IO} Outcome
-routeHandler p conn exec cap stripped = match stripped with
-  "system/tree" -> treeHandler p exec
+-- `cap` and `pattern` are THREADED to the tree handler rather than re-derived there:
+-- §6.3 must ask about the same authority §5.2 did, and a second resolution is a second
+-- thing that can disagree with the first.
+routeHandler : Peer -> Conn -> Entity -> Entity -> Text -> Text ->{IO} Outcome
+routeHandler p conn exec cap pattern stripped = match stripped with
+  "system/tree" -> treeHandler p (Some cap) pattern exec
   "system/capability" -> capabilityHandler p exec (Some cap)
   "system/handler" -> handlersHandler p exec
   "system/type" -> typesHandler p exec
@@ -905,7 +985,7 @@ dispatchWithCap p conn env exec resolve pattern cap =
   granterPeer = optOr (resolveGranterPeerId resolve cap) (Peer.pLocal p)
   match checkPermission (Peer.pLocal p) granterPeer exec cap pattern with
     VDeny -> errOc 403 "capability_denied"
-    VAllow -> routeHandler p conn exec cap (stripLocal p pattern)
+    VAllow -> routeHandler p conn exec cap pattern (stripLocal p pattern)
 
 dispatchOutcome : Peer -> Conn -> Envelope -> Entity -> Text ->{IO} Outcome
 dispatchOutcome p conn env exec uri =
@@ -937,7 +1017,17 @@ dispatchOutcome p conn env exec uri =
 dispatch : Peer -> Conn -> Envelope ->{IO} Optional Envelope
 dispatch p conn env =
   exec = Envelope.eroot env
-  if not ((Entity.etype exec) == "system/protocol/execute") then None
+  -- §3.3 names EXECUTE and EXECUTE_RESPONSE as the only wire message types, and §4.11
+  -- assigns this class a CODED FRAME: the caller is owed the reason its root type was
+  -- refused, not silence. This arm used to answer `None`, which the transport turns into
+  -- nothing on the wire.
+  --
+  -- A RESPONSE root never reaches here -- `routeOrDispatch` routes it to its awaiting
+  -- Promise -- and that exclusion is deliberate rather than incidental: answering one
+  -- would put a response on the wire FOR a response.
+  if not ((Entity.etype exec) == "system/protocol/execute") then
+    rid = optOr (textField exec "request_id") ""
+    Some (Envelope (makeResponse rid 400 (errorResult None "invalid_request")) [])
   else
     requestId = optOr (textField exec "request_id") ""
     uri = optOr (textField exec "uri") ""

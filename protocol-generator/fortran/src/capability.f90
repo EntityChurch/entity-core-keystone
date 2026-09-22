@@ -44,6 +44,7 @@ module entity_core_capability
   public :: cap_temporal_fields_representable, cap_add_ttl
   public :: cap_resolve_granter_peer_id, cap_grants_of_token, cap_grant_subset_local
   public :: cap_chain_exceeds_depth, cap_verify_chain, cap_is_revoked, cap_verify_request
+  public :: cap_effective_targets, cap_check_path_permission
 
 contains
 
@@ -278,6 +279,116 @@ contains
     end do
     check_resource_scope = .true.
   end function check_resource_scope
+
+  ! ── §5.2 effective targets and §6.3 check_path_permission (0.8.2.20/.21/.25) ──
+
+  ! §5.2's effective target list: the caller's OWN `resource.exclude` removes entries
+  ! from the request BEFORE anything else looks at it.
+  !
+  ! Survivors come back in the CALLER'S OWN SPELLING, never canonicalized. 0.8.2.21 is
+  ! explicit that `effective_targets` yields raw survivors, and it is load-bearing here
+  ! because the value flows on to cap_canonicalize, which frames for itself.
+  !
+  ! `has_resource` IS THE SECOND HALF OF A NON-LOSSY PROJECTION [MUST] (§3.3, 0.8.2.25
+  ! N11): "where an implementation projects resource.targets onto the effective set
+  ! ahead of the handler, that projection MUST NOT be lossy about its own emptiness."
+  ! An ABSENT resource and a resource whose every target the caller excluded are
+  ! DIFFERENT REQUESTS for a resource-OPTIONAL operation. A routine returning only the
+  ! survivor list collapses `[qA] exclude [qA]` to the same `[]` an absent resource
+  ! gives, which deletes the discriminator before any handler can read it and turns the
+  ! handler's refusal arm into dead code only a WIRE drive can detect. Returning the
+  ! flag beside the survivors keeps the two apart by construction.
+  !
+  ! THE CALLER-EXCLUDE ARM IS FAIL-OPEN ON AN UNMATCHABLE PATTERN, and that asymmetry is
+  ! deliberate: §5.4's table rules the caller arm separately from the GRANT arm, which
+  ! denies (see exclude_unmatchable in check_resource_scope). Here `canon` answers the
+  ! never_match sentinel, cap_matches_pattern then answers .false., and the target simply
+  ! survives -- inherited from the matcher rather than restated.
+  !
+  ! ONE NARROWING SEAM. This is the only place in this peer where resource.targets is
+  ! reduced to a subject; §6.5's dispatch chain does not project (check_resource_scope
+  ! iterates every target and cycles the excluded ones without selecting one). A second
+  ! narrowing site would be a second thing that can disagree with this one, and §6.3
+  ! cannot close a gap between two derivations of its own subject.
+  subroutine cap_effective_targets(local, exec, eff, has_resource)
+    character(len=*), intent(in)  :: local
+    type(entity_t),   intent(in)  :: exec
+    type(str_t), allocatable, intent(out) :: eff(:)
+    logical,          intent(out) :: has_resource
+    type(ecf_value_t) :: r
+    type(str_t), allocatable :: targets(:), caller_excl(:)
+    logical, allocatable :: keep(:)
+    character(len=:), allocatable :: ct
+    integer :: i, n
+    has_resource = .false.
+    allocate(eff(0))
+    r = ent_map_field(exec, 'resource')
+    if (r%vkind /= EV_MAP) return
+    if (.not. m_has(r, 'targets')) return
+    has_resource = .true.
+    targets = text_list(m_array(r, 'targets'))
+    caller_excl = text_list(m_array(r, 'exclude'))
+    if (size(targets) == 0) return
+    allocate(keep(size(targets)))
+    n = 0
+    do i = 1, size(targets)
+      ct = canon(local, targets(i)%s)
+      keep(i) = .not. covered(local, caller_excl, ct)
+      if (keep(i)) n = n + 1
+    end do
+    deallocate(eff); allocate(eff(n))
+    n = 0
+    do i = 1, size(targets)
+      if (.not. keep(i)) cycle
+      n = n + 1
+      eff(n) = targets(i)
+    end do
+  end subroutine cap_effective_targets
+
+  ! §6.3's handler-level path check.
+  !
+  ! IT IS NOT A SECONDARY CHECK (§5.2, 0.8.2.20). It is the sole enforcement wherever the
+  ! subject is derived AFTER dispatch, and the dispatch-level check can be made VACUOUS by
+  ! caller-controlled input: a caller who excludes the one target its capability does not
+  ! cover removes that target from check_resource_scope's view entirely -- it `cycle`s --
+  ! and a handler that then acts on it has authorized nothing.
+  !
+  ! THREE DIMENSIONS, NOT FOUR. `peers` is not consulted: the path is local by construction
+  ! at this point (§1.4's inbound rule refuses a foreign namespace at §6.5 step 3, above the
+  ! verdict), and §6.3's signature names only handlers, operations and resources.
+  !
+  ! THE FRAME IS THE LOCAL PEER, NOT THE GRANTER, and that is §6.3's own signature rather
+  ! than a choice: its block reads matches_scope(canonical_path, grant.resources,
+  ! "path-scope", local_peer_id) -- there is no granter parameter to pass. §5.5a governs
+  ! chain ATTENUATION, where the subject is a pattern compared against a parent's pattern;
+  ! this call site compares a CONCRETE local path the handler is about to touch. Threading
+  ! the per-link granter frame in here by analogy with §5.5a is a recorded cohort error.
+  !
+  ! There is no caller-exclude set at this call site: the subject is a single concrete path
+  ! and the caller's own exclusions were applied in deriving it. So every GRANT exclude
+  ! covering the subject denies -- which cap_matches_scope already implements, including
+  ! 0.8.2.21's sentinel rule, making this three calls to it and nothing else.
+  logical function cap_check_path_permission(local, operation, path, token, handler_pattern)
+    character(len=*), intent(in) :: local, operation, path, handler_pattern
+    type(entity_t),   intent(in) :: token
+    type(ecf_value_t) :: garr, g
+    character(len=:), allocatable :: cp
+    integer :: i, n
+    logical :: invalid
+    cap_check_path_permission = .false.
+    ! cap_canonicalize is total and may answer the never_match sentinel, which matches no
+    ! grant (§5.4) -- so a malformed path falls through to DENY rather than being compared.
+    call cap_canonicalize(local, path, cp, invalid)
+    garr = cap_grants_of_token(token)
+    n = arr_count(garr)
+    do i = 1, n
+      g = arr_item(garr, i)
+      if (.not. cap_matches_scope(local, handler_pattern, m_submap(g, 'handlers'), 'path')) cycle
+      if (.not. cap_matches_scope(local, operation, m_submap(g, 'operations'), 'id')) cycle
+      if (.not. cap_matches_scope(local, cp, m_submap(g, 'resources'), 'path')) cycle
+      cap_check_path_permission = .true.; return
+    end do
+  end function cap_check_path_permission
 
   ! §PR-8: the granter's peer_id frames a cap's resource patterns.
   function cap_resolve_granter_peer_id(inc, store, cap) result(pid)

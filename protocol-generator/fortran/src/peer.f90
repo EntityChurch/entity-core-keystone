@@ -449,7 +449,10 @@ contains
     type(outcome_t) :: oc
     select case (routine)
     case (R_CONNECT);    oc = hnd_connect(slot, operation, env)
-    case (R_TREE);       oc = hnd_tree(operation, env)
+    ! caller_cap and pattern are THREADED IN rather than re-derived: §6.3 must ask about
+    ! the same authority §5.2 did, and a second resolution is a second thing that can
+    ! disagree with the first.
+    case (R_TREE);       oc = hnd_tree(operation, env, caller_cap, pattern)
     case (R_HANDLERS);   oc = hnd_handlers(operation, env)
     case (R_TYPE);       oc = hnd_type(operation, env)
     case (R_CAPABILITY); oc = hnd_capability(operation, env, caller_cap)
@@ -713,15 +716,23 @@ contains
   end function connect_authenticate
 
   ! ── §6.3 tree ──
-  function hnd_tree(operation, env) result(oc)
+  function hnd_tree(operation, env, caller_cap, pattern) result(oc)
     character(len=*), intent(in) :: operation
     type(envelope_t), intent(in) :: env
+    type(entity_t),   intent(in) :: caller_cap
+    character(len=*), intent(in) :: pattern
     type(outcome_t) :: oc
-    if (operation == 'get') then; oc = tree_get(env)
-    else if (operation == 'put') then; oc = tree_put(env)
+    if (operation == 'get') then; oc = tree_get(env, caller_cap, pattern)
+    else if (operation == 'put') then; oc = tree_put(env, caller_cap, pattern)
     else; oc = out_err(501, 'unsupported_operation', operation); end if
   end function hnd_tree
 
+  ! `resource.targets(1)` with no effective-set narrowing. KEPT, and ONLY for the §6.2
+  ! register/unregister ladder, which takes exactly one target and answers
+  ! ambiguous_resource otherwise. The tree handler must NOT use it: reading targets(1)
+  ! after the caller's own exclude has been applied at dispatch is precisely F84 --
+  ! check_resource_scope `cycle`s the excluded target, so the dispatch check never saw
+  ! the path the handler then acted on.
   function exec_resource_target(exec) result(t)
     type(entity_t), intent(in) :: exec
     character(len=:), allocatable :: t
@@ -734,21 +745,74 @@ contains
     if (size(targets) > 0) t = targets(1)%s
   end function exec_resource_target
 
-  function tree_get(env) result(oc)
+  ! Is a resource target a §5.4 PATTERN rather than a concrete path? A resource-requiring
+  ! operation takes a concrete path (0.8.2.20). A trailing '/' is a LISTING request, not a
+  ! pattern -- only a '*' makes it one.
+  logical function is_pattern_path(t)
+    character(len=*), intent(in) :: t
+    is_pattern_path = (index(t, '*') > 0)
+  end function is_pattern_path
+
+  function tree_get(env, caller_cap, pattern) result(oc)
     type(envelope_t), intent(in) :: env
+    type(entity_t),   intent(in) :: caller_cap
+    character(len=*), intent(in) :: pattern
     type(outcome_t) :: oc
     type(entity_t)  :: exec, e, params
     character(len=:), allocatable :: target, path, mode
-    logical :: invalid
+    type(str_t), allocatable :: eff(:)
+    logical :: invalid, has_resource
     exec = env%root
-    target = exec_resource_target(exec)
-    if (len(target) > 0 .and. .not. path_flex_ok(target)) then; oc = out_err(400, 'invalid_path', target); return; end if
-    if (len(target) == 0) then; oc = tree_listing('/' // g_local // '/'); return; end if
+    ! §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on resource.targets: a
+    ! handler that counts the effective list and then indexes targets(1) has implemented
+    ! the arithmetic completely and is still reading a path no authorization covered.
+    call cap_effective_targets(g_local, exec, eff, has_resource)
+    if (.not. has_resource) then
+      ! THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION IS WHAT
+      ! SAYS SO. §3.3's "an empty effective list IS the absent case" is scoped "for an
+      ! operation that REQUIRES a resource" (0.8.2.24 N7); `get` does not. For a
+      ! resource-OPTIONAL operation 0.8.2.25 (N10) decides the present-but-empty case by
+      ! whether the absent case is WIDER than the request, and requires the operation to
+      ! declare which it is. EXTENSION-TREE §2.2a is that declaration: `get` is
+      ! resource-OPTIONAL and BROAD-RESULT, absent -> the root listing, self-excluded ->
+      ! 400 path_required. Both arms are pinned by text; neither is this peer's choice.
+      oc = tree_listing('/' // g_local // '/', caller_cap, pattern); return
+    end if
+    if (size(eff) == 0) then
+      ! `resource` PRESENT, every target carved out by the caller's own exclude. Serving
+      ! it the absent case would answer a request for one excluded path with a listing of
+      ! the whole tree -- wider than what was asked for, which is what BROAD-RESULT means.
+      oc = out_err(400, 'path_required', 'tree: effective target list is empty'); return
+    end if
+    if (size(eff) > 1) then
+      oc = out_err(400, 'ambiguous_resource', 'tree: more than one effective target'); return
+    end if
+    target = eff(1)%s
+    if (.not. path_flex_ok(target)) then; oc = out_err(400, 'invalid_path', target); return; end if
+    ! A LISTING REQUEST IS `""` OR A TRAILING SLASH, AND THE EMPTY ONE IS EASY TO LOSE.
+    ! Before the effective-set ladder, `len(target) == 0` was reached by BOTH an absent
+    ! resource and a present-but-empty target string, and both took the root listing. The
+    ! ladder splits those two, so the empty STRING now needs saying: it canonicalizes to
+    ! `/{local}/`, which is a directory. Dropping it into the concrete-get arm answers 404
+    ! for the root of the peer's own tree (measured: tree_operations/path_root_listing
+    ! PASS -> FAIL on the first cut of this change).
+    if (len(target) == 0) then
+      oc = tree_listing('/' // g_local // '/', caller_cap, pattern); return
+    end if
     if (target(len(target):len(target)) == '/') then
       call cap_canonicalize(g_local, target, path, invalid)
-      oc = tree_listing(path); return
+      oc = tree_listing(path, caller_cap, pattern); return
     end if
+    if (is_pattern_path(target)) then; oc = out_err(400, 'malformed_resource', target); return; end if
     call cap_canonicalize(g_local, target, path, invalid)
+    ! §6.3: the handler MUST verify the CALLER's capability covers the path it is about to
+    ! read. Not a secondary check -- the dispatch-level check never saw this path if the
+    ! caller excluded it.
+    if (caller_cap%present) then
+      if (.not. cap_check_path_permission(g_local, 'get', path, caller_cap, pattern)) then
+        oc = out_err(403, 'capability_denied', path); return
+      end if
+    end if
     e = store_get_at(g_store, path)
     if (.not. e%present) then; oc = out_err(404, 'not_found', path); return; end if
     params = ent_entity_field(exec, 'params')
@@ -844,19 +908,47 @@ contains
     admitted = .true.
   end subroutine admit_put
 
-  function tree_put(env) result(oc)
+  function tree_put(env, caller_cap, pattern) result(oc)
     type(envelope_t), intent(in) :: env
+    type(entity_t),   intent(in) :: caller_cap
+    character(len=*), intent(in) :: pattern
     type(outcome_t) :: oc
     type(entity_t)  :: exec, params, entity
     type(ecf_value_t) :: raw_entity
     character(len=:), allocatable :: target, path, current
+    type(str_t), allocatable :: eff(:)
     integer(int8), allocatable :: expected(:)
-    logical :: invalid, cas_ok, has_raw, admitted
+    logical :: invalid, cas_ok, has_raw, admitted, has_resource
     exec = env%root
-    target = exec_resource_target(exec)
-    if (len(target) == 0) then; oc = out_err(400, 'ambiguous_resource', 'tree: missing resource target'); return; end if
+    ! Same ladder as `get`, with the two empties COLLAPSED rather than split:
+    ! EXTENSION-TREE §2.2a declares `put` resource-REQUIRED, so §3.3's "an empty effective
+    ! list IS the absent case" applies in its unscoped form and both empties answer
+    ! path_required. Same table `get`'s branch cites, read one row down -- the field is
+    ! per-operation and neither answer is derivable from this handler's source.
+    !
+    ! Note the CODE change 0.8.2.20 forced: this branch answered `ambiguous_resource` for a
+    ! MISSING target, which 0.8.2.20 names as the exact inversion it forbids ("answering
+    ! ambiguous_resource for an absent resource inverts them"). The remedies differ --
+    ! *supply a resource* is not *disambiguate your request* -- and the code is what selects
+    ! between them.
+    call cap_effective_targets(g_local, exec, eff, has_resource)
+    if (.not. has_resource .or. size(eff) == 0) then
+      oc = out_err(400, 'path_required', 'tree: put requires a resource target'); return
+    end if
+    if (size(eff) > 1) then
+      oc = out_err(400, 'ambiguous_resource', 'tree: more than one effective target'); return
+    end if
+    target = eff(1)%s
     if (.not. path_flex_ok(target)) then; oc = out_err(400, 'invalid_path', target); return; end if
+    if (is_pattern_path(target)) then; oc = out_err(400, 'malformed_resource', target); return; end if
     call cap_canonicalize(g_local, target, path, invalid)
+    ! §6.3, as in `get`: the subject was derived AFTER dispatch, so this is the enforcement
+    ! rather than a restatement of it.
+    if (caller_cap%present) then
+      if (.not. cap_check_path_permission(g_local, 'put', path, caller_cap, pattern)) then
+        oc = out_err(403, 'capability_denied', path); return
+      end if
+    end if
     params = ent_entity_field(exec, 'params')
     raw_entity%vkind = EV_ABSENT
     has_raw = .false.
@@ -878,8 +970,30 @@ contains
     oc = out_ok0(ent_make('system/hash', v_map_put(v_map_empty(), 'hash', v_bytes(ent_hash(entity)))))
   end function tree_put
 
-  function tree_listing(path) result(oc)
+  ! §6.3's per-entry listing check for one child segment. An unauthenticated context (no
+  ! capability) is the bootstrap/internal path and is NOT filtered -- the filter's subject
+  ! is "the caller's verified capability", and where there is none there is no caller to
+  ! narrow.
+  logical function entry_visible(dir, segment, caller_cap, pattern)
+    character(len=*), intent(in) :: dir, segment, pattern
+    type(entity_t),   intent(in) :: caller_cap
+    character(len=:), allocatable :: child
+    entry_visible = .true.
+    if (.not. caller_cap%present) return
+    child = dir
+    if (len(child) == 0) then
+      child = '/'
+    else if (child(len(child):len(child)) /= '/') then
+      child = child // '/'
+    end if
+    child = child // segment
+    entry_visible = cap_check_path_permission(g_local, 'get', child, caller_cap, pattern)
+  end function entry_visible
+
+  function tree_listing(path, caller_cap, pattern) result(oc)
     character(len=*), intent(in) :: path
+    type(entity_t),   intent(in) :: caller_cap
+    character(len=*), intent(in) :: pattern
     type(outcome_t) :: oc
     type(listing_row_t), allocatable :: rows(:)
     type(ecf_value_t) :: em, led, lm
@@ -897,6 +1011,10 @@ contains
           if (ent_type(me) == 'system/deletion-marker') cycle
         end if
       end if
+      ! §6.3's listing filter (0.8.2.22), in the SAME pass as the deletion-marker filter
+      ! above, so `count` follows by construction rather than from a second walk over a
+      ! list the filter has already changed.
+      if (.not. entry_visible(path, rows(i)%seg, caller_cap, pattern)) cycle
       led = v_map_empty()
       led = v_map_put(led, 'has_children', v_bool(rows(i)%has_children))
       if (len(rows(i)%hashhex) > 0) led = v_map_put(led, 'hash', v_bytes(hex_to_bytes(rows(i)%hashhex)))
@@ -1377,29 +1495,64 @@ contains
     if (s > 0) then; c_io(s) = 0; c_estab(s) = .false.; c_has_nonce(s) = .false. ; end if
   end subroutine conn_close_io
 
+  ! §4.11's best-effort coded refusal. `rid` may be empty: the section provides for exactly
+  ! that ("correlated by request_id where the id is available, and otherwise as a
+  ! best-effort coded frame carrying no correlation"), so an empty id is a conformant
+  ! uncorrelated answer and NOT a reason to stay silent.
+  subroutine refuse_frame(io, rid, code)
+    integer,          intent(in) :: io
+    character(len=*), intent(in) :: rid, code
+    type(envelope_t) :: resp_env
+    integer(int8), allocatable :: frame(:)
+    resp_env = env_make(wire_make_response(rid, 400, wire_error_result(code, '')), empty_ents())
+    frame = wire_frame_of_envelope(resp_env)
+    call tr_send_frame(io, frame)
+  end subroutine refuse_frame
+
   subroutine on_frame(io, payload)
     integer,       intent(in) :: io
     integer(int8), intent(in) :: payload(:)
     character(len=:), allocatable :: root_type, rid
     logical :: is_response, ok, ok2, has_resp
     type(envelope_t) :: env, resp_env
-    integer :: slot
+    integer :: slot, stat
     integer(int8), allocatable :: frame(:)
     call wire_peek(payload, root_type, rid, is_response, ok)
-    if (.not. ok) return
+    if (.not. ok) then
+      ! §4.11. The STRICT peek failed, so this frame never became a top-level map -- a
+      ! tag in a data field, a non-canonical head, a structural fault. Every one of these
+      ! used to `return` here, which is the silent drop §4.11 exists to forbid and is what
+      ! CAP-6a scores as "a transport/decode drop is a refusal yet NOT the §5.2
+      ! disposition". Salvage the id and the root type so the refusal can be CORRELATED
+      ! and so a malformed RESPONSE is still recognised as one.
+      call wire_peek_salvage(payload, root_type, rid, is_response, ok)
+      if (ok .and. is_response) return    ! see the response arm below
+      call wire_envelope_of_frame_cause(payload, env, ok2, stat)
+      if (.not. ok) rid = ''              ! salvage failed too -- uncorrelated, still coded
+      call refuse_frame(io, rid, wire_cause_code(stat))
+      return
+    end if
     if (is_response) then
       call tr_pending_deliver(rid, payload)
       return
     end if
-    if (root_type /= 'system/protocol/execute') return    ! §3.3: ignore other root types
+    if (root_type /= 'system/protocol/execute') then
+      ! §3.3 names EXECUTE and EXECUTE_RESPONSE as the only wire message types. This used
+      ! to `return`, and §4.11 assigns the class a coded frame: the caller is owed the
+      ! reason its root type was refused, not silence. A RESPONSE root is excluded above
+      ! and deliberately: answering one would put a response on the wire FOR a response.
+      call refuse_frame(io, rid, 'invalid_request')
+      return
+    end if
     slot = conn_open(io)
-    call wire_envelope_of_frame(payload, env, ok2)
+    call wire_envelope_of_frame_cause(payload, env, ok2, stat)
     if (.not. ok2) then
-      if (len(rid) > 0) then
-        resp_env = env_make(wire_make_response(rid, 400, wire_error_result('non_canonical_ecf', '')), empty_ents())
-        frame = wire_frame_of_envelope(resp_env)
-        call tr_send_frame(io, frame)
-      end if
+      ! The code now follows the CAUSE (§4.11) instead of being hardcoded to
+      ! non_canonical_ecf: a §3.1 miskeyed `included` entry is `hash_mismatch`, a
+      ! structural fault is `invalid_request`, and only a tag-policy violation keeps the
+      ! canonicalization code. The peek above already succeeded, so `rid` is present and
+      ! the refusal is correlated.
+      call refuse_frame(io, rid, wire_cause_code(stat))
       return
     end if
     call peer_dispatch(slot, env, resp_env, has_resp)
@@ -1434,6 +1587,18 @@ contains
       case (EV_ACCEPT);   idummy = conn_open(id)
       case (EV_CLOSED);   call conn_close_io(id)
       case (EV_OVERSIZE); call send_413(id)
+      ! §4.11: the shim saw FIN with a partial frame still buffered -- "a length prefix
+      ! that never completes". The request_id is unavailable BY CONSTRUCTION (the frame
+      ! that would have carried it never arrived), so this is the section's best-effort
+      ! UNCORRELATED coded frame. A CLEAN close at a frame boundary never reaches here: it
+      ! is EV_CLOSED and is owed nothing, which is the distinction pa-probe's D3 control
+      ! exists to protect and which answering every read error would delete.
+      !
+      ! BOTH PUMPS CARRY THIS ARM. The reentry wait loop below serves inbound frames too,
+      ! so a truncated frame arriving while a handler waits on a correlated reply must be
+      ! answered there as well -- an arm in one pump only is a refusal that depends on
+      ! what the peer happened to be doing.
+      case (EV_TRUNCATED); call refuse_frame(id, '', 'invalid_request')
       case (EV_FRAME);    call on_frame(id, payload)
       case default;       cycle                    ! EV_NONE (EINTR/spurious): keep serving,
                                                    ! never stop the persistent listener.
@@ -1502,6 +1667,18 @@ contains
       case (EV_ACCEPT);   idummy = conn_open(id)
       case (EV_CLOSED);   call conn_close_io(id)
       case (EV_OVERSIZE); call send_413(id)
+      ! §4.11: the shim saw FIN with a partial frame still buffered -- "a length prefix
+      ! that never completes". The request_id is unavailable BY CONSTRUCTION (the frame
+      ! that would have carried it never arrived), so this is the section's best-effort
+      ! UNCORRELATED coded frame. A CLEAN close at a frame boundary never reaches here: it
+      ! is EV_CLOSED and is owed nothing, which is the distinction pa-probe's D3 control
+      ! exists to protect and which answering every read error would delete.
+      !
+      ! BOTH PUMPS CARRY THIS ARM. The reentry wait loop below serves inbound frames too,
+      ! so a truncated frame arriving while a handler waits on a correlated reply must be
+      ! answered there as well -- an arm in one pump only is a refusal that depends on
+      ! what the peer happened to be doing.
+      case (EV_TRUNCATED); call refuse_frame(id, '', 'invalid_request')
       case (EV_FRAME);    call on_frame(id, payload)
       case default;       ok = .false.; return
       end select

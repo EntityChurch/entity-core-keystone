@@ -27,6 +27,7 @@ module entity_core_wire
 
   public :: env_make, env_included_get, env_to_cbor, env_of_cbor
   public :: wire_frame_of_envelope, wire_envelope_of_frame, wire_peek
+  public :: wire_envelope_of_frame_cause, wire_peek_salvage, wire_cause_code
   public :: wire_make_execute, wire_make_response, wire_error_result
   public :: wire_empty_params, wire_resource_target
   public :: wire_response_status, wire_response_result
@@ -156,15 +157,64 @@ contains
     integer(int8),    intent(in)  :: payload(:)
     type(envelope_t), intent(out) :: env
     logical,          intent(out) :: ok
+    integer :: stat
+    call wire_envelope_of_frame_cause(payload, env, ok, stat)
+  end subroutine wire_envelope_of_frame
+
+  ! As wire_envelope_of_frame, but hands back WHY it failed.
+  !
+  ! §4.11 assigns the pre-admission causes DIFFERENT CODES ("the frame obligation belongs
+  ! to the class; the CODE belongs to the cause"), and this decoder has always known which
+  ! cause it hit -- EC_TAG_REJECTED, EC_TRUNCATED_INPUT, EC_NON_CANONICAL_ECF,
+  ! EC_HASH_MISMATCH are four distinct values and env_of_cbor already returns the last of
+  ! them for a §3.1 miskeyed `included` entry. The status was simply DISCARDED one layer
+  ! up, so every refusal that reached the wire reached it spelled `non_canonical_ecf`.
+  ! Nothing new is detected here; the existing verdict is carried instead of dropped.
+  subroutine wire_envelope_of_frame_cause(payload, env, ok, stat)
+    integer(int8),    intent(in)  :: payload(:)
+    type(envelope_t), intent(out) :: env
+    logical,          intent(out) :: ok
+    integer,          intent(out) :: stat
     type(ecf_value_t) :: v
-    integer :: consumed, stat
+    integer :: consumed
     ok = .false.
     call cbor_decode(payload, v, consumed, stat)
     if (stat /= EC_OK) return
-    if (consumed /= size(payload)) return       ! §6.3 full-consumption reject (A-FTN-012)
+    ! §6.3 full-consumption reject (A-FTN-012). Trailing bytes are a structural fault of
+    ! the frame, not a tag-policy violation, so the cause is the generic decode error.
+    if (consumed /= size(payload)) then; stat = EC_DECODE_ERROR; return; end if
     call env_of_cbor(v, env, stat)
     ok = (stat == EC_OK)
-  end subroutine wire_envelope_of_frame
+  end subroutine wire_envelope_of_frame_cause
+
+  ! §4.11's code assignment, from this decoder's own leaf-reject kinds. One function so the
+  ! mapping cannot drift between the three call sites that need it.
+  function wire_cause_code(stat) result(code)
+    integer, intent(in) :: stat
+    character(len=:), allocatable :: code
+    select case (stat)
+    case (EC_TAG_REJECTED)
+      ! ONLY THE TAG ARM KEEPS THIS CODE, and the distinction is the whole reason §4.11
+      ! bothers to name it: the section rules `non_canonical_ecf` non-conformant ON THE
+      ! FRAMING ARM and gives its reason in the same sentence -- ENTITY-CBOR-ENCODING
+      ! defines that code for CBOR **tag-policy violations specifically**, which §6.3
+      ! still MUSTs at decode time. So the rows are disjoint by CAUSE, not in conflict.
+      !
+      ! EC_NON_CANONICAL_ECF (indefinite length, a non-minimal head, depth) deliberately
+      ! does NOT land here even though its NAME matches the code's. This peer's own leaf
+      ! kinds separate the two (-103 tag vs -101 canonicalization) and the first cut of
+      ! this function folded them together, which answered `non_canonical_ecf` to a merely
+      ! undecodable frame -- measured as pa-probe D6 WRONG CODE. Enumerate the arms of an
+      ! existing failure flag before reusing it; the name is not the mapping.
+      code = 'non_canonical_ecf'
+    case (EC_HASH_MISMATCH)
+      ! §3.1 / 0.8.2.23: an `included` entry filed under a key that is not its
+      ! content_hash. A resolution-integrity fault, not a canonicalization one.
+      code = 'hash_mismatch'
+    case default
+      code = 'invalid_request'
+    end select
+  end function wire_cause_code
 
   ! peek the root type + request_id from a raw payload WITHOUT hash validation — the §6.11
   ! demux needs only these to route a reply vs an inbound EXECUTE. Robust to a malformed
@@ -173,10 +223,34 @@ contains
     integer(int8),                 intent(in)  :: payload(:)
     character(len=:), allocatable, intent(out) :: root_type, request_id
     logical,                       intent(out) :: is_response, ok
+    call peek_impl(payload, root_type, request_id, is_response, ok, .false.)
+  end subroutine wire_peek
+
+  ! wire_peek over the §6.3 SALVAGE decode: a major-type-6 head is unwrapped rather than
+  ! rejected, so a frame carrying a tag in a data field still yields its `request_id` and
+  ! its root type. Used ONLY to CORRELATE and to ROUTE a refusal -- never to admit one.
+  ! §4.11 permits an uncorrelated best-effort frame when the id is unavailable, but a
+  ! correlated refusal is strictly better for the caller and this peer can produce one.
+  subroutine wire_peek_salvage(payload, root_type, request_id, is_response, ok)
+    integer(int8),                 intent(in)  :: payload(:)
+    character(len=:), allocatable, intent(out) :: root_type, request_id
+    logical,                       intent(out) :: is_response, ok
+    call peek_impl(payload, root_type, request_id, is_response, ok, .true.)
+  end subroutine wire_peek_salvage
+
+  subroutine peek_impl(payload, root_type, request_id, is_response, ok, salvage)
+    integer(int8),                 intent(in)  :: payload(:)
+    character(len=:), allocatable, intent(out) :: root_type, request_id
+    logical,                       intent(out) :: is_response, ok
+    logical,                       intent(in)  :: salvage
     type(ecf_value_t) :: top, rootv, datav
     integer :: consumed, stat
     root_type = ''; request_id = ''; is_response = .false.; ok = .false.
-    call cbor_decode(payload, top, consumed, stat)
+    if (salvage) then
+      call cbor_decode_salvage(payload, top, consumed, stat)
+    else
+      call cbor_decode(payload, top, consumed, stat)
+    end if
     if (stat /= EC_OK .or. top%vkind /= EV_MAP) return
     rootv = m_submap(top, 'root')
     if (rootv%vkind /= EV_MAP) return
@@ -185,7 +259,7 @@ contains
     if (datav%vkind == EV_MAP) request_id = m_text(datav, 'request_id')
     is_response = (root_type == 'system/protocol/execute/response')
     ok = .true.
-  end subroutine wire_peek
+  end subroutine peek_impl
 
   ! ── EXECUTE builder (§3.2): author/capability are raw 33-byte hashes (0-len to omit);
   ! resource is a map value (EV_ABSENT to omit); params is a materialized entity. ──

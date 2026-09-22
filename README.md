@@ -228,8 +228,15 @@ target, not a normative pin, and says so in its own changelog.
 
 ## Conformance state, honestly
 
-The whole cohort is measured at **one** pin — the 778-check set `7aa6f3de…`, spec snapshot
-`v0.8.2.11` — with every row a fresh measurement at that pin:
+The whole cohort is measured at **one** pin — the 778-check set `7aa6f3de…`, against the spec
+snapshot the **oracle** is built from, `v0.8.2.11` — with every row a fresh measurement at that pin:
+
+> **Two pins move independently here, and a reader outside this repo cannot tell them apart from a
+> version string alone.** `v0.8.2.11` is the snapshot the *conformance oracle* measures against;
+> `tools/peer-tiers.tsv`'s `spec_pin` column is the revision each peer's *source* has been swept to,
+> currently `0.8.2.25`. A peer can implement a rule the pinned oracle has no vector for — that is
+> most of what the `0.8.2.x` arc has been — so the source pin runs ahead of the measurement pin by
+> design, and a conformance number is only ever a claim about the second one.
 
 - **All 46 peers pass `--profile core` 0-FAIL** (2026-09-08, re-measured at the 778-check set).
   Tiers M1 (5/5), M2 (8/8), M3 (13/13), probes 18/18, exploratory 2/2 — every peer in the tree,

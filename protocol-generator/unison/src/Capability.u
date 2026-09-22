@@ -39,6 +39,13 @@ allL p xs = match xs with
   [] -> true
   h +: t -> if p h then allL p t else false
 
+-- Hand-rolled because this peer loads `builtins.mergeio` ONLY -- no base library, so
+-- `List.filter` is not in scope (A-UN-001's zero-third-party-dependency constraint).
+filterL : (a -> Boolean) -> [a] -> [a]
+filterL p xs = match xs with
+  [] -> []
+  h +: t -> if p h then h +: (filterL p t) else filterL p t
+
 -- ── parse ─────────────────────────────────────────────────────────────────────
 
 collectText : [Text] -> Value -> [Text]
@@ -308,6 +315,81 @@ checkResourceScope localPeer granterPeer resource s =
   (not (excludeUnmatchable granterPeer (Scope.scExcl s))) &&
     ((List.size targets) > 0) &&
     (allL (t -> resTargetOk localPeer granterPeer s callerExcl t) targets)
+
+-- ── §5.2 effective targets and §6.3 check_path_permission (0.8.2.20/.21/.25) ──
+
+-- §5.2's effective target list: the caller's OWN `resource.exclude` removes entries from
+-- the request BEFORE anything else looks at it.
+--
+-- Survivors come back in the CALLER'S OWN SPELLING, never canonicalized -- 0.8.2.21 is
+-- explicit that `effective_targets` yields raw survivors, and it is load-bearing because
+-- the value flows on to `canonicalize`, which frames for itself.
+--
+-- THE `Optional` IS THE NON-LOSSY PROJECTION [MUST] (§3.3, 0.8.2.25 N11): "where an
+-- implementation projects resource.targets onto the effective set ahead of the handler,
+-- that projection MUST NOT be lossy about its own emptiness." `None` is an ABSENT
+-- resource; `Some []` is a resource whose every target the caller excluded. For a
+-- resource-OPTIONAL operation those are DIFFERENT REQUESTS with different answers, and
+-- returning a bare `[Text]` collapses them -- which deletes the discriminator before any
+-- handler can read it and turns the handler's refusal arm into dead code that only a WIRE
+-- drive can detect. The two cases are distinct CONSTRUCTORS here, so the type keeps them
+-- apart and a handler that forgets one fails to compile rather than failing to refuse.
+--
+-- THE CALLER-EXCLUDE ARM IS FAIL-OPEN ON AN UNMATCHABLE PATTERN, deliberately: §5.4's
+-- table rules the caller arm separately from the GRANT arm, which denies. `canonicalize`
+-- answers the never-match sentinel, `matchesPattern` then answers false, and the target
+-- simply survives -- inherited from the matcher rather than restated.
+--
+-- ONE NARROWING SEAM. This is the only place in this peer where `resource.targets` is
+-- reduced to a subject; §6.5's dispatch chain does not project (`checkResourceScope`
+-- quantifies over every target and skips the excluded ones without selecting one). A
+-- second narrowing site would be a second thing that can disagree with this one, and §6.3
+-- cannot close a gap between two derivations of its own subject.
+effectiveTargets : Text -> Entity -> Optional [Text]
+effectiveTargets localPeer exec = match field exec "resource" with
+  None -> None
+  Some r -> match mapField r "targets" with
+    None -> None
+    Some _ ->
+      callerExcl = textListAt r "exclude"
+      keep = t -> not (coveredByFrame localPeer callerExcl (canonicalize localPeer t))
+      Some (filterL keep (textListAt r "targets"))
+
+-- §6.3's handler-level path check.
+--
+-- IT IS NOT A SECONDARY CHECK (§5.2, 0.8.2.20). It is the sole enforcement wherever the
+-- subject is derived AFTER dispatch, and the dispatch-level check can be made VACUOUS by
+-- caller-controlled input: a caller who excludes the one target its capability does not
+-- cover removes that target from `checkResourceScope`'s view entirely -- `resTargetOk`
+-- answers true for it -- and a handler that then acts on it has authorized nothing.
+--
+-- THREE DIMENSIONS, NOT FOUR. `peers` is not consulted: the path is local by construction
+-- at this point (§1.4's inbound rule refuses a foreign namespace at §6.5 step 3, above the
+-- verdict), and §6.3's signature names only handlers, operations and resources.
+--
+-- THE FRAME IS THE LOCAL PEER, NOT THE GRANTER, and that is §6.3's own signature rather
+-- than a choice: its block reads matches_scope(canonical_path, grant.resources,
+-- "path-scope", local_peer_id) -- there is no granter parameter to pass. §5.5a governs
+-- chain ATTENUATION, where the subject is a pattern compared against a parent's pattern;
+-- this call site compares a CONCRETE local path the handler is about to touch.
+--
+-- There is no caller-exclude set here: the subject is a single concrete path and the
+-- caller's own exclusions were applied in deriving it. So every GRANT exclude covering the
+-- subject denies -- which `matchesScope` already implements, including 0.8.2.21's sentinel
+-- rule, making this three calls to it and nothing else.
+-- The per-grant half, split out for the same reason `grantAllows` is: a multi-line lambda
+-- body is not a block in Unison's layout, so the three matches live in a named function.
+pathGrantAllows : Text -> Text -> Text -> Text -> Grant -> Boolean
+pathGrantAllows localPeer operation path handlerPattern g =
+  hOk = matchesScope localPeer handlerPattern (Grant.grHandlers g) PathScope
+  oOk = matchesScope localPeer operation (Grant.grOperations g) IdScope
+  rOk = matchesScope localPeer path (Grant.grResources g) PathScope
+  hOk && oOk && rOk
+
+checkPathPermission : Text -> Text -> Text -> Entity -> Text -> Boolean
+checkPathPermission localPeer operation path token handlerPattern =
+  ok = g -> pathGrantAllows localPeer operation path handlerPattern g
+  anyL ok (grantsOfToken token)
 
 grantAllows : Text -> Text -> Text -> Text -> Text -> Optional Value -> Grant -> Boolean
 grantAllows localPeer granterPeer operation handlerPattern targetPeer resource g =

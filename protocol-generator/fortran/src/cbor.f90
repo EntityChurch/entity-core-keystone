@@ -52,6 +52,10 @@ module entity_core_cbor
 
   integer, parameter :: MAX_DEPTH = 64           ! §4.10 nesting bound
 
+  ! §6.3 salvage-decode flag -- see cbor_decode_salvage. Single-thread event loop,
+  ! so a module global is the correct mechanism here; BOTH entry points write it.
+  logical, save :: salvage_tags = .false.
+
   ! The self-referential `items` component is a POINTER, not allocatable, on purpose:
   ! gfortran's compiler-generated RECURSIVE auto-deallocator for a derived type with an
   ! allocatable component of its OWN type double-frees on deep/aliased nesting (observed
@@ -70,7 +74,7 @@ module entity_core_cbor
     type(ecf_value_t), pointer  :: items(:) => null()      ! array elems / map k,v pairs
   end type ecf_value_t
 
-  public :: cbor_encode, cbor_decode, cbor_scan_len
+  public :: cbor_encode, cbor_decode, cbor_decode_salvage, cbor_scan_len
   public :: ev_map_get, ev_has, ev_get_uint, ev_get_bytes, ev_text_bytes, ev_text_equals
   public :: ev_uint_make, ev_text_make, ev_bytes_make, ev_map_make2
   public :: ult, str_bytes, head_form_selftest
@@ -514,10 +518,42 @@ contains
     integer,           intent(out) :: consumed
     integer,           intent(out) :: stat
     integer :: pos
+    ! BOTH ENTRY POINTS SET THE FLAG. A global that only the salvage path writes leaves
+    ! the next STRICT decode inheriting a stale .true. -- the recorded cohort trap for
+    ! exactly this mechanism. Clearing it here is not defensive, it is the invariant.
+    salvage_tags = .false.
     pos = 1
     call dec(buf, pos, v, 0, stat)
     consumed = pos - 1
   end subroutine cbor_decode
+
+  ! §6.3's SALVAGE decode. Identical to cbor_decode except that a major-type-6 head is
+  ! UNWRAPPED instead of rejected, so a `request_id` sitting beside a tagged sibling is
+  ! still recoverable and the refusal can be CORRELATED.
+  !
+  ! IT IS NOT AN INGESTION PATH AND MUST NEVER BECOME ONE. The frame is still refused: no
+  ! entity is built, nothing is stored, the tag is never interpreted -- so §6.3's MUST NOT
+  ! strip / preserve / interpret all still hold, and the `tag_reject` conformance vectors
+  ! keep their meaning because the ingestion path never sets this flag. Its ONLY caller is
+  ! wire_peek_salvage, and its only product is the request_id.
+  !
+  ! THE FLAG IS A MODULE GLOBAL BECAUSE THIS PEER IS A SINGLE-THREAD EVENT LOOP -- one
+  ! frame is fully decoded before the next is read (peer.f90's pump), so there is no
+  ! second reader to see it set. On a threaded peer this would have to be a parameter
+  ! threaded through the recursion or a thread-local; the mechanism is decided by the
+  ! concurrency shape, not by taste.
+  subroutine cbor_decode_salvage(buf, v, consumed, stat)
+    integer(int8),     intent(in)  :: buf(:)
+    type(ecf_value_t), intent(out) :: v
+    integer,           intent(out) :: consumed
+    integer,           intent(out) :: stat
+    integer :: pos
+    salvage_tags = .true.
+    pos = 1
+    call dec(buf, pos, v, 0, stat)
+    consumed = pos - 1
+    salvage_tags = .false.
+  end subroutine cbor_decode_salvage
 
   recursive subroutine dec(buf, pos, v, depth, stat)
     integer(int8),     intent(in)    :: buf(:)
@@ -535,7 +571,17 @@ contains
     ai    = iand(b, 31)
     pos   = pos + 1
 
-    if (major == 6) then; stat = EC_TAG_REJECTED; return; end if   ! N2
+    if (major == 6) then                                           ! N2
+      if (.not. salvage_tags) then; stat = EC_TAG_REJECTED; return; end if
+      ! SALVAGE ONLY (see cbor_decode_salvage): consume the tag's own argument and decode
+      ! the value it wraps in its place. The tag number is DISCARDED rather than recorded
+      ! -- nothing downstream may act on it, and the caller's sole use for this tree is to
+      ! read one text field out of it.
+      call read_arg(buf, pos, ai, arg, stat)
+      if (stat /= EC_OK) return
+      call dec(buf, pos, v, depth + 1, stat)
+      return
+    end if
 
     if (major == 7) then
       call dec_simple(buf, pos, ai, v, stat)

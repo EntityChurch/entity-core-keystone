@@ -14,7 +14,8 @@ module entity_core_net
 
   ! event kinds returned by ec_net_poll (must match net_shim.c).
   integer, parameter, public :: EV_NONE = 0, EV_ACCEPT = 1, EV_FRAME = 2, &
-                                EV_CLOSED = 3, EV_OVERSIZE = 4
+                                EV_CLOSED = 3, EV_OVERSIZE = 4, &
+                                EV_TRUNCATED = 5   ! §4.11: FIN with a partial frame buffered
 
   public :: net_listen, net_connect, net_send, net_close, net_shutdown, net_poll
   public :: now_ms, random_bytes

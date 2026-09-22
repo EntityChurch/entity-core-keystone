@@ -128,7 +128,7 @@ parseIncluded kvs = match kvs with
           match parseIncluded rest with
             Left e -> Left e
             Right more -> Right ((h, ent) +: more)
-        else Left (NonCanonicalEcf "envelope: included key != entity content_hash")
+        else Left (IncludedKeyMismatch "envelope: included key != entity content_hash")
     _ -> Left (UnsupportedItem "envelope: included key not a byte string")
 
 -- lowercase hex of a byte string (§3.5 pointer paths).

@@ -1525,6 +1525,49 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   the frame ARRIVES.** A unit test that calls the refusal function passes in both worlds. Generalize
   past Node: ask what the stream layer does on (a) an exception inside the read loop and (b) the
   peer's FIN, before claiming a refusal path works.
+- **A HANDLER'S SCOPE IS A PROPERTY OF THE LANGUAGE, NOT OF WHERE THE TEXT SITS — IN ADA AN
+  EXCEPTION RAISED WHILE ELABORATING A BLOCK'S *DECLARATIVE PART* IS NOT HANDLED BY THAT BLOCK'S OWN
+  HANDLER (LRM 11.4), AND THE ARM THAT NAMES THE EXCEPTION BY NAME SITS RIGHT THERE LOOKING
+  CORRECT.** RATIFIED 2026-09-16 (`ada`, **three instances in one peer**, found on the wire and by
+  nothing else). It is the standing *"a refusal that exists but cannot be reached is a §4.9(c) silent
+  drop"* class with a **new mechanism**: every prior instance was a refusal at the wrong *layer* or
+  behind an unreachable *branch*; this one is a correct refusal in a handler that **does not govern
+  the call that raises**, for a reason nothing in the file's shape shows.
+  - `Reader_Task`'s loop read the frame as `Payload : constant Byte_Array := Wire.Read_Frame (…)` in
+    the **declarative part** of the very block whose `when Framing : others` arm calls
+    `Refuse_Pre_Admission`, and whose 15-line comment says *"an OVERSIZE prefix and a TRUNCATED frame
+    are REFUSALS owed a coded frame."* `Payload_Too_Large` and `Truncated_Input` propagated **past
+    it**, killed the task, and left the socket open with nothing on the wire.
+  - `Salvage_Request_Id` — **a function whose entire purpose is to be total** — called
+    `Decode_Salvage (Payload)` in its own declarative part, above its own `when others => return ""`.
+    So hostile bytes the salvage decoder itself refuses escaped to the CALLER, out through the
+    handler that had just caught the decode failure. **This is `io`'s tranche-6 defect in a second
+    language reached by a different mechanism** — there the salvage walk was unguarded, here the
+    guard is present and **out of scope**.
+  **Measured, and the ladder is the evidence: `pa-probe` 3 of 6 arms owed → 1 → 0**, each step
+  attributable to one named mechanism, with **0 of 778 conformance severities moved** at every step
+  (denominator asserted non-zero, digest matched, no `budget_exhausted`). A fix to an ungated surface
+  should be invisible in the verdicts, and when it is not, the surface was not what you fixed.
+  **Enforcement, and it is a grep this time:** in any Ada peer, an initialization in a `declare`'s or
+  subprogram's declarative part that can raise is unprotected by that unit's own handler — search for
+  `:=` initializers calling `Read_*`, `Decode_*`, `*_Of_Frame` or any codec entry point above a
+  `begin`, and move the call into the statement part. **Generalise past Ada, because the question is
+  what transfers:** for every language a peer is written in, know *what its handler does NOT cover* —
+  initializers, destructors, `defer`/`ensure` blocks, `finally`, and static/field initialization are
+  the usual answers — and never read a `try`/`exception` arm as governing a call merely because the
+  call appears above it. **A source read clears the peer completely in all three instances here**,
+  which is why this was found by driving the wire and could not have been found otherwise.
+  **AND THE COVERAGE LESSON IS THE SHARPER HALF: A SWEEP THAT LANDS SEVERAL RULES CAN TOUCH A PEER FOR
+  ONE RULE AND NOT ANOTHER, AND PER-PEER COVERAGE IS NOT PER-RULE COVERAGE.** `ada` is *not* the
+  `fortran`/`unison` shape — a tranche **did** touch it (`sweep tranche 4`), it was measured `0 of 15`
+  on `arc-probe`, it published `0.8.2.25` honestly, and its own row was true. That tranche's message
+  says §4.11 went *"0 of 7 → 7 of 7 on odin, php and prolog"* — **three of the six peers it names** —
+  so `ada` received the §5 rules and not the §4.11 one, and **nothing anywhere tracked which rule had
+  reached which peer.** The set-difference control ratified the day before (*diff the roster against
+  the peers the sweep's commits touched*) **reports `ada` as swept and is right**: it is keyed on the
+  peer, and the gap is one axis finer. **Enforcement: a multi-rule sweep records a rule × peer
+  matrix, and the closing claim is per cell, not per peer** — `tools/pa-probe` over the whole roster
+  is what produced this, and it is the instrument that answers the §4.11 column.
 - **A §4.11 TEST WITH NO READ DEADLINE HANGS ON THE PLANT INSTEAD OF FAILING — because the
   non-conformant behaviour IS "no response".** RATIFIED 2026-09-14/15 (`ruby`, then `common-lisp`
   identically an hour later). This is the one place where the standing plant discipline turns on

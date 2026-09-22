@@ -33,6 +33,12 @@ type CodecError
   | DuplicateKey Text
   | UnsupportedItem Text
   | BadBase58 Text
+  -- §3.1 / 0.8.2.23: an `included` entry filed under a key that is not its content_hash.
+  -- ITS OWN CONSTRUCTOR, not a NonCanonicalEcf, because §4.11 assigns it a DIFFERENT CODE
+  -- (`hash_mismatch`) -- it is a resolution-integrity fault, not a canonicalization one.
+  -- It was filed under NonCanonicalEcf until 2026-09-16, which is why every refusal on
+  -- this cause reached the wire spelled `non_canonical_ecf` (pa-probe D4, WRONG CODE).
+  | IncludedKeyMismatch Text
 
 -- ── generic helpers (shared prelude; reused by Protocol.u / Ed25519.u) ────────
 

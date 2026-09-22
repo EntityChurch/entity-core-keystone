@@ -57,12 +57,15 @@
 #define EC_MAXCONN     512                   /* §4.10(c): above the 256-burst flood probe
                                                 + its follow-up keep-serving connection. */
 
-enum { EC_EV_NONE = 0, EC_EV_ACCEPT = 1, EC_EV_FRAME = 2, EC_EV_CLOSED = 3, EC_EV_OVERSIZE = 4 };
+enum { EC_EV_NONE = 0, EC_EV_ACCEPT = 1, EC_EV_FRAME = 2, EC_EV_CLOSED = 3, EC_EV_OVERSIZE = 4,
+       EC_EV_TRUNCATED = 5 };
 
 struct conn {
     int fd; int id;
     unsigned char *buf; long have, cap;    /* inbound de-framing buffer (grows) */
     long drain;                             /* §4.10(a): bytes of an oversize body left to discard */
+    int rdclosed;                           /* §4.11: peer sent FIN; our write side stays open
+                                             * until the refusal is flushed, then we drop */
     unsigned char *obuf; long olen, ocap, ohead;  /* outbound queue (non-blocking write) */
 };
 
@@ -288,8 +291,11 @@ int ec_net_poll(int timeout_ms, int *out_id, int8_t *out_buf, int out_cap, int *
         int maxfd = -1;
         if (listen_fd >= 0) { FD_SET(listen_fd, &rf); if (listen_fd > maxfd) maxfd = listen_fd; }
         for (int i = 0; i < nconn; i++) {
-            FD_SET(conns[i].fd, &rf); if (conns[i].fd > maxfd) maxfd = conns[i].fd;
-            if (conns[i].ohead < conns[i].olen) { FD_SET(conns[i].fd, &wf); }
+            /* A half-closed connection is never read again -- select would report it
+             * readable forever at EOF and spin. It stays in the table only so its
+             * §4.11 refusal can be written. */
+            if (!conns[i].rdclosed) { FD_SET(conns[i].fd, &rf); if (conns[i].fd > maxfd) maxfd = conns[i].fd; }
+            if (conns[i].ohead < conns[i].olen) { FD_SET(conns[i].fd, &wf); if (conns[i].fd > maxfd) maxfd = conns[i].fd; }
         }
         if (maxfd < 0) return EC_EV_NONE;
         struct timeval tv, *tvp = 0;
@@ -298,13 +304,18 @@ int ec_net_poll(int timeout_ms, int *out_id, int8_t *out_buf, int out_cap, int *
         if (r < 0) { if (errno == EINTR) return EC_EV_NONE; return EC_EV_CLOSED; }
         if (r == 0) return EC_EV_NONE;
         for (int i = 0; i < nconn; i++) if (FD_ISSET(conns[i].fd, &wf)) conn_flush(&conns[i]);
+        /* the half-close teardown: once the refusal has left, the connection is done. */
+        for (int i = 0; i < nconn; ) {
+            if (conns[i].rdclosed && conns[i].ohead >= conns[i].olen) { conn_drop(i); continue; }
+            i++;
+        }
         if (listen_fd >= 0 && FD_ISSET(listen_fd, &rf)) {
             int cfd = accept(listen_fd, 0, 0);
             if (cfd >= 0) { struct conn *c = conn_new(cfd); if (c) ev_push(EC_EV_ACCEPT, c->id, 0, 0); }
         }
         for (int i = 0; i < nconn; ) {
             struct conn *c = &conns[i];
-            if (FD_ISSET(c->fd, &rf)) {
+            if (!c->rdclosed && FD_ISSET(c->fd, &rf)) {
                 if (c->have + 65536 > c->cap && c->cap < EC_MAX_PAYLOAD) {
                     long ncap = c->cap * 2; c->buf = (unsigned char *)realloc(c->buf, ncap); c->cap = ncap;
                 }
@@ -312,7 +323,33 @@ int ec_net_poll(int timeout_ms, int *out_id, int8_t *out_buf, int out_cap, int *
                 if (room <= 0) room = 65536;   /* defensive */
                 long rd = read(c->fd, c->buf + c->have, room);
                 if (rd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { i++; continue; }
-                if (rd <= 0) { conn_drop(i); continue; }
+                if (rd < 0) { conn_drop(i); continue; }   /* a real error: no refusal is owed */
+                if (rd == 0) {
+                    /* §4.11: THE TWO ENDS-OF-STREAM DIFFER BY ONE BUFFERED BYTE.
+                     * Nothing buffered is a CLEAN CLOSE at a frame boundary and is owed
+                     * NOTHING (pa-probe D3). Bytes still buffered are "a length prefix
+                     * that never completes" and are owed a coded 400 (D2). The cheapest
+                     * way to pass D2 is to answer every read error, which DELETES that
+                     * distinction rather than implementing it -- so the test is on
+                     * c->have, not on the read result.
+                     *
+                     * c->drain > 0 is excluded: an oversize frame already had its 413
+                     * (§4.10(a)), and answering again is two refusals for one cause.
+                     *
+                     * WE DO NOT CLOSE HERE. A FIN closes the peer's write side, not ours,
+                     * and closing on receipt would make the mandatory refusal
+                     * undeliverable -- the same defect Node's `allowHalfOpen` default and
+                     * the BEAM's `exit_on_close` produce for free. Raw sockets let us
+                     * simply not do it: mark the read side closed, let the peer queue its
+                     * refusal, flush, and drop once the output queue is empty. */
+                    if (c->have > 0 && c->drain == 0) {
+                        ev_push(EC_EV_TRUNCATED, c->id, 0, 0);
+                        c->have = 0;
+                        c->rdclosed = 1;
+                        i++; continue;
+                    }
+                    conn_drop(i); continue;
+                }
                 c->have += rd;
                 drain_frames(c);
             }

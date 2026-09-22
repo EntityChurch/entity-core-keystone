@@ -2,7 +2,7 @@
 
 _Updated: 2026-09-16 · oracle pin: the 778-check set `7aa6f3de…` · spec snapshot **`v0.8.2.25`** (vendored 2026-09-15)_
 
-## ⛔ CORRECTED 2026-09-16: the `0.8.2.25` sweep is **44 of 46**, not 46 of 46 — `fortran` and `unison` were never swept
+## ✅ CLOSED 2026-09-16: the `0.8.2.25` sweep is **46 of 46** — and it got there by being corrected to 44 first
 
 **This section headlined *"46 of 46"* for one day and it was wrong.** A **single-age** roster run of
 `tools/arc-probe` (46 of 46 reported, report-age span **0.04 h**) plus `tools/pa-probe` measured both
@@ -22,9 +22,23 @@ measurement** — diff the roster against the peers the sweep commits actually m
 one command. `CONFORMANCE-MATRIX.md` footnote ¹³ carries the detail; the two rows now publish
 `0.8.2.21`.
 
-**Sweeping them is owed and is named as the next work item**, not folded into this correction: it is
-RULE A (the §3.3 ladder + the `G` family) and RULE C (the `hash_mismatch` code) and RULE D (§4.11),
-which is a tranche of real work rather than an edit.
+**✅ BOTH PEERS ARE SWEPT, later the same day** (`52620f9b` `fortran`, and `unison` after it). Each
+went **6 `arc-probe` rows owed → 0 of 15** and **5 of 6 §4.11 arms owed → 0 of 6**, every control
+green, with the census measured **twice per peer** so RULES A/G and RULE D are attributable
+separately. **`unison` moved 0 of 778 severities on both halves; `fortran` moved 0 on the first and
+exactly ONE on the second** — `capability/ingest_rejects_unrepresentable_expiry` WARN→PASS, because
+the §6.3 salvage decode turned three transport-drops into the `capability_denied` disposition CAP-6a
+asks for. Corroboration worth recording: `fortran`'s suite went **62.3 s → 2.1 s**, stable over two
+runs, because every dropped frame had been billing the caller a full read deadline. *Presents as
+slow, is actually wrong*, one more time.
+
+**The reconciliation is the test that this is closed, and it failed first — on us.**
+`tools/spec-pin-gate.py --since b71b940f~1` is supposed to go quiet once every advanced pin is
+backed by a tree change. It instead named **both peers**, because its sweep-commit selector was
+`^(sweep tranche|vanguard)` and **the tail of a sweep is not a numbered tranche** — so it accused
+the two commits that closed the hole it exists to catch. Broadened to `^(sweep |vanguard)`, with the
+**hit list diffed** rather than the count trusted (17 → 18 over that range, the one addition being
+the `fortran` sweep). It is quiet now.
 
 **What IS true, and it is 44 peers rather than 46.** The spec had moved fourteen revisions under a
 cohort pinned at `v0.8.2.11`; the peers were brought forward a tranche at a time and the last nine
@@ -68,6 +82,34 @@ to requests the peer *admits* and reaches none of those inputs, which is why §4
 **The executed check set has no vector on that surface**, so it is measured by
 `tools/pa-probe` — six arms, two controls, per-peer JSON, and it never enters a published number.
 Baseline when the nine were measured: **5 or 6 of 6 arms owed on every one of them.**
+
+✅ **DRIVEN ACROSS THE WHOLE ROSTER FOR THE FIRST TIME, 2026-09-16 — 46 of 46 reported, all
+`trusted`, report-age span 0.22 h** (single-age by construction: the directory was moved aside
+before the run, and the span includes one peer re-measured after a fix):
+
+| state | peers | |
+|---|---:|---|
+| **0 of 6 arms owed** | **42** | |
+| substrate-limited, **disclosed not deferred** | 2 arms | `io` D2 — its `Socket` `close(2)`s the descriptor the instant a read returns zero, so there is no instant at which it both knows the stream ended mid-frame and can write; `smalltalk` D2 — `A-ST-018`, Pharo cannot write a half-closed socket |
+| **ruled NOT OWED** | 2 arms | `io` and `sql` D4. Both implement §1.8 mechanism **(b)** — discard the wire key, address by a validated `content_hash` — so a mis-keyed entry **misses** and §5.2a's own table answers `401`/`403`. §5.2a scopes `400 hash_mismatch` to a peer refusing at the **decode boundary**, which is mechanism (a); forcing it would abandon a conformant mechanism |
+| ~~**genuinely owed**~~ | ~~2 peers~~ | ✅ **CLOSED the same day** — `fortran` and `unison` were 5 of 6 each, the never-swept pair above; both are **0 of 6** now |
+
+⇒ **Every §4.11 arm in the cohort is now conformant, disclosed as a substrate limit, or ruled not
+owed.** 44 peers at 0 of 6; the remaining four arms are the two `io`/`smalltalk` substrate limits and
+the two `io`/`sql` not-owed rulings. **No arm anywhere is owed-and-unexplained.**
+
+**`ada` was the one undisclosed gap and it is closed.** It owed **3 of 6** — and it is *not* the
+never-swept shape: a tranche **did** touch it, it measured `0 of 15` on `arc-probe`, and its
+`0.8.2.25` row was true. That tranche landed §4.11 on *"odin, php and prolog"* — three of the six
+peers it names — so `ada` took the §5 rules and not this one, and **nothing tracked which rule had
+reached which peer.** *Per-peer coverage is not per-rule coverage*, and the set-difference control
+is keyed on the peer, so it reports `ada` as swept and is right.
+The defect underneath was **three instances of one Ada scope rule**: an exception raised while
+elaborating a block's or subprogram's **declarative part** is not handled by that unit's own handler
+(LRM 11.4), so `Read_Frame`'s `Payload_Too_Large`/`Truncated_Input` went past the arm naming them by
+name, and `Salvage_Request_Id` — a function whose whole purpose is to be total — leaked past its own
+`when others` for the same reason. **A source read clears the peer in all three cases.** Measured
+`3 of 6 → 1 → 0`, each step one named mechanism, **0 of 778 severities moved at every step.**
 
 **A note for anyone measuring this cohort:** ⚠ **the cohort is NOT uniform — `fortran` and `unison`
 are at `0.8.2.21`**, and the sentence that stood here said it was, which is the correction this file

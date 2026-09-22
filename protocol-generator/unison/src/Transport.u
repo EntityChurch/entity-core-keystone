@@ -50,23 +50,48 @@ makeConnIO sock =
 
 -- ── blocking framed read (the IO edge — failures stay Either, not raises) ─────
 
-recvExact : Socket -> Nat ->{IO} Optional Bytes
-recvExact sock n =
-  go : Bytes ->{IO} Optional Bytes
+-- §4.11 NEEDS THE FRAMED READ TO SAY WHY IT STOPPED. `Optional Bytes` collapses three
+-- events that the section assigns three different answers: a clean close at a frame
+-- boundary (owed NOTHING), a length prefix that never completes (owed 400), and an
+-- oversize declaration (owed 413). A reader that returns None for all three cannot be
+-- made conformant downstream, however the loop is written.
+type FrameRead
+  = FrameOk Bytes       -- a complete §1.6 frame
+  | FrameEof            -- FIN at a frame boundary, nothing buffered  -> emit NOTHING
+  | FrameTruncated      -- FIN mid-frame, bytes buffered              -> 400 invalid_request
+  | FrameOversize       -- the prefix declares more than maxFrame     -> 413 payload_too_large
+
+-- Receive up to n bytes; the Boolean says whether all n arrived. The accumulated prefix
+-- comes back either way, because ITS SIZE is the discriminator between a clean close and
+-- a truncation -- the two differ by exactly one buffered byte.
+recvUpTo : Socket -> Nat ->{IO} (Bytes, Boolean)
+recvUpTo sock n =
+  go : Bytes ->{IO} (Bytes, Boolean)
   go acc =
-    if (Bytes.size acc) >= n then Some (Bytes.take n acc)
+    if (Bytes.size acc) >= n then (Bytes.take n acc, true)
     else match io2.IO.socketReceive.impl sock (Nat.drop n (Bytes.size acc)) with
-      Right chunk -> if (Bytes.size chunk) == 0 then None else go (acc Bytes.++ chunk)
-      Left _ -> None
+      Right chunk -> if (Bytes.size chunk) == 0 then (acc, false) else go (acc Bytes.++ chunk)
+      Left _ -> (acc, false)
   go Bytes.empty
 
-readFrame : Socket ->{IO} Optional Bytes
-readFrame sock = match recvExact sock 4 with
-  None -> None
-  Some hdr ->
+recvExact : Socket -> Nat ->{IO} Optional Bytes
+recvExact sock n = match recvUpTo sock n with
+  (b, true) -> Some b
+  (_, false) -> None
+
+readFrame : Socket ->{IO} FrameRead
+readFrame sock = match recvUpTo sock 4 with
+  (hdr, false) ->
+    -- The cheapest way to pass the truncation arm is to answer every short read, which
+    -- DELETES the distinction rather than implementing it. The test is on how much was
+    -- buffered, and `FrameEof` is what keeps the clean-close control honest.
+    if (Bytes.size hdr) == 0 then FrameEof else FrameTruncated
+  (hdr, true) ->
     len = parseFrameLength hdr
-    if len > maxFrame then None
-    else recvExact sock len
+    if len > maxFrame then FrameOversize
+    else match recvUpTo sock len with
+      (body, true) -> FrameOk body
+      (_, false) -> FrameTruncated
 
 writeFramed : ConnIO -> Envelope ->{IO} ()
 writeFramed cio env =
@@ -151,10 +176,35 @@ routeOrDispatch peer conn cio env =
     _ = io2.IO.forkComp '(onExecute peer conn cio env)
     ()
 
+-- §4.11's best-effort coded refusal. `rid` may be empty: the section provides for exactly
+-- that ("correlated by request_id where the id is available, and otherwise as a
+-- best-effort coded frame carrying no correlation"), so an absent id is a conformant
+-- uncorrelated answer and NOT a reason to stay silent.
+refuseFrame : ConnIO -> Text -> Nat -> Text ->{IO} ()
+refuseFrame cio rid status code =
+  writeFramed cio (Envelope (makeResponse rid status (errorResult None code)) [])
+
 readLoop : Peer -> Conn -> ConnIO ->{IO} ()
 readLoop peer conn cio = match readFrame (ConnIO.ioSock cio) with
-  None -> ()
-  Some payload -> match envelopeOfFrame payload with
+  -- A clean close at a frame boundary is owed NOTHING (pa-probe's D3 control).
+  FrameEof -> ()
+  -- "A length prefix that never completes." The request_id is unavailable BY
+  -- CONSTRUCTION -- the frame that would have carried it never arrived -- so this is the
+  -- section's uncorrelated best-effort frame. We answer and then stop reading: the
+  -- caller's write side is already gone, so there is nothing further to serve.
+  FrameTruncated ->
+    refuseFrame cio "" 400 "invalid_request"
+    ()
+  -- §4.10(a): the prefix is refused BEFORE the body is buffered, so the request_id is
+  -- again unavailable and the 413 goes out uncorrelated. We do NOT drain the declared
+  -- body to keep the stream framed -- that IS the fully-buffering §4.10(a) forbids, one
+  -- buffer at a time, and a sender declaring 4 GiB and sending 1 KiB would park the peer
+  -- forever. Answering and closing is the honest end of a connection whose framing we
+  -- have deliberately stopped tracking.
+  FrameOversize ->
+    refuseFrame cio "" 413 "payload_too_large"
+    ()
+  FrameOk payload -> match envelopeOfFrame payload with
     -- §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is owed a STATUS,
     -- not silence. This used to fall straight back into readLoop, which rejected the frame
     -- (correct) and then dropped it on the floor (wrong): the sender saw no response at all
@@ -165,12 +215,18 @@ readLoop peer conn cio = match readFrame (ConnIO.ioSock cio) with
     -- The frame is still REJECTED — only enough is salvaged to correlate the response. If
     -- even the request_id is unrecoverable the frame is unattributable and silence is the
     -- only option left.
-    Left _ ->
-      match salvageRequestId payload with
-        Some rid ->
-          rej = makeResponse rid 400 (errorResult None "non_canonical_ecf")
-          writeFramed cio (Envelope rej [])
-        None -> ()
+    -- §4.11 (0.8.2.25) SHARPENED THIS: the frame obligation belongs to the CLASS and the
+    -- code belongs to the CAUSE, and the cause was already in hand and discarded (`Left _`).
+    -- `non_canonical_ecf` was going out for every decode failure, including a §3.1
+    -- miskeyed `included` entry, which owes `hash_mismatch`. `causeCode` maps the
+    -- constructor; nothing new is detected here.
+    --
+    -- And an unattributable frame is no longer silence: where the salvage cannot recover
+    -- a request_id, §4.11 still owes a coded frame, uncorrelated.
+    Left err ->
+      code = causeCode err
+      rid = optOr (salvageRequestId payload) ""
+      refuseFrame cio rid 400 code
       readLoop peer conn cio
     Right env ->
       routeOrDispatch peer conn cio env

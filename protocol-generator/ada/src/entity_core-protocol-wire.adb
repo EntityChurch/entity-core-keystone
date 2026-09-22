@@ -142,11 +142,31 @@ package body Entity_Core.Protocol.Wire is
    --  position (§6.3), so a frame whose ONLY defect is a tag inside some
    --  entity's `data` still has a structurally sound root -- which is exactly
    --  the case this recovers.
+   --  THE `when others` ARM BELOW COULD NOT SEE `Decode_Salvage`, FOR THE SAME REASON
+   --  THE READ LOOP'S HANDLER COULD NOT SEE `Read_Frame` -- and this is the more
+   --  dangerous of the two, because this function's WHOLE PURPOSE is to be total.
+   --  `Decode_Salvage` initialized `V` in this subprogram's DECLARATIVE PART, and an
+   --  exception raised while elaborating a subprogram's declarations propagates to the
+   --  CALLER: the body's own handler does not apply (LRM 11.4). So hostile bytes that
+   --  the salvage decoder itself refuses escaped past `return ""`, out of
+   --  `Reject_Frame`, out of the block whose handler had just caught the decode
+   --  failure, and killed the reader -- measured as `pa-probe` D6 `DROPPED` on an
+   --  indefinite-length array, which canonical ECF forbids and which is therefore
+   --  exactly the input this path exists to survive.
+   --
+   --  This is `io`'s A-IO tranche-6 defect in a second language and reached by a
+   --  different mechanism: there `salvageRequestId` walked attacker-controlled
+   --  structure unguarded, here the guard is present and out of scope. Both are the
+   --  salvage path being trusted to be total when nothing made it so.
+   --
+   --  The read moves into the statement part. `Root`, `Data_V` and `Rid` were already
+   --  declared uninitialized one line below, so the type default-initializes and this
+   --  costs nothing.
    function Salvage_Request_Id (Payload : Byte_Array) return String is
-      V : constant Ecf_Value := Entity_Core.Codec.Cbor.Decode_Salvage (Payload);
       Got : Boolean;
-      Root, Data_V, Rid : Ecf_Value;
+      V, Root, Data_V, Rid : Ecf_Value;
    begin
+      V := Entity_Core.Codec.Cbor.Decode_Salvage (Payload);
       if Kind (V) /= K_Map then
          return "";
       end if;

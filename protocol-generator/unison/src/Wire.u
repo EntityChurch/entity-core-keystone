@@ -46,6 +46,21 @@ salvageRequestId payload = match decodeSalvage payload with
       _ -> None
     _ -> None
 
+-- §4.11's code assignment, from this codec's own error constructors. One function so the
+-- mapping cannot drift between the call sites that need it.
+--
+-- §4.11 rules `non_canonical_ecf` non-conformant ON THE FRAMING ARM and gives its reason
+-- in the same sentence: ENTITY-CBOR-ENCODING defines that code for CBOR **tag-policy
+-- violations specifically**, which §6.3 still MUSTs at decode time. So ONLY `TagRejected`
+-- keeps it. `NonCanonicalEcf` and `DuplicateKey` are real canonicalization faults whose
+-- NAMES match the code and which nonetheless owe `invalid_request` -- the rows are
+-- disjoint by CAUSE, and reading the constructor name as the mapping is the mistake.
+causeCode : CodecError -> Text
+causeCode e = match e with
+  TagRejected _ -> "non_canonical_ecf"
+  IncludedKeyMismatch _ -> "hash_mismatch"
+  _ -> "invalid_request"
+
 frameOfEnvelope : Envelope -> Bytes
 frameOfEnvelope env =
   payload = encode (envelopeToCbor env)
