@@ -606,6 +606,32 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   So the failure modes are mirror images — over-applying the frame REFUSES legitimate delegated
   caps, under-applying it ADMITS illegitimate ones — and a peer can have one without the other.
   Check both call sites, not just the one the grep lands on first.
+  **THIRD SURFACE, and it is the one a fix to the other two makes VISIBLE rather than breaks**
+  (`wasm-wat`, 2026-08-29). §5.5a names three surfaces; the two above are chain attenuation and
+  the §6.2 mint. The third is the **dispatch boundary** — `verify_request` matching a presented
+  cap's resource patterns against the incoming target path — and there the two sides take
+  *different* frames: the cap's patterns frame against **its granter**, the request target
+  against the **local peer**. Frame both against the local peer and a foreign-granted bare `*`
+  becomes `/{verifier}/*` and authorizes the verifier's own namespace.
+  **What makes it worth its own entry is how it surfaced.** `captok_form_dispatch_minted_pl_
+  presented_xpeer` was *passing* while the peer refused every foreign-granted cap outright — a
+  vacuous pass. Implementing the chain walk made it a real FAIL, because the cap now reached
+  dispatch and dispatch had no frame. **A fix to one surface converts the next surface's vacuous
+  pass into a true failure**, which reads as "my change broke it" and is the opposite. Enforcement:
+  after landing §5.5a on any surface, re-run and expect the OTHER surfaces' foreign-granter vectors
+  to move; a fully green run right after the first surface lands means the others were never
+  exercised.
+  **And a K-of-N root has NO granter frame — the local peer is the correct one, not a fallback.**
+  §3.6's M6 already requires the local peer to be in the signer set and to have signed, and §5.5
+  says a quorum cap's *"subsequent use is locally rooted"*. Deriving the frame from `granter`
+  unconditionally simply fails on a quorum root (there is no single hash to derive from), which
+  presents as "multisig is broken" and is a §5.5a bug.
+  **Sub-lesson from the same peer, cheap and general: in a path-pattern matcher, test the parent's
+  TRAILING `*` before testing whether the child path is exhausted.** `/{peer}/*` must cover
+  `/{peer}/` — listing a namespace's own root is inside that namespace, not above it. Getting the
+  order wrong refuses every root listing while every deeper path still works, so it looks like a
+  permissions problem rather than a matcher problem. Two `tree_operations`/`universal_address_space`
+  listing checks caught it; nothing else did.
 - **A WRONG DENIAL CAN STAND IN FOR A MISSING CHECK, AND FIXING THE DENIAL IS THE ONLY THING THAT
   EXPOSES IT — so a fix that makes a peer's FAIL COUNT GO UP is a finding, not a regression.**
   Ratified 2026-08-28: two occurrences the same session, both in the peers that author the authority
