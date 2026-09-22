@@ -138,7 +138,11 @@ defmodule EntityCore.PeerTest do
         })
 
       do_exec = Model.make("system/protocol/execute", %{"operation" => "dispatch", "params" => Model.to_cbor(do_params)})
-      dout = Peer.dispatch_outbound_handler(cpeer, conn, do_exec)
+      # §1.4 PD-2 threads the OWNING handler's peer-relative pattern (Dimension 1 is
+      # matched peer-relative) and the parent envelope (the §7a.2a bundle base).
+      dout =
+        Peer.dispatch_outbound_handler(cpeer, conn, do_exec,
+          "system/validate/dispatch-outbound", %Envelope{root: do_exec, included: %{}})
       assert dout.status == 200
       rc = Model.field(dout.result, "result")
       assert Model.field(Model.of_cbor(rc), "value") == "round-trip-99"

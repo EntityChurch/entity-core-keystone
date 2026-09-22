@@ -852,34 +852,123 @@ Returns (values ENTITY NIL) when admitted, or (values NIL OUTCOME) when refused.
   (let ((p (entity-entity (ctx-exec ctx) "params")))
     (if p (ok p) (err 400 "invalid_params" "echo requires a params entity"))))
 
+(defun entity-list-field (e key singular)
+  "Decode an ARRAY of nested entities at KEY, falling back to the SINGULAR spelling as a
+list of one (the section 7a.1 transitional carriers).
+
+NIL means absent or not a list; an array whose members do not all decode is a MALFORMED
+carrier and is also NIL, never a silently shorter list, because the caller's all-or-none
+test would then read a partial credential as a complete one."
+  (let ((v (entity-field e key)))
+    ;; (AND V (LISTP V)), not (LISTP V): in Common Lisp NIL *is* a list, so an ABSENT
+    ;; plural carrier takes the array branch, yields NIL, and the SINGULAR fallback below
+    ;; is unreachable. Measured: 0 FAIL at the candidate check set (which sends the plural
+    ;; names) and 2 FAIL at the PINNED one (which sends the singular) -- the exact split
+    ;; running both check sets exists to catch, and invisible in either alone.
+    (if (and v (listp v))
+        (let ((decoded (mapcar (lambda (x) (ignore-errors (entity-of-cbor x))) v)))
+          (unless (some #'null decoded) decoded))
+        (let ((one (entity-entity e singular)))
+          (when one (list one))))))
+
 (defmethod handle-op ((h dispatch-outbound-handler) (op (eql :dispatch)) ctx)
   (let* ((peer (handler-peer h)) (conn (ctx-conn ctx))
          (p (entity-entity (ctx-exec ctx) "params")))
     (if (null p) (err 400 "invalid_params" "dispatch-outbound requires a params entity")
-        (let ((target (or (entity-text p "target") ""))
-              (operation (or (entity-text p "operation") ""))
-              (value (entity-field p "value"))
-              (capability (entity-entity p "reentry_capability"))
-              (granter-peer (entity-entity p "reentry_granter"))
-              (cap-sig (entity-entity p "reentry_cap_signature")))
-          (if (and value capability granter-peer cap-sig)
-              ;; §7a.1: the `value' field IS the outbound params entity data — pass it
-              ;; through (the reference uses it directly). Re-wrapping as (value . value)
-              ;; double-wraps, so the echo's result.value returns a map (keystone §7b t1_2).
-              (let* ((inner (make-entity "primitive/any" value))
-                     (resource (resource-target (concatenate 'string "system/handler/" target)))
-                     (env (outbound-dispatch peer conn target operation inner
-                                             capability granter-peer cap-sig :resource resource)))
-                (if (null env) (err 503 "no_outbound_seam" "no live section 6.11 reentry connection")
-                    (let ((status (or (entity-uint (envelope-root env) "status") 0))
-                          (result-cbor (or (entity-field (envelope-root env) "result") (make-cbor-map nil))))
-                      (ok (make-entity "primitive/any"
-                                       (map-of "status" status "result" result-cbor))))))
-              (err 400 "invalid_params" "dispatch-outbound requires value + reentry authority"))))))
+        (let* ((target (or (entity-text p "target") ""))
+               (operation (or (entity-text p "operation") ""))
+               (value (entity-field p "value"))
+               ;; GUIDE-CONFORMANCE section 7a.1: PLURAL carriers [0.8.2.19]. Arrays, and
+               ;; the single-granter case is an array of ONE. They were singular, which
+               ;; made section 1.4's multi-signature-root rule ungateable on the wire:
+               ;; driving it needs two granter identities and two signatures, and a
+               ;; single-credential carrier cannot express that input.
+               ;;
+               ;; TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of
+               ;; one, because THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned
+               ;; oracle is what all 46 tracked reports are measured against and it sends
+               ;; the SINGULAR names; a plural-only peer reads the triple as absent there,
+               ;; takes the ambient arm and refuses -- measured on the go vanguard as 2 of
+               ;; 778 severities moving PASS -> FAIL. Accepting both keeps the cohort
+               ;; 0-FAIL at BOTH check sets. REMOVE THIS FALLBACK AT THE ORACLE RE-PIN,
+               ;; and not before: the exit condition is that tools/oracle-pin.env's ref
+               ;; names an oracle whose dispatch-outbound probe sends the plural carriers.
+               (capability (entity-entity p "reentry_capability"))
+               (granters (entity-list-field p "reentry_granters" "reentry_granter"))
+               (cap-sigs (entity-list-field p "reentry_cap_signatures" "reentry_cap_signature"))
+               ;; The triple is ALL-OR-NONE (section 7a.1): all three present selects the
+               ;; PRESENTED arm, all three absent selects the AMBIENT arm, and a PARTIAL
+               ;; set is 400 invalid_params -- a partial credential is malformed, not
+               ;; ambient. An empty array is partial, not present.
+               (n-present (count t (list (and capability t)
+                                         (and granters t)
+                                         (and cap-sigs t)))))
+          (cond
+            ((null value) (err 400 "invalid_params" "dispatch-outbound requires value"))
+            ((not (member n-present '(0 3)))
+             (err 400 "invalid_params" "dispatch-outbound reentry authority is all-or-none"))
+            (t
+             (let* ((has-cred (= n-present 3))
+                    (cred (when has-cred capability))
+                    (granter-list (when has-cred granters))
+                    (sig-list (when has-cred cap-sigs))
+                    ;; §7a.1: the `value' field IS the outbound params entity data — pass
+                    ;; it through (the reference uses it directly). Re-wrapping as
+                    ;; (value . value) double-wraps, so the echo's result.value returns a
+                    ;; map (keystone §7b t1_2).
+                    (inner (make-entity "primitive/any" value))
+                    ;; `target' arrives as any of section 1.4's three spellings and the
+                    ;; validator sends the SCHEMED ABSOLUTE form. Both the handler-pattern
+                    ;; dimension and the resource target want the PEER-RELATIVE path.
+                    (rel-target (peer-relative-of target))
+                    (resource (resource-target (concatenate 'string "system/handler/" rel-target)))
+                    ;; Section 7a.2a: the credential, its granters and its signatures
+                    ;; arrive NESTED IN PARAMS (ratified shape (a), in-band), so they are
+                    ;; not in the parent envelope's included and a verifier handed that
+                    ;; alone cannot resolve a single link.
+                    (bundle (append (mapcar (lambda (e) (cons (entity-hash e) e))
+                                            (append (when cred (list cred)) granter-list sig-list))
+                                    (ctx-included ctx)))
+                    ;; Section 1.4: target_peer = extract_peer(uri, local). The validator
+                    ;; sends the absolute form. Where the uri is PEER-RELATIVE there is no
+                    ;; peer in it and the section 6.11 seam's destination is the
+                    ;; connection's remote, so that is the fallback -- without it
+                    ;; Dimension 4 passes vacuously.
+                    (uri-peer (extract-peer (peer-local-peer peer) target))
+                    (target-peer (if (string= uri-peer (peer-local-peer peer))
+                                     (or (conn-hello-peer-id conn) uri-peer)
+                                     uri-peer))
+                    ;; Section 1.4 PD-2: check_permission runs BEFORE the sub-dispatch
+                    ;; leaves the peer, all four dimensions, on THIS handler's own grant.
+                    (own-grant (store-get-at (peer-store peer)
+                                             (grant-path-for (peer-local-peer peer)
+                                                             (ctx-handler-pattern ctx)))))
+               (cond
+                 ;; Section 6.8: a handler with no valid grant does not run. Fail closed
+                 ;; rather than falling back to the credential, which is the substitution
+                 ;; section 6.8 forbids.
+                 ((null own-grant)
+                  (err 403 "capability_denied" "no handler grant for this pattern"))
+                 ((not (check-outbound-sub-dispatch (peer-local-peer peer) target-peer
+                                                    rel-target operation (peer-store peer)
+                                                    own-grant resource cred bundle))
+                  ;; Section 7a.1a: the surfaced code is the AUTHORIZATION domain's code.
+                  ;; A generic transport- or gateway-class code would launder an
+                  ;; authorization verdict into a route fault.
+                  (err 403 "capability_denied"
+                       "outbound sub-dispatch not authorized by the handler grant"))
+                 (t
+                  (let ((env (outbound-dispatch peer conn target operation inner
+                                                cred granter-list sig-list :resource resource)))
+                    (if (null env) (err 503 "no_outbound_seam" "no live section 6.11 reentry connection")
+                        (let ((status (or (entity-uint (envelope-root env) "status") 0))
+                              (result-cbor (or (entity-field (envelope-root env) "result") (make-cbor-map nil))))
+                          (ok (make-entity "primitive/any"
+                                           (map-of "status" status "result" result-cbor)))))))))))))))
 
 ;; ── §6.13(b) handler-facing outbound dispatch ───────────────────────────────────
 
-(defun outbound-dispatch (peer conn uri operation params capability granter-peer cap-sig &key resource)
+(defun outbound-dispatch (peer conn uri operation params capability granter-peers cap-sigs &key resource)
   "Build, sign (as the local peer), and send an outbound EXECUTE through the §6.11
 reentry seam on the serving connection (conn-outbound, set by the transport),
 returning the correlated EXECUTE_RESPONSE envelope, or NIL if no reentrant
@@ -889,16 +978,27 @@ connection. Present on every peer even though no CORE handler originates."
         (let* ((id (peer-identity peer)))
           (incf (conn-out-counter conn))
           (let* ((request-id (format nil "out-~d" (conn-out-counter conn)))
+                 ;; GRANTER-PEERS and CAP-SIGS are PLURAL (GUIDE-CONFORMANCE section
+                 ;; 7a.1, 0.8.2.19) so a K-of-N root can present every granter identity
+                 ;; and every link signature. Every member goes into `included' because
+                 ;; section 5.5's chain walk resolves granters and signers BY HASH out of
+                 ;; that map.
+                 ;;
+                 ;; CAPABILITY NIL is the AMBIENT arm: the EXECUTE carries no capability
+                 ;; field at all. An empty hash would NOT do -- that is a present field
+                 ;; resolving to nothing, which section 5.2 reads as an unresolvable
+                 ;; capability rather than as its absence.
                  (exec (make-execute request-id uri operation params
                                      :author (identity-hash id)
-                                     :capability (entity-hash capability)
+                                     :capability (when capability (entity-hash capability))
                                      :resource resource))
                  (exec-sig (sign-entity id exec))
-                 (included (list (cons (entity-hash capability) capability)
-                                 (cons (entity-hash granter-peer) granter-peer)
-                                 (cons (identity-hash id) (identity-peer-entity id))
-                                 (cons (entity-hash cap-sig) cap-sig)
-                                 (cons (entity-hash exec-sig) exec-sig))))
+                 (included (append
+                            (when capability
+                              (mapcar (lambda (e) (cons (entity-hash e) e))
+                                      (cons capability (append granter-peers cap-sigs))))
+                            (list (cons (identity-hash id) (identity-peer-entity id))
+                                  (cons (entity-hash exec-sig) exec-sig)))))
             (funcall send (make-envelope exec included)))))))
 
 ;; ── dispatcher-level signature ingestion (§6.5) ─────────────────────────────────
@@ -1097,6 +1197,16 @@ multiplexed connection that would cost every ADMITTED in-flight request its resp
     ("system/validate/dispatch-outbound" dispatch-outbound-handler "validate-dispatch-outbound"
      (("dispatch" nil nil)))))
 
+(defun own-grants-for (pattern)
+  "A handler's OWN grant (section 6.8) -- the authority it spends when it dispatches
+onward, as distinct from any capability a caller presents. Section 6.8 row 1: an access
+in service of a caller's request needs the caller's verified capability AND this grant,
+and BOTH must pass. Narrow for dispatch-outbound; NIL for everything else."
+  (when (string= pattern "system/validate/dispatch-outbound")
+    (list (map-of "handlers" (map-of "include" (list "system/validate/echo"))
+                  "operations" (map-of "include" (list "echo"))
+                  "resources" (map-of "include" (list "system/handler/system/validate/echo"))))))
+
 (defun %bootstrap-handler-entities (peer pattern name ops)
   "Write the §6.9 tree entities for a handler: handler entity at pattern, interface
 at the discovery index, and a bootstrap grant."
@@ -1112,7 +1222,14 @@ at the discovery index, and a bootstrap grant."
     (store-bind store (concatenate 'string "/" local "/system/handler/" pattern)
                 (make-entity "system/handler/interface"
                              (map-of "pattern" pattern "name" name "operations" operations)))
-    (multiple-value-bind (token) (mint-token peer (identity-hash (peer-identity peer)) nil)
+    ;; Section 6.8: the grant MUST exist at system/capability/grants/{pattern} and a
+    ;; handler with no valid grant does not run -- so this bind is the ceiling row 1
+    ;; intersects against, not bookkeeping. NARROW for dispatch-outbound: with a wide
+    ;; grant, consulting it and skipping it give the same answer on every input, so the
+    ;; confused-deputy discriminator cannot fire (GUIDE-CONFORMANCE section 7a.1 makes the
+    ;; narrowness a scaffold-contract requirement).
+    (multiple-value-bind (token) (mint-token peer (identity-hash (peer-identity peer))
+                                             (own-grants-for pattern))
       (store-bind store (concatenate 'string "/" local "/system/capability/grants/" pattern) token))))
 
 (defun make-peer (&key seed open-grants conformance)

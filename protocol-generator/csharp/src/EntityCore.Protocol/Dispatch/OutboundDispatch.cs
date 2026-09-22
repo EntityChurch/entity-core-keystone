@@ -26,7 +26,7 @@ internal sealed class OutboundDispatch : IOutboundDispatch
 
     public async Task<ExecuteResponse> ExecuteAsync(
         string uri, string operation, Entity paramsEntity, ResourceTarget? resource,
-        OutboundAuthority authority, TimeSpan timeout, CancellationToken ct = default)
+        OutboundAuthority? authority, TimeSpan timeout, CancellationToken ct = default)
     {
         Execute execute = Execute.Build(
             requestId: _sender.NextRequestId(),
@@ -34,19 +34,23 @@ internal sealed class OutboundDispatch : IOutboundDispatch
             operation: operation,
             paramsEntity: paramsEntity,
             author: _local.IdentityHash,
-            capability: authority.Capability.ContentHash,
+            // §1.4 PD-2 AMBIENT arm: no credential, so no `capability` field at all.
+            capability: authority?.Capability.ContentHash,
             resource: resource);
 
         Entity executeSignature = Signatures.Sign(execute.Entity, _local);
 
-        var included = new List<Entity>
+        var included = new List<Entity>();
+        if (authority is not null)
         {
-            authority.Capability.Entity,
-            authority.GranterPeer,        // capability granter (the target peer's identity)
-            _local.PeerEntity,            // grantee + author (this peer's identity)
-            authority.CapabilitySignature,
-            executeSignature,
-        };
+            included.Add(authority.Capability.Entity);
+            // Every granter and every signature: §5.5's chain walk resolves them BY HASH
+            // out of this map.
+            included.AddRange(authority.GranterPeers);
+            included.AddRange(authority.CapabilitySignatures);
+        }
+        included.Add(_local.PeerEntity);   // grantee + author (this peer's identity)
+        included.Add(executeSignature);
 
         Envelope response = await _sender.SendRequestAsync(
             new Envelope(execute.Entity, included), timeout, ct).ConfigureAwait(false);

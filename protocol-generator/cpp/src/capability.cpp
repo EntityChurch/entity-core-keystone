@@ -487,23 +487,50 @@ bool check_delegation_caveats(const Entity& parent, const Entity& child, int dep
     return true;
 }
 
+Verdict verify_chain_rooted_at(const std::string& local_peer, const std::string& root_peer,
+                               const Store& store, const EntityPtr& cap,
+                               const Envelope& env, bool& unresolvable);
+
 Verdict verify_chain(const std::string& local_peer, const Store& store, const EntityPtr& cap,
                      const Envelope& env, bool& unresolvable) {
+    return verify_chain_rooted_at(local_peer, local_peer, store, cap, env, unresolvable);
+}
+
+// `root_peer` is the peer the chain ROOT must derive; it defaults to `local_peer`.
+//
+// §1.4's PD-2 presented-authority arm needs it: the credential it evaluates is minted by
+// the TARGET peer, so root-trust is relaxed away from the local peer — and every other
+// clause (per-link signatures, grantee resolution, temporal validity, attenuation,
+// caveats) is unchanged. Parameterized rather than forked because a second copy of a
+// chain walk is a second copy that drifts.
+//
+// A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY (§1.4, 0.8.2.19). When `root_peer`
+// differs from `local_peer` the quorum arm is REFUSED outright rather than verified:
+// *minted by the target* means the target SOLELY minted it, and a K-of-N root is a
+// GROUP's authority — its co-signers authorized it too. Accepting it would let any one
+// signer's target confer the whole group's grant, which is E3/F66's over-acceptance.
+// §5.5's M6 also requires the LOCAL peer in the signer set, so the quorum arm has no
+// meaning in a foreign frame even on its own terms.
+Verdict verify_chain_rooted_at(const std::string& local_peer, const std::string& root_peer,
+                               const Store& store, const EntityPtr& cap,
+                               const Envelope& env, bool& unresolvable) {
     unresolvable = false;
     Chain c = collect_chain(cap, env, store);
     if (!c.ok) return Verdict::Deny;
     const Entity& root = *c.items.back();
 
-    // Root authority: a multi-sig root runs k-of-n; a single-sig root must root at local.
+    // Root authority: a multi-sig root runs k-of-n in the LOCAL frame only; a single-sig
+    // root must root at `root_peer`.
     if (is_multi_sig(root)) {
-        return verify_multi_sig_root(root, env, store, local_peer, now_ms())
+        return (root_peer == local_peer &&
+                verify_multi_sig_root(root, env, store, local_peer, now_ms()))
                    ? Verdict::Allow : Verdict::Deny;
     }
 
     bool root_ok = false;
     if (auto rgh = root.bytes("granter"); rgh && rgh->size() == kHashLen) {
         if (auto g = resolve(env, store, *rgh)) {
-            if (auto pid = granter_peer_id(*g)) root_ok = (*pid == local_peer);
+            if (auto pid = granter_peer_id(*g)) root_ok = (*pid == root_peer);
         }
     }
     if (!root_ok) return Verdict::Deny;
@@ -871,6 +898,103 @@ ReqVerdict verify_request(const std::string& local_peer, const Store& store,
     }
     if (is_revoked(local_peer, store, cap, env)) return ReqVerdict::AuthzDeny;
     return ReqVerdict::Allow;
+}
+
+
+// ── §1.4 PD-2: outbound sub-dispatch authorization ──────────────────────────────────
+
+std::string peer_relative_of(std::string_view uri) {
+    std::string p = normalize_uri(uri);
+    if (p.empty() || p.front() != '/') return p;
+    std::string_view body{p};
+    body.remove_prefix(1);
+    auto slash = body.find('/');
+    std::string first{slash == std::string_view::npos ? body : body.substr(0, slash)};
+    if (is_peer_id(first)) {
+        return slash == std::string_view::npos ? std::string{} : std::string{body.substr(slash + 1)};
+    }
+    return std::string{body};
+}
+
+std::string grant_path_for(std::string_view local_peer, std::string_view pattern) {
+    std::string prefix = "/" + std::string{local_peer} + "/";
+    std::string rel{pattern};
+    if (starts_with(prefix, rel)) rel = rel.substr(prefix.size());
+    return "/" + std::string{local_peer} + "/system/capability/grants/" + rel;
+}
+
+// Verify a presented reentry credential against §1.4's clauses. Answers true when every
+// clause holds; `out_scope` is then the `peers` scope Dimension 4 relaxes to, BORROWED
+// into the credential's value tree, or nullptr meaning "the target itself" (an absent
+// `peers` dimension is the ordinary reentry shape: "you may dispatch back to me").
+//
+// THE BOOL AND THE SCOPE ARE SEPARATE ON PURPOSE. A null scope is a legitimate RESULT, so
+// a single-return signature would collapse "relaxes to the target" into "relaxes nothing"
+// — the absent-vs-present conflation §6.2's CAP-6a records for temporal accessors, one
+// layer up, and in the direction that REFUSES a valid reentry.
+bool target_minted_peers_relaxation(const std::string& local_peer, const std::string& target_peer,
+                                    const Store& store, const EntityPtr& cred,
+                                    const Envelope& env, const EcfValue** out_scope) {
+    *out_scope = nullptr;
+    // Nothing to relax — the default already covers this peer. Treating a self-targeted
+    // credential as a relaxation would make the exemption reachable with no foreign mint.
+    if (!cred || target_peer == local_peer) return false;
+    bool unres = false;
+    if (verify_chain_rooted_at(local_peer, target_peer, store, cred, env, unres) != Verdict::Allow) {
+        return false;
+    }
+    if (is_revoked(local_peer, store, cred, env)) return false;
+    auto gh = cred->bytes("grantee");
+    if (!gh || gh->size() != kHashLen) return false;
+    auto ge = resolve(env, store, *gh);
+    if (!ge) return false;
+    auto pid = granter_peer_id(*ge);
+    if (!pid || *pid != local_peer) return false;
+    const EcfValue* grants = token_grants(*cred);
+    if (!grants) return false;
+    const auto& arr = std::get<ecf::Array>(grants->as_variant());
+    if (arr.empty()) return false;
+    *out_scope = grant_dim(&*arr[0], "peers");   // nullptr => the target itself
+    return true;
+}
+
+bool check_outbound_sub_dispatch(const std::string& local_peer, const std::string& target_peer,
+                                 std::string_view handler_pattern, std::string_view operation,
+                                 const Store& store, const Entity& handler_grant,
+                                 const EcfValue& resource, const EntityPtr& cred,
+                                 const Envelope& env) {
+    const EcfValue* grants = token_grants(handler_grant);
+    if (!grants) return false;
+    // Computed FIRST and consulted LAST, so no credential can stand in for 1-3.
+    const EcfValue* relax_scope = nullptr;
+    bool have_relax = target_minted_peers_relaxation(local_peer, target_peer, store, cred,
+                                                     env, &relax_scope);
+    for (const auto& gbox : std::get<ecf::Array>(grants->as_variant())) {
+        const EcfValue& g = *gbox;
+        if (!matches_scope(local_peer, handler_pattern,
+                           parse_scope(grant_dim(&g, "handlers")), ScopeKind::Path)) continue;
+        if (!matches_scope(local_peer, operation,
+                           parse_scope(grant_dim(&g, "operations")), ScopeKind::Id)) continue;
+        if (!check_resource_scope(local_peer, local_peer, resource,
+                                  grant_dim(&g, "resources"))) continue;
+        // Dimension 4. §5.2's default for an absent `peers` scope is
+        // {include: [local_peer_id]}, so a foreign target fails unless this grant names it
+        // or a target-minted credential relaxes it.
+        if (const EcfValue* pd = grant_dim(&g, "peers")) {
+            if (matches_scope(local_peer, target_peer, parse_scope(pd), ScopeKind::Id)) return true;
+        } else if (target_peer == local_peer) {
+            return true;
+        }
+        if (have_relax) {
+            if (relax_scope) {
+                if (matches_scope(local_peer, target_peer, parse_scope(relax_scope), ScopeKind::Id))
+                    return true;
+            } else {
+                return true;   // absent `peers` on the credential relaxes to the granter
+            }
+        }
+    }
+    return false;
 }
 
 }  // namespace entity_core::cap

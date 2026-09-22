@@ -747,22 +747,43 @@ fn verifyMultiSigRoot(arena: std.mem.Allocator, env: model.Envelope, st: *Store,
 /// §3.6 M3 multi-sig root (root-only) passes k-of-n quorum via verifyMultiSigRoot.
 /// Returns allow/deny; surfaces UnresolvableGrantee for the §5.5 401 carve-out.
 fn verifyCapabilityChain(arena: std.mem.Allocator, env: model.Envelope, st: *Store, local_peer: []const u8, capability: Entity) Error!Verdict {
+    return verifyCapabilityChainRootedAt(arena, env, st, local_peer, local_peer, capability);
+}
+
+/// `verifyCapabilityChain` with the expected ROOT granter named separately from the
+/// verifying peer.
+///
+/// §1.4's PD-2 presented-authority arm needs this: the credential it evaluates is minted
+/// by the TARGET peer, so root-trust is relaxed away from the local peer — and every other
+/// clause (per-link signatures, grantee resolution, temporal validity, attenuation,
+/// caveats) is unchanged. Parameterized rather than forked because a second copy of a
+/// chain walk is a second copy that drifts.
+///
+/// A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY (§1.4, 0.8.2.19). When `root_peer`
+/// differs from `local_peer` the quorum arm is REFUSED outright rather than verified:
+/// *minted by the target* means the target SOLELY minted it, and a K-of-N root is a
+/// GROUP's authority — its co-signers authorized it too. Accepting it would let any one
+/// signer's target confer the whole group's grant, which is E3/F66's over-acceptance.
+/// §5.5's M6 also requires the LOCAL peer in the signer set, so the quorum arm has no
+/// meaning in a foreign frame even on its own terms.
+fn verifyCapabilityChainRootedAt(arena: std.mem.Allocator, env: model.Envelope, st: *Store, local_peer: []const u8, root_peer: []const u8, capability: Entity) Error!Verdict {
     const chain = collectChain(arena, env, st, capability) catch |e| switch (e) {
         error.ChainTooDeep, error.ChainUnreachable => return .deny,
         else => |x| return x,
     };
     const root = chain[chain.len - 1];
-    // Root authority: a single-sig root must root at the local peer; a §3.6 M3
-    // multi-sig root (root-only) must pass k-of-n quorum validation.
+    // Root authority: a single-sig root must root at `root_peer`; a §3.6 M3 multi-sig root
+    // (root-only) must pass k-of-n quorum validation, and only in the LOCAL frame.
     const root_ok = blk: {
         if (try multiGranterOfEntity(arena, root)) |mg| {
+            if (!std.mem.eql(u8, root_peer, local_peer)) break :blk false;
             break :blk (try verifyMultiSigRoot(arena, env, st, local_peer, root, mg)) == .allow;
         }
         const gh = root.bytesField("granter") orelse break :blk false;
         const g = resolve(env, st, gh) orelse break :blk false;
         const pk = g.bytesField("public_key") orelse break :blk false;
         const pid = try identity.peerIdOfPubkey(arena, pk);
-        break :blk std.mem.eql(u8, pid, local_peer);
+        break :blk std.mem.eql(u8, pid, root_peer);
     };
     if (!root_ok) return .deny;
 
@@ -1303,4 +1324,122 @@ test "single-sig root still verifies (strict superset)" {
     defer ss.deinit(gpa);
     const extra = [_]Entity{ id1.peer_entity, ss };
     try testing.expectEqual(Verdict.allow, try allowsMultiSig(gpa, local, cap, &extra));
+}
+
+
+// ── §1.4 PD-2: outbound sub-dispatch authorization ───────────────────────────
+
+/// Strip the §1.4 scheme and leading peer segment, answering the PEER-RELATIVE path.
+///
+/// §1.4 admits three spellings of one address — `system/tree`, `/{peer}/system/tree` and
+/// `entity://{peer}/system/tree` — and §1.4's PD-2 block requires Dimension 1's handler
+/// pattern to be the target uri's peer-relative path, because a grant names HANDLERS and
+/// a handler pattern never carries a peer segment. Matching a grant against the absolute
+/// or schemed form matches nothing, silently, which reads at the wire as an authority
+/// refusal.
+///
+/// The first segment is dropped ONLY when it is a peer_id. A peer-relative
+/// `system/protocol/connect` must not lose `system` — the standing defect on `smalltalk`
+/// and `forth`, where an unconditional strip made every self-minted grant unusable while
+/// the handshake stayed green.
+pub fn peerRelativeOf(arena: std.mem.Allocator, uri: []const u8) Error![]const u8 {
+    const p = try normalizeUri(arena, uri);
+    if (p.len == 0 or p[0] != '/') return p;
+    const body = p[1..];
+    const slash = std.mem.indexOfScalar(u8, body, '/');
+    const first = if (slash) |i| body[0..i] else body;
+    if (isPeerId(first)) return if (slash) |i| body[i + 1 ..] else "";
+    return body;
+}
+
+/// Store key of a handler's OWN grant (§6.8: `system/capability/grants/{pattern}`),
+/// tolerant of the pattern arriving absolute or peer-relative.
+///
+/// §6.6's tree walk answers an ABSOLUTE pattern because store keys are absolute, while
+/// the grant path is built from the PEER-RELATIVE one. The two are one segment apart and
+/// concatenating the wrong one yields a doubled peer segment whose lookup misses — which
+/// fails closed as "no handler grant" and is indistinguishable, at the wire, from a
+/// genuine authority refusal.
+pub fn grantPathFor(arena: std.mem.Allocator, local_peer: []const u8, pattern: []const u8) Error![]const u8 {
+    const prefix = try std.fmt.allocPrint(arena, "/{s}/", .{local_peer});
+    const rel = if (startsWith(pattern, prefix)) pattern[prefix.len..] else pattern;
+    return std.fmt.allocPrint(arena, "/{s}/system/capability/grants/{s}", .{ local_peer, rel });
+}
+
+/// Verify a presented reentry credential against §1.4's clauses. Answers the `peers`
+/// scope Dimension 4 relaxes to, wrapped so that a credential which VERIFIES but carries
+/// NO `peers` dimension is distinguishable from one that relaxes nothing.
+///
+/// THE OPTIONAL-OF-OPTIONAL IS THE POINT. An absent `peers` on the credential relaxes to
+/// the TARGET — the ordinary reentry shape, "you may dispatch back to me" — so a plain
+/// `?Scope` would collapse that legitimate result into "no relaxation", which is the
+/// absent-vs-present conflation §6.2's CAP-6a records for temporal accessors, one layer
+/// up and in the direction that REFUSES a valid reentry.
+///
+/// Every clause is required and failing any relaxes nothing: the chain ROOT granter
+/// resolves to the TARGET peer and is NOT a multi-signature root; the LEAF grantee is the
+/// local peer; the chain is valid and not revoked.
+fn targetMintedPeersRelaxation(arena: std.mem.Allocator, env: model.Envelope, st: *Store, local_peer: []const u8, target_peer: []const u8, cred: Entity) Error!??Scope {
+    // Nothing to relax — the default already covers this peer.
+    if (std.mem.eql(u8, target_peer, local_peer)) return null;
+    const v = verifyCapabilityChainRootedAt(arena, env, st, local_peer, target_peer, cred) catch |e| switch (e) {
+        // An unresolvable grantee inside the credential belongs to SOMEBODY ELSE'S chain:
+        // it must relax nothing, not turn the sub-dispatch into a 401 about a token the
+        // caller presented in params.
+        error.UnresolvableGrantee => return null,
+        else => |x| return x,
+    };
+    if (v != .allow) return null;
+    if (try isRevoked(arena, env, st, local_peer, cred)) return null;
+    const gh = cred.bytesField("grantee") orelse return null;
+    const ge = resolve(env, st, gh) orelse return null;
+    const pk = ge.bytesField("public_key") orelse return null;
+    const pid = try identity.peerIdOfPubkey(arena, pk);
+    if (!std.mem.eql(u8, pid, local_peer)) return null;
+    const gs = try grantsOfToken(arena, cred);
+    if (gs.len == 0) return null;
+    return gs[0].peers;   // null INSIDE the outer optional => the target itself
+}
+
+/// §1.4's PD-2 gate: `check_permission` run before a locally-originated sub-dispatch
+/// LEAVES the peer, with all four dimensions applied.
+///
+/// ONE GATE AND ONE EXEMPTION, in §1.4's own words: the EXECUTING HANDLER'S GRANT decides
+/// all four dimensions (§6.8), evaluated in the LOCAL frame, with Dimension 1's pattern
+/// the target uri's PEER-RELATIVE path; and a valid capability MINTED BY THE TARGET PEER
+/// naming this peer as `grantee` relaxes Dimension 4 (`peers`) AND ONLY DIMENSION 4.
+///
+/// *"The target answers WHERE; the handler's grant answers WHAT."* A credential is NOT a
+/// grant: with no handler grant there is nothing to supply Dimensions 1-3, so the
+/// sub-dispatch is refused however good the credential is. That is the COMPOSE, and the
+/// BYPASS it is distinguished from is a peer that treats the credential as a standalone
+/// authorizer and steers past its own grant — §6.8's confused-deputy substitution. Both
+/// obvious vectors agree under either reading, so the only input that separates them is a
+/// VALID credential presented to a handler whose own grant does NOT cover the request.
+///
+/// `cred == null` is the ambient arm: Dimension 4 is decided by the handler's grant alone.
+pub fn checkOutboundSubDispatch(arena: std.mem.Allocator, env: model.Envelope, st: *Store, local_peer: []const u8, target_peer: []const u8, handler_pattern: []const u8, operation: []const u8, handler_grant: Entity, resource: Value, cred: ?Entity) Error!bool {
+    // Computed FIRST and consulted LAST, so no credential can stand in for 1-3.
+    const relax: ??Scope = if (cred) |c|
+        try targetMintedPeersRelaxation(arena, env, st, local_peer, target_peer, c)
+    else
+        null;
+    for (try grantsOfToken(arena, handler_grant)) |g| {
+        if (!try matchesScope(arena, local_peer, handler_pattern, g.handlers, .path)) continue;
+        if (!try matchesScope(arena, local_peer, operation, g.operations, .id)) continue;
+        if (!try checkResourceScope(arena, local_peer, local_peer, resource, g.resources)) continue;
+        // Dimension 4. §5.2's default for an absent `peers` scope is
+        // {include: [local_peer_id]}, so a foreign target fails unless this grant names it
+        // or a target-minted credential relaxes it.
+        const peers = g.peers orelse Scope{ .incl = &.{local_peer}, .excl = &.{} };
+        if (try matchesScope(arena, local_peer, target_peer, peers, .id)) return true;
+        if (relax) |maybe_scope| {
+            if (maybe_scope) |rs| {
+                if (try matchesScope(arena, local_peer, target_peer, rs, .id)) return true;
+            } else {
+                return true;   // absent `peers` on the credential relaxes to the granter
+            }
+        }
+    }
+    return false;
 }

@@ -2097,10 +2097,22 @@ static void h_validate_echo(ec_peer *p, ec_conn *conn, const ec_envelope *env,
  * envelope (+1 ref; caller frees) or NULL. The whole authority is caller-supplied (the
  * validator minted the reentry cap); we sign the EXECUTE with our own identity.
  */
+/* granters/cap_sigs are PLURAL (GUIDE-CONFORMANCE §7a.1, 0.8.2.19) so a K-of-N root can
+ * present every granter identity and every link signature; the ordinary single-granter
+ * case is a list of one. Every member goes into `included` because §5.5's chain walk
+ * resolves granters and signers BY HASH out of that map — a granter left out is a link the
+ * verifier cannot reach, which fails closed and reads as the peer refusing the credential
+ * form rather than as a carrier we truncated.
+ *
+ * capability == NULL is the AMBIENT arm: the EXECUTE carries no `capability` field at all.
+ * An empty hash would NOT do — that is a present field resolving to nothing, which §5.2
+ * reads as an unresolvable capability rather than as its absence. */
 static ec_status outbound_dispatch(ec_peer *p, ec_conn *conn, const char *uri,
                                    const char *operation, ec_entity *params,
-                                   ec_entity *capability, ec_entity *granter,
-                                   ec_entity *cap_sig, ec_value *resource,
+                                   ec_entity *capability,
+                                   ec_entity **granters, size_t n_granters,
+                                   ec_entity **cap_sigs, size_t n_cap_sigs,
+                                   ec_value *resource,
                                    ec_envelope **out_resp)
 {
     *out_resp = NULL;
@@ -2115,7 +2127,8 @@ static ec_status outbound_dispatch(ec_peer *p, ec_conn *conn, const char *uri,
 
     ec_entity *exec = NULL;
     ec_status st = ec_make_execute(rid, uri, operation, params,
-                                   p->identity->identity_hash, capability->hash, resource, &exec);
+                                   p->identity->identity_hash,
+                                   capability ? capability->hash : NULL, resource, &exec);
     if (st != EC_OK) {
         return st;                   /* resource consumed by make_execute on success only */
     }
@@ -2132,17 +2145,73 @@ static ec_status outbound_dispatch(ec_peer *p, ec_conn *conn, const char *uri,
         ec_entity_unref(exec_sig);
         return st;
     }
-    /* §5.8 authority chain travels in included (reentry cap + granter + our peer + sigs) */
-    ec_env_add(req, capability);
-    ec_env_add(req, granter);
+    /* §5.8 authority chain travels in included (reentry cap + granters + our peer + sigs) */
+    if (capability) {
+        ec_env_add(req, capability);
+        for (size_t i = 0; i < n_granters; i++) { ec_env_add(req, granters[i]); }
+        for (size_t i = 0; i < n_cap_sigs; i++) { ec_env_add(req, cap_sigs[i]); }
+    }
     ec_env_add(req, p->identity->peer_entity);
-    ec_env_add(req, cap_sig);
     ec_env_add(req, exec_sig);
     ec_entity_unref(exec_sig);
 
     *out_resp = ec_io_outbound(conn->io, req);
     ec_env_free(req);
     return EC_OK;
+}
+
+
+/* Decode an ARRAY of nested entities at `key`, falling back to the SINGULAR spelling as a
+ * list of one (the §7a.1 transitional carriers). Returns false when the key is absent or
+ * not a list AND the singular is absent too; the caller reads *out_len == 0 as "no
+ * credential here".
+ *
+ * An array whose members do not all decode is a MALFORMED carrier and yields false with
+ * an EMPTY list, never a silently shorter one, because the caller's all-or-none test
+ * would then read a partial credential as a complete one. */
+static bool entity_list_field(const ec_entity *e, const char *key, const char *singular,
+                              ec_entity ***out, size_t *out_len)
+{
+    *out = NULL;
+    *out_len = 0;
+    const ec_value *v = ec_ent_field(e, key);
+    if (v && v->kind == EC_ARRAY) {
+        size_t n = v->as.arr.len;
+        if (n == 0) {
+            return true;    /* present, empty -> partial; the caller's count sees 0 */
+        }
+        ec_entity **items = calloc(n, sizeof(*items));
+        if (!items) {
+            return false;
+        }
+        for (size_t i = 0; i < n; i++) {
+            if (ec_entity_of_cbor(v->as.arr.items[i], &items[i]) != EC_OK || !items[i]) {
+                for (size_t j = 0; j < i; j++) { ec_entity_unref(items[j]); }
+                free(items);
+                return false;
+            }
+        }
+        *out = items;
+        *out_len = n;
+        return true;
+    }
+    ec_entity *one = ec_ent_entity_field(e, singular);
+    if (!one) {
+        return false;
+    }
+    ec_entity **items = calloc(1, sizeof(*items));
+    if (!items) { ec_entity_unref(one); return false; }
+    items[0] = one;
+    *out = items;
+    *out_len = 1;
+    return true;
+}
+
+static void entity_list_free(ec_entity **items, size_t len)
+{
+    if (!items) { return; }
+    for (size_t i = 0; i < len; i++) { ec_entity_unref(items[i]); }
+    free(items);
 }
 
 /*
@@ -2159,8 +2228,7 @@ static void h_validate_dispatch_outbound(ec_peer *p, ec_conn *conn, const ec_env
                                          const ec_entity *exec, const ec_entity *caller_cap,
                                          const char *op, const char *handler_pattern, ec_outcome *out)
 {
-    (void)handler_pattern;   /* §6.3's path check is the tree handler's; carried for the interface */
-    (void)env; (void)caller_cap;
+    (void)caller_cap;
     if (strcmp(op, "dispatch") != 0) {
         outcome_err(out, 501, "unsupported_operation", op);
         return;
@@ -2173,19 +2241,58 @@ static void h_validate_dispatch_outbound(ec_peer *p, ec_conn *conn, const ec_env
     const char *target = ec_ent_text(params, "target");
     const char *operation = ec_ent_text(params, "operation");
     const ec_value *value = ec_ent_field(params, "value");
-    ec_entity *capability = ec_ent_entity_field(params, "reentry_capability");
-    ec_entity *granter = ec_ent_entity_field(params, "reentry_granter");
-    ec_entity *cap_sig = ec_ent_entity_field(params, "reentry_cap_signature");
     if (!target) { target = ""; }
     if (!operation) { operation = ""; }
-    if (!value || !capability || !granter || !cap_sig) {
-        ec_entity_unref(capability); ec_entity_unref(granter); ec_entity_unref(cap_sig);
+
+    /* GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the single-granter
+     * case is an array of ONE. They were singular, which made §1.4's multi-signature-root
+     * rule ungateable on the wire: driving it needs two granter identities and two
+     * signatures, and a single-credential carrier cannot express that input.
+     *
+     * TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one, because
+     * THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle is what all 46
+     * tracked reports are measured against and it sends the SINGULAR names; a plural-only
+     * peer reads the triple as absent there, takes the ambient arm and refuses — measured
+     * on the `go` vanguard as 2 of 778 severities moving PASS -> FAIL. Accepting both
+     * keeps the cohort 0-FAIL at BOTH check sets. REMOVE THIS FALLBACK AT THE ORACLE
+     * RE-PIN, and not before: the exit condition is that tools/oracle-pin.env's `ref`
+     * names an oracle whose dispatch-outbound probe sends the plural carriers. */
+    ec_entity *capability = ec_ent_entity_field(params, "reentry_capability");
+    ec_entity **granters = NULL; size_t n_granters = 0;
+    ec_entity **cap_sigs = NULL; size_t n_cap_sigs = 0;
+    bool granters_ok = entity_list_field(params, "reentry_granters", "reentry_granter",
+                                         &granters, &n_granters);
+    bool sigs_ok = entity_list_field(params, "reentry_cap_signatures", "reentry_cap_signature",
+                                     &cap_sigs, &n_cap_sigs);
+
+    /* The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED arm, all
+     * three absent selects the AMBIENT arm, and a PARTIAL set is 400 invalid_params — a
+     * partial credential is malformed, not ambient. An empty array is partial, not
+     * present: it carries no credential. A MALFORMED array (a member that does not decode)
+     * is also partial, never a silently shorter list. */
+    int n_present = (capability ? 1 : 0)
+                  + ((granters_ok && n_granters > 0) ? 1 : 0)
+                  + ((sigs_ok && n_cap_sigs > 0) ? 1 : 0);
+    if (!value) {
+        ec_entity_unref(capability);
+        entity_list_free(granters, n_granters); entity_list_free(cap_sigs, n_cap_sigs);
         ec_entity_unref(params);
-        outcome_err(out, 400, "invalid_params", "dispatch-outbound requires value + reentry authority");
+        outcome_err(out, 400, "invalid_params", "dispatch-outbound requires value");
         return;
     }
+    if (n_present != 0 && n_present != 3) {
+        ec_entity_unref(capability);
+        entity_list_free(granters, n_granters); entity_list_free(cap_sigs, n_cap_sigs);
+        ec_entity_unref(params);
+        outcome_err(out, 400, "invalid_params",
+                    "dispatch-outbound reentry authority is all-or-none");
+        return;
+    }
+    bool has_cred = (n_present == 3);
+    ec_entity *cred = has_cred ? capability : NULL;
     if (!conn || !conn->io) {
-        ec_entity_unref(capability); ec_entity_unref(granter); ec_entity_unref(cap_sig);
+        ec_entity_unref(capability);
+        entity_list_free(granters, n_granters); entity_list_free(cap_sigs, n_cap_sigs);
         ec_entity_unref(params);
         outcome_err(out, 503, "no_outbound_seam", "no live §6.11 reentry connection");
         return;
@@ -2195,29 +2302,113 @@ static void h_validate_dispatch_outbound(ec_peer *p, ec_conn *conn, const ec_env
      * The validator already shapes it as the echo {value: X} params map; pass it through. */
     ec_entity *inner = NULL;
     if (ec_entity_make("primitive/any", value, &inner) != EC_OK) {
-        ec_entity_unref(capability); ec_entity_unref(granter); ec_entity_unref(cap_sig);
+        ec_entity_unref(capability);
+        entity_list_free(granters, n_granters); entity_list_free(cap_sigs, n_cap_sigs);
+        ec_entity_unref(params);
+        outcome_err(out, 500, "internal_error", NULL);
+        return;
+    }
+
+    /* `target` arrives as any of §1.4's three spellings and the validator sends the
+     * SCHEMED ABSOLUTE form. Both the handler-pattern dimension and the resource target
+     * want the PEER-RELATIVE path — §1.4's PD-2 block says so for Dimension 1, and a
+     * resource target carrying a scheme is not a path at all. */
+    char *rel_target = NULL;
+    if (ec_cap_peer_relative_of(target, &rel_target) != EC_OK || !rel_target) {
+        ec_entity_unref(inner); ec_entity_unref(capability);
+        entity_list_free(granters, n_granters); entity_list_free(cap_sigs, n_cap_sigs);
         ec_entity_unref(params);
         outcome_err(out, 500, "internal_error", NULL);
         return;
     }
 
     /* resource target = the downstream handler path */
-    size_t tn = strlen("system/handler/") + strlen(target) + 1;
+    size_t tn = strlen("system/handler/") + strlen(rel_target) + 1;
     char *rt = malloc(tn);
     ec_value *resource = NULL;
     if (rt) {
-        snprintf(rt, tn, "system/handler/%s", target);
+        snprintf(rt, tn, "system/handler/%s", rel_target);
         if (ec_resource_target(rt, &resource) != EC_OK) { resource = NULL; }
         free(rt);
     }
 
+    /* §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer, all four
+     * dimensions, on THIS handler's own grant — with a target-minted credential relaxing
+     * Dimension 4 and nothing else. Consulting only the presented credential here is the
+     * §6.8 confused-deputy bypass.
+     *
+     * §7a.2a: the credential, its granters and its signatures arrive NESTED IN PARAMS
+     * (ratified shape (a), in-band), so they are NOT in `env` and a verifier handed that
+     * alone cannot resolve a single link. The bundle merges them in. */
+    ec_envelope *bundle = NULL;
+    bool gate_ok = false;
+    char *gpath = NULL;
+    ec_entity *own_grant = NULL;
+    if (ec_cap_grant_path_for(p->local, handler_pattern, &gpath) == EC_OK && gpath) {
+        own_grant = ec_store_get_at(p->store, gpath);
+        free(gpath);
+    }
+    if (!own_grant) {
+        /* §6.8: a handler with no valid grant does not run. Fail closed rather than
+         * falling back to the credential, which is the substitution §6.8 forbids. */
+        ec_value_free(resource); free(rel_target);
+        ec_entity_unref(inner); ec_entity_unref(capability);
+        entity_list_free(granters, n_granters); entity_list_free(cap_sigs, n_cap_sigs);
+        ec_entity_unref(params);
+        outcome_err(out, 403, "capability_denied", "no handler grant for this pattern");
+        return;
+    }
+    if (ec_env_new((ec_entity *)exec, &bundle) == EC_OK && bundle) {
+        if (env) {
+            for (size_t i = 0; i < env->included_len; i++) {
+                ec_env_add(bundle, env->included[i].entity);
+            }
+        }
+        if (has_cred) {
+            ec_env_add(bundle, cred);
+            for (size_t i = 0; i < n_granters; i++) { ec_env_add(bundle, granters[i]); }
+            for (size_t i = 0; i < n_cap_sigs; i++) { ec_env_add(bundle, cap_sigs[i]); }
+        }
+        /* §1.4: target_peer = extract_peer(uri, local_peer_id). The validator sends the
+         * absolute form, so the URI names the target. Where the uri is PEER-RELATIVE there
+         * is no peer in it and the §6.11 seam's destination is the connection's remote, so
+         * that is the fallback — without it Dimension 4 passes vacuously. */
+        char *uri_peer = NULL;
+        const char *target_peer = p->local;
+        if (ec_extract_peer(p->local, target, &uri_peer) == EC_OK && uri_peer) {
+            target_peer = (strcmp(uri_peer, p->local) == 0 && conn->hello_peer_id)
+                        ? conn->hello_peer_id : uri_peer;
+        }
+        gate_ok = ec_cap_check_outbound_sub_dispatch(p->local, target_peer, rel_target,
+                                                     operation, p->store, own_grant,
+                                                     resource, cred, bundle);
+        free(uri_peer);
+    }
+    ec_env_free(bundle);
+    ec_entity_unref(own_grant);
+    if (!gate_ok) {
+        /* §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic
+         * transport- or gateway-class code would launder an authorization verdict into a
+         * route fault, and the ambient and presented branches would then disagree about
+         * what the same gate decided. */
+        ec_value_free(resource); free(rel_target);
+        ec_entity_unref(inner); ec_entity_unref(capability);
+        entity_list_free(granters, n_granters); entity_list_free(cap_sigs, n_cap_sigs);
+        ec_entity_unref(params);
+        outcome_err(out, 403, "capability_denied",
+                    "outbound sub-dispatch not authorized by the handler grant");
+        return;
+    }
+    free(rel_target);
+
     ec_envelope *resp = NULL;
     ec_status st = outbound_dispatch(p, conn, target, operation, inner,
-                                     capability, granter, cap_sig, resource, &resp);
+                                     cred, granters, n_granters, cap_sigs, n_cap_sigs,
+                                     resource, &resp);
     ec_entity_unref(inner);
     ec_entity_unref(capability);
-    ec_entity_unref(granter);
-    ec_entity_unref(cap_sig);
+    entity_list_free(granters, n_granters);
+    entity_list_free(cap_sigs, n_cap_sigs);
     ec_entity_unref(params);
 
     if (st != EC_OK || !resp) {
@@ -2456,6 +2647,45 @@ static ec_value *operations_map(const char *const *ops, size_t nops)
     return m;
 }
 
+/* A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward, as
+ * distinct from any capability a caller presents. §6.8 row 1: an access in service of a
+ * caller's request needs the caller's verified capability AND this grant, and BOTH must
+ * pass. Narrow for dispatch-outbound; an empty array for everything else. */
+static ec_value *scope_include_one(const char *v)
+{
+    ec_value *m = ec_map();
+    ec_value *arr = ec_array();
+    ec_value *k = ec_text("include");
+    if (!m || !arr || !k) { ec_value_free(m); ec_value_free(arr); ec_value_free(k); return NULL; }
+    if (ec_array_push(arr, ec_text(v)) != EC_OK || ec_map_put(m, k, arr) != EC_OK) {
+        ec_value_free(m); return NULL;
+    }
+    return m;
+}
+
+static ec_value *own_grants_for(const char *pattern)
+{
+    ec_value *arr = ec_array();
+    if (!arr || strcmp(pattern, "system/validate/dispatch-outbound") != 0) {
+        return arr;
+    }
+    ec_value *g = ec_map();
+    ec_value *kh = ec_text("handlers"), *ko = ec_text("operations"), *kr = ec_text("resources");
+    ec_value *sh = scope_include_one("system/validate/echo");
+    ec_value *so = scope_include_one("echo");
+    ec_value *sr = scope_include_one("system/handler/system/validate/echo");
+    if (!g || !kh || !ko || !kr || !sh || !so || !sr ||
+        ec_map_put(g, kh, sh) != EC_OK ||
+        ec_map_put(g, ko, so) != EC_OK ||
+        ec_map_put(g, kr, sr) != EC_OK ||
+        ec_array_push(arr, g) != EC_OK) {
+        ec_value_free(g); ec_value_free(kh); ec_value_free(ko); ec_value_free(kr);
+        ec_value_free(sh); ec_value_free(so); ec_value_free(sr);
+        return ec_array();
+    }
+    return arr;
+}
+
 static ec_status bootstrap_handler_entities(ec_peer *p, const char *pattern, const char *name,
                                             const char *const *ops, size_t nops)
 {
@@ -2502,8 +2732,15 @@ static ec_status bootstrap_handler_entities(ec_peer *p, const char *pattern, con
     }
     ec_entity_unref(ie);
 
-    /* empty self-grant */
-    ec_value *grants = ec_array();
+    /* Self-grant. §6.8: the grant MUST exist at system/capability/grants/{pattern} and a
+     * handler with no valid grant does not run — so this bind is the ceiling row 1
+     * intersects against, not bookkeeping. EMPTY is the right default for a handler that
+     * never dispatches onward and the WRONG one for a handler that does, which is why
+     * dispatch-outbound gets a NARROW one: with a wide grant, consulting it and skipping
+     * it give the same answer on every input, so the confused-deputy discriminator cannot
+     * fire and a bypass reads as conformant (GUIDE-CONFORMANCE §7a.1 makes the narrowness
+     * a scaffold-contract requirement). */
+    ec_value *grants = own_grants_for(pattern);
     ec_entity *token = NULL, *sig = NULL;
     if (grants && mint_token(p, p->identity->identity_hash, grants, NULL, &token, &sig) == EC_OK) {
         size_t gn = strlen(p->local) + strlen(pattern) + 48;

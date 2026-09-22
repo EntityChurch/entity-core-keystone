@@ -586,6 +586,25 @@ NIL to 403 capability_denied; never errors or hangs."
 (root-only) must pass k-of-n quorum via VERIFY-MULTISIG-ROOT. A multi-sig token
 anywhere but the chain root is rejected. Returns :allow / :deny; signals
 UNRESOLVABLE-GRANTEE for the §5.5 401 carve-out."
+  (verify-capability-chain-rooted-at local-peer local-peer store capability included))
+
+(defun verify-capability-chain-rooted-at (local-peer root-peer store capability included)
+  "VERIFY-CAPABILITY-CHAIN with the expected ROOT granter named separately from the
+verifying peer.
+
+Section 1.4's PD-2 presented-authority arm needs this: the credential it evaluates is
+minted by the TARGET peer, so root-trust is relaxed away from the local peer -- and
+every other clause (per-link signatures, grantee resolution, temporal validity,
+attenuation, caveats) is unchanged. Parameterized rather than forked because a second
+copy of a chain walk is a second copy that drifts.
+
+A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY (section 1.4, 0.8.2.19). When
+ROOT-PEER differs from LOCAL-PEER the quorum arm is REFUSED outright rather than
+verified: minted by the target means the target SOLELY minted it, and a K-of-N root is a
+GROUP's authority -- its co-signers authorized it too. Accepting it would let any one
+signer's target confer the whole group's grant, which is E3/F66's over-acceptance.
+Section 5.5's M6 also requires the LOCAL peer in the signer set, so the quorum arm has
+no meaning in a foreign frame even on its own terms."
   (let ((resolve-fn (lambda (h) (cap-resolve included store h))))
     (multiple-value-bind (chain ok) (collect-chain capability resolve-fn)
       (if (not ok) :deny
@@ -593,16 +612,16 @@ UNRESOLVABLE-GRANTEE for the §5.5 401 carve-out."
                  (root-ok
                    (let ((mg (multi-granter-of-entity root)))
                      (if mg
-                         ;; §3.6 M3 multi-sig root — k-of-n quorum (structure + sigs
-                         ;; + temporal + grantee all handled here).
-                         (verify-multisig-root local-peer resolve-fn root mg included)
-                         ;; single-sig root: granter identity's peer_id == local peer.
+                         ;; §3.6 M3 multi-sig root — k-of-n quorum, LOCAL frame only.
+                         (and (string= root-peer local-peer)
+                              (verify-multisig-root local-peer resolve-fn root mg included))
+                         ;; single-sig root: granter identity's peer_id == root peer.
                          (let ((gh (entity-bytes root "granter")))
                            (and gh
                                 (let ((g (funcall resolve-fn gh)))
                                   (and g
                                        (let ((pk (entity-bytes g "public_key")))
-                                         (and pk (string= (peer-id-of-pubkey pk) local-peer)))))))))))
+                                         (and pk (string= (peer-id-of-pubkey pk) root-peer)))))))))))
             (if (not root-ok) :deny
                 (let ((good t) (n (length chain)))
                   (loop for i from 0 for current in chain while good do
@@ -700,3 +719,123 @@ UNRESOLVABLE-GRANTEE (→401) through chain verification."
                                               :authz-deny)
                                              ((is-revoked local-peer store cap included) :authz-deny)
                                              (t :allow))))))))))))))))))
+
+;; ── §1.4 PD-2: outbound sub-dispatch authorization ────────────────────────────
+
+(defun peer-relative-of (uri)
+  "Strip the section 1.4 scheme and leading peer segment, answering the PEER-RELATIVE path.
+
+Section 1.4 admits three spellings of one address -- system/tree, /{peer}/system/tree and
+entity://{peer}/system/tree -- and section 1.4's PD-2 block requires Dimension 1's handler
+pattern to be the target uri's peer-relative path, because a grant names HANDLERS and a
+handler pattern never carries a peer segment. Matching a grant against the absolute or
+schemed form matches nothing, silently, which reads at the wire as an authority refusal.
+
+The first segment is dropped ONLY when it is a peer_id. A peer-relative
+system/protocol/connect must not lose the system segment -- the standing defect on
+smalltalk and forth, where an unconditional strip made every self-minted grant unusable
+while the handshake stayed green."
+  (let ((p (normalize-uri uri)))
+    (if (or (zerop (length p)) (char/= (char p 0) #\/))
+        p
+        (let* ((body (subseq p 1))
+               (slash (position #\/ body))
+               (first (if slash (subseq body 0 slash) body)))
+          (if (is-peer-id first)
+              (if slash (subseq body (1+ slash)) "")
+              body)))))
+
+(defun grant-path-for (local-peer pattern)
+  "Store key of a handler's OWN grant (section 6.8: system/capability/grants/{pattern}),
+tolerant of the pattern arriving absolute or peer-relative.
+
+Section 6.6's tree walk answers an ABSOLUTE pattern because store keys are absolute,
+while the grant path is built from the PEER-RELATIVE one. The two are one segment apart
+and concatenating the wrong one yields a doubled peer segment whose lookup misses --
+which fails closed as no-handler-grant and is indistinguishable, at the wire, from a
+genuine authority refusal."
+  (let* ((prefix (concatenate 'string "/" local-peer "/"))
+         (rel (if (starts-with prefix pattern)
+                  (subseq pattern (length prefix))
+                  pattern)))
+    (concatenate 'string "/" local-peer "/system/capability/grants/" rel)))
+
+(defun target-minted-peers-relaxation (local-peer target-peer store cred included)
+  "Verify a presented reentry credential against section 1.4's clauses and, where they
+all hold, answer the peers scope Dimension 4 relaxes to. NIL relaxes nothing.
+
+Every clause is required and failing any relaxes nothing: the chain ROOT granter resolves
+to the TARGET peer and is NOT a multi-signature root (a K-of-N root is a GROUP's
+authority and never relaxes Dimension 4 -- VERIFY-CAPABILITY-CHAIN-ROOTED-AT refuses the
+quorum arm in a foreign frame, which is where that rule lands); the LEAF grantee is the
+local peer; the chain is valid and not revoked."
+  ;; Nothing to relax -- the default already covers this peer. Treating a self-targeted
+  ;; credential as a relaxation would make the exemption reachable with no foreign mint.
+  (when (string/= target-peer local-peer)
+    ;; An unresolvable grantee inside the credential SIGNALS rather than denying; a
+    ;; credential we cannot fully verify relaxes NOTHING, and it must not turn the
+    ;; sub-dispatch into a 401 about someone else's chain.
+    (let ((verdict (handler-case
+                       (verify-capability-chain-rooted-at local-peer target-peer store cred included)
+                     (error () :deny))))
+      (when (and (eq verdict :allow)
+                 (not (is-revoked local-peer store cred included)))
+        (let ((gh (entity-bytes cred "grantee")))
+          (when gh
+            (let ((ge (cap-resolve included store gh)))
+              (when ge
+                (let ((pk (entity-bytes ge "public_key")))
+                  (when (and pk (string= (peer-id-of-pubkey pk) local-peer))
+                    ;; The credential's own peers scope is what Dimension 4 relaxes TO.
+                    ;; Absent means the granter -- the target peer -- which is the
+                    ;; ordinary reentry shape: "you may dispatch back to me".
+                    (let ((g (car (grants-of-token cred))))
+                      (when g
+                        (or (grant-rec-peers g)
+                            (make-scope (list target-peer) nil))))))))))))))
+
+(defun check-outbound-sub-dispatch (local-peer target-peer handler-pattern operation
+                                    store handler-grant resource cred included)
+  "Section 1.4's PD-2 gate: check_permission run BEFORE a locally-originated sub-dispatch
+LEAVES the peer, with all four dimensions applied.
+
+ONE GATE AND ONE EXEMPTION, in section 1.4's own words: the EXECUTING HANDLER'S GRANT
+decides all four dimensions (section 6.8), evaluated in the LOCAL frame, with Dimension
+1's pattern the target uri's PEER-RELATIVE path; and a valid capability MINTED BY THE
+TARGET PEER naming this peer as grantee relaxes Dimension 4 (peers) AND ONLY DIMENSION 4.
+
+The target answers WHERE; the handler's grant answers WHAT. A credential is NOT a grant:
+with no handler grant there is nothing to supply Dimensions 1-3, so the sub-dispatch is
+refused however good the credential is. That is the COMPOSE, and the BYPASS it is
+distinguished from is a peer that treats the credential as a standalone authorizer and
+steers past its own grant -- section 6.8's confused-deputy substitution. Both obvious
+vectors agree under either reading (sources agree -> allow, no source -> refuse), so the
+only input that separates them is a VALID credential presented to a handler whose own
+grant does NOT cover the request, which MUST refuse.
+
+A credential failing any verification clause relaxes NOTHING and the handler grant gates
+unrelaxed -- it does not turn the verdict into an error.
+
+TARGET-PEER is supplied by the caller rather than derived here: on the section 6.11
+reentry seam the uri may be PEER-RELATIVE and the destination is the connection's remote,
+so extract-peer would answer the LOCAL peer and Dimension 4 would pass vacuously on the
+default include-local -- the exemption would then never be exercised and a bypass would
+read as a compose.
+
+CRED NIL is the ambient arm: Dimension 4 is decided by the handler's grant alone."
+  ;; Computed FIRST and consulted LAST, so no credential can stand in for 1-3.
+  (let ((relax-to (when cred
+                    (target-minted-peers-relaxation local-peer target-peer store cred included))))
+    (some (lambda (g)
+            (and (matches-scope local-peer handler-pattern (grant-rec-handlers g) :path)
+                 (matches-scope local-peer operation (grant-rec-operations g) :id)
+                 (check-resource-scope local-peer local-peer resource (grant-rec-resources g))
+                 ;; Dimension 4. Section 5.2's default for an absent peers scope is
+                 ;; include-local, so a foreign target fails unless this grant names it or
+                 ;; a target-minted credential relaxes it.
+                 (or (matches-scope local-peer target-peer
+                                    (or (grant-rec-peers g) (make-scope (list local-peer) nil))
+                                    :id)
+                     (and relax-to
+                          (matches-scope local-peer target-peer relax-to :id)))))
+          (grants-of-token handler-grant))))

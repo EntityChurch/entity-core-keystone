@@ -73,20 +73,40 @@ internal static class ChainVerifier
     /// grantee resolves, all links are temporally valid, and each delegation is a
     /// valid attenuation of its parent.
     /// </summary>
-    public static bool VerifyCapabilityChain(CapabilityToken capability, Envelope envelope, string localPeerId, ulong nowMs)
+    // `rootPeerId` is the peer the chain ROOT must derive; null defaults it to
+    // `localPeerId`. §1.4's PD-2 presented-authority arm needs it: the credential it
+    // evaluates is minted by the TARGET peer, so root-trust is relaxed away from the local
+    // peer — and every other clause (per-link signatures, grantee resolution, temporal
+    // validity, attenuation, caveats) is unchanged. Parameterized rather than forked
+    // because a second copy of a chain walk is a second copy that drifts.
+    //
+    // A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY (§1.4, 0.8.2.19). When it differs
+    // from `localPeerId` the quorum arm is REFUSED outright rather than verified: *minted
+    // by the target* means the target SOLELY minted it, and a K-of-N root is a GROUP's
+    // authority — its co-signers authorized it too. Accepting it would let any one
+    // signer's target confer the whole group's grant, which is E3/F66's over-acceptance.
+    // §5.5's M6 also requires the LOCAL peer in the signer set, so the quorum arm has no
+    // meaning in a foreign frame even on its own terms.
+    //
+    // Plain comments rather than <param> tags: C# requires EVERY parameter documented once
+    // ANY is, and turning a doc-completeness rule into a build failure is not what this
+    // change is for.
+    public static bool VerifyCapabilityChain(CapabilityToken capability, Envelope envelope, string localPeerId, ulong nowMs, string? rootPeerId = null)
     {
+        string rootPeer = rootPeerId ?? localPeerId;
         List<CapabilityToken>? chain = CollectAuthorityChain(capability, envelope);
         if (chain is null)
         {
             return false; // ChainUnreachable / ChainTooDeep — fail closed
         }
 
-        // Root authority: a single-sig root must root at the local peer; a multi-sig
-        // root (§3.6 M3, root-only) must pass k-of-n quorum validation.
+        // Root authority: a single-sig root must root at `rootPeer`; a multi-sig root
+        // (§3.6 M3, root-only) must pass k-of-n quorum validation, and only in the LOCAL
+        // frame.
         CapabilityToken root = chain[^1];
         if (root.IsMultiSig)
         {
-            if (!VerifyMultiSigRoot(root, envelope, localPeerId, nowMs))
+            if (rootPeer != localPeerId || !VerifyMultiSigRoot(root, envelope, localPeerId, nowMs))
             {
                 return false;
             }
@@ -94,7 +114,7 @@ internal static class ChainVerifier
         else
         {
             Entity? rootGranter = envelope.Find(root.Granter!);
-            if (rootGranter is null || PeerEntities.PeerId(rootGranter) != localPeerId)
+            if (rootGranter is null || PeerEntities.PeerId(rootGranter) != rootPeer)
             {
                 return false;
             }

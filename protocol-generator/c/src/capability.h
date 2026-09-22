@@ -83,6 +83,24 @@ bool ec_cap_check_path_permission(const char *local_peer, const char *operation,
                                   const char *path, const ec_entity *token,
                                   const char *handler_pattern);
 
+/* ── §1.4 PD-2: outbound sub-dispatch authorization ─────────────────────────── */
+
+/* The §1.4 PEER-RELATIVE spelling of a uri (scheme + leading peer_id segment stripped,
+ * and ONLY when that segment IS a peer_id). *out malloc'd. */
+ec_status ec_cap_peer_relative_of(const char *uri, char **out);
+
+/* Store key of a handler's OWN grant (§6.8), tolerant of an absolute or peer-relative
+ * pattern. *out malloc'd. */
+ec_status ec_cap_grant_path_for(const char *local_peer, const char *pattern, char **out);
+
+/* §1.4's PD-2 gate — check_permission before a locally-originated sub-dispatch leaves the
+ * peer. `cred == NULL` selects the ambient arm. See the definition. */
+bool ec_cap_check_outbound_sub_dispatch(const char *local_peer, const char *target_peer,
+                                        const char *handler_pattern, const char *operation,
+                                        ec_store *store, const ec_entity *handler_grant,
+                                        const ec_value *resource, const ec_entity *cred,
+                                        const ec_envelope *env);
+
 uint64_t ec_now_ms(void);
 
 #endif /* EC_CAPABILITY_H */

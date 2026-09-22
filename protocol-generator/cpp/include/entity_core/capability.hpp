@@ -102,6 +102,27 @@ bool check_path_permission(std::string_view local_peer, std::string_view operati
                            std::string_view path, const Entity& token,
                            std::string_view handler_pattern);
 
+
+// ── §1.4 PD-2: outbound sub-dispatch authorization ──────────────────────────────────
+
+// The §1.4 PEER-RELATIVE spelling of a uri (scheme + leading peer_id segment stripped,
+// and ONLY when that segment IS a peer_id). §1.4's PD-2 block requires Dimension 1's
+// handler pattern to be this form, because a grant names HANDLERS and a handler pattern
+// never carries a peer segment.
+std::string peer_relative_of(std::string_view uri);
+
+// Store key of a handler's OWN grant (§6.8), tolerant of an absolute or peer-relative
+// pattern.
+std::string grant_path_for(std::string_view local_peer, std::string_view pattern);
+
+// §1.4's PD-2 gate — check_permission before a locally-originated sub-dispatch leaves the
+// peer. A null `cred` selects the ambient arm. See the definition.
+bool check_outbound_sub_dispatch(const std::string& local_peer, const std::string& target_peer,
+                                 std::string_view handler_pattern, std::string_view operation,
+                                 const Store& store, const Entity& handler_grant,
+                                 const EcfValue& resource, const EntityPtr& cred,
+                                 const Envelope& env);
+
 }  // namespace entity_core::cap
 
 #endif  // ENTITY_CORE_CAPABILITY_HPP

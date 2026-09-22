@@ -110,7 +110,8 @@ private:
     void h_capability(const Envelope&, const Entity&, const Entity*, const std::string&, Outcome&);
     void h_type(const Entity&, const std::string&, Outcome&);
     void h_validate_echo(const Entity&, const std::string&, Outcome&);
-    void h_validate_dispatch_outbound(Connection&, const Entity&, const std::string&, Outcome&);
+    void h_validate_dispatch_outbound(Connection&, const Envelope&, const Entity&,
+                                      const std::string&, const std::string&, Outcome&);
 
     // helpers
     std::string abs_path(std::string_view rel) const;

@@ -138,7 +138,7 @@ class SmokeTest {
                 // initiator's reader dispatches it (it must serve echo too → make it a
                 // --validate peer). We model the validator-as-B surface S4 needs.
                 check("§6.11 dispatch-outbound reentry round-trips (B→A echo over inbound conn)",
-                    runReentryProbe(s, remote))
+                    runReentryProbe(s, remote, initiator, responder.identity.identityHash()))
             }
         }
     }
@@ -157,14 +157,35 @@ class SmokeTest {
      * a structured 503 (no_outbound_seam — only if the connection were non-reentrant);
      * reject 404/501 (handler absent — seam not wired) or 400 (param shape rejected).
      */
-    private suspend fun runReentryProbe(s: Transport.Session, remote: String): Boolean {
+    private suspend fun runReentryProbe(
+        s: Transport.Session,
+        remote: String,
+        initiator: Peer,
+        responderPeerId: ByteArray,
+    ): Boolean {
+        // §1.4 PD-2: the credential that relaxes Dimension 4 must be minted BY THE TARGET
+        // — here the INITIATOR (A), naming the responder (B) as grantee, because B is the
+        // peer dispatching back to A. This used to pass `s.capability`, the SESSION cap B
+        // minted for A: granter B, not the target, so under 0.8.2.31 it relaxes NOTHING
+        // and the gate refuses. It always was the wrong credential; nothing checked until
+        // §1.4's PD-2 arm landed, and the probe's own comment admitted it was standing in
+        // "to prove the seam parses". This is the credential validate-peer actually sends.
+        //
+        // The grant carries NO `peers` scope on purpose: absent means the granter, so
+        // Dimension 4 relaxes to A — exactly "you may dispatch back to me".
+        val reentryGrant = Peer.grant(
+            listOf("system/validate/echo"), listOf("system/handler/system/validate/echo"),
+            listOf("echo"), null)
+        val minted = initiator.mintToken(responderPeerId, listOf(reentryGrant), null)
         val params = Entity.make("primitive/any", Cbor.map(
             "target", "system/validate/echo",
             "operation", "echo",
             "value", Cbor.map("ping", EcfValue.IntVal.of(7L)),
-            "reentry_capability", s.capability!!.toCbor(),
-            "reentry_granter", s.granterPeer!!.toCbor(),
-            "reentry_cap_signature", s.capSignature!!.toCbor(),
+            "reentry_capability", minted.token.toCbor(),
+            // PLURAL carriers (GUIDE-CONFORMANCE §7a.1, 0.8.2.19): the single-granter case
+            // is an array of ONE.
+            "reentry_granters", EcfValue.Arr(listOf(initiator.identity.peerEntity.toCbor())),
+            "reentry_cap_signatures", EcfValue.Arr(listOf(minted.signature.toCbor())),
         ))
         val r = s.execute("/$remote/system/validate/dispatch-outbound", "dispatch", params, null)
             ?: return false

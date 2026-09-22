@@ -223,19 +223,50 @@ module EntityCore
 
     # ── §6.13(b) handler-facing outbound dispatch ────────────────────────────────
 
+    # A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward, as
+    # distinct from any capability a caller presents. §6.8 row 1: an access in service of a
+    # caller's request needs the caller's verified capability AND this grant, and BOTH must
+    # pass. Narrow for `dispatch-outbound`; empty for everything else.
+    private def own_grants_for(pattern : String) : Array(Cbor::EcValue)
+      return [] of Cbor::EcValue unless pattern == "system/validate/dispatch-outbound"
+      scope = ->(v : String) {
+        m = ::Hash(Cbor::EcValue, Cbor::EcValue).new
+        m["include"] = [v.as(Cbor::EcValue)] of Cbor::EcValue
+        m.as(Cbor::EcValue)
+      }
+      g = ::Hash(Cbor::EcValue, Cbor::EcValue).new
+      g["handlers"] = scope.call("system/validate/echo")
+      g["operations"] = scope.call("echo")
+      g["resources"] = scope.call("system/handler/system/validate/echo")
+      [g.as(Cbor::EcValue)] of Cbor::EcValue
+    end
+
+    # `granter_peers`/`cap_sigs` are PLURAL (GUIDE-CONFORMANCE §7a.1, 0.8.2.19) so a K-of-N
+    # root can present every granter identity and every link signature. Every member goes
+    # into `included` because §5.5's chain walk resolves granters and signers BY HASH out
+    # of that map — a granter left out is a link the verifier cannot reach.
+    #
+    # `capability == nil` is the AMBIENT arm: the EXECUTE carries no `capability` field at
+    # all. An empty hash would NOT do — that is a present field resolving to nothing, which
+    # §5.2 reads as an unresolvable capability rather than as its absence.
     def outbound_dispatch(conn : Conn, uri : String, operation : String, params : Entity,
-                          capability : Entity, granter_peer : Entity, cap_sig : Entity,
-                          resource : EcMap) : Envelope?
+                          capability : Entity?, granter_peers : Array(Entity),
+                          cap_sigs : Array(Entity), resource : EcMap) : Envelope?
       send_fn = conn.outbound
       return nil if send_fn.nil?
 
       request_id = "out-#{conn.next_out_counter}"
       exec = Wire.make_execute(request_id, uri, operation, params,
-        author: @identity.identity_hash, capability: capability.content_hash, resource: resource)
+        author: @identity.identity_hash, capability: capability.try(&.content_hash), resource: resource)
       exec_sig = @identity.sign(exec)
-      included = [
-        capability, granter_peer, @identity.peer_entity, cap_sig, exec_sig,
-      ]
+      included = [] of Entity
+      if cap = capability
+        included << cap
+        included.concat(granter_peers)
+        included.concat(cap_sigs)
+      end
+      included << @identity.peer_entity
+      included << exec_sig
       send_fn.call(Envelope.of(exec, included))
     end
 
@@ -449,7 +480,12 @@ module EntityCore
       idata["operations"] = operations
       @store.bind("/#{@local_peer}/system/handler/#{pattern}",
         Entity.make("system/handler/interface", idata))
-      minted = mint_token(@identity.identity_hash, [] of Cbor::EcValue, nil)
+      # §6.8: the grant MUST exist at `system/capability/grants/{pattern}` and a handler
+      # with no valid grant does not run — so this bind is the ceiling row 1 intersects
+      # against, not bookkeeping. NARROW for dispatch-outbound: with a wide grant,
+      # consulting it and skipping it give the same answer on every input, so the
+      # confused-deputy discriminator cannot fire (GUIDE-CONFORMANCE §7a.1).
+      minted = mint_token(@identity.identity_hash, own_grants_for(pattern), nil)
       @store.bind("/#{@local_peer}/system/capability/grants/#{pattern}", minted.token)
       nil
     end

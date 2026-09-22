@@ -93,7 +93,21 @@ internal sealed class HandlerContext
 /// signature. The handler dispatches under its own authority (§6.8 — no silent
 /// escalation of the caller's), so it supplies the bundle it holds for the target.
 /// </summary>
-internal sealed record OutboundAuthority(CapabilityToken Capability, Entity GranterPeer, Entity CapabilitySignature);
+/// <summary>
+/// The authority a handler presents on an outbound EXECUTE.
+/// <para>
+/// The granter and signature lists are PLURAL (GUIDE-CONFORMANCE §7a.1, 0.8.2.19) so a
+/// K-of-N root can present every granter identity and every link signature; the ordinary
+/// single-granter case is a list of one. Every member goes into <c>included</c> because
+/// §5.5's chain walk resolves granters and signers BY HASH out of that map — a granter
+/// left out is a link the verifier cannot reach, which fails closed and reads as the peer
+/// refusing the credential form rather than as a carrier we truncated.
+/// </para>
+/// </summary>
+internal sealed record OutboundAuthority(
+    CapabilityToken Capability,
+    IReadOnlyList<Entity> GranterPeers,
+    IReadOnlyList<Entity> CapabilitySignatures);
 
 /// <summary>
 /// The handler-facing outbound-dispatch seam (V7 §6.13(b)): a handler servicing an
@@ -110,7 +124,12 @@ internal interface IOutboundDispatch
     /// </summary>
     Task<ExecuteResponse> ExecuteAsync(
         string uri, string operation, Entity paramsEntity, ResourceTarget? resource,
-        OutboundAuthority authority, TimeSpan timeout, CancellationToken ct = default);
+        // `authority == null` is §1.4's PD-2 AMBIENT arm: the sub-dispatch is authorized
+        // by the executing handler's own grant and carries no credential at all. The
+        // EXECUTE then carries no `capability` field — an empty hash would NOT do, since
+        // that is a present field resolving to nothing, which §5.2 reads as an
+        // unresolvable capability rather than as its absence.
+        OutboundAuthority? authority, TimeSpan timeout, CancellationToken ct = default);
 }
 
 /// <summary>A registered handler's executable contract (V7 §6.1). The dispatch target.</summary>

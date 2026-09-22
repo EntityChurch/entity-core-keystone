@@ -41,7 +41,9 @@ public sealed class OutboundDispatchTests
         PeerIdentity target = PeerIdentity.Generate(); // the cap granter (the peer being called)
         (CapabilityToken cap, Entity capSig) = CapabilityToken.CreateRoot(
             target, local.IdentityHash, SeedPolicy.OpenGrants(), 1000);
-        var authority = new OutboundAuthority(cap, target.PeerEntity, capSig);
+        // PLURAL carriers (GUIDE-CONFORMANCE §7a.1, 0.8.2.19): the single-granter case is
+        // an array of ONE.
+        var authority = new OutboundAuthority(cap, new[] { target.PeerEntity }, new[] { capSig });
 
         var sender = new FakeSender();
         var outbound = new OutboundDispatch(local, sender);

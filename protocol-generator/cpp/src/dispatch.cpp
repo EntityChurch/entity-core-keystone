@@ -1100,25 +1100,66 @@ void Peer::h_validate_echo(const Entity& exec, const std::string& op, Outcome& o
     if (params) ok(o, params); else err(o, 400, "invalid_params", "echo requires a params entity");
 }
 
+// Decode an ARRAY of nested entities at `key`, falling back to the SINGULAR spelling as a
+// list of one (the §7a.1 transitional carriers).
+//
+// An EMPTY vector means absent, not-a-list, or a MALFORMED array (a member that does not
+// decode) — never a silently shorter list, because the caller's all-or-none test would
+// then read a partial credential as a complete one.
+static std::vector<EntityPtr> entity_list_field(const Entity& e, std::string_view key,
+                                                std::string_view singular) {
+    std::vector<EntityPtr> out;
+    if (const EcfValue* v = e.field(key); v && std::holds_alternative<ecf::Array>(v->as_variant())) {
+        for (const auto& box : std::get<ecf::Array>(v->as_variant())) {
+            auto d = Entity::from_cbor(*box);
+            if (!d) return {};
+            out.push_back(*d);
+        }
+        return out;
+    }
+    if (auto one = e.entity_field(singular)) out.push_back(one);
+    return out;
+}
+
 // §6.13(b)/§6.11 dispatch-outbound: originate an EXECUTE back to the caller over the inbound
 // connection (the reentry seam) and await the response. The reentry cap/granter/cap-sig
 // travel in `included` exactly as a session EXECUTE carries its §5.8 authority chain.
-void Peer::h_validate_dispatch_outbound(Connection& conn, const Entity& exec,
-                                        const std::string& op, Outcome& o) {
+void Peer::h_validate_dispatch_outbound(Connection& conn, const Envelope& env,
+                                        const Entity& exec, const std::string& op,
+                                        const std::string& handler_pattern, Outcome& o) {
     if (op != "dispatch") { err(o, 501, "unsupported_operation", op); return; }
     auto params = exec.entity_field("params");
     if (!params) { err(o, 400, "invalid_params", "dispatch-outbound requires a params entity"); return; }
     auto target = params->text("target").value_or("");
     auto operation = params->text("operation").value_or("");
     const EcfValue* value_v = params->field("value");
+    // GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the single-granter
+    // case is an array of ONE. They were singular, which made §1.4's multi-signature-root
+    // rule ungateable on the wire: driving it needs two granter identities and two
+    // signatures, and a single-credential carrier cannot express that input.
+    //
+    // TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one, because
+    // THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle is what all 46
+    // tracked reports are measured against and it sends the SINGULAR names; a plural-only
+    // peer reads the triple as absent there, takes the ambient arm and refuses — measured
+    // on the `go` vanguard as 2 of 778 severities moving PASS -> FAIL. Accepting both
+    // keeps the cohort 0-FAIL at BOTH check sets. REMOVE THIS FALLBACK AT THE ORACLE
+    // RE-PIN, and not before.
     auto capability = params->entity_field("reentry_capability");
-    auto granter = params->entity_field("reentry_granter");
-    auto cap_sig = params->entity_field("reentry_cap_signature");
-    if (!value_v || !capability || !granter || !cap_sig) {
-        err(o, 400, "invalid_params",
-            "dispatch-outbound requires value + reentry authority");
+    auto granters = entity_list_field(*params, "reentry_granters", "reentry_granter");
+    auto cap_sigs = entity_list_field(*params, "reentry_cap_signatures", "reentry_cap_signature");
+    if (!value_v) { err(o, 400, "invalid_params", "dispatch-outbound requires value"); return; }
+    // The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED arm, all
+    // three absent selects the AMBIENT arm, and a PARTIAL set is 400 invalid_params — a
+    // partial credential is malformed, not ambient. An empty array is partial, not present.
+    int n_present = (capability ? 1 : 0) + (granters.empty() ? 0 : 1) + (cap_sigs.empty() ? 0 : 1);
+    if (n_present != 0 && n_present != 3) {
+        err(o, 400, "invalid_params", "dispatch-outbound reentry authority is all-or-none");
         return;
     }
+    bool has_cred = (n_present == 3);
+    EntityPtr cred = has_cred ? capability : EntityPtr{};
+    if (!has_cred) { granters.clear(); cap_sigs.clear(); }
     if (!conn.seam) {
         err(o, 503, "no_outbound_seam", "no live section 6.11 reentry connection"); return;
     }
@@ -1126,21 +1167,77 @@ void Peer::h_validate_dispatch_outbound(Connection& conn, const Entity& exec,
     auto inner = Entity::make("primitive/any", *value_v);
     if (!inner) { err(o, 500, "internal_error"); return; }
 
-    EcfValue resource = wire::resource_target("system/handler/" + target);
+    // `target` arrives as any of §1.4's three spellings and the validator sends the
+    // SCHEMED ABSOLUTE form. Both the handler-pattern dimension and the resource target
+    // want the PEER-RELATIVE path — §1.4's PD-2 block says so for Dimension 1, and a
+    // resource target carrying a scheme is not a path at all.
+    std::string rel_target = cap::peer_relative_of(target);
+    EcfValue resource = wire::resource_target("system/handler/" + rel_target);
+
+    // §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer, all four
+    // dimensions, on THIS handler's own grant — with a target-minted credential relaxing
+    // Dimension 4 and nothing else. Consulting only the presented credential here is the
+    // §6.8 confused-deputy bypass.
+    auto own_grant = store_.get_at(cap::grant_path_for(local_, handler_pattern));
+    if (!own_grant) {
+        // §6.8: a handler with no valid grant does not run. Fail closed rather than
+        // falling back to the credential, which is the substitution §6.8 forbids.
+        err(o, 403, "capability_denied", "no handler grant for " + handler_pattern);
+        return;
+    }
+    // §7a.2a: the credential, its granters and its signatures arrive NESTED IN PARAMS
+    // (ratified shape (a), in-band), so they are NOT in `env` and a verifier handed that
+    // alone cannot resolve a single link.
+    Envelope bundle = env;
+    if (has_cred) {
+        bundle.add(cred);
+        for (const auto& g : granters) bundle.add(g);
+        for (const auto& sg : cap_sigs) bundle.add(sg);
+    }
+    // §1.4: target_peer = extract_peer(uri, local_id). The validator sends the
+    // absolute form, so the URI names the target. Where the uri is PEER-RELATIVE there is
+    // no peer in it and the §6.11 seam's destination is the connection's remote, so that
+    // is the fallback — without it Dimension 4 passes vacuously.
+    std::string uri_peer = cap::extract_peer(local_, target);
+    std::string target_peer = (uri_peer == local_ && conn.hello_peer_id)
+                                  ? *conn.hello_peer_id : uri_peer;
+    if (!cap::check_outbound_sub_dispatch(local_, target_peer, rel_target, operation,
+                                          store_, *own_grant, resource, cred, bundle)) {
+        // §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic
+        // transport- or gateway-class code would launder an authorization verdict into a
+        // route fault, and the ambient and presented branches would then disagree about
+        // what the same gate decided.
+        err(o, 403, "capability_denied",
+            "outbound sub-dispatch not authorized by the handler grant");
+        return;
+    }
+
     int n = ++conn.out_counter;
     std::string rid = "out-" + std::to_string(n);
-    auto exec_out = wire::make_execute(rid, target, operation, **inner,
-                                       identity_.identity_hash(),
-                                       std::span<const std::byte>(capability->hash()),
-                                       std::move(resource));
+    // The AMBIENT arm carries no credential, so the EXECUTE carries no `capability` field.
+    // An empty hash would NOT do — that is a present field resolving to nothing, which
+    // §5.2 reads as an unresolvable capability rather than as its absence.
+    auto exec_out =
+        has_cred ? wire::make_execute(rid, target, operation, **inner,
+                                      identity_.identity_hash(),
+                                      std::span<const std::byte>(cred->hash()),
+                                      std::move(resource))
+                 : wire::make_execute(rid, target, operation, **inner,
+                                      identity_.identity_hash(),
+                                      std::span<const std::byte>{},
+                                      std::move(resource));
     if (!exec_out) { err(o, 500, "internal_error"); return; }
     auto exec_sig = identity_.sign(**exec_out);
     if (!exec_sig) { err(o, 500, "internal_error"); return; }
     Envelope req(*exec_out);
-    req.add(capability);
-    req.add(granter);
+    if (has_cred) {
+        // Every granter and every signature: §5.5's chain walk resolves them BY HASH out
+        // of `included` — a granter left out is a link the verifier cannot reach.
+        req.add(cred);
+        for (const auto& g : granters) req.add(g);
+        for (const auto& sg : cap_sigs) req.add(sg);
+    }
     req.add(identity_.peer_entity());
-    req.add(cap_sig);
     req.add(*exec_sig);
 
     auto resp = conn.seam->outbound(req);
@@ -1266,6 +1363,29 @@ std::optional<Envelope> Peer::dispatch(Connection& conn, const Envelope& env) {
 }
 
 // ── bootstrap (§6.9 / §6.9a) + create ───────────────────────────────────────────────
+// A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward, as
+// distinct from any capability a caller presents. §6.8 row 1: an access in service of a
+// caller's request needs the caller's verified capability AND this grant, and BOTH must
+// pass. Narrow for dispatch-outbound; an empty array for everything else.
+static EcfValue scope_include_one(const char* v) {
+    auto arr = EcfValue::array();
+    arr.push(EcfValue::text(v));
+    auto m = EcfValue::map();
+    m.put(EcfValue::text("include"), std::move(arr));
+    return m;
+}
+
+static EcfValue own_grants_for(std::string_view pattern) {
+    auto arr = EcfValue::array();
+    if (pattern != "system/validate/dispatch-outbound") return arr;
+    auto g = EcfValue::map();
+    g.put(EcfValue::text("handlers"), scope_include_one("system/validate/echo"));
+    g.put(EcfValue::text("operations"), scope_include_one("echo"));
+    g.put(EcfValue::text("resources"), scope_include_one("system/handler/system/validate/echo"));
+    arr.push(std::move(g));
+    return arr;
+}
+
 void Peer::register_handler(const std::string& pattern, Handler fn) {
     handlers_.emplace_back(pattern, std::move(fn));
 }
@@ -1297,8 +1417,14 @@ Result<void> Peer::bootstrap_handler_entities(const std::string& pattern, const 
         if (!ie) return std::unexpected(ie.error());
         store_.bind("/" + local_ + "/system/handler/" + pattern, *ie);
     }
-    // empty self-grant
-    if (auto minted = mint_token(identity_.identity_hash(), EcfValue::array(), std::nullopt)) {
+    // Self-grant. §6.8: the grant MUST exist at system/capability/grants/{pattern} and a
+    // handler with no valid grant does not run — so this bind is the ceiling row 1
+    // intersects against, not bookkeeping. EMPTY is the right default for a handler that
+    // never dispatches onward and the WRONG one for a handler that does, which is why
+    // dispatch-outbound gets a NARROW one: with a wide grant, consulting it and skipping
+    // it give the same answer on every input, so the confused-deputy discriminator cannot
+    // fire (GUIDE-CONFORMANCE §7a.1 makes the narrowness a scaffold-contract requirement).
+    if (auto minted = mint_token(identity_.identity_hash(), own_grants_for(pattern), std::nullopt)) {
         store_.bind("/" + local_ + "/system/capability/grants/" + pattern, minted->first);
     }
     return {};
@@ -1387,9 +1513,11 @@ Result<void> Peer::init(bool open_grants, bool conformance) {
             [](Peer& p, Connection&, const Envelope&, const Entity& x, const Entity*,
                const std::string& op, const std::string&, Outcome& o) { p.h_validate_echo(x, op, o); });
         register_handler("system/validate/dispatch-outbound",
-            [](Peer& p, Connection& c, const Envelope&, const Entity& x, const Entity*,
-               const std::string& op, const std::string&, Outcome& o) {
-                p.h_validate_dispatch_outbound(c, x, op, o);
+            // §1.4 PD-2 needs the OWNING handler's peer-relative pattern (Dimension 1 is
+            // matched peer-relative) and the parent envelope (the §7a.2a bundle base).
+            [](Peer& p, Connection& c, const Envelope& e, const Entity& x, const Entity*,
+               const std::string& op, const std::string& pattern, Outcome& o) {
+                p.h_validate_dispatch_outbound(c, e, x, op, pattern, o);
             });
         struct Conf { const char* pattern; const char* name; std::span<const V> ops; };
         const std::array<Conf, 2> conf{{

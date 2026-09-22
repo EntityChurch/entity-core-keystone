@@ -78,12 +78,22 @@ class Peer private constructor(
     // ── token mint (§4.4 / §6.9a) ───────────────────────────────────────────────────
 
     /** A minted token + its signature. */
-    private data class Minted(val token: Entity, val signature: Entity)
+    /**
+     * MODULE-visible (`internal`), not public: the smoke test needs to mint the
+     * CROSS-PEER reentry credential §1.4's PD-2 exemption requires — one minted BY THE
+     * TARGET naming the dispatching peer as grantee. Before 0.8.2.31 nothing checked the
+     * credential's root, so the smoke could pass the session cap (minted by the
+     * DISPATCHER, not the target) and still reach the outbound primitive; §1.4 now
+     * correctly refuses that, and a test cannot construct the right input without a mint.
+     * `internal` keeps it out of the published surface while the same-module test can
+     * build exactly what `validate-peer` sends over the wire.
+     */
+    internal data class Minted(val token: Entity, val signature: Entity)
 
     /** Inclusive maximum of `primitive/uint` — the §5.6 rule-3 representability bound. */
     private val UINT64_MAX_P: BigInteger = BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE)
 
-    private fun mintToken(granteeHash: ByteArray, grants: List<EcfValue.MapVal>, parent: ByteArray?): Minted =
+    internal fun mintToken(granteeHash: ByteArray, grants: List<EcfValue.MapVal>, parent: ByteArray?): Minted =
         mintTokenAt(granteeHash, grants, parent, Capability.nowMs(), null)
 
     /**
@@ -853,12 +863,45 @@ class Peer private constructor(
             val target = p.text("target") ?: ""
             val operationField = p.text("operation") ?: ""
             val value = p.field("value")
+            // GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the
+            // single-granter case is an array of ONE. They were singular, which made
+            // §1.4's multi-signature-root rule ungateable on the wire: driving it needs
+            // two granter identities and two signatures, and a single-credential carrier
+            // cannot express that input.
+            //
+            // TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one,
+            // because THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle
+            // is what all 46 tracked reports are measured against and it sends the
+            // SINGULAR names; a plural-only peer reads the triple as absent there, takes
+            // the ambient arm and refuses — measured on the `go` vanguard as 2 of 778
+            // severities moving PASS -> FAIL. Accepting both keeps the cohort 0-FAIL at
+            // BOTH check sets. REMOVE THIS FALLBACK AT THE ORACLE RE-PIN, and not before:
+            // the exit condition is that `tools/oracle-pin.env`'s `ref` names an oracle
+            // whose dispatch-outbound probe sends the plural carriers.
             val capability = p.entityField("reentry_capability")
-            val granterPeer = p.entityField("reentry_granter")
-            val capSig = p.entityField("reentry_cap_signature")
-            if (!(value != null && capability != null && granterPeer != null && capSig != null)) {
-                return Outcome.err(400, "invalid_params", "dispatch-outbound requires value + reentry authority")
+            val granterPeers = entityListField(p, "reentry_granters")
+                ?: p.entityField("reentry_granter")?.let { listOf(it) }
+            val capSigs = entityListField(p, "reentry_cap_signatures")
+                ?: p.entityField("reentry_cap_signature")?.let { listOf(it) }
+            if (value == null) {
+                return Outcome.err(400, "invalid_params", "dispatch-outbound requires value")
             }
+            // The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED
+            // arm, all three absent selects the AMBIENT arm, and a PARTIAL set is 400
+            // invalid_params — a partial credential is malformed, not ambient. An empty
+            // array is partial, not present: it carries no credential.
+            val nPresent = listOf(
+                capability != null,
+                !granterPeers.isNullOrEmpty(),
+                !capSigs.isNullOrEmpty(),
+            ).count { it }
+            if (nPresent != 0 && nPresent != 3) {
+                return Outcome.err(400, "invalid_params", "dispatch-outbound reentry authority is all-or-none")
+            }
+            val hasCred = nPresent == 3
+            val cred = if (hasCred) capability else null
+            val granters = if (hasCred) granterPeers.orEmpty() else emptyList()
+            val sigs = if (hasCred) capSigs.orEmpty() else emptyList()
             // §7a.1 generic relay: the `value` field is the bytes of the downstream's
             // params entity data and MUST be forwarded verbatim, never re-wrapped. The
             // validator already shaped it as echo's {value: X} params; a faithful relay
@@ -867,8 +910,52 @@ class Peer private constructor(
             val valueMap = Cbor.asMap(value)
             val innerData = valueMap ?: Cbor.map("value", value)
             val inner = Entity.make("primitive/any", innerData)
-            val resource = Wire.resourceTarget("system/handler/$target")
-            val env = outboundDispatch(ctx.conn, target, operationField, inner, capability, granterPeer, capSig, resource)
+            // `target` arrives as any of §1.4's three spellings and the validator sends
+            // the SCHEMED ABSOLUTE form. Both the handler-pattern dimension and the
+            // resource target want the PEER-RELATIVE path — §1.4's PD-2 block says so for
+            // Dimension 1, and a resource target carrying a scheme is not a path at all.
+            val relTarget = Capability.peerRelativeOf(target)
+            val resource = Wire.resourceTarget("system/handler/$relTarget")
+
+            // §7a.2a: the presented arm verifies against a BUNDLE MERGED FROM THE PARENT
+            // ENVELOPE'S `included`. The credential, its granters and its signatures
+            // arrive NESTED IN PARAMS (ratified shape (a), in-band), so they are not in
+            // ctx.included and a verifier handed that alone cannot resolve a single link.
+            val bundle = buildList {
+                addAll(ctx.included)
+                if (hasCred) {
+                    cred?.let { add(Envelope.Included(it.hash(), it)) }
+                    granters.forEach { add(Envelope.Included(it.hash(), it)) }
+                    sigs.forEach { add(Envelope.Included(it.hash(), it)) }
+                }
+            }
+            // §1.4: target_peer = extract_peer(uri, local_peer_id). The validator sends
+            // the absolute form, so the URI names the target. Where the uri is
+            // PEER-RELATIVE there is no peer in it and the §6.11 seam's destination is the
+            // connection's remote, so that is the fallback — without it Dimension 4 passes
+            // vacuously.
+            val uriPeer = Capability.extractPeer(localPeer, target)
+            val targetPeer = if (uriPeer == localPeer) (ctx.conn.helloPeerId ?: uriPeer) else uriPeer
+
+            // §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer,
+            // all four dimensions, on THIS handler's own grant — with a target-minted
+            // credential relaxing Dimension 4 and nothing else. Consulting only the
+            // presented credential here is the §6.8 confused-deputy bypass.
+            val ownGrant = store.getAt(Capability.grantPathFor(localPeer, ctx.pattern))
+                // §6.8: a handler with no valid grant does not run. Fail closed rather
+                // than falling back to the credential, which is the substitution §6.8
+                // forbids.
+                ?: return Outcome.err(403, "capability_denied", "no handler grant for ${ctx.pattern}")
+            if (!Capability.checkOutboundSubDispatch(
+                    localPeer, targetPeer, relTarget, operationField, store, ownGrant, resource, cred, bundle)) {
+                // §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic
+                // transport- or gateway-class code would launder an authorization verdict
+                // into a route fault, and the ambient and presented branches would then
+                // disagree about what the same gate decided.
+                return Outcome.err(403, "capability_denied",
+                    "outbound sub-dispatch not authorized by the handler grant")
+            }
+            val env = outboundDispatch(ctx.conn, target, operationField, inner, cred, granters, sigs, resource)
                 ?: return Outcome.err(503, "no_outbound_seam", "no live section 6.11 reentry connection")
             val status = env.root.uint("status") ?: BigInteger.ZERO
             val resultCbor = env.root.field("result") ?: Cbor.emptyMap()
@@ -878,29 +965,77 @@ class Peer private constructor(
 
     // ── §6.13(b) handler-facing outbound dispatch ─────────────────────────────────────
 
+    /**
+     * Send an outbound EXECUTE through the §6.11 reentry seam.
+     *
+     * `granterPeers` and `capSigs` are PLURAL (GUIDE-CONFORMANCE §7a.1, 0.8.2.19) so a
+     * K-of-N root can present every granter identity and every link signature. Every
+     * member goes into `included` because §5.5's chain walk resolves granters and signers
+     * BY HASH out of that map — a granter left out is a link the verifier cannot reach.
+     *
+     * `capability == null` is the AMBIENT arm: the EXECUTE carries no `capability` field
+     * at all. An empty hash would NOT do — that is a present field resolving to nothing,
+     * which §5.2 reads as an unresolvable capability rather than as its absence.
+     */
     private suspend fun outboundDispatch(
         conn: Conn,
         uri: String,
         operation: String,
         params: Entity,
-        capability: Entity,
-        granterPeer: Entity,
-        capSig: Entity,
+        capability: Entity?,
+        granterPeers: List<Entity>,
+        capSigs: List<Entity>,
         resource: EcfValue.MapVal,
     ): Envelope? {
         val send = conn.outbound ?: return null
         val requestId = "out-${conn.nextOutCounter()}"
         val exec = Wire.makeExecute(requestId, uri, operation, params,
-            identity.identityHash(), capability.hash(), resource)
+            identity.identityHash(), capability?.hash(), resource)
         val execSig = identity.sign(exec)
-        val included = listOf(
-            Envelope.Included(capability.hash(), capability),
-            Envelope.Included(granterPeer.hash(), granterPeer),
-            Envelope.Included(identity.identityHash(), identity.peerEntity),
-            Envelope.Included(capSig.hash(), capSig),
-            Envelope.Included(execSig.hash(), execSig),
-        )
+        val included = buildList {
+            if (capability != null) {
+                add(Envelope.Included(capability.hash(), capability))
+                granterPeers.forEach { add(Envelope.Included(it.hash(), it)) }
+                capSigs.forEach { add(Envelope.Included(it.hash(), it)) }
+            }
+            add(Envelope.Included(identity.identityHash(), identity.peerEntity))
+            add(Envelope.Included(execSig.hash(), execSig))
+        }
         return send(Envelope(exec, included))
+    }
+
+    /**
+     * Decode an ARRAY of nested entities at [key] (the §7a.1 plural carriers).
+     *
+     * `null` means the key is absent or is not a list; an array whose members do not all
+     * decode is a MALFORMED carrier and is also `null`, never a silently shorter list,
+     * because the caller's all-or-none test would then read a partial credential as a
+     * complete one.
+     */
+    /**
+     * A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward, as
+     * distinct from any capability a caller presents. §6.8 row 1: an access in service of a
+     * caller's request needs the caller's verified capability AND this grant, and BOTH must
+     * pass. Narrow for `dispatch-outbound`; empty for everything else.
+     */
+    private fun ownGrantsFor(pattern: String): List<EcfValue.MapVal> =
+        if (pattern != "system/validate/dispatch-outbound") emptyList()
+        else listOf(Cbor.map(
+            "handlers", Cbor.map("include", EcfValue.Arr(listOf(EcfValue.Text("system/validate/echo")))),
+            "operations", Cbor.map("include", EcfValue.Arr(listOf(EcfValue.Text("echo")))),
+            "resources", Cbor.map("include",
+                EcfValue.Arr(listOf(EcfValue.Text("system/handler/system/validate/echo")))),
+        ))
+
+    private fun entityListField(e: Entity, key: String): List<Entity>? {
+        val v = e.field(key) as? EcfValue.Arr ?: return null
+        val out = ArrayList<Entity>(v.items.size)
+        for (item in v.items) {
+            val m = item as? EcfValue.MapVal ?: return null
+            val d = runCatching { Entity.ofCbor(m) }.getOrNull() ?: return null
+            out.add(d)
+        }
+        return out
     }
 
     // ── dispatcher-level signature ingestion (§6.5) ───────────────────────────────────
@@ -1036,7 +1171,12 @@ class Peer private constructor(
             Cbor.map("interface", "system/handler/$pattern")))
         store.bind("/$localPeer/system/handler/$pattern", Entity.make("system/handler/interface",
             Cbor.map("pattern", pattern, "name", name, "operations", operations)))
-        val m = mintToken(identity.identityHash(), emptyList(), null)
+        // §6.8: the grant MUST exist at `system/capability/grants/{pattern}` and a handler
+        // with no valid grant does not run — so this bind is the ceiling row 1 intersects
+        // against, not bookkeeping. NARROW for dispatch-outbound: with a wide grant,
+        // consulting it and skipping it give the same answer on every input, so the
+        // confused-deputy discriminator cannot fire (GUIDE-CONFORMANCE §7a.1).
+        val m = mintToken(identity.identityHash(), ownGrantsFor(pattern), null)
         store.bind("/$localPeer/system/capability/grants/$pattern", m.token)
     }
 

@@ -276,4 +276,111 @@ internal static class Permissions
         }
         return false;
     }
+
+    // ── §1.4 PD-2: outbound sub-dispatch authorization ──────────────────────────
+
+    /// <summary>
+    /// Strip the §1.4 scheme and leading peer segment, answering the PEER-RELATIVE path.
+    /// <para>
+    /// §1.4 admits three spellings of one address — <c>system/tree</c>,
+    /// <c>/{peer}/system/tree</c> and <c>entity://{peer}/system/tree</c> — and §1.4's PD-2
+    /// block requires Dimension 1's handler pattern to be the target uri's peer-relative
+    /// path, because a grant names HANDLERS and a handler pattern never carries a peer
+    /// segment. Matching a grant against the absolute or schemed form matches nothing,
+    /// silently, which reads at the wire as an authority refusal.
+    /// </para>
+    /// <para>
+    /// The first segment is dropped ONLY when it is a peer_id. A peer-relative
+    /// <c>system/protocol/connect</c> must not lose <c>system</c> — the standing defect on
+    /// <c>smalltalk</c> and <c>forth</c>, where an unconditional strip made every
+    /// self-minted grant unusable while the handshake stayed green.
+    /// </para>
+    /// </summary>
+    public static string PeerRelativeOf(string uri)
+    {
+        string p = uri.StartsWith("entity://", System.StringComparison.Ordinal)
+            ? "/" + uri["entity://".Length..]
+            : uri;
+        if (!p.StartsWith('/')) return p;
+        string body = p[1..];
+        int slash = body.IndexOf('/');
+        string first = slash < 0 ? body : body[..slash];
+        if (Paths.IsPeerId(first)) return slash < 0 ? string.Empty : body[(slash + 1)..];
+        return body;
+    }
+
+    /// <summary>
+    /// Store key of a handler's OWN grant (§6.8:
+    /// <c>system/capability/grants/{pattern}</c>), tolerant of the pattern arriving
+    /// absolute or peer-relative.
+    /// <para>
+    /// §6.6's tree walk answers an ABSOLUTE pattern because store keys are absolute, while
+    /// the grant path is built from the PEER-RELATIVE one. The two are one segment apart
+    /// and concatenating the wrong one yields a doubled peer segment whose lookup misses —
+    /// which fails closed as "no handler grant" and is indistinguishable, at the wire,
+    /// from a genuine authority refusal.
+    /// </para>
+    /// </summary>
+    public static string GrantPathFor(string localPeerId, string pattern)
+    {
+        string prefix = "/" + localPeerId + "/";
+        string rel = pattern.StartsWith(prefix, System.StringComparison.Ordinal)
+            ? pattern[prefix.Length..]
+            : pattern;
+        return "/" + localPeerId + "/system/capability/grants/" + rel;
+    }
+
+    /// <summary>
+    /// §1.4's PD-2 gate: <c>check_permission</c> run before a locally-originated
+    /// sub-dispatch LEAVES the peer, with all four dimensions applied.
+    /// <para>
+    /// ONE GATE AND ONE EXEMPTION, in §1.4's own words: the EXECUTING HANDLER'S GRANT
+    /// decides all four dimensions (§6.8), evaluated in the LOCAL frame, with Dimension
+    /// 1's pattern the target uri's PEER-RELATIVE path; and a valid capability MINTED BY
+    /// THE TARGET PEER naming this peer as <c>grantee</c> relaxes Dimension 4
+    /// (<c>peers</c>) AND ONLY DIMENSION 4, to the peers that capability covers.
+    /// </para>
+    /// <para>
+    /// <em>"The target answers WHERE; the handler's grant answers WHAT."</em> A credential
+    /// is NOT a grant: with no handler grant there is nothing to supply Dimensions 1-3, so
+    /// the sub-dispatch is refused however good the credential is. That is the COMPOSE,
+    /// and the BYPASS it is distinguished from is a peer that treats the credential as a
+    /// standalone authorizer and steers past its own grant — §6.8's confused-deputy
+    /// substitution. Both obvious vectors agree under either reading (sources agree ->
+    /// allow, no source -> refuse), so the only input that separates them is a VALID
+    /// credential presented to a handler whose own grant does NOT cover the request,
+    /// which MUST refuse.
+    /// </para>
+    /// <para>
+    /// <paramref name="relaxTo"/> is the peers scope the credential earned, decided by the
+    /// caller (which owns resolution, the clock and the revocation read); <c>null</c> is
+    /// BOTH the ambient arm and a credential that failed a clause. A credential failing
+    /// verification relaxes NOTHING and the handler grant gates unrelaxed — it does not
+    /// turn the verdict into an error.
+    /// </para>
+    /// <para>
+    /// <paramref name="targetPeerId"/> is supplied by the caller rather than derived here:
+    /// on the §6.11 reentry seam the uri may be PEER-RELATIVE and the destination is the
+    /// connection's remote, so <c>ExtractPeer(uri, local)</c> would answer the LOCAL peer
+    /// and Dimension 4 would pass vacuously on the default <c>{include: [local]}</c> — the
+    /// exemption would then never be exercised and a bypass would read as a compose.
+    /// </para>
+    /// </summary>
+    public static bool CheckOutboundSubDispatch(
+        CapabilityToken handlerGrant, string localPeerId, string targetPeerId,
+        string handlerPattern, string operation, ResourceTarget resource, Scope? relaxTo)
+    {
+        foreach (GrantEntry grant in handlerGrant.Grants)
+        {
+            if (!grant.Handlers.Matches(handlerPattern, localPeerId, ScopeKind.Path)) continue;
+            if (!grant.Operations.Matches(operation, localPeerId, ScopeKind.Id)) continue;
+            if (!CheckResourceScope(resource, grant.Resources, localPeerId, localPeerId)) continue;
+            // Dimension 4. §5.2's default for an absent `peers` scope is
+            // {include: [local_peer_id]}, so a foreign target fails unless this grant names
+            // it or a target-minted credential relaxes it.
+            if (grant.EffectivePeers(localPeerId).Matches(targetPeerId, localPeerId, ScopeKind.Id)) return true;
+            if (relaxTo is not null && relaxTo.Matches(targetPeerId, localPeerId, ScopeKind.Id)) return true;
+        }
+        return false;
+    }
 }

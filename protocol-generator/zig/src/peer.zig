@@ -1080,7 +1080,7 @@ fn echoHandler(p: *Peer, a: std.mem.Allocator, exec: Entity) Error!Outcome {
 /// ORIGINATE, not just respond. The reentry direction (this peer → caller) is
 /// authorized only by the caller, so the caller carries the minted authority
 /// entities in-band (reentry_capability / reentry_granter / reentry_cap_signature).
-fn dispatchOutboundHandler(p: *Peer, a: std.mem.Allocator, conn: *Conn, exec: Entity) Error!Outcome {
+fn dispatchOutboundHandler(p: *Peer, a: std.mem.Allocator, conn: *Conn, env: Envelope, exec: Entity, handler_pattern: []const u8) Error!Outcome {
     const out_fn = conn.outbound orelse
         return errOut(a, 503, "no_outbound_seam", "dispatch-outbound requires a live §6.11 reentry connection");
     const params = (try exec.entityField(a, "params")) orelse
@@ -1089,18 +1089,85 @@ fn dispatchOutboundHandler(p: *Peer, a: std.mem.Allocator, conn: *Conn, exec: En
     const operation = params.textField("operation") orelse return errOut(a, 400, "unexpected_params", "missing operation");
     const value = params.field("value") orelse return errOut(a, 400, "unexpected_params", "missing value");
 
-    // Caller-minted reentry authority, carried in-band (this peer is the grantee).
-    const cap_e = try params.entityField(a, "reentry_capability") orelse return errOut(a, 400, "unexpected_params", "missing reentry_capability");
-    const granter_e = try params.entityField(a, "reentry_granter") orelse return errOut(a, 400, "unexpected_params", "missing reentry_granter");
-    const capsig_e = try params.entityField(a, "reentry_cap_signature") orelse return errOut(a, 400, "unexpected_params", "missing reentry_cap_signature");
+    // GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the single-granter
+    // case is an array of ONE. They were singular, which made §1.4's multi-signature-root
+    // rule ungateable on the wire: driving it needs two granter identities and two
+    // signatures, and a single-credential carrier cannot express that input.
+    //
+    // TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one, because
+    // THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle is what all 46
+    // tracked reports are measured against and it sends the SINGULAR names; a plural-only
+    // peer reads the triple as absent there, takes the ambient arm and refuses — measured
+    // on the `go` vanguard as 2 of 778 severities moving PASS -> FAIL. REMOVE THIS
+    // FALLBACK AT THE ORACLE RE-PIN, and not before.
+    const cap_e = try params.entityField(a, "reentry_capability");
+    const granters = try entityListField(a, params, "reentry_granters", "reentry_granter");
+    const cap_sigs = try entityListField(a, params, "reentry_cap_signatures", "reentry_cap_signature");
+    // The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED arm, all
+    // three absent selects the AMBIENT arm, and a PARTIAL set is 400 invalid_params — a
+    // partial credential is malformed, not ambient. An empty array is partial, not present.
+    var n_present: u8 = 0;
+    if (cap_e != null) n_present += 1;
+    if (granters.len > 0) n_present += 1;
+    if (cap_sigs.len > 0) n_present += 1;
+    if (n_present != 0 and n_present != 3)
+        return errOut(a, 400, "invalid_params", "dispatch-outbound reentry authority is all-or-none");
+    const has_cred = n_present == 3;
+    const cred: ?Entity = if (has_cred) cap_e else null;
+    const granter_list: []const Entity = if (has_cred) granters else &.{};
+    const sig_list: []const Entity = if (has_cred) cap_sigs else &.{};
 
     // §7a.1: the `value` field IS the outbound params entity data — pass it through
     // (the reference uses it directly). Re-wrapping as { value } double-wraps, so the
     // echo's result.value returns a map, not the sent value (keystone §7b t1_2).
     const inner = try Entity.make(a, "primitive/any", try model.cloneValue(a, value));
 
+    // `target` arrives as any of §1.4's three spellings and the validator sends the
+    // SCHEMED ABSOLUTE form. Both the handler-pattern dimension and the resource target
+    // want the PEER-RELATIVE path — §1.4's PD-2 block says so for Dimension 1, and a
+    // resource target carrying a scheme is not a path at all.
+    const rel_target = try cap.peerRelativeOf(a, target);
+
+    // §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer, all four
+    // dimensions, on THIS handler's own grant — with a target-minted credential relaxing
+    // Dimension 4 and nothing else. Consulting only the presented credential here is the
+    // §6.8 confused-deputy bypass.
+    const own_grant = p.store.getAt(try cap.grantPathFor(a, p.local_peer, handler_pattern)) orelse
+        // §6.8: a handler with no valid grant does not run. Fail closed rather than
+        // falling back to the credential, which is the substitution §6.8 forbids.
+        return errOut(a, 403, "capability_denied", "no handler grant for this pattern");
+    // §7a.2a: the credential, its granters and its signatures arrive NESTED IN PARAMS
+    // (ratified shape (a), in-band), so they are NOT in `env` and a verifier handed that
+    // alone cannot resolve a single link.
+    const bundle = try mergeIncluded(a, env, cred, granter_list, sig_list);
+    // §1.4: target_peer = extract_peer(uri, local_peer_id). The validator sends the
+    // absolute form, so the URI names the target. Where the uri is PEER-RELATIVE there is
+    // no peer in it and the §6.11 seam's destination is the connection's remote, so that
+    // is the fallback — without it Dimension 4 passes vacuously.
+    const uri_peer = try cap.extractPeer(a, p.local_peer, target);
+    const target_peer = if (std.mem.eql(u8, uri_peer, p.local_peer))
+        (conn.hello_peer_id orelse uri_peer)
+    else
+        uri_peer;
+    var res_pairs = try a.alloc(Value.Pair, 1);
+    res_pairs[0] = .{ .key = try model.textVal(a, "targets"), .value = blk: {
+        const t = try a.alloc(Value, 1);
+        t[0] = try model.textVal(a, try std.fmt.allocPrint(a, "system/handler/{s}", .{rel_target}));
+        break :blk .{ .array = t };
+    } };
+    if (!try cap.checkOutboundSubDispatch(a, bundle, &p.store, p.local_peer, target_peer,
+                                          rel_target, operation, own_grant,
+                                          .{ .map = res_pairs }, cred)) {
+        // §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic
+        // transport- or gateway-class code would launder an authorization verdict into a
+        // route fault, and the ambient and presented branches would then disagree about
+        // what the same gate decided.
+        return errOut(a, 403, "capability_denied",
+                      "outbound sub-dispatch not authorized by the handler grant");
+    }
+
     // Build a signed, authority-bearing outbound EXECUTE back to the caller.
-    const req = try buildReentryExecute(p, a, conn, target, operation, inner, cap_e, granter_e, capsig_e);
+    const req = try buildReentryExecute(p, a, conn, target, rel_target, operation, inner, cred, granter_list, sig_list);
     const resp = (out_fn(conn.outbound_ctx, a, req)) orelse
         return errOut(a, 504, "outbound_timeout", "downstream did not reply");
     defer resp.deinit(a);
@@ -1114,13 +1181,21 @@ fn dispatchOutboundHandler(p: *Peer, a: std.mem.Allocator, conn: *Conn, exec: En
 }
 
 /// Assemble a signed reentry EXECUTE (the caller-minted authority in `included`).
-fn buildReentryExecute(p: *Peer, a: std.mem.Allocator, conn: *Conn, target: []const u8, operation: []const u8, inner: Entity, cap_e: Entity, granter_e: Entity, capsig_e: Entity) Error!Envelope {
+/// `granters`/`cap_sigs` are PLURAL (GUIDE-CONFORMANCE §7a.1, 0.8.2.19) so a K-of-N root
+/// can present every granter identity and every link signature. Every member goes into
+/// `included` because §5.5's chain walk resolves granters and signers BY HASH out of that
+/// map — a granter left out is a link the verifier cannot reach.
+///
+/// `cred == null` is the AMBIENT arm: the EXECUTE carries no `capability` field at all. An
+/// empty hash would NOT do — that is a present field resolving to nothing, which §5.2
+/// reads as an unresolvable capability rather than as its absence.
+fn buildReentryExecute(p: *Peer, a: std.mem.Allocator, conn: *Conn, target: []const u8, rel_target: []const u8, operation: []const u8, inner: Entity, cred: ?Entity, granters: []const Entity, cap_sigs: []const Entity) Error!Envelope {
     conn.out_counter += 1;
     const rid = try std.fmt.allocPrint(a, "ro-{d}", .{conn.out_counter});
     var rpairs = try a.alloc(Value.Pair, 1);
     rpairs[0] = .{ .key = try model.textVal(a, "targets"), .value = blk: {
         const t = try a.alloc(Value, 1);
-        t[0] = try model.textVal(a, try std.fmt.allocPrint(a, "system/handler/{s}", .{target}));
+        t[0] = try model.textVal(a, try std.fmt.allocPrint(a, "system/handler/{s}", .{rel_target}));
         break :blk .{ .array = t };
     } };
     const resource = Value{ .map = rpairs };
@@ -1131,23 +1206,70 @@ fn buildReentryExecute(p: *Peer, a: std.mem.Allocator, conn: *Conn, target: []co
         .params = inner,
         .resource = resource,
         .author = p.identity.identity_hash,
-        .capability = cap_e.hash,
+        .capability = if (cred) |c| c.hash else null,
     });
     const exec_sig = try identity_mod.signEntity(a, p.identity, exec);
-    var inc = try a.alloc(Inc, 4);
-    inc[0] = .{ .key = cap_e.hash, .entity = cap_e };
-    inc[1] = .{ .key = granter_e.hash, .entity = granter_e };
-    inc[2] = .{ .key = capsig_e.hash, .entity = capsig_e };
-    inc[3] = .{ .key = exec_sig.hash, .entity = exec_sig };
+    const n_cred: usize = if (cred != null) 1 + granters.len + cap_sigs.len else 0;
+    var included = try a.alloc(model.Included, n_cred + 1);
+    var idx: usize = 0;
+    if (cred) |c| {
+        included[idx] = .{ .key = c.hash, .entity = c };
+        idx += 1;
+        for (granters) |g| { included[idx] = .{ .key = g.hash, .entity = g }; idx += 1; }
+        for (cap_sigs) |sg| { included[idx] = .{ .key = sg.hash, .entity = sg }; idx += 1; }
+    }
+    included[idx] = .{ .key = exec_sig.hash, .entity = exec_sig };
     // Materialize into an Envelope (arena-owned; out_fn must NOT free our entities).
-    var included = try a.alloc(model.Included, inc.len);
-    for (inc, 0..) |i, idx| included[idx] = .{ .key = i.key, .entity = i.entity };
     return Envelope{ .root = exec, .included = included };
 }
 
-fn conformanceHandler(p: *Peer, a: std.mem.Allocator, conn: *Conn, exec: Entity, stripped: []const u8) Error!Outcome {
+/// Decode an ARRAY of nested entities at `key`, falling back to the SINGULAR spelling as a
+/// list of one (the §7a.1 transitional carriers).
+///
+/// An EMPTY slice means absent, not-a-list, or a MALFORMED array (a member that does not
+/// decode) — never a silently shorter list, because the caller's all-or-none test would
+/// then read a partial credential as a complete one.
+fn entityListField(a: std.mem.Allocator, e: Entity, key: []const u8, singular: []const u8) Error![]const Entity {
+    if (e.field(key)) |v| {
+        switch (v) {
+            .array => |items| {
+                var out = try a.alloc(Entity, items.len);
+                for (items, 0..) |item, i| {
+                    out[i] = model.ofCbor(a, item) catch return &.{};
+                }
+                return out;
+            },
+            else => {},
+        }
+    }
+    if (try e.entityField(a, singular)) |one| {
+        var out = try a.alloc(Entity, 1);
+        out[0] = one;
+        return out;
+    }
+    return &.{};
+}
+
+/// The §7a.2a bundle: the parent envelope's `included` plus the in-band credential set.
+fn mergeIncluded(a: std.mem.Allocator, env: Envelope, cred: ?Entity, granters: []const Entity, cap_sigs: []const Entity) Error!Envelope {
+    const extra: usize = if (cred != null) 1 + granters.len + cap_sigs.len else 0;
+    var included = try a.alloc(model.Included, env.included.len + extra);
+    var idx: usize = 0;
+    for (env.included) |inc| { included[idx] = inc; idx += 1; }
+    if (cred) |c| {
+        included[idx] = .{ .key = c.hash, .entity = c };
+        idx += 1;
+        for (granters) |g| { included[idx] = .{ .key = g.hash, .entity = g }; idx += 1; }
+        for (cap_sigs) |sg| { included[idx] = .{ .key = sg.hash, .entity = sg }; idx += 1; }
+    }
+    return Envelope{ .root = env.root, .included = included };
+}
+
+fn conformanceHandler(p: *Peer, a: std.mem.Allocator, conn: *Conn, env: Envelope, exec: Entity, stripped: []const u8) Error!Outcome {
     if (std.mem.eql(u8, stripped, "system/validate/echo")) return echoHandler(p, a, exec);
-    if (std.mem.eql(u8, stripped, "system/validate/dispatch-outbound")) return dispatchOutboundHandler(p, a, conn, exec);
+    // §1.4 PD-2 needs the OWNING handler's peer-relative pattern (Dimension 1 is matched
+    // peer-relative) and the parent envelope (the §7a.2a bundle base).
+    if (std.mem.eql(u8, stripped, "system/validate/dispatch-outbound")) return dispatchOutboundHandler(p, a, conn, env, exec, stripped);
     return errOut(a, 501, "no_handler_body", stripped);
 }
 
@@ -1255,7 +1377,7 @@ fn dispatchOutcome(p: *Peer, a: std.mem.Allocator, conn: *Conn, env: Envelope) E
     if (std.mem.eql(u8, stripped, "system/type")) return typesHandler(a, exec);
     // §7a conformance handlers (only bootstrapped when conformance=true)
     if (p.conformance and cap.startsWith(stripped, "system/validate/"))
-        return conformanceHandler(p, a, conn, exec, stripped);
+        return conformanceHandler(p, a, conn, env, exec, stripped);
     // a dynamically-registered handler: dispatch its entity-native body
     // (§6.13(a) — the v7.74 §10.1 register round-trip). The resolved handler
     // entity carries the expression_path seam.
@@ -1372,6 +1494,30 @@ fn operationsMap(a: std.mem.Allocator, ops: []const []const u8) Error!Value {
 
 /// Bootstrap one handler: handler entity at the pattern path, interface entity at
 /// the discovery index (system/handler/{pattern}), and a self-issued grant.
+/// A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward, as
+/// distinct from any capability a caller presents. §6.8 row 1: an access in service of a
+/// caller's request needs the caller's verified capability AND this grant, and BOTH must
+/// pass. Narrow for `dispatch-outbound`; empty for everything else.
+fn ownGrantsFor(a: std.mem.Allocator, pattern: []const u8) Error![]Value {
+    if (!std.mem.eql(u8, pattern, "system/validate/dispatch-outbound")) return a.alloc(Value, 0);
+    const scope = struct {
+        fn one(al: std.mem.Allocator, v: []const u8) Error!Value {
+            var items = try al.alloc(Value, 1);
+            items[0] = try model.textVal(al, v);
+            var pairs = try al.alloc(Value.Pair, 1);
+            pairs[0] = .{ .key = try model.textVal(al, "include"), .value = .{ .array = items } };
+            return Value{ .map = pairs };
+        }
+    };
+    var gpairs = try a.alloc(Value.Pair, 3);
+    gpairs[0] = .{ .key = try model.textVal(a, "handlers"), .value = try scope.one(a, "system/validate/echo") };
+    gpairs[1] = .{ .key = try model.textVal(a, "operations"), .value = try scope.one(a, "echo") };
+    gpairs[2] = .{ .key = try model.textVal(a, "resources"), .value = try scope.one(a, "system/handler/system/validate/echo") };
+    var out = try a.alloc(Value, 1);
+    out[0] = .{ .map = gpairs };
+    return out;
+}
+
 fn bootstrapHandler(p: *Peer, a: std.mem.Allocator, local_peer: []const u8, bh: BootHandler) Error!void {
     var hpairs = try a.alloc(Value.Pair, 1);
     hpairs[0] = .{ .key = try model.textVal(a, "interface"), .value = try model.textVal(a, try std.fmt.allocPrint(a, "system/handler/{s}", .{bh.pattern})) };
@@ -1383,7 +1529,12 @@ fn bootstrapHandler(p: *Peer, a: std.mem.Allocator, local_peer: []const u8, bh: 
     ipairs[2] = .{ .key = try model.textVal(a, "operations"), .value = try operationsMap(a, bh.operations) };
     const iface_e = try Entity.make(a, "system/handler/interface", .{ .map = ipairs });
     try p.store.bind(try std.fmt.allocPrint(a, "/{s}/system/handler/{s}", .{ local_peer, bh.pattern }), iface_e);
-    const minted = try mintToken(p, a, p.identity.identity_hash, null, &.{});
+    // §6.8: the grant MUST exist at `system/capability/grants/{pattern}` and a handler
+    // with no valid grant does not run — so this bind is the ceiling row 1 intersects
+    // against, not bookkeeping. NARROW for dispatch-outbound: with a wide grant,
+    // consulting it and skipping it give the same answer on every input, so the
+    // confused-deputy discriminator cannot fire (GUIDE-CONFORMANCE §7a.1).
+    const minted = try mintToken(p, a, p.identity.identity_hash, null, try ownGrantsFor(a, bh.pattern));
     try p.store.bind(try std.fmt.allocPrint(a, "/{s}/system/capability/grants/{s}", .{ local_peer, bh.pattern }), minted.token);
 }
 

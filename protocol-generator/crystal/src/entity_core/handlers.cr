@@ -638,12 +638,34 @@ module EntityCore
         target = p.text("target") || ""
         operation_arg = p.text("operation") || ""
         value = p.field("value")
+        # GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the
+        # single-granter case is an array of ONE. They were singular, which made §1.4's
+        # multi-signature-root rule ungateable on the wire: driving it needs two granter
+        # identities and two signatures, and a single-credential carrier cannot express
+        # that input.
+        #
+        # TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one,
+        # because THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle is
+        # what all 46 tracked reports are measured against and it sends the SINGULAR
+        # names; a plural-only peer reads the triple as absent there, takes the ambient
+        # arm and refuses — measured on the `go` vanguard as 2 of 778 severities moving
+        # PASS -> FAIL. REMOVE THIS FALLBACK AT THE ORACLE RE-PIN, and not before.
         capability = p.entity_field("reentry_capability")
-        granter_peer = p.entity_field("reentry_granter")
-        cap_sig = p.entity_field("reentry_cap_signature")
-        unless value && capability && granter_peer && cap_sig
-          return Outcome.err(400, "invalid_params", "dispatch-outbound requires value + reentry authority")
+        granters = Capability.entity_list_field(p, "reentry_granters", "reentry_granter")
+        cap_sigs = Capability.entity_list_field(p, "reentry_cap_signatures", "reentry_cap_signature")
+        return Outcome.err(400, "invalid_params", "dispatch-outbound requires value") if value.nil?
+        # The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED arm,
+        # all three absent selects the AMBIENT arm, and a PARTIAL set is 400
+        # invalid_params — a partial credential is malformed, not ambient. An empty array
+        # is partial, not present.
+        n_present = (capability ? 1 : 0) + (granters.empty? ? 0 : 1) + (cap_sigs.empty? ? 0 : 1)
+        if n_present != 0 && n_present != 3
+          return Outcome.err(400, "invalid_params", "dispatch-outbound reentry authority is all-or-none")
         end
+        has_cred = n_present == 3
+        cred = has_cred ? capability : nil
+        granter_list = has_cred ? granters : [] of Entity
+        sig_list = has_cred ? cap_sigs : [] of Entity
 
         # §7a.1 generic relay: the `value` field is the bytes of the downstream's
         # params entity data and MUST be forwarded verbatim, never re-wrapped.
@@ -656,8 +678,49 @@ module EntityCore
             m
           end
         inner = Entity.make("primitive/any", inner_data)
-        resource = Wire.resource_target("system/handler/#{target}")
-        env = @peer.outbound_dispatch(ctx.conn, target, operation_arg, inner, capability, granter_peer, cap_sig, resource)
+        # `target` arrives as any of §1.4's three spellings and the validator sends the
+        # SCHEMED ABSOLUTE form. Both the handler-pattern dimension and the resource target
+        # want the PEER-RELATIVE path — §1.4's PD-2 block says so for Dimension 1, and a
+        # resource target carrying a scheme is not a path at all.
+        rel_target = Capability.peer_relative_of(target)
+        resource = Wire.resource_target("system/handler/#{rel_target}")
+
+        # §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer, all
+        # four dimensions, on THIS handler's own grant — with a target-minted credential
+        # relaxing Dimension 4 and nothing else. Consulting only the presented credential
+        # here is the §6.8 confused-deputy bypass.
+        own_grant = @peer.store.get_at(Capability.grant_path_for(@peer.local_peer, ctx.pattern))
+        if own_grant.nil?
+          # §6.8: a handler with no valid grant does not run. Fail closed rather than
+          # falling back to the credential, which is the substitution §6.8 forbids.
+          return Outcome.err(403, "capability_denied", "no handler grant for #{ctx.pattern}")
+        end
+        # §7a.2a: the credential, its granters and its signatures arrive NESTED IN PARAMS
+        # (ratified shape (a), in-band), so they are NOT in ctx.included and a verifier
+        # handed that alone cannot resolve a single link.
+        bundle = ctx.included.dup
+        if has_cred
+          [cred].compact.each { |e| bundle << Envelope::Included.new(e.content_hash, e) }
+          granter_list.each { |e| bundle << Envelope::Included.new(e.content_hash, e) }
+          sig_list.each { |e| bundle << Envelope::Included.new(e.content_hash, e) }
+        end
+        # §1.4: target_peer = extract_peer(uri, local_peer_id). The validator sends the
+        # absolute form, so the URI names the target. Where the uri is PEER-RELATIVE there
+        # is no peer in it and the §6.11 seam's destination is the connection's remote, so
+        # that is the fallback — without it Dimension 4 passes vacuously.
+        uri_peer = Capability.extract_peer(@peer.local_peer, target)
+        target_peer = uri_peer == @peer.local_peer ? (ctx.conn.hello_peer_id || uri_peer) : uri_peer
+        unless Capability.check_outbound_sub_dispatch(@peer.local_peer, target_peer,
+                 rel_target, operation_arg, @peer.store, own_grant, resource, cred, bundle)
+          # §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic
+          # transport- or gateway-class code would launder an authorization verdict into a
+          # route fault, and the ambient and presented branches would then disagree about
+          # what the same gate decided.
+          return Outcome.err(403, "capability_denied",
+            "outbound sub-dispatch not authorized by the handler grant")
+        end
+
+        env = @peer.outbound_dispatch(ctx.conn, target, operation_arg, inner, cred, granter_list, sig_list, resource)
         return Outcome.err(503, "no_outbound_seam", "no live section 6.11 reentry connection") if env.nil?
 
         status = env.root.uint("status") || 0_u64

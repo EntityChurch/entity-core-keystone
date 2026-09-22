@@ -44,12 +44,18 @@ internal sealed class HandlerRegistry
         Entity handlerEntity = Entity.Create(TypeNames.Handler, Ecf.Map(
             ("interface", Ecf.Text(interfaceRelPath))));
 
-        // Self-issued, signed, empty-scope grant (§6.8: empty grants are valid for
-        // pure-functional handlers; bootstrap handlers authorize caller-specified
-        // tree writes via the caller capability, not their own grant).
+        // Self-issued, signed grant (§6.8: empty grants are valid for pure-functional
+        // handlers; bootstrap handlers authorize caller-specified tree writes via the
+        // caller capability, not their own grant).
+        //
+        // NOT empty for `dispatch-outbound`, which DOES dispatch onward: §6.8 row 1 makes
+        // this grant the ceiling its sub-dispatch intersects against, and
+        // GUIDE-CONFORMANCE §7a.1 requires it to be NARROW — with a wide grant, consulting
+        // it and skipping it give the same answer on every input, so the confused-deputy
+        // discriminator cannot fire and a bypass reads as conformant.
         (CapabilityToken grant, Entity grantSig) = CapabilityToken.CreateRoot(
             _peer.LocalIdentity, _peer.LocalIdentity.IdentityHash,
-            System.Array.Empty<GrantEntry>(), _peer.NowMs);
+            OwnGrantsFor(handler.Pattern), _peer.NowMs);
 
         _peer.Tree.Put(AbsolutePath(handler.Pattern), handlerEntity);
         _peer.Tree.Put(interfacePath, ifaceEntity);
@@ -112,4 +118,23 @@ internal sealed class HandlerRegistry
     private static EcfValue OperationsMap(IReadOnlyList<string> operations) =>
         new EcfValue.Map(operations.Select(op =>
             new KeyValuePair<EcfValue, EcfValue>(Ecf.Text(op), Ecf.EmptyMap)).ToList());
+
+    /// <summary>
+    /// A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward,
+    /// as distinct from any capability a caller presents. §6.8 row 1: an access in service
+    /// of a caller's request needs the caller's verified capability AND this grant, and
+    /// BOTH must pass. Narrow for <c>dispatch-outbound</c>; empty for everything else.
+    /// </summary>
+    private static GrantEntry[] OwnGrantsFor(string pattern)
+    {
+        if (pattern != "system/validate/dispatch-outbound") return System.Array.Empty<GrantEntry>();
+        return new[]
+        {
+            new GrantEntry(
+                new Scope(new[] { "system/validate/echo" }, null),
+                new Scope(new[] { "system/handler/system/validate/echo" }, null),
+                new Scope(new[] { "echo" }, null),
+                null, null, null),
+        };
+    }
 }

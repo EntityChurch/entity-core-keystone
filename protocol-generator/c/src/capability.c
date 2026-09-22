@@ -1099,9 +1099,35 @@ static bool multisig_root_ok(const char *local_peer, const ec_envelope *env,
     return valid >= threshold;
 }
 
+static ec_verdict verify_chain_rooted_at(const char *local_peer, const char *root_peer,
+                                         ec_store *store, const ec_entity *cap,
+                                         const ec_envelope *env, bool *unresolvable);
+
 static ec_verdict verify_chain(const char *local_peer, ec_store *store,
                                const ec_entity *cap, const ec_envelope *env,
                                bool *unresolvable)
+{
+    return verify_chain_rooted_at(local_peer, local_peer, store, cap, env, unresolvable);
+}
+
+/* verify_chain with the expected ROOT granter named separately from the verifying peer.
+ *
+ * §1.4's PD-2 presented-authority arm needs this: the credential it evaluates is minted
+ * by the TARGET peer, so root-trust is relaxed away from the local peer — and every other
+ * clause (per-link signatures, grantee resolution, temporal validity, attenuation,
+ * caveats) is unchanged. Parameterized rather than forked because a second copy of a
+ * chain walk is a second copy that drifts.
+ *
+ * A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY (§1.4, 0.8.2.19). When root_peer
+ * differs from local_peer the quorum arm is REFUSED outright rather than verified:
+ * "minted by the target" means the target SOLELY minted it, and a K-of-N root is a
+ * GROUP's authority — its co-signers authorized it too. Accepting it would let any one
+ * signer's target confer the whole group's grant, which is E3/F66's over-acceptance.
+ * §5.5's M6 also requires the LOCAL peer in the signer set, so the quorum arm has no
+ * meaning in a foreign frame even on its own terms. */
+static ec_verdict verify_chain_rooted_at(const char *local_peer, const char *root_peer,
+                                         ec_store *store, const ec_entity *cap,
+                                         const ec_envelope *env, bool *unresolvable)
 {
     *unresolvable = false;
     chain c = collect_chain(cap, env, store);
@@ -1111,10 +1137,11 @@ static ec_verdict verify_chain(const char *local_peer, ec_store *store,
     ec_verdict result = EC_V_DENY;
     ec_entity *root = c.items[c.len - 1];
 
-    /* root granter must resolve to local (single-sig), or pass the §3.6 K-of-N
-     * quorum (multi-sig root: granter is a {signers, threshold} map). */
+    /* root granter must resolve to root_peer (single-sig), or pass the §3.6 K-of-N
+     * quorum (multi-sig root: granter is a {signers, threshold} map) — LOCAL frame only. */
     if (is_multisig(root)) {
-        if (!multisig_root_ok(local_peer, env, store, root)) {
+        if (strcmp(root_peer, local_peer) != 0 ||
+            !multisig_root_ok(local_peer, env, store, root)) {
             goto done; /* result stays EC_V_DENY */
         }
     } else {
@@ -1129,7 +1156,7 @@ static ec_verdict verify_chain(const char *local_peer, ec_store *store,
                 if (pk && pl == 32) {
                     char *pid = NULL;
                     if (ec_peer_id_of_pubkey32(pk, &pid) == EC_OK && pid) {
-                        root_ok = (strcmp(pid, local_peer) == 0);
+                        root_ok = (strcmp(pid, root_peer) == 0);
                         free(pid);
                     }
                 }
@@ -1316,4 +1343,234 @@ ec_req_verdict ec_cap_verify_request(const char *local_peer, ec_store *store,
         return EC_REQ_AUTHZ_DENY;
     }
     return EC_REQ_ALLOW;
+}
+
+/* ── §1.4 PD-2: outbound sub-dispatch authorization ─────────────────────────── */
+
+/* Strip the §1.4 scheme and leading peer segment, answering the PEER-RELATIVE path.
+ * *out is malloc'd.
+ *
+ * §1.4 admits three spellings of one address — system/tree, /{peer}/system/tree and
+ * entity://{peer}/system/tree — and §1.4's PD-2 block requires Dimension 1's handler
+ * pattern to be the target uri's peer-relative path, because a grant names HANDLERS and a
+ * handler pattern never carries a peer segment. Matching a grant against the absolute or
+ * schemed form matches nothing, silently, which reads at the wire as an authority refusal.
+ *
+ * The first segment is dropped ONLY when it is a peer_id. A peer-relative
+ * system/protocol/connect must not lose `system` — the standing defect on smalltalk and
+ * forth, where an unconditional strip made every self-minted grant unusable while the
+ * handshake stayed green. */
+ec_status ec_cap_peer_relative_of(const char *uri, char **out)
+{
+    *out = NULL;
+    char *norm = NULL;
+    ec_status st = ec_normalize_uri(uri ? uri : "", &norm);
+    if (st != EC_OK) {
+        return st;
+    }
+    if (norm[0] != '/') {
+        *out = norm;
+        return EC_OK;
+    }
+    const char *body = norm + 1;
+    const char *slash = strchr(body, '/');
+    size_t firstlen = slash ? (size_t)(slash - body) : strlen(body);
+    char *first = malloc(firstlen + 1);
+    if (!first) { free(norm); return EC_ERR_OOM; }
+    memcpy(first, body, firstlen);
+    first[firstlen] = '\0';
+    const char *rest = ec_is_peer_id(first) ? (slash ? slash + 1 : "") : body;
+    char *res = strdup(rest);
+    free(first);
+    free(norm);
+    if (!res) { return EC_ERR_OOM; }
+    *out = res;
+    return EC_OK;
+}
+
+/* Store key of a handler's OWN grant (§6.8: system/capability/grants/{pattern}),
+ * tolerant of the pattern arriving absolute or peer-relative. *out is malloc'd.
+ *
+ * §6.6's tree walk answers an ABSOLUTE pattern because store keys are absolute, while the
+ * grant path is built from the PEER-RELATIVE one. The two are one segment apart and
+ * concatenating the wrong one yields a doubled peer segment whose lookup misses — which
+ * fails closed as "no handler grant" and is indistinguishable, at the wire, from a
+ * genuine authority refusal. */
+ec_status ec_cap_grant_path_for(const char *local_peer, const char *pattern, char **out)
+{
+    *out = NULL;
+    size_t pn = strlen(local_peer) + 3;
+    char *prefix = malloc(pn);
+    if (!prefix) { return EC_ERR_OOM; }
+    snprintf(prefix, pn, "/%s/", local_peer);
+    const char *rel = ec_startswith(prefix, pattern) ? pattern + strlen(prefix) : pattern;
+    free(prefix);
+    size_t n = strlen(local_peer) + strlen(rel) + 64;
+    char *res = malloc(n);
+    if (!res) { return EC_ERR_OOM; }
+    snprintf(res, n, "/%s/system/capability/grants/%s", local_peer, rel);
+    *out = res;
+    return EC_OK;
+}
+
+/* Verify a presented reentry credential against §1.4's clauses and, where they all hold,
+ * answer the `peers` scope Dimension 4 relaxes to. Returns NULL (borrowed into the cred's
+ * value tree when non-NULL) when nothing relaxes.
+ *
+ * Every clause is required and failing any relaxes nothing: the chain ROOT granter
+ * resolves to the TARGET peer and is NOT a multi-signature root (a K-of-N root is a
+ * GROUP's authority and never relaxes Dimension 4 — verify_chain_rooted_at refuses the
+ * quorum arm in a foreign frame, which is where that rule lands); the LEAF grantee is the
+ * local peer; the chain is valid and not revoked. */
+/* Verify a presented reentry credential against §1.4's clauses. Answers true when every
+ * clause holds; *out_scope is then the `peers` scope Dimension 4 relaxes to, BORROWED into
+ * the credential's value tree, or NULL meaning "the target itself" (an absent `peers`
+ * dimension is the ordinary reentry shape: "you may dispatch back to me").
+ *
+ * THE BOOL AND THE SCOPE ARE SEPARATE ON PURPOSE. A NULL scope is a legitimate RESULT
+ * here, not a failure, so a single-return signature would collapse "the credential relaxes
+ * to the target" into "the credential relaxes nothing" — the same absent-vs-present
+ * conflation §6.2's CAP-6a records for temporal accessors, one layer up.
+ *
+ * Every clause is required and failing any relaxes nothing: the chain ROOT granter
+ * resolves to the TARGET peer and is NOT a multi-signature root (a K-of-N root is a
+ * GROUP's authority and never relaxes Dimension 4 — verify_chain_rooted_at refuses the
+ * quorum arm in a foreign frame, which is where that rule lands); the LEAF grantee is the
+ * local peer; the chain is valid and not revoked. */
+static bool target_minted_peers_relaxation(const char *local_peer, const char *target_peer,
+                                           ec_store *store, const ec_entity *cred,
+                                           const ec_envelope *env,
+                                           const ec_value **out_scope)
+{
+    *out_scope = NULL;
+    /* Nothing to relax — the default already covers this peer. Treating a self-targeted
+     * credential as a relaxation would make the exemption reachable with no foreign mint
+     * at all. */
+    if (!cred || strcmp(target_peer, local_peer) == 0) {
+        return false;
+    }
+    bool unresolvable = false;
+    if (verify_chain_rooted_at(local_peer, target_peer, store, cred, env, &unresolvable)
+        != EC_V_ALLOW) {
+        return false;
+    }
+    if (is_revoked(local_peer, store, cred, env)) {
+        return false;
+    }
+    size_t ghl = 0;
+    const uint8_t *gh = ec_ent_bytes(cred, "grantee", &ghl);
+    if (!gh || ghl != 33) {
+        return false;
+    }
+    ec_entity *ge = cap_resolve(env, store, gh);
+    if (!ge) {
+        return false;
+    }
+    bool grantee_is_local = false;
+    size_t pl = 0;
+    const uint8_t *pk = ec_ent_bytes(ge, "public_key", &pl);
+    if (pk && pl == 32) {
+        char *pid = NULL;
+        if (ec_peer_id_of_pubkey32(pk, &pid) == EC_OK && pid) {
+            grantee_is_local = (strcmp(pid, local_peer) == 0);
+            free(pid);
+        }
+    }
+    ec_entity_unref(ge);
+    if (!grantee_is_local) {
+        return false;
+    }
+    const ec_value *grants = token_grants(cred);
+    if (!grants || grants->as.arr.len == 0) {
+        return false;
+    }
+    const ec_value *g0 = grants->as.arr.items[0];
+    if (!g0 || g0->kind != EC_MAP) {
+        return false;
+    }
+    *out_scope = grant_dim(g0, "peers");   /* NULL => the target itself */
+    return true;
+}
+
+/* §1.4's PD-2 gate: check_permission run BEFORE a locally-originated sub-dispatch LEAVES
+ * the peer, with all four dimensions applied.
+ *
+ * ONE GATE AND ONE EXEMPTION, in §1.4's own words: the EXECUTING HANDLER'S GRANT decides
+ * all four dimensions (§6.8), evaluated in the LOCAL frame, with Dimension 1's pattern the
+ * target uri's PEER-RELATIVE path; and a valid capability MINTED BY THE TARGET PEER naming
+ * this peer as grantee relaxes Dimension 4 (peers) AND ONLY DIMENSION 4.
+ *
+ * "The target answers WHERE; the handler's grant answers WHAT." A credential is NOT a
+ * grant: with no handler grant there is nothing to supply Dimensions 1-3, so the
+ * sub-dispatch is refused however good the credential is. That is the COMPOSE, and the
+ * BYPASS it is distinguished from is a peer that treats the credential as a standalone
+ * authorizer and steers past its own grant — §6.8's confused-deputy substitution. Both
+ * obvious vectors agree under either reading (sources agree -> allow, no source ->
+ * refuse), so the only input that separates them is a VALID credential presented to a
+ * handler whose own grant does NOT cover the request, which MUST refuse.
+ *
+ * A credential failing any verification clause relaxes NOTHING and the handler grant gates
+ * unrelaxed — it does not turn the verdict into an error.
+ *
+ * `target_peer` is supplied by the caller rather than derived here: on the §6.11 reentry
+ * seam the uri may be PEER-RELATIVE and the destination is the connection's remote, so
+ * ec_extract_peer would answer the LOCAL peer and Dimension 4 would pass vacuously on the
+ * default {include: [local]} — the exemption would then never be exercised and a bypass
+ * would read as a compose.
+ *
+ * `cred == NULL` is the ambient arm: Dimension 4 is decided by the handler's grant alone. */
+bool ec_cap_check_outbound_sub_dispatch(const char *local_peer, const char *target_peer,
+                                        const char *handler_pattern, const char *operation,
+                                        ec_store *store, const ec_entity *handler_grant,
+                                        const ec_value *resource, const ec_entity *cred,
+                                        const ec_envelope *env)
+{
+    const ec_value *grants = handler_grant ? token_grants(handler_grant) : NULL;
+    if (!grants) {
+        return false;
+    }
+    /* Computed FIRST and consulted LAST, so no credential can stand in for 1-3. */
+    const ec_value *relax_scope = NULL;
+    bool have_relax = target_minted_peers_relaxation(local_peer, target_peer, store, cred,
+                                                     env, &relax_scope);
+    for (size_t i = 0; i < grants->as.arr.len; i++) {
+        const ec_value *g = grants->as.arr.items[i];
+        if (!g || g->kind != EC_MAP) {
+            continue;
+        }
+        if (!matches_scope(local_peer, handler_pattern,
+                           parse_scope(grant_dim(g, "handlers")), SCOPE_PATH)) {
+            continue;
+        }
+        if (!matches_scope(local_peer, operation,
+                           parse_scope(grant_dim(g, "operations")), SCOPE_ID)) {
+            continue;
+        }
+        if (!ec_cap_check_resource_scope(local_peer, local_peer, resource,
+                                         grant_dim(g, "resources"))) {
+            continue;
+        }
+        /* Dimension 4. §5.2's default for an absent `peers` scope is
+         * {include: [local_peer_id]}, so a foreign target fails unless this grant names it
+         * or a target-minted credential relaxes it. */
+        const ec_value *pd = grant_dim(g, "peers");
+        if (pd) {
+            if (matches_scope(local_peer, target_peer, parse_scope(pd), SCOPE_ID)) {
+                return true;
+            }
+        } else if (strcmp(target_peer, local_peer) == 0) {
+            return true;
+        }
+        if (have_relax) {
+            if (relax_scope) {
+                if (matches_scope(local_peer, target_peer, parse_scope(relax_scope), SCOPE_ID)) {
+                    return true;
+                }
+            } else {
+                /* Absent `peers` on the credential relaxes to the granter — the target. */
+                return true;
+            }
+        }
+    }
+    return false;
 }

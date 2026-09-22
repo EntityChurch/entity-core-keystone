@@ -742,7 +742,28 @@ defmodule EntityCore.Capability do
     go.(go, capability, 0)
   end
 
-  def verify_capability_chain(local_peer, store, capability, included) do
+  def verify_capability_chain(local_peer, store, capability, included),
+    do: verify_capability_chain_rooted_at(local_peer, local_peer, store, capability, included)
+
+  @doc """
+  `verify_capability_chain/4` with the expected ROOT granter named separately from the
+  verifying peer.
+
+  §1.4's PD-2 presented-authority arm needs this: the credential it evaluates is minted
+  by the TARGET peer, so root-trust is relaxed away from the local peer — and every other
+  clause (per-link signatures, grantee resolution, temporal validity, attenuation,
+  caveats) is unchanged. Parameterized rather than forked because a second copy of a
+  chain walk is a second copy that drifts.
+
+  A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY (§1.4, 0.8.2.19). When `root_peer`
+  differs from `local_peer` the quorum arm is REFUSED outright rather than verified:
+  *minted by the target* means the target SOLELY minted it, and a K-of-N root is a
+  GROUP's authority — its co-signers authorized it too. Accepting it would let any one
+  signer's target confer the whole group's grant, which is E3/F66's over-acceptance.
+  §5.5's M6 also requires the LOCAL peer in the signer set, so the quorum arm has no
+  meaning in a foreign frame even on its own terms.
+  """
+  def verify_capability_chain_rooted_at(local_peer, root_peer, store, capability, included) do
     resolve_fn = resolve(included, store)
 
     case collect_chain(capability, resolve_fn) do
@@ -753,11 +774,13 @@ defmodule EntityCore.Capability do
         root = List.last(chain)
 
         # Root authority: a §3.6 M3 multi-sig root (root-only) passes k-of-n quorum
-        # verification; a single-sig root must root at the local peer.
+        # verification and ONLY in the local frame; a single-sig root must root at
+        # `root_peer`.
         root_ok =
           case multi_granter(root) do
             %{} = mg ->
-              verify_multisig_root(local_peer, resolve_fn, root, mg, included)
+              root_peer == local_peer and
+                verify_multisig_root(local_peer, resolve_fn, root, mg, included)
 
             nil ->
               case Model.bytes_field(root, "granter") do
@@ -768,7 +791,7 @@ defmodule EntityCore.Capability do
                   case resolve_fn.(gh) do
                     %{} = g ->
                       case Model.bytes_field(g, "public_key") do
-                        pk when is_binary(pk) -> Identity.peer_id_of_pubkey(pk) == local_peer
+                        pk when is_binary(pk) -> Identity.peer_id_of_pubkey(pk) == root_peer
                         _ -> false
                       end
 
@@ -1007,5 +1030,152 @@ defmodule EntityCore.Capability do
         end
         end
     end
+  end
+
+  # ── §1.4 PD-2: outbound sub-dispatch authorization ─────────────────────────
+
+  @doc """
+  Strip the §1.4 scheme and leading peer segment, answering the PEER-RELATIVE path.
+
+  §1.4 admits three spellings of one address — `system/tree`, `/{peer}/system/tree` and
+  `entity://{peer}/system/tree` — and §1.4's PD-2 block requires Dimension 1's handler
+  pattern to be the target uri's peer-relative path, because a grant names HANDLERS and a
+  handler pattern never carries a peer segment. Matching a grant against the absolute or
+  schemed form matches nothing, silently, which reads at the wire as an authority refusal.
+
+  The first segment is dropped ONLY when it is a peer_id. A peer-relative
+  `system/protocol/connect` must not lose `system` — the standing defect on `smalltalk`
+  and `forth`, where an unconditional strip made every self-minted grant unusable while
+  the handshake stayed green.
+  """
+  def peer_relative_of(uri) do
+    p = normalize_uri(uri)
+
+    if String.starts_with?(p, "/") do
+      body = String.slice(p, 1..-1//1)
+
+      case String.split(body, "/", parts: 2) do
+        [first, rest] -> if is_peer_id(first), do: rest, else: body
+        [only] -> if is_peer_id(only), do: "", else: only
+      end
+    else
+      p
+    end
+  end
+
+  @doc """
+  Store key of a handler's OWN grant (§6.8: `system/capability/grants/{pattern}`),
+  tolerant of the pattern arriving absolute or peer-relative.
+
+  §6.6's tree walk answers an ABSOLUTE pattern because store keys are absolute, while the
+  grant path is built from the PEER-RELATIVE one. The two are one segment apart and
+  concatenating the wrong one yields a doubled peer segment whose lookup misses — which
+  fails closed as "no handler grant" and is indistinguishable, at the wire, from a
+  genuine authority refusal.
+  """
+  def grant_path_for(local_peer, pattern) do
+    prefix = "/" <> local_peer <> "/"
+
+    rel =
+      if String.starts_with?(pattern, prefix),
+        do: String.replace_prefix(pattern, prefix, ""),
+        else: pattern
+
+    "/" <> local_peer <> "/system/capability/grants/" <> rel
+  end
+
+  @doc """
+  Verify a presented reentry credential against §1.4's clauses and, where they all hold,
+  answer the `peers` scope Dimension 4 relaxes to. `nil` relaxes nothing.
+
+  Every clause is required and failing any relaxes nothing: the chain ROOT granter
+  resolves to the TARGET peer and is NOT a multi-signature root (a K-of-N root is a
+  GROUP's authority and never relaxes Dimension 4 — `verify_capability_chain_rooted_at/5`
+  refuses the quorum arm in a foreign frame, which is where that rule lands); the LEAF
+  grantee is the local peer; the chain is valid and not revoked.
+  """
+  def target_minted_peers_relaxation(local_peer, target_peer, store, cred, included) do
+    # Nothing to relax — the default already covers this peer. Treating a self-targeted
+    # credential as a relaxation would make the exemption reachable with no foreign mint
+    # at all.
+    if target_peer == local_peer do
+      nil
+    else
+      with :allow <-
+             verify_capability_chain_rooted_at(local_peer, target_peer, store, cred, included),
+           false <- is_revoked(local_peer, store, cred, included),
+           gh when is_binary(gh) <- Model.bytes_field(cred, "grantee"),
+           %{} = ge <- resolve(included, store).(gh),
+           pk when is_binary(pk) <- Model.bytes_field(ge, "public_key"),
+           true <- Identity.peer_id_of_pubkey(pk) == local_peer do
+        # The credential's own `peers` scope is what Dimension 4 relaxes TO. Absent means
+        # the granter — the target peer — which is the ordinary reentry shape: "you may
+        # dispatch back to me".
+        case grants_of_token(cred) do
+          [g | _] -> g.peers || %{incl: [target_peer], excl: []}
+          [] -> nil
+        end
+      else
+        _ -> nil
+      end
+    end
+  end
+
+  @doc """
+  §1.4's PD-2 gate: `check_permission` run before a locally-originated sub-dispatch
+  LEAVES the peer, with all four dimensions applied.
+
+  ONE GATE AND ONE EXEMPTION, in §1.4's own words: the EXECUTING HANDLER'S GRANT decides
+  all four dimensions (§6.8), evaluated in the LOCAL frame, with Dimension 1's pattern the
+  target uri's PEER-RELATIVE path; and a valid capability MINTED BY THE TARGET PEER naming
+  this peer as `grantee` relaxes Dimension 4 (`peers`) AND ONLY DIMENSION 4.
+
+  *"The target answers WHERE; the handler's grant answers WHAT."* A credential is NOT a
+  grant: with no handler grant there is nothing to supply Dimensions 1-3, so the
+  sub-dispatch is refused however good the credential is. That is the COMPOSE, and the
+  BYPASS it is distinguished from is a peer that treats the credential as a standalone
+  authorizer and steers past its own grant — §6.8's confused-deputy substitution. Both
+  obvious vectors agree under either reading (sources agree -> allow, no source ->
+  refuse), so the only input that separates them is a VALID credential presented to a
+  handler whose own grant does NOT cover the request, which MUST refuse.
+
+  A credential failing any verification clause relaxes NOTHING and the handler grant gates
+  unrelaxed — it does not turn the verdict into an error.
+
+  `target_peer` is supplied by the caller rather than derived here: on the §6.11 reentry
+  seam the uri may be PEER-RELATIVE and the destination is the connection's remote, so
+  `extract_peer(uri, local)` would answer the LOCAL peer and Dimension 4 would pass
+  vacuously on the default `{include: [local]}` — the exemption would then never be
+  exercised and a bypass would read as a compose.
+
+  `cred == nil` is the ambient arm: Dimension 4 is decided by the handler's grant alone.
+  """
+  def check_outbound_sub_dispatch(
+        local_peer,
+        target_peer,
+        handler_pattern,
+        operation,
+        store,
+        handler_grant,
+        resource,
+        cred,
+        included
+      ) do
+    # Computed FIRST and consulted LAST, so no credential can stand in for 1-3.
+    relax_to =
+      if cred,
+        do: target_minted_peers_relaxation(local_peer, target_peer, store, cred, included),
+        else: nil
+
+    Enum.any?(grants_of_token(handler_grant), fn g ->
+      matches_scope(local_peer, handler_pattern, g.handlers, :path) and
+        matches_scope(local_peer, operation, g.operations, :id) and
+        check_resource_scope(local_peer, local_peer, resource, g.resources) and
+        # Dimension 4. §5.2's default for an absent `peers` scope is
+        # {include: [local_peer_id]}, so a foreign target fails unless this grant names it
+        # or a target-minted credential relaxes it.
+        (matches_scope(local_peer, target_peer, g.peers || %{incl: [local_peer], excl: []}, :id) or
+           (relax_to != nil and matches_scope(local_peer, target_peer, relax_to, :id)))
+    end)
   end
 end

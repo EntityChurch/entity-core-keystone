@@ -240,9 +240,17 @@ defmodule EntityCore.Peer do
         uri = Keyword.fetch!(opts, :uri)
         operation = Keyword.fetch!(opts, :operation)
         params = Keyword.fetch!(opts, :params)
+        # PLURAL (GUIDE-CONFORMANCE §7a.1, 0.8.2.19) so a K-of-N root can present every
+        # granter identity and every link signature. Every member goes into `included`
+        # because §5.5's chain walk resolves granters and signers BY HASH out of that map.
+        #
+        # `capability: nil` is the AMBIENT arm: the EXECUTE carries no `capability` field
+        # at all. An empty hash would NOT do — that is a present field resolving to
+        # nothing, which §5.2 reads as an unresolvable capability rather than as its
+        # absence.
         capability = Keyword.fetch!(opts, :capability)
-        granter_peer = Keyword.fetch!(opts, :granter_peer)
-        capability_signature = Keyword.fetch!(opts, :capability_signature)
+        granter_peers = Keyword.get(opts, :granter_peers, [])
+        capability_signatures = Keyword.get(opts, :capability_signatures, [])
         resource = Keyword.get(opts, :resource)
         request_id = "out-" <> Integer.to_string(System.unique_integer([:positive, :monotonic]))
 
@@ -254,17 +262,19 @@ defmodule EntityCore.Peer do
             params: params,
             resource: resource,
             author: t.identity.identity_hash,
-            capability: capability.hash
+            capability: capability && capability.hash
           )
 
         exec_sig = Identity.sign_entity(t.identity, exec)
 
+        cred_carried =
+          if capability,
+            do: [capability | granter_peers ++ capability_signatures],
+            else: []
+
         included =
-          %{}
-          |> Map.put(capability.hash, capability)
-          |> Map.put(granter_peer.hash, granter_peer)
+          Enum.reduce(cred_carried, %{}, fn e, acc -> Map.put(acc, e.hash, e) end)
           |> Map.put(t.identity.identity_hash, t.identity.peer_entity)
-          |> Map.put(capability_signature.hash, capability_signature)
           |> Map.put(exec_sig.hash, exec_sig)
 
         send_fn.(%Envelope{root: exec, included: included})
@@ -1267,7 +1277,7 @@ defmodule EntityCore.Peer do
   # §6.11 reentry seam back to the caller; return the downstream response. The caller
   # carries the cap it minted for this peer in-band (three nested entities).
   @doc false
-  def dispatch_outbound_handler(t, conn, exec) do
+  def dispatch_outbound_handler(t, conn, exec, handler_pattern, env) do
     case entity_field(exec, "params") do
       nil ->
         err(400, "invalid_params", "dispatch-outbound requires a params entity")
@@ -1275,37 +1285,155 @@ defmodule EntityCore.Peer do
       p ->
         target = Model.text_field(p, "target") || ""
         operation = Model.text_field(p, "operation") || ""
+        # GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the
+        # single-granter case is an array of ONE. They were singular, which made §1.4's
+        # multi-signature-root rule ungateable on the wire: driving it needs two granter
+        # identities and two signatures, and a single-credential carrier cannot express
+        # that input.
+        #
+        # TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one,
+        # because THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle is
+        # what all 46 tracked reports are measured against and it sends the SINGULAR
+        # names; a plural-only peer reads the triple as absent there, takes the ambient
+        # arm and refuses — measured on the `go` vanguard as 2 of 778 severities moving
+        # PASS -> FAIL. Accepting both keeps the cohort 0-FAIL at BOTH check sets. REMOVE
+        # THIS FALLBACK AT THE ORACLE RE-PIN, and not before: the exit condition is that
+        # `tools/oracle-pin.env`'s `ref` names an oracle whose dispatch-outbound probe
+        # sends the plural carriers.
+        capability = entity_field(p, "reentry_capability")
+        granters = entity_list_field(p, "reentry_granters", "reentry_granter")
+        cap_sigs = entity_list_field(p, "reentry_cap_signatures", "reentry_cap_signature")
+        value = Model.field(p, "value")
 
-        with value when value != nil <- Model.field(p, "value"),
-             %{} = capability <- entity_field(p, "reentry_capability"),
-             %{} = granter_peer <- entity_field(p, "reentry_granter"),
-             %{} = capability_signature <- entity_field(p, "reentry_cap_signature") do
-          # §7a.1: the `value` field IS the outbound params entity data — pass it
-          # through directly (the reference's NewEntity("primitive/any", value)).
-          # Re-wrapping as %{"value" => value} double-wraps, so the echo's
-          # result.value comes back a map, not the sent value (keystone §7b t1_2).
-          inner = Model.make("primitive/any", value)
-          resource = %{"targets" => ["system/handler/" <> target]}
+        # The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED arm,
+        # all three absent selects the AMBIENT arm, and a PARTIAL set is 400
+        # invalid_params — a partial credential is malformed, not ambient. An empty array
+        # is partial, not present: it carries no credential.
+        n_present =
+          Enum.count(
+            [capability != nil, granters not in [nil, []], cap_sigs not in [nil, []]],
+            & &1
+          )
 
-          case outbound_dispatch(t, conn,
-                 uri: target,
-                 operation: operation,
-                 params: inner,
-                 resource: resource,
-                 capability: capability,
-                 granter_peer: granter_peer,
-                 capability_signature: capability_signature
-               ) do
-            nil ->
-              err(503, "no_outbound_seam", "no live section 6.11 reentry connection")
+        cond do
+          value == nil ->
+            err(400, "invalid_params", "dispatch-outbound requires value")
 
-            %Envelope{} = env ->
-              status = Model.uint_field(env.root, "status") || 0
-              result_cbor = Model.field(env.root, "result") || %{}
-              ok(Model.make("primitive/any", %{"status" => status, "result" => result_cbor}))
-          end
-        else
-          _ -> err(400, "invalid_params", "dispatch-outbound requires value + reentry authority")
+          n_present not in [0, 3] ->
+            err(400, "invalid_params", "dispatch-outbound reentry authority is all-or-none")
+
+          true ->
+            has_cred = n_present == 3
+            cred = if has_cred, do: capability, else: nil
+            granter_list = if has_cred, do: granters, else: []
+            sig_list = if has_cred, do: cap_sigs, else: []
+
+            # §7a.1: the `value` field IS the outbound params entity data — pass it
+            # through directly (the reference's NewEntity("primitive/any", value)).
+            # Re-wrapping as %{"value" => value} double-wraps, so the echo's
+            # result.value comes back a map, not the sent value (keystone §7b t1_2).
+            inner = Model.make("primitive/any", value)
+            # `target` arrives as any of §1.4's three spellings and the validator sends
+            # the SCHEMED ABSOLUTE form. Both the handler-pattern dimension and the
+            # resource target want the PEER-RELATIVE path — §1.4's PD-2 block says so for
+            # Dimension 1, and a resource target carrying a scheme is not a path at all.
+            rel_target = Capability.peer_relative_of(target)
+            resource = %{"targets" => ["system/handler/" <> rel_target]}
+
+            # §7a.2a: the presented arm verifies against a BUNDLE MERGED FROM THE PARENT
+            # ENVELOPE'S `included`. The credential, its granters and its signatures
+            # arrive NESTED IN PARAMS (ratified shape (a), in-band), so they are not in
+            # `env` and a verifier handed that alone cannot resolve a single link.
+            bundle =
+              Enum.reduce(
+                (if(cred, do: [cred], else: []) ++ granter_list ++ sig_list),
+                env.included,
+                fn e, acc -> Map.put(acc, e.hash, e) end
+              )
+
+            # §1.4: target_peer = extract_peer(uri, local_peer_id). The validator sends
+            # the absolute form, so the URI names the target. Where the uri is
+            # PEER-RELATIVE there is no peer in it and the §6.11 seam's destination is the
+            # connection's remote, so that is the fallback — without it Dimension 4 passes
+            # vacuously.
+            uri_peer = Capability.extract_peer(t.local_peer, target)
+
+            target_peer =
+              if uri_peer == t.local_peer, do: conn.hello_peer_id || uri_peer, else: uri_peer
+
+            # §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer,
+            # all four dimensions, on THIS handler's own grant — with a target-minted
+            # credential relaxing Dimension 4 and nothing else. Consulting only the
+            # presented credential here is the §6.8 confused-deputy bypass.
+            own_grant =
+              Store.get_at(t.store, Capability.grant_path_for(t.local_peer, handler_pattern))
+
+            cond do
+              # §6.8: a handler with no valid grant does not run. Fail closed rather than
+              # falling back to the credential, which is the substitution §6.8 forbids.
+              own_grant == nil ->
+                err(403, "capability_denied", "no handler grant for " <> handler_pattern)
+
+              not Capability.check_outbound_sub_dispatch(
+                t.local_peer,
+                target_peer,
+                rel_target,
+                operation,
+                t.store,
+                own_grant,
+                resource,
+                cred,
+                bundle
+              ) ->
+                # §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic
+                # transport- or gateway-class code would launder an authorization verdict
+                # into a route fault, and the ambient and presented branches would then
+                # disagree about what the same gate decided.
+                err(
+                  403,
+                  "capability_denied",
+                  "outbound sub-dispatch not authorized by the handler grant"
+                )
+
+              true ->
+                case outbound_dispatch(t, conn,
+                       uri: target,
+                       operation: operation,
+                       params: inner,
+                       resource: resource,
+                       capability: cred,
+                       granter_peers: granter_list,
+                       capability_signatures: sig_list
+                     ) do
+                  nil ->
+                    err(503, "no_outbound_seam", "no live section 6.11 reentry connection")
+
+                  %Envelope{} = renv ->
+                    status = Model.uint_field(renv.root, "status") || 0
+                    result_cbor = Model.field(renv.root, "result") || %{}
+                    ok(Model.make("primitive/any", %{"status" => status, "result" => result_cbor}))
+                end
+            end
+        end
+    end
+  end
+
+  # Decode an ARRAY of nested entities at `key`, falling back to the SINGULAR spelling as
+  # a list of one (the §7a.1 transitional carriers).
+  #
+  # `nil` means absent or not a list; an array whose members do not all decode is a
+  # MALFORMED carrier and is also `nil`, never a silently shorter list, because the
+  # caller's all-or-none test would then read a partial credential as a complete one.
+  defp entity_list_field(e, key, singular) do
+    case Model.field(e, key) do
+      l when is_list(l) ->
+        decoded = Enum.map(l, fn v -> if is_map(v), do: Model.of_cbor(v), else: nil end)
+        if Enum.any?(decoded, &is_nil/1), do: nil, else: decoded
+
+      _ ->
+        case entity_field(e, singular) do
+          %{} = one -> [one]
+          _ -> nil
         end
     end
   end
@@ -1502,14 +1630,14 @@ defmodule EntityCore.Peer do
                   err(403, "capability_denied")
 
                 :allow ->
-                  route_to_handler(t, conn, exec, pattern, cap)
+                  route_to_handler(t, conn, exec, pattern, cap, env)
               end
           end
       end
     end
   end
 
-  defp route_to_handler(t, conn, exec, pattern, caller_cap) do
+  defp route_to_handler(t, conn, exec, pattern, caller_cap, env) do
     # §6.3's path check needs the handler pattern AND the caller's capability, and the
     # dispatch-level check above already computed both. They are CARRIED, never
     # recomputed: recomputing invites the two to drift, and §6.8 is explicit that the
@@ -1525,7 +1653,10 @@ defmodule EntityCore.Peer do
       "system/type" -> types_handler(t, exec)
       # §7a conformance handlers — only resolvable when bootstrapped under --validate.
       "system/validate/echo" -> echo_handler(t, exec)
-      "system/validate/dispatch-outbound" -> dispatch_outbound_handler(t, conn, exec)
+      # §1.4 PD-2 needs the OWNING handler's peer-relative pattern (Dimension 1 is
+      # matched peer-relative) and the parent envelope (the §7a.2a bundle base).
+      "system/validate/dispatch-outbound" ->
+        dispatch_outbound_handler(t, conn, exec, strip_local(t, pattern), env)
       # a dynamically-registered handler (§6.13(a)): dispatch its entity-native body.
       _ -> entity_native_dispatch(t, pattern)
     end
@@ -1593,6 +1724,22 @@ defmodule EntityCore.Peer do
     t
   end
 
+  # A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward, as
+  # distinct from any capability a caller presents. §6.8 row 1: an access in service of a
+  # caller's request needs the caller's verified capability AND this grant, and BOTH must
+  # pass. Narrow for `dispatch-outbound`; empty for everything else.
+  defp own_grants_for("system/validate/dispatch-outbound") do
+    [
+      %{
+        "handlers" => %{"include" => ["system/validate/echo"]},
+        "operations" => %{"include" => ["echo"]},
+        "resources" => %{"include" => ["system/handler/system/validate/echo"]}
+      }
+    ]
+  end
+
+  defp own_grants_for(_), do: []
+
   defp bootstrap_handler(t, {pattern, name, ops}) do
     operations = for {o, {i, ou}} <- ops, into: %{}, do: {o, op_spec(i, ou)}
     handler_e = Model.make("system/handler", %{"interface" => "system/handler/" <> pattern})
@@ -1601,7 +1748,13 @@ defmodule EntityCore.Peer do
     iface = Model.make("system/handler/interface", %{"pattern" => pattern, "name" => name, "operations" => operations})
     Store.bind(t.store, "/" <> t.local_peer <> "/system/handler/" <> pattern, iface)
 
-    {token, _} = mint_token(t, t.identity.identity_hash, [])
+    # §6.8: the grant MUST exist at `system/capability/grants/{pattern}` and a handler with
+    # no valid grant does not run — so this bind is the ceiling row 1 intersects against,
+    # not bookkeeping. NARROW for dispatch-outbound: with a wide grant, consulting it and
+    # skipping it give the same answer on every input, so the confused-deputy
+    # discriminator cannot fire (GUIDE-CONFORMANCE §7a.1 makes the narrowness a
+    # scaffold-contract requirement).
+    {token, _} = mint_token(t, t.identity.identity_hash, own_grants_for(pattern))
     Store.bind(t.store, "/" <> t.local_peer <> "/system/capability/grants/" <> pattern, token)
   end
 
