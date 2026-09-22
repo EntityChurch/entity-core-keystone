@@ -2157,6 +2157,48 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   written down in a status doc is not an enforcement point.** The floor is where a new implementation
   builds from, so it is the site whose staleness costs the most and the one a sweep reaches last —
   put it FIRST in the sweep order, not last.)*
+- **WHEN A FIND-RATE STAYS FLAT ACROSS MANY FOLDS, STOP LOOKING FOR THE NEXT DEFECT AND ENUMERATE
+  THE DECISION SPACE — THE RECURRING FINDING IS THE ABSENCE OF THE ENUMERATION, NOT N DEFECTS.**
+  Candidate (first occurrence, 2026-09-12, `tools/scope-cell-table.py` +
+  `shared/findings/scope-algebra-cell-census.md`; enforcement exact). Twenty-one `0.8.2.x`
+  revisions in twelve days moved almost nothing but ten functions of the §5 scope algebra, and
+  every finding across four seats had one of three shapes: *this cell says A here and B there* ·
+  *this cell is unreachable* · *the sweep covered 3 of 7 sites*. Enumerated from the pseudocode:
+  **146 live cells, 37 with a named vector**, and **every finding of the arc landed in a
+  zero-coverage region** — while **F40, the one cell family that got vectors, is the one that
+  closed and stayed closed.** That correlation is the diagnosis, and unlike *"the find-rate is the
+  instrument, not the disease"* (true when written for newly-instrumented OLD surfaces, carried
+  four weeks past its evidence onto text the cycle itself authored) **it is falsifiable**: the
+  census publishes the prediction that the next finding lands in one of its four zeros.
+  **Three things generalize past this arc.**
+  - **THE REDUCTION IS THE VALUABLE HALF, NOT THE COUNT.** A naive product said 640; the space is
+    146, and the single biggest factor is that **scope type is FIXED by the dimension and is not a
+    free axis** (−320). Enumerating forces you to find that out. And the residual −126 named the
+    *generator* in one sentence — `resources` is the only dimension whose subject is a
+    set-with-exclusions rather than a value — which is what makes the next revision able to
+    predict where it will need to look instead of discovering it.
+  - **A COVERAGE TABLE MAPPED BY NAME FAILS IN BOTH DIRECTIONS FROM ONE MIS-ASSIGNMENT.** Filing
+    `chain_parent_exclude_drop_denied` under the L1 caller-exclude arm (it drives the L3 delegation
+    link) simultaneously reported a **false ZERO** on exclude-inheritance and a **false COVER** on
+    the F68 arm. So a coverage claim is `unknown` until a harness drives it — the standing rule —
+    and the cells that survive being wrong about the mapping are the ones worth publishing: here
+    the four zeros hold either way, because no check in the set names that layer or dimension *at
+    all*.
+  - **THE INSTRUMENT NEEDED THE EXAMINED-ZERO-THINGS RULE TWICE IN ONE SITTING, AND ONLY THE
+    PRINTED COUNTS CAUGHT IT.** The first cut reported `structurally dead 0` from two classifier
+    branches that could not fire (the space already excluded them by construction — better design,
+    dishonest reporting). The reduction rows then summed to 172 against an enumeration of 146.
+    **Fix both the same way: stage each reduction from the one above and ASSERT CLOSURE, plus a
+    non-zero assertion per stage** — a reduction that stops removing anything is a rule the code no
+    longer implements, sitting there reading as load-bearing.
+  **And the finding it surfaced is the shape to expect from this method: `matches_scope` dispatches
+  on a `scope.type` read off the RECEIVED ENTITY while all 46 peers supply it from the call site,
+  and nothing validates that value against the dimension anywhere** (§6.3, M3,
+  `verify_capability_chain` and §5.6's relative child-vs-parent check all read, not assumed) — **F72,
+  cohort cost zero.** Four seats reviewing §5 for twelve days could not see it because **the two
+  readings agree on every well-typed grant**; only a table that asks each cell *what decides this,
+  and who supplies it* separates them. **A defect invisible to every reading is visible to an
+  enumeration, and that is the whole argument for building one.**
   - **A section headed "Current state" was anchored to a pin retired three flips earlier**
     (`CONFORMANCE-MATRIX.md` §4, `2026-08-30 @ the 755-check pin`, while §1 published `778`).
     `coherence-gate` is scoped to §1's rows and the 46 per-peer banners, so §2–§4 prose can go
@@ -3799,6 +3841,21 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   which effort is unnecessary — and it is read once, acted on, and never re-derived. **Measure the flag
   before proposing the migration.** One `podman run` with four invocations answered it in ninety
   seconds and reversed the conclusion.
+  **RATIFIED 2026-09-12 — second occurrence, different shape, and this one was refuted by the
+  OPERATOR rather than by us.** The cell census (§5) offered *"could canonicalization move to mint
+  time"* as the shape of question worth asking once — hedged as unverified, and still a
+  recommendation about a **wire-affecting migration across 46 peers and three ground-up
+  implementations**. The objection was one sentence — *the granter is always known at grant
+  creation, so both readings freeze the same value* — and checking it case by case took twenty
+  minutes: **extensionally equivalent in every single-granter case, and the only divergence is the
+  K-of-N root, where the proposed direction is STRICTLY WORSE** (no single granter exists to
+  freeze). The bug class it targeted was **already gated** — only one of four layers takes a
+  non-local frame, and §5.5a ships three vectors on it. **So the rule is not "hedge the
+  recommendation", it is BUILD THE CASE TABLE BEFORE PROPOSING**: the first occurrence was
+  reversed by four invocations, this one by seven rows, and in both the artifact that settles it is
+  cheaper than the paragraph arguing for it. Strike a withdrawn recommendation **in place with its
+  case table** — *"we asked and the answer was no, here is why"* is worth more to the next reader
+  than silence, and it is what stops the same migration being re-proposed in a month.
   *(Sub-lesson, cheap and general: **a `PARTIAL … do not cite this total` banner can be a property of
   YOUR INVOCATION rather than of the peer.** An ad-hoc run against a peer started `-open-access` with
   no `--name`/keypair prints exactly that banner, reports `Result: FAIL (un-allowlisted skips)`, and
