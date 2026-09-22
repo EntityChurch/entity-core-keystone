@@ -91,13 +91,13 @@ const U64_MAX = (1n << 64n) - 1n;
 export function ecfInt(value: bigint): EcfInt {
   if (value >= 0n) {
     if (value > U64_MAX) {
-      throw new RangeError(`uint exceeds 2⁶⁴−1: ${value}`);
+      throw new RangeError(`uint exceeds 2^64-1: ${value}`);
     }
     return { kind: "int", negative: false, argument: value };
   }
   const argument = -1n - value; // value = -1 - argument
   if (argument > U64_MAX) {
-    throw new RangeError(`nint exceeds −2⁶⁴: ${value}`);
+    throw new RangeError(`nint exceeds -2^64: ${value}`);
   }
   return { kind: "int", negative: true, argument };
 }

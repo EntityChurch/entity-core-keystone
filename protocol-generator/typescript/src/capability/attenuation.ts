@@ -4,7 +4,7 @@ import { bytesEqual } from "../codec/bytes.js";
 import { Ecf } from "../model/index.js";
 import { CapabilityToken } from "./capability-token.js";
 import { GrantEntry } from "./grant-entry.js";
-import { Scope } from "./scope.js";
+import { matchesIdPattern, Scope, type ScopeKind } from "./scope.js";
 import * as Paths from "./paths.js";
 
 /**
@@ -93,11 +93,12 @@ function grantSubset(
   parentPeerId: string,
 ): boolean {
   // §5.5a: only the RESOURCE dimension uses the per-link granter frames; the other
-  // dimensions stay on the local frame.
-  if (!scopeSubset(child.handlers, parent.handlers, localPeerId, localPeerId)) return false;
-  if (!scopeSubset(child.operations, parent.operations, localPeerId, localPeerId)) return false;
-  if (!scopeSubset(child.resources, parent.resources, childPeerId, parentPeerId)) return false;
-  if (!scopeSubset(child.effectivePeers(localPeerId), parent.effectivePeers(localPeerId), localPeerId, localPeerId)) return false;
+  // dimensions stay on the local frame. The scope KIND is a property of the DIMENSION and
+  // is named at every call site, never defaulted (F50 / 0.8.2.16).
+  if (!scopeSubset(child.handlers, parent.handlers, localPeerId, localPeerId, "path")) return false;
+  if (!scopeSubset(child.operations, parent.operations, localPeerId, localPeerId, "id")) return false;
+  if (!scopeSubset(child.resources, parent.resources, childPeerId, parentPeerId, "path")) return false;
+  if (!scopeSubset(child.effectivePeers(localPeerId), parent.effectivePeers(localPeerId), localPeerId, localPeerId, "id")) return false;
 
   // Constraint attenuation: parent keys retained + byte-equal values.
   if (!constraintsRetained(parent.constraints, child.constraints)) return false;
@@ -108,12 +109,42 @@ function grantSubset(
   return true;
 }
 
-function scopeSubset(child: Scope, parent: Scope, childPeerId: string, parentPeerId: string): boolean {
+/**
+ * §5.5a subset check: every child include must be covered by some parent include, and every
+ * parent exclude must be inherited by some child exclude.
+ *
+ * TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16; `entity-core-formalization` K-7). §3.6's
+ * id-scope grammar binds the scope TYPE, not one function — *"An implementation on the
+ * canonicalizing reading is non-conformant and MUST adopt the literal matcher"* — so the
+ * rule F40 landed on {@link Scope.matches} reaches here too, with delegation-chain WIDENING
+ * named as the reason: on the canonicalizing reading a bare id include reads as covered by
+ * a path-form parent pattern it does not literally match, and a child grant comes out wider
+ * than its parent. `lean`'s differential put it at 2 of 64 include pairs and 2 of 64 exclude
+ * pairs, fail-closed, with a 16-pair control alphabet reporting 0 — which is why every
+ * hand-tried example missed it.
+ *
+ * `kind` has NO DEFAULT and is named at every call site, because a default is how the next
+ * dimension inherits the wrong matcher silently — the original F40 defect. The per-link
+ * granter frames are meaningless on the id arm (an id pattern is never canonicalized) and
+ * are simply unread there.
+ */
+function scopeSubset(
+  child: Scope,
+  parent: Scope,
+  childPeerId: string,
+  parentPeerId: string,
+  kind: ScopeKind,
+): boolean {
+  const frame = (pattern: string, peerId: string): string =>
+    kind === "path" ? Paths.canonicalize(pattern, peerId) : pattern;
+  const covers = (pattern: string, value: string): boolean =>
+    kind === "path" ? Paths.matchesPattern(value, pattern) : matchesIdPattern(value, pattern);
+
   // Every child include pattern (child granter frame) must be covered by some parent
   // include (parent granter frame).
   for (const childPattern of child.include) {
-    const cc = Paths.canonicalize(childPattern, childPeerId);
-    const covered = parent.include.some((pp) => Paths.matchesPattern(cc, Paths.canonicalize(pp, parentPeerId)));
+    const cc = frame(childPattern, childPeerId);
+    const covered = parent.include.some((pp) => covers(frame(pp, parentPeerId), cc));
     if (!covered) {
       return false;
     }
@@ -122,10 +153,9 @@ function scopeSubset(child: Scope, parent: Scope, childPeerId: string, parentPee
   // Child must inherit all parent excludes (parent frame vs child frame).
   if (parent.exclude !== null) {
     for (const parentEx of parent.exclude) {
-      const cp = Paths.canonicalize(parentEx, parentPeerId);
+      const cp = frame(parentEx, parentPeerId);
       const childHas =
-        child.exclude !== null &&
-        child.exclude.some((ce) => Paths.matchesPattern(cp, Paths.canonicalize(ce, childPeerId)));
+        child.exclude !== null && child.exclude.some((ce) => covers(frame(ce, childPeerId), cp));
       if (!childHas) {
         return false;
       }

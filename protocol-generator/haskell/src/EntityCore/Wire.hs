@@ -15,6 +15,9 @@ module EntityCore.Wire
   , parseFrameLength
   , envelopeOfFrame
   , salvageRequestId
+    -- * §4.11 pre-admission refusals (0.8.2.25)
+  , FramingRefusal (..)
+  , preAdmissionRefusal
   , frameOfEnvelope
   , makeResponse
   , makeExecute
@@ -78,6 +81,58 @@ salvageRequestId payload = case decodeAllowTags payload of
     case rid of
       VText t -> Just t
       _ -> Nothing
+
+-- | §4.11's pre-admission refusal causes (0.8.2.25) that arise BELOW the decoder —
+-- at the framing layer, where there is no 'CodecError' to carry them because no
+-- CBOR was ever parsed. 'preAdmissionRefusal' maps both these and 'CodecError' onto
+-- one (status, code) table so the classification lives in one place.
+data FramingRefusal
+  = -- | §4.10(a) / N14: the declared envelope exceeds the configured maximum.
+    -- Reported BEFORE the body is buffered, so nothing is spent on it.
+    FrameTooLarge
+  | -- | A length prefix declaring N bytes followed by fewer — §4.11's framing arm.
+    -- DISTINCT from EOF: a clean close is not a refusal of anything and there is
+    -- nobody left to answer.
+    FrameTruncated
+  deriving (Eq, Show)
+
+-- | The (status, code) §4.11 assigns a pre-admission refusal's CAUSE (0.8.2.25).
+--
+-- "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on
+-- the wire [MUST] — correlated by @request_id@ where the id is available, and
+-- otherwise as a best-effort coded frame carrying no correlation." §4.9(c)'s
+-- deliver-or-signal rule is scoped to "every request the peer ADMITS" and therefore
+-- reaches none of these, which is why §4.11 exists.
+--
+-- THE FRAME OBLIGATION BELONGS TO THE CLASS; THE CODE BELONGS TO THE CAUSE [MUST].
+-- A single code for the whole class answers an honest caller under the wrong reason
+-- and sends them to the wrong layer.
+--
+-- @
+-- connect-auth proof-of-possession    401 authentication_failed  (the connect
+--                                                                 handler's, not here)
+-- envelope over the configured max     413 payload_too_large      (§4.10(a), N14)
+-- resolution integrity (mis-keyed)     400 hash_mismatch          (§5.2a, §1.8)
+-- framing \/ never becomes an Envelope  400 invalid_request        (§4.7, §4.11)
+-- root neither EXECUTE nor RESPONSE    400 invalid_request        (§3.3, N12\/N17 —
+--                                                                 in dispatch, not here)
+-- @
+--
+-- The CBOR tag-policy arm keeps @non_canonical_ecf@ and that is deliberate. §4.11
+-- rules that code non-conformant "on the framing arm" and gives its reason in the
+-- same sentence: @ENTITY-CBOR-ENCODING@ §5.4 "defines that code for CBOR
+-- tag-policy violations specifically", which that document still MUSTs at decode
+-- time. §6.3 disjoins the two by CAUSE — a tag in a DATA-FIELD position is the
+-- policy violation; bytes that never become an Envelope are the framing arm — so
+-- there is no conflict of MUSTs to reconcile, and this branch keeps the behaviour
+-- the @tag_reject@ vectors were written against.
+preAdmissionRefusal :: Either FramingRefusal CodecError -> (Int, Text)
+preAdmissionRefusal (Left FrameTooLarge) = (413, "payload_too_large")
+preAdmissionRefusal (Left FrameTruncated) = (400, "invalid_request")
+preAdmissionRefusal (Right e) = case e of
+  HashMismatch _ -> (400, "hash_mismatch")
+  TagRejected _ -> (400, "non_canonical_ecf")
+  _ -> (400, "invalid_request")
 
 frameOfEnvelope :: Envelope -> ByteString
 frameOfEnvelope env =

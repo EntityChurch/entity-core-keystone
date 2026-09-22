@@ -156,18 +156,40 @@ pub fn read_loop(peer: Arc<Peer>, conn: Arc<Mutex<Conn>>, io: Arc<Io>, mut read_
     // reads the same number back from its context.
     let budget = peer.max_frame_bytes();
     conn.lock().unwrap().max_frame_bytes = budget;
-    // Closed / PayloadTooLarge / Io ends the loop.
-    while let Ok(payload) = wire::read_frame_limit(&mut read_stream, budget) {
+    loop {
+        let payload = match wire::read_frame_limit(&mut read_stream, budget) {
+            Ok(p) => p,
+            Err(e) => {
+                // The stream is desynchronized on both REFUSABLE arms — an oversize body
+                // was never drained, a truncated one never arrived — so the coded frame
+                // goes out and THEN the loop ends. §4.11 makes the frame mandatory and
+                // leaves the close to us; closing is the only sound choice once the
+                // framing is lost, and it is a CHOICE rather than an alternative to
+                // answering. An ordinary hangup is not a refusal and gets nothing.
+                if wire::framing_refusal(&e) {
+                    let (status, code, message) = wire::pre_admission_refusal(&e);
+                    refuse_pre_admission(&io, "", status, code, message);
+                }
+                break;
+            }
+        };
         let env = match model::envelope_of_frame(&payload) {
             Ok(e) => e,
-            Err(_) => {
-                // §6.3: "Rejection returns `400 non_canonical_ecf`" — the frame is
-                // refused (correct), and that refusal MUST be a STATUS, not silence.
-                // Dropping it satisfies only the first half of the sentence and leaves
-                // the sender blocked until its own timeout, so a refusal is
-                // indistinguishable from a dead peer. §4.9(c) deliver-or-signal says the
-                // same from the other direction. Answer, then keep reading.
-                reject_non_canonical(&io, &payload);
+            Err(err) => {
+                // A COMPLETE frame the decoder refused. The framing is intact, so we
+                // answer and KEEP SERVING — and the refusal MUST be a status rather than
+                // silence (§4.11; §4.9(c) says the same from the other direction). A
+                // silent skip leaves the sender blocked until its own §6.11(c) deadline
+                // and makes a refusal indistinguishable from a dead peer.
+                //
+                // THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered
+                // `non_canonical_ecf` for every cause until 0.8.2.24/.25 pinned them
+                // apart: a mis-keyed `included` entry is `400 hash_mismatch` (its encoding
+                // is canonical — what is false is the claim the key makes), a tag-policy
+                // violation keeps `non_canonical_ecf`, and everything else that never
+                // becomes an Envelope is `400 invalid_request`.
+                let (status, code, message) = wire::decode_refusal(&err);
+                refuse_pre_admission(&io, &salvage_request_id(&payload), status, code, message);
                 continue;
             }
         };
@@ -187,34 +209,57 @@ pub fn read_loop(peer: Arc<Peer>, conn: Arc<Mutex<Conn>>, io: Arc<Io>, mut read_
     io.close();
 }
 
-/// Answer a frame the strict decoder rejected with `400 non_canonical_ecf` (§6.3),
-/// recovering ONLY the `request_id` so the sender can correlate the refusal.
+/// Recover ONLY the `request_id` from a frame the strict decoder rejected, so the refusal
+/// can be delivered CORRELATED rather than as §4.11's uncorrelated best-effort frame.
+/// `""` when nothing is recoverable.
 ///
-/// The frame stays rejected: nothing is built from it, nothing is stored, and the tag is
+/// The frame stays rejected: nothing is built from it, nothing is stored, and a tag is
 /// never interpreted — the salvage decode exists solely to read back the correlation key.
 /// The envelope and entity-wrapper shapes are fixed maps with no legal tag position, so a
 /// frame whose ONLY defect is a tag inside some entity's `data` still has a structurally
 /// sound root, which is exactly the case worth recovering (and the one CAP-6a's `>2^64`
-/// half arrives as — a bignum can only reach a peer as a major-type-6 tag). If even the
-/// request_id is unrecoverable there is nobody to answer, so the frame is dropped: the
-/// one case where silence is all that is available.
-fn reject_non_canonical(io: &Arc<Io>, payload: &[u8]) {
+/// half arrives as — a bignum can only reach a peer as a major-type-6 tag).
+fn salvage_request_id(payload: &[u8]) -> String {
     let Ok(v) = crate::cbor::decode_salvage(payload) else {
-        return;
+        return String::new();
     };
-    let request_id = match model::map_get(&v, "root")
+    match model::map_get(&v, "root")
         .and_then(|root| model::map_get(root, "data"))
         .and_then(|data| model::map_get(data, "request_id"))
     {
         Some(Value::Text(s)) => s.clone(),
-        _ => return, // no correlatable request_id — nothing to answer
-    };
-    let result = wire::error_result(
-        "non_canonical_ecf",
-        Some("frame is not canonical ECF (section 6.3): CBOR tags are forbidden anywhere in an entity"),
-    );
-    let resp = wire::response_envelope(&request_id, 400, &result);
-    let _ = io.write_framed(&resp);
+        _ => String::new(),
+    }
+}
+
+/// Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+/// refused BEFORE it becomes an admitted request.
+///
+/// *"A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on the
+/// wire `[MUST]` — correlated by `request_id` where the id is available, and otherwise as
+/// a best-effort coded frame carrying no correlation."*
+///
+/// §4.9(c)'s deliver-or-signal rule is scoped to *"every request the peer ADMITS"* and
+/// therefore reaches none of these, which is why §4.11 exists. The two non-conformant
+/// behaviours it names are SEPARATE failures and this peer had one of each: DROPPING the
+/// frame (the un-salvageable arm, which used to fall through to silence — *"the weaker of
+/// the two precisely because nothing surfaces it"*), and CLOSING with no coded frame (the
+/// oversize and truncated arms, which ended the read loop's `while let Ok(..)` outright).
+/// A bare close is indistinguishable from a network fault (§4.6), and on a multiplexed
+/// connection it destroys unrelated ADMITTED requests.
+///
+/// AN EMPTY `request_id` IS THE BEST-EFFORT FORM, not a bug: it is what the section
+/// prescribes where no id can be recovered, and guessing one would correlate the refusal
+/// to somebody else's in-flight request.
+fn refuse_pre_admission(
+    io: &Arc<Io>,
+    request_id: &str,
+    status: u64,
+    code: &str,
+    message: &str,
+) {
+    let result = wire::error_result(code, Some(message));
+    let _ = io.write_framed(&wire::response_envelope(request_id, status, &result));
 }
 
 fn dispatch_one(peer: Arc<Peer>, conn: Arc<Mutex<Conn>>, io: Arc<Io>, env: Envelope) {

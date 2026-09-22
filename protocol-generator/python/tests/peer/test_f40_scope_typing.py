@@ -62,3 +62,36 @@ def test_f40_id_scope_wildcards_survive() -> None:
     assert _matches_scope(LOCAL, "get", Scope(["*"], []), "id") is True
     assert _matches_scope(LOCAL, "compute/apply", Scope(["compute/*"], []), "id") is True
     assert _matches_scope(LOCAL, "compute", Scope(["compute/*"], []), "id") is False
+
+
+def test_sentinel_is_path_scope_only() -> None:
+    """§5.4's unmatchable-pattern rule is scoped to PATH-SCOPE (0.8.2.24, N2/N3), and
+    this is the discriminating pair.
+
+    *"A capability carrying an unmatchable PATH-SCOPE pattern is INVALID ``[MUST]`` ...
+    It does NOT reach ``operations`` or ``peers`` ``[MUST]``."*  ``NEVER_MATCH`` is a
+    §5.4 path-canonicalization sentinel; an id-scope pattern is a literal identifier
+    that §5.2's id-scope arm forbids putting through the §5.4 transforms at all.
+
+    The id-scope case cannot be passed by accident: ``*/apply`` is an ordinary
+    namespaced operation name that PATH-canonicalizes to the sentinel, so on the
+    pre-.24 unscoped reading it DENIED THE WHOLE DIMENSION — ``get``, included by a
+    bare ``*``, came back False.  The path-scope half is the other side and proves this
+    is a scope split rather than a removal: the sentinel still bites where the
+    dimension is a path.
+    """
+    # id-scope: the sentinel MUST NOT be consulted. `*/apply` is a literal here and
+    # carves out nothing, so `get` stays included.
+    assert _matches_scope(LOCAL, "get", Scope(["*"], ["*/apply"]), "id") is True
+    # The same holds for `peers`, the other id-scope dimension.
+    assert _matches_scope(LOCAL, LOCAL, Scope(["*"], ["../nope"]), "id") is True
+    # path-scope: UNCHANGED. An unmatchable exclude still denies, because there it
+    # would otherwise carve out nothing and leave the grant silently wider than its
+    # author wrote (0.8.2.21).
+    assert _matches_scope(LOCAL, "system/tree", Scope(["*"], ["../nope"]), "path") is False
+    # And a path-scope exclude that IS matchable still carves out only its own target —
+    # the sentinel arm must not have swallowed the ordinary case.
+    assert (
+        _matches_scope(LOCAL, "system/tree", Scope(["*"], ["system/secret"]), "path")
+        is True
+    )

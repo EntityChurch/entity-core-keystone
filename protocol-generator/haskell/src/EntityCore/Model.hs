@@ -119,7 +119,12 @@ entityOfCbor c = do
     Nothing -> Left (Unsupported "entity: missing data")
   let !e = makeEntity typ dataV
   case mapGet c "content_hash" of
-    Just (VBytes h) | h /= entHash e -> Left (NonCanonicalEcf "entity: content_hash mismatch (§1.8 fidelity)")
+    -- §1.8 fidelity is the SAME RESOLUTION-INTEGRITY CAUSE as a mis-keyed
+    -- `included` entry, one level in: the encoding is canonical and carries no
+    -- tag, and what is false is the claim the content_hash makes. §5.2a pins that
+    -- cause to 400 hash_mismatch [MUST] and rules non_canonical_ecf non-conformant
+    -- there (0.8.2.24 N4/N5) — so both arms answer HashMismatch.
+    Just (VBytes h) | h /= entHash e -> Left (HashMismatch "entity: content_hash mismatch (§1.8 fidelity)")
     _ -> Right e
 
 -- ── envelope (§3.1) ──────────────────────────────────────────────────────────
@@ -160,9 +165,12 @@ envelopeOfCbor c = do
   where
     parseIncluded (VBytes h, v) = do
       e <- entityOfCbor v
-      -- §3.1: included content_hash MUST match the map key.
+      -- §3.1: included content_hash MUST match the map key. §5.2a pins the
+      -- disposition for refusing it at the decode boundary to 400 hash_mismatch
+      -- [MUST] (0.8.2.24 N4/N5) — see 'HashMismatch'. This answered
+      -- NonCanonicalEcf until then, which §5.2a names non-conformant here.
       if h /= entHash e
-        then Left (NonCanonicalEcf "envelope: included key != entity content_hash")
+        then Left (HashMismatch "envelope: included key != entity content_hash")
         else Right (h, e)
     parseIncluded _ = Left (Unsupported "envelope: included key not a byte string")
 

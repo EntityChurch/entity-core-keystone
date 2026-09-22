@@ -4,7 +4,13 @@ import { decodeSalvage } from "../codec/canonical-cbor.js";
 import { Ecf, Envelope, Execute, ExecuteResponse, TypeNames } from "../model/index.js";
 import { type ConnectionState, Deferred } from "../handlers/index.js";
 import { type Dispatcher } from "../dispatch/index.js";
-import { DEFAULT_MAX_FRAME_BYTES, readFrames, writeFrame } from "./frame-codec.js";
+import {
+  DEFAULT_MAX_FRAME_BYTES,
+  framingRefusal,
+  preAdmissionRefusal,
+  readFrames,
+  writeFrame,
+} from "./frame-codec.js";
 
 /**
  * A single peer-to-peer connection over a socket. Implements the §6.11 transport
@@ -108,13 +114,20 @@ export class PeerConnection {
           envelope = Envelope.decode(frame);
         } catch (e) {
           if (e instanceof EntityCoreError) {
-            // §6.3: "Rejection returns `400 non_canonical_ecf`" — the frame is
-            // refused (above), and that refusal MUST be a STATUS, not silence.
-            // This used to `break`, closing the connection: one bad frame then took
-            // every later request on it with it, which is where this peer's 81
-            // cascade FAILs came from. §4.9(c) deliver-or-signal says the same from
-            // the other direction. Answer, then keep serving.
-            await this.#rejectNonCanonical(frame);
+            // A COMPLETE frame the decoder refused. The framing is intact, so we answer
+            // and KEEP SERVING — and the refusal MUST be a status rather than silence
+            // (§4.11; §4.9(c) says the same from the other direction). This used to
+            // `break`, closing the connection: one bad frame then took every later
+            // request on it with it, which is where this peer's 81 cascade FAILs came
+            // from.
+            //
+            // THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered `non_canonical_ecf`
+            // for every cause until 0.8.2.24/.25 pinned them apart: a mis-keyed
+            // `included` entry is `400 hash_mismatch` (its encoding is canonical — what
+            // is false is the claim the key makes), a tag-policy violation keeps
+            // `non_canonical_ecf`, and everything else that never becomes an Envelope is
+            // `400 invalid_request`.
+            await this.#refusePreAdmission(this.#salvageRequestId(frame), preAdmissionRefusal(e));
             continue;
           }
           throw e;
@@ -127,11 +140,40 @@ export class PeerConnection {
           // N6: dispatch concurrently — do NOT block the reader on the handler.
           void this.#dispatchInbound(envelope);
         } else {
-          break; // neither EXECUTE nor EXECUTE_RESPONSE → invalid, close (§3.3)
+          // §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+          // invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare
+          // close — that is indistinguishable from a network fault."
+          //
+          // §3.3 read "the connection MUST be closed", assigning no code and requiring
+          // no frame, and this loop did exactly that: a bare `break`. This is a
+          // PRE-ADMISSION refusal — the root is not an EXECUTE, so nothing was ever
+          // admitted and §4.9(c) does not reach it. §9.1's floor row that MANDATED the
+          // bare close was REPLACED at the same revision (N18).
+          //
+          // The request_id is read best-effort: an arbitrary root type is under no
+          // obligation to carry one, and §4.11 licenses the uncorrelated frame exactly
+          // there. We do NOT close — on a multiplexed connection that would cost every
+          // ADMITTED in-flight request its response, and §4.11 leaves the close to us.
+          await this.#refusePreAdmission(Ecf.optText(envelope.root.data, "request_id") ?? "", {
+            status: 400,
+            code: "invalid_request",
+            message: "root entity is neither EXECUTE nor EXECUTE_RESPONSE",
+          });
         }
       }
-    } catch {
-      // Read error → close.
+    } catch (e) {
+      // The stream is desynchronized on both REFUSABLE arms — an oversize body was never
+      // drained, a truncated one never arrived — so the coded frame goes out and THEN the
+      // connection closes. §4.11 makes the frame mandatory and leaves the close to us;
+      // closing is the only sound choice once the framing is lost, and it is a CHOICE
+      // rather than an alternative to answering. An ordinary hangup is not a refusal and
+      // gets nothing, which is what `framingRefusal` separates.
+      if (framingRefusal(e)) {
+        // §4.11's best-effort UNCORRELATED form: no request_id can be recovered from a
+        // frame whose body never arrived, and guessing one would correlate the refusal to
+        // somebody else's in-flight request.
+        await this.#refusePreAdmission("", preAdmissionRefusal(e));
+      }
     } finally {
       this.#failPending(new ConnectionBrokenError("connection closed"));
       this.#destroy();
@@ -182,39 +224,55 @@ export class PeerConnection {
   }
 
   /**
-   * Answer a frame the strict decoder rejected with `400 non_canonical_ecf` (§6.3),
-   * recovering ONLY the `request_id` so the sender can correlate the refusal.
+   * Recover ONLY the `request_id` from a frame the strict decoder rejected, so the refusal
+   * can be delivered CORRELATED rather than as §4.11's uncorrelated best-effort frame.
+   * `""` when nothing is recoverable.
    *
-   * The frame stays rejected: nothing is built from it, nothing is stored, and the tag
-   * is never interpreted — the salvage decode exists solely to read back the correlation
-   * key. If even the request_id is unrecoverable there is nobody to answer, so the frame
-   * is dropped; that is the one case where silence is all that is available.
+   * The frame stays rejected: nothing is built from it, nothing is stored, and a tag is
+   * never interpreted — the salvage decode exists solely to read back the correlation key.
+   * The envelope and entity-wrapper shapes are fixed maps with no legal tag position, so a
+   * frame whose ONLY defect is a tag inside some entity's `data` still has a structurally
+   * sound root — which is exactly the case worth recovering, and the one CAP-6a's `>2^64`
+   * half arrives as (a bignum can only reach a peer as a major-type-6 tag).
    */
-  async #rejectNonCanonical(frame: Uint8Array): Promise<void> {
-    let requestId: string;
+  #salvageRequestId(frame: Uint8Array): string {
     try {
-      // envelope → root (an entity wrapper: {type, data, content_hash}) → data →
-      // request_id. The envelope and entity-wrapper shapes are fixed maps with no
-      // legal tag position, so a frame whose ONLY defect is a tag inside some
-      // entity's `data` still has a structurally sound root — which is exactly the
-      // case worth recovering, and the one CAP-6a's >2^64 half arrives as.
       const salvaged = decodeSalvage(frame);
       const root = Ecf.require(salvaged, "root");
-      requestId = Ecf.requireText(Ecf.require(root, "data"), "request_id");
+      return Ecf.requireText(Ecf.require(root, "data"), "request_id");
     } catch {
-      return; // no correlatable request_id — nothing to answer
+      return "";
     }
+  }
+
+  /**
+   * Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+   * refused BEFORE it becomes an admitted request.
+   *
+   * *"A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on the
+   * wire `[MUST]` — correlated by `request_id` where the id is available, and otherwise as
+   * a best-effort coded frame carrying no correlation."*
+   *
+   * §4.9(c)'s deliver-or-signal rule is scoped to *"every request the peer ADMITS"* and
+   * therefore reaches none of these, which is why §4.11 exists. Both of the non-conformant
+   * behaviours it names separately were present on this peer: DROPPING the frame (the
+   * un-salvageable decode arm and the partial trailing frame, *"the weaker of the two
+   * precisely because nothing surfaces it"*) and CLOSING with no coded frame (the oversize
+   * arm and the non-EXECUTE root's bare `break`).
+   *
+   * AN EMPTY `requestId` IS THE BEST-EFFORT FORM, not a bug: it is what the section
+   * prescribes where no id can be recovered.
+   */
+  async #refusePreAdmission(
+    requestId: string,
+    refusal: { status: number; code: string; message: string },
+  ): Promise<void> {
     try {
-      const response = ExecuteResponse.error(
-        requestId,
-        400,
-        "non_canonical_ecf",
-        "frame is not canonical ECF (§6.3): CBOR tags are forbidden anywhere in an entity",
-      );
+      const response = ExecuteResponse.error(requestId, refusal.status, refusal.code, refusal.message);
       await this.#write(new Envelope(response.entity, []));
     } catch {
-      // A write failure here is a dead socket, not a protocol decision; the read
-      // loop's own error handling tears the connection down on the next iteration.
+      // A write failure here is a dead socket, not a protocol decision; the read loop's
+      // own error handling tears the connection down on the next iteration.
     }
   }
 

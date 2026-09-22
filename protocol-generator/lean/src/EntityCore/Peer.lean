@@ -525,14 +525,58 @@ def treeListing (snapshot : List (String × ByteArray)) (pfx0 : String) :
     else acc) []
   folded.toArray.qsort (fun a b => a.1 < b.1) |>.toList
 
-def buildListing (peer : Peer) (path : String) : IO Outcome := do
+/-- What the handler needs from the dispatch chain, CARRIED rather than recomputed
+(§6.3, 0.8.2.23). The dispatch-level check already resolved both; recomputing invites
+the two to drift, and §6.8 is explicit that the authority is selected by who named
+the path. `pattern` is the OWNING handler's pattern — for the tree handler owner and
+runner coincide, so the distinction is not observable on the wire here, but the field
+is named for the owner because that is the reading. -/
+structure DispatchCtx where
+  exec : Entity
+  /-- The caller's verified capability; `none` on an internal/bootstrap call. -/
+  callerCap : Option Entity
+  pattern : String
+
+/-- §6.3's path check, applied only where a caller capability exists. An
+unauthenticated context is the bootstrap/internal path and is NOT filtered: the
+filter's subject is "the caller's verified capability", and where there is none there
+is no caller to narrow. -/
+def pathPermitted (peer : Peer) (ctx : DispatchCtx) (operation path : String) : Bool :=
+  match ctx.callerCap with
+  | none => true
+  | some cap =>
+    EntityCore.Capability.checkPathPermission peer.localPeer operation path cap ctx.pattern
+
+/-- §6.3's per-entry listing check for one child segment (0.8.2.21/.22). -/
+def entryVisible (peer : Peer) (ctx : DispatchCtx) (dir segment : String) : Bool :=
+  let child := (if dir.isEmpty || dir.endsWith "/" then dir else dir ++ "/") ++ segment
+  pathPermitted peer ctx "get" child
+
+/-- Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+
+"When any handler returns a multi-entry result whose entries are tree paths, each
+entry MUST be individually checked using `check_path_permission`. Entries for which
+`check_path_permission` returns DENY MUST be omitted. The result's `count` field MUST
+reflect the filtered entry count, not the source tree's total count."
+
+This is the read path at its highest volume and it is why 0.8.2.21 refused to carve
+reads out of the caller-specified-path rule: an unfiltered listing discloses the
+EXISTENCE of every binding under a prefix to a caller whose capability covers none of
+them, and a `count` still reporting the source total is that same disclosure in one
+field.
+
+The DIRECTORY itself is deliberately NOT checked — §6.3 makes each ENTRY the subject,
+and testing the prefix would deny a listing to a caller whose grant covers children
+but not the node above them, which is the ordinary shape of a narrowed grant. -/
+def buildListing (peer : Peer) (ctx : DispatchCtx) (path : String) : IO Outcome := do
   let snap ← EntityCore.Store.treeSnapshot peer.store
   let entries0 := treeListing snap path
   -- filter deletion-marker-bound leaves (CORE-TREE-DELETE-1)
-  let entries ← entries0.filterM (fun (_, hash, hasChildren) => do
+  let entries1 ← entries0.filterM (fun (_, hash, hasChildren) => do
     match hash with
     | some h => if !hasChildren && (← isDeletionMarker peer h) then pure false else pure true
     | none => pure true)
+  let entries := entries1.filter (fun (seg, _, _) => entryVisible peer ctx path seg)
   let entryMap := entries.map (fun (seg, hash, hasChildren) =>
     (Value.text seg,
      toCbor (make "system/tree/listing-entry"
@@ -607,28 +651,85 @@ def admitPut (v : Value) : Except Outcome Entity :=
     | _ => refuse "invalid_request" "put: entity.type absent, empty or not a text string"
   | _ => refuse "invalid_request" "put: entity is not a map"
 
-def treeHandler (peer : Peer) (exec : Entity) : IO Outcome := do
-  let op := (textField exec "operation").getD ""
-  let tgt := resourceTarget exec
-  match op, tgt with
-  | "get", none => buildListing peer ("/" ++ peer.localPeer ++ "/")
-  | "get", some target =>
+/-- Is a resource target a §5.4 PATTERN rather than a concrete path? A
+resource-requiring operation takes a concrete path (0.8.2.20); a trailing `/` is a
+LISTING request rather than a pattern, so only a `*` makes it one. -/
+def isPatternPath (t : String) : Bool := t.toList.contains '*'
+
+/-- `get` (§6.3). §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+`resource.targets`: a handler that counts the effective list and then indexes
+`targets[0]` has implemented the arithmetic completely and is still reading a path no
+authorization covered. -/
+def treeGet (peer : Peer) (ctx : DispatchCtx) : IO Outcome := do
+  let (eff, hadResource) := EntityCore.Capability.effectiveTargets peer.localPeer ctx.exec
+  match eff with
+  | [] =>
+    if !hadResource then
+      -- THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION IS
+      -- WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is scoped
+      -- "for an operation that REQUIRES a resource" (0.8.2.24, N7); `get` does not.
+      -- For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the
+      -- present-but-empty case by whether the absent case is WIDER than the request
+      -- — BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty — and requires
+      -- the operation to declare which it is. EXTENSION-TREE §2.2a (v4.11) is that
+      -- declaration: `get` is resource-OPTIONAL and BROAD-RESULT, absent-case answer
+      -- "the root listing", self-excluded case "400 path_required". Both arms are
+      -- pinned by text and neither is this peer's choice.
+      buildListing peer ctx ("/" ++ peer.localPeer ++ "/")
+    else
+      -- The self-excluded request: `resource` PRESENT, every target carved out by
+      -- the caller's OWN exclude. Serving it the absent case "answers a request for
+      -- one excluded path with a listing of the tree" (EXTENSION-TREE §2.2a) — the
+      -- root listing is wider than what was asked for, which is what BROAD-RESULT
+      -- means.
+      pure (err 400 "path_required" (some "tree: effective target list is empty"))
+  | [target] =>
     if !pathFlexOk target then pure (err 400 "invalid_path" (some target))
     else if target == "" || target.endsWith "/" then
-      buildListing peer (canonPath peer.localPeer target)
+      buildListing peer ctx (canonPath peer.localPeer target)
+    else if isPatternPath target then
+      pure (err 400 "malformed_resource" (some target))
     else do
       let path := canonPath peer.localPeer target
+      -- §6.3: the handler MUST verify the CALLER's capability covers the path it is
+      -- about to read. Not a secondary check — the dispatch-level check never saw
+      -- this path if the caller excluded it.
+      if !pathPermitted peer ctx "get" path then
+        pure (err 403 "capability_denied" (some path))
+      else
       match ← EntityCore.Store.getAt peer.store path with
       | some e =>
-        let mode := (entityField exec "params").bind (fun p => textField p "mode")
+        let mode := (entityField ctx.exec "params").bind (fun p => textField p "mode")
         if mode == some "hash" then pure (ok (make "system/hash" (.bytes e.hash)))
         else pure (ok e)
       | none => pure (err 404 "not_found" (some path))
-  | "put", some target =>
+  | _ => pure (err 400 "ambiguous_resource" (some "tree: more than one effective target"))
+
+/-- `put` (§6.3). The same ladder as `treeGet`, with the two empties COLLAPSED rather
+than split: EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's
+"an empty effective list IS the absent case" applies in its unscoped form and both
+empties answer `path_required`. Same table `get`'s branch cites, read one row down —
+the field is per-operation and neither answer is derivable from the handler's source.
+
+NOTE THE CODE CHANGE 0.8.2.20 FORCED: this answered `ambiguous_resource` for a MISSING
+target, which 0.8.2.20 names as the exact inversion it forbids. The remedies differ —
+*supply a resource* is not *disambiguate your request* — and the code is what selects
+between them. -/
+def treePut (peer : Peer) (ctx : DispatchCtx) : IO Outcome := do
+  -- `hadResource` is deliberately not consulted: both empties collapse here.
+  let (eff, _) := EntityCore.Capability.effectiveTargets peer.localPeer ctx.exec
+  match eff with
+  | [] => pure (err 400 "path_required" (some "tree: put requires a resource target"))
+  | [target] =>
     if !pathFlexOk target then pure (err 400 "invalid_path" (some target))
+    else if isPatternPath target then
+      pure (err 400 "malformed_resource" (some target))
     else do
       let path := canonPath peer.localPeer target
-      let params := entityField exec "params"
+      if !pathPermitted peer ctx "put" path then
+        pure (err 403 "capability_denied" (some path))
+      else do
+      let params := entityField ctx.exec "params"
       let entity := params.bind (fun p => field p "entity")
       let expected := params.bind (fun p => bytesField p "expected_hash")
       let current ← EntityCore.Store.hashAt peer.store path
@@ -644,8 +745,18 @@ def treeHandler (peer : Peer) (exec : Entity) : IO Outcome := do
              | .ok e => do EntityCore.Store.bind peer.store path e
                            pure (ok (make "system/hash" (.bytes e.hash)))
            | none => pure (err 400 "unexpected_params" (some "put: missing entity"))
-  | "put", none => pure (err 400 "ambiguous_resource" (some "tree: missing resource target"))
-  | other, _ => pure (err 501 "unsupported_operation" (some s!"tree: {other}"))
+  | _ => pure (err 400 "ambiguous_resource" (some "tree: more than one effective target"))
+
+/-- RESOLVE THE OPERATION FIRST; only then run the §3.3 ladder. A peer that validates
+the resource first answers a RESOURCE fault for every unknown operation. This handler
+already keyed its no-resource arms to a specific operation rather than to `_`, so the
+ordering was correct before this change and is now structural: the ladder lives inside
+the per-operation functions and is unreachable from the unknown-operation arm. -/
+def treeHandler (peer : Peer) (ctx : DispatchCtx) : IO Outcome := do
+  match (textField ctx.exec "operation").getD "" with
+  | "get" => treeGet peer ctx
+  | "put" => treePut peer ctx
+  | other => pure (err 501 "unsupported_operation" (some s!"tree: {other}"))
 
 -- ── capability handler (§6.2) ─────────────────────────────────────────────────
 
@@ -754,8 +865,14 @@ def register (peer : Peer) (exec : Entity) : IO Outcome := do
   | .error e => pure e
   | .ok pattern =>
     if isReservedSystemPattern pattern then
+      -- ASCII-ONLY WIRE STRING. The `§` that used to open this message is a
+      -- wire-VISIBLE literal — the codec CBOR-text-encodes it and sends it — and
+      -- that is the class AGENTS.md ratifies on two independent crashes (Oz's
+      -- compiled string constant corrupted by a `§`; Io's own UTF-8 validator
+      -- rejecting byte-correct UTF-8, killing the process and cascading 104 FAILs).
+      -- `§` stays in COMMENTS, which are never encoded.
       pure (err 403 "forbidden_pattern"
-        (some s!"§6.2: user-installed handlers MUST NOT register at system/* paths: {pattern}"))
+        (some s!"section 6.2: user-installed handlers MUST NOT register at system/* paths: {pattern}"))
     else match entityField exec "params" with
     | none => pure (err 400 "unexpected_params" (some "register: missing params"))
     | some req =>
@@ -915,7 +1032,9 @@ def dispatchOutboundHandler (peer : Peer) (conn : Conn) (exec : Entity) : IO Out
         let resource : Value := .map [(.text "targets", .array [.text ("system/handler/" ++ target)])]
         match ← outboundDispatch peer conn target operation inner (some resource)
                  capability granterPeer capabilitySignature with
-        | none => pure (err 503 "no_outbound_seam" (some "no live §6.11 reentry connection"))
+        -- ASCII-ONLY WIRE STRING (see the forbidden_pattern note above): the
+        -- `§6.11` this message used to carry is encoded and sent.
+        | none => pure (err 503 "no_outbound_seam" (some "no live section 6.11 reentry connection"))
         | some env =>
             let status := (uintField env.root "status").getD 0
             let resultCbor := (field env.root "result").getD (.map [])
@@ -932,7 +1051,29 @@ def internalErrorResponse (env : Envelope) : Option Envelope :=
 
 def dispatch (peer : Peer) (conn : Conn) (env : Envelope) : IO (Option Envelope) := do
   let exec := env.root
-  if exec.typ != "system/protocol/execute" then pure none
+  if exec.typ != "system/protocol/execute" then
+    -- §6.5's "Other type?" arm, as REWRITTEN at 0.8.2.25 (N12/N17): "400
+    -- invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare close —
+    -- that is indistinguishable from a network fault."
+    --
+    -- §3.3 used to read "the connection MUST be closed", assigning no code and
+    -- requiring no frame, and that row was REPLACED at .25 (N18 — §9.1's floor row
+    -- went with it). This peer did something weaker still: it returned `none`, the
+    -- transport wrote NOTHING and kept the connection open, which is §4.11's other
+    -- non-conformant behaviour — the SILENT DROP, "the weaker of the two precisely
+    -- because nothing surfaces it".
+    --
+    -- This is a PRE-ADMISSION refusal: the root is not an EXECUTE, so nothing was
+    -- ever admitted and §4.9(c) does not reach it. `request_id` is read best-effort
+    -- — an arbitrary root type is under no obligation to carry one, and §4.11
+    -- licenses the uncorrelated frame exactly there. We do NOT close: on a
+    -- multiplexed connection that would cost every ADMITTED in-flight request its
+    -- response, and §4.11 leaves the close to us.
+    pure (some {
+      root := EntityCore.Wire.makeResponse ((textField exec "request_id").getD "") 400
+                (EntityCore.Wire.errorResult "invalid_request"
+                  (some "root entity is neither EXECUTE nor EXECUTE_RESPONSE")),
+      included := [] })
   else do
     let requestId := (textField exec "request_id").getD ""
     let uri := (textField exec "uri").getD ""
@@ -971,8 +1112,12 @@ def dispatch (peer : Peer) (conn : Conn) (env : Envelope) : IO (Option Envelope)
               let granterPeer ← dispatchGranterPeer peer env cap
               match EntityCore.Capability.checkPermission peer.localPeer granterPeer exec cap (stripLocal peer pattern) with
               | .deny => pure (err 403 "capability_denied")
+              -- §6.3 needs the OWNING handler's pattern and the caller's
+              -- capability; both were just computed here, so they are CARRIED
+              -- rather than recomputed (0.8.2.23).
               | .allow => match stripLocal peer pattern with
-                | "system/tree" => treeHandler peer exec
+                | "system/tree" =>
+                  treeHandler peer { exec, callerCap, pattern := stripLocal peer pattern }
                 | "system/capability" => capabilityHandler peer exec callerCap
                 | "system/handler" => handlersHandler peer exec
                 | "system/type" => typesHandler peer exec

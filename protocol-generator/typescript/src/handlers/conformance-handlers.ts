@@ -61,7 +61,7 @@ export class ValidateDispatchOutboundHandler implements Handler {
       return errorResult(
         Status.ServiceUnavailable,
         "no_outbound_seam",
-        "dispatch-outbound requires a live §6.11 reentry connection (handler was not dispatched over a connection)",
+        "dispatch-outbound requires a live section 6.11 reentry connection (handler was not dispatched over a connection)",
       );
     }
 

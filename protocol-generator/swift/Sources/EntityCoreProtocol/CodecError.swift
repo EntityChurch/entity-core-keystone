@@ -41,4 +41,37 @@ public enum CodecError: Error, Equatable, Sendable {
     case invalidBase58
     /// A nesting/size limit (§10.2) was exceeded.
     case limitExceeded(String)
+
+    /// A §1.8 / §3.1 RESOLUTION-INTEGRITY failure: an entity whose carried
+    /// `content_hash` is not `content_hash({type, data})`, or an `included` entry whose
+    /// MAP KEY does not bind to the entity filed under it.
+    ///
+    /// A DIFFERENT CAUSE FROM `.malformed`, TAKING A DIFFERENT CODE. §5.2a pins this arm:
+    /// *"A peer that refuses at the decode boundary MUST answer `400 hash_mismatch`
+    /// `[MUST]`"* (mood corrected 0.8.2.24), and in the same breath *"`400
+    /// non_canonical_ecf` is NOT conformant here `[MUST]`."*  That code is
+    /// `ENTITY-CBOR-ENCODING` §5.4's, for a CBOR TAG-POLICY violation, and a mis-keyed
+    /// included entry carries no tag at all — its encoding is canonical. What is false is
+    /// the claim the KEY makes, so the remedy `non_canonical_ecf` selects (*re-encode*)
+    /// sends an honest caller to the wrong layer. This peer answered `non_canonical_ecf`
+    /// for every decode-boundary refusal until 0.8.2.24 (measured on the wire: arc-probe
+    /// B1/B2).
+    case hashMismatch(String)
+
+    /// A frame whose declared length exceeds the configured maximum, detected at the
+    /// LENGTH PREFIX before the body is buffered (§4.10(a)). Since 0.8.2.25 (N14) the
+    /// `413` MUST be EMITTED: §4.10(a)'s SHOULD became a MUST, because the condition is
+    /// detected with the connection intact and nothing spent.
+    case frameTooLarge
+
+    /// A frame that never completed: a partial length prefix, or a prefix declaring N
+    /// bytes followed by fewer. §4.11's framing arm names this input explicitly and
+    /// answers `400 invalid_request`.
+    ///
+    /// SEPARATE FROM AN ORDINARY CLOSE BECAUSE THE TWO ARE DIFFERENT EVENTS. A clean EOF
+    /// at a frame BOUNDARY is an ordinary hangup and is owed nothing; a stream that ends
+    /// mid-frame is a REFUSAL and is owed a coded frame. The distinction can only be made
+    /// where the frame boundary is known, which is why `Socket.readFrame` reports it
+    /// rather than collapsing everything into `nil`.
+    case truncatedFrame
 }

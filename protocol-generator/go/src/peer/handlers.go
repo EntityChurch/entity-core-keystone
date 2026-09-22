@@ -285,12 +285,32 @@ func (h treeHandler) isDeletionMarker(hexHash string) bool {
 	return ok && e.Type == "system/deletion-marker"
 }
 
-func (h treeHandler) buildListing(path string) outcome {
+// buildListing renders a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+//
+// "When any handler returns a multi-entry result whose entries are tree paths,
+// each entry MUST be individually checked using check_path_permission. Entries
+// for which check_path_permission returns DENY MUST be omitted. The result's
+// `count` field MUST reflect the filtered entry count, not the source tree's
+// total count."
+//
+// This is the read path at its highest volume and it is the reason 0.8.2.21
+// refused to carve reads out of the caller-specified-path rule: an unfiltered
+// listing discloses the EXISTENCE of every binding under a prefix to a caller
+// whose capability covers none of them.
+//
+// The DIRECTORY itself is deliberately not checked — §6.3 makes each ENTRY the
+// subject, and testing the prefix would deny a listing to a caller whose grant
+// covers children but not the node above them, which is the ordinary shape of a
+// narrowed grant.
+func (h treeHandler) buildListing(ctx *dispatchCtx, path string) outcome {
 	rows := h.p.store.Listing(path)
 	entries := make([]cbor.Pair, 0, len(rows))
 	count := 0
 	for _, row := range rows {
 		if row.Hash != "" && !row.HasChildren && h.isDeletionMarker(row.Hash) {
+			continue
+		}
+		if !h.entryVisible(ctx, path, row.Segment) {
 			continue
 		}
 		var data cbor.Value
@@ -317,19 +337,88 @@ func (h treeHandler) buildListing(path string) outcome {
 	)))
 }
 
+// entryVisible answers §6.3's per-entry listing check for one child segment.
+// An unauthenticated context (no capability) is the bootstrap/internal path and
+// is not filtered — the filter's subject is "the caller's verified capability",
+// and where there is none there is no caller to narrow.
+func (h treeHandler) entryVisible(ctx *dispatchCtx, dir, segment string) bool {
+	if ctx == nil || !ctx.hasCap {
+		return true
+	}
+	child := dir
+	if child == "" || child[len(child)-1] != '/' {
+		child += "/"
+	}
+	child += segment
+	return checkPathPermission(h.p.localPeer, "get", child, ctx.callerCap, ctx.pattern)
+}
+
+// isPatternPath reports whether a resource target is a §5.4 PATTERN rather than
+// a concrete path. A resource-requiring operation takes a concrete path
+// (0.8.2.20), and a trailing "/" is a listing request rather than a pattern —
+// only a `*` makes it one.
+func isPatternPath(t string) bool {
+	for i := 0; i < len(t); i++ {
+		if t[i] == '*' {
+			return true
+		}
+	}
+	return false
+}
+
 func (h treeHandler) get(ctx *dispatchCtx) outcome {
 	p, exec := h.p, ctx.exec
-	target, hasTarget := execResourceTarget(exec)
+	// §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+	// resource.targets: a handler that counts the effective list and then
+	// indexes targets[0] has implemented the arithmetic completely and is still
+	// reading a path no authorization covered.
+	eff, hasResource := effectiveTargets(p.localPeer, exec)
 	switch {
-	case hasTarget && !pathFlexOK(target):
+	case !hasResource:
+		// THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN
+		// SPECIFICATION IS WHAT SAYS SO. §3.3's "an empty effective list IS the
+		// absent case" is scoped "for an operation that REQUIRES a resource"
+		// (0.8.2.24, N7); `get` does not. For a resource-OPTIONAL operation
+		// 0.8.2.25 (N10) decides the present-but-empty case by whether the
+		// absent case is WIDER than the request — BROAD-RESULT refuses it,
+		// OPTIONAL-FILTER answers it empty — and requires the operation to
+		// declare which it is.
+		//
+		// EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+		// resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root
+		// listing", self-excluded case "400 path_required". So both arms below
+		// are pinned by text and neither is this peer's choice. (This branch
+		// previously carried an ambiguity note arguing the absent case might owe
+		// path_required too; it was routed as F86 and §2.2a answers it — the
+		// behaviour is unchanged and the justification is no longer ours.)
+		return h.buildListing(ctx, "/"+p.localPeer+"/")
+	case len(eff) == 0:
+		// The self-excluded request: `resource` PRESENT, every target carved out
+		// by the caller's own exclude. Serving it the absent case "answers a
+		// request for one excluded path with a listing of the tree"
+		// (EXTENSION-TREE §2.2a) — the root listing is wider than what was
+		// asked for, which is what BROAD-RESULT means.
+		return errOutcome(400, "path_required", "tree: effective target list is empty")
+	case len(eff) > 1:
+		return errOutcome(400, "ambiguous_resource", "tree: more than one effective target")
+	}
+	target := eff[0]
+	switch {
+	case !pathFlexOK(target):
 		return errOutcome(400, "invalid_path", target)
-	case !hasTarget:
-		return h.buildListing("/" + p.localPeer + "/")
 	case target == "" || target[len(target)-1] == '/':
 		c, _ := canonicalize(p.localPeer, target)
-		return h.buildListing(c)
+		return h.buildListing(ctx, c)
+	case isPatternPath(target):
+		return errOutcome(400, "malformed_resource", target)
 	default:
 		path, _ := canonicalize(p.localPeer, target)
+		// §6.3: the handler MUST verify the CALLER's capability covers the path
+		// it is about to read. Not a secondary check — the dispatch-level check
+		// never saw this path if the caller excluded it.
+		if ctx.hasCap && !checkPathPermission(p.localPeer, "get", path, ctx.callerCap, ctx.pattern) {
+			return errOutcome(403, "capability_denied", path)
+		}
 		e, ok := p.store.GetAt(path)
 		if !ok {
 			return errOutcome(404, "not_found", path)
@@ -413,14 +502,37 @@ func admitPut(v cbor.Value) (Entity, outcome, bool) {
 
 func (h treeHandler) put(ctx *dispatchCtx) outcome {
 	p, exec := h.p, ctx.exec
-	target, hasTarget := execResourceTarget(exec)
-	if !hasTarget {
-		return errOutcome(400, "ambiguous_resource", "tree: missing resource target")
+	// Same ladder as `get`, with the two empties COLLAPSED rather than split:
+	// EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's
+	// "an empty effective list IS the absent case" applies in its unscoped form
+	// and both empties answer `path_required`. That is the same table `get`'s
+	// branch cites, read one row down — the field is per-operation and neither
+	// answer is derivable from the handler's source.
+	//
+	// Note the code change 0.8.2.20 forced: this branch answered
+	// `ambiguous_resource` for a MISSING target,
+	// which 0.8.2.20 names as the exact inversion it forbids ("answering
+	// ambiguous_resource for an absent resource inverts them"). The remedies
+	// differ — *supply a resource* is not *disambiguate your request* — and the
+	// code is what selects between them.
+	eff, hasResource := effectiveTargets(p.localPeer, exec)
+	switch {
+	case !hasResource, len(eff) == 0:
+		return errOutcome(400, "path_required", "tree: put requires a resource target")
+	case len(eff) > 1:
+		return errOutcome(400, "ambiguous_resource", "tree: more than one effective target")
 	}
+	target := eff[0]
 	if !pathFlexOK(target) {
 		return errOutcome(400, "invalid_path", target)
 	}
+	if isPatternPath(target) {
+		return errOutcome(400, "malformed_resource", target)
+	}
 	path, _ := canonicalize(p.localPeer, target)
+	if ctx.hasCap && !checkPathPermission(p.localPeer, "put", path, ctx.callerCap, ctx.pattern) {
+		return errOutcome(403, "capability_denied", path)
+	}
 	params, _ := paramsEntity(exec)
 	rawEntity, hasEntity := params.Field("entity")
 	expected, hasExpected := params.Bytes("expected_hash")

@@ -241,7 +241,18 @@ export class Peer implements PeerServices {
    */
   listen(port = 0, host = "127.0.0.1"): Promise<number> {
     return new Promise<number>((resolve, reject) => {
-      const server = net.createServer((socket) => this.#onInbound(socket));
+      // `allowHalfOpen: true` IS A §4.11 REQUIREMENT ON THIS SUBSTRATE, not a tuning
+      // knob. Node's default auto-ENDS the server's write side the moment the client
+      // sends FIN — so a frame that is only knowable as TRUNCATED at end-of-stream can
+      // never be answered, and the peer's mandatory coded EXECUTE_RESPONSE is refused by
+      // the runtime with "This socket has been ended by the other party". A half-close is
+      // exactly the state where an answer is both deliverable and useful: the caller has
+      // stopped writing and is still reading. Go's TCPConn has this behaviour by default,
+      // which is why the vanguard peers needed no equivalent line.
+      //
+      // The peer now owns its own close, which it already did: the reader loop's `finally`
+      // destroys the socket after the refusal is written.
+      const server = net.createServer({ allowHalfOpen: true }, (socket) => this.#onInbound(socket));
       server.once("error", reject);
       server.listen(port, host, () => {
         const address = server.address();

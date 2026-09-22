@@ -32,6 +32,7 @@ import qualified Data.Word as Word
 import Network.Socket
 import System.Exit (exitFailure)
 import System.IO (BufferMode (LineBuffering), hFlush, hSetBuffering, stdout)
+import System.Timeout (timeout)
 
 import EntityCore.Codec.Value (Value (..))
 import EntityCore.Identity (Identity (..), identityOfSeed, signEntity)
@@ -53,6 +54,23 @@ assertEq label expected got
 statusOf :: Maybe Envelope -> Int
 statusOf Nothing = -1
 statusOf (Just env) = maybe (-1) fromIntegral (uintField (envRoot env) "status")
+
+-- | The @system/protocol/error@ code out of a response, when it carries one. The
+-- §3.3 ladder assertions below need it: several arms differ ONLY in the code, and
+-- a status-only assertion cannot tell `path_required` from `ambiguous_resource` —
+-- which is the exact inversion 0.8.2.20 forbids. A gate line that prints only a
+-- status is a gate line that will be misread.
+codeOf :: Maybe Envelope -> Maybe Text
+codeOf menv = do
+  env <- menv
+  res <- resultEntityOf env
+  textField res "code"
+
+-- | 'sendOver' with a deadline. A frame the peer DROPS never fills its reply slot,
+-- so an un-timed await hangs the suite instead of failing it — and §4.11's silent
+-- drop is precisely what several assertions below exist to catch.
+sendOverT :: ConnIOHandle -> Envelope -> IO (Maybe Envelope)
+sendOverT h env = fromMaybe Nothing <$> timeout 5000000 (sendOver h env)
 
 -- ── client identity + envelope construction ──────────────────────────────────
 
@@ -314,6 +332,75 @@ main = withSocketsDo $ do
     _ -> do
       BC.putStrLn "  FAIL dispatch-outbound: no cap captured from authenticate"
       record False
+
+  -- ── 8. §3.3's effective-targets ladder + §6.5 operation-first resolution ────
+  -- These run over the WIRE because that is the only place the ladder's ORDER is
+  -- observable: every arm below answers 200 or a different 400 if the handler
+  -- reads `resource.targets` directly, or resolves the resource before the
+  -- operation. They ride on the open seed policy this runner boots, so they
+  -- measure the LADDER and not the path check (§6.3's check is measured by
+  -- `tools/arc-probe`, which mints the narrow capability a seed policy cannot).
+  let emptyP = makeEntity "primitive/any" (VMap [])
+      res1 t = VMap [(VText "targets", VArray [VText t])]
+
+  -- 8a. RESOLVE THE OPERATION FIRST. An unknown tree operation with NO resource
+  -- answered `400 ambiguous_resource` — a RESOURCE fault for an OPERATION fault —
+  -- because the any-operation/no-resource arm sat ABOVE the unknown-operation arm.
+  -- The same call WITH a resource always answered 501, which is what hid it.
+  rBogusNoRes <- sendAuthed cl "system/tree" "bogusop" emptyP Nothing
+  assertEq "unknown tree op, no resource → 501 (operation resolved first)" 501 (statusOf rBogusNoRes) >>= record
+  rBogusRes <- sendAuthed cl "system/tree" "bogusop" emptyP (Just (res1 "system/type/primitive/any"))
+  assertEq "unknown tree op, with resource → 501 (unchanged)" 501 (statusOf rBogusRes) >>= record
+
+  -- 8b. The SELF-EXCLUDED get: `resource` PRESENT, every target carved out by the
+  -- caller's own exclude. EXTENSION-TREE §2.2a makes `get` resource-OPTIONAL and
+  -- BROAD-RESULT, so this is `400 path_required` and NOT the absent case — serving
+  -- the root listing here "answers a request for one excluded path with a listing
+  -- of the tree", which is wider than what was asked for.
+  let selfExcluded =
+        VMap
+          [ (VText "targets", VArray [VText "system/type/primitive/any"])
+          , (VText "exclude", VArray [VText "system/type/primitive/any"])
+          ]
+  rSelfExcl <- sendAuthed cl "system/tree" "get" emptyP (Just selfExcluded)
+  assertEq "get, self-excluded resource → 400 path_required" 400 (statusOf rSelfExcl) >>= record
+  assertEq "get, self-excluded resource → code path_required" (Just "path_required") (codeOf rSelfExcl) >>= record
+
+  -- 8c. The ABSENT case stays the root listing (§2.2a's own answer for `get`), so
+  -- 8b is a real discrimination rather than a blanket refusal.
+  rAbsent <- sendAuthed cl "system/tree" "get" emptyP Nothing
+  assertEq "get, absent resource → 200 root listing (the two empties are distinct)" 200 (statusOf rAbsent) >>= record
+
+  -- 8d. Two surviving targets is ambiguous; a §5.4 PATTERN is malformed.
+  let twoTargets = VMap [(VText "targets", VArray [VText "system/type/primitive/any", VText "system/type/primitive/text"])]
+  rAmbig <- sendAuthed cl "system/tree" "get" emptyP (Just twoTargets)
+  assertEq "get, two effective targets → 400 ambiguous_resource" (400, Just "ambiguous_resource") (statusOf rAmbig, codeOf rAmbig) >>= record
+  rPattern <- sendAuthed cl "system/tree" "get" emptyP (Just (res1 "system/type/*"))
+  assertEq "get, pattern target → 400 malformed_resource" (400, Just "malformed_resource") (statusOf rPattern, codeOf rPattern) >>= record
+
+  -- 8e. `put` is resource-REQUIRED (§2.2a), so BOTH empties collapse to
+  -- path_required. This answered `ambiguous_resource` for a MISSING target, which
+  -- 0.8.2.20 names as the exact inversion it forbids: the remedies differ —
+  -- *supply a resource* is not *disambiguate your request* — and the code is what
+  -- selects between them.
+  rPutNoRes <- sendAuthed cl "system/tree" "put" emptyP Nothing
+  assertEq "put, absent resource → 400 path_required (NOT ambiguous_resource)" (400, Just "path_required") (statusOf rPutNoRes, codeOf rPutNoRes) >>= record
+
+  -- ── 9. §4.11 / N12-N17: a non-EXECUTE root gets a CODED FRAME ───────────────
+  -- §6.5's "Other type?" arm as rewritten at 0.8.2.25: "400 invalid_request, coded
+  -- frame; MAY then close. NOT a bare close — that is indistinguishable from a
+  -- network fault." This peer did something weaker still: it wrote NOTHING and
+  -- kept the connection open, §4.11's SILENT DROP, "the weaker of the two
+  -- precisely because nothing surfaces it". The assertion is that a reply ARRIVES
+  -- at all — a dropped frame leaves `sendOver` waiting and the request_id is what
+  -- correlates it back.
+  ridOther <- nextReqId cl
+  let otherRoot =
+        makeEntity
+          "system/protocol/some-other-thing"
+          (VMap [(VText "request_id", VText ridOther)])
+  rOther <- sendOverT (clHandle cl) (Envelope otherRoot [])
+  assertEq "non-EXECUTE root → 400 invalid_request (a coded frame, not silence)" (400, Just "invalid_request") (statusOf rOther, codeOf rOther) >>= record
 
   -- 6. teardown — close the client connection; the listener + green threads are
   -- reaped on process exit (closing lsock under a blocked accept races a

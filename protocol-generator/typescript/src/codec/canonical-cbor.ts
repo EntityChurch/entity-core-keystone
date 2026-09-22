@@ -1,5 +1,5 @@
 import { ByteWriter, toHex } from "./bytes.js";
-import { EntityCodecError } from "../errors.js";
+import { EntityCodecError, TagRejectedError } from "../errors.js";
 import { encodeFloatBytes, halfBitsToFloat } from "./float.js";
 import {
   type EcfValue,
@@ -240,7 +240,9 @@ function readValue(cursor: Cursor): EcfValue {
         readArgument(cursor, ai);
         return readValue(cursor);
       }
-      throw new EntityCodecError("CBOR tag forbidden in ECF (non_canonical_ecf)");
+      // A SUBCLASS so §4.11's classifier can tell this cause from every other decode
+      // fault: the tag arm is the one that KEEPS `non_canonical_ecf` (0.8.2.24/.25).
+      throw new TagRejectedError("CBOR tag forbidden in ECF (non_canonical_ecf)");
     case 7:
       return readSimpleOrFloat(cursor, ai);
     default:
@@ -264,21 +266,21 @@ function readArgument(cursor: Cursor, ai: number): bigint {
     case 25: {
       const v = readBigEndian(cursor, 2);
       if (v <= 0xffn) {
-        throw new EntityCodecError("non-minimal integer (2-byte arg ≤ 0xff)");
+        throw new EntityCodecError("non-minimal integer (2-byte arg <= 0xff)");
       }
       return v;
     }
     case 26: {
       const v = readBigEndian(cursor, 4);
       if (v <= 0xffffn) {
-        throw new EntityCodecError("non-minimal integer (4-byte arg ≤ 0xffff)");
+        throw new EntityCodecError("non-minimal integer (4-byte arg <= 0xffff)");
       }
       return v;
     }
     case 27: {
       const v = readBigEndian(cursor, 8);
       if (v <= 0xffffffffn) {
-        throw new EntityCodecError("non-minimal integer (8-byte arg ≤ 0xffffffff)");
+        throw new EntityCodecError("non-minimal integer (8-byte arg <= 0xffffffff)");
       }
       return v;
     }

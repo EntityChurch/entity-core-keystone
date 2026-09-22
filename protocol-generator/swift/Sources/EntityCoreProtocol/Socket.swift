@@ -49,25 +49,58 @@ public final class Socket: @unchecked Sendable {
     }
 
     /// Read exactly `n` bytes (blocking). Returns nil on EOF/error (connection broken).
-    func readExact(_ n: Int) -> [UInt8]? {
+    /// `bytesRead` is reported alongside the failure because it is the ONLY thing that
+    /// separates a clean close at a frame boundary from a mid-frame truncation, and the
+    /// caller cannot recover it afterwards.
+    func readExact(_ n: Int) -> (bytes: [UInt8]?, bytesRead: Int) {
         var buf = [UInt8](repeating: 0, count: n)
         var got = 0
         while got < n {
             let r = buf.withUnsafeMutableBytes { ptr -> Int in
                 read(fd, ptr.baseAddress!.advanced(by: got), n - got)
             }
-            if r <= 0 { return nil }
+            if r <= 0 { return (nil, got) }
             got += r
         }
-        return buf
+        return (buf, got)
+    }
+
+    /// The outcome of one frame read. A CLEAN CLOSE IS ITS OWN CASE, not an error:
+    /// §4.11 owes a coded EXECUTE_RESPONSE to a frame that was REFUSED, and an ordinary
+    /// hangup at a frame boundary refuses nothing and has nobody left to answer.
+    ///
+    /// This type exists because `readFrame` used to answer `[UInt8]?` and collapsed all
+    /// three outcomes into `nil` — so an over-max frame, a truncated one and an idle
+    /// disconnect were the same observation, and the reader's only possible response was
+    /// to close. That is §4.11's second non-conformant behaviour: "closing with no coded
+    /// frame ... indistinguishable from a network fault".
+    enum FrameRead {
+        case frame([UInt8])
+        case closed
+        case refused(CodecError)
     }
 
     /// Read one length-prefixed frame (§1.6): 4-byte BE length + payload.
-    func readFrame() -> [UInt8]? {
-        guard let prefix = readExact(4) else { return nil }
-        guard let len = try? Wire.frameLength(prefix), len >= 0, len < 64 * 1024 * 1024 else { return nil }
-        if len == 0 { return [] }
-        return readExact(len)
+    func readFrame() -> FrameRead {
+        let (prefix, prefixBytes) = readExact(4)
+        guard let prefix else {
+            // Nothing read AT A BOUNDARY is an ordinary close; a PARTIAL prefix means the
+            // stream died mid-frame and is owed a coded refusal (§4.11).
+            return prefixBytes == 0 ? .closed : .refused(.truncatedFrame)
+        }
+        guard let len = try? Wire.frameLength(prefix), len >= 0 else {
+            return .refused(.truncatedFrame)
+        }
+        // §4.10(a): the bound is checked at the LENGTH PREFIX, before the body is
+        // buffered, and since N14 the 413 MUST be emitted rather than merely licensed.
+        guard len < Wire.maxFrame else { return .refused(.frameTooLarge) }
+        if len == 0 { return .frame([]) }
+        let (body, _) = readExact(len)
+        // Past the prefix the peer has COMMITTED to a frame, so a body that never
+        // arrives is a truncation even when not one byte of it was read. Inferring from
+        // "zero bytes" is right for the prefix and wrong here.
+        guard let body else { return .refused(.truncatedFrame) }
+        return .frame(body)
     }
 
     /// Write a complete framed payload (blocking, serialized).

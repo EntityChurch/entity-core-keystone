@@ -97,8 +97,19 @@ public enum Capability {
     /// AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
     /// fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
     /// fail-OPEN in an exclude (carves out nothing), so the reading is chosen where the
-    /// POSITION is known and `matchesPattern` stays uniform over its operands. The
-    /// guard sits outside the scope-type dispatch, transcribing §5.2's loop literally.
+    /// POSITION is known and `matchesPattern` stays uniform over its operands.
+    ///
+    /// EVERY CALL SITE MUST GUARD IT ON PATH-SCOPE (0.8.2.24, N2/N3). This used to be
+    /// asked of every dimension, transcribing §5.2's loop before that loop grew its type
+    /// dispatch. `neverMatch` is a §5.4 PATH-canonicalization sentinel and has no meaning
+    /// on an id-scope dimension, whose patterns are literal identifiers that §5.2's own
+    /// id-scope arm forbids putting through the §5.4 transforms. Asking it outside the
+    /// type dispatch ran an id pattern through those transforms purely to classify it and
+    /// then DENIED THE WHOLE DIMENSION on a property unrelated to whether the exclude
+    /// carves anything out: an `operations` exclude of `*/apply` — an ordinary namespaced
+    /// operation name, a literal matching nothing under the id-scope grammar —
+    /// canonicalized to the sentinel and denied every operation. Over-denial, and
+    /// invisible on any well-formed grant.
     static func excludeIsUnmatchable(_ excl: [String], frame: String) -> Bool {
         for p in excl where canonicalize(p, frame: frame) == neverMatch { return true }
         return false
@@ -198,7 +209,17 @@ public enum Capability {
     /// matcher by scope type — `.path` canonicalizes both sides against `frame`, `.id`
     /// compares literally. The two MUST NOT be interchanged.
     public static func matchesScope(_ value: String, _ scope: Scope, frame: String, kind: ScopeKind) -> Bool {
-        if excludeIsUnmatchable(scope.exclude, frame: frame) { return false }  // 0.8.2.21
+        // SCOPED TO PATH-SCOPE (0.8.2.24). §5.2's exclude loop tests the sentinel INSIDE
+        // `if dimension_type == "system/capability/path-scope"`, and §5.4's rule is
+        // likewise "a capability carrying an unmatchable PATH-SCOPE pattern is INVALID
+        // ... It does NOT reach `operations` or `peers` [MUST]". The two id-scope
+        // dimensions reach the literal arm below unguarded, which is correct: under the
+        // id-scope grammar every non-`*` pattern is a literal and a literal is never
+        // structurally unmatchable, so there is nothing here for the sentinel to detect.
+        // (§5.4 says so outright and leaves the id-scope form of the carves-out-nothing
+        // hazard deliberately open rather than minting a second sentinel for it — so this
+        // is a scope boundary, not an omission.)
+        if kind == .path && excludeIsUnmatchable(scope.exclude, frame: frame) { return false }  // 0.8.2.21
         if kind == .id {
             var matchedID = false
             for p in scope.include where matchesIDPattern(value, p) { matchedID = true; break }
@@ -287,6 +308,13 @@ public enum Capability {
         // An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before
         // any target: the coverage tests below are correct in isolation and are simply
         // never reached on a sentinel, because matchesPattern answers false.
+        //
+        // UNGUARDED ON PURPOSE, unlike `matchesScope`'s (0.8.2.24): `grantResources` is
+        // always the RESOURCES dimension, which §5.2 fixes as path-scope, so the type
+        // test this call site would perform is a constant. Naming the dimension in the
+        // signature is what makes that checkable — a frame argument on an id-scope call
+        // site is the defect. Do NOT "fix" this by copying the `kind == .path` guard
+        // across.
         if excludeIsUnmatchable(grantResources.exclude, frame: granterFrame) { return false }
         for target in rt.targets {
             let ct = canonicalize(target, frame: localPeerID)
@@ -324,6 +352,108 @@ public enum Capability {
     static func patternsOverlap(_ a: String, _ b: String) -> Bool {
         let pa = stripWildcard(a), pb = stripWildcard(b)
         return pa.hasPrefix(pb) || pb.hasPrefix(pa)
+    }
+
+    // MARK: §5.2 effective targets and §6.3 check_path_permission
+
+    /// §5.2's effective target list (0.8.2.20): the caller's OWN `resource.exclude`
+    /// removes entries from the request BEFORE anything else looks at it.
+    ///
+    /// The survivors come back in the caller's OWN SPELLING, not canonicalized —
+    /// 0.8.2.21 is explicit that `effective_targets` yields raw survivors, and the
+    /// distinction is load-bearing here because the value flows on to `store.getAt`,
+    /// which canonicalizes for itself.
+    ///
+    /// `nil` means the EXECUTE carries NO `resource` at all, which is a different input
+    /// from "a resource whose every target was excluded" — and for a resource-OPTIONAL
+    /// operation 0.8.2.24 (N7) makes them DIFFERENT REQUESTS with different answers, not
+    /// merely different inputs to one disposition.
+    ///
+    /// `nil`-vs-`[]` IS THE NON-LOSSY PROJECTION §3.3 REQUIRES `[MUST]` (0.8.2.25, N11):
+    /// *"where an implementation projects `resource.targets` onto the effective set ahead
+    /// of the handler, that projection MUST NOT be lossy about its own emptiness — narrow
+    /// when narrowing leaves something, and retain the raw pair when narrowing would
+    /// empty it."*  A function returning only a list cannot satisfy that: collapsing
+    /// `[qA] exclude [qA]` to `[]` deletes the two-empties discriminator before any
+    /// handler can read it, and the handler's refusal arm becomes dead code that only a
+    /// WIRE drive can detect. Swift carries the discriminator as the `?`, which is the
+    /// same property spelled the way this substrate spells "absent".
+    ///
+    /// This peer has exactly ONE narrowing seam — this function, called by the tree
+    /// handler — and §6.5's dispatch chain does not project: `dispatchInner` passes the
+    /// EXECUTE through untouched and `checkPermission` reads `resource` for itself. So
+    /// there is no second door to keep in step, and adding a projection at dispatch would
+    /// create one.
+    ///
+    /// PRESENT-BUT-ILL-TYPED `targets` IS **PRESENT** and only the KEY's absence is
+    /// absent — the cell the two vanguards disagreed on until 0.8.2.25, corrected toward
+    /// `go`. Reading `{"targets": 42}` as absent serves a PRESENT resource the wider
+    /// absent-case answer §3.3 forbids: N11's own defect one field over.
+    ///
+    /// OPEN, AND ALL THREE PEERS ANSWER IT THE SAME WAY WITH NO TEXT BEHIND THEM: a
+    /// `resource` map carrying no `targets` KEY at all is reported absent, so `get` serves
+    /// it the root listing. §3.2 says *"`targets` — Array of paths or patterns this
+    /// operation accesses. MUST contain at least one entry"*, which makes that shape a
+    /// MALFORMED resource rather than an absent one. Left as shipped rather than decided
+    /// in a sweep (the F86 precedent): the disposition a malformed `resource` earns is not
+    /// pinned anywhere and nothing in the 778-check set drives the shape.
+    public static func effectiveTargets(_ execute: Entity, localPeerID: String) -> [String]? {
+        guard let r = execute.data.mapValue("resource"), case .map = r else { return nil }
+        guard let targetsValue = r.mapValue("targets") else { return nil }
+        let targets = (targetsValue.arrayValue ?? []).compactMap { $0.textValue }
+        let callerExclude = (r.arrayAt("exclude") ?? []).compactMap { $0.textValue }
+        return targets.filter { t in
+            let ct = canonicalize(t, frame: localPeerID)
+            // The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4's table
+            // rules it separately from the grant arm): `canonicalize` answers `neverMatch`
+            // and `matchesPattern` then answers false, so the target simply survives. That
+            // asymmetry is 0.8.2.21's whole point and it is INHERITED here, not restated.
+            return !callerExclude.contains { matchesPattern(ct, canonicalize($0, frame: localPeerID)) }
+        }
+    }
+
+    /// §6.3's handler-level path check.
+    ///
+    /// IT IS NOT A SECONDARY CHECK (§5.2, 0.8.2.20). It is the enforcement wherever the
+    /// subject is derived after dispatch, and the dispatch-level check can be made
+    /// VACUOUS by caller-controlled input: a caller who excludes the one target its
+    /// capability does not cover removes that target from `checkPermission`'s view
+    /// entirely, and a handler that then acts on it has authorized nothing.
+    ///
+    /// THREE DIMENSIONS, NOT FOUR. `peers` is not consulted here — the path is local by
+    /// construction at this point (§1.4's inbound rule refuses a foreign namespace at
+    /// §6.5 step 3, before any handler runs), and §6.3's signature names only handlers,
+    /// operations and resources.
+    ///
+    /// THE FRAME IS `localPeerID`, NOT THE GRANTER, AND THAT IS THE SPEC'S OWN SIGNATURE
+    /// RATHER THAN A CHOICE. §6.3's block reads
+    /// `matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id)` —
+    /// there is no granter parameter to pass. §5.5a governs chain ATTENUATION, where the
+    /// subject is a pattern being compared against a parent's pattern; this call site
+    /// compares a CONCRETE LOCAL PATH the handler is about to touch. The first `go` cut
+    /// threaded the per-link granter frame in by analogy with §5.5a and was wrong.
+    ///
+    /// There is no caller-exclude set here: the subject is a single concrete path, and the
+    /// caller's exclusions have already been applied in deriving it. Every grant exclude
+    /// covering the subject therefore denies — which `matchesScope` already implements,
+    /// including 0.8.2.21's sentinel rule, so this is three calls to it and nothing else.
+    ///
+    /// An empty `resources.include` is a legal grant shape (§5.2: handlers that touch no
+    /// tree paths) and DENIES every path here, which is what that note says it should. And
+    /// a malformed path canonicalizes to `neverMatch`, which matches no grant (§5.4), so
+    /// it falls through to DENY rather than being matched against anything.
+    public static func checkPathPermission(
+        operation: String, path: String, handlerPattern: String,
+        grants: [GrantEntry], localPeerID: String
+    ) -> Bool {
+        let canonicalPath = canonicalize(path, frame: localPeerID)
+        for g in grants {
+            if !matchesScope(handlerPattern, g.handlers, frame: localPeerID, kind: .path) { continue }
+            if !matchesScope(operation, g.operations, frame: localPeerID, kind: .id) { continue }
+            if !matchesScope(canonicalPath, g.resources, frame: localPeerID, kind: .path) { continue }
+            return true
+        }
+        return false
     }
 
     /// §5.2 extract_peer: first segment if a peer_id, else local.
@@ -579,12 +709,14 @@ public enum Capability {
     /// unrelated-looking capability failures (CAP-5, CAP-6, and CAP-6a's control
     /// losing its teeth), none of which is where the defect was.
     static func grantSubset(_ child: GrantEntry, _ parent: GrantEntry, childFrame: String, parentFrame: String, localPeerID: String) -> Bool {
-        if !scopeSubset(child.handlers, parent.handlers, childFrame: localPeerID, parentFrame: localPeerID) { return false }
-        if !scopeSubset(child.operations, parent.operations, childFrame: localPeerID, parentFrame: localPeerID) { return false }
-        if !scopeSubset(child.resources, parent.resources, childFrame: childFrame, parentFrame: parentFrame) { return false }
+        // `kind` follows §5.2's dimension table, not the frame: handlers/resources are
+        // path-scope, operations/peers id-scope (F50, 0.8.2.16).
+        if !scopeSubset(child.handlers, parent.handlers, childFrame: localPeerID, parentFrame: localPeerID, kind: .path) { return false }
+        if !scopeSubset(child.operations, parent.operations, childFrame: localPeerID, parentFrame: localPeerID, kind: .id) { return false }
+        if !scopeSubset(child.resources, parent.resources, childFrame: childFrame, parentFrame: parentFrame, kind: .path) { return false }
         let cp = child.peers ?? Scope(include: [localPeerID])
         let pp = parent.peers ?? Scope(include: [localPeerID])
-        if !scopeSubset(cp, pp, childFrame: localPeerID, parentFrame: localPeerID) { return false }
+        if !scopeSubset(cp, pp, childFrame: localPeerID, parentFrame: localPeerID, kind: .id) { return false }
         // Constraint key retention + byte equality.
         for (k, v) in parent.constraints {
             guard let cv = child.constraints.first(where: { cborEqual($0.key, k) })?.value, cborEqual(cv, v) else { return false }
@@ -596,10 +728,37 @@ public enum Capability {
         return true
     }
 
-    /// §5.6 scope_subset: each child include covered by some parent include (each
-    /// side canonicalized against ITS OWN granter frame, §5.5a); child inherits all
-    /// parent excludes.
-    static func scopeSubset(_ child: Scope, _ parent: Scope, childFrame: String, parentFrame: String) -> Bool {
+    /// §5.6 scope_subset: each child include covered by some parent include; child
+    /// inherits all parent excludes.
+    ///
+    /// TYPED BY SCOPE KIND, EXACTLY AS ITS SIBLING `matchesScope` IS (F50, ruled
+    /// 0.8.2.16). §3.6's grammar binds the SCOPE TYPE, not one function: *"an
+    /// implementation on the canonicalizing reading is non-conformant and MUST adopt the
+    /// literal matcher."* F40 fixed `matchesScope` and left this one behind, and the two
+    /// readings AGREE on every well-formed grant — which is why no hand-tried example
+    /// found it. `entity-core-formalization` measured the disagreement on `lean`: 2 of 64
+    /// include pairs and 2 of 64 exclude pairs, fail-CLOSED (`/tree/get` vs `*`,
+    /// `*/apply` vs `*`), against 0 over a 16-pair control alphabet. Fail-closed here
+    /// means an over-narrow delegation refusal rather than an over-grant — but the
+    /// direction is not the point, the matcher is.
+    ///
+    /// `kind` is passed at EVERY call site with no default, because a default is how the
+    /// next dimension inherits the wrong matcher silently, which is the original F40
+    /// defect.
+    ///
+    /// On the PATH arm each side canonicalizes against ITS OWN granter frame (§5.5a). The
+    /// ID arm takes no frame at all: an id pattern is a literal, and there is nothing to
+    /// canonicalize it against.
+    static func scopeSubset(_ child: Scope, _ parent: Scope, childFrame: String, parentFrame: String, kind: ScopeKind) -> Bool {
+        if kind == .id {
+            for cp in child.include {
+                if !parent.include.contains(where: { matchesIDPattern(cp, $0) }) { return false }
+            }
+            for pe in parent.exclude {
+                if !child.exclude.contains(where: { matchesIDPattern(pe, $0) }) { return false }
+            }
+            return true
+        }
         for cp in child.include {
             let cc = canonicalize(cp, frame: childFrame)
             if !parent.include.contains(where: { matchesPattern(cc, canonicalize($0, frame: parentFrame)) }) { return false }

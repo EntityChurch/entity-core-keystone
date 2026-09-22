@@ -70,17 +70,43 @@ def hex (b : ByteArray) : String :=
 def toCbor (e : Entity) : Value :=
   .map [(.text "type", .text e.typ), (.text "data", e.data), (.text "content_hash", .bytes e.hash)]
 
-/-- Parse a wire entity, recomputing the hash from {type,data} and validating it
-against the carried `content_hash` (§1.8 fidelity); we trust our hash, not the
-wire bytes (§5.2). `none` on a malformed or mismatched entity. -/
-def ofCbor (v : Value) : Option Entity :=
+/-- Why a wire entity or envelope was refused at the decode boundary. The CODE a
+caller sees is selected from this, because "the frame obligation belongs to the
+class; the CODE belongs to the cause [MUST]" (§4.11, 0.8.2.25) — a single code for
+the whole class answers an honest caller under the wrong reason and sends them to
+the wrong layer. -/
+inductive EnvelopeRefusal where
+  /-- §1.8 / §5.2a RESOLUTION INTEGRITY: an `included` entry filed under a key that
+  is not its own `content_hash`, or an entity whose carried `content_hash` does not
+  bind. §5.2a pins this to `400 hash_mismatch` [MUST] and rules `400
+  non_canonical_ecf` NON-CONFORMANT here (0.8.2.24 N4/N5, 0.8.2.25 N16): the
+  encoding is perfectly CANONICAL and carries no tag — what is false is the CLAIM
+  THE KEY (or the carried hash) MAKES. The code selects the caller's remedy, so a
+  code merely in the right family is still wrong. -/
+  | hashMismatch
+  /-- Bytes that never become an Envelope: a shape violation in the envelope or
+  entity wrapper. §4.11's framing arm — `400 invalid_request`. -/
+  | malformed
+  deriving Repr, Inhabited, BEq
+
+def ofCborE (v : Value) : Except EnvelopeRefusal Entity :=
   match mapGet v "type", mapGet v "data" with
   | some (.text typ), some d =>
       let e := make typ d
       match mapGet v "content_hash" with
-      | some (.bytes h) => if baEq h e.hash then some e else none
-      | _ => some e
-  | _, _ => none
+      -- §1.8 fidelity is the SAME RESOLUTION-INTEGRITY CAUSE as a mis-keyed
+      -- `included` entry, one level in: canonical encoding, no tag, and the false
+      -- thing is the hash claim.
+      | some (.bytes h) => if baEq h e.hash then .ok e else .error .hashMismatch
+      | _ => .ok e
+  | _, _ => .error .malformed
+
+/-- Parse a wire entity, recomputing the hash from {type,data} and validating it
+against the carried `content_hash` (§1.8 fidelity); we trust our hash, not the wire
+bytes (§5.2). `none` on a malformed or mismatched entity — use `ofCborE` wherever
+the CAUSE has to reach a caller. -/
+def ofCbor (v : Value) : Option Entity :=
+  match ofCborE v with | .ok e => some e | .error _ => none
 
 -- ── envelope (§3.1) ──────────────────────────────────────────────────────────
 
@@ -101,19 +127,28 @@ def envelopeToCbor (env : Envelope) : Value :=
         (.text "included", .map (env.included.map (fun ke => (.bytes ke.1, toCbor ke.2))))]
 
 /-- Parse an envelope; the `included` key MUST equal each entity's content_hash. -/
-def envelopeOfCbor (v : Value) : Option Envelope := do
-  let rootV ← mapGet v "root"
-  let root ← ofCbor rootV
+def envelopeOfCborE (v : Value) : Except EnvelopeRefusal Envelope := do
+  let rootV ← match mapGet v "root" with
+    | some r => .ok r
+    | none => .error .malformed
+  let root ← ofCborE rootV
   let included ← match mapGet v "included" with
     | some (.map kvs) =>
         kvs.foldrM (fun kv acc =>
           match kv.1 with
           | .bytes h => do
-              let e ← ofCbor kv.2
-              if baEq h e.hash then some ((h, e) :: acc) else none
-          | _ => none) []
-    | none => some []
-    | some _ => none
-  some { root, included }
+              let e ← ofCborE kv.2
+              -- §3.1: the included key MUST equal the entity's content_hash.
+              if baEq h e.hash then .ok ((h, e) :: acc) else .error .hashMismatch
+          | _ => .error .malformed) []
+    | none => .ok []
+    | some _ => .error .malformed
+  .ok { root, included }
+
+/-- The pre-0.8.2.24 shape, kept for callers with no error channel to consume a
+cause. Every REFUSING call site should take `envelopeOfCborE` instead — a caller
+that discards the cause cannot answer the code §4.11 assigns it. -/
+def envelopeOfCbor (v : Value) : Option Envelope :=
+  match envelopeOfCborE v with | .ok e => some e | .error _ => none
 
 end EntityCore.Model

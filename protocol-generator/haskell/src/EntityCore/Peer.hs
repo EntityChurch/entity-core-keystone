@@ -458,17 +458,62 @@ isDeletionMarker p h = do
   me <- Store.getByHash (peerStore p) h
   pure $ case me of Just e -> entType e == "system/deletion-marker"; Nothing -> False
 
-buildListing :: Peer -> Text -> IO Outcome
-buildListing p path = do
+-- | What the handler needs from the dispatch chain, CARRIED rather than
+-- recomputed (§6.3, 0.8.2.23). The dispatch-level check already resolved both;
+-- recomputing invites the two to drift, and §6.8 is explicit that the authority is
+-- selected by who named the path.
+data DispatchCtx = DispatchCtx
+  { dcExec :: Entity
+  , -- | The caller's verified capability, 'Nothing' on an internal/bootstrap call.
+    dcCallerCap :: Maybe Entity
+  , -- | The OWNING handler's pattern (§6.3, 0.8.2.23). For the tree handler owner
+    -- and runner coincide, so the distinction is not observable on the wire here —
+    -- the field is named for the owner anyway, because that is the reading.
+    dcPattern :: Text
+  }
+
+-- | §6.3's per-entry listing check for one child segment (0.8.2.21/.22).
+--
+-- An UNAUTHENTICATED context (no capability) is the bootstrap/internal path and is
+-- NOT filtered: the filter's subject is "the caller's verified capability", and
+-- where there is none there is no caller to narrow.
+entryVisible :: Peer -> DispatchCtx -> Text -> Text -> Bool
+entryVisible p ctx dir segment = case dcCallerCap ctx of
+  Nothing -> True
+  Just cap ->
+    let child = (if T.null dir || T.last dir == '/' then dir else dir <> "/") <> segment
+     in Cap.checkPathPermission (peerLocal p) "get" child cap (dcPattern ctx)
+
+-- | Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+--
+-- "When any handler returns a multi-entry result whose entries are tree paths,
+-- each entry MUST be individually checked using @check_path_permission@. Entries
+-- for which @check_path_permission@ returns DENY MUST be omitted. The result's
+-- @count@ field MUST reflect the filtered entry count, not the source tree's total
+-- count."
+--
+-- This is the read path at its highest volume and it is why 0.8.2.21 refused to
+-- carve reads out of the caller-specified-path rule: an unfiltered listing
+-- discloses the EXISTENCE of every binding under a prefix to a caller whose
+-- capability covers none of them. A @count@ that still reports the source total is
+-- that same disclosure in one field.
+--
+-- The DIRECTORY itself is deliberately NOT checked — §6.3 makes each ENTRY the
+-- subject, and testing the prefix would deny a listing to a caller whose grant
+-- covers children but not the node above them, which is the ordinary shape of a
+-- narrowed grant.
+buildListing :: Peer -> DispatchCtx -> Text -> IO Outcome
+buildListing p ctx path = do
   entries0 <- Store.listing (peerStore p) path
-  entries <-
+  entries1 <-
     filterM
       ( \(_, mh, hasChildren) -> case mh of
           Just h | not hasChildren -> not <$> isDeletionMarker p h
           _ -> pure True
       )
       entries0
-  let entryMap =
+  let entries = filter (\(seg, _, _) -> entryVisible p ctx path seg) entries1
+      entryMap =
         map
           ( \(seg, mh, hasChildren) ->
               ( VText seg
@@ -587,49 +632,128 @@ hashDigestLen 0x00 = Just 32
 hashDigestLen 0x01 = Just 48
 hashDigestLen _ = Nothing
 
-treeHandler :: Peer -> Entity -> IO Outcome
-treeHandler p exec = do
-  let op = fromMaybe "" (textField exec "operation")
-      tgt = resourceTarget exec
-  case (op, tgt) of
-    (o, Just target) | (o == "get" || o == "put") && not (pathFlexOk target) ->
-      pure (errMsg 400 "invalid_path" target)
-    ("get", Nothing) -> buildListing p ("/" <> peerLocal p <> "/")
-    ("get", Just target)
+-- | Is a resource target a §5.4 PATTERN rather than a concrete path? A
+-- resource-requiring operation takes a concrete path (0.8.2.20); a trailing @/@ is
+-- a LISTING request rather than a pattern, so only a @*@ makes it one.
+isPatternPath :: Text -> Bool
+isPatternPath = T.any (== '*')
+
+-- | @get@ (§6.3). RESOLVE THE OPERATION FIRST; only then run the §3.3 ladder.
+--
+-- 'treeHandler' used to answer @(anyOperation, noResource)@ from one arm placed
+-- ABOVE the unknown-operation arm, so @system\/tree:bogusop@ with no @resource@
+-- answered a RESOURCE fault (@400 ambiguous_resource@) for an OPERATION fault —
+-- while the same call WITH a resource correctly answered 501. The resource ladder
+-- is reachable only for a KNOWN operation that takes a resource, which is what
+-- splitting the handler into per-operation functions makes structural.
+treeGet :: Peer -> DispatchCtx -> IO Outcome
+treeGet p ctx = do
+  -- §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+  -- `resource.targets`: a handler that counts the effective list and then indexes
+  -- targets[0] has implemented the arithmetic completely and is still reading a
+  -- path no authorization covered.
+  let (eff, hadResource) = Cap.effectiveTargets (peerLocal p) (dcExec ctx)
+  case eff of
+    []
+      -- THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION
+      -- IS WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is
+      -- scoped "for an operation that REQUIRES a resource" (0.8.2.24, N7); `get`
+      -- does not. For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the
+      -- present-but-empty case by whether the absent case is WIDER than the
+      -- request — BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty — and
+      -- requires the operation to declare which it is.
+      --
+      -- EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+      -- resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root listing",
+      -- self-excluded case "400 path_required". Both arms are pinned by text and
+      -- neither is this peer's choice.
+      | not hadResource -> buildListing p ctx ("/" <> peerLocal p <> "/")
+      -- The self-excluded request: `resource` PRESENT, every target carved out by
+      -- the caller's OWN exclude. Serving it the absent case "answers a request
+      -- for one excluded path with a listing of the tree" (EXTENSION-TREE §2.2a) —
+      -- the root listing is wider than what was asked for, which is what
+      -- BROAD-RESULT means.
+      | otherwise -> pure (errMsg 400 "path_required" "tree: effective target list is empty")
+    [target]
+      | not (pathFlexOk target) -> pure (errMsg 400 "invalid_path" target)
       | T.null target || T.last target == '/' ->
-          buildListing p (canonicalize (peerLocal p) target)
-    ("get", Just target) -> do
-      let path = canonicalize (peerLocal p) target
-      me <- Store.getAt (peerStore p) path
-      case me of
-        Just e ->
-          let mode = entityField exec "params" >>= (`textField` "mode")
-           in if mode == Just "hash"
-                then pure (ok (makeEntity "system/hash" (VBytes (entHash e))))
-                else pure (ok e)
-        Nothing -> pure (errMsg 404 "not_found" path)
-    ("put", Just target) -> do
-      let path = canonicalize (peerLocal p) target
-          params = entityField exec "params"
-          entity = params >>= (`field` "entity")
-          expected = params >>= (`bytesField` "expected_hash")
-      current <- Store.hashAt (peerStore p) path
-      let zero33 = BS.replicate 33 0
-          casOk = case expected of
-            Nothing -> True
-            Just h | h == zero33 -> current == Nothing
-            Just h -> current == Just h
-      if not casOk
-        then pure (errMsg 409 "hash_mismatch" path)
-        else case entity of
-          Just raw -> case admitPut raw of
-            Left refusal -> pure refusal
-            Right e -> do
-              Store.bind (peerStore p) path e
-              pure (ok (makeEntity "system/hash" (VBytes (entHash e))))
-          Nothing -> pure (errMsg 400 "unexpected_params" "put: missing entity")
-    (_, Nothing) -> pure (errMsg 400 "ambiguous_resource" "tree: missing resource target")
-    (other, _) -> pure (errMsg 501 "unsupported_operation" ("tree: " <> other))
+          buildListing p ctx (canonicalize (peerLocal p) target)
+      | isPatternPath target -> pure (errMsg 400 "malformed_resource" target)
+      | otherwise -> do
+          let path = canonicalize (peerLocal p) target
+          -- §6.3: the handler MUST verify the CALLER's capability covers the path
+          -- it is about to read. Not a secondary check — the dispatch-level check
+          -- never saw this path if the caller excluded it.
+          if not (pathPermitted p ctx "get" path)
+            then pure (errMsg 403 "capability_denied" path)
+            else do
+              me <- Store.getAt (peerStore p) path
+              case me of
+                Just e ->
+                  let mode = entityField (dcExec ctx) "params" >>= (`textField` "mode")
+                   in if mode == Just "hash"
+                        then pure (ok (makeEntity "system/hash" (VBytes (entHash e))))
+                        else pure (ok e)
+                Nothing -> pure (errMsg 404 "not_found" path)
+    _ -> pure (errMsg 400 "ambiguous_resource" "tree: more than one effective target")
+
+-- | §6.3's path check, applied only where a caller capability exists (the
+-- bootstrap/internal path has no caller to narrow).
+pathPermitted :: Peer -> DispatchCtx -> Text -> Text -> Bool
+pathPermitted p ctx operation path = case dcCallerCap ctx of
+  Nothing -> True
+  Just cap -> Cap.checkPathPermission (peerLocal p) operation path cap (dcPattern ctx)
+
+-- | @put@ (§6.3). The same ladder as 'treeGet', with the two empties COLLAPSED
+-- rather than split: EXTENSION-TREE §2.2a (v4.11) declares @put@ resource-REQUIRED,
+-- so §3.3's "an empty effective list IS the absent case" applies in its unscoped
+-- form and both empties answer @path_required@. Same table @get@ cites, one row
+-- down — the field is per-operation and neither answer is derivable from source.
+--
+-- NOTE THE CODE CHANGE 0.8.2.20 FORCED: this answered @ambiguous_resource@ for a
+-- MISSING target, which 0.8.2.20 names as the exact inversion it forbids. The
+-- remedies differ — /supply a resource/ is not /disambiguate your request/ — and
+-- the code is what selects between them.
+treePut :: Peer -> DispatchCtx -> IO Outcome
+treePut p ctx = do
+  let exec = dcExec ctx
+      -- `hadResource` is deliberately not consulted: both empties collapse here.
+      (eff, _hadResource) = Cap.effectiveTargets (peerLocal p) exec
+  case eff of
+    [] -> pure (errMsg 400 "path_required" "tree: put requires a resource target")
+    [target]
+      | not (pathFlexOk target) -> pure (errMsg 400 "invalid_path" target)
+      | isPatternPath target -> pure (errMsg 400 "malformed_resource" target)
+      | otherwise -> do
+          let path = canonicalize (peerLocal p) target
+          if not (pathPermitted p ctx "put" path)
+            then pure (errMsg 403 "capability_denied" path)
+            else do
+              let params = entityField exec "params"
+                  entity = params >>= (`field` "entity")
+                  expected = params >>= (`bytesField` "expected_hash")
+              current <- Store.hashAt (peerStore p) path
+              let zero33 = BS.replicate 33 0
+                  casOk = case expected of
+                    Nothing -> True
+                    Just h | h == zero33 -> current == Nothing
+                    Just h -> current == Just h
+              if not casOk
+                then pure (errMsg 409 "hash_mismatch" path)
+                else case entity of
+                  Just raw -> case admitPut raw of
+                    Left refusal -> pure refusal
+                    Right e -> do
+                      Store.bind (peerStore p) path e
+                      pure (ok (makeEntity "system/hash" (VBytes (entHash e))))
+                  Nothing -> pure (errMsg 400 "unexpected_params" "put: missing entity")
+    _ -> pure (errMsg 400 "ambiguous_resource" "tree: more than one effective target")
+
+treeHandler :: Peer -> DispatchCtx -> IO Outcome
+treeHandler p ctx = case fromMaybe "" (textField (dcExec ctx) "operation") of
+  "get" -> treeGet p ctx
+  "put" -> treePut p ctx
+  other -> pure (errMsg 501 "unsupported_operation" ("tree: " <> other))
 
 -- ── capability handler (§6.2) ──────────────────────────────────────────────────
 
@@ -757,7 +881,13 @@ registerHandler p exec = case registerPattern exec of
   Left e -> pure e
   Right pattern
     | isReservedSystemPattern pattern ->
-        pure (errMsg 403 "forbidden_pattern" ("§6.2: user-installed handlers MUST NOT register at system/* paths: " <> pattern))
+        -- ASCII-ONLY WIRE STRING. The `§` that used to open this message is a
+        -- wire-VISIBLE literal — the codec CBOR-text-encodes it and sends it — and
+        -- that is the class AGENTS.md ratifies on two independent crashes (Oz's
+        -- compiled string constant corrupted by a `§`; Io's own UTF-8 validator
+        -- rejecting byte-correct UTF-8, killing the process and cascading 104
+        -- FAILs). `§` stays in COMMENTS, which are never encoded.
+        pure (errMsg 403 "forbidden_pattern" ("section 6.2: user-installed handlers MUST NOT register at system/* paths: " <> pattern))
   Right pattern -> case entityField exec "params" of
     Nothing -> pure (errMsg 400 "unexpected_params" "register: missing params")
     Just req
@@ -891,7 +1021,9 @@ dispatchOutboundHandler p conn exec = case entityField exec "params" of
                 resource = VMap [(VText "targets", VArray [VText ("system/handler/" <> target)])]
             menv <- outboundDispatch p conn target operation inner (Just resource) capability granterPeer capabilitySignature
             case menv of
-              Nothing -> pure (errMsg 503 "no_outbound_seam" "no live §6.11 reentry connection")
+              -- ASCII-ONLY WIRE STRING (see the forbidden_pattern note above): the
+              -- `§6.11` this message used to carry is encoded and sent.
+              Nothing -> pure (errMsg 503 "no_outbound_seam" "no live section 6.11 reentry connection")
               Just env ->
                 let status = fromMaybe 0 (uintField (envRoot env) "status")
                     resultCbor = fromMaybe (VMap []) (field (envRoot env) "result")
@@ -961,7 +1093,35 @@ dispatch :: Peer -> Conn -> Envelope -> IO (Maybe Envelope)
 dispatch p conn env = do
   let exec = envRoot env
   if entType exec /= "system/protocol/execute"
-    then pure Nothing -- §3.3: server side ignores non-EXECUTE
+    then
+      -- §6.5's "Other type?" arm, as REWRITTEN at 0.8.2.25 (N12/N17): "400
+      -- invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare
+      -- close — that is indistinguishable from a network fault."
+      --
+      -- §3.3 used to read "the connection MUST be closed", assigning no code and
+      -- requiring no frame, and that row was REPLACED at .25 (N18 — §9.1's floor
+      -- row went with it). This peer did something weaker still: it returned
+      -- Nothing, the transport wrote NOTHING and kept the connection open, which is
+      -- §4.11's other non-conformant behaviour — the SILENT DROP, "the weaker of
+      -- the two precisely because nothing surfaces it".
+      --
+      -- This is a PRE-ADMISSION refusal: the root is not an EXECUTE, so nothing was
+      -- ever admitted and §4.9(c) does not reach it. `request_id` is read
+      -- best-effort — an arbitrary root type is under no obligation to carry one,
+      -- and §4.11 licenses the uncorrelated frame exactly there. We do NOT close:
+      -- on a multiplexed connection that would cost every ADMITTED in-flight
+      -- request its response, and §4.11 leaves the close to us.
+      pure
+        ( Just
+            ( Envelope
+                ( makeResponse
+                    (fromMaybe "" (textField exec "request_id"))
+                    400
+                    (errorResult (Just "root entity is neither EXECUTE nor EXECUTE_RESPONSE") "invalid_request")
+                )
+                []
+            )
+        )
     else do
       let requestId = fromMaybe "" (textField exec "request_id")
           uri = fromMaybe "" (textField exec "uri")
@@ -1005,8 +1165,12 @@ dispatch p conn env = do
                             let granterPeer = fromMaybe (peerLocal p) (resolveGranterPeerId resolve cap)
                             case checkPermission (peerLocal p) granterPeer exec cap pattern of
                               Deny -> pure (errOc 403 "capability_denied")
+                              -- §6.3 needs the OWNING handler's pattern and the
+                              -- caller's capability; both were just computed here,
+                              -- so they are CARRIED rather than recomputed
+                              -- (0.8.2.23).
                               Allow -> case stripLocal p pattern of
-                                "system/tree" -> treeHandler p exec
+                                "system/tree" -> treeHandler p (DispatchCtx exec callerCap pattern)
                                 "system/capability" -> capabilityHandler p exec callerCap
                                 "system/handler" -> handlersHandler p exec
                                 "system/type" -> typesHandler p exec

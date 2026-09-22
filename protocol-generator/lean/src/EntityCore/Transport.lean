@@ -61,32 +61,58 @@ def closeConn (cio : ConnIO) : IO Unit := do
   let pendingList ← cio.pending.atomically get
   for kp in pendingList do kp.2.resolve none
 
+/-- Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+refused BEFORE it became an admitted request.
+
+An EMPTY `request_id` IS the best-effort form, not a bug: §4.11 prescribes exactly
+that where no id can be recovered ("otherwise a best-effort coded frame carrying no
+correlation"). The alternative it replaced was silence — §4.11's other named
+non-conformant behaviour, "the weaker of the two precisely because nothing surfaces
+it". -/
+def refusePreAdmission (cio : ConnIO) (requestId : String)
+    (cause : EntityCore.Wire.PreAdmission) : IO Unit := do
+  let (status, code) := EntityCore.Wire.preAdmissionRefusal cause
+  let resp : Envelope :=
+    { root := EntityCore.Wire.makeResponse requestId status
+                (EntityCore.Wire.errorResult code none),
+      included := [] }
+  try writeFramed cio resp catch _ => pure ()
+
 /-- Reader loop (§6.11 demux): RESPONSE → route; EXECUTE → dispatch on its own
-dedicated thread (§4.8). Ends on connection close / malformed frame. -/
+dedicated thread (§4.8). Ends on connection close, or on a §4.11 framing refusal
+AFTER the coded frame has gone out. -/
 partial def readLoop (cio : ConnIO) (onExecute : Envelope → IO Unit) : IO Unit := do
-  match ← EntityCore.Net.readFramePayload cio.fd with
-  | none => pure ()   -- connection finished (EOF / short read / §4.10(a) oversize)
-  | some payload =>
-  match EntityCore.Wire.envelopeOfPayload payload with
-  | none =>
-    -- §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is owed
-    -- a STATUS, not silence, and certainly not a closed connection. This branch
-    -- used to be indistinguishable from EOF, so ONE malformed frame ended the
-    -- read loop and every later request on the connection failed. That is what
-    -- turned a single CAP-6a refusal into an 81-check cascade.
+  match ← EntityCore.Net.readFrameResult cio.fd with
+  | .eof => pure ()   -- connection finished; a refusal of nothing
+  | .refused cause =>
+    -- §4.11: the coded frame goes out and THEN the loop ends. The stream is
+    -- desynchronized on both arms — an oversize body was never drained, a truncated
+    -- one never arrived — so closing is the only sound choice once the framing is
+    -- lost, and §4.11 leaves that close to us. It is a choice made AFTER answering,
+    -- never an alternative to answering. No id is recoverable here (the body was
+    -- never read), so this is the best-effort uncorrelated form.
+    refusePreAdmission cio "" cause
+  | .payload payload =>
+  match EntityCore.Wire.envelopeOfPayloadE payload with
+  | .error cause =>
+    -- A rejected frame is owed a STATUS, not silence, and certainly not a closed
+    -- connection. This branch used to be indistinguishable from EOF, so ONE
+    -- malformed frame ended the read loop and every later request on the connection
+    -- failed — what turned a single CAP-6a refusal into an 81-check cascade.
     --
-    -- The frame is still REJECTED — only the request_id is salvaged, to
-    -- correlate the response — and the loop keeps serving.
-    (match EntityCore.Wire.salvageRequestId payload with
-     | some rid =>
-         let resp : Envelope :=
-           { root := EntityCore.Wire.makeResponse rid 400
-                       (EntityCore.Wire.errorResult "non_canonical_ecf" none),
-             included := [] }
-         (try writeFramed cio resp catch _ => pure ())
-     | none => pure ())
+    -- THE CODE IS THE CAUSE'S (§4.11, §5.2a). Every cause answered
+    -- `non_canonical_ecf` until 0.8.2.24/.25 pinned them apart: a mis-keyed
+    -- `included` entry is `400 hash_mismatch` (its encoding is canonical — what is
+    -- false is the claim the key makes), a tag-policy violation keeps
+    -- `non_canonical_ecf`, and everything else that never becomes an Envelope is
+    -- `400 invalid_request`.
+    --
+    -- The frame is still REJECTED — only the request_id is salvaged, to correlate
+    -- the response — and an unrecoverable id yields the uncorrelated best-effort
+    -- frame rather than silence. The loop keeps serving.
+    refusePreAdmission cio ((EntityCore.Wire.salvageRequestId payload).getD "") cause
     readLoop cio onExecute
-  | some env =>
+  | .ok env =>
     if env.root.typ == "system/protocol/execute/response" then
       routeResponse cio env
     else

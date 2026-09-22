@@ -19,6 +19,12 @@ export class TreeHandler implements Handler {
   readonly name = "tree";
   readonly operations: readonly string[] = ["get", "put"];
 
+  /**
+   * RESOLVE THE OPERATION FIRST; only then run the §3.3 resource ladder. This switch is
+   * what makes that true: a handler that validates the resource first answers a RESOURCE
+   * fault for an unknown-OPERATION request, so `system/tree:bogusop` with no `resource`
+   * reports `ambiguous_resource` where §3.3 pins `501 unsupported_operation`.
+   */
   async handle(ctx: HandlerContext): Promise<HandlerResult> {
     switch (ctx.operation) {
       case "get":
@@ -34,9 +40,43 @@ export class TreeHandler implements Handler {
   }
 
   #get(ctx: HandlerContext): HandlerResult {
-    const target = requireSingleTarget(ctx);
     const tree = ctx.peer.tree;
     const localPeerId = ctx.localPeerId;
+
+    // §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on `resource.targets`: a
+    // handler that counts the effective list and then indexes `targets[0]` has implemented
+    // the arithmetic completely and is still reading a path no authorization covered.
+    //
+    // This replaces a `targets.length !== 1` THROW, which answered `400 handler_error` for
+    // every row of the ladder at once: an absent resource, two targets and a single-entry
+    // effective set all landed on the generic handler-fault frame. 0.8.2.20 pins each to
+    // its own code because the code is what selects the caller's remedy, and a peer that
+    // refuses correctly for a reason §6.3 does not name has not implemented the selection.
+    const { survivors, hasResource } = Permissions.effectiveTargets(ctx.execute, localPeerId);
+    if (!hasResource) {
+      // THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION IS WHAT
+      // SAYS SO. §3.3's "an empty effective list IS the absent case" is scoped "for an
+      // operation that REQUIRES a resource" (0.8.2.24, N7); `get` does not. For a
+      // resource-OPTIONAL operation 0.8.2.25 (N10) decides the present-but-empty case by
+      // whether the absent case is WIDER than the request — BROAD-RESULT refuses it,
+      // OPTIONAL-FILTER answers it empty — and requires the operation to declare which.
+      //
+      // EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is resource-OPTIONAL and
+      // BROAD-RESULT, absent-case answer "the root listing", self-excluded case
+      // "400 path_required". Both arms are pinned by text and neither is this peer's choice.
+      return this.#listing(ctx, "/" + localPeerId + "/");
+    }
+    if (survivors.length === 0) {
+      // The self-excluded request: `resource` PRESENT, every target carved out by the
+      // caller's own exclude. Serving it the absent case "answers a request for one
+      // excluded path with a listing of the tree" (EXTENSION-TREE §2.2a) — the root
+      // listing is wider than what was asked for, which is what BROAD-RESULT means.
+      return errorResult(Status.BadRequest, "path_required", "tree: effective target list is empty");
+    }
+    if (survivors.length > 1) {
+      return errorResult(Status.BadRequest, "ambiguous_resource", "tree: more than one effective target");
+    }
+    const target = survivors[0]!;
 
     try {
       Paths.validateCallerTarget(target);
@@ -49,43 +89,20 @@ export class TreeHandler implements Handler {
 
     // Listing request — trailing slash or empty (§6.3).
     if (target.length === 0 || target.endsWith("/")) {
-      const prefix = Paths.canonicalize(target.replace(/\/+$/, ""), localPeerId);
-      const raw = tree.list(prefix);
-      const entries: [string, EcfValue][] = [];
-      for (const [name, entry] of raw) {
-        // Filter each entry against the caller's capability (§6.3 listing filter).
-        const entryPath = (prefix.endsWith("/") ? prefix : prefix + "/") + name;
-        if (!authorizePath(ctx, "get", entryPath)) {
-          continue;
-        }
-        // §6.3 / v7.72 §9.5a CORE-TREE-DELETE-1: a direct child bound to a
-        // system/deletion-marker is omitted (a marked leaf reads as absent); a
-        // marker that still prefixes deeper live paths survives as a pure prefix.
-        if (entry.hash !== null && tree.get(entryPath)?.type === TypeNames.DeletionMarker) {
-          if (!entry.hasChildren) {
-            continue;
-          }
-          entries.push([name, Ecf.map(["hash", null], ["has_children", Ecf.bool(true)])]);
-          continue;
-        }
-        entries.push([
-          name,
-          Ecf.map(["hash", entry.hash === null ? null : Ecf.bytes(entry.hash)], ["has_children", Ecf.bool(entry.hasChildren)]),
-        ]);
-      }
-      const listing = Entity.create(
-        "system/tree/listing",
-        Ecf.map(
-          ["path", Ecf.text(prefix)],
-          ["entries", ecfMap(entries.map(([name, value]) => [ecfText(name), value] as const))],
-          ["count", Ecf.uint(BigInt(entries.length))],
-          ["offset", Ecf.uint(0n)],
-        ),
-      );
-      return HandlerResult.ok(listing);
+      return this.#listing(ctx, Paths.canonicalize(target.replace(/\/+$/, ""), localPeerId));
+    }
+
+    // A resource-requiring operation takes a CONCRETE path (0.8.2.20). Without this the
+    // pattern is looked up as a literal and answers `404 not_found`, which names the wrong
+    // fault: the request is malformed, the tree is fine.
+    if (isPatternPath(target)) {
+      return errorResult(Status.BadRequest, "malformed_resource", target);
     }
 
     const path = Paths.canonicalize(target, localPeerId);
+    // §6.3: the handler MUST verify the CALLER's capability covers the path it is about to
+    // read. NOT a secondary check — the dispatch-level check never saw this path if the
+    // caller excluded it.
     if (!authorizePath(ctx, "get", path)) {
       return errorResult(Status.Forbidden, "capability_denied", "capability does not cover path");
     }
@@ -101,8 +118,81 @@ export class TreeHandler implements Handler {
     return HandlerResult.ok(tree.get(path)!);
   }
 
+  /**
+   * Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+   *
+   * *"When any handler returns a multi-entry result whose entries are tree paths, each
+   * entry MUST be individually checked using `check_path_permission`. Entries for which
+   * `check_path_permission` returns DENY MUST be omitted. The result's `count` field MUST
+   * reflect the filtered entry count, not the source tree's total count."*
+   *
+   * This is the read path at its highest volume and it is the reason 0.8.2.21 refused to
+   * carve reads out of the caller-specified-path rule: an unfiltered listing discloses the
+   * EXISTENCE of every binding under a prefix to a caller whose capability covers none of
+   * them.
+   *
+   * The DIRECTORY itself is deliberately NOT checked — §6.3 makes each ENTRY the subject,
+   * and testing the prefix would deny a listing to a caller whose grant covers children but
+   * not the node above them, which is the ordinary shape of a narrowed grant.
+   */
+  #listing(ctx: HandlerContext, prefix: string): HandlerResult {
+    const tree = ctx.peer.tree;
+    const raw = tree.list(prefix);
+    const entries: [string, EcfValue][] = [];
+    for (const [name, entry] of raw) {
+      // §6.3's per-entry check (0.8.2.21/.22).
+      const entryPath = (prefix.endsWith("/") ? prefix : prefix + "/") + name;
+      if (!authorizePath(ctx, "get", entryPath)) {
+        continue;
+      }
+      // §6.3 / v7.72 §9.5a CORE-TREE-DELETE-1: a direct child bound to a
+      // system/deletion-marker is omitted (a marked leaf reads as absent); a
+      // marker that still prefixes deeper live paths survives as a pure prefix.
+      if (entry.hash !== null && tree.get(entryPath)?.type === TypeNames.DeletionMarker) {
+        if (!entry.hasChildren) {
+          continue;
+        }
+        entries.push([name, Ecf.map(["hash", null], ["has_children", Ecf.bool(true)])]);
+        continue;
+      }
+      entries.push([
+        name,
+        Ecf.map(["hash", entry.hash === null ? null : Ecf.bytes(entry.hash)], ["has_children", Ecf.bool(entry.hasChildren)]),
+      ]);
+    }
+    const listing = Entity.create(
+      "system/tree/listing",
+      Ecf.map(
+        ["path", Ecf.text(prefix)],
+        ["entries", ecfMap(entries.map(([name, value]) => [ecfText(name), value] as const))],
+        // `count` follows the FILTERED total. A count that still reports the source total
+        // is the disclosure the rule exists to prevent.
+        ["count", Ecf.uint(BigInt(entries.length))],
+        ["offset", Ecf.uint(0n)],
+      ),
+    );
+    return HandlerResult.ok(listing);
+  }
+
   #put(ctx: HandlerContext): HandlerResult {
-    const target = requireSingleTarget(ctx);
+    // Same ladder as `#get`, with the two empties COLLAPSED rather than split:
+    // EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an empty
+    // effective list IS the absent case" applies in its unscoped form and both empties
+    // answer `path_required`. That is the same table `#get`'s branch cites, one row down.
+    //
+    // Note the code 0.8.2.20 forces: a MISSING target is `path_required`, never
+    // `ambiguous_resource` — 0.8.2.20 names that inversion outright, because *supply a
+    // resource* is not *disambiguate your request* and the code is what selects the remedy.
+    // This peer answered `400 handler_error` for both.
+    const { survivors, hasResource } = Permissions.effectiveTargets(ctx.execute, ctx.localPeerId);
+    if (!hasResource || survivors.length === 0) {
+      return errorResult(Status.BadRequest, "path_required", "tree: put requires a resource target");
+    }
+    if (survivors.length > 1) {
+      return errorResult(Status.BadRequest, "ambiguous_resource", "tree: more than one effective target");
+    }
+    const target = survivors[0]!;
+
     let path: string;
     try {
       // §1.4 / v7.72 §9.5a CORE-TREE-PATH-FLEX-1: reject control bytes + malformed
@@ -114,6 +204,9 @@ export class TreeHandler implements Handler {
         return errorResult(Status.BadRequest, "invalid_path", e.message);
       }
       throw e;
+    }
+    if (isPatternPath(target)) {
+      return errorResult(Status.BadRequest, "malformed_resource", target);
     }
 
     // Caller-specified path: the caller's capability MUST cover it (§6.8).
@@ -233,19 +326,33 @@ function admitPut(v: EcfValue): Entity | HandlerResult {
   }
 }
 
+/**
+ * §6.3's per-path authorization, against the CALLER's verified capability and the OWNING
+ * handler's pattern — both carried on the context by the dispatcher, which already
+ * computed them. Carried rather than recomputed: recomputing invites the two to drift, and
+ * §6.8 is explicit that the authority is selected by who named the path.
+ *
+ * An UNAUTHENTICATED context (no capability) is NOT filtered: the filter's subject is "the
+ * caller's verified capability", and where there is none there is no caller to narrow.
+ * That is the bootstrap/internal path, and it matches both vanguard peers. On this peer
+ * every reachable tree dispatch carries a capability — `#route` only reaches a handler
+ * after `verifyRequest` produced one, and the connect handler is the sole `null` case —
+ * so the branch is unreachable today and is written for the rule rather than for a caller.
+ */
 function authorizePath(ctx: HandlerContext, operation: string, path: string): boolean {
-  return (
-    ctx.callerCapability !== null &&
-    Permissions.checkPathPermission(operation, path, ctx.callerCapability, ctx.pattern, ctx.localPeerId)
-  );
+  if (ctx.callerCapability === null) {
+    return true;
+  }
+  return Permissions.checkPathPermission(operation, path, ctx.callerCapability, ctx.pattern, ctx.localPeerId);
 }
 
-function requireSingleTarget(ctx: HandlerContext): string {
-  const resource = ctx.resource;
-  if (resource === null || resource.targets.length !== 1) {
-    throw new EntityProtocolError("tree operation requires exactly one resource target (§6.3)");
-  }
-  return resource.targets[0]!;
+/**
+ * A §5.4 PATTERN rather than a concrete path. A resource-requiring operation takes a
+ * CONCRETE path (0.8.2.20), and a trailing `/` is a listing request rather than a pattern —
+ * only a `*` makes it one.
+ */
+function isPatternPath(target: string): boolean {
+  return target.includes("*");
 }
 
 function emptyAck(): Entity {

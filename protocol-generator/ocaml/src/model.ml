@@ -54,6 +54,26 @@ let to_cbor (e : entity) : Cbor.t =
    validate-before-trust). *)
 exception Bad_entity of string
 
+(* [Hash_mismatch] is a §1.8 / §3.1 RESOLUTION-INTEGRITY failure, and it is a
+   DIFFERENT CAUSE from [Bad_entity] taking a different code: an entity whose
+   carried content_hash is not content_hash({type, data}), or an `included` entry
+   whose MAP KEY does not bind to the entity filed under it.
+
+   §5.2a pins this arm: "A peer that refuses at the decode boundary MUST answer
+   `400 hash_mismatch` [MUST]" (mood corrected 0.8.2.24), and in the same breath
+   "`400 non_canonical_ecf` is NOT conformant here [MUST]". That code is
+   ENTITY-CBOR-ENCODING §5.4's, for a CBOR TAG-POLICY violation, and a mis-keyed
+   included entry carries no tag at all -- its encoding is canonical. What is
+   false is the claim the KEY makes, so the remedy `non_canonical_ecf` selects
+   (*re-encode*) sends an honest caller to the wrong layer. This peer answered
+   non_canonical_ecf for every decode-boundary refusal until 0.8.2.24 (measured on
+   the wire: arc-probe B1/B2).
+
+   [Bad_entity] keeps the STRUCTURAL faults -- a missing/ill-typed `type`, an
+   absent `data`, a non-map root, an `included` key that is not a byte string --
+   which §4.11 answers `400 invalid_request`. *)
+exception Hash_mismatch of string
+
 let of_cbor (c : Cbor.t) : entity =
   let typ = match map_get c "type" with
     | Some (Cbor.Text s) -> s
@@ -64,7 +84,7 @@ let of_cbor (c : Cbor.t) : entity =
   let e = make ~typ data in
   (match map_get c "content_hash" with
    | Some (Cbor.Bytes h) when not (String.equal h e.hash) ->
-       raise (Bad_entity "entity: content_hash mismatch (§1.8 fidelity)")
+       raise (Hash_mismatch "entity: content_hash mismatch (§1.8 fidelity)")
    | _ -> ());
   e
 
@@ -103,7 +123,13 @@ let envelope_of_cbor (c : Cbor.t) : envelope =
                 let e = of_cbor v in
                 (* §3.1: included content_hash MUST match the map key. *)
                 if not (String.equal h e.hash) then
-                  raise (Bad_entity "envelope: included key != entity content_hash");
+                  (* §3.1 key != content_hash -- §1.8's resolution-integrity
+                     obligation, mechanism (a) "bind the key": refuse the entry
+                     whose key is not content_hash({type, data}) of the entity
+                     under it, which fails the envelope closed at ONE site.
+                     §5.2a's code for this arm is hash_mismatch, not the
+                     structural invalid_request beside it. *)
+                  raise (Hash_mismatch "envelope: included key != entity content_hash");
                 (h, e)
             | _ -> raise (Bad_entity "envelope: included key not a byte string"))
           kvs

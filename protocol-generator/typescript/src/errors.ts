@@ -5,7 +5,9 @@
  * ```
  * EntityCoreError
  *   EntityCodecError                  (S2 — codec / canonical-CBOR faults)
+ *     TagRejectedError                (§6.3 tag policy — keeps `non_canonical_ecf`)
  *   EntityProtocolError               (wire-contract faults; carries a §3.3 status)
+ *     HashMismatchError               (§1.8/§3.1 resolution integrity — `hash_mismatch`)
  *     HelloFailedError
  *     AuthenticationError
  *   EntityTransportError              (per-request transport faults; §6.12 code/status)
@@ -58,6 +60,44 @@ export class EntityProtocolError extends EntityCoreError {
     this.name = "EntityProtocolError";
     this.status = status;
     Object.setPrototypeOf(this, EntityProtocolError.prototype);
+  }
+}
+
+/**
+ * A CBOR major-type-6 tag in a position ECF forbids (`ENTITY-CBOR-ENCODING` §6.3).
+ *
+ * A SUBCLASS RATHER THAN A MESSAGE, because §4.11 makes this the one decode-boundary cause
+ * that keeps `400 non_canonical_ecf` while every other one moves to a different code — and
+ * a classifier that has to recognise the cause by matching on `message` is one string edit
+ * away from silently re-collapsing them.
+ */
+export class TagRejectedError extends EntityCodecError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "TagRejectedError";
+    Object.setPrototypeOf(this, TagRejectedError.prototype);
+  }
+}
+
+/**
+ * A §1.8 / §3.1 RESOLUTION-INTEGRITY failure: an entity whose carried `content_hash` is not
+ * `content_hash({type, data})`, or an `included` entry whose MAP KEY does not bind to the
+ * entity filed under it.
+ *
+ * §5.2a pins this arm: *"A peer that refuses at the decode boundary MUST answer
+ * `400 hash_mismatch` `[MUST]`"* (mood corrected 0.8.2.24), and in the same breath
+ * *"`400 non_canonical_ecf` is NOT conformant here `[MUST]`"*. That code is
+ * `ENTITY-CBOR-ENCODING` §5.4's, for a CBOR TAG-POLICY violation, and a mis-keyed included
+ * entry carries no tag. Its encoding is canonical; what is false is the claim the KEY
+ * makes, so the remedy `non_canonical_ecf` selects (*re-encode*) sends an honest caller to
+ * the wrong layer. This peer answered `non_canonical_ecf` for every decode-boundary refusal
+ * until 0.8.2.24 (measured on the wire: arc-probe B1/B2).
+ */
+export class HashMismatchError extends EntityProtocolError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, 400, options);
+    this.name = "HashMismatchError";
+    Object.setPrototypeOf(this, HashMismatchError.prototype);
   }
 }
 

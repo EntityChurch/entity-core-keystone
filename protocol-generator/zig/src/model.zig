@@ -115,8 +115,26 @@ pub fn ofCbor(gpa: std.mem.Allocator, c: Value) Error!Entity {
     };
     const data_src = mapGet(c, "data") orelse return error.BadEntity;
     const data = try cloneValue(gpa, data_src);
-    errdefer data.deinit(gpa);
-    const e = try Entity.make(gpa, typ, data);
+    // AN `errdefer` STAYS ARMED AFTER OWNERSHIP TRANSFERS, so the release for
+    // `data` is a `catch` on the call rather than an `errdefer` above it.
+    //
+    // `Entity.make` takes ownership of `data` ON SUCCESS ONLY — on failure it
+    // frees its own allocations (`owned_typ`, `h`) and leaves `data` to us. With
+    // an `errdefer data.deinit(gpa)` here instead, the `ContentHashMismatch`
+    // refusal below unwinds through BOTH it and `errdefer e.deinit(gpa)`, and
+    // `Entity.deinit` frees `self.data` — so the same tree is freed twice. A
+    // double free of a tagged union leaves a corrupt tag behind, and the abort
+    // surfaces later in an unrelated `Value.deinit` as `switch on corrupt
+    // value`, which reads as a codec fault and is a lifetime fault.
+    //
+    // It is remotely reachable and needs no valid request: §1.8 validate-on-
+    // receipt runs on every inbound entity, so any peer that sends one whose
+    // carried `content_hash` disagrees with its content takes this path. Found
+    // by entity-system-conformance (X14/F60) as a symptom; this is the cause.
+    const e = Entity.make(gpa, typ, data) catch |err| {
+        data.deinit(gpa);
+        return err;
+    };
     errdefer e.deinit(gpa);
     if (mapGet(c, "content_hash")) |ch| {
         switch (ch) {
@@ -347,6 +365,39 @@ test "entity wire round trip validates content_hash (§1.8)" {
     const back = try ofCbor(gpa, wire);
     defer back.deinit(gpa);
     try testing.expectEqualSlices(u8, e.hash, back.hash);
+}
+
+test "ofCbor refuses a mismatched content_hash without double-freeing (§1.8)" {
+    // THE REFUSAL PATH, WHICH IS THE ONE THAT WAS UNTESTED. The round-trip test
+    // above drives only the ACCEPT direction, so it cannot see a release that
+    // runs twice on the way out — `testing.allocator` can, and it is what makes
+    // this test a control rather than a restatement.
+    const gpa = testing.allocator;
+    var pairs = [_]Value.Pair{.{ .key = .{ .text = "x" }, .value = .{ .uint = 7 } }};
+    const data = try cloneValue(gpa, .{ .map = &pairs });
+    const e = try Entity.make(gpa, "system/test", data);
+    defer e.deinit(gpa);
+
+    // Same entity on the wire, but with the carried content_hash corrupted —
+    // exactly what a peer can send unauthenticated.
+    var bad_hash = try gpa.dupe(u8, e.hash);
+    defer gpa.free(bad_hash);
+    bad_hash[bad_hash.len - 1] ^= 0xFF;
+
+    const wire = try e.toCbor(gpa);
+    defer wire.deinit(gpa);
+    var wpairs = try gpa.alloc(Value.Pair, wire.map.len);
+    defer gpa.free(wpairs);
+    for (wire.map, 0..) |p, i| {
+        wpairs[i] = if (std.mem.eql(u8, p.key.text, "content_hash"))
+            .{ .key = p.key, .value = .{ .bytes = bad_hash } }
+        else
+            p;
+    }
+
+    try testing.expectError(error.ContentHashMismatch, ofCbor(gpa, .{ .map = wpairs }));
+    // Reaching here with testing.allocator satisfied is the assertion: the
+    // pre-fix code freed the cloned data tree twice on this exact input.
 }
 
 test "envelope round trip through frame leak-clean" {

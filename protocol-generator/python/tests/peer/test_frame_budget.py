@@ -141,12 +141,22 @@ def test_unconfigured_peer_still_reads_the_informative_default():
         "and a body on it reads that same default"
 
 
-def _frame_header_over_bound_is_refused(max_frame_bytes: int | None, seed: int) -> bool:
+def _frame_header_over_bound_is_refused(max_frame_bytes: int | None, seed: int):
     """Send a length prefix of ``CONFIGURED_BOUND + 1`` and no body.
 
-    Returns True if the peer closed the connection (refused before buffering, §4.10(a)),
-    False if it is still waiting for the body (i.e. the length is within its bound).
+    Returns ``(status, code)`` of the coded refusal the peer put on the wire, or
+    ``None`` if it is still waiting for the body (i.e. the length is within its bound).
+
+    THIS USED TO RETURN "did the peer close with nothing", and that was the right
+    assertion right up until 0.8.2.25.  §4.10(a) then went SHOULD -> MUST (N14) and
+    §4.11 made the coded frame mandatory for the whole pre-admission class, so a bare
+    close is now one of the two named non-conformant behaviours — "indistinguishable
+    from a network fault", and on a multiplexed connection it destroys unrelated
+    ADMITTED requests.  The check is STRENGTHENED rather than relaxed: it asserted a
+    close and now asserts the frame, its status AND its code, and the close after it.
     """
+    from entity_core.peer.wire import envelope_of_frame, read_frame
+
     kwargs = {} if max_frame_bytes is None else {"max_frame_bytes": max_frame_bytes}
     responder = Peer(_fixed_seed(seed), **kwargs)
     ln = listen(responder, 0)
@@ -154,11 +164,13 @@ def _frame_header_over_bound_is_refused(max_frame_bytes: int | None, seed: int) 
         s = socket.create_connection(("127.0.0.1", ln.port))
         try:
             s.sendall(struct.pack(">I", CONFIGURED_BOUND + 1))
-            s.settimeout(1.0)
+            s.settimeout(2.0)
             try:
-                return s.recv(1) == b""  # clean EOF: the peer refused and closed
-            except socket.timeout:
-                return False  # still parked waiting for the body: within the bound
+                env = envelope_of_frame(read_frame(s))
+            except (socket.timeout, TimeoutError):
+                return None  # still parked waiting for the body: within the bound
+            result = response_result(env)
+            return response_status(env), (result.text("code") if result else "")
         finally:
             s.close()
     finally:
@@ -169,9 +181,10 @@ def test_the_budget_read_is_the_budget_enforced():
     """(3) The differential: the same header is refused at the configured bound and
     accepted at the default.  Without both arms this proves nothing — a peer that
     refused everything would pass the first half."""
-    assert _frame_header_over_bound_is_refused(CONFIGURED_BOUND, 0x57), \
-        "a frame over the configured bound is refused before its body is buffered"
-    assert not _frame_header_over_bound_is_refused(None, 0x59), \
+    assert _frame_header_over_bound_is_refused(CONFIGURED_BOUND, 0x57) == (
+        413, "payload_too_large"
+    ), "a frame over the configured bound is refused before its body is buffered"
+    assert _frame_header_over_bound_is_refused(None, 0x59) is None, \
         "the same frame is within an unconfigured peer's 16 MiB bound (the control)"
 
 

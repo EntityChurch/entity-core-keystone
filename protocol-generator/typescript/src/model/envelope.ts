@@ -1,6 +1,6 @@
 import { encode, decode } from "../codec/canonical-cbor.js";
 import { ecfBytes, ecfMap, ecfPreEncoded, ecfText } from "../codec/ecf-value.js";
-import { EntityProtocolError } from "../errors.js";
+import { EntityProtocolError, HashMismatchError } from "../errors.js";
 import * as Ecf from "./ecf.js";
 import { Entity } from "./entity.js";
 import { hashEqual, hashHex } from "./hashes.js";
@@ -69,11 +69,16 @@ export class Envelope {
       }
       for (const [key, entityValue] of includedValue.pairs) {
         if (key.kind !== "bytes") {
-          throw new EntityProtocolError("envelope included map key must be a byte string (§3.1)");
+          throw new EntityProtocolError("envelope included map key must be a byte string (section 3.1)");
         }
         const entity = Entity.fromDecoded(entityValue);
         if (!hashEqual(key.value, entity.contentHash)) {
-          throw new EntityProtocolError("included entity content_hash does not match its map key (§3.1)");
+          // §3.1 key != content_hash — §1.8's resolution-integrity obligation, mechanism
+          // (a) "bind the key": reject the entry whose key is not
+          // content_hash({type, data}) of the entity under it, which fails the envelope
+          // closed at ONE site. §5.2a's code for this arm is `hash_mismatch`, not the
+          // structural `invalid_request` beside it (0.8.2.24 N4/N5).
+          throw new HashMismatchError("included entity content_hash does not match its map key (section 3.1)");
         }
         included.push(entity);
       }

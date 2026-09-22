@@ -26,9 +26,26 @@ type t =
   | Null
   | Float of float  (* major 7; 0xf9/0xfa/0xfb *)
 
-(* Decode failures. Tag-policy violations (§6.3) surface to the peer layer as
-   [400 non_canonical_ecf]; carried here as a plain exception with a tag. *)
+(* Decode failures, SEPARATED BY CAUSE because the peer layer maps them to
+   different codes (§4.11, 0.8.2.25: "the frame obligation belongs to the class;
+   the CODE belongs to the cause [MUST]").
+
+   [Decode_error] is every structural fault -- truncation, a non-minimal integer,
+   an indefinite length, duplicate keys, trailing bytes -- input that never
+   becomes an Envelope at all. §4.11's framing arm answers those [400
+   invalid_request].
+
+   [Tag_rejected] is the ONE cause that keeps [400 non_canonical_ecf]:
+   ENTITY-CBOR-ENCODING §5.4 defines that code for CBOR TAG-POLICY violations
+   specifically -- a major-type-6 item in a data-field position -- and still MUSTs
+   it at decode time. §4.11 rules the code non-conformant "on the framing arm";
+   the two texts are compatible only if the tag case is not read as part of that
+   arm, and this split is what keeps both MUSTs satisfiable while preserving the
+   behaviour the tag_reject vectors were written against. It used to be one
+   [Decode_error] whose MESSAGE named the cause, which is a discrimination no
+   caller can make. *)
 exception Decode_error of string
+exception Tag_rejected
 
 (* ── half-precision (float16) helpers ─────────────────────────────────────── *)
 
@@ -218,7 +235,7 @@ let decode ?(keep_tags = false) (s : string) : t =
         Map (loop len [])
     | 6 ->
         if keep_tags then (ignore (read_arg ai); item ())
-        else raise (Decode_error "non_canonical_ecf: CBOR tag not permitted in ECF")
+        else raise Tag_rejected
     | 7 ->
         (match ai with
          | 20 -> Bool false

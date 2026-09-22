@@ -73,7 +73,11 @@ echo "── proofs (EntityCoreProofs: build + axiom grading) ──"
 # entity-core-formalization's hframed proposal (absolute-form isolation, absolute-form
 # frame-independence, wildcard peer-agnosticism). The floor tracks reality or it stops
 # being a floor.
-PROOF_FLOOR="${PROOF_FLOOR:-}"; [ -n "$PROOF_FLOOR" ] || PROOF_FLOOR=40
+# 40 → 41 on 2026-09-14: `matchesSegNM_trans`, which is what let RULE F (K-6,
+# 0.8.2.22) move the §5.4 sentinel onto the attenuation path — `scopeSubset` now
+# calls the GUARDED wrapper — without re-deriving the T5a surface. `matchesSeg` is
+# untouched, so its five rfl-level arm-characterization lemmas still hold.
+PROOF_FLOOR="${PROOF_FLOOR:-}"; [ -n "$PROOF_FLOOR" ] || PROOF_FLOOR=41
 proof_log=$(mktemp)
 lake build EntityCoreProofs >"$proof_log" 2>&1 || {
   echo "run-s2: ERROR EntityCoreProofs failed to build" >&2; cat "$proof_log" >&2; rm -f "$proof_log"; exit 1; }

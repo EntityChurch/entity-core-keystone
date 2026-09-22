@@ -124,9 +124,27 @@ func (e Entity) ToCbor() cbor.Value {
 	)
 }
 
-// ErrBadEntity signals a malformed wire entity or a content_hash fidelity
-// violation (§1.8).
+// ErrBadEntity signals a STRUCTURALLY malformed wire entity or envelope — a
+// missing/ill-typed `type`, an absent `data`, a non-map root, an `included` key
+// that is not a byte string. These are bytes that never become an Envelope at
+// all, which §4.11's framing arm answers `400 invalid_request`.
 var ErrBadEntity = errors.New("peer: bad entity")
+
+// ErrHashMismatch signals a §1.8 / §3.1 RESOLUTION-INTEGRITY failure, which is a
+// different cause from ErrBadEntity and takes a different code: an entity whose
+// carried content_hash is not content_hash({type, data}), or an `included` entry
+// whose MAP KEY does not bind to the entity filed under it.
+//
+// §5.2a pins this arm: "A peer that refuses at the decode boundary MUST answer
+// `400 hash_mismatch` [MUST] (mood corrected 0.8.2.24)", and in the same breath
+// "`400 non_canonical_ecf` is NOT conformant here [MUST]". That code is
+// ENTITY-CBOR-ENCODING §5.4's, for a CBOR TAG-POLICY violation — a major-type-6
+// item in a data-field position — and a mis-keyed included entry carries no tag.
+// Its encoding is canonical; what is false is the claim the KEY makes, so the
+// remedy `non_canonical_ecf` selects (*re-encode*) sends an honest caller to the
+// wrong layer. This peer answered non_canonical_ecf for every decode-boundary
+// refusal until 0.8.2.24 (measured on the wire: arc-probe B1/B2).
+var ErrHashMismatch = errors.New("peer: content_hash does not bind (400 hash_mismatch)")
 
 // EntityOfCbor parses a wire entity map, recomputes the hash from {type, data},
 // and validates it against the carried content_hash (§1.8 fidelity:
@@ -146,7 +164,7 @@ func EntityOfCbor(m cbor.Value) (Entity, error) {
 	}
 	if carried, ok := MapField(m, "content_hash"); ok && carried.Kind == cbor.KindBytes {
 		if !bytesEqual(carried.Bytes, e.Hash) {
-			return Entity{}, ErrBadEntity // §1.8 content_hash mismatch
+			return Entity{}, ErrHashMismatch // §1.8 content_hash mismatch
 		}
 	}
 	return e, nil
@@ -220,7 +238,13 @@ func EnvelopeOfCbor(m cbor.Value) (Envelope, error) {
 				return Envelope{}, err
 			}
 			if !bytesEqual(pair.Key.Bytes, e.Hash) {
-				return Envelope{}, ErrBadEntity // §3.1 key != content_hash
+				// §3.1 key != content_hash — §1.8's resolution-integrity
+				// obligation, mechanism (a) "bind the key": reject the entry
+				// whose key is not content_hash({type, data}) of the entity
+				// under it, which fails the envelope closed at ONE site.
+				// §5.2a's code for this arm is hash_mismatch, not the
+				// structural invalid_request beside it.
+				return Envelope{}, ErrHashMismatch
 			}
 			included.Add(e)
 		}

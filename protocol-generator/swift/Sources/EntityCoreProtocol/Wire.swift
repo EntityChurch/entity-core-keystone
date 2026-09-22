@@ -38,6 +38,14 @@ public enum Wire {
 
     // MARK: framing (§1.6)
 
+    /// §4.10(a)'s finite maximum inbound payload. NAMED rather than the bare
+    /// `64 * 1024 * 1024` literal it replaces: a size literal at the read site is one
+    /// nobody has compared to anything, and this bound is now cited by
+    /// `preAdmissionRefusal`'s 413 arm as well as by the read. The VALUE is unchanged —
+    /// the sweep names it, it does not re-tune it. §1.6's 16 MiB figure is informative
+    /// and a SHOULD; §4.10(a) requires only that the maximum be finite.
+    public static let maxFrame = 64 * 1024 * 1024
+
     /// Frame an envelope's CBOR bytes: 4-byte big-endian length || bytes.
     public static func frame(_ envelopeBytes: [UInt8]) -> [UInt8] {
         let n = UInt32(envelopeBytes.count).bigEndian
@@ -107,14 +115,61 @@ public enum Wire {
             for pair in pairs {
                 guard case let .bytes(key) = pair.key else { throw .malformed("included key not bytes") }
                 let e = try entityFromValue(pair.value)
-                // §3.1: the included content_hash MUST match the map key.
+                // §3.1 key != content_hash — §1.8's resolution-integrity obligation,
+                // mechanism (a) "bind the key": refuse the entry whose key is not
+                // content_hash({type, data}) of the entity under it, which fails the
+                // envelope closed at ONE site. §5.2a's code for this arm is
+                // `hash_mismatch`, not the structural `invalid_request` beside it.
                 if let ch = e.contentHash, !ch.elementsEqual(key) {
-                    throw .malformed("included content_hash != map key")
+                    throw .hashMismatch("included content_hash != map key")
                 }
                 included[HashKey(key)] = e
             }
         }
         return Envelope(root: root, included: included)
+    }
+
+    /// Map a pre-admission failure to the (status, code) §4.11 (0.8.2.25) assigns its
+    /// CAUSE. *"The frame obligation belongs to the class; the CODE belongs to the cause
+    /// `[MUST]`"* — a single code for the whole class answers an honest caller under the
+    /// wrong reason and sends them to the wrong layer.
+    ///
+    ///     connect-auth proof-of-possession    401 authentication_failed  (§4.6/§4.7 — the
+    ///                                                                     connect handler's,
+    ///                                                                     not this function's)
+    ///     envelope over the configured max    413 payload_too_large      (§4.10(a), N14)
+    ///     resolution integrity (mis-keyed)    400 hash_mismatch          (§5.2a, §1.8)
+    ///     framing / never becomes an Envelope 400 invalid_request        (§4.7, §4.11)
+    ///     root neither EXECUTE nor
+    ///       EXECUTE_RESPONSE                  400 invalid_request        (§3.3, §4.11 — in
+    ///                                                                     dispatch, not here)
+    ///
+    /// The CBOR tag-policy arm keeps `non_canonical_ecf` and that is deliberate. §4.11
+    /// rules the code non-conformant *"on the framing arm"* and gives its reason in the
+    /// same sentence: `ENTITY-CBOR-ENCODING` §5.4 *"defines that code for CBOR tag-policy
+    /// violations specifically"*, which that document still MUSTs at decode time. The two
+    /// texts are compatible only if the tag case is not read as part of the framing arm,
+    /// even though §4.11's row says "non-canonical CBOR" and a tagged frame is literally
+    /// that. Reported as an ambiguity rather than resolved here; this branch takes the
+    /// reading that keeps BOTH MUSTs satisfiable and preserves the behaviour the
+    /// `tag_reject` vectors were written against.
+    public static func preAdmissionRefusal(_ e: CodecError) -> (status: UInt64, code: String) {
+        switch e {
+        case .frameTooLarge: return (413, "payload_too_large")
+        case .hashMismatch: return (400, "hash_mismatch")
+        case .tagRejected: return (400, "non_canonical_ecf")
+        default: return (400, "invalid_request")
+        }
+    }
+
+    /// Whether a `readFrame` failure is a REFUSAL owed a coded frame (§4.11) rather than
+    /// an ordinary end of connection. A closed or reset socket is not a refusal of
+    /// anything and there is nobody left to answer.
+    public static func isFramingRefusal(_ e: CodecError) -> Bool {
+        switch e {
+        case .frameTooLarge, .truncatedFrame: return true
+        default: return false
+        }
     }
 
     // MARK: EXECUTE / EXECUTE_RESPONSE builders

@@ -143,8 +143,19 @@ pub fn canonicalize(local_peer: &str, path: &str) -> String {
 /// AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
 /// fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
 /// fail-OPEN in an exclude (carves out nothing), so the reading is chosen where the
-/// POSITION is known and [`matches_pattern`] stays uniform over its operands. The
-/// guard sits outside the scope-type dispatch, transcribing §5.2's loop literally.
+/// POSITION is known and [`matches_pattern`] stays uniform over its operands.
+///
+/// EVERY CALL SITE MUST GUARD IT ON PATH-SCOPE (0.8.2.24, N2/N3). This used to be
+/// asked of every dimension, transcribing §5.2's loop before that loop grew its type
+/// dispatch. NEVER_MATCH is a §5.4 PATH-canonicalization sentinel and has no meaning
+/// on an id-scope dimension, whose patterns are literal identifiers that §5.2's own
+/// id-scope arm forbids putting through the §5.4 transforms. Asking it outside the
+/// type dispatch ran an id pattern through those transforms purely to classify it and
+/// then DENIED THE WHOLE DIMENSION on a property unrelated to whether the exclude
+/// carves anything out: an `operations` exclude of `*/apply` — an ordinary namespaced
+/// operation name, a literal matching nothing under the id-scope grammar —
+/// path-canonicalized to the sentinel and denied every operation. Over-denial, and
+/// invisible on any well-formed grant.
 fn exclude_is_unmatchable(frame: &str, excl: &[String]) -> bool {
     excl.iter().any(|p| canonicalize(frame, p) == NEVER_MATCH)
 }
@@ -214,7 +225,17 @@ fn covered_id(value: &str, pats: &[String]) -> bool {
 }
 
 fn matches_scope(local_peer: &str, value: &str, s: &Scope, kind: ScopeKind) -> bool {
-    if exclude_is_unmatchable(local_peer, &s.excl) {
+    // SCOPED TO PATH-SCOPE (0.8.2.24, N2/N3). §5.2's exclude loop tests the sentinel
+    // INSIDE `if dimension_type == "system/capability/path-scope"`, and §5.4's rule is
+    // likewise "a capability carrying an unmatchable PATH-SCOPE pattern is INVALID ...
+    // It does NOT reach `operations` or `peers` [MUST]". The two id-scope dimensions
+    // reach the literal arm below unguarded, which is correct: under the id-scope
+    // grammar every non-`*` pattern is a literal and a literal is never structurally
+    // unmatchable, so there is nothing here for the sentinel to detect. (§5.4 says so
+    // outright and leaves the id-scope form of the carves-out-nothing hazard
+    // deliberately open rather than minting a second sentinel for it — so this is a
+    // scope boundary, not an omission.)
+    if kind == ScopeKind::Path && exclude_is_unmatchable(local_peer, &s.excl) {
         return false; // 0.8.2.21 — deny, do not carve out nothing
     }
     if kind == ScopeKind::Id {
@@ -316,6 +337,114 @@ pub fn check_permission(
     Verdict::Deny
 }
 
+/// §5.2's effective target list (0.8.2.20): the caller's own `resource.exclude` removes
+/// entries from `resource.targets` BEFORE anything else looks at the request.
+///
+/// The survivors are returned in the caller's OWN SPELLING, not canonicalized — 0.8.2.21
+/// is explicit that `effective_targets` yields raw survivors, and the distinction is
+/// load-bearing because the value flows on to `Store::get_at`, which canonicalizes for
+/// itself.
+///
+/// The second return says whether a `resource` was present AT ALL. An ABSENT resource and
+/// a resource whose every target was excluded are different inputs to §3.3 — the first is
+/// "no resource", the second is an empty effective list — and for a resource-OPTIONAL
+/// operation 0.8.2.24 (N7) makes them DIFFERENT REQUESTS with different answers, not
+/// merely different inputs to one disposition.
+///
+/// THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES `[MUST]` (0.8.2.25, N11): *"where an
+/// implementation projects `resource.targets` onto the effective set ahead of the handler,
+/// that projection MUST NOT be lossy about its own emptiness — narrow when narrowing
+/// leaves something, and retain the raw pair when narrowing would empty it."* A function
+/// returning only a list cannot satisfy that: collapsing `[qA] exclude [qA]` to `[]`
+/// deletes the two-empties discriminator before any handler can read it, and the handler's
+/// refusal arm becomes dead code only a WIRE drive can detect.
+///
+/// *"Every seam that narrows is exempted alike, inbound-wire and in-process
+/// sub-dispatch."* This peer has exactly ONE narrowing seam — this function, called by the
+/// tree handler — and §6.5's dispatch chain does not project: `Peer::route` passes `exec`
+/// through untouched and `check_permission` reads `resource` for itself. So there is no
+/// second door to keep in step, and adding a projection at dispatch would create one.
+///
+/// A PRESENT-BUT-ILL-TYPED `targets` IS **PRESENT**: `text_list` of a non-array yields an
+/// empty survivor list rather than "absent", so `{"targets": 42}` answers the
+/// present-but-empty disposition and never the wider absent-case one. That is N11's own
+/// defect one field over, and it is the cell the two vanguards initially disagreed on.
+pub fn effective_targets(local_peer: &str, exec: &Entity) -> (Vec<String>, bool) {
+    let r = match exec.field("resource") {
+        Some(v @ Value::Map(_)) => v,
+        _ => return (Vec::new(), false),
+    };
+    if model::map_get(r, "targets").is_none() {
+        return (Vec::new(), false);
+    }
+    let targets = text_list(model::map_get(r, "targets"));
+    let caller_excl = text_list(model::map_get(r, "exclude"));
+    let mut out = Vec::with_capacity(targets.len());
+    for t in targets {
+        let ct = canonicalize(local_peer, &t);
+        // The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4's table
+        // rules it separately from the grant arm): `canonicalize` answers NEVER_MATCH and
+        // `matches_pattern` then answers false, so the target simply survives. That
+        // asymmetry is 0.8.2.21's whole point and it is INHERITED here, never restated.
+        if caller_excl
+            .iter()
+            .any(|x| matches_pattern(&ct, &canonicalize(local_peer, x)))
+        {
+            continue;
+        }
+        out.push(t);
+    }
+    (out, true)
+}
+
+/// H9 — the public path-permission predicate: is `operation` on `path`, served by the
+/// handler at `handler_pattern`, permitted by some single grant in `token`?
+///
+/// **Resources match against the local peer with NO granter frame.** This is the §6.3
+/// tree handler's defense-in-depth check and the one an extension whose target lives
+/// in its params needs; it is deliberately not the dispatch-boundary check (which takes
+/// the granter frame for resources, §PR-8) and not chain attenuation (a different
+/// function again). Adding a frame here is the over-scoping defect this cohort has
+/// recorded three times.
+///
+/// It answers about the token's grants only; the token's signature, chain, temporal
+/// bounds and revocation are `verify_request`'s, and must already have held.
+///
+/// IT IS NOT A SECONDARY CHECK (§6.3, 0.8.2.20). It is the enforcement wherever the
+/// subject is derived after dispatch, and the dispatch-level check can be made VACUOUS by
+/// caller-controlled input: a caller who excludes the one target its capability does not
+/// cover removes that target from `check_permission`'s view entirely, and a handler that
+/// then acts on it has authorized nothing.
+///
+/// THREE DIMENSIONS, NOT FOUR. `peers` is not consulted — the path is local by
+/// construction at this point (§1.4's inbound rule refuses a foreign namespace at §6.5
+/// step 3, before any handler runs), and §6.3's signature names only handlers, operations
+/// and resources.
+///
+/// There is no caller-exclude set at this call site: the subject is a single concrete
+/// path, and the caller's exclusions have already been applied in deriving it. Every grant
+/// exclude covering the subject therefore denies — which `matches_scope` already
+/// implements, including 0.8.2.21's sentinel rule, so this function is three calls to it
+/// and nothing else. An empty `resources.include` is a legal grant shape (§5.2: handlers
+/// that touch no tree paths) and DENIES every path here, which is what that note says it
+/// should: `covered` over an empty include list is false.
+pub fn check_path_permission(
+    operation: &str,
+    path: &str,
+    token: &Entity,
+    handler_pattern: &str,
+    local_peer: &str,
+) -> bool {
+    // `canonicalize` is total and may answer NEVER_MATCH, which matches no grant (§5.4) —
+    // so a malformed path falls through to DENY rather than being matched against anything.
+    let cp = canonicalize(local_peer, path);
+    grants_of_token(token).iter().any(|g| {
+        matches_scope(local_peer, handler_pattern, &g.handlers, ScopeKind::Path)
+            && matches_scope(local_peer, operation, &g.operations, ScopeKind::Id)
+            && matches_scope(local_peer, &cp, &g.resources, ScopeKind::Path)
+    })
+}
+
 // ── §5.5 / §5.6 chain verification + attenuation ───────────────────────────────
 
 pub fn resolve(env: &Envelope, st: &Store, h: &[u8]) -> Option<Entity> {
@@ -347,23 +476,59 @@ fn link_granter_peer(env: &Envelope, st: &Store, local_peer: &str, cap: &Entity)
     Some(identity::peer_id_of_pubkey(pk))
 }
 
-fn scope_subset(child_peer: &str, parent_peer: &str, child: &Scope, parent: &Scope) -> bool {
+/// §5.5a subset check: every child include must be covered by some parent include, and
+/// every parent exclude must be inherited by some child exclude.
+///
+/// TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16; `entity-core-formalization` K-7).
+/// §3.6's id-scope grammar binds the scope TYPE, not one function — *"An implementation
+/// on the canonicalizing reading is non-conformant and MUST adopt the literal matcher"* —
+/// so the rule F40 landed on `matches_scope` reaches here too, with delegation-chain
+/// WIDENING named as the reason: on the canonicalizing reading `/tree/get` is covered by
+/// `*` in one direction and `*/apply` is not, and a child grant can come out wider than
+/// its parent. `lean`'s differential put it at 2 of 64 include pairs and 2 of 64 exclude
+/// pairs, fail-closed, with a 16-pair control alphabet reporting 0 — which is why every
+/// hand-tried example missed it.
+///
+/// `kind` has NO DEFAULT and is named at every call site, because a default is how the
+/// next dimension inherits the wrong matcher silently — the original F40 defect.
+/// `handlers`/`resources` -> path; `operations`/`peers` -> id. The per-link granter
+/// frames are meaningless on the id arm (an id pattern is never canonicalized) and are
+/// simply unread there rather than being a second parameter to get wrong.
+fn scope_subset(
+    child_peer: &str,
+    parent_peer: &str,
+    child: &Scope,
+    parent: &Scope,
+    kind: ScopeKind,
+) -> bool {
+    let frame = |peer: &str, p: &String| -> String {
+        match kind {
+            ScopeKind::Path => canonicalize(peer, p),
+            ScopeKind::Id => p.clone(),
+        }
+    };
+    let covers = |pattern_side: &str, value_side: &str| -> bool {
+        match kind {
+            ScopeKind::Path => matches_pattern(value_side, pattern_side),
+            ScopeKind::Id => matches_id_pattern(value_side, pattern_side),
+        }
+    };
     for cp in &child.incl {
-        let cc = canonicalize(child_peer, cp);
+        let cc = frame(child_peer, cp);
         if !parent
             .incl
             .iter()
-            .any(|pp| matches_pattern(&cc, &canonicalize(parent_peer, pp)))
+            .any(|pp| covers(&frame(parent_peer, pp), &cc))
         {
             return false;
         }
     }
     for pe in &parent.excl {
-        let cpe = canonicalize(parent_peer, pe);
+        let cpe = frame(parent_peer, pe);
         if !child
             .excl
             .iter()
-            .any(|ce| matches_pattern(&cpe, &canonicalize(child_peer, ce)))
+            .any(|ce| covers(&frame(child_peer, ce), &cpe))
         {
             return false;
         }
@@ -378,7 +543,16 @@ fn grant_subset(
     child: &Grant,
     parent: &Grant,
 ) -> bool {
-    if !scope_subset(local_peer, local_peer, &child.handlers, &parent.handlers) {
+    // The scope KIND is a property of the dimension, named here, never defaulted
+    // (F50 / 0.8.2.16). Only the RESOURCES dimension takes the §5.5a per-link granter
+    // frames; handlers stays local, and the two id dimensions do not canonicalize at all.
+    if !scope_subset(
+        local_peer,
+        local_peer,
+        &child.handlers,
+        &parent.handlers,
+        ScopeKind::Path,
+    ) {
         return false;
     }
     if !scope_subset(
@@ -386,10 +560,17 @@ fn grant_subset(
         local_peer,
         &child.operations,
         &parent.operations,
+        ScopeKind::Id,
     ) {
         return false;
     }
-    if !scope_subset(child_peer, parent_peer, &child.resources, &parent.resources) {
+    if !scope_subset(
+        child_peer,
+        parent_peer,
+        &child.resources,
+        &parent.resources,
+        ScopeKind::Path,
+    ) {
         return false;
     }
     let default = Scope {
@@ -398,7 +579,7 @@ fn grant_subset(
     };
     let cp = child.peers.as_ref().unwrap_or(&default);
     let pp = parent.peers.as_ref().unwrap_or(&default);
-    scope_subset(local_peer, local_peer, cp, pp)
+    scope_subset(local_peer, local_peer, cp, pp, ScopeKind::Id)
 }
 
 fn is_attenuated(
@@ -924,6 +1105,35 @@ pub fn multi_granter_value(signers: &[Vec<u8>], threshold: u64) -> Value {
 
 #[cfg(test)]
 mod tests;
+
+/// `SDK-OPERATIONS` §11.3 SEC-3 — whether `identity_hash` appears as a GRANTER in the
+/// authority chain of the capability whose content hash is `cap_hash` (in the chain, not
+/// merely at its root — core §5.5), and that chain verifies for this peer. A handler that
+/// embeds a caller-supplied capability in an entity it creates asks this before persisting.
+///
+/// `false` for a capability that cannot be resolved (from the envelope's `included` or the
+/// store), whose chain is unreachable or too deep, or which does not verify.
+pub fn identity_in_authority_chain(
+    env: &Envelope,
+    st: &Store,
+    local_peer: &str,
+    cap_hash: &[u8],
+    identity_hash: &[u8],
+) -> bool {
+    let cap = match resolve(env, st, cap_hash) {
+        Some(c) if c.typ == "system/capability/token" => c,
+        _ => return false,
+    };
+    if !matches!(verify_capability_chain(env, st, local_peer, &cap), Ok(Verdict::Allow)) {
+        return false;
+    }
+    match collect_chain(env, st, &cap) {
+        ChainResult::Chain(links) => links
+            .iter()
+            .any(|l| l.bytes_field("granter") == Some(identity_hash)),
+        _ => false,
+    }
+}
 
 #[cfg(test)]
 pub(crate) fn verify_capability_chain_for_test(

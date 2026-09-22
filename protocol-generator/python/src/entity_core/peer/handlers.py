@@ -14,10 +14,13 @@ from typing import Any
 
 from .capability import (
     GrantRec,
+    _canon,
     _grant_subset,
     _grants_of_token,
     canonicalize,
+    check_path_permission,
     is_peer_id,
+    matches_pattern,
 )
 from .._varint import decode_varint
 from ..content_hash import content_hash
@@ -158,6 +161,88 @@ def _str_array(exec_e: Entity, key: str) -> list[str] | None:
     if not isinstance(v, list):
         return None
     return [x for x in v if isinstance(x, str)]
+
+
+def _effective_targets(local_peer: str, exec_e: Entity) -> list[str] | None:
+    """§5.2's effective target list (0.8.2.20).
+
+    The caller's own ``resource.exclude`` removes entries from the request BEFORE
+    anything else looks at it, and the survivors are returned in the caller's OWN
+    spelling — 0.8.2.21 is explicit that ``effective_targets`` yields raw
+    survivors rather than canonical forms.
+
+    Returns ``None`` when the EXECUTE carries no ``resource`` at all, which is a
+    different input from "a resource whose every target was excluded" — and for a
+    resource-OPTIONAL operation 0.8.2.24 (N7) makes them DIFFERENT REQUESTS with
+    different answers, not merely different inputs to one disposition.
+
+    ``None``-vs-``[]`` IS THE NON-LOSSY PROJECTION §3.3 REQUIRES ``[MUST]`` (0.8.2.25,
+    N11): *"where an implementation projects ``resource.targets`` onto the effective
+    set ahead of the handler, that projection MUST NOT be lossy about its own emptiness
+    — narrow when narrowing leaves something, and retain the raw pair when narrowing
+    would empty it."*  A function returning only a list cannot satisfy that: collapsing
+    ``[qA] exclude [qA]`` to ``[]`` would delete the two-empties discriminator before
+    any handler could read it, and the handler's refusal arm becomes dead code that
+    only a WIRE drive can detect.  Python carries the discriminator as the ``| None``
+    rather than as a second return value — the same property, spelled the way this
+    substrate spells "absent".
+
+    *"Every seam that narrows is exempted alike, inbound-wire and in-process
+    sub-dispatch, or one request receives two different answers according to which door
+    it arrived through."*  This peer has exactly ONE narrowing seam — this function,
+    called by the handler — and §6.5's dispatch chain does not project: ``_run_chain``
+    passes ``exec_e`` through untouched and ``check_permission`` reads ``resource`` for
+    itself.  So there is no second door to keep in step, and adding a projection at
+    dispatch would create one.
+
+    The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4 rules it
+    separately from the grant arm): ``_canon`` answers the sentinel and
+    ``matches_pattern`` then answers False, so the target simply survives.
+
+    OPEN, AND BOTH VANGUARDS ANSWER IT THE SAME WAY WITHOUT TEXT BEHIND THEM: a
+    ``resource`` map carrying NO ``targets`` key at all is reported here as ABSENT, so
+    ``get`` serves it the root listing.  §3.2 says *"``targets`` — Array of paths or
+    patterns this operation accesses.  MUST contain at least one entry"*, which makes
+    that shape a MALFORMED resource rather than an absent one — and N10's whole point
+    is that a PRESENT ``resource`` must not be served the wider absent-case answer.
+    Left as shipped rather than decided in a sweep (the F86 precedent), because the
+    disposition a malformed ``resource`` earns — ``path_required`` or
+    ``invalid_request`` — is not pinned anywhere and nothing in the 778-check set
+    drives the shape.
+    """
+    r = exec_e.field("resource")
+    if not isinstance(r, dict):
+        return None
+    if "targets" not in r:
+        return None
+    # PRESENT-BUT-ILL-TYPED `targets` IS **PRESENT**, and this line used to say
+    # otherwise.  `if not isinstance(targets, list): return None` collapsed an absent
+    # `targets` key and a `targets` that is a number into one answer — which is N11's
+    # own defect (a projection "lossy about its own emptiness") one field over, and it
+    # put the two vanguards on opposite sides of the same cell: `go`'s `textElems` of a
+    # non-array yields an EMPTY effective list, so `{"targets": 42}` answers
+    # `400 path_required` there and returned the ROOT LISTING here — the wider-than-the-
+    # request answer §3.3 forbids.  Corrected toward `go`.
+    targets = r.get("targets")
+    targets = targets if isinstance(targets, list) else []
+    excl = r.get("exclude")
+    excl = [x for x in excl if isinstance(x, str)] if isinstance(excl, list) else []
+    out: list[str] = []
+    for t in targets:
+        if not isinstance(t, str):
+            continue
+        ct = _canon(local_peer, t)
+        if any(matches_pattern(ct, _canon(local_peer, x)) for x in excl):
+            continue
+        out.append(t)
+    return out
+
+
+def _is_pattern_path(t: str) -> bool:
+    """A §5.4 PATTERN rather than a concrete path. A resource-requiring operation
+    takes a concrete path (0.8.2.20); a trailing "/" is a LISTING request, not a
+    pattern — only a ``*`` makes it one."""
+    return "*" in t
 
 
 def _exec_resource_target(exec_e: Entity) -> str | None:
@@ -466,12 +551,46 @@ class TreeHandler:
         e = self.p.store.get_by_hash(raw)
         return e is not None and e.type == "system/deletion-marker"
 
-    def _build_listing(self, path: str) -> Outcome:
+    def _entry_visible(self, ctx: DispatchCtx | None, dir_path: str, segment: str) -> bool:
+        """§6.3's per-entry listing check for one child segment.
+
+        An unauthenticated context is the bootstrap/internal path and is not
+        filtered: the filter's subject is "the caller's verified capability", and
+        where there is none there is no caller to narrow.
+        """
+        if ctx is None or not ctx.has_cap or ctx.caller_cap is None:
+            return True
+        child = dir_path if dir_path.endswith("/") else dir_path + "/"
+        return check_path_permission(
+            "get", child + segment, ctx.caller_cap, ctx.handler_pattern, self.p.local_peer
+        )
+
+    def _build_listing(self, path: str, ctx: DispatchCtx | None = None) -> Outcome:
+        """Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+
+        "When any handler returns a multi-entry result whose entries are tree
+        paths, each entry MUST be individually checked using
+        check_path_permission.  Entries for which check_path_permission returns
+        DENY MUST be omitted.  The result's ``count`` field MUST reflect the
+        filtered entry count, not the source tree's total count."
+
+        This is the read path at its highest volume and it is the reason 0.8.2.21
+        refused to carve reads out of the caller-specified-path rule: an
+        unfiltered listing discloses the EXISTENCE of every binding under a
+        prefix to a caller whose capability covers none of them.
+
+        The DIRECTORY itself is deliberately not checked — §6.3 makes each ENTRY
+        the subject, and testing the prefix would deny a listing to a caller
+        whose grant covers children but not the node above them, which is the
+        ordinary shape of a narrowed grant.
+        """
         rows = self.p.store.listing(path)
         entries: dict[str, Any] = {}
         count = 0
         for row in rows:
             if row.hash and not row.has_children and self._is_deletion_marker(row.hash):
+                continue
+            if not self._entry_visible(ctx, path, row.segment):
                 continue
             if row.hash:
                 data = {"has_children": row.has_children, "hash": bytes.fromhex(row.hash)}
@@ -488,17 +607,54 @@ class TreeHandler:
 
     def _get(self, ctx: DispatchCtx) -> Outcome:
         p, exec_e = self.p, ctx.exec
-        target = _exec_resource_target(exec_e)
-        if target is not None and not _path_flex_ok(target):
+        # §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+        # resource.targets: a handler that counts the effective list and then
+        # indexes targets[0] has implemented the arithmetic completely and is
+        # still reading a path no authorization covered.
+        eff = _effective_targets(p.local_peer, exec_e)
+        if eff is None:
+            # THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION
+            # IS WHAT SAYS SO.  §3.3's "an empty effective list IS the absent case" is
+            # scoped "for an operation that REQUIRES a resource" (0.8.2.24, N7); `get`
+            # does not.  For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the
+            # present-but-empty case by whether the absent case is WIDER than the
+            # request — BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty — and
+            # requires the operation to declare which it is.
+            #
+            # EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+            # resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root listing",
+            # self-excluded case "400 path_required".  So both arms here are pinned by
+            # text and neither is this peer's choice.  (This branch previously carried
+            # an ambiguity note arguing the absent case might owe `path_required` too;
+            # it was routed as F86 and §2.2a answers it — the behaviour is unchanged and
+            # the justification is no longer ours.)
+            return self._build_listing("/" + p.local_peer + "/", ctx)
+        if len(eff) == 0:
+            # `resource` PRESENT, every target carved out by the caller's own exclude.
+            # Serving it the absent case "answers a request for one excluded path with
+            # a listing of the tree" (EXTENSION-TREE §2.2a) — the root listing is wider
+            # than what was asked for, which is what BROAD-RESULT means.
+            return Outcome.err(400, "path_required", "tree: effective target list is empty")
+        if len(eff) > 1:
+            return Outcome.err(400, "ambiguous_resource", "tree: more than one effective target")
+        target = eff[0]
+        if not _path_flex_ok(target):
             return Outcome.err(400, "invalid_path", target)
-        if target is None:
-            return self._build_listing("/" + p.local_peer + "/")
         if target == "" or target.endswith("/"):
             c = canonicalize(p.local_peer, target) or target
-            return self._build_listing(c)
+            return self._build_listing(c, ctx)
+        if _is_pattern_path(target):
+            return Outcome.err(400, "malformed_resource", target)
         path = canonicalize(p.local_peer, target)
         if path is None:
             return Outcome.err(400, "invalid_path", target)
+        # §6.3: the handler MUST verify the CALLER's capability covers the path
+        # it is about to read.  Not a secondary check — the dispatch-level check
+        # never saw this path if the caller excluded it.
+        if ctx.has_cap and ctx.caller_cap is not None and not check_path_permission(
+            "get", path, ctx.caller_cap, ctx.handler_pattern, p.local_peer
+        ):
+            return Outcome.err(403, "capability_denied", path)
         e = p.store.get_at(path)
         if e is None:
             return Outcome.err(404, "not_found", path)
@@ -510,12 +666,33 @@ class TreeHandler:
 
     def _put(self, ctx: DispatchCtx) -> Outcome:
         p, exec_e = self.p, ctx.exec
-        target = _exec_resource_target(exec_e)
-        if target is None:
-            return Outcome.err(400, "ambiguous_resource", "tree: missing resource target")
+        # Same ladder as `_get`, with the two empties COLLAPSED rather than split:
+        # EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's "an
+        # empty effective list IS the absent case" applies in its unscoped form and both
+        # empties answer `path_required`.  That is the same table `_get`'s branch cites,
+        # read one row down — the field is per-operation and neither answer is derivable
+        # from this handler's source.
+        #
+        # Note the code change 0.8.2.20 forced: this branch answered
+        # `ambiguous_resource` for a MISSING target, which 0.8.2.20 names as the exact
+        # inversion it forbids ("answering ambiguous_resource for an absent resource
+        # inverts them").  The remedies differ — *supply a resource* is not *disambiguate
+        # your request* — and the code selects.
+        eff = _effective_targets(p.local_peer, exec_e)
+        if eff is None or len(eff) == 0:
+            return Outcome.err(400, "path_required", "tree: put requires a resource target")
+        if len(eff) > 1:
+            return Outcome.err(400, "ambiguous_resource", "tree: more than one effective target")
+        target = eff[0]
         if not _path_flex_ok(target):
             return Outcome.err(400, "invalid_path", target)
+        if _is_pattern_path(target):
+            return Outcome.err(400, "malformed_resource", target)
         path = canonicalize(p.local_peer, target)
+        if path is not None and ctx.has_cap and ctx.caller_cap is not None and not check_path_permission(
+            "put", path, ctx.caller_cap, ctx.handler_pattern, p.local_peer
+        ):
+            return Outcome.err(403, "capability_denied", path)
         params = _params_entity(exec_e)
         raw_entity = params.field("entity") if params is not None else None
         expected = params.bytes_("expected_hash") if params is not None else None

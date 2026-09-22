@@ -145,8 +145,19 @@ func canon(localPeer, path string) string {
 // sentinel. AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21): the sentinel is
 // fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
 // fail-OPEN in an exclude (carves out nothing), so the reading is chosen where the
-// POSITION is known and matchesPattern stays uniform over its operands. The guard
-// sits outside the scope-type dispatch, transcribing §5.2's loop literally.
+// POSITION is known and matchesPattern stays uniform over its operands.
+//
+// EVERY CALL SITE MUST GUARD IT ON PATH-SCOPE (0.8.2.24, N2/N3). This used to be
+// asked of every dimension, transcribing §5.2's loop before that loop grew its
+// type dispatch. neverMatch is a §5.4 PATH-canonicalization sentinel and has no
+// meaning on an id-scope dimension, whose patterns are literal identifiers that
+// §5.2's own id-scope arm forbids putting through the §5.4 transforms. Asking it
+// outside the type dispatch ran an id pattern through those transforms purely to
+// classify it and then DENIED THE WHOLE DIMENSION on a property unrelated to
+// whether the exclude carves anything out: an `operations` exclude of `*/apply` —
+// an ordinary namespaced operation name, a literal matching nothing under the
+// id-scope grammar — canonicalized to the sentinel and denied every operation.
+// Over-denial, and invisible on any well-formed grant.
 func excludeIsUnmatchable(frame string, excl []string) bool {
 	for _, p := range excl {
 		if canon(frame, p) == neverMatch {
@@ -233,7 +244,17 @@ func covered(localPeer, value string, pats []string, kind scopeKind) bool {
 }
 
 func matchesScope(localPeer, value string, s scope, kind scopeKind) bool {
-	if excludeIsUnmatchable(localPeer, s.excl) {
+	// SCOPED TO PATH-SCOPE (0.8.2.24). §5.2's exclude loop tests the sentinel
+	// INSIDE `if dimension_type == "system/capability/path-scope"`, and §5.4's
+	// rule is likewise "a capability carrying an unmatchable PATH-SCOPE pattern
+	// is INVALID ... It does NOT reach `operations` or `peers` [MUST]". The two
+	// id-scope dimensions reach `covered`'s literal arm below unguarded, which is
+	// correct: under the id-scope grammar every non-`*` pattern is a literal and
+	// a literal is never structurally unmatchable, so there is nothing here for
+	// the sentinel to detect. (§5.4 says so outright and leaves the id-scope form
+	// of the carves-out-nothing hazard deliberately open rather than minting a
+	// second sentinel for it — so this is a scope boundary, not an omission.)
+	if kind == kindPath && excludeIsUnmatchable(localPeer, s.excl) {
 		return false // 0.8.2.21 — deny, do not carve out nothing
 	}
 	return covered(localPeer, value, s.incl, kind) && !covered(localPeer, value, s.excl, kind)
@@ -298,6 +319,12 @@ func checkResourceScope(localPeer, granterPeer string, resource cbor.Value, s sc
 	// An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
 	// target: the coverage test below is correct in isolation and is simply never
 	// reached on a sentinel, because matchesPattern answers false.
+	//
+	// UNGUARDED ON PURPOSE, unlike matchesScope's (0.8.2.24): `s` here is always
+	// the RESOURCES dimension, which §5.2 fixes as path-scope, so the type test
+	// this call site would perform is a constant. Naming the dimension in the
+	// signature is what makes that checkable — a frame argument on an id-scope
+	// call site is the defect.
 	if excludeIsUnmatchable(granterPeer, s.excl) {
 		return false
 	}
@@ -988,3 +1015,123 @@ func verifyRequest(localPeer string, store *Store, env Envelope) Verdict {
 
 // nowMillis returns the current Unix time in milliseconds.
 func nowMillis() uint64 { return uint64(time.Now().UnixMilli()) }
+
+// ── §5.2 effective targets and §6.3 check_path_permission ───────────────────
+
+// effectiveTargets derives §5.2's effective target list (0.8.2.20): the caller's
+// own `resource.exclude` removes entries from the request BEFORE anything else
+// looks at it.
+//
+// The survivors are returned in the caller's OWN SPELLING, not canonicalized —
+// 0.8.2.21 is explicit that `effective_targets` yields raw survivors, and the
+// distinction is load-bearing here because the value flows on to `store.GetAt`,
+// which canonicalizes for itself.
+//
+// The second return says whether a `resource` was present at all. An ABSENT
+// resource and a resource whose every target was excluded are different inputs
+// to §3.3 — the first is "no resource", the second is an empty effective list —
+// and for a resource-OPTIONAL operation 0.8.2.24 (N7) makes them DIFFERENT
+// REQUESTS with different answers, not merely different inputs to one.
+//
+// THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES [MUST] (0.8.2.25, N11):
+// "where an implementation projects resource.targets onto the effective set
+// ahead of the handler, that projection MUST NOT be lossy about its own
+// emptiness — narrow when narrowing leaves something, and retain the raw pair
+// when narrowing would empty it." A function returning only a list cannot
+// satisfy that: collapsing `[qA] exclude [qA]` to `[]` deletes the two-empties
+// discriminator before any handler can read it, and the handler's refusal arm
+// becomes dead code that only a WIRE drive can detect. Returning the flag
+// beside the survivors keeps the discriminator by construction.
+//
+// "Every seam that narrows is exempted alike, inbound-wire and in-process
+// sub-dispatch, or one request receives two different answers according to which
+// door it arrived through." This peer has exactly ONE narrowing seam — this
+// function, called by the handler — and §6.5's dispatch chain does not project:
+// `runChain` passes `exec` through untouched and `checkPermission` reads
+// `resource` for itself. So there is no second door to keep in step, and adding
+// a projection at dispatch would create one.
+func effectiveTargets(localPeer string, exec Entity) ([]string, bool) {
+	r, ok := exec.Field("resource")
+	if !ok || r.Kind != cbor.KindMap {
+		return nil, false
+	}
+	targetsV, ok := MapField(r, "targets")
+	if !ok {
+		return nil, false
+	}
+	targets := textElems(targetsV)
+	exclV, _ := MapField(r, "exclude")
+	callerExcl := textElems(exclV)
+	out := make([]string, 0, len(targets))
+	for _, t := range targets {
+		ct := canon(localPeer, t)
+		dropped := false
+		for _, x := range callerExcl {
+			// The caller-exclude arm is fail-OPEN on an unmatchable pattern
+			// (§5.4's table rules it separately from the grant arm): canon
+			// answers neverMatch and matchesPattern then answers false, so the
+			// target simply survives. That asymmetry is 0.8.2.21's whole point
+			// and it is inherited here rather than restated.
+			if matchesPattern(ct, canon(localPeer, x)) {
+				dropped = true
+				break
+			}
+		}
+		if !dropped {
+			out = append(out, t)
+		}
+	}
+	return out, true
+}
+
+// checkPathPermission is §6.3's handler-level path check.
+//
+// IT IS NOT A SECONDARY CHECK (§5.2, 0.8.2.20). It is the enforcement wherever
+// the subject is derived after dispatch, and the dispatch-level check can be
+// made VACUOUS by caller-controlled input: a caller who excludes the one target
+// its capability does not cover removes that target from `check_permission`'s
+// view entirely, and a handler that then acts on it has authorized nothing.
+//
+// THREE DIMENSIONS, NOT FOUR. `peers` is not consulted here — the path is local
+// by construction at this point (§1.4's inbound rule refuses a foreign namespace
+// at §6.5 step 3, before any handler runs), and §6.3's signature names only
+// handlers, operations and resources.
+//
+// THE FRAME IS `local_peer_id`, NOT THE GRANTER, AND THAT IS THE SPEC'S OWN
+// SIGNATURE RATHER THAN A CHOICE. §6.3's block reads
+// `matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id)`
+// — there is no granter parameter to pass. The first cut of this function
+// threaded the per-link granter frame in by analogy with §5.5a and was wrong:
+// §5.5a governs chain ATTENUATION, where the subject is a pattern being
+// compared against a parent's pattern; this call site compares a CONCRETE local
+// path the handler is about to touch. The sibling `python` peer had it right
+// and said so at the definition, which is what caught it.
+//
+// There is no caller-exclude set at this call site: the subject is a single
+// concrete path, and the caller's exclusions have already been applied in
+// deriving it. Every grant exclude covering the subject therefore denies —
+// which `matchesScope` already implements, including 0.8.2.21's sentinel rule,
+// so this function is three calls to it and nothing else.
+//
+// An empty `resources.include` is a legal grant shape (§5.2: handlers that touch
+// no tree paths) and DENIES every path here, which is what that note says it
+// should — `covered` over an empty include list is false.
+func checkPathPermission(localPeer, operation, path string, token Entity, handlerPattern string) bool {
+	// canonicalize is total and may answer NEVER_MATCH, which matches no grant
+	// (§5.4) — so a malformed path falls through to DENY rather than being
+	// matched against anything.
+	cp := canon(localPeer, path)
+	for _, g := range grantsOfToken(token) {
+		if !matchesScope(localPeer, handlerPattern, g.handlers, kindPath) {
+			continue
+		}
+		if !matchesScope(localPeer, operation, g.operations, kindID) {
+			continue
+		}
+		if !matchesScope(localPeer, cp, g.resources, kindPath) {
+			continue
+		}
+		return true
+	}
+	return false
+}

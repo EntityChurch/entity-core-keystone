@@ -41,11 +41,78 @@ def salvageRequestId (payload : ByteArray) : Option String :=
           | none => none
       | none => none
 
-/-- Parse a CBOR payload to an envelope (`none` on malformed bytes — §3.3 drop). -/
+/-- Parse a CBOR payload to an envelope (`none` on malformed bytes). Retained for
+callers with no error channel; the reader loop uses `envelopeOfPayloadE`, because a
+caller that discards the CAUSE cannot answer the code §4.11 assigns it. -/
 def envelopeOfPayload (payload : ByteArray) : Option Envelope :=
   match EntityCore.Codec.decode payload with
   | .ok v => envelopeOfCbor v
   | .error _ => none
+
+/-- §4.11's pre-admission refusal causes (0.8.2.25). The two framing arms arise
+BELOW the decoder, where no CBOR was ever parsed and there is no `CodecError` to
+carry them, so they live here alongside the decode causes and the whole
+classification is one table. -/
+inductive PreAdmission where
+  /-- §4.10(a) / N14: the declared envelope exceeds the configured maximum. Reported
+  BEFORE the body is buffered, so nothing is spent on it. -/
+  | frameTooLarge
+  /-- A length prefix declaring N bytes followed by fewer — §4.11's framing arm.
+  DISTINCT from EOF: a clean close is not a refusal of anything and there is nobody
+  left to answer. -/
+  | frameTruncated
+  /-- §6.3 / ENTITY-CBOR-ENCODING §5.4: a major-type-6 tag in a data-field position. -/
+  | tagRejected
+  /-- §1.8 / §5.2a resolution integrity — a hash claim that does not bind. -/
+  | hashMismatch
+  /-- Bytes that never become an Envelope. -/
+  | malformed
+  deriving Repr, Inhabited, BEq
+
+/-- The (status, code) §4.11 assigns a pre-admission refusal's CAUSE (0.8.2.25).
+
+"A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on the
+wire [MUST] — correlated by `request_id` where the id is available, and otherwise as
+a best-effort coded frame carrying no correlation." §4.9(c)'s deliver-or-signal rule
+is scoped to "every request the peer ADMITS" and therefore reaches none of these,
+which is why §4.11 exists.
+
+THE FRAME OBLIGATION BELONGS TO THE CLASS; THE CODE BELONGS TO THE CAUSE [MUST].
+
+```
+connect-auth proof-of-possession    401 authentication_failed  (the connect handler's)
+envelope over the configured max     413 payload_too_large      (§4.10(a), N14)
+resolution integrity (mis-keyed)     400 hash_mismatch          (§5.2a, §1.8)
+framing / never becomes an Envelope  400 invalid_request        (§4.7, §4.11)
+root neither EXECUTE nor RESPONSE    400 invalid_request        (§3.3, N12/N17 — in
+                                                                 dispatch, not here)
+```
+
+The CBOR tag-policy arm keeps `non_canonical_ecf` and that is deliberate. §4.11 rules
+that code non-conformant "on the framing arm" and gives its reason in the same
+sentence: ENTITY-CBOR-ENCODING §5.4 "defines that code for CBOR tag-policy violations
+specifically", which that document still MUSTs at decode time. §6.3 disjoins the two
+by CAUSE — a tag in a DATA-FIELD position is the policy violation; bytes that never
+become an Envelope are the framing arm — so there is no conflict of MUSTs to
+reconcile, and this branch keeps the behaviour the `tag_reject` vectors were written
+against. -/
+def preAdmissionRefusal : PreAdmission → Nat × String
+  | .frameTooLarge => (413, "payload_too_large")
+  | .frameTruncated => (400, "invalid_request")
+  | .tagRejected => (400, "non_canonical_ecf")
+  | .hashMismatch => (400, "hash_mismatch")
+  | .malformed => (400, "invalid_request")
+
+/-- Parse a CBOR payload to an envelope, keeping the §4.11 CAUSE. -/
+def envelopeOfPayloadE (payload : ByteArray) : Except PreAdmission Envelope :=
+  match EntityCore.Codec.decode payload with
+  | .error (.tagRejected _) => .error .tagRejected
+  | .error _ => .error .malformed
+  | .ok v =>
+    match envelopeOfCborE v with
+    | .ok e => .ok e
+    | .error .hashMismatch => .error .hashMismatch
+    | .error .malformed => .error .malformed
 
 -- ── builders ─────────────────────────────────────────────────────────────────
 

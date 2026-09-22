@@ -23,6 +23,9 @@ module EntityCore.Capability
   , Resolver
   , verifyRequest
   , checkPermission
+    -- * §5.2 effective targets + §6.3 handler-level path check
+  , effectiveTargets
+  , checkPathPermission
   , resolveGranterPeerId
   , grantsOfToken
   , parseGrant
@@ -240,13 +243,37 @@ matchesIdPattern value pattern
 -- fail-OPEN in an exclude (carves out nothing -> the grant is SILENTLY WIDER than
 -- its author wrote): same value, same matcher, opposite safety direction, so the
 -- reading is chosen where the POSITION is known and 'matchesPattern' stays uniform
--- over its operands. The guard sits outside the scope-type dispatch, transcribing
--- §5.2's loop literally.
+-- over its operands.
+--
+-- EVERY CALL SITE MUST GUARD IT ON PATH-SCOPE (0.8.2.24, N2/N3). This used to be
+-- asked of every dimension — the comment here said so, "transcribing §5.2's loop
+-- literally", and that was true of the loop as it then read. §5.2's exclude test
+-- now sits INSIDE @if dimension_type == "system\/capability\/path-scope"@, and
+-- §5.4 says the same from the other side: "a capability carrying an unmatchable
+-- PATH-SCOPE pattern is INVALID ... It does NOT reach @operations@ or @peers@
+-- [MUST]".
+--
+-- 'neverMatch' is a §5.4 PATH-canonicalization sentinel with no meaning on an
+-- id-scope dimension, whose patterns are literal identifiers that §5.2's own
+-- id-scope arm forbids putting through the §5.4 transforms. Asking it outside the
+-- type dispatch ran an id pattern through those transforms purely to classify it
+-- and then DENIED THE WHOLE DIMENSION on a property unrelated to whether the
+-- exclude carves anything out: an @operations@ exclude of @*\/apply@ — an ordinary
+-- namespaced operation name, a literal matching nothing under the id-scope grammar
+-- — canonicalized to the sentinel and denied every operation. Over-denial, and
+-- invisible on any well-formed grant.
 excludeIsUnmatchable :: Text -> [Text] -> Bool
 excludeIsUnmatchable frame = any (\p -> canonicalize frame p == neverMatch)
 
 matchesScope :: Text -> Text -> Scope -> ScopeKind -> Bool
-matchesScope localPeer _value s _kind
+-- The guard is on the PATH-SCOPE arm only (0.8.2.24). The two id-scope dimensions
+-- fall through to the literal matcher below unguarded, which is correct: under the
+-- id-scope grammar every non-@*@ pattern is a literal, and a literal is never
+-- structurally unmatchable, so there is nothing here for the sentinel to detect.
+-- §5.4 says so outright and leaves the id-scope form of the carves-out-nothing
+-- hazard deliberately open rather than minting a second sentinel for it — a scope
+-- boundary, not an omission.
+matchesScope localPeer _value s PathScope
   | excludeIsUnmatchable localPeer (scExcl s) = False   -- 0.8.2.21 — deny
 matchesScope localPeer value s kind =
   let covered = case kind of
@@ -338,6 +365,97 @@ checkPermission localPeer granterPeer exec token handlerPattern =
             Nothing -> True
             Just r -> checkResourceScope localPeer granterPeer r (grResources g)
    in if any grantOk (grantsOfToken token) then Allow else Deny
+
+-- ── §5.2 effective targets and §6.3 check_path_permission ─────────────────────
+
+-- | §5.2's effective target list (0.8.2.20): the caller's own @resource.exclude@
+-- removes entries from the request BEFORE anything else looks at it.
+--
+-- The survivors come back in the caller's OWN SPELLING, not canonicalized —
+-- 0.8.2.21 is explicit that @effective_targets@ yields raw survivors, and the
+-- distinction is load-bearing because the value flows on to the store lookup,
+-- which canonicalizes for itself.
+--
+-- The 'Bool' says whether a @resource@ was present at all. An ABSENT resource and
+-- a resource whose every target was excluded are different inputs to §3.3 — the
+-- first is "no resource", the second is an empty effective list — and for a
+-- resource-OPTIONAL operation 0.8.2.24 (N7) makes them DIFFERENT REQUESTS with
+-- different answers, not merely different inputs to one.
+--
+-- THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES [MUST] (0.8.2.25, N11):
+-- "where an implementation projects @resource.targets@ onto the effective set
+-- ahead of the handler, that projection MUST NOT be lossy about its own emptiness
+-- — narrow when narrowing leaves something, and retain the raw pair when narrowing
+-- would empty it." A function returning only a list cannot satisfy that:
+-- collapsing @[qA] exclude [qA]@ to @[]@ deletes the two-empties discriminator
+-- before any handler can read it, and the handler's refusal arm becomes dead code
+-- that only a WIRE drive can detect.
+--
+-- A @targets@ key that is PRESENT but not an array reads as PRESENT-and-empty, not
+-- as absent. Reading it as absent would answer it with the ABSENT case, which for
+-- @get@ is the whole root listing — wider than the request, which is the answer
+-- §3.3 forbids. (This is the one place the two vanguard peers diverged; corrected
+-- toward the present reading.)
+effectiveTargets :: Text -> Entity -> ([Text], Bool)
+effectiveTargets localPeer exec =
+  case field exec "resource" of
+    Just r@(VMap _) -> case mapGet r "targets" of
+      Nothing -> ([], False)
+      Just targetsV ->
+        let targets = textList targetsV
+            callerExcl = maybe [] textList (mapGet r "exclude")
+            -- The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4's
+            -- table rules it separately from the grant arm): 'canonicalize' answers
+            -- 'neverMatch' and 'matchesPattern' then answers False, so the target
+            -- simply survives. That asymmetry is 0.8.2.21's whole point and it is
+            -- INHERITED from the primitives here rather than restated.
+            dropped t =
+              let ct = canonicalize localPeer t
+               in any (\x -> matchesPattern ct (canonicalize localPeer x)) callerExcl
+         in (filter (not . dropped) targets, True)
+    _ -> ([], False)
+
+-- | §6.3's handler-level path check.
+--
+-- IT IS NOT A SECONDARY CHECK (§5.2, 0.8.2.20). It is the enforcement wherever the
+-- subject is derived after dispatch, and the dispatch-level check can be made
+-- VACUOUS by caller-controlled input: a caller who excludes the one target its
+-- capability does not cover removes that target from 'checkPermission''s view
+-- entirely, and a handler that then acts on it has authorized nothing.
+--
+-- THREE DIMENSIONS, NOT FOUR. @peers@ is not consulted here — the path is local by
+-- construction at this point (§1.4's inbound rule refuses a foreign namespace at
+-- §6.5 step 3, before any handler runs), and §6.3's signature names only
+-- @handlers@, @operations@ and @resources@.
+--
+-- THE FRAME IS @local_peer_id@, NOT THE GRANTER, AND THAT IS THE SPEC'S OWN
+-- SIGNATURE RATHER THAN A CHOICE. §6.3's block reads
+-- @matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id)@ —
+-- there is no granter parameter to pass. §5.5a governs chain ATTENUATION, where
+-- the subject is a pattern compared against a parent's pattern; this call site
+-- compares a CONCRETE local path the handler is about to touch.
+--
+-- There is no caller-exclude set at this call site: the subject is a single
+-- concrete path, and the caller's exclusions have already been applied in deriving
+-- it. Every grant exclude covering the subject therefore denies — which
+-- 'matchesScope' already implements, including 0.8.2.21's sentinel rule, so this
+-- function is three calls to it and nothing else.
+--
+-- An empty @resources.include@ is a legal grant shape (§5.2: handlers that touch
+-- no tree paths) and DENIES every path here, which is what that note says it
+-- should: @any@ over an empty include list is False.
+--
+-- 'canonicalize' is total and may answer 'neverMatch', which matches no grant
+-- (§5.4) — so a malformed path falls through to DENY rather than being matched
+-- against anything.
+checkPathPermission :: Text -> Text -> Text -> Entity -> Text -> Bool
+checkPathPermission localPeer operation path token handlerPattern =
+  let cp = canonicalize localPeer path
+      grantOk g =
+        matchesScope localPeer handlerPattern (grHandlers g) PathScope
+          && matchesScope localPeer operation (grOperations g) IdScope
+          && matchesScope localPeer cp (grResources g) PathScope
+   in any grantOk (grantsOfToken token)
 
 -- ── §3.6 M3 multi-signature granter ────────────────────────────────────────────
 -- The capability @granter@ field is a union (§3.6): a single @system/hash@ (bytes,
@@ -471,31 +589,54 @@ linkGranterPeer resolve localPeer cap =
 -- | §5.6: every child include covered by parent include; child inherits all
 -- parent excludes. §5.5a: each side's patterns canonicalize against THAT side's
 -- granter peer_id.
-scopeSubset :: Text -> Text -> Scope -> Scope -> Bool
-scopeSubset childPeer parentPeer child parent =
-  all
-    ( \cp ->
+--
+-- TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16). §3.6's grammar binds the scope
+-- TYPE, not one function — "an implementation on the canonicalizing reading is
+-- non-conformant and MUST adopt the literal matcher" — and F40's id-scope pin
+-- therefore reaches here exactly as it reaches 'matchesScope', with delegation-chain
+-- WIDENING named as the reason. This function used to canonicalize both operands on
+-- every dimension, so an @operations@ or @peers@ pattern was put through the §5.4
+-- path transforms purely to compare it: @entity-core-formalization@ measured 2 of 64
+-- include pairs and 2 of 64 exclude pairs diverging (@\/tree\/get@ vs @*@,
+-- @*\/apply@ vs @*@), FAIL-CLOSED, with a 16-pair control alphabet reporting zero —
+-- which is why every hand-tried example missed it.
+--
+-- The kind is a parameter with NO DEFAULT and is named at every call site, for the
+-- same reason 'matchesScope' takes one: a default is how the next dimension inherits
+-- the wrong matcher silently, which is the original F40 defect.
+--
+-- The §5.4 sentinel needs no separate guard on either arm. On the path arm it is
+-- inside 'matchesPattern', which refuses 'neverMatch' in EITHER operand, so every
+-- path that reaches a match decision here is already guarded. On the id arm it does
+-- not apply at all (0.8.2.24, N2/N3 — see 'excludeIsUnmatchable').
+scopeSubset :: ScopeKind -> Text -> Text -> Scope -> Scope -> Bool
+scopeSubset kind childPeer parentPeer child parent =
+  all coveredByParentInclude (scIncl child)
+    && all inheritedByChildExclude (scExcl parent)
+  where
+    coveredByParentInclude cp = case kind of
+      IdScope -> any (matchesIdPattern cp) (scIncl parent)
+      PathScope ->
         let cc = canonicalize childPeer cp
          in any (\pp -> matchesPattern cc (canonicalize parentPeer pp)) (scIncl parent)
-    )
-    (scIncl child)
-    && all
-      ( \pe ->
-          let cpe = canonicalize parentPeer pe
-           in any (\ce -> matchesPattern cpe (canonicalize childPeer ce)) (scExcl child)
-      )
-      (scExcl parent)
+    inheritedByChildExclude pe = case kind of
+      IdScope -> any (matchesIdPattern pe) (scExcl child)
+      PathScope ->
+        let cpe = canonicalize parentPeer pe
+         in any (\ce -> matchesPattern cpe (canonicalize childPeer ce)) (scExcl child)
 
 -- | @childPeer@/@parentPeer@ are the §5.5a per-link granter frames applied to the
--- RESOURCE dimension only; handlers/operations/peers stay on @localPeer@.
+-- RESOURCE dimension only; handlers/operations/peers stay on @localPeer@. The scope
+-- KIND is named per dimension alongside the frame: @handlers@/@resources@ are
+-- path-scope, @operations@/@peers@ id-scope (§3.6, F40/F50).
 grantSubset :: Text -> Text -> Text -> Grant -> Grant -> Bool
 grantSubset localPeer childPeer parentPeer child parent =
-  scopeSubset localPeer localPeer (grHandlers child) (grHandlers parent)
-    && scopeSubset localPeer localPeer (grOperations child) (grOperations parent)
-    && scopeSubset childPeer parentPeer (grResources child) (grResources parent)
+  scopeSubset PathScope localPeer localPeer (grHandlers child) (grHandlers parent)
+    && scopeSubset IdScope localPeer localPeer (grOperations child) (grOperations parent)
+    && scopeSubset PathScope childPeer parentPeer (grResources child) (grResources parent)
     && let cp = fromMaybe (Scope [localPeer] []) (grPeers child)
            pp = fromMaybe (Scope [localPeer] []) (grPeers parent)
-        in scopeSubset localPeer localPeer cp pp
+        in scopeSubset IdScope localPeer localPeer cp pp
 
 isAttenuated :: Text -> Text -> Text -> Entity -> Entity -> Bool
 isAttenuated localPeer childPeer parentPeer child parent =

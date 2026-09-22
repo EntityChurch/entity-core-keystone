@@ -10,15 +10,15 @@
 # failure, neither of which points at the label.
 #
 # THE COUNT IS ASSERTED, NOT JUST PRINTED. `swift test` exits 0 for a suite that
-# ran 35 cases and for one that ran none — a dropped test file, a mis-declared
+# ran 69 cases and for one that ran none — a dropped test file, a mis-declared
 # target, or a filter that matches nothing all leave this gate green. That is the
 # gate-that-examined-zero-things shape the charter names, and the enforcement it
 # asks for is one line: require the executed count to be at or above the floor.
 #
 # About the "0 tests in 0 suites" line at the end of the output: that is the
 # swift-testing runner, which Swift 6 runs alongside XCTest. This package has no
-# `@Test` functions — all four test files are XCTestCase — so it correctly reports
-# an empty run. It is not a broken target and not a silent skip; the 35 XCTest
+# `@Test` functions — all five test files are XCTestCase — so it correctly reports
+# an empty run. It is not a broken target and not a silent skip; the 69 XCTest
 # cases below it are the suite. If swift-testing cases are ever added, that line
 # changes and the XCTest floor here still holds.
 #
@@ -28,7 +28,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$REPO_ROOT/tools/podman-caps.sh"
 
-FLOOR="${SWIFT_TEST_FLOOR:-35}"
+# RAISED 35 -> 69 with the 0.8.2.20/.21/.24/.25 scope-algebra suite
+# (Tests/EntityCoreProtocolTests/ScopeAlgebraTests.swift, 34 cases). A floor left at
+# the old number would pass a tree that silently dropped the whole new file, which is
+# the one thing this line exists to catch.
+FLOOR="${SWIFT_TEST_FLOOR:-69}"
 
 # No pipe: `cmd | tee` reports the EXIT STATUS OF TEE, which is how a failing gate
 # reads as green (written down twice in AGENTS.md, re-created twice anyway).

@@ -23,7 +23,7 @@ export class ResourceTarget {
   static fromEcf(value: EcfValue): ResourceTarget {
     const targets = Ecf.asArray(Ecf.require(value, "targets")).map((t) => Ecf.asText(t));
     if (targets.length === 0) {
-      throw new EntityProtocolError("resource-target.targets MUST contain at least one entry (§3.2)");
+      throw new EntityProtocolError("resource-target.targets MUST contain at least one entry (section 3.2)");
     }
     const excludeField = Ecf.field(value, "exclude");
     const exclude = excludeField === null ? null : Ecf.asArray(excludeField).map((e) => Ecf.asText(e));

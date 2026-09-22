@@ -41,7 +41,7 @@ export class HandlersHandler implements Handler {
     }
     const pattern = patternOrErr;
     if (isReservedSystemPattern(pattern)) {
-      return errorResult(Status.Forbidden, "forbidden_pattern", `§6.2: user-installed handlers MUST NOT register at system/* paths: ${pattern}`);
+      return errorResult(Status.Forbidden, "forbidden_pattern", `section 6.2: user-installed handlers MUST NOT register at system/* paths: ${pattern}`);
     }
     if (ctx.params.type !== TypeNames.HandlerRegisterRequest) {
       return errorResult(Status.BadRequest, "invalid_params", `register expects a ${TypeNames.HandlerRegisterRequest} (got '${ctx.params.type}')`);
@@ -151,12 +151,12 @@ function isReservedSystemPattern(pattern: string): boolean {
 function patternFromResource(ctx: HandlerContext): string | HandlerResult {
   const resource = ctx.resource;
   if (resource === null || resource.targets.length !== 1) {
-    return errorResult(Status.BadRequest, "ambiguous_resource", "register/unregister require exactly one resource target (system/handler/{pattern}) (§6.2)");
+    return errorResult(Status.BadRequest, "ambiguous_resource", "register/unregister require exactly one resource target (system/handler/{pattern}) (section 6.2)");
   }
   const prefix = "system/handler/";
   const target = resource.targets[0] ?? "";
   if (!target.startsWith(prefix) || target.length === prefix.length) {
-    return errorResult(Status.BadRequest, "invalid_resource", "register/unregister resource target MUST be system/handler/{pattern} (§6.2)");
+    return errorResult(Status.BadRequest, "invalid_resource", "register/unregister resource target MUST be system/handler/{pattern} (section 6.2)");
   }
   return target.slice(prefix.length);
 }

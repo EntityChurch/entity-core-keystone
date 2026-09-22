@@ -33,6 +33,43 @@ def writeFrame (fd : UInt32) (env : EntityCore.Model.Envelope) : IO Unit := do
   let payload := EntityCore.Wire.payloadOfEnvelope env
   tcpSendRaw fd (be32 payload.size ++ payload)
 
+/-- What one read of the socket produced (§1.6, §4.11).
+
+THE THREE ARE NOT INTERCHANGEABLE AND THEY USED TO BE ONE `none`. An EOF is a clean
+end of connection and is a refusal of nothing; an oversize prefix and a truncated
+body are §4.11 PRE-ADMISSION REFUSALS, each owed a coded EXECUTE_RESPONSE before the
+loop ends. Collapsing them meant this peer answered an over-`maxFrame` envelope by
+ending the read loop with nothing on the wire — §4.11's second named non-conformant
+behaviour, "closing with no coded frame", which is indistinguishable from a network
+fault (§4.6) and which on a multiplexed connection destroys unrelated ADMITTED
+requests. -/
+inductive FrameRead where
+  | payload (p : ByteArray)
+  /-- Clean EOF / closed socket. Nothing to answer, nobody to answer to. -/
+  | eof
+  /-- A §4.11 refusal: the coded frame goes out and THEN the loop ends. -/
+  | refused (cause : EntityCore.Wire.PreAdmission)
+
+/-- Read one framed payload, keeping the three outcomes apart.
+
+The oversize test is on the DECLARED length and runs BEFORE the body is read, as
+§4.10(a) requires ("reject before fully buffering") — draining the declared body to
+keep the stream framed IS the fully-buffering that section forbids, and a sender
+declaring 4 GiB and sending 1 KiB would park the peer forever. -/
+def readFrameResult (fd : UInt32) : IO FrameRead := do
+  let hdr ← tcpRecvExact fd 4
+  if hdr.size != 4 then pure .eof
+  else
+    let len := (hdr[0]!.toNat <<< 24) ||| (hdr[1]!.toNat <<< 16)
+             ||| (hdr[2]!.toNat <<< 8) ||| hdr[3]!.toNat
+    if len > EntityCore.Wire.maxFrame then pure (.refused .frameTooLarge)
+    else
+      let payload ← tcpRecvExact fd (UInt32.ofNat len)
+      -- A length prefix arrived and the body did not: the sender is gone mid-frame.
+      -- §4.11's framing arm — a refusal, not an EOF.
+      if payload.size != len then pure (.refused .frameTruncated)
+      else pure (.payload payload)
+
 /-- Read one framed payload. `none` means the CONNECTION is finished (EOF, short
 read, or an over-`maxFrame` length prefix per §4.10(a)); it does NOT mean the
 frame was malformed.
@@ -44,16 +81,9 @@ connection down and every subsequent request on it failed. Decoding is now the
 caller's job, which lets it answer §6.3's mandated `400 non_canonical_ecf` and
 keep serving. -/
 def readFramePayload (fd : UInt32) : IO (Option ByteArray) := do
-  let hdr ← tcpRecvExact fd 4
-  if hdr.size != 4 then pure none
-  else
-    let len := (hdr[0]!.toNat <<< 24) ||| (hdr[1]!.toNat <<< 16)
-             ||| (hdr[2]!.toNat <<< 8) ||| hdr[3]!.toNat
-    if len > EntityCore.Wire.maxFrame then pure none
-    else
-      let payload ← tcpRecvExact fd (UInt32.ofNat len)
-      if payload.size != len then pure none
-      else pure (some payload)
+  match ← readFrameResult fd with
+  | .payload p => pure (some p)
+  | _ => pure none
 
 /-- Read one framed envelope; `none` on connection close OR a malformed frame.
 Retained for callers that do not need the distinction (the client/outbound side);

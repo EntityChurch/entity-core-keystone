@@ -763,12 +763,37 @@ impl Peer {
 
     // ── dispatch (§6.5) ─────────────────────────────────────────────────────────
 
-    /// Materialize the inbound envelope into an outbound response envelope. Returns
-    /// `None` for a non-EXECUTE root (§3.3 server ignores it). Never panics on a
-    /// protocol error — every failure is a status, the connection stays alive.
+    /// Materialize the inbound envelope into an outbound response envelope. Never panics
+    /// on a protocol error — every failure is a status, the connection stays alive.
+    ///
+    /// The `None` in the return type is now UNREACHABLE and is kept only so the
+    /// transport's write decision does not have to change shape: every inbound root
+    /// reaching here is answered.
     pub fn dispatch(&self, conn: &mut Conn, env: &Envelope) -> Option<Envelope> {
         if env.root.typ != "system/protocol/execute" {
-            return None; // §3.3
+            // §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+            // invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare
+            // close — that is indistinguishable from a network fault."
+            //
+            // §3.3 read "the connection MUST be closed", assigning no code and requiring
+            // no frame, and this peer did something weaker still: it returned `None`, the
+            // transport wrote NOTHING, and the connection stayed open — which is §4.11's
+            // OTHER non-conformant behaviour, the silent drop, "the weaker of the two
+            // precisely because nothing surfaces it". This is a PRE-ADMISSION refusal: the
+            // root is not an EXECUTE, so nothing was ever admitted and §4.9(c) does not
+            // reach it. §9.1's floor row that used to MANDATE the bare close was REPLACED
+            // at the same revision (N18).
+            //
+            // `request_id` is read best-effort — an arbitrary root type is under no
+            // obligation to carry one, and §4.11 licenses the uncorrelated frame exactly
+            // there. We do NOT close: on a multiplexed connection that would cost every
+            // ADMITTED in-flight request its response, and §4.11 leaves the close to us.
+            let request_id = env.root.text_field("request_id").unwrap_or("");
+            let result = wire::error_result(
+                "invalid_request",
+                Some("root entity is neither EXECUTE nor EXECUTE_RESPONSE"),
+            );
+            return Some(wire::response_envelope(request_id, 400, &result));
         }
         let request_id = env.root.text_field("request_id").unwrap_or("").to_string();
         let outcome = self.dispatch_outcome(conn, env);
@@ -864,7 +889,14 @@ impl Peer {
 
         let stripped = self.strip_local(&pattern);
         match stripped.as_str() {
-            "system/tree" => self.tree_handler(exec),
+            // §6.3's `check_path_permission` needs the caller's capability and the OWNING
+            // handler's pattern, and the dispatch-level check above already computed both.
+            // They are CARRIED rather than recomputed: recomputing invites the two to
+            // drift, and §6.8 is explicit that the authority is selected by who named the
+            // path. `pattern` here is the owner's (§6.3, 0.8.2.23) — for the tree handler
+            // owner and runner coincide, so the distinction is not observable, but the
+            // argument means the owner.
+            "system/tree" => self.tree_handler(exec, caller_cap, &stripped),
             "system/capability" => self.capability_handler(exec, caller_cap),
             "system/handler" => self.handlers_handler(exec),
             "system/type" => err_out(501, "unsupported_operation", exec.text_field("operation")),
@@ -1398,28 +1430,95 @@ impl Peer {
         }
     }
 
-    fn tree_handler(&self, exec: &Entity) -> Outcome {
+    /// The `system/tree` handler (§6.3).
+    ///
+    /// RESOLVE THE OPERATION FIRST; only then run the §3.3 resource ladder. The `match op`
+    /// below is what makes that true, and it is the shape RULE G asks for: a handler that
+    /// validates the resource first answers a RESOURCE fault for an unknown-OPERATION
+    /// request, so `system/tree:bogusop` with no resource reports `ambiguous_resource`
+    /// where §3.3 pins `501 unsupported_operation`.
+    fn tree_handler(
+        &self,
+        exec: &Entity,
+        caller_cap: Option<&Entity>,
+        pattern: &str,
+    ) -> Outcome {
         let op = exec.text_field("operation").unwrap_or("");
-        let target = resource_target(exec);
-        if matches!(op, "get" | "put") {
-            if let Some(t) = &target {
-                if !path_flex_ok(t) {
-                    return err_out(400, "invalid_path", Some(t));
-                }
-            }
-        }
         match op {
             "get" => {
-                let target = match target {
-                    None => {
-                        return self.build_listing(&format!("/{}/", self.local_peer));
-                    }
-                    Some(t) => t,
-                };
+                // §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+                // `resource.targets`: a handler that counts the effective list and then
+                // indexes `targets[0]` has implemented the arithmetic completely and is
+                // still reading a path no authorization covered.
+                let (eff, has_resource) = cap::effective_targets(&self.local_peer, exec);
+                if !has_resource {
+                    // THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN
+                    // SPECIFICATION IS WHAT SAYS SO. §3.3's "an empty effective list IS
+                    // the absent case" is scoped "for an operation that REQUIRES a
+                    // resource" (0.8.2.24, N7); `get` does not. For a resource-OPTIONAL
+                    // operation 0.8.2.25 (N10) decides the present-but-empty case by
+                    // whether the absent case is WIDER than the request — BROAD-RESULT
+                    // refuses it, OPTIONAL-FILTER answers it empty — and requires the
+                    // operation to declare which it is.
+                    //
+                    // EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+                    // resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root
+                    // listing", self-excluded case "400 path_required". Both arms are
+                    // pinned by text and neither is this peer's choice.
+                    return self.build_listing(
+                        &format!("/{}/", self.local_peer),
+                        caller_cap,
+                        pattern,
+                    );
+                }
+                if eff.is_empty() {
+                    // The self-excluded request: `resource` PRESENT, every target carved
+                    // out by the caller's own exclude. Serving it the absent case
+                    // "answers a request for one excluded path with a listing of the
+                    // tree" (EXTENSION-TREE §2.2a) — the root listing is wider than what
+                    // was asked for, which is what BROAD-RESULT means.
+                    return err_out(
+                        400,
+                        "path_required",
+                        Some("tree: effective target list is empty"),
+                    );
+                }
+                if eff.len() > 1 {
+                    return err_out(
+                        400,
+                        "ambiguous_resource",
+                        Some("tree: more than one effective target"),
+                    );
+                }
+                let target = eff.into_iter().next().unwrap_or_default();
+                if !path_flex_ok(&target) {
+                    return err_out(400, "invalid_path", Some(&target));
+                }
                 if target.is_empty() || target.ends_with('/') {
-                    return self.build_listing(&cap::canonicalize(&self.local_peer, &target));
+                    return self.build_listing(
+                        &cap::canonicalize(&self.local_peer, &target),
+                        caller_cap,
+                        pattern,
+                    );
+                }
+                if is_pattern_path(&target) {
+                    return err_out(400, "malformed_resource", Some(&target));
                 }
                 let path = cap::canonicalize(&self.local_peer, &target);
+                // §6.3: the handler MUST verify the CALLER's capability covers the path it
+                // is about to read. NOT a secondary check — the dispatch-level check never
+                // saw this path if the caller excluded it.
+                if let Some(cc) = caller_cap {
+                    if !cap::check_path_permission(
+                        "get",
+                        &path,
+                        cc,
+                        pattern,
+                        &self.local_peer,
+                    ) {
+                        return err_out(403, "capability_denied", Some(&path));
+                    }
+                }
                 let e = match self.store.get_at(&path) {
                     Some(e) => e,
                     None => return err_out(404, "not_found", Some(&path)),
@@ -1432,17 +1531,51 @@ impl Peer {
                 ok(e)
             }
             "put" => {
-                let target = match target {
-                    Some(t) => t,
-                    None => {
-                        return err_out(
-                            400,
-                            "ambiguous_resource",
-                            Some("tree: missing resource target"),
-                        )
-                    }
-                };
+                // Same ladder as `get`, with the two empties COLLAPSED rather than split:
+                // EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's
+                // "an empty effective list IS the absent case" applies in its unscoped form
+                // and both empties answer `path_required`. That is the same table `get`'s
+                // branch cites, read one row down.
+                //
+                // Note the code change 0.8.2.20 forced: this branch answered
+                // `ambiguous_resource` for a MISSING target, which 0.8.2.20 names as the
+                // exact inversion it forbids ("answering ambiguous_resource for an absent
+                // resource inverts them"). The remedies differ — *supply a resource* is not
+                // *disambiguate your request* — and the code is what selects between them.
+                let (eff, has_resource) = cap::effective_targets(&self.local_peer, exec);
+                if !has_resource || eff.is_empty() {
+                    return err_out(
+                        400,
+                        "path_required",
+                        Some("tree: put requires a resource target"),
+                    );
+                }
+                if eff.len() > 1 {
+                    return err_out(
+                        400,
+                        "ambiguous_resource",
+                        Some("tree: more than one effective target"),
+                    );
+                }
+                let target = eff.into_iter().next().unwrap_or_default();
+                if !path_flex_ok(&target) {
+                    return err_out(400, "invalid_path", Some(&target));
+                }
+                if is_pattern_path(&target) {
+                    return err_out(400, "malformed_resource", Some(&target));
+                }
                 let path = cap::canonicalize(&self.local_peer, &target);
+                if let Some(cc) = caller_cap {
+                    if !cap::check_path_permission(
+                        "put",
+                        &path,
+                        cc,
+                        pattern,
+                        &self.local_peer,
+                    ) {
+                        return err_out(403, "capability_denied", Some(&path));
+                    }
+                }
                 let params = exec.entity_field("params");
                 let entity = params.as_ref().and_then(|p| p.field("entity")).cloned();
                 let expected = params.as_ref().and_then(|p| p.bytes_field("expected_hash"));
@@ -1481,10 +1614,40 @@ impl Peer {
         }
     }
 
-    fn build_listing(&self, path: &str) -> Outcome {
+    /// Render a directory listing, FILTERED per §6.3 (0.8.2.21/.22).
+    ///
+    /// *"When any handler returns a multi-entry result whose entries are tree paths, each
+    /// entry MUST be individually checked using `check_path_permission`. Entries for which
+    /// `check_path_permission` returns DENY MUST be omitted. The result's `count` field
+    /// MUST reflect the filtered entry count, not the source tree's total count."*
+    ///
+    /// This is the read path at its highest volume and it is the reason 0.8.2.21 refused
+    /// to carve reads out of the caller-specified-path rule: an unfiltered listing
+    /// discloses the EXISTENCE of every binding under a prefix to a caller whose
+    /// capability covers none of them.
+    ///
+    /// The DIRECTORY itself is deliberately NOT checked — §6.3 makes each ENTRY the
+    /// subject, and testing the prefix would deny a listing to a caller whose grant covers
+    /// children but not the node above them, which is the ordinary shape of a narrowed
+    /// grant.
+    ///
+    /// An UNAUTHENTICATED context (`caller_cap == None`) is not filtered: the filter's
+    /// subject is "the caller's verified capability", and where there is none there is no
+    /// caller to narrow. That is the bootstrap/internal path.
+    fn build_listing(
+        &self,
+        path: &str,
+        caller_cap: Option<&Entity>,
+        pattern: &str,
+    ) -> Outcome {
         let entries = self.store.listing(path);
         let mut entry_pairs: Vec<(Key, Value)> = vec![];
         let mut emitted: u64 = 0;
+        let dir = if path.ends_with('/') {
+            path.to_string()
+        } else {
+            format!("{path}/")
+        };
         for le in entries {
             // §6.3 / CORE-TREE-DELETE-1: a leaf bound to a deletion-marker is a
             // tombstone — omit it from the listing.
@@ -1493,6 +1656,13 @@ impl Peer {
                     if bound.typ == "system/deletion-marker" {
                         continue;
                     }
+                }
+            }
+            // §6.3's per-entry check (0.8.2.21/.22).
+            if let Some(cc) = caller_cap {
+                let child = format!("{dir}{}", le.seg);
+                if !cap::check_path_permission("get", &child, cc, pattern, &self.local_peer) {
+                    continue;
                 }
             }
             let mut fields = vec![("has_children", Value::Bool(le.has_children))];
@@ -1696,7 +1866,11 @@ impl Peer {
                 403,
                 "forbidden_pattern",
                 Some(&format!(
-                    "§6.2: user-installed handlers MUST NOT register at system/* paths: {pattern}"
+                    // ASCII-ONLY: this string is CBOR-text-encoded and put on the wire.
+                    // The section sign stays in comments (ratified discipline; two peers
+                    // in this cohort have been killed at runtime by a non-ASCII byte in
+                    // an encoded string, on two unrelated compilers).
+                    "section 6.2: user-installed handlers MUST NOT register at system/* paths: {pattern}"
                 )),
             );
         }
@@ -1845,7 +2019,8 @@ impl Peer {
                 return err_out(
                     503,
                     "no_outbound_seam",
-                    Some("dispatch-outbound requires a live §6.11 reentry connection"),
+                    // ASCII-only wire-visible string (see the forbidden_pattern site).
+                    Some("dispatch-outbound requires a live section 6.11 reentry connection"),
                 )
             }
         };
@@ -1995,6 +2170,13 @@ fn resource_target(exec: &Entity) -> Option<String> {
         },
         _ => None,
     }
+}
+
+/// A §5.4 PATTERN rather than a concrete path. A resource-requiring operation takes a
+/// CONCRETE path (0.8.2.20), and a trailing `/` is a listing request rather than a
+/// pattern — only a `*` makes it one.
+fn is_pattern_path(t: &str) -> bool {
+    t.contains('*')
 }
 
 /// §1.4 / §5.4 path-flex validation: reject null byte, non-peer-id leading slash,
@@ -2194,7 +2376,7 @@ mod tests {
 
         // The differential. Same unknown operation, a registered NON-connect handler:
         // still 501. Measured together the trade is visible; measured apart it is not.
-        let out = p.tree_handler(&unknown("system/tree"));
+        let out = p.tree_handler(&unknown("system/tree"), None, "system/tree");
         assert_eq!(out.status, 501);
         assert_eq!(code(&out), Some("unsupported_operation".to_string()));
         let out = p.capability_handler(&unknown("system/capability"), None);
@@ -2236,11 +2418,208 @@ mod tests {
         p.store.bind(&format!("{base}/target"), &real);
         let sib = Entity::make("system/test2", Value::Map(vec![]));
         p.store.bind(&format!("{base}/keep"), &sib);
-        let out1 = p.build_listing(&format!("{base}/"));
+        let out1 = p.build_listing(&format!("{base}/"), None, "system/tree");
         assert_eq!(out1.result.uint_field("count"), Some(2));
         let marker = Entity::make("system/deletion-marker", Value::Map(vec![]));
         p.store.bind(&format!("{base}/target"), &marker);
-        let out2 = p.build_listing(&format!("{base}/"));
+        let out2 = p.build_listing(&format!("{base}/"), None, "system/tree");
         assert_eq!(out2.result.uint_field("count"), Some(1));
+    }
+
+    // ── §3.3's effective-targets ladder + §6.3's listing filter ────────────────
+
+    fn out_code(o: &Outcome) -> Option<&str> {
+        o.result.text_field("code")
+    }
+
+    fn tree_exec(op: &str, resource: Option<Value>) -> Entity {
+        let mut pairs = vec![
+            (Key::Text("request_id".into()), Value::Text("t1".into())),
+            (Key::Text("uri".into()), Value::Text("system/tree".into())),
+            (Key::Text("operation".into()), Value::Text(op.into())),
+        ];
+        if let Some(r) = resource {
+            pairs.push((Key::Text("resource".into()), r));
+        }
+        Entity::make("system/protocol/execute", Value::Map(pairs))
+    }
+
+    fn resource(targets: &[&str], exclude: &[&str]) -> Value {
+        let arr = |v: &[&str]| Value::Array(v.iter().map(|s| model::text(s)).collect());
+        let mut pairs = vec![(Key::Text("targets".into()), arr(targets))];
+        if !exclude.is_empty() {
+            pairs.push((Key::Text("exclude".into()), arr(exclude)));
+        }
+        Value::Map(pairs)
+    }
+
+    /// A token granting `get`/`put` on `system/tree` for exactly `resources`.
+    fn narrow_token(resources: &[&str]) -> Entity {
+        let scope = |v: &[&str]| {
+            model::map(vec![(
+                "include",
+                Value::Array(v.iter().map(|s| model::text(s)).collect()),
+            )])
+        };
+        Entity::make(
+            "system/capability/token",
+            model::map(vec![(
+                "grants",
+                Value::Array(vec![model::map(vec![
+                    ("handlers", scope(&["system/tree"])),
+                    ("operations", scope(&["get", "put"])),
+                    ("resources", scope(resources)),
+                ])]),
+            )]),
+        )
+    }
+
+    /// §3.3's ladder (0.8.2.20, refined at .24/.25) runs on the EFFECTIVE list, never on
+    /// `resource.targets`. Each row names the disposition the revision pins; the two
+    /// EMPTIES are deliberately different for `get` (EXTENSION-TREE §2.2a v4.11 declares
+    /// it resource-OPTIONAL and BROAD-RESULT) and deliberately the same for `put`
+    /// (resource-REQUIRED).
+    #[test]
+    fn tree_ladder_dispositions() {
+        let p = Peer::create(CreateOptions {
+            seed: [11u8; 32],
+            open_grants: true,
+            ..Default::default()
+        });
+        let run = |op: &str, r: Option<Value>| p.tree_handler(&tree_exec(op, r), None, "system/tree");
+
+        // get, ABSENT resource -> the root listing (§2.2a's absent-case answer).
+        let out = run("get", None);
+        assert_eq!(out.status, 200);
+        assert_eq!(out.result.typ, "system/tree/listing");
+
+        // get, PRESENT and self-excluded -> 400 path_required. Serving this the absent
+        // case would answer a request for one excluded path with a listing of the tree.
+        let out = run("get", Some(resource(&["app/a"], &["app/a"])));
+        assert_eq!((out.status, out_code(&out)), (400, Some("path_required")));
+
+        // get, two survivors -> 400 ambiguous_resource. A peer indexing targets[0]
+        // answers 200 and cannot tell the caller it ignored the second.
+        let out = run("get", Some(resource(&["app/a", "app/b"], &[])));
+        assert_eq!((out.status, out_code(&out)), (400, Some("ambiguous_resource")));
+
+        // get, a PATTERN subject -> 400 malformed_resource. A resource-requiring
+        // operation takes a CONCRETE path; without this the pattern is looked up as a
+        // literal and answers 404, which names the wrong fault.
+        let out = run("get", Some(resource(&["system/type/*"], &[])));
+        assert_eq!((out.status, out_code(&out)), (400, Some("malformed_resource")));
+
+        // put, ABSENT resource -> 400 path_required, NOT ambiguous_resource. 0.8.2.20
+        // names that inversion outright: *supply a resource* is not *disambiguate your
+        // request*, and the code is what selects the remedy.
+        let out = run("put", None);
+        assert_eq!((out.status, out_code(&out)), (400, Some("path_required")));
+        // put, self-excluded: the same answer, because §2.2a declares put
+        // resource-REQUIRED and §3.3's "an empty effective list IS the absent case"
+        // applies in its unscoped form.
+        let out = run("put", Some(resource(&["app/a"], &["app/a"])));
+        assert_eq!((out.status, out_code(&out)), (400, Some("path_required")));
+        let out = run("put", Some(resource(&["app/a", "app/b"], &[])));
+        assert_eq!((out.status, out_code(&out)), (400, Some("ambiguous_resource")));
+
+        // RULE G control: the OPERATION resolves first. An unknown op with no resource
+        // answers the OPERATION fault, never the resource one — a handler that validates
+        // the resource first answers `ambiguous_resource`/`path_required` here.
+        let out = run("bogusop", None);
+        assert_eq!((out.status, out_code(&out)), (501, Some("unsupported_operation")));
+    }
+
+    /// THE SELECTION, which the arithmetic alone does not give you: with
+    /// `targets:[a,b] exclude:[a]` the effective set is `{b}`, size 1, so the COUNT rule
+    /// says proceed — and a raw `targets[0]` selector proceeds on `a`. Both targets are
+    /// bound, so a 200 naming `a` is a selection defect and nothing else.
+    #[test]
+    fn tree_get_selects_from_the_effective_set_never_targets_0() {
+        let p = Peer::create(CreateOptions {
+            seed: [12u8; 32],
+            open_grants: true,
+            ..Default::default()
+        });
+        let a = Entity::make("system/test-a", Value::Map(vec![]));
+        let b = Entity::make("system/test-b", Value::Map(vec![]));
+        p.store.bind(&format!("/{}/app/a", p.local_peer), &a);
+        p.store.bind(&format!("/{}/app/b", p.local_peer), &b);
+        let out = p.tree_handler(
+            &tree_exec("get", Some(resource(&["app/a", "app/b"], &["app/a"]))),
+            None,
+            "system/tree",
+        );
+        assert_eq!(out.status, 200);
+        assert_eq!(
+            out.result.typ, "system/test-b",
+            "the subject is SELECTED from the effective set; targets[0] would answer test-a"
+        );
+    }
+
+    /// §6.3's handler-level path check (0.8.2.20): *"not a secondary check ... the sole
+    /// enforcement wherever the subject is derived after dispatch"*. A caller whose
+    /// capability does not cover the path is refused HERE even though the dispatch-level
+    /// check never saw it.
+    #[test]
+    fn tree_get_refuses_a_path_the_callers_capability_does_not_cover() {
+        let p = Peer::create(CreateOptions {
+            seed: [13u8; 32],
+            open_grants: true,
+            ..Default::default()
+        });
+        let a = Entity::make("system/test-a", Value::Map(vec![]));
+        p.store.bind(&format!("/{}/app/a", p.local_peer), &a);
+        p.store.bind(&format!("/{}/app/b", p.local_peer), &a);
+        let cap = narrow_token(&["app/a"]);
+        // The CONTROL: the one resource the grant covers is served, so a refusal below is
+        // about coverage rather than about the grant being unreadable.
+        let out = p.tree_handler(
+            &tree_exec("get", Some(resource(&["app/a"], &[]))),
+            Some(&cap),
+            "system/tree",
+        );
+        assert_eq!(out.status, 200, "the covered path must still be served");
+        let out = p.tree_handler(
+            &tree_exec("get", Some(resource(&["app/b"], &[]))),
+            Some(&cap),
+            "system/tree",
+        );
+        assert_eq!((out.status, out_code(&out)), (403, Some("capability_denied")));
+    }
+
+    /// §6.3's listing filter (0.8.2.21/.22): *"each entry MUST be individually checked
+    /// using check_path_permission. Entries for which check_path_permission returns DENY
+    /// MUST be omitted. The result's `count` field MUST reflect the filtered entry count,
+    /// not the source tree's total count."*
+    #[test]
+    fn listing_omits_entries_the_callers_capability_excludes() {
+        let p = Peer::create(CreateOptions {
+            seed: [14u8; 32],
+            open_grants: true,
+            ..Default::default()
+        });
+        let e = Entity::make("system/test", Value::Map(vec![]));
+        let base = format!("/{}/app", p.local_peer);
+        p.store.bind(&format!("{base}/a"), &e);
+        p.store.bind(&format!("{base}/b"), &e);
+
+        // CONTROL: unfiltered, the listing names BOTH. Without it "b is absent" below is
+        // the trivial truth and measures nothing.
+        let out = p.build_listing(&format!("{base}/"), None, "system/tree");
+        assert_eq!(out.result.uint_field("count"), Some(2));
+
+        let cap = narrow_token(&["app/a"]);
+        let out = p.build_listing(&format!("{base}/"), Some(&cap), "system/tree");
+        assert_eq!(
+            out.result.uint_field("count"),
+            Some(1),
+            "`count` MUST follow the FILTERED total, not the source tree's"
+        );
+        let entries = out.result.field("entries").expect("entries");
+        assert!(model::map_get(entries, "a").is_some(), "the covered entry survives");
+        assert!(
+            model::map_get(entries, "b").is_none(),
+            "an entry the caller's own capability excludes MUST be omitted"
+        );
     }
 }

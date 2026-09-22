@@ -44,7 +44,7 @@ export function canonicalize(path: string, localPeerId: string): string {
   // path is a non-empty name. (Callers strip a single trailing '/' for listings
   // before canonicalizing, so an interior "//" is always an empty segment.)
   if (path.includes("//")) {
-    throw new EntityProtocolError("empty path segment (§1.4)");
+    throw new EntityProtocolError("empty path segment (section 1.4)");
   }
   if (path.startsWith("./") || path.startsWith("../")) {
     return NEVER_MATCH; // reserved: directory-relative (§1.4)
@@ -84,7 +84,7 @@ export function validateCallerTarget(target: string): void {
   for (const ch of target) {
     const code = ch.charCodeAt(0);
     if (code < 0x20 || code === 0x7f) {
-      throw new EntityProtocolError("control byte in path segment (§1.4)");
+      throw new EntityProtocolError("control byte in path segment (section 1.4)");
     }
   }
   if (target.startsWith("/")) {
@@ -92,7 +92,7 @@ export function validateCallerTarget(target: string): void {
     const slash = rest.indexOf("/");
     const first = slash < 0 ? rest : rest.slice(0, slash);
     if (!isPeerId(first)) {
-      throw new EntityProtocolError("leading / on caller-supplied path must name a peer_id (§1.4)");
+      throw new EntityProtocolError("leading / on caller-supplied path must name a peer_id (section 1.4)");
     }
   }
 }

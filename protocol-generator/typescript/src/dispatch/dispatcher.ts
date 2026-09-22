@@ -499,7 +499,7 @@ export class Dispatcher {
     // distinct from 403 capability_denied. Arch v7.75 ruling: 400 lets the caller
     // distinguish "shorten your chain" from "you lack the capability".
     if (ChainVerifier.exceedsMaxDepth(capability, envelope)) {
-      return deny(Status.BadRequest, "chain_depth_exceeded", "capability chain exceeds max depth (§4.10b)");
+      return deny(Status.BadRequest, "chain_depth_exceeded", "capability chain exceeds max depth (section 4.10b)");
     }
     if (!ChainVerifier.verifyCapabilityChain(capability, envelope, this.#peer.localPeerId, this.#peer.nowMs)) {
       return deny(Status.Forbidden, "capability_denied", "capability chain verification failed");
@@ -508,7 +508,7 @@ export class Dispatcher {
     // §5.2 step 4: revocation. A revoked link anywhere in the chain denies with the
     // specific code 403 capability_revoked (Class C ruling 2026-06-11).
     if (this.#isChainRevoked(capability, envelope)) {
-      return deny(Status.Forbidden, "capability_revoked", "capability is revoked (§5.1)");
+      return deny(Status.Forbidden, "capability_revoked", "capability is revoked (section 5.1)");
     }
 
     return ok(capability);

@@ -71,39 +71,73 @@ let close_io (io : io) : unit =
 (* The reader loop (§6.11 demux): EXECUTE_RESPONSE → route; EXECUTE → dispatch on its
    own thread (§4.8). [on_execute] dispatches one inbound EXECUTE and writes its
    response. Returns when the connection closes / a malformed frame ends it. *)
+(* [refuse_pre_admission] puts the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires
+   on the wire for a frame refused BEFORE it becomes an admitted request.
+
+     "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE
+      on the wire [MUST] — correlated by request_id where the id is available, and
+      otherwise as a best-effort coded frame carrying no correlation."
+
+   §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS"
+   and therefore reaches NONE of these, which is why §4.11 exists. The two
+   non-conformant behaviours it names are SEPARATE failures and this peer had one
+   of each: DROPPING the frame (the un-salvageable arm below fell through to
+   silence — "the weaker of the two precisely because nothing surfaces it") and
+   CLOSING with no coded frame (the oversize arm, which ended the read loop).
+
+   An EMPTY [request_id] IS the best-effort form, not a bug: it is what the section
+   prescribes where no id can be recovered. *)
+let refuse_pre_admission (io : io) ~(request_id : string) ~(status : int) ~(code : string) : unit =
+  let resp =
+    { Model.root = Wire.make_response ~request_id ~status ~result:(Wire.error_result code);
+      Model.included = [] }
+  in
+  (try write_framed io resp with _ -> ())
+
 let read_loop (io : io) ~(on_execute : Model.envelope -> unit) : unit =
   let rec loop () =
-    match (try Some (Wire.read_frame io.fd) with Wire.Closed | End_of_file | Unix.Unix_error _ | Failure _ -> None) with
-    | None -> ()
-    | Some payload ->
-        (match (try Some (Wire.envelope_of_frame payload) with _ -> None) with
-         | None ->
-             (* §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame
-                is owed a STATUS, not silence. This used to drop the frame, which
-                rejected it (correct) and then said nothing (wrong): the sender
-                blocked until its own timeout, violating §6.3's second sentence
-                and §4.9(c) deliver-or-signal, and making a refusal
-                indistinguishable from a dead peer. On a single-connection oracle
-                run it also poisons every later request on the connection.
+    match (try Ok (Wire.read_frame io.fd) with e -> Error e) with
+    | Error e ->
+        (* The stream is desynchronized on both refusable arms — an oversize body
+           was never drained, a truncated one never arrived — so the coded frame
+           goes out and THEN the loop ends. §4.11 makes the frame mandatory and
+           leaves the close to us; closing is the only sound choice once the
+           framing is lost, and it is a choice rather than an alternative to
+           answering. An ordinary close ([Wire.Closed], EOF, a reset socket) is not
+           a refusal of anything and there is nobody left to answer. *)
+        if Wire.is_framing_refusal e then begin
+          let status, code = Wire.pre_admission_refusal e in
+          refuse_pre_admission io ~request_id:"" ~status ~code
+        end
+    | Ok payload ->
+        (match (try Ok (Wire.envelope_of_frame payload) with e -> Error e) with
+         | Error e ->
+             (* A COMPLETE frame the decoder refused. The framing is intact, so we
+                answer and KEEP SERVING — this used to drop the frame when even the
+                request_id was unrecoverable, which left the sender blocked until
+                its own §6.11(c) deadline and made a refusal indistinguishable from
+                a dead peer.
 
-                The frame is still REJECTED — only the request_id is salvaged, to
-                correlate the response. *)
-             (match Wire.salvage_request_id payload with
-              | Some request_id ->
-                  let resp =
-                    { Model.root =
-                        Wire.make_response ~request_id ~status:400
-                          ~result:(Wire.error_result "non_canonical_ecf");
-                      Model.included = [] }
-                  in
-                  (try write_framed io resp with _ -> ())
-              | None -> ())
-         | Some env ->
+                THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered
+                non_canonical_ecf for EVERY cause until 0.8.2.24/.25 pinned them
+                apart: a mis-keyed `included` entry is 400 hash_mismatch (its
+                encoding is canonical — what is false is the claim the key makes),
+                a tag-policy violation keeps non_canonical_ecf, and everything else
+                that never becomes an Envelope is 400 invalid_request.
+
+                The frame is still REJECTED — we only salvage enough to correlate
+                the response, and an unrecoverable id yields the uncorrelated
+                best-effort frame rather than silence. *)
+             let status, code = Wire.pre_admission_refusal e in
+             let request_id = Option.value ~default:"" (Wire.salvage_request_id payload) in
+             refuse_pre_admission io ~request_id ~status ~code;
+             loop ()
+         | Ok env ->
              if String.equal env.Model.root.Model.typ "system/protocol/execute/response" then
                route_response io env
              else
-               let _ : Thread.t = Thread.create on_execute env in ());
-        loop ()
+               (let _ : Thread.t = Thread.create on_execute env in ());
+             loop ())
   in
   (try loop () with _ -> ())
 

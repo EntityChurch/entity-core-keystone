@@ -34,7 +34,7 @@ import math
 import struct
 from typing import Any
 
-from .errors import NonCanonicalEcfError, TruncatedError
+from .errors import NonCanonicalEcfError, TagRejectedError, TruncatedError
 
 # Major types.
 _MT_UINT = 0
@@ -367,7 +367,13 @@ class _Decoder:
                 # reached from the strict decode path.
                 self._read_argument(info)
                 return self._decode_value()
-            raise NonCanonicalEcfError("CBOR tag (major type 6) forbidden in ECF (non_canonical_ecf)")
+            # A DISTINCT TYPE, because the dispatch boundary has to branch on it:
+            # this is the one decode failure §4.11 leaves on `non_canonical_ecf`,
+            # ENTITY-CBOR-ENCODING §6.3 being that code's sole definition. Every
+            # other member of this hierarchy is §4.11's framing arm and answers
+            # `400 invalid_request`. TagRejectedError subclasses
+            # NonCanonicalEcfError, so nothing that catches the parent changes.
+            raise TagRejectedError("CBOR tag (major type 6) forbidden in ECF (non_canonical_ecf)")
         # major == 7: simple values + floats.
         return self._decode_simple(info)
 
@@ -446,9 +452,11 @@ class _Decoder:
 def decode(buf: bytes) -> Any:
     """Strictly decode canonical ECF bytes to a value tree.
 
-    Raises :class:`NonCanonicalEcfError` for any non-canonical input (tags,
-    indefinite-length, non-minimal int/float head, mis-ordered/duplicate map
-    keys) and :class:`TruncatedError` on a short read.
+    Raises :class:`NonCanonicalEcfError` for any non-canonical input
+    (indefinite-length, non-minimal int/float head, mis-ordered/duplicate map keys)
+    and :class:`TruncatedError` on a short read.  A CBOR TAG raises the
+    :class:`TagRejectedError` subclass, which is the only member that carries the
+    ``non_canonical_ecf`` wire code (§4.11).
     """
     return _Decoder(bytes(buf)).decode()
 

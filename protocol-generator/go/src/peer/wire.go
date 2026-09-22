@@ -9,9 +9,14 @@ package peer
 //
 // §4.10(a) resource bound: a finite max inbound payload (MaxFrame, 16 MiB) is
 // enforced by checking the LENGTH PREFIX before buffering the body — an
-// over-limit frame is rejected as 413 payload_too_large at read time (the
-// transport closes the connection after the rejection rather than allocating the
-// oversized buffer). The recommended (informative) default is 16 MiB.
+// over-limit frame is rejected as 413 payload_too_large at read time, and since
+// 0.8.2.25 (N14) that rejection MUST be EMITTED: §4.10(a)'s "SHOULD … and
+// otherwise MAY close after a best-effort coded frame" became a MUST, because
+// the over-size condition is detected at the length prefix with the connection
+// intact and nothing spent. §4.11 is the emission shape for the whole class.
+// The transport still closes afterwards — the body was never drained, so the
+// framing is lost — but the close is now in addition to the frame, not instead
+// of it. The recommended (informative) default is 16 MiB.
 
 import (
 	"encoding/binary"
@@ -29,13 +34,31 @@ const MaxFrame = 16 * 1024 * 1024
 // payload_too_large). Reported BEFORE the body is buffered (§4.10(a)).
 var ErrFrameTooLarge = errors.New("peer: inbound frame exceeds max payload (413 payload_too_large)")
 
+// ErrTruncatedFrame signals a frame that never completed: a partial length prefix,
+// or a prefix declaring N bytes followed by fewer. §4.11's framing arm names this
+// input explicitly — "un-parseable, truncated or non-canonical CBOR, or a length
+// prefix that never completes" — and answers `400 invalid_request`.
+//
+// IT IS A SEPARATE VALUE FROM io.EOF BECAUSE THE TWO ARE DIFFERENT EVENTS AND
+// io.ReadFull COLLAPSES THEM. A clean io.EOF at a frame boundary is an ordinary
+// close and is owed nothing; a stream that ends mid-frame is a REFUSAL and is
+// owed a coded frame. io.ReadFull answers io.EOF for "zero bytes read" and
+// io.ErrUnexpectedEOF for "some", so a prefix declaring 100 bytes followed by
+// immediate close is indistinguishable from an idle hangup unless the distinction
+// is made HERE, where the frame boundary is known.
+var ErrTruncatedFrame = errors.New("peer: truncated inbound frame (400 invalid_request)")
+
 // ReadFrame reads one length-prefixed frame and returns its CBOR payload. The
 // length prefix is validated against MaxFrame before any body bytes are read
-// (§4.10(a)). io.EOF / io.ErrUnexpectedEOF propagate to signal a closed conn.
+// (§4.10(a)). A clean io.EOF at a frame boundary propagates unchanged; anything
+// that ends mid-frame becomes ErrTruncatedFrame.
 func ReadFrame(r io.Reader) ([]byte, error) {
 	var hdr [4]byte
-	if _, err := io.ReadFull(r, hdr[:]); err != nil {
-		return nil, err
+	if n, err := io.ReadFull(r, hdr[:]); err != nil {
+		if n > 0 {
+			return nil, ErrTruncatedFrame // partial length prefix
+		}
+		return nil, err // nothing read: an ordinary close, not a refusal
 	}
 	n := binary.BigEndian.Uint32(hdr[:])
 	if n > MaxFrame {
@@ -43,7 +66,7 @@ func ReadFrame(r io.Reader) ([]byte, error) {
 	}
 	body := make([]byte, n)
 	if _, err := io.ReadFull(r, body); err != nil {
-		return nil, err
+		return nil, ErrTruncatedFrame // declared n, delivered fewer
 	}
 	return body, nil
 }
@@ -68,9 +91,53 @@ func EnvelopeOfFrame(payload []byte) (Envelope, error) {
 	return EnvelopeOfCbor(v)
 }
 
+// preAdmissionRefusal maps a pre-admission failure to the (status, code) §4.11
+// assigns its CAUSE. "The frame obligation belongs to the class; the CODE belongs
+// to the cause [MUST]" — a single code for the class would answer an honest
+// caller under the wrong reason and send them to the wrong layer.
+//
+//	connect-auth proof-of-possession   401 authentication_failed   (§4.6/§4.7 — the
+//	                                                                connect handler's,
+//	                                                                not this function's)
+//	envelope over the configured max    413 payload_too_large       (§4.10(a), N14)
+//	resolution integrity (mis-keyed)    400 hash_mismatch           (§5.2a, §1.8)
+//	framing / never becomes an Envelope 400 invalid_request         (§4.7, §4.11)
+//	root is neither EXECUTE nor
+//	  EXECUTE_RESPONSE                  400 invalid_request         (§3.3, §4.11 — in
+//	                                                                dispatch, not here)
+//
+// The CBOR tag-policy arm keeps `non_canonical_ecf` and that is deliberate.
+// §4.11 rules that code non-conformant "on the framing arm" and gives its reason
+// in the same sentence: ENTITY-CBOR-ENCODING §5.4 "defines that code for CBOR
+// tag-policy violations specifically", which that document still MUSTs at decode
+// time. The two texts are only compatible if the tag case is not read as part of
+// the framing arm even though §4.11's row says "non-canonical CBOR" and a tagged
+// frame is literally that. Reported as an ambiguity rather than resolved here;
+// this branch takes the reading that keeps BOTH MUSTs satisfiable and preserves
+// the behaviour the `tag_reject` vectors were written against.
+func preAdmissionRefusal(err error) (uint64, string) {
+	switch {
+	case err == ErrFrameTooLarge:
+		return 413, "payload_too_large"
+	case err == ErrHashMismatch:
+		return 400, "hash_mismatch"
+	case errors.Is(err, cbor.ErrTagRejected):
+		return 400, "non_canonical_ecf"
+	default:
+		return 400, "invalid_request"
+	}
+}
+
+// framingRefusal reports whether a ReadFrame error is a REFUSAL owed a coded
+// frame (§4.11) rather than an ordinary end of connection. A closed or reset
+// socket is not a refusal of anything and there is nobody left to answer.
+func framingRefusal(err error) bool {
+	return err == ErrFrameTooLarge || err == ErrTruncatedFrame
+}
+
 // salvageRequestID recovers ONLY the request_id from a frame the strict decoder
-// rejected, so the rejection can be delivered as a correlated
-// `400 non_canonical_ecf` response (§6.3) instead of silence.
+// rejected, so the rejection can be delivered as a CORRELATED response rather
+// than as the uncorrelated best-effort frame §4.11 falls back to.
 //
 // The frame stays rejected. Nothing else is read out of it: no entity is built,
 // nothing is stored, and the offending tag is never interpreted. The envelope

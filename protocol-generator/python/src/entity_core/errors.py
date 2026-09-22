@@ -24,15 +24,42 @@ class CodecError(EntityCoreError):
 
 
 class NonCanonicalEcfError(CodecError):
-    """A decoded frame violated ECF canonicality.
+    """A decoded frame violated ECF canonicality: an indefinite-length item, a
+    non-shortest integer/float head, a misordered/duplicated map key, invalid UTF-8,
+    trailing bytes.
 
-    Maps to the spec wire error code ``400 non_canonical_ecf`` (ENTITY-CBOR-
-    ENCODING §6.3 / Rule violation): a CBOR tag (major type 6) on a data
-    field, an indefinite-length item, a non-shortest integer/float head, or a
-    misordered/duplicated map key.
+    THE WIRE CODE IS NOT ``non_canonical_ecf`` FOR THIS CLASS, and the name is a
+    historical accident this docstring used to repeat.  ``ENTITY-CORE-PROTOCOL`` §4.11
+    (0.8.2.25) puts these inputs on the FRAMING arm — "un-parseable, truncated or
+    non-canonical CBOR that never becomes an Envelope" -> ``400 invalid_request`` —
+    and rules ``400 non_canonical_ecf`` *"NOT conformant on the framing arm
+    ``[MUST]``"*, because ``ENTITY-CBOR-ENCODING`` §6.3 defines that code for CBOR
+    **tag-policy** violations specifically and *"your bytes are truncated"* is not
+    *"re-encode without the tag."*  The code selects the caller's remedy, so a code
+    that is merely in the right family is still wrong.
+
+    :class:`TagRejectedError` is the one subclass that keeps the old code.
     """
 
-    #: The spec wire error code this exception maps to at the dispatch boundary.
+    #: The §4.11 wire error code this exception maps to at the dispatch boundary.
+    wire_code = "invalid_request"
+
+
+class TagRejectedError(NonCanonicalEcfError):
+    """A CBOR tag (major type 6) in a data-field position.
+
+    ``ENTITY-CBOR-ENCODING`` §6.3 is the sole definition of ``non_canonical_ecf`` in
+    the corpus and assigns it to exactly this condition: *"any CBOR major-type-6 item
+    encountered in a data-field position is a rejection condition ... Rejection
+    returns ``400 non_canonical_ecf``."*  The remedy that code names — re-encode
+    without the tag — is the caller's actual remedy here and nowhere else in this
+    hierarchy, which is why this is a SUBCLASS rather than a message on the parent:
+    the dispatch boundary has to branch on it, and a string comparison is not a branch.
+
+    A subclass so every existing ``except NonCanonicalEcfError`` site — the S2 corpus
+    harness among them — keeps catching it unchanged.
+    """
+
     wire_code = "non_canonical_ecf"
 
 

@@ -52,6 +52,30 @@ public actor Connection {
         await readerTask?.value
     }
 
+    /// Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a frame
+    /// refused BEFORE it becomes an admitted request.
+    ///
+    /// > "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on
+    /// > the wire `[MUST]` — correlated by `request_id` where the id is available, and
+    /// > otherwise as a best-effort coded frame carrying no correlation."
+    ///
+    /// §4.9(c)'s deliver-or-signal rule is scoped to *"every request the peer ADMITS"*
+    /// and therefore reaches NONE of these, which is why §4.11 exists. The two
+    /// non-conformant behaviours it names are SEPARATE failures and this peer had one of
+    /// each: DROPPING the frame (the un-salvageable arm below fell through to silence —
+    /// *"the weaker of the two precisely because nothing surfaces it"*) and CLOSING with
+    /// no coded frame (the oversize/truncated arm, which broke out of the read loop, and
+    /// the non-EXECUTE root, which called `teardown()` directly).
+    ///
+    /// An EMPTY `requestID` IS the best-effort form, not a bug: it is what the section
+    /// prescribes where no id can be recovered.
+    private func refusePreAdmission(requestID: String, status: UInt64, code: String) async {
+        guard let err = try? Wire.errorEntity(code: code, message: nil),
+              let root = try? Wire.buildResponse(requestID: requestID, status: status, result: err),
+              let bytes = try? Wire.encodeEnvelope(root: root) else { return }
+        await send(bytes)
+    }
+
     private func readLoop() async {
         // Blocking reads happen on a detached task so the actor isn't pinned; each
         // frame is handed back onto the actor for demux.
@@ -59,29 +83,53 @@ public actor Connection {
             // Blocking read on a DEDICATED OS thread (§7b): a blocking read parked on
             // the small cooperative pool starves accepts/other readers under churn
             // (t2_2 i/o-timeout). A fresh thread per read keeps the pool free.
-            let frameOpt = await onBlockingThread { [socket] in
+            let outcome = await onBlockingThread { [socket] in
                 socket.readFrame()
             }
-            guard let frame = frameOpt else { break }   // EOF / connection broken
-            guard let env = try? Wire.decodeEnvelope(frame) else {
-                // §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame
-                // is owed a STATUS, not a closed connection. Breaking here rejected
-                // the frame (correct) and tore down the whole connection (wrong):
-                // it violates §6.3's second sentence and §4.9(c) deliver-or-signal,
-                // makes a refusal indistinguishable from a dead peer, and kills every
-                // in-flight and subsequent request over ONE bad frame.
-                //
-                // The frame is still REJECTED — only the request_id is salvaged, to
-                // correlate the response — and the connection stays up.
-                if let rid = Wire.salvageRequestID(frame),
-                   let err = try? Wire.errorEntity(code: "non_canonical_ecf", message: nil),
-                   let root = try? Wire.buildResponse(requestID: rid, status: 400, result: err),
-                   let bytes = try? Wire.encodeEnvelope(root: root) {
-                    await send(bytes)
-                }
-                continue
+            let frame: [UInt8]
+            switch outcome {
+            case .closed:
+                // An ordinary hangup at a frame boundary. Not a refusal of anything and
+                // nobody left to answer (§4.11).
+                await teardown()
+                return
+            case .refused(let e):
+                // The stream is desynchronized — an oversize body was never drained, a
+                // truncated one never arrived — so the coded frame goes out and THEN the
+                // loop ends. §4.11 makes the frame mandatory and leaves the close to us;
+                // closing is the only sound choice once the framing is lost, and it is a
+                // choice rather than an alternative to answering.
+                let r = Wire.preAdmissionRefusal(e)
+                await refusePreAdmission(requestID: "", status: r.status, code: r.code)
+                await teardown()
+                return
+            case .frame(let f):
+                frame = f
             }
-            await handleFrame(env)
+            do {
+                let env = try Wire.decodeEnvelope(frame)
+                await handleFrame(env)
+            } catch let error as CodecError {
+                // A COMPLETE frame the decoder refused. The framing is intact, so we
+                // answer and KEEP SERVING — this used to tear the connection down, then
+                // (once that was fixed) still dropped the frame whenever the request_id
+                // was unrecoverable, which left the sender blocked until its own §6.11(c)
+                // deadline and made a refusal indistinguishable from a dead peer.
+                //
+                // THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered
+                // `non_canonical_ecf` for EVERY cause until 0.8.2.24/.25 pinned them
+                // apart: a mis-keyed `included` entry is 400 `hash_mismatch` (its encoding
+                // is canonical — what is false is the claim the key makes), a tag-policy
+                // violation keeps `non_canonical_ecf`, and everything else that never
+                // becomes an Envelope is 400 `invalid_request`.
+                //
+                // The frame is still REJECTED — we only salvage enough to correlate the
+                // response, and an unrecoverable id yields the uncorrelated best-effort
+                // frame rather than silence.
+                let r = Wire.preAdmissionRefusal(error)
+                await refusePreAdmission(requestID: Wire.salvageRequestID(frame) ?? "",
+                                         status: r.status, code: r.code)
+            }
         }
         await teardown()
     }
@@ -108,8 +156,28 @@ public actor Connection {
                 }
             }
         } else {
-            // §3.3: any other root type is invalid → close the connection.
-            await teardown()
+            // §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+            // invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare
+            // close — that is indistinguishable from a network fault."
+            //
+            // §3.3 read "the connection MUST be closed", assigning no code and requiring
+            // no frame, and §9.1's floor row MANDATED it; N18 replaced that row. This
+            // peer did exactly the bare close, which §4.11 names as non-conformant and
+            // which on a multiplexed connection costs every ADMITTED in-flight request
+            // its response.
+            //
+            // This is a PRE-ADMISSION refusal: the root is not an EXECUTE, so nothing was
+            // ever admitted and §4.9(c) — scoped to "every request the peer ADMITS" —
+            // does not reach it. `request_id` is read best-effort: an arbitrary root type
+            // is under no obligation to carry one, and §4.11 licenses the uncorrelated
+            // frame exactly there. We do NOT close; §4.11 leaves that to us.
+            //
+            // The peer layer's own arm for this (`dispatchInner`'s non-EXECUTE guard) is
+            // unreachable from here by construction — the transport decides which roots
+            // reach dispatch — so the code is fixed HERE, where the wire observes it.
+            // Both sites now answer `invalid_request` rather than diverging.
+            await refusePreAdmission(requestID: env.root.data.textAt("request_id") ?? "",
+                                     status: 400, code: "invalid_request")
         }
     }
 

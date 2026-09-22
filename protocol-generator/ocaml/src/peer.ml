@@ -388,15 +388,51 @@ let is_deletion_marker (t : t) (h : string) : bool =
   | Some e -> String.equal e.Model.typ "system/deletion-marker"
   | None -> false
 
+(* [entry_visible] answers §6.3's per-entry listing check for ONE child segment.
+
+   An UNAUTHENTICATED context ([~caller_cap = None]) is the bootstrap / internal
+   path and is NOT filtered -- the filter's subject is "the caller's verified
+   capability", and where there is none there is no caller to narrow. *)
+let entry_visible (t : t) ~(caller_cap : Model.entity option) ~(pattern : string)
+    ~(dir : string) ~(segment : string) : bool =
+  match caller_cap with
+  | None -> true
+  | Some cap ->
+      let dir = if String.length dir > 0 && dir.[String.length dir - 1] = '/' then dir else dir ^ "/" in
+      Capability.check_path_permission ~local_peer:t.local_peer ~operation:"get"
+        ~path:(dir ^ segment) ~token:cap ~handler_pattern:pattern
+
 (* Build a system/tree/listing (§3.9), omitting deletion-marker-bound leaves
-   (CORE-TREE-DELETE-1 / §6.3 filter). Entries keyed by child segment. *)
-let build_listing (t : t) ~(path : string) : outcome =
+   (CORE-TREE-DELETE-1 / §6.3 filter), and FILTERED PER-ENTRY against the caller's
+   own capability (§6.3, 0.8.2.21/.22):
+
+     "When any handler returns a multi-entry result whose entries are tree paths,
+      each entry MUST be individually checked using check_path_permission. Entries
+      for which check_path_permission returns DENY MUST be omitted. The result's
+      `count` field MUST reflect the filtered entry count, not the source tree's
+      total count."
+
+   This is the read path at its highest volume and it is the reason 0.8.2.21
+   refused to carve reads out of the caller-specified-path rule: an unfiltered
+   listing discloses the EXISTENCE of every binding under a prefix to a caller
+   whose capability covers none of them. [count] follows the FILTERED total below
+   -- a count that still reports the source total is the disclosure the rule
+   exists to prevent.
+
+   THE DIRECTORY ITSELF IS DELIBERATELY NOT CHECKED. §6.3 makes each ENTRY the
+   subject, and testing the prefix would deny a listing to a caller whose grant
+   covers children but not the node above them, which is the ordinary shape of a
+   narrowed grant. *)
+let build_listing (t : t) ~(caller_cap : Model.entity option) ~(pattern : string) ~(path : string) : outcome =
   let entries = Store.listing t.store ~prefix:path in
   let entries =
     List.filter
       (fun (_, hash, has_children) ->
         match hash with Some h when (not has_children) && is_deletion_marker t h -> false | _ -> true)
       entries
+  in
+  let entries =
+    List.filter (fun (seg, _, _) -> entry_visible t ~caller_cap ~pattern ~dir:path ~segment:seg) entries
   in
   let entry_map =
     List.map
@@ -492,50 +528,143 @@ let admit_put (v : Cbor.t) : (Model.entity, outcome) result =
             "put: entity.type absent, empty or not a text string")
   | _ -> refuse "invalid_request" "put: entity is not a map"
 
-let tree_handler (t : t) (exec : Model.entity) : outcome =
+(* [is_pattern_path] reports whether a resource target is a §5.4 PATTERN rather
+   than a concrete path. A resource-requiring operation takes a concrete path
+   (0.8.2.20), and a trailing "/" is a LISTING request rather than a pattern --
+   only a "*" makes it one. *)
+let is_pattern_path (target : string) : bool = String.contains target '*'
+
+(* THE OPERATION IS RESOLVED FIRST, AND THE §3.3 RESOURCE LADDER IS REACHABLE ONLY
+   FROM A KNOWN OPERATION (RULE G / F52).
+
+   This match used to dispatch on the PAIR [op, resource_target exec], with an
+   [| _, None -> 400 ambiguous_resource] arm sitting ABOVE [| other, _ -> 501].
+   OCaml's match is first-fit, so the any-operation/no-resource arm captured every
+   UNKNOWN operation that arrived without a resource, and the peer answered a
+   RESOURCE fault for an OPERATION fault. Measured on the wire before the change:
+
+     system/tree:bogusop, no resource   -> 400 ambiguous_resource   (wrong)
+     system/tree:bogusop, WITH resource -> 501 unsupported_operation (right)
+
+   -- the same operation, two answers, decided by a field that has nothing to do
+   with whether the operation exists. The second row is the control that makes the
+   first attributable to ORDERING rather than to a missing 501 arm.
+
+   §4.7's reasoning for the connect handler's row 10 is the general principle and
+   it applies here: the code selects the caller's REMEDY. "Disambiguate your
+   request" is useless advice about an operation this handler does not implement.
+   [entity-system-conformance] measured the same defect independently (X9/F52) and
+   names [elixir] and [haskell] as carrying the same shape. *)
+let tree_handler (t : t) ~(caller_cap : Model.entity option) ~(pattern : string)
+    (exec : Model.entity) : outcome =
   let op = Option.value ~default:"" (Model.text_field exec "operation") in
-  match op, resource_target exec with
-  | ("get" | "put"), Some target when not (path_flex_ok target) ->
-      err 400 "invalid_path" ~message:target
-  | "get", None ->
-      (* §6.3: empty resource → list the local peer root. *)
-      build_listing t ~path:("/" ^ t.local_peer ^ "/")
-  | "get", Some target when target = "" || target.[String.length target - 1] = '/' ->
-      build_listing t ~path:(Capability.canonicalize ~local_peer:t.local_peer target)
-  | "get", Some target -> (
-      let path = Capability.canonicalize ~local_peer:t.local_peer target in
-      match Store.get_at t.store ~path with
-      | Some e ->
-          let mode = Option.bind (entity_field exec "params") (fun p -> Model.text_field p "mode") in
-          if mode = Some "hash" then ok (Model.make ~typ:"system/hash" (Cbor.Bytes e.hash))
-          else ok e
-      | None -> err 404 "not_found" ~message:path)
-  | "put", Some target ->
-      let path = Capability.canonicalize ~local_peer:t.local_peer target in
-      let params = entity_field exec "params" in
-      let entity = Option.bind params (fun p -> Model.field p "entity") in
-      let expected = Option.bind params (fun p -> Model.bytes_field p "expected_hash") in
-      (* §3.9 CAS: zero-hash = create-only; non-zero must match current binding. *)
-      let current = Store.hash_at t.store ~path in
-      let zero33 = String.make 33 '\000' in
-      let cas_ok =
-        match expected with
-        | None -> true
-        | Some h when String.equal h zero33 -> current = None
-        | Some h -> current = Some h
-      in
-      if not cas_ok then err 409 "hash_mismatch" ~message:path
-      else (
-        match entity with
-        | Some raw -> (
-            match admit_put raw with
-            | Error refusal -> refusal
-            | Ok e ->
-                Store.bind t.store ~path e;
-                ok (Model.make ~typ:"system/hash" (Cbor.Bytes e.hash)))
-        | None -> err 400 "unexpected_params" ~message:"put: missing entity")
-  | _, None -> err 400 "ambiguous_resource" ~message:"tree: missing resource target"
-  | other, _ -> err 501 "unsupported_operation" ~message:("tree: " ^ other)
+  (* §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+     [resource.targets]: a handler that counts the effective list and then takes
+     targets[0] has implemented the arithmetic completely and is still reading a
+     path no authorization covered. *)
+  let eff, has_resource = Capability.effective_targets ~local_peer:t.local_peer exec in
+  (* §6.3: the handler MUST verify the CALLER's capability covers the path it is
+     about to touch. NOT a secondary check -- the dispatch-level check never saw
+     this path if the caller excluded it. An unauthenticated context (bootstrap /
+     internal) has no caller to narrow and is not filtered. *)
+  let path_permitted operation path =
+    match caller_cap with
+    | None -> true
+    | Some cap ->
+        Capability.check_path_permission ~local_peer:t.local_peer ~operation ~path ~token:cap
+          ~handler_pattern:pattern
+  in
+  match op with
+  | "get" -> (
+      if not has_resource then
+        (* THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN SPECIFICATION
+           IS WHAT SAYS SO. §3.3's "an empty effective list IS the absent case" is
+           scoped "for an operation that REQUIRES a resource" (0.8.2.24, N7); [get]
+           does not. For a resource-OPTIONAL operation 0.8.2.25 (N10) decides the
+           present-but-empty case by whether the absent case is WIDER than the
+           request -- BROAD-RESULT refuses it, OPTIONAL-FILTER answers it empty --
+           and requires the operation to declare which it is.
+
+           EXTENSION-TREE §2.2a (v4.11) is that declaration: [get] is
+           resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root
+           listing", self-excluded case "400 path_required". Both arms are pinned
+           by text and neither is this peer's choice. *)
+        build_listing t ~caller_cap ~pattern ~path:("/" ^ t.local_peer ^ "/")
+      else if eff = [] then
+        (* The self-excluded request: [resource] PRESENT, every target carved out by
+           the caller's own exclude. Serving it the absent case "answers a request
+           for one excluded path with a listing of the tree" (EXTENSION-TREE §2.2a)
+           -- the root listing is wider than what was asked for, which is what
+           BROAD-RESULT means. *)
+        err 400 "path_required" ~message:"tree: effective target list is empty"
+      else if List.length eff > 1 then
+        err 400 "ambiguous_resource" ~message:"tree: more than one effective target"
+      else
+        let target = List.hd eff in
+        if not (path_flex_ok target) then err 400 "invalid_path" ~message:target
+        else if target = "" || target.[String.length target - 1] = '/' then
+          build_listing t ~caller_cap ~pattern
+            ~path:(Capability.canonicalize ~local_peer:t.local_peer target)
+        else if is_pattern_path target then err 400 "malformed_resource" ~message:target
+        else
+          let path = Capability.canonicalize ~local_peer:t.local_peer target in
+          if not (path_permitted "get" path) then err 403 "capability_denied" ~message:path
+          else
+            match Store.get_at t.store ~path with
+            | Some e ->
+                let mode = Option.bind (entity_field exec "params") (fun p -> Model.text_field p "mode") in
+                if mode = Some "hash" then ok (Model.make ~typ:"system/hash" (Cbor.Bytes e.hash))
+                else ok e
+            | None -> err 404 "not_found" ~message:path)
+  | "put" ->
+      (* Same ladder as [get], with the two empties COLLAPSED rather than split:
+         EXTENSION-TREE §2.2a (v4.11) declares [put] resource-REQUIRED, so §3.3's
+         "an empty effective list IS the absent case" applies in its unscoped form
+         and both empties answer [path_required]. That is the same table [get]'s
+         branch cites, read one row down -- the field is per-operation and neither
+         answer is derivable from the handler's source.
+
+         NOTE THE CODE CHANGE 0.8.2.20 FORCED: this arm answered [ambiguous_resource]
+         for a MISSING target, which 0.8.2.20 names as the exact inversion it forbids
+         ("answering ambiguous_resource for an absent resource inverts them"). The
+         remedies differ -- *supply a resource* is not *disambiguate your request* --
+         and the code is what selects between them. Measured on the wire before the
+         change: put with no resource answered 400 ambiguous_resource. *)
+      if (not has_resource) || eff = [] then
+        err 400 "path_required" ~message:"tree: put requires a resource target"
+      else if List.length eff > 1 then
+        err 400 "ambiguous_resource" ~message:"tree: more than one effective target"
+      else
+        let target = List.hd eff in
+        if not (path_flex_ok target) then err 400 "invalid_path" ~message:target
+        else if is_pattern_path target then err 400 "malformed_resource" ~message:target
+        else
+          let path = Capability.canonicalize ~local_peer:t.local_peer target in
+          if not (path_permitted "put" path) then err 403 "capability_denied" ~message:path
+          else
+            let params = entity_field exec "params" in
+            let entity = Option.bind params (fun p -> Model.field p "entity") in
+            let expected = Option.bind params (fun p -> Model.bytes_field p "expected_hash") in
+            (* §3.9 CAS: zero-hash = create-only; non-zero must match current binding. *)
+            let current = Store.hash_at t.store ~path in
+            let zero33 = String.make 33 '\000' in
+            let cas_ok =
+              match expected with
+              | None -> true
+              | Some h when String.equal h zero33 -> current = None
+              | Some h -> current = Some h
+            in
+            if not cas_ok then err 409 "hash_mismatch" ~message:path
+            else (
+              match entity with
+              | Some raw -> (
+                  match admit_put raw with
+                  | Error refusal -> refusal
+                  | Ok e ->
+                      Store.bind t.store ~path e;
+                      ok (Model.make ~typ:"system/hash" (Cbor.Bytes e.hash)))
+              | None -> err 400 "unexpected_params" ~message:"put: missing entity")
+  | other -> err 501 "unsupported_operation" ~message:("tree: " ^ other)
 
 (* ── capability handler (§6.2) ────────────────────────────────────────────── *)
 
@@ -678,7 +807,13 @@ let register (t : t) (exec : Model.entity) : outcome =
   | Error e -> e
   | Ok pattern when is_reserved_system_pattern pattern ->
       err 403 "forbidden_pattern"
-        ~message:("§6.2: user-installed handlers MUST NOT register at system/* paths: " ^ pattern)
+        (* ASCII-ONLY IN A WIRE-VISIBLE STRING (AGENTS.md, ratified on two
+           independent crashes). A "§" in an error `message` is CBOR-text-encoded
+           and sent; Oz's compiled string constant was corrupted by one and Io's
+           own UTF-8 validator rejected byte-correct UTF-8, killing the process
+           and cascading 104 FAILs. The citation stays, spelled "section", and
+           "§" stays in comments, which are never encoded. *)
+        ~message:("section 6.2: user-installed handlers MUST NOT register at system/* paths: " ^ pattern)
   | Ok pattern -> (
       match entity_field exec "params" with
       | None -> err 400 "unexpected_params" ~message:"register: missing params"
@@ -874,7 +1009,8 @@ let dispatch_outbound_handler (t : t) (conn : conn) (exec : Model.entity) : outc
             outbound_dispatch t conn ~uri:target ~operation ~params:inner ~resource ~capability
               ~granter_peer ~capability_signature ()
           with
-          | None -> err 503 "no_outbound_seam" ~message:"no live §6.11 reentry connection"
+          (* ASCII-only wire message (AGENTS.md) — see the forbidden_pattern arm. *)
+          | None -> err 503 "no_outbound_seam" ~message:"no live section 6.11 reentry connection"
           | Some env ->
               let status = Option.value ~default:0L (Model.uint_field env.Model.root "status") in
               let result_cbor = Option.value ~default:(Cbor.Map []) (Model.field env.Model.root "result") in
@@ -893,9 +1029,40 @@ let internal_error_response (env : Model.envelope) : Model.envelope option =
     { Model.root = Wire.make_response ~request_id ~status:500 ~result:(Wire.error_result "internal_error");
       included = [] }
 
+(* [dispatch] runs the §6.5 dispatch chain. The [option] is kept for the caller's
+   write decision and is now always [Some]: every inbound root reaching here is
+   ANSWERED. *)
 let dispatch (t : t) (conn : conn) (env : Model.envelope) : Model.envelope option =
   let exec = env.root in
-  if not (String.equal exec.typ "system/protocol/execute") then None  (* §3.3: server side ignores non-EXECUTE *)
+  if not (String.equal exec.typ "system/protocol/execute") then begin
+    (* §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+       invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare
+       close -- that is indistinguishable from a network fault."
+
+       §3.3 used to read "the connection MUST be closed", assigning no code and
+       requiring no frame, and §9.1's floor row MANDATED it; N18 replaced that
+       row. This peer did something weaker still: it returned [None], the
+       transport wrote NOTHING and the connection stayed open -- §4.11's OTHER
+       non-conformant behaviour, the silent drop, "the weaker of the two
+       precisely because nothing surfaces it".
+
+       This is a PRE-ADMISSION refusal: the root is not an EXECUTE, so nothing was
+       ever admitted and §4.9(c) -- scoped to "every request the peer ADMITS" --
+       does not reach it. That is why §4.11 exists.
+
+       [request_id] is read BEST-EFFORT. An arbitrary root type is under no
+       obligation to carry one, and §4.11 licenses the uncorrelated frame exactly
+       there. We do NOT close: on a multiplexed connection that would cost every
+       ADMITTED in-flight request its response, and §4.11 leaves the close to us. *)
+    let request_id = Option.value ~default:"" (Model.text_field exec "request_id") in
+    Some
+      { Model.root =
+          Wire.make_response ~request_id ~status:400
+            ~result:
+              (Wire.error_result "invalid_request"
+                 ~message:"root entity is neither EXECUTE nor EXECUTE_RESPONSE");
+        included = [] }
+  end
   else begin
     let request_id = Option.value ~default:"" (Model.text_field exec "request_id") in
     let uri = Option.value ~default:"" (Model.text_field exec "uri") in
@@ -948,7 +1115,18 @@ let dispatch (t : t) (conn : conn) (env : Model.envelope) : Model.envelope optio
                       | Capability.Deny -> err 403 "capability_denied"
                       | Capability.Allow -> (
                           match strip_local t pattern with
-                          | "system/tree" -> tree_handler t exec
+                          (* §6.3 needs the caller's capability and the OWNING
+                             handler's pattern, and BOTH are CARRIED from here
+                             rather than recomputed: the handler-level check MUST
+                             run against the same authority the dispatch check
+                             resolved, and recomputing invites the two to drift
+                             (§6.8 -- the authority is selected by who named the
+                             path). [pattern] is the owner's (§6.3, 0.8.2.23); for
+                             the tree handler owner and runner coincide, so the
+                             distinction is not observable here, but the argument
+                             is named for the owner because that is what the
+                             parameter means. *)
+                          | "system/tree" -> tree_handler t ~caller_cap ~pattern exec
                           | "system/capability" -> capability_handler t exec ~caller_cap
                           | "system/handler" -> handlers_handler t exec
                           | "system/type" -> types_handler t exec

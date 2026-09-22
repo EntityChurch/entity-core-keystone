@@ -146,8 +146,26 @@ def _exclude_is_unmatchable(frame: str, excl: list[str]) -> bool:
     The sentinel is fail-CLOSED in an include (covers nothing -> the grant grants
     nothing) and fail-OPEN in an exclude (carves out nothing), so the reading is
     chosen where the POSITION is known and :func:`matches_pattern` stays uniform
-    over its operands. The guard sits outside the scope-type dispatch, transcribing
-    §5.2's loop literally.
+    over its operands.
+
+    ASK THIS ONLY OF A PATH-SCOPE DIMENSION (0.8.2.24, N2/N3).  ``NEVER_MATCH`` is a
+    §5.4 PATH-canonicalization sentinel; an id-scope pattern is a literal identifier
+    that §5.2's own id-scope arm forbids putting through the §5.4 transforms.  This
+    guard used to sit OUTSIDE the type dispatch, transcribing §5.2's loop as it read
+    before that loop grew one — which ran an id pattern through those transforms
+    purely to classify it and then DENIED THE WHOLE DIMENSION on a property unrelated
+    to whether the exclude carves anything out.  An ``operations`` exclude of
+    ``*/apply`` — an ordinary namespaced operation name, and a literal that matches
+    nothing under the id-scope grammar — canonicalized to the sentinel and denied
+    every operation.  Over-denial, and invisible on any well-formed grant.
+
+    §5.4 says outright that the rule "does NOT reach ``operations`` or ``peers``
+    ``[MUST]``", and it does NOT leave the id-scope dimensions unprotected by
+    oversight: under the id-scope grammar every non-``*`` pattern is a literal and a
+    literal is never structurally unmatchable, so there is nothing here for this
+    sentinel to detect.  The id-scope form of the carves-out-nothing hazard is
+    acknowledged there and deliberately left open rather than given a second
+    sentinel.  A scope boundary, not an omission.
     """
     return any(_canon(frame, p) == NEVER_MATCH for p in excl)
 
@@ -199,7 +217,11 @@ def _matches_scope(local_peer: str, value: str, s: Scope, kind: str) -> bool:
     """§5.2 typed scope match. ``kind`` is ``"id"`` (operations, peers) or ``"path"``
     (handlers, resources) and has no default — every call site names its dimension, so
     a new one cannot silently inherit the wrong matcher (that is the F40 defect)."""
-    if _exclude_is_unmatchable(local_peer, s.excl):
+    # SCOPED TO PATH-SCOPE (0.8.2.24).  §5.2's exclude loop tests the sentinel INSIDE
+    # `if dimension_type == "system/capability/path-scope"`, and §5.4 scopes its own
+    # invalid-capability rule the same way.  `kind` already names the dimension here,
+    # so the scoping costs one term and cannot be got wrong by a new call site.
+    if kind == "path" and _exclude_is_unmatchable(local_peer, s.excl):
         return False  # 0.8.2.21 — deny, do not carve out nothing
     return _covered(local_peer, value, s.incl, kind) and not _covered(
         local_peer, value, s.excl, kind
@@ -634,6 +656,12 @@ def _check_resource_scope(local_peer: str, granter_peer: str, resource: Any, s: 
     # An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
     # target: the coverage test below is correct in isolation and is simply never
     # reached on a sentinel, because matches_pattern answers False.
+    #
+    # UNGUARDED ON PURPOSE, unlike _matches_scope's (0.8.2.24): `s` here is ALWAYS the
+    # RESOURCES dimension, which §5.2 fixes as path-scope, so the type test that call
+    # site performs would be a constant here. The single-dimension signature is what
+    # makes that checkable — a granter frame reaching an id-scope call site is the
+    # defect, and this function cannot be one.
     if _exclude_is_unmatchable(granter_peer, s.excl):
         return False
 
@@ -712,6 +740,32 @@ def check_path_permission(
             continue
         return True
     return False
+
+
+def identity_in_authority_chain(
+    included: dict, store: Store, local_peer: str, cap_hash: bytes | None, identity_hash: bytes | None
+) -> bool:
+    """``SDK-OPERATIONS`` §11.3 SEC-3: is ``identity_hash`` a GRANTER in the VERIFIED
+    authority chain of the capability ``cap_hash``?
+
+    The capability is resolved included-first then from the store, must be a
+    ``system/capability/token``, and its chain must verify under §5.5 exactly as a dispatch
+    would (signatures from ``included``) — an unverifiable chain answers ``False``, never
+    "in chain".  An unresolvable hash is never in chain.
+    """
+    if cap_hash is None or identity_hash is None:
+        return False
+    resolve = cap_resolve(included, store)
+    cap = resolve(bytes(cap_hash))
+    if cap is None or cap.type != "system/capability/token":
+        return False
+    if verify_capability_chain(local_peer, store, cap, included) != ALLOW:
+        return False
+    chain = collect_chain(cap, resolve)
+    if chain is None:
+        return False
+    want = bytes(identity_hash)
+    return any(link.bytes_("granter") == want for link in chain)
 
 
 # ── §5.2 verify-request (3-way verdict + carve-outs) ──────────────────────────

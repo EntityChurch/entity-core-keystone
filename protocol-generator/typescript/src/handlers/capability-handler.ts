@@ -61,7 +61,7 @@ export class CapabilityHandler implements Handler {
       return errorResult(
         Status.Forbidden,
         "scope_exceeds_authority",
-        "requested grant exceeds the caller's presented authority (§6.2 / §5.6)",
+        "requested grant exceeds the caller's presented authority (section 6.2 / section 5.6)",
       );
     }
 
@@ -102,7 +102,7 @@ export class CapabilityHandler implements Handler {
       return errorResult(
         Status.BadRequest,
         "invalid_params",
-        'peer_pattern MUST be "default", a 66/98-char hex content hash, or a Base58 peer_id; partial prefixes are rejected (v7.62 §4)',
+        'peer_pattern MUST be "default", a 66/98-char hex content hash, or a Base58 peer_id; partial prefixes are rejected (v7.62 section 4)',
       );
     }
     // §6.2 CAP-2: an EMPTY grants array is valid and meaningful — `configure` MUST
@@ -122,7 +122,7 @@ export class CapabilityHandler implements Handler {
   #revoke(ctx: HandlerContext): HandlerResult {
     const token = Ecf.optBytes(ctx.params.data, "token");
     if (token === null || isZeroHash(token)) {
-      return errorResult(Status.BadRequest, "invalid_params", "revoke-request.token must be non-zero (v7.62 §10)");
+      return errorResult(Status.BadRequest, "invalid_params", "revoke-request.token must be non-zero (v7.62 section 10)");
     }
     const reason = Ecf.optText(ctx.params.data, "reason");
 

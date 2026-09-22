@@ -61,3 +61,44 @@ test("F40 — id-scope wildcards survive (bootstrap depends on them)", () => {
   assert.equal(new Scope(["compute/*"], []).matches("compute", LOCAL, "id"), false);
   assert.equal(new Scope([REMOTE], []).matches(REMOTE, LOCAL, "id"), true);
 });
+
+// ── 0.8.2.24 N2/N3 — the §5.4 sentinel is scoped to PATH-SCOPE ────────────────
+
+// "A capability carrying an unmatchable PATH-SCOPE pattern is INVALID [MUST] ... It does
+// NOT reach `operations` or `peers` [MUST]." NEVER_MATCH is a §5.4 path-canonicalization
+// sentinel; an id-scope pattern is a literal identifier that §5.2's id-scope arm forbids
+// putting through the §5.4 transforms at all.
+//
+// The id-scope case cannot be passed by accident: `*/apply` is an ordinary namespaced
+// operation name that PATH-canonicalizes to the sentinel, so on the pre-.24 unscoped
+// reading it DENIED THE WHOLE DIMENSION — `get`, included by a bare `*`, came back false.
+// The path-scope cases are the other half and prove this is a scope SPLIT rather than a
+// removal: the sentinel's own arm still bites where the dimension is a path.
+test("0.8.2.24 — the unmatchable-exclude sentinel is consulted on PATH scopes only", () => {
+  assert.equal(
+    new Scope(["*"], ["*/apply"]).matches("get", LOCAL, "id"),
+    true,
+    "id-scope: a path-unmatchable exclude must not deny the dimension (0.8.2.24)",
+  );
+  // The same holds for `peers`, the other id-scope dimension.
+  assert.equal(
+    new Scope(["*"], ["../nope"]).matches(REMOTE, LOCAL, "id"),
+    true,
+    "id-scope peers: a path-unmatchable exclude must not deny the dimension (0.8.2.24)",
+  );
+  // path-scope: UNCHANGED. An unmatchable exclude still denies, because there it would
+  // otherwise carve out nothing and leave the grant silently wider than its author
+  // wrote (0.8.2.21).
+  assert.equal(
+    new Scope(["*"], ["../nope"]).matches("system/tree", LOCAL, "path"),
+    false,
+    "path-scope: an unmatchable exclude must still deny (0.8.2.21)",
+  );
+  // And an ordinary path-scope exclude still carves out only its own target — the
+  // sentinel arm must not have swallowed the ordinary case.
+  assert.equal(
+    new Scope(["*"], ["system/secret"]).matches("system/tree", LOCAL, "path"),
+    true,
+    "path-scope: an ordinary exclude must not deny an unrelated value",
+  );
+});

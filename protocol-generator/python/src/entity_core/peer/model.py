@@ -28,7 +28,35 @@ FORMAT_ECFV1_SHA256 = 0
 
 
 class BadEntityError(Exception):
-    """A malformed wire entity or a §1.8 content_hash fidelity violation."""
+    """A STRUCTURALLY malformed wire entity or envelope: a missing or ill-typed
+    ``type``, an absent ``data``, a non-map root, an ``included`` key that is not a
+    byte string at all.
+
+    These are bytes that never become an Envelope, which is §4.11's framing arm:
+    ``400 invalid_request``.  :class:`HashMismatchError` is the OTHER cause and takes
+    a different code — see there.
+    """
+
+
+class HashMismatchError(BadEntityError):
+    """A §1.8 / §3.1 RESOLUTION-INTEGRITY failure: an entity whose carried
+    ``content_hash`` is not ``content_hash({type, data})``, or an ``included`` entry
+    whose MAP KEY does not bind to the entity filed under it.
+
+    §5.2a pins this arm: *"A peer that refuses at the decode boundary MUST answer
+    ``400 hash_mismatch`` ``[MUST]`` (mood corrected 0.8.2.24)"*, and in the same
+    breath *"``400 non_canonical_ecf`` is NOT conformant here ``[MUST]``"*.  That code
+    is ``ENTITY-CBOR-ENCODING`` §6.3's, for a CBOR tag-policy violation, and a
+    mis-keyed ``included`` entry carries no tag: its encoding is canonical, what is
+    false is the claim the KEY makes, and the remedy ``non_canonical_ecf`` selects
+    (*re-encode*) sends an honest caller to the wrong layer.  This peer answered
+    ``non_canonical_ecf`` for every decode-boundary refusal until 0.8.2.24 — measured
+    on the wire, ``arc-probe`` B1/B2.
+
+    A SUBCLASS of :class:`BadEntityError` rather than a sibling, so every existing
+    ``except BadEntityError`` site keeps its behaviour; the classifier that maps a
+    refusal to a code tests this type FIRST, which is the whole point of the split.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +161,8 @@ def entity_of_cbor(m: Any) -> Entity:
     e = Entity.make(typ, m["data"])
     carried = m.get("content_hash")
     if isinstance(carried, (bytes, bytearray)) and bytes(carried) != e.hash:
-        raise BadEntityError("content_hash mismatch (§1.8)")
+        # Resolution integrity, not structure: 400 hash_mismatch (§5.2a, §4.11).
+        raise HashMismatchError("content_hash mismatch (§1.8)")
     return e
 
 
@@ -185,10 +214,22 @@ def envelope_of_cbor(m: Any) -> Envelope:
     if isinstance(inc_c, dict):
         for key, val in inc_c.items():
             if not isinstance(key, (bytes, bytearray)):
+                # STRUCTURAL, not integrity: §3.1 shapes `included` as
+                # {byte-string -> entity}, so a text key means the envelope was never
+                # the right shape. It is arguably §4.11's mis-keyed row too — a text
+                # key is certainly "not content_hash({type, data})" — and the two
+                # readings give different codes. Taking the shape reading: the key is
+                # not a hash at all, so there is nothing for hash_mismatch to be about.
+                # Reported as an ambiguity; the wire cannot distinguish it from any
+                # other malformed envelope without a vector.
                 raise BadEntityError("included key is not a byte string")
             e = entity_of_cbor(val)
             if bytes(key) != e.hash:
-                raise BadEntityError("included key != content_hash (§3.1)")
+                # §3.1 key != content_hash — §1.8's resolution-integrity obligation,
+                # mechanism (a) "bind the key", failing the envelope closed at ONE
+                # site. §5.2a's code for this arm is hash_mismatch, not the structural
+                # invalid_request beside it.
+                raise HashMismatchError("included key != content_hash (§3.1)")
             included.add(e)
     return Envelope(root=root, included=included)
 

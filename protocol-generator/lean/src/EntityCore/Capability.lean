@@ -164,8 +164,23 @@ def matchesSegNM (path pat : List String) : Bool :=
 /-- AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
 in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an exclude
 (carves out nothing), so the reading is chosen where the POSITION is known and the
-matcher stays uniform over its operands. The guard sits outside the scope-type
-dispatch, transcribing §5.2's loop literally. -/
+matcher stays uniform over its operands.
+
+EVERY CALL SITE MUST GUARD IT ON PATH-SCOPE (0.8.2.24, N2/N3). This used to be asked
+of every dimension — the comment here said so, "transcribing §5.2's loop literally",
+and that was true of the loop as it then read. §5.2's exclude test now sits INSIDE
+`if dimension_type == "system/capability/path-scope"`, and §5.4 says the same from the
+other side: "a capability carrying an unmatchable PATH-SCOPE pattern is INVALID ... It
+does NOT reach `operations` or `peers` [MUST]".
+
+`neverMatch` is a §5.4 PATH-canonicalization sentinel with no meaning on an id-scope
+dimension, whose patterns are literal identifiers that §5.2's own id-scope arm forbids
+putting through the §5.4 transforms. Asked outside the type dispatch it ran an id
+pattern through those transforms purely to classify it and then DENIED THE WHOLE
+DIMENSION on a property unrelated to whether the exclude carves anything out: an
+`operations` exclude of `*/apply` — an ordinary namespaced operation name, a literal
+matching nothing under the id-scope grammar — canonicalized to the sentinel and denied
+every operation. Over-denial, and invisible on any well-formed grant. -/
 def excludeUnmatchable (frame : String) (excl : List String) : Bool :=
   excl.any (fun p => canonSegs frame p == neverMatch)
 
@@ -209,34 +224,73 @@ def coveredId (value : String) (pats : List String) : Bool :=
 /-- §5.2 scope membership, typed by scope kind (0.8.1, F40): `path` canonicalizes both
 sides on the LOCAL frame; `id` compares literally. Value in include, not in exclude. -/
 def matchesScope (localPeer : String) (value : String) (s : Scope) (kind : ScopeKind) : Bool :=
-  if excludeUnmatchable localPeer s.excl then false     -- 0.8.2.21 — deny
-  else match kind with
+  match kind with
+  -- The two id-scope dimensions reach the literal matcher UNGUARDED, and that is
+  -- correct rather than an omission (0.8.2.24, N2/N3 — see `excludeUnmatchable`):
+  -- under the id-scope grammar every non-`*` pattern is a literal, and a literal is
+  -- never structurally unmatchable, so there is nothing here for the sentinel to
+  -- detect. §5.4 says so outright and leaves the id-scope form of the
+  -- carves-out-nothing hazard deliberately open rather than minting a second
+  -- sentinel for it.
   | .id => coveredId value s.incl && !coveredId value s.excl
-  | .path => covered localPeer localPeer value s.incl && !covered localPeer localPeer value s.excl
+  | .path =>
+    if excludeUnmatchable localPeer s.excl then false   -- 0.8.2.21 — deny
+    else covered localPeer localPeer value s.incl && !covered localPeer localPeer value s.excl
 
 -- ── §5.6 attenuation (the T5a surface) ───────────────────────────────────────
 
 /-- §5.6 scope subset under per-side §5.5a granter frames: every child include is
 covered by some parent include (child frame vs parent frame), and the child
 inherits every parent exclude (parent frame vs child frame). When the two frames
-are equal (same-peer chain) this is the pre-Amendment behavior byte-for-byte. -/
-def scopeSubset (childFrame parentFrame : String) (child parent : Scope) : Bool :=
-  child.incl.all (fun cp =>
-    let cc := canonSegs childFrame cp
-    parent.incl.any (fun pp => matchesSeg cc (canonSegs parentFrame pp)))
-  && parent.excl.all (fun pe =>
-       let cpe := canonSegs parentFrame pe
-       child.excl.any (fun ce => matchesSeg cpe (canonSegs childFrame ce)))
+are equal (same-peer chain) this is the pre-Amendment behavior byte-for-byte.
+
+TYPED BY SCOPE KIND (F50, ruled YES at 0.8.2.16). §3.6's grammar binds the scope
+TYPE, not one function — "an implementation on the canonicalizing reading is
+non-conformant and MUST adopt the literal matcher" — so F40's id-scope pin reaches
+here exactly as it reaches `matchesScope`, with delegation-chain WIDENING named as
+the reason. This function used to canonicalize both operands on every dimension, so
+an `operations` or `peers` pattern went through the §5.4 path transforms purely to
+be compared: `entity-core-formalization` measured 2 of 64 include pairs and 2 of 64
+exclude pairs diverging (`/tree/get` vs `*`, `*/apply` vs `*`), FAIL-CLOSED, with a
+16-pair control alphabet reporting zero — which is why every hand-tried example
+missed it. The kind has NO DEFAULT and is named at every call site, because a
+default is how the next dimension inherits the wrong matcher silently, which is the
+original F40 defect.
+
+AND IT CALLS `matchesSegNM`, NOT `matchesSeg` (K-6, 0.8.2.22). `covered` already
+took the guarded wrapper and this function did not, so §5.4's "never matches in
+either operand" was bypassed on the ATTENUATION path — in the PERMISSIVE direction.
+"A sentinel arm is a control-flow obligation, not a line ... the guard MUST sit on
+every path that reaches the decision it protects." The wrapper exists precisely so
+the running matcher can be guarded without touching `matchesSeg`, which is the T5a
+proof surface: six `rfl`-level lemmas in `EntityCoreProofs.CapabilityProofs` are
+facts about its exact clause order, and a new first arm would re-derive all of them
+to prove a property that is not about pattern matching. -/
+def scopeSubset (kind : ScopeKind) (childFrame parentFrame : String)
+    (child parent : Scope) : Bool :=
+  match kind with
+  | .id =>
+    child.incl.all (fun cp => parent.incl.any (fun pp => matchesIdPattern cp pp))
+    && parent.excl.all (fun pe => child.excl.any (fun ce => matchesIdPattern pe ce))
+  | .path =>
+    child.incl.all (fun cp =>
+      let cc := canonSegs childFrame cp
+      parent.incl.any (fun pp => matchesSegNM cc (canonSegs parentFrame pp)))
+    && parent.excl.all (fun pe =>
+         let cpe := canonSegs parentFrame pe
+         child.excl.any (fun ce => matchesSegNM cpe (canonSegs childFrame ce)))
 
 /-- §5.6 grant subset. Handlers/operations/peers compare on the LOCAL frame;
-RESOURCES use the §5.5a per-link granter frames (`childFrame`/`parentFrame`). -/
+RESOURCES use the §5.5a per-link granter frames (`childFrame`/`parentFrame`). The
+scope KIND is named per dimension alongside the frame: `handlers`/`resources` are
+path-scope, `operations`/`peers` id-scope (§3.6, F40/F50). -/
 def grantSubset (localPeer childFrame parentFrame : String) (child parent : Grant) : Bool :=
-  scopeSubset localPeer localPeer child.handlers parent.handlers
-  && scopeSubset localPeer localPeer child.operations parent.operations
-  && scopeSubset childFrame parentFrame child.resources parent.resources
+  scopeSubset .path localPeer localPeer child.handlers parent.handlers
+  && scopeSubset .id localPeer localPeer child.operations parent.operations
+  && scopeSubset .path childFrame parentFrame child.resources parent.resources
   && (let cp := child.peers.getD { incl := [localPeer], excl := [] }
       let pp := parent.peers.getD { incl := [localPeer], excl := [] }
-      scopeSubset localPeer localPeer cp pp)
+      scopeSubset .id localPeer localPeer cp pp)
 
 /-- §5.6 attenuation: every child grant is covered by some parent grant, and the
 child's expiry does not exceed the parent's (a finite parent forbids an infinite
@@ -473,5 +527,88 @@ def checkPermission (localPeer granterPeer : String) (exec token : Entity)
         | none => true
         | some r => checkResourceScope localPeer granterPeer r g.resources)
   if (grantsOfToken token).any grantOk then .allow else .deny
+
+-- ── §5.2 effective targets and §6.3 check_path_permission ────────────────────
+
+/-- §5.2's effective target list (0.8.2.20): the caller's own `resource.exclude`
+removes entries from the request BEFORE anything else looks at it.
+
+Survivors come back in the caller's OWN SPELLING, not canonicalized — 0.8.2.21 is
+explicit that `effective_targets` yields raw survivors, and the distinction is
+load-bearing because the value flows on to the store lookup, which canonicalizes
+for itself.
+
+The `Bool` says whether a `resource` was present AT ALL. An ABSENT resource and a
+resource whose every target was excluded are different inputs to §3.3 — the first
+is "no resource", the second is an empty effective list — and for a
+resource-OPTIONAL operation 0.8.2.24 (N7) makes them DIFFERENT REQUESTS with
+different answers, not merely different inputs to one.
+
+THE PAIR IS THE NON-LOSSY PROJECTION §3.3 REQUIRES [MUST] (0.8.2.25, N11): "where
+an implementation projects resource.targets onto the effective set ahead of the
+handler, that projection MUST NOT be lossy about its own emptiness — narrow when
+narrowing leaves something, and retain the raw pair when narrowing would empty it."
+A function returning only a list cannot satisfy that: collapsing `[qA] exclude
+[qA]` to `[]` deletes the two-empties discriminator before any handler can read it,
+and the handler's refusal arm becomes dead code that only a WIRE drive can detect.
+
+A `targets` key PRESENT but not an array reads as PRESENT-and-empty, never as
+absent: reading it as absent answers it with the ABSENT case, which for `get` is the
+whole root listing — wider than the request, which is the answer §3.3 forbids. -/
+def effectiveTargets (localPeer : String) (exec : Entity) : List String × Bool :=
+  match field exec "resource" with
+  | some r@(.map _) =>
+    match mapGet r "targets" with
+    | none => ([], false)
+    | some targetsV =>
+      let targets := textList targetsV
+      let callerExcl := match mapGet r "exclude" with | some a => textList a | none => []
+      -- The caller-exclude arm is fail-OPEN on an unmatchable pattern (§5.4's table
+      -- rules it separately from the grant arm): `canonSegs` answers the sentinel and
+      -- `matchesSegNM` then answers false, so the target simply SURVIVES. That
+      -- asymmetry is 0.8.2.21's whole point and it is INHERITED from the primitives
+      -- here rather than restated.
+      let dropped (t : String) : Bool :=
+        let ct := canonSegs localPeer t
+        callerExcl.any (fun x => matchesSegNM ct (canonSegs localPeer x))
+      (targets.filter (fun t => !dropped t), true)
+  | _ => ([], false)
+
+/-- §6.3's handler-level path check.
+
+IT IS NOT A SECONDARY CHECK (§5.2, 0.8.2.20). It is the enforcement wherever the
+subject is derived after dispatch, and the dispatch-level check can be made VACUOUS
+by caller-controlled input: a caller who excludes the one target its capability does
+not cover removes that target from `checkPermission`'s view entirely, and a handler
+that then acts on it has authorized nothing.
+
+THREE DIMENSIONS, NOT FOUR. `peers` is not consulted here — the path is local by
+construction at this point (§1.4's inbound rule refuses a foreign namespace at §6.5
+step 3, before any handler runs), and §6.3's signature names only `handlers`,
+`operations` and `resources`.
+
+THE FRAME IS `local_peer_id`, NOT THE GRANTER, AND THAT IS THE SPEC'S OWN SIGNATURE
+RATHER THAN A CHOICE. §6.3's block reads `matches_scope(canonical_path,
+grant.resources, "path-scope", local_peer_id)` — there is no granter parameter to
+pass. §5.5a governs chain ATTENUATION, where the subject is a pattern compared
+against a parent's pattern; this call site compares a CONCRETE local path the
+handler is about to touch.
+
+There is no caller-exclude set here: the subject is a single concrete path and the
+caller's exclusions were already applied in DERIVING it, so every grant exclude
+covering the subject denies — which `matchesScope` already implements, including
+0.8.2.21's sentinel rule, so this is three calls to it and nothing else.
+
+An empty `resources.include` is a legal grant shape (§5.2: handlers that touch no
+tree paths) and DENIES every path, which is what that note says it should: `any`
+over an empty include list is false. A malformed path canonicalizes to the sentinel,
+which matches no grant (§5.4), so it falls through to DENY rather than being matched
+against anything. -/
+def checkPathPermission (localPeer operation path : String) (token : Entity)
+    (handlerPattern : String) : Bool :=
+  (grantsOfToken token).any (fun g =>
+    matchesScope localPeer handlerPattern g.handlers .path
+    && matchesScope localPeer operation g.operations .id
+    && matchesScope localPeer path g.resources .path)
 
 end EntityCore.Capability

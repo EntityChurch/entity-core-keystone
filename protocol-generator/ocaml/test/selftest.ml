@@ -7,7 +7,12 @@
 open Entitycore_codec
 
 let fails = ref 0
-let check name cond = if not cond then (incr fails; Printf.printf "FAIL %s\n" name)
+
+(* [ran] counts EXECUTED checks. A suite that examined zero things prints exactly
+   what one that examined all of them prints, so the count is asserted against a
+   floor at the end — the rule this repo has now earned seven times. *)
+let ran = ref 0
+let check name cond = incr ran; if not cond then (incr fails; Printf.printf "FAIL %s\n" name)
 
 let hex s = String.concat "" (List.map (Printf.sprintf "%02x") (List.of_seq (Seq.map Char.code (String.to_seq s))))
 let unhex h =
@@ -54,8 +59,27 @@ let () =
   check "ed25519 sign/verify" (Sign.verify ~pub ~signature:sg ~msg);
   check "ed25519 reject-tamper" (not (Sign.verify ~pub ~signature:sg ~msg:(msg ^ "!")));
 
-  (* decoder rejects a bare CBOR tag (major 6) anywhere — N2 *)
-  check "tag-reject bare" (try ignore (Cbor.decode (unhex "c100")); false with Cbor.Decode_error _ -> true);
+  (* decoder rejects a bare CBOR tag (major 6) anywhere — N2.
+     The exception is [Tag_rejected] and NOT the generic [Decode_error] since
+     0.8.2.25: §4.11 makes the peer answer a different CODE for a tag-policy
+     violation (400 non_canonical_ecf, ENTITY-CBOR-ENCODING §5.4) than for every
+     other decode fault (400 invalid_request), so the decoder has to distinguish
+     them. Asserting the SPECIFIC exception is what keeps the two from being
+     re-merged: a [Decode_error] catch here would still pass if the tag arm
+     regressed into the structural family. *)
+  check "tag-reject bare"
+    (try ignore (Cbor.decode (unhex "c100")); false
+     with Cbor.Tag_rejected -> true
+        (* Named rather than left to escape: an uncaught exception kills the suite
+           before it can report WHICH check failed, so a regression here would read
+           as a crash instead of as a red test. *)
+        | Cbor.Decode_error _ -> false);
+  (* And the other direction: a STRUCTURAL fault must NOT come back as
+     [Tag_rejected], or the split is one-way and every malformed frame answers
+     non_canonical_ecf again. "c1" is a tag head with its argument missing. *)
+  check "structural-fault is not tag-reject"
+    (try ignore (Cbor.decode (unhex "1b00")); false
+     with Cbor.Tag_rejected -> false | Cbor.Decode_error _ -> true);
 
   (* ── F3 emit pathway (§6.10 / §6.13(c)): event-type derivation + no-op suppression ── *)
   let st = Store.create () in
@@ -293,5 +317,218 @@ let () =
   check "single-sig root still verifies (strict superset)"
     (allows local ss_cap ([ peer_inc id1; sig_inc ss_sig ]));
 
-  if !fails = 0 then print_endline "selftest: all uncovered-range checks PASS"
-  else (Printf.printf "selftest: %d FAILED\n" !fails; exit 1)
+  (* ── 0.8.2.20/.21/.24 — §5.2 effective targets, §6.3 check_path_permission,
+        the path-scope sentinel, and F50's typing of scope_subset ────────────── *)
+
+  let sid = Identity.of_seed (String.make 32 '\007') in
+  let slocal = sid.Identity.peer_id in
+  let scope ?(excl = []) incl = Cbor.Map
+    ((Cbor.Text "include", Cbor.Array (List.map (fun s -> Cbor.Text s) incl))
+     :: (if excl = [] then []
+         else [ (Cbor.Text "exclude", Cbor.Array (List.map (fun s -> Cbor.Text s) excl)) ])) in
+  let grant ~handlers ~operations ~resources =
+    Cbor.Map [ (Cbor.Text "handlers", handlers);
+               (Cbor.Text "operations", operations);
+               (Cbor.Text "resources", resources) ] in
+  let token grants =
+    Model.make ~typ:"system/capability/token" (Cbor.Map [ (Cbor.Text "grants", Cbor.Array grants) ]) in
+  let exec_with ?targets ?exclude () =
+    let resource = match targets with
+      | None -> []
+      | Some ts ->
+          [ (Cbor.Text "resource",
+             Cbor.Map ((Cbor.Text "targets", Cbor.Array (List.map (fun s -> Cbor.Text s) ts))
+                       :: (match exclude with
+                           | None -> []
+                           | Some xs -> [ (Cbor.Text "exclude", Cbor.Array (List.map (fun s -> Cbor.Text s) xs)) ]))) ]
+    in
+    Model.make ~typ:"system/protocol/execute"
+      (Cbor.Map ((Cbor.Text "operation", Cbor.Text "get") :: resource)) in
+  let eff e = Capability.effective_targets ~local_peer:slocal e in
+
+  (* §5.2 effective targets (0.8.2.20): the caller's own exclude removes entries
+     BEFORE anything else looks at the request, and survivors keep the caller's
+     RAW spelling (0.8.2.21) rather than a canonical form. *)
+  check "eff: caller exclude removes its own target"
+    (eff (exec_with ~targets:[ "qA"; "qB" ] ~exclude:[ "qB" ] ()) = ([ "qA" ], true));
+  check "eff: survivors are raw, not canonicalized"
+    (eff (exec_with ~targets:[ "qA" ] ()) = ([ "qA" ], true));
+  (* N11's NON-LOSSY PROJECTION [MUST]: the two empties are DIFFERENT REQUESTS and
+     a function returning only a list cannot tell them apart. A resource-OPTIONAL
+     operation answers them differently (N7/N10 + EXTENSION-TREE §2.2a: absent ->
+     root listing, self-excluded -> 400 path_required), so collapsing them here
+     deletes the discriminator before any handler can read it. *)
+  check "eff: absent resource is (\\[\\], false)" (eff (exec_with ()) = ([], false));
+  check "eff: self-excluded resource is (\\[\\], TRUE) — not the absent case"
+    (eff (exec_with ~targets:[ "qA" ] ~exclude:[ "qA" ] ()) = ([], true));
+  (* PRESENT-BUT-ILL-TYPED `targets` IS PRESENT — the cell the two vanguards
+     disagreed on until 0.8.2.25, corrected toward `go`. Reading it as ABSENT
+     would serve a present resource the wider absent-case answer §3.3 forbids
+     (on `get`, the root listing instead of 400 path_required). The KEY's
+     presence is the discriminator, not the value's type. *)
+  check "eff: ill-typed targets is PRESENT with an empty effective list"
+    (Capability.effective_targets ~local_peer:slocal
+       (Model.make ~typ:"system/protocol/execute"
+          (Cbor.Map [ (Cbor.Text "resource", Cbor.Map [ (Cbor.Text "targets", Cbor.Text "qA") ]) ]))
+     = ([], true));
+  (* ...and a `resource` map with no `targets` KEY at all is absent. *)
+  check "eff: a resource with no targets key is absent"
+    (Capability.effective_targets ~local_peer:slocal
+       (Model.make ~typ:"system/protocol/execute"
+          (Cbor.Map [ (Cbor.Text "resource", Cbor.Map [ (Cbor.Text "exclude", Cbor.Array []) ]) ]))
+     = ([], false));
+  (* §5.4's caller-exclude arm is fail-OPEN on an unmatchable pattern (the grant
+     arm is fail-CLOSED): canonicalize answers the sentinel, matches_pattern then
+     answers false, and the target simply SURVIVES. *)
+  check "eff: unmatchable caller exclude carves out nothing"
+    (eff (exec_with ~targets:[ "qA" ] ~exclude:[ "../nope" ] ()) = ([ "qA" ], true));
+
+  (* §6.3 check_path_permission. THE ACCEPT CASE IS WHAT VALIDATES THE FIXTURE —
+     a predicate test built only from deny cases is indistinguishable from one
+     asserting False == False, and a broken fixture makes every deny pass for
+     free. One deny per DIMENSION, because a single deny cannot separate "it
+     checks the dimension I care about" from "it denies". *)
+  let cpp ?(op = "get") ?(pattern = "system/tree") tok path =
+    Capability.check_path_permission ~local_peer:slocal ~operation:op ~path ~token:tok
+      ~handler_pattern:pattern in
+  let tok_ok = token [ grant ~handlers:(scope [ "system/tree" ])
+                         ~operations:(scope [ "get" ]) ~resources:(scope [ "q/*" ]) ] in
+  check "cpp: ACCEPT (validates the fixture)" (cpp tok_ok "q/a");
+  check "cpp: DENY on the resources dimension" (not (cpp tok_ok "other/a"));
+  check "cpp: DENY on the operations dimension" (not (cpp ~op:"put" tok_ok "q/a"));
+  check "cpp: DENY on the handlers dimension" (not (cpp ~pattern:"system/other" tok_ok "q/a"));
+  (* §5.2's note: an empty resources.include is a legal grant shape (a handler
+     that touches no tree paths) and DENIES every path here. *)
+  check "cpp: empty resources.include denies every path"
+    (not (cpp (token [ grant ~handlers:(scope [ "system/tree" ])
+                         ~operations:(scope [ "get" ]) ~resources:(scope []) ]) "q/a"));
+  (* A malformed path canonicalizes to the sentinel, which matches no grant
+     (§5.4), so it falls through to DENY rather than being matched at all. *)
+  check "cpp: a malformed path denies" (not (cpp tok_ok "../nope"));
+  (* A grant exclude covering the subject denies: the caller's exclusions were
+     already applied in deriving this concrete path, so nothing carves it back. *)
+  check "cpp: a grant exclude covering the path denies"
+    (not (cpp (token [ grant ~handlers:(scope [ "system/tree" ]) ~operations:(scope [ "get" ])
+                         ~resources:(scope ~excl:[ "q/a" ] [ "q/*" ]) ]) "q/a"));
+
+  (* §5.4's unmatchable-pattern rule is SCOPED TO PATH-SCOPE (0.8.2.24, N2/N3):
+     "It does NOT reach `operations` or `peers` [MUST]". This is the
+     discriminating pair, and the id case cannot be passed by accident —
+     "*/apply" is an ordinary namespaced operation name that PATH-canonicalizes
+     to the sentinel, so on the pre-.24 unscoped reading it denied the WHOLE
+     dimension and `get` included by a bare "*" came back false. *)
+  check "sentinel: id-scope operations must NOT consult it"
+    (Capability.matches_scope ~local_peer:slocal ~kind:Capability.Id_scope "get"
+       { Capability.incl = [ "*" ]; excl = [ "*/apply" ] });
+  check "sentinel: id-scope peers must NOT consult it"
+    (Capability.matches_scope ~local_peer:slocal ~kind:Capability.Id_scope slocal
+       { Capability.incl = [ "*" ]; excl = [ "../nope" ] });
+  (* The other half, and it proves this is a scope SPLIT rather than a removal:
+     on a path-scope dimension an unmatchable exclude still denies (0.8.2.21),
+     because there it would otherwise carve out nothing and leave the grant
+     silently wider than its author wrote. *)
+  check "sentinel: path-scope still denies on an unmatchable exclude"
+    (not (Capability.matches_scope ~local_peer:slocal ~kind:Capability.Path_scope "system/tree"
+            { Capability.incl = [ "*" ]; excl = [ "../nope" ] }));
+  check "sentinel: path-scope ordinary exclude still carves out only its target"
+    (Capability.matches_scope ~local_peer:slocal ~kind:Capability.Path_scope "system/tree"
+       { Capability.incl = [ "*" ]; excl = [ "system/secret" ] });
+
+  (* F50 (ruled 0.8.2.16): scope_subset is typed by SCOPE KIND exactly as its
+     sibling matches_scope is. The two readings agree on every well-formed grant,
+     which is why no hand-tried example found it; these are the two pairs
+     `entity-core-formalization` measured as disagreeing, both fail-CLOSED under
+     the canonicalizing reading. On the id matcher a literal child include is
+     covered by a bare "*" parent. *)
+  let ssub ~kind child parent =
+    Capability.scope_subset ~child_peer:slocal ~parent_peer:slocal ~kind child parent in
+  check "scope_subset id: /tree/get is covered by *"
+    (ssub ~kind:Capability.Id_scope
+       { Capability.incl = [ "/tree/get" ]; excl = [] } { Capability.incl = [ "*" ]; excl = [] });
+  check "scope_subset id: */apply is covered by *"
+    (ssub ~kind:Capability.Id_scope
+       { Capability.incl = [ "*/apply" ]; excl = [] } { Capability.incl = [ "*" ]; excl = [] });
+  (* The id matcher must still REFUSE a genuine widening, or "typed" would just
+     mean "always true". *)
+  check "scope_subset id: * is NOT covered by a literal"
+    (not (ssub ~kind:Capability.Id_scope
+            { Capability.incl = [ "*" ]; excl = [] } { Capability.incl = [ "get" ]; excl = [] }));
+  (* And the path arm is UNCHANGED — this is a split, not a replacement. *)
+  check "scope_subset path: a subtree child is covered by a bare * parent"
+    (ssub ~kind:Capability.Path_scope
+       { Capability.incl = [ "q/a" ]; excl = [] } { Capability.incl = [ "*" ]; excl = [] });
+  check "scope_subset path: an uncovered child is refused"
+    (not (ssub ~kind:Capability.Path_scope
+            { Capability.incl = [ "q/a" ]; excl = [] } { Capability.incl = [ "r/*" ]; excl = [] }));
+
+  (* §5.2a / §4.11 (0.8.2.24 N4/N5, 0.8.2.25): THE CODE BELONGS TO THE CAUSE. A
+     mis-keyed `included` entry is a RESOLUTION-INTEGRITY failure, not a CBOR
+     tag-policy violation — its encoding is canonical, and what is false is the
+     claim the KEY makes — so it MUST answer 400 hash_mismatch and
+     non_canonical_ecf is explicitly non-conformant there. Asserted through the
+     peer's own mapping function, not by reading it. *)
+  let mis_keyed =
+    let e = Model.make ~typ:"primitive/any" (Cbor.Map [ (Cbor.Text "v", Cbor.Text "x") ]) in
+    Cbor.Map [ (Cbor.Text "root", Model.to_cbor (Model.make ~typ:"system/protocol/execute" (Cbor.Map [])));
+               (Cbor.Text "included", Cbor.Map [ (Cbor.Bytes (String.make 33 '\000'), Model.to_cbor e) ]) ] in
+  check "decode: a mis-keyed included entry raises Hash_mismatch"
+    (try ignore (Model.envelope_of_cbor mis_keyed); false
+     with Model.Hash_mismatch _ -> true
+        (* The pre-0.8.2.24 spelling, named so a regression reports as a red check
+           rather than as an uncaught exception that ends the run. *)
+        | Model.Bad_entity _ -> false);
+  check "pre-admission: mis-keyed included maps to 400 hash_mismatch"
+    (Wire.pre_admission_refusal (Model.Hash_mismatch "x") = (400, "hash_mismatch"));
+  check "pre-admission: a tag-policy violation KEEPS 400 non_canonical_ecf"
+    (Wire.pre_admission_refusal Cbor.Tag_rejected = (400, "non_canonical_ecf"));
+  check "pre-admission: a structural fault is 400 invalid_request"
+    (Wire.pre_admission_refusal (Model.Bad_entity "x") = (400, "invalid_request"));
+  check "pre-admission: an oversize frame is 413 payload_too_large"
+    (Wire.pre_admission_refusal Wire.Frame_too_large = (413, "payload_too_large"));
+  (* §4.11's framing arm is owed a coded frame; an ordinary close is NOT a refusal
+     of anything and there is nobody left to answer. *)
+  check "framing refusal: oversize is owed a frame" (Wire.is_framing_refusal Wire.Frame_too_large);
+  check "framing refusal: truncation is owed a frame" (Wire.is_framing_refusal Wire.Truncated_frame);
+  check "framing refusal: a clean close is NOT" (not (Wire.is_framing_refusal Wire.Closed));
+
+  (* ...AND THE CLASSIFICATION HAS TO HAPPEN AT THE READ, WHICH THE THREE CHECKS
+     ABOVE CANNOT SEE. They are pure functions of an exception VALUE: they stay
+     green while [read_frame] raises the WRONG one. §4.11's whole distinction —
+     "a clean close at a frame BOUNDARY is an ordinary hangup and is owed nothing;
+     a stream that ends mid-frame is a REFUSAL and is owed a coded frame" — can
+     only be made where the frame boundary is known, so it is driven here over a
+     real socketpair. A test that never executes the site it is about is the
+     never-executed-guard class wearing a green tick. *)
+  let read_after ?(shutdown_write = true) (bytes_sent : string) : exn option =
+    let a, b = Unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+    if String.length bytes_sent > 0 then
+      ignore (Unix.write_substring b bytes_sent 0 (String.length bytes_sent));
+    if shutdown_write then Unix.shutdown b Unix.SHUTDOWN_SEND;
+    let r = try ignore (Wire.read_frame a); None with e -> Some e in
+    (try Unix.close a with _ -> ()); (try Unix.close b with _ -> ());
+    r in
+  check "read_frame: a clean close AT A BOUNDARY is Closed, not a refusal"
+    (read_after "" = Some Wire.Closed);
+  check "read_frame: a PARTIAL length prefix is Truncated_frame"
+    (read_after "\x00\x00" = Some Wire.Truncated_frame);
+  check "read_frame: a prefix declaring more than arrives is Truncated_frame"
+    (read_after "\x00\x00\x00\x64ab" = Some Wire.Truncated_frame);
+  (* The body arm is the one an [off = 0] inference gets wrong: the prefix has
+     been consumed, so ZERO body bytes is still a truncation and not a boundary. *)
+  check "read_frame: a prefix with NO body at all is still Truncated_frame"
+    (read_after "\x00\x00\x00\x64" = Some Wire.Truncated_frame);
+  check "read_frame: an over-max length prefix is Frame_too_large"
+    (read_after "\xff\xff\xff\xff" = Some Wire.Frame_too_large);
+
+  (* THE COUNT IS THE ONLY THING THAT SEPARATES "all green" FROM "nothing ran".
+     `fails = 0` is the expected output of a passing suite AND of one whose checks
+     were dropped — the examined-zero-things class, which this repo has now hit
+     seven times. The floor is raised when checks are added; it is deliberately a
+     floor rather than an equality so adding one does not fail the gate. *)
+  let floor = 68 in
+  if !ran < floor then begin
+    Printf.printf "selftest: executed %d checks, below the floor of %d — checks were DROPPED\n" !ran floor;
+    exit 1
+  end;
+  if !fails = 0 then Printf.printf "selftest: all %d uncovered-range checks PASS\n" !ran
+  else (Printf.printf "selftest: %d of %d FAILED\n" !fails !ran; exit 1)

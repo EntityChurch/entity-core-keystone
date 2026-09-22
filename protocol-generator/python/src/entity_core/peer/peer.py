@@ -315,11 +315,35 @@ class Peer:
 
     # ── dispatch chain (§6.5) ────────────────────────────────────────────────
     def dispatch(self, c: Conn, env: Envelope) -> Envelope | None:
-        """Run the §6.5 dispatch chain.  Returns an EXECUTE_RESPONSE envelope, or
-        None for a non-EXECUTE root (§3.3 server side ignores non-EXECUTE)."""
+        """Run the §6.5 dispatch chain, returning an EXECUTE_RESPONSE envelope.
+
+        The ``None`` in the return type is now unreachable and is kept only so the
+        transport's write decision does not have to change shape: every inbound root
+        reaching here is answered.
+        """
         exec_e = env.root
         if exec_e.type != "system/protocol/execute":
-            return None
+            # §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17): "400
+            # invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a bare
+            # close — that is indistinguishable from a network fault."
+            #
+            # §3.3 read "the connection MUST be closed", assigning no code and requiring
+            # no frame, and this peer did something weaker still: it returned None, the
+            # transport wrote NOTHING, and the connection stayed open — which is §4.11's
+            # OTHER non-conformant behaviour, the silent drop, "the weaker of the two
+            # precisely because nothing surfaces it". This is a PRE-ADMISSION refusal:
+            # the root is not an EXECUTE, so nothing was ever admitted and §4.9(c) does
+            # not reach it.
+            #
+            # The request_id is read best-effort — an arbitrary root type is under no
+            # obligation to carry one, and §4.11 licenses the uncorrelated frame exactly
+            # there. We do NOT close: on a multiplexed connection that would cost every
+            # ADMITTED in-flight request its response, and §4.11 leaves the close to us.
+            return Envelope.of(make_response(
+                exec_e.text("request_id") or "", 400,
+                error_result("invalid_request",
+                             "root entity is neither EXECUTE nor EXECUTE_RESPONSE"),
+            ))
         request_id = exec_e.text("request_id") or ""
         uri = exec_e.text("uri") or ""
         oc = self._run_chain(c, env, exec_e, uri)

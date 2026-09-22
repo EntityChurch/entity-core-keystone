@@ -2,7 +2,7 @@ import { encode, decode } from "../codec/canonical-cbor.js";
 import { encodeEntity } from "../codec/entity-codec.js";
 import { type EcfValue, ecfBytes, ecfMap, ecfPreEncoded, ecfText } from "../codec/ecf-value.js";
 import { SHA256_FORMAT, contentHashForFormat, readFormatCode } from "../codec/hash-formats.js";
-import { EntityProtocolError } from "../errors.js";
+import { EntityProtocolError, HashMismatchError } from "../errors.js";
 import * as Ecf from "./ecf.js";
 import { hashEqual, hashHex } from "./hashes.js";
 
@@ -95,7 +95,10 @@ export class Entity {
     const hashable = encodeEntity(type, encode(data));
     const expected = contentHashForFormat(format, hashable);
     if (!hashEqual(expected, declared)) {
-      throw new EntityProtocolError(
+      // §1.8 item 1 — RESOLUTION INTEGRITY, not a structural fault. §5.2a pins the
+      // decode-boundary code for this cause to `400 hash_mismatch` and rules
+      // `400 non_canonical_ecf` non-conformant here (0.8.2.24 N4/N5).
+      throw new HashMismatchError(
         `content_hash mismatch on '${type}': computed ${hashHex(expected)}, declared ${hashHex(declared)}`,
       );
     }

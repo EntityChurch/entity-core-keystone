@@ -74,6 +74,18 @@ type dispatchCtx struct {
 	included  Included
 	callerCap Entity
 	hasCap    bool
+
+	// The two values §6.3's `check_path_permission` needs and the dispatch check
+	// already computed. They are carried rather than recomputed because the
+	// handler-level check MUST run against the same authority the dispatch check
+	// resolved — recomputing invites the two to drift, and §6.8 is explicit that
+	// the authority is selected by who named the path.
+	//
+	// `pattern` is the OWNING handler's pattern (§6.3, 0.8.2.23): for the tree
+	// handler the owner and the runner coincide, so the distinction is not
+	// observable here, but the field is named for the owner because that is what
+	// the parameter means.
+	pattern string
 }
 
 // handler is a bootstrapped system handler.
@@ -344,12 +356,32 @@ func (p *Peer) entityNativeDispatch(handlerPath string) outcome {
 
 // ── dispatch chain (§6.5) ───────────────────────────────────────────────────
 
-// dispatch runs the §6.5 dispatch chain, returning an EXECUTE_RESPONSE envelope,
-// or ok=false for a non-EXECUTE root (§3.3 server side ignores non-EXECUTE).
+// dispatch runs the §6.5 dispatch chain, returning an EXECUTE_RESPONSE envelope.
+// The second return is kept for the caller's write decision and is now always
+// true: every inbound root reaching here is answered.
 func (p *Peer) dispatch(c *conn, env Envelope) (Envelope, bool) {
 	exec := env.Root
 	if exec.Type != "system/protocol/execute" {
-		return Envelope{}, false
+		// §6.5's "Other type?" arm, as rewritten at 0.8.2.25 (N12/N17):
+		// "400 invalid_request, coded frame; MAY then close (§3.3, §4.11). NOT a
+		// bare close — that is indistinguishable from a network fault."
+		//
+		// §3.3 read "the connection MUST be closed", assigning no code and
+		// requiring no frame, and this peer did something weaker still: it
+		// returned ok=false and the transport wrote NOTHING and kept the
+		// connection open, which is §4.11's other non-conformant behaviour — the
+		// silent drop, "the weaker of the two precisely because nothing surfaces
+		// it". This is a PRE-ADMISSION refusal: the root is not an EXECUTE, so
+		// nothing was ever admitted and §4.9(c) does not reach it.
+		//
+		// request_id is read best-effort. An arbitrary root type is under no
+		// obligation to carry one, and §4.11 licenses the uncorrelated frame
+		// exactly there. We do NOT close: on a multiplexed connection that would
+		// cost every ADMITTED in-flight request its response, and §4.11 leaves
+		// the close to us.
+		requestID, _ := exec.Text("request_id")
+		return NewEnvelope(MakeResponse(requestID, 400,
+			ErrorResult("invalid_request", "root entity is neither EXECUTE nor EXECUTE_RESPONSE"))), true
 	}
 	requestID, _ := exec.Text("request_id")
 	uri, _ := exec.Text("uri")
@@ -427,6 +459,7 @@ func (p *Peer) runChain(c *conn, env Envelope, exec Entity, uri string) outcome 
 		return inst.handleOp(operation, &dispatchCtx{
 			exec: exec, conn: c, included: env.Included,
 			callerCap: callerCap, hasCap: true,
+			pattern: pattern,
 		})
 	}
 	return p.entityNativeDispatch(pattern)

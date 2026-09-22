@@ -227,13 +227,67 @@ extension Peer {
 
     // MARK: - Tree handler (§6.3)
 
+    /// Whether a resource target is a §5.4 PATTERN rather than a concrete path. A
+    /// resource-requiring operation takes a concrete path (0.8.2.20), and a trailing
+    /// `/` is a LISTING request rather than a pattern — only a `*` makes it one.
+    func isPatternPath(_ target: String) -> Bool { target.contains("*") }
+
+    /// §6.3: the handler MUST verify the CALLER's capability covers the path it is about
+    /// to touch. NOT a secondary check — the dispatch-level check never saw this path if
+    /// the caller excluded it. An unauthenticated context (bootstrap / internal) has no
+    /// caller to narrow and is not filtered.
+    ///
+    /// `ctx.pattern` is the OWNING handler's pattern (§6.3, 0.8.2.23), and both it and
+    /// the capability are CARRIED from the dispatch check rather than recomputed: the
+    /// handler-level check MUST run against the same authority the dispatch check
+    /// resolved, and recomputing invites the two to drift (§6.8 — the authority is
+    /// selected by who named the path). For the tree handler owner and runner coincide,
+    /// so the distinction is not observable here.
+    func pathPermitted(_ operation: String, _ path: String, _ ctx: HandlerContext) -> Bool {
+        guard let cap = ctx.callerCapability else { return true }
+        return Capability.checkPathPermission(
+            operation: operation, path: path, handlerPattern: ctx.pattern,
+            grants: Capability.grants(of: cap), localPeerID: localPeerID)
+    }
+
     func treeHandler(operation: String, requestID: String, ctx: HandlerContext) async throws -> BuiltEntity {
+        // §3.3's ladder runs on the EFFECTIVE list (0.8.2.20), never on
+        // `resource.targets`: a handler that counts the effective list and then takes
+        // `targets[0]` has implemented the arithmetic completely and is still reading a
+        // path no authorization covered.
+        let eff = Capability.effectiveTargets(ctx.execute, localPeerID: localPeerID)
         switch operation {
         case "get":
-            // §6.3: empty resource → list the local peer root.
-            guard let target = ctx.resourceTarget?.targets.first else {
-                return try await buildListing(requestID: requestID, path: "/" + localPeerID + "/")
+            guard let eff else {
+                // THE TWO EMPTIES ARE DISTINCT HERE, AND THE OPERATION'S OWN
+                // SPECIFICATION IS WHAT SAYS SO. §3.3's "an empty effective list IS the
+                // absent case" is scoped "for an operation that REQUIRES a resource"
+                // (0.8.2.24, N7); `get` does not. For a resource-OPTIONAL operation
+                // 0.8.2.25 (N10) decides the present-but-empty case by whether the absent
+                // case is WIDER than the request — BROAD-RESULT refuses it,
+                // OPTIONAL-FILTER answers it empty — and requires the operation to
+                // declare which it is.
+                //
+                // EXTENSION-TREE §2.2a (v4.11) is that declaration: `get` is
+                // resource-OPTIONAL and BROAD-RESULT, absent-case answer "the root
+                // listing", self-excluded case "400 path_required". Both arms are pinned
+                // by text and neither is this peer's choice.
+                return try await buildListing(requestID: requestID, path: "/" + localPeerID + "/", ctx: ctx)
             }
+            if eff.isEmpty {
+                // The self-excluded request: `resource` PRESENT, every target carved out
+                // by the caller's own exclude. Serving it the absent case "answers a
+                // request for one excluded path with a listing of the tree"
+                // (EXTENSION-TREE §2.2a) — the root listing is wider than what was asked
+                // for, which is what BROAD-RESULT means.
+                return try errorResponse(requestID: requestID, status: 400, code: "path_required",
+                                         message: "tree: effective target list is empty")
+            }
+            if eff.count > 1 {
+                return try errorResponse(requestID: requestID, status: 400, code: "ambiguous_resource",
+                                         message: "tree: more than one effective target")
+            }
+            let target = eff[0]
             // §1.4 / CORE-TREE-PATH-FLEX-1: reject malformed caller paths.
             guard pathFlexOK(target) else {
                 return try errorResponse(requestID: requestID, status: 400, code: "invalid_path")
@@ -241,7 +295,13 @@ extension Peer {
             let canon = Capability.canonicalize(target, frame: localPeerID)
             if target.isEmpty || canon.hasSuffix("/") {
                 // listing (§3.9).
-                return try await buildListing(requestID: requestID, path: canon)
+                return try await buildListing(requestID: requestID, path: canon, ctx: ctx)
+            }
+            if isPatternPath(target) {
+                return try errorResponse(requestID: requestID, status: 400, code: "malformed_resource")
+            }
+            guard pathPermitted("get", canon, ctx) else {
+                return try errorResponse(requestID: requestID, status: 403, code: "capability_denied")
             }
             guard let entity = await store.getAt(path: canon) else {
                 return try errorResponse(requestID: requestID, status: 404, code: "not_found")
@@ -255,13 +315,39 @@ extension Peer {
             return try okResponse(requestID: requestID, result: result)
 
         case "put":
-            guard let target = ctx.resourceTarget?.targets.first else {
-                return try errorResponse(requestID: requestID, status: 400, code: "ambiguous_resource")
+            // Same ladder as `get`, with the two empties COLLAPSED rather than split:
+            // EXTENSION-TREE §2.2a (v4.11) declares `put` resource-REQUIRED, so §3.3's
+            // "an empty effective list IS the absent case" applies in its unscoped form
+            // and both empties answer `path_required`. That is the same table `get`'s
+            // branch cites, read one row down — the field is per-operation and neither
+            // answer is derivable from the handler's source.
+            //
+            // NOTE THE CODE CHANGE 0.8.2.20 FORCED: this arm answered
+            // `ambiguous_resource` for a MISSING target, which 0.8.2.20 names as the
+            // exact inversion it forbids ("answering ambiguous_resource for an absent
+            // resource inverts them"). The remedies differ — *supply a resource* is not
+            // *disambiguate your request* — and the code is what selects between them.
+            // Measured on the wire before the change: put with no resource answered
+            // 400 ambiguous_resource.
+            guard let eff, !eff.isEmpty else {
+                return try errorResponse(requestID: requestID, status: 400, code: "path_required",
+                                         message: "tree: put requires a resource target")
             }
+            if eff.count > 1 {
+                return try errorResponse(requestID: requestID, status: 400, code: "ambiguous_resource",
+                                         message: "tree: more than one effective target")
+            }
+            let target = eff[0]
             guard pathFlexOK(target) else {
                 return try errorResponse(requestID: requestID, status: 400, code: "invalid_path")
             }
+            if isPatternPath(target) {
+                return try errorResponse(requestID: requestID, status: 400, code: "malformed_resource")
+            }
             let canon = Capability.canonicalize(target, frame: localPeerID)
+            guard pathPermitted("put", canon, ctx) else {
+                return try errorResponse(requestID: requestID, status: 403, code: "capability_denied")
+            }
             // params is a system/tree/put-request: the entity to bind lives at
             // params.data.entity (§6.3); expected_hash drives §3.9 CAS.
             guard let p = params(ctx.execute) else {
@@ -312,14 +398,41 @@ extension Peer {
     /// keyed by child segment as a map of `system/tree/listing-entry`, with the
     /// `count`/`offset`/`path` carriers. Deletion-marker-bound leaves are omitted
     /// (§6.3 / CORE-TREE-DELETE-1).
-    func buildListing(requestID: String, path: String) async throws -> BuiltEntity {
+    ///
+    /// FILTERED PER-ENTRY against the caller's own capability (§6.3, 0.8.2.21/.22):
+    ///
+    /// > "When any handler returns a multi-entry result whose entries are tree paths,
+    /// > each entry MUST be individually checked using `check_path_permission`. Entries
+    /// > for which `check_path_permission` returns DENY MUST be omitted. The result's
+    /// > `count` field MUST reflect the filtered entry count, not the source tree's
+    /// > total count."
+    ///
+    /// This is the read path at its highest volume and it is the reason 0.8.2.21 refused
+    /// to carve reads out of the caller-specified-path rule: an unfiltered listing
+    /// discloses the EXISTENCE of every binding under a prefix to a caller whose
+    /// capability covers none of them. `count` follows the FILTERED total below — a count
+    /// that still reports the source total is the disclosure the rule exists to prevent.
+    ///
+    /// THE DIRECTORY ITSELF IS DELIBERATELY NOT CHECKED. §6.3 makes each ENTRY the
+    /// subject, and testing the prefix would deny a listing to a caller whose grant covers
+    /// children but not the node above them, which is the ordinary shape of a narrowed
+    /// grant.
+    ///
+    /// `ctx` is optional because the bootstrap/internal path has no caller to narrow —
+    /// "the caller's verified capability" is the filter's subject, and where there is
+    /// none there is nothing to filter against.
+    func buildListing(requestID: String, path: String, ctx: HandlerContext? = nil) async throws -> BuiltEntity {
         let raw = await store.listing(prefix: path)
+        let dir = path.hasSuffix("/") ? path : path + "/"
         var entryPairs: [(key: CBORValue, value: CBORValue)] = []
         var count: UInt64 = 0
         for e in raw {
             // omit a leaf bound to a deletion marker.
             if !e.hasChildren, let h = e.hash, let bound = await store.getByHash(h),
                bound.type == "system/deletion-marker" { continue }
+            // §6.3's per-entry check. The subject is `dir + segment`, never the
+            // directory.
+            if let ctx, !pathPermitted("get", dir + e.segment, ctx) { continue }
             var fields: [(String, CBORValue)] = [("has_children", .bool(e.hasChildren))]
             if let h = e.hash { fields.append(("hash", .bytes(h))) }
             entryPairs.append((.text(e.segment), .textMap(fields)))

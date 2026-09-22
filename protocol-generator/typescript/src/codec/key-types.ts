@@ -99,7 +99,7 @@ export function keyAlgorithmByCode(code: bigint, provider: CryptoProvider = defa
     case EXPERIMENTAL_TEST_CODE:
       return experimentalTest;
     case RESERVED_KEY_CODE:
-      throw new EntityCodecError("reserved key_type 255 (§1.5)");
+      throw new EntityCodecError("reserved key_type 255 (section 1.5)");
     default:
       throw new EntityCodecError(`unsupported_key_type: 0x${code.toString(16)}`);
   }

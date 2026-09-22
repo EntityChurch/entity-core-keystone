@@ -219,9 +219,18 @@ public actor Peer {
     private func dispatchInner(_ env: Envelope, connID: Int, outbound: OutboundDispatch?) async -> BuiltEntity {
         let root = env.root
         guard root.type == Wire.executeType else {
-            // §3.3: not an EXECUTE here (EXECUTE_RESPONSE is demuxed by transport;
-            // any other type → caller closes the connection).
-            return (try? errorResponse(requestID: "", status: 400, code: "protocol_error")) ?? fallbackError()
+            // §6.5's "Other type?" arm at 0.8.2.25 (N12/N17): 400 `invalid_request`, a
+            // coded frame, and the close is optional. The transport answers this before
+            // dispatch is reached, so this arm is a BACKSTOP rather than the observed
+            // site — and the two are kept in step deliberately: `protocol_error` is not
+            // one of §3.3's codes, so a peer that ever did reach it would answer a code
+            // the table does not define. (AGENTS.md: two sites for one refusal, and only
+            // the one that runs first is observable — say so at both, and name which one
+            // the wire sees.)
+            return (try? errorResponse(requestID: root.data.textAt("request_id") ?? "",
+                                       status: 400, code: "invalid_request",
+                                       message: "root entity is neither EXECUTE nor EXECUTE_RESPONSE"))
+                ?? fallbackError()
         }
         let reqID = root.data.textAt("request_id") ?? ""
         let uri = root.data.textAt("uri") ?? ""

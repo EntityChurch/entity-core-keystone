@@ -107,36 +107,66 @@ func (io *transportIO) closeIO() {
 	_ = io.conn.Close()
 }
 
+// refusePreAdmission puts the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on
+// the wire for a frame refused BEFORE it becomes an admitted request.
+//
+// "A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on
+// the wire [MUST] — correlated by request_id where the id is available, and
+// otherwise as a best-effort coded frame carrying no correlation."
+//
+// §4.9(c)'s deliver-or-signal rule is scoped to "every request the peer ADMITS"
+// and therefore reaches none of these, which is why §4.11 exists. The two
+// non-conformant behaviours it names are SEPARATE failures and this peer had one
+// of each: DROPPING the frame (the un-salvageable arm below used to fall through
+// to silence — "the weaker of the two precisely because nothing surfaces it"), and
+// CLOSING with no coded frame (the oversize arm, which returned straight out of
+// the read loop). A bare close is indistinguishable from a network fault (§4.6),
+// and on a multiplexed connection it destroys unrelated ADMITTED requests.
+//
+// An empty requestID IS the best-effort form, not a bug: it is what the section
+// prescribes where no id can be recovered.
+func (io *transportIO) refusePreAdmission(requestID string, status uint64, code string) {
+	_ = io.writeFramed(NewEnvelope(MakeResponse(requestID, status, ErrorResult(code, ""))))
+}
+
 // readLoop (§6.11 demux): EXECUTE_RESPONSE -> route; EXECUTE -> dispatch on its
 // own goroutine (§4.8). onExecute handles one inbound EXECUTE + writes its reply.
 func (io *transportIO) readLoop(onExecute func(Envelope)) {
 	for {
 		payload, err := ReadFrame(io.conn)
 		if err != nil {
-			if err == ErrFrameTooLarge {
-				// §4.10(a): rejected before buffering; close + keep the peer
-				// serving other connections (this loop just ends).
+			// The stream is desynchronized on both refusable arms — an oversize
+			// body was never drained, a truncated one never arrived — so the
+			// coded frame goes out and THEN the loop ends. §4.11 makes the frame
+			// mandatory and leaves the close to us; closing is the only sound
+			// choice once the framing is lost, and it is a choice rather than an
+			// alternative to answering.
+			if framingRefusal(err) {
+				status, code := preAdmissionRefusal(err)
+				io.refusePreAdmission("", status, code)
 			}
 			return
 		}
 		env, err := EnvelopeOfFrame(payload)
 		if err != nil {
-			// §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame
-			// is owed a STATUS, not silence. This used to `continue`, which
-			// rejected the frame (correct) and then dropped it on the floor
-			// (wrong): the sender saw no response at all and blocked until its
-			// own timeout, violating §6.3's second sentence and §4.9(c)
-			// deliver-or-signal. It also made a refusal indistinguishable from a
-			// dead peer, and on a single-connection oracle run it poisons every
-			// later request on the same connection.
+			// A COMPLETE frame the decoder refused. The framing is intact, so we
+			// answer and keep serving — this used to `continue` with no response
+			// at all, which left the sender blocked until its own §6.11(c)
+			// deadline and made a refusal indistinguishable from a dead peer.
+			//
+			// THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered
+			// non_canonical_ecf for every cause until 0.8.2.24/.25 pinned them
+			// apart: a mis-keyed `included` entry is `400 hash_mismatch` (its
+			// encoding is canonical — what is false is the claim the key makes),
+			// a tag-policy violation keeps `non_canonical_ecf`, and everything
+			// else that never becomes an Envelope is `400 invalid_request`.
 			//
 			// The frame is still REJECTED — we only salvage enough to correlate
-			// the response. If even the request_id is unrecoverable the frame is
-			// unattributable and silence is the only option left.
-			if reqID, ok := salvageRequestID(payload); ok {
-				_ = io.writeFramed(NewEnvelope(MakeResponse(reqID, 400,
-					ErrorResult("non_canonical_ecf", ""))))
-			}
+			// the response, and an unrecoverable id yields the uncorrelated
+			// best-effort frame rather than silence.
+			status, code := preAdmissionRefusal(err)
+			reqID, _ := salvageRequestID(payload)
+			io.refusePreAdmission(reqID, status, code)
 			continue
 		}
 		if env.Root.Type == "system/protocol/execute/response" {

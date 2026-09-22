@@ -27,7 +27,6 @@ from typing import Callable
 from .model import Entity, Envelope
 from .wire import (
     MAX_FRAME,
-    FrameTooLargeError,
     frame_of_envelope,
     make_execute,
     make_response,
@@ -106,70 +105,98 @@ class TransportIO:
         except OSError:
             pass
 
-    def _reject_non_canonical(self, payload: bytes) -> None:
-        """Answer a frame the strict decoder rejected with ``400 non_canonical_ecf``
-        (§6.3), recovering ONLY the ``request_id`` so the sender can correlate it.
+    def _salvage_request_id(self, payload: bytes) -> str:
+        """Recover ONLY the ``request_id`` from a frame the strict decoder rejected, so
+        the refusal can be delivered CORRELATED rather than as §4.11's uncorrelated
+        best-effort frame.  ``""`` when nothing is recoverable.
 
-        The frame stays rejected: nothing is built from it, nothing is stored, and the
-        tag is never interpreted — the salvage decode exists solely to read back the
-        correlation key. The envelope and entity-wrapper shapes are fixed maps with no
+        The frame stays rejected: nothing is built from it, nothing is stored, and a tag
+        is never interpreted — the salvage decode exists solely to read back the
+        correlation key.  The envelope and entity-wrapper shapes are fixed maps with no
         legal tag position, so a frame whose ONLY defect is a tag inside some entity's
         ``data`` still has a structurally sound root, which is exactly the case worth
         recovering (and the one CAP-6a's ``>2^64`` half arrives as — a bignum can only
-        reach a peer as a major-type-6 tag). If even the request_id is unrecoverable
-        there is nobody to answer, so the frame is dropped: the one case where silence is
-        all that is available.
+        reach a peer as a major-type-6 tag).
         """
         from .._cbor import decode_salvage
-        from .model import Envelope, Included
-        from .wire import error_result, make_response
 
         try:
             v = decode_salvage(payload)
             request_id = v["root"]["data"]["request_id"]
-            if not isinstance(request_id, str):
-                return
-        except Exception:
-            return  # no correlatable request_id — nothing to answer
+        except Exception:  # noqa: BLE001 — any failure means "no id", never a crash
+            return ""
+        return request_id if isinstance(request_id, str) else ""
+
+    def _refuse_pre_admission(self, request_id: str, status: int, code: str, message: str) -> None:
+        """Put the coded EXECUTE_RESPONSE §4.11 (0.8.2.25) requires on the wire for a
+        frame refused BEFORE it becomes an admitted request.
+
+        *"A peer that refuses a frame pre-admission MUST put a coded EXECUTE_RESPONSE on
+        the wire ``[MUST]`` — correlated by ``request_id`` where the id is available, and
+        otherwise as a best-effort coded frame carrying no correlation."*
+
+        §4.9(c)'s deliver-or-signal rule is scoped to *"every request the peer ADMITS"*
+        and therefore reaches none of these, which is why §4.11 exists.  The two
+        non-conformant behaviours it names are SEPARATE failures and this peer had one of
+        each: DROPPING the frame (the un-salvageable arm below used to fall through to
+        silence — *"the weaker of the two precisely because nothing surfaces it"*), and
+        CLOSING with no coded frame (the oversize arm, which returned straight out of the
+        read loop).  A bare close is indistinguishable from a network fault (§4.6), and on
+        a multiplexed connection it destroys unrelated ADMITTED requests.
+
+        AN EMPTY ``request_id`` IS THE BEST-EFFORT FORM, not a bug: it is what the section
+        prescribes where no id can be recovered, and guessing one would correlate the
+        refusal to somebody else's in-flight request.
+        """
+        from .model import Envelope, Included
+        from .wire import error_result, make_response
+
         try:
-            result = error_result(
-                "non_canonical_ecf",
-                "frame is not canonical ECF (section 6.3): CBOR tags are forbidden "
-                "anywhere in an entity",
-            )
-            self.write_framed(
-                Envelope(root=make_response(request_id, 400, result), included=Included())
-            )
-        except Exception:
-            # A write failure here is a dead socket, not a protocol decision; the read
-            # loop's own error handling ends the loop on the next iteration.
+            self.write_framed(Envelope(
+                root=make_response(request_id, status, error_result(code, message)),
+                included=Included(),
+            ))
+        except Exception:  # noqa: BLE001 — a dead socket, not a protocol decision
             return
 
     def read_loop(self, on_execute: Callable[[Envelope], None]) -> None:
         """§6.11 demux: EXECUTE_RESPONSE -> route; EXECUTE -> dispatch on its own
         thread (§4.8)."""
-        from .model import BadEntityError
-        from .wire import envelope_of_frame
+        from .wire import envelope_of_frame, framing_refusal, pre_admission_refusal
 
         while True:
             try:
                 payload = read_frame(self.sock, self.max_frame_bytes)
-            except FrameTooLargeError:
-                # §4.10(a): rejected before buffering; close + keep the peer
-                # serving other connections (this loop just ends).
-                return
-            except (OSError, ConnectionError):
+            except Exception as exc:  # noqa: BLE001 — OSError/ConnectionError included
+                # The stream is desynchronized on both REFUSABLE arms — an oversize body
+                # was never drained, a truncated one never arrived — so the coded frame
+                # goes out and THEN the loop ends. §4.11 makes the frame mandatory and
+                # leaves the close to us; closing is the only sound choice once the
+                # framing is lost, and it is a CHOICE rather than an alternative to
+                # answering. An ordinary hangup is not a refusal and gets nothing.
+                if framing_refusal(exc):
+                    status, code, message = pre_admission_refusal(exc)
+                    self._refuse_pre_admission("", status, code, message)
                 return
             try:
                 env = envelope_of_frame(payload)
-            except (BadEntityError, Exception):
-                # §6.3: "Rejection returns `400 non_canonical_ecf`" — the frame is
-                # refused (correct), and that refusal MUST be a STATUS, not silence.
-                # Skipping it satisfies only the first half of the sentence and leaves
-                # the sender blocked until its own timeout, so a refusal is
-                # indistinguishable from a dead peer. §4.9(c) deliver-or-signal says the
-                # same from the other direction. Answer, then keep reading.
-                self._reject_non_canonical(payload)
+            except Exception as exc:  # noqa: BLE001 — every decode fault is a refusal
+                # A COMPLETE frame the decoder refused. The framing is intact, so we
+                # answer and KEEP SERVING — and the refusal MUST be a status rather than
+                # silence (§4.11; §4.9(c) says the same from the other direction). A
+                # silent skip leaves the sender blocked until its own §6.11(c) deadline
+                # and makes a refusal indistinguishable from a dead peer.
+                #
+                # THE CODE IS THE CAUSE'S (§4.11, §5.2a). This answered
+                # `non_canonical_ecf` for every cause until 0.8.2.24/.25 pinned them
+                # apart: a mis-keyed `included` entry is `400 hash_mismatch` (its
+                # encoding is canonical — what is false is the claim the key makes), a
+                # tag-policy violation keeps `non_canonical_ecf`, and everything else
+                # that never becomes an Envelope is `400 invalid_request`.
+                status, code, message = pre_admission_refusal(exc)
+                self._refuse_pre_admission(
+                    self._salvage_request_id(payload), status, code, message
+                )
                 continue
             if env.root.type == "system/protocol/execute/response":
                 self._route_response(env)

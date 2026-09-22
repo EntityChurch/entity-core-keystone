@@ -118,6 +118,35 @@ theorem matchesSeg_trans : ∀ (x y z : List String),
 
 #print axioms matchesSeg_trans
 
+/-- `matchesSegNM` — the §5.4-guarded wrapper — inherits transitivity.
+
+THIS IS THE LEMMA RULE F's CHANGE NEEDED, and it is why the guard could move onto
+the attenuation path without re-deriving the T5a surface. `scopeSubset` used to call
+the RAW `matchesSeg` in both arms while `covered` called the wrapper, so §5.4's
+"never matches in EITHER operand" was bypassed on the attenuation path, in the
+PERMISSIVE direction (K-6, 0.8.2.22: "a sentinel arm is a control-flow obligation,
+not a line ... the guard MUST sit on every path that reaches the decision it
+protects").
+
+The proof is the whole argument for the wrapper existing: the sentinel cases are
+discharged from the HYPOTHESES (a sentinel operand makes some antecedent false), and
+the real case delegates to `matchesSeg_trans` untouched. `matchesSeg` keeps its exact
+clause order, so its five `rfl`-level arm-characterization lemmas are undisturbed. -/
+theorem matchesSegNM_trans : ∀ (x y z : List String),
+    matchesSegNM x y = true → matchesSegNM y z = true → matchesSegNM x z = true := by
+  intro x y z hxy hyz
+  unfold matchesSegNM at hxy hyz ⊢
+  by_cases hx : x = neverMatch
+  · simp [hx] at hxy
+  · by_cases hy : y = neverMatch
+    · simp [hy] at hxy
+    · by_cases hz : z = neverMatch
+      · simp [hy, hz] at hyz
+      · simp [hx, hy, hz] at hxy hyz ⊢
+        exact matchesSeg_trans x y z hxy hyz
+
+#print axioms matchesSegNM_trans
+
 -- ── Lifting: the generic all/any composition combinator ───────────────────────
 
 /-- The plumbing lemma that lifts a transitive per-element relation through the
@@ -146,46 +175,116 @@ theorem all_any_compose {α} {R_AB R_BC R_AC : α → α → Bool} {xs ys zs : L
 
 -- ── T5a lift: scopeSubset is transitive (under the shared middle frame) ───────
 
+/-- Transitivity of the §3.6 ID-SCOPE literal matcher, as an explicit HYPOTHESIS
+rather than a derived fact — a documented scope boundary, stated so the theorems
+below say exactly what they assume.
+
+WHY IT IS A HYPOTHESIS. `scopeSubset` became TYPED at 0.8.2.16 (F50): `handlers` and
+`resources` compare with the §5.4 segment matcher, `operations` and `peers` with
+§3.6's LITERAL matcher, because "an implementation on the canonicalizing reading is
+non-conformant and MUST adopt the literal matcher". Before that, every dimension went
+through `matchesSeg`, so the theorems below covered all four — but they covered them
+against a matcher the spec forbids. The code is now conformant and the two id
+dimensions need a different lemma.
+
+WHY IT IS NOT DERIVED HERE. `matchesIdPattern`'s wildcard arm is
+`value.startsWith (pattern.dropEnd 1)`, and in this toolchain `String.startsWith`
+routes through the `String.Slice.Pattern.ForwardPattern` typeclass. Deriving prefix
+transitivity plus the length reasoning the proof needs is a from-scratch string
+theory — the same one `grantPattern_namespace_isolation` declines by name a few
+hundred lines below, for the same reason. `grind` discharges most of the case split
+and leaves exactly those string obligations.
+
+IT IS TRUE, and the argument is short enough to record: with `z = "*"` the conclusion
+is immediate; with `z` a literal both hypotheses force equality; with `z = Q ++ "/*"`
+the hypothesis gives `y.startsWith (Q ++ "/")`, and since `y` is either a literal
+(then `x = y`), or `"*"` (then `Q ++ "/"` — length ≥ 1, ending in `/` — cannot prefix
+the one-character `"*"`, so the case is vacuous), or `P ++ "/*"`, in which case
+`Q ++ "/"` is a proper prefix of `P ++ "/*"` (they differ in their last character),
+hence `|Q| ≤ |P|`, hence `Q ++ "/"` prefixes `P ++ "/"` and so prefixes `x`.
+
+SOUNDNESS vs COMPLETENESS, since this file insists on the distinction: assuming this
+makes the theorems below CONDITIONAL, not wrong. Nothing here asserts the id arm
+composes; the theorems assert that IF it does, attenuation composes — and the path
+dimensions are unconditional either way, because `scopeSubset_trans`'s `.path` branch
+discharges its own obligation from `matchesSegNM_trans`. -/
+abbrev IdPatternTrans : Prop :=
+  ∀ x y z : String, matchesIdPattern x y = true → matchesIdPattern y z = true →
+    matchesIdPattern x z = true
+
 /-- §5.6 scope subset composes along a delegation chain: if scope `A` (granted in
 frame `fA`) is a subset of `B` (frame `fB`), and `B` is a subset of `C` (frame
 `fC`), then `A` is a subset of `C`. The INCLUDE direction composes covariantly
-(A→B→C), the EXCLUDE direction contravariantly (C→B→A) — both via the SAME
-`matchesSeg_trans` through `all_any_compose`, the middle frame `fB` shared. -/
-theorem scopeSubset_trans (fA fB fC : String) (A B C : Scope)
-    (h1 : scopeSubset fA fB A B = true) (h2 : scopeSubset fB fC B C = true) :
-    scopeSubset fA fC A C = true := by
-  unfold scopeSubset at h1 h2 ⊢
-  rw [Bool.and_eq_true] at h1 h2 ⊢
-  refine ⟨?_, ?_⟩
-  · exact all_any_compose
-      (R_AB := fun x y => matchesSeg (canonSegs fA x) (canonSegs fB y))
-      (R_BC := fun y z => matchesSeg (canonSegs fB y) (canonSegs fC z))
-      (R_AC := fun x z => matchesSeg (canonSegs fA x) (canonSegs fC z))
-      (fun x y z hxy hyz => matchesSeg_trans _ _ _ hxy hyz)
-      h1.1 h2.1
-  · exact all_any_compose
-      (R_AB := fun x y => matchesSeg (canonSegs fC x) (canonSegs fB y))
-      (R_BC := fun y z => matchesSeg (canonSegs fB y) (canonSegs fA z))
-      (R_AC := fun x z => matchesSeg (canonSegs fC x) (canonSegs fA z))
-      (fun x y z hxy hyz => matchesSeg_trans _ _ _ hxy hyz)
-      h2.2 h1.2
+(A→B→C), the EXCLUDE direction contravariantly (C→B→A) — both through the SAME
+`all_any_compose`, the middle frame `fB` shared.
+
+TYPED BY SCOPE KIND (F50, 0.8.2.16). The `.path` branch is unconditional and lifts
+`matchesSegNM_trans` — the §5.4-GUARDED wrapper, which is what makes this theorem
+describe the matcher the peer actually runs after RULE F moved the sentinel onto this
+path. The `.id` branch lifts `IdPatternTrans`; see its note for why that one is a
+hypothesis. -/
+theorem scopeSubset_trans (kind : ScopeKind) (hid : IdPatternTrans)
+    (fA fB fC : String) (A B C : Scope)
+    (h1 : scopeSubset kind fA fB A B = true) (h2 : scopeSubset kind fB fC B C = true) :
+    scopeSubset kind fA fC A C = true := by
+  cases kind with
+  | path =>
+    unfold scopeSubset at h1 h2 ⊢
+    rw [Bool.and_eq_true] at h1 h2 ⊢
+    refine ⟨?_, ?_⟩
+    · exact all_any_compose
+        (R_AB := fun x y => matchesSegNM (canonSegs fA x) (canonSegs fB y))
+        (R_BC := fun y z => matchesSegNM (canonSegs fB y) (canonSegs fC z))
+        (R_AC := fun x z => matchesSegNM (canonSegs fA x) (canonSegs fC z))
+        (fun x y z hxy hyz => matchesSegNM_trans _ _ _ hxy hyz)
+        h1.1 h2.1
+    · exact all_any_compose
+        (R_AB := fun x y => matchesSegNM (canonSegs fC x) (canonSegs fB y))
+        (R_BC := fun y z => matchesSegNM (canonSegs fB y) (canonSegs fA z))
+        (R_AC := fun x z => matchesSegNM (canonSegs fC x) (canonSegs fA z))
+        (fun x y z hxy hyz => matchesSegNM_trans _ _ _ hxy hyz)
+        h2.2 h1.2
+  | id =>
+    unfold scopeSubset at h1 h2 ⊢
+    rw [Bool.and_eq_true] at h1 h2 ⊢
+    refine ⟨?_, ?_⟩
+    · exact all_any_compose
+        (R_AB := fun x y => matchesIdPattern x y)
+        (R_BC := fun y z => matchesIdPattern y z)
+        (R_AC := fun x z => matchesIdPattern x z)
+        (fun x y z hxy hyz => hid _ _ _ hxy hyz)
+        h1.1 h2.1
+    · exact all_any_compose
+        (R_AB := fun x y => matchesIdPattern x y)
+        (R_BC := fun y z => matchesIdPattern y z)
+        (R_AC := fun x z => matchesIdPattern x z)
+        (fun x y z hxy hyz => hid _ _ _ hxy hyz)
+        h2.2 h1.2
 
 #print axioms scopeSubset_trans
 
-/-- §5.6 grant subset composes: each of the four dimensions (handlers/operations
-on the local frame, resources on the per-link granter frames, peers on the local
-frame) composes via `scopeSubset_trans`, the middle frame `fB` shared. -/
-theorem grantSubset_trans (lp fA fB fC : String) (A B C : Grant)
+/-- §5.6 grant subset composes: each of the four dimensions composes via
+`scopeSubset_trans`, the middle frame `fB` shared.
+
+THE FOUR DIMENSIONS NO LONGER COMPOSE THROUGH ONE MATCHER, and the signature is where
+that shows. `handlers`/`resources` are PATH-scope and compose unconditionally;
+`operations`/`peers` are ID-scope (F50, 0.8.2.16) and compose through
+`IdPatternTrans`, which this file carries as a hypothesis rather than deriving — see
+its note. Before F50 all four went through the segment matcher and this theorem was
+unconditional; it was also, for two of the four, a theorem about a matcher §3.6 calls
+non-conformant. Conditional-and-about-the-right-function is the better of the two,
+and stating the hypothesis is what keeps that visible. -/
+theorem grantSubset_trans (hid : IdPatternTrans) (lp fA fB fC : String) (A B C : Grant)
     (h1 : grantSubset lp fA fB A B = true) (h2 : grantSubset lp fB fC B C = true) :
     grantSubset lp fA fC A C = true := by
   unfold grantSubset at h1 h2 ⊢
   simp only [Bool.and_eq_true] at h1 h2 ⊢
   obtain ⟨⟨⟨h1h, h1o⟩, h1r⟩, h1p⟩ := h1
   obtain ⟨⟨⟨h2h, h2o⟩, h2r⟩, h2p⟩ := h2
-  exact ⟨⟨⟨scopeSubset_trans lp lp lp _ _ _ h1h h2h,
-           scopeSubset_trans lp lp lp _ _ _ h1o h2o⟩,
-          scopeSubset_trans fA fB fC _ _ _ h1r h2r⟩,
-         scopeSubset_trans lp lp lp _ _ _ h1p h2p⟩
+  exact ⟨⟨⟨scopeSubset_trans .path hid lp lp lp _ _ _ h1h h2h,
+           scopeSubset_trans .id hid lp lp lp _ _ _ h1o h2o⟩,
+          scopeSubset_trans .path hid fA fB fC _ _ _ h1r h2r⟩,
+         scopeSubset_trans .id hid lp lp lp _ _ _ h1p h2p⟩
 
 /-- **T5a, the entity-level security theorem.** §5.6 attenuation composes along a
 delegation chain: if entity `A` is an attenuation of granter `B` (in frames
@@ -194,8 +293,15 @@ fA/fB), and `B` of granter `C` (fB/fC), then `A` is an attenuation of `C`
 `all_any_compose`; the expiry bound composes by transitivity of `≤` in the
 finite-or-∞ lattice (a finite parent forbids an infinite child). Hence a leaf
 capability's effective authority is a subset of the root's — delegation never
-broadens. -/
-theorem isAttenuated_trans (lp fA fB fC : String) (A B C : EntityCore.Model.Entity)
+broadens.
+
+CONDITIONAL ON `IdPatternTrans` since F50 (0.8.2.16) typed `scope_subset`: the two
+ID-scope dimensions compose through §3.6's literal matcher, whose transitivity this
+file carries as a hypothesis rather than deriving. The path dimensions and the whole
+expiry half are unconditional. See `IdPatternTrans` for the argument that the
+hypothesis holds and for why it is not discharged here. -/
+theorem isAttenuated_trans (hid : IdPatternTrans) (lp fA fB fC : String)
+    (A B C : EntityCore.Model.Entity)
     (h1 : isAttenuated lp fA fB A B = true) (h2 : isAttenuated lp fB fC B C = true) :
     isAttenuated lp fA fC A C = true := by
   unfold isAttenuated at h1 h2 ⊢
@@ -207,7 +313,7 @@ theorem isAttenuated_trans (lp fA fB fC : String) (A B C : EntityCore.Model.Enti
       (R_AB := fun c p => grantSubset lp fA fB c p)
       (R_BC := fun c p => grantSubset lp fB fC c p)
       (R_AC := fun c p => grantSubset lp fA fC c p)
-      (fun x y z hxy hyz => grantSubset_trans lp fA fB fC x y z hxy hyz)
+      (fun x y z hxy hyz => grantSubset_trans hid lp fA fB fC x y z hxy hyz)
       h1g h2g
   · -- expiry: A.exp ≤ B.exp ≤ C.exp in the {finite < ∞} lattice ⇒ A.exp ≤ C.exp.
     -- `none` = ∞ = top; a finite parent (some) forbids an infinite child (none).
@@ -396,26 +502,77 @@ theorem matchesIdPattern_literal (value pattern : String)
 
 -- ── Reflexivity chain (the fold base case) ───────────────────────────────────
 
-theorem scopeSubset_refl (f : String) (s : Scope) : scopeSubset f f s s = true := by
-  unfold scopeSubset
-  rw [Bool.and_eq_true]
-  refine ⟨?_, ?_⟩ <;>
-    · rw [List.all_eq_true]; intro x hx; rw [List.any_eq_true]
-      exact ⟨x, hx, matchesSeg_refl _⟩
+/-- Reflexivity of the §3.6 id matcher, the second fact this file carries rather than
+derives. `matchesIdPattern x x` is true in all three arms — `"*"` by the first, a
+literal by the equality arm, and `P ++ "/*"` because a string starts with itself minus
+its last character — but that last arm is again `String.startsWith` over the Slice
+API. Same boundary as `IdPatternTrans`, same reason. -/
+abbrev IdPatternRefl : Prop := ∀ x : String, matchesIdPattern x x = true
 
-theorem grantSubset_refl (lp f : String) (g : Grant) : grantSubset lp f f g g = true := by
+/-- A scope carries no §5.4-UNMATCHABLE pattern under frame `f`.
+
+THIS HYPOTHESIS IS NEW AND IT IS RULE F's GUARD BECOMING VISIBLE IN THE PROOF.
+`scopeSubset` now compares through `matchesSegNM`, which refuses `neverMatch` in
+EITHER operand — so a scope whose include list canonicalizes some pattern to the
+sentinel IS NOT A SUBSET OF ITSELF, and `scopeSubset_refl` is simply false without
+this condition. That is not a defect in the guard: §5.4 rules "a capability carrying
+an unmatchable PATH-SCOPE pattern is INVALID", so self-subset failing on exactly those
+capabilities is the guard doing its job, one layer up. Stating it is what keeps the
+reflexivity chain from quietly asserting something about capabilities the spec says
+do not exist. -/
+def scopeMatchable (f : String) (s : Scope) : Prop :=
+  (∀ p ∈ s.incl, canonSegs f p ≠ neverMatch) ∧ (∀ p ∈ s.excl, canonSegs f p ≠ neverMatch)
+
+/-- A grant's two PATH-scope dimensions are matchable. `operations`/`peers` are
+id-scope and the sentinel does not reach them (0.8.2.24, N2/N3), so they are absent
+here by design rather than by omission. -/
+def grantMatchable (lp f : String) (g : Grant) : Prop :=
+  scopeMatchable lp g.handlers ∧ scopeMatchable f g.resources
+
+/-- Every grant a token carries is matchable. -/
+def entityMatchable (lp f : String) (e : EntityCore.Model.Entity) : Prop :=
+  ∀ g ∈ grantsOfToken e, grantMatchable lp f g
+
+theorem scopeSubset_refl (kind : ScopeKind) (hidr : IdPatternRefl) (f : String) (s : Scope)
+    (hm : kind = .path → scopeMatchable f s) : scopeSubset kind f f s s = true := by
+  cases kind with
+  | path =>
+    obtain ⟨hi, he⟩ := hm rfl
+    unfold scopeSubset
+    rw [Bool.and_eq_true]
+    refine ⟨?_, ?_⟩
+    · rw [List.all_eq_true]; intro x hx; rw [List.any_eq_true]
+      refine ⟨x, hx, ?_⟩
+      unfold matchesSegNM
+      simp [hi x hx, matchesSeg_refl]
+    · rw [List.all_eq_true]; intro x hx; rw [List.any_eq_true]
+      refine ⟨x, hx, ?_⟩
+      unfold matchesSegNM
+      simp [he x hx, matchesSeg_refl]
+  | id =>
+    unfold scopeSubset
+    rw [Bool.and_eq_true]
+    refine ⟨?_, ?_⟩ <;>
+      · rw [List.all_eq_true]; intro x hx; rw [List.any_eq_true]
+        exact ⟨x, hx, hidr x⟩
+
+theorem grantSubset_refl (hidr : IdPatternRefl) (lp f : String) (g : Grant)
+    (hm : grantMatchable lp f g) : grantSubset lp f f g g = true := by
   unfold grantSubset
   simp only [Bool.and_eq_true]
-  exact ⟨⟨⟨scopeSubset_refl _ _, scopeSubset_refl _ _⟩, scopeSubset_refl _ _⟩,
-         scopeSubset_refl _ _⟩
+  exact ⟨⟨⟨scopeSubset_refl .path hidr _ _ (fun _ => hm.1),
+           scopeSubset_refl .id hidr _ _ (by intro h; exact ScopeKind.noConfusion h)⟩,
+          scopeSubset_refl .path hidr _ _ (fun _ => hm.2)⟩,
+         scopeSubset_refl .id hidr _ _ (by intro h; exact ScopeKind.noConfusion h)⟩
 
-theorem isAttenuated_refl (lp f : String) (e : EntityCore.Model.Entity) :
+theorem isAttenuated_refl (hidr : IdPatternRefl) (lp f : String)
+    (e : EntityCore.Model.Entity) (hm : entityMatchable lp f e) :
     isAttenuated lp f f e e = true := by
   unfold isAttenuated
   rw [Bool.and_eq_true]
   refine ⟨?_, ?_⟩
   · rw [List.all_eq_true]; intro x hx; rw [List.any_eq_true]
-    exact ⟨x, hx, grantSubset_refl lp f x⟩
+    exact ⟨x, hx, grantSubset_refl hidr lp f x (hm x hx)⟩
   · split <;> first | rfl | simp_all | exact decide_eq_true (UInt64.le_refl _)
 
 -- ── Edge-frame extraction ────────────────────────────────────────────────────
@@ -442,26 +599,40 @@ verdict cannot return `allow` for a chain whose leaf broadens the root's
 authority — `walk_allow_cons` extracts each edge's `isAttenuated`, and
 `isAttenuated_trans` folds them. Combined with `verifyChain`'s root-granter-local
 check, this is the closed statement of "a requester only ever wields authority the
-local peer actually delegated." -/
-theorem allowed_chain_leaf_atten_root (lp : String) (now : UInt64) :
+local peer actually delegated."
+
+THE THREE NEW HYPOTHESES ARE THE F50/RULE-F BOUNDARY REACHING THE CAPSTONE, and each
+is only used where it is needed. `IdPatternTrans` and `IdPatternRefl` are the two
+§3.6 literal-matcher facts this file carries rather than derives (see their notes).
+The `entityMatchable` condition is USED ONLY at the induction's base — the
+single-link chain, where the statement degenerates to "the leaf is an attenuation of
+ITSELF". Since RULE F moved §5.4's sentinel onto the attenuation path, self-subset is
+false for a capability carrying an unmatchable path pattern — which §5.4 rules INVALID
+anyway, so the condition excludes exactly the capabilities the spec excludes. It is
+quantified over the chain rather than over the leaf because the induction reaches the
+base case at the chain's LAST link, not its first. -/
+theorem allowed_chain_leaf_atten_root (hid : IdPatternTrans) (hidr : IdPatternRefl)
+    (lp : String) (now : UInt64) :
     ∀ (rest : List ResolvedLink) (leaf : ResolvedLink) (d : Nat) (lf : String),
     walk lp now d (leaf :: rest) = .allow → leaf.granterPeer = some lf →
+    (∀ l ∈ (leaf :: rest), ∀ f, l.granterPeer = some f → entityMatchable lp f l.entity) →
     ∃ root rf, (leaf :: rest).getLast? = some root ∧ root.granterPeer = some rf ∧
       isAttenuated lp lf rf leaf.entity root.entity = true := by
   intro rest
   induction rest with
   | nil =>
-    intro leaf _ lf _ hlf
-    exact ⟨leaf, lf, rfl, hlf, isAttenuated_refl lp lf leaf.entity⟩
+    intro leaf _ lf _ hlf hm
+    exact ⟨leaf, lf, rfl, hlf,
+      isAttenuated_refl hidr lp lf leaf.entity (hm leaf (List.mem_cons_self ..) lf hlf)⟩
   | cons snd tl ih =>
-    intro leaf d lf hwalk hlf
+    intro leaf d lf hwalk hlf hm
     obtain ⟨hedge, hwalk'⟩ := walk_allow_cons lp now d leaf snd tl hwalk
     obtain ⟨cf, pf, hcf, hpf, hatten⟩ := edgeOk_atten lp d leaf snd hedge
     -- cf = lf (leaf's frame is determined)
     rw [hlf] at hcf; injection hcf with hcfeq; subst hcfeq
     -- recurse on the tail chain (snd :: tl), whose leaf is snd with frame pf
-    obtain ⟨root, rf, hlast, hrf, hsnd⟩ := ih snd (d + 1) pf hwalk' hpf
-    refine ⟨root, rf, ?_, hrf, isAttenuated_trans lp lf pf rf leaf.entity snd.entity root.entity hatten hsnd⟩
+    obtain ⟨root, rf, hlast, hrf, hsnd⟩ := ih snd (d + 1) pf hwalk' hpf (fun l hl f hf => hm l (List.mem_cons_of_mem _ hl) f hf)
+    refine ⟨root, rf, ?_, hrf, isAttenuated_trans hid lp lf pf rf leaf.entity snd.entity root.entity hatten hsnd⟩
     -- getLast? (leaf :: snd :: tl) = getLast? (snd :: tl)
     rw [List.getLast?_cons_cons] at *; exact hlast
 

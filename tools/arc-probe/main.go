@@ -1218,13 +1218,34 @@ func verdictFor(c caseSpec, r caseResult, st *runState) string {
 		return "yes — refused " + fmt.Sprintf("%d %s", r.Status, r.Code) +
 			", which is not the row §5.2a assigns this lookup"
 	case "C1_operations_declared_path_scope", "C2_resources_declared_id_scope":
-		if r.Status == 403 {
-			return "yes"
-		}
+		// RETIRED at 0.8.2.24. These rows graded `J4` clause 2 — "a received
+		// `scope` whose declared `type` contradicts its dimension MUST be refused
+		// 403 capability_denied" — and §3.6 now reads "That clause is WITHDRAWN…
+		// It MUST NOT be required at the matcher [MUST] (0.8.2.24)", because an
+		// implementation that discards `scope.type` at decode (the shape the rule
+		// prescribes) cannot observe the contradiction at all and "is conformant".
+		//
+		// So 200 is the PRESCRIBED answer here, not a defect, and the old grading
+		// inverted it: it published the conformant shape as `no — the declared
+		// type was not read`, which is the description and no longer the fault.
+		// F78 is the ask that withdrew it and the clause was OURS.
+		//
+		// The rows are kept rather than deleted because the observation is still
+		// worth having — it says whether a peer reads a field the spec tells it to
+		// drop — and because deleting them would silently shrink the denominator
+		// of every historical report. RETIRED is its own state, like VOID: it is
+		// excluded from the owed count rather than counted as a pass, since
+		// counting it as a pass would claim a measurement this row no longer makes.
 		if r.Status == 200 {
-			return "no — the declared type was not read"
+			return "RETIRED — clause withdrawn at 0.8.2.24; 200 is the prescribed shape " +
+				"(`scope.type` discarded at decode)"
 		}
-		return "partial — refused " + fmt.Sprintf("%d %s", r.Status, r.Code) + ", not 403"
+		if r.Status == 403 {
+			return "RETIRED — clause withdrawn at 0.8.2.24; this peer reads `scope.type` " +
+				"at the matcher, which is no longer required (§3.6 permits a MAY at admission)"
+		}
+		return "RETIRED — clause withdrawn at 0.8.2.24; refused " +
+			fmt.Sprintf("%d %s", r.Status, r.Code)
 	case "E2_matchable_grant_exclude":
 		switch {
 		case r.Status == 403:
@@ -1526,8 +1547,17 @@ func main() {
 		}
 	}
 
-	famC := "C (§5.2/§5.6 scope typing, 0.8.2.22 clause 2): operations-mistyped=" + c1.Conforms +
-		" · resources-mistyped=" + c2.Conforms + " · untyped-control=" + c3.Conforms
+	// FAMILY C IS RETIRED. It graded `J4` clause 2, WITHDRAWN at 0.8.2.24 (§3.6:
+	// "That clause is WITHDRAWN… It MUST NOT be required at the matcher"). The
+	// withdrawal is F78, which was our own ask to unship our own clause — so this
+	// family's rows now measure a rule that does not exist, and a peer answering
+	// 200 is answering correctly. Kept as an observation, excluded from the owed
+	// count. C3 (the differential) still carries information: it says whether the
+	// peer's answer changes when `type` is absent, which is the direct read on
+	// whether the field is consulted at all.
+	famC := "C (§5.2/§5.6 scope typing) — RETIRED: `J4` clause 2 was withdrawn at 0.8.2.24 " +
+		"and these rows no longer grade a live rule. Observation only: operations-mistyped=" +
+		c1.Conforms + " · resources-mistyped=" + c2.Conforms + " · untyped-control=" + c3.Conforms
 	e2 := get("E2_matchable_grant_exclude")
 	famE := "E (§5.2 grant exclude, 0.8.2.21): unmatchable=" + e1.Conforms +
 		" · matchable-control=" + e2.Conforms
@@ -1573,7 +1603,7 @@ func main() {
 	}
 	r.Families = []string{famA, famB, famC, famE, famF, famG}
 
-	owed, void := 0, 0
+	owed, void, retired := 0, 0, 0
 	for _, cr := range r.Cases {
 		if cr.Role != "measurement" && cr.Role != "differential" {
 			continue
@@ -1584,13 +1614,19 @@ func main() {
 			// Unmeasured is its own state. Folding it into "owed" would make a
 			// peer whose control failed look like a peer with a defect.
 			void++
+		case hasPrefix(cr.Conforms, "RETIRED"):
+			// The rule this row graded no longer exists. Counting it as owed
+			// publishes a defect against withdrawn text; counting it as a pass
+			// claims a measurement the row no longer makes. It is neither.
+			retired++
 		default:
 			owed++
 		}
 	}
 	if r.Trusted {
-		r.Summary = fmt.Sprintf("%d of %d measured rows do not yet answer what 0.8.2.23 requires; "+
-			"%d unmeasured (family control failed)", owed, countRoles(), void)
+		r.Summary = fmt.Sprintf("%d of %d measured rows do not yet answer what 0.8.2.25 requires; "+
+			"%d unmeasured (family control failed); %d retired (rule withdrawn upstream)",
+			owed, countRoles()-retired, void, retired)
 	} else {
 		r.Summary = "UNTRUSTED — nothing below is a reading about this peer"
 	}

@@ -22,8 +22,14 @@ extension Peer {
             let pattern = patternFromHandlerResource(first)
             // §6.2: user-installed handlers MUST NOT register at system/* paths.
             if isReservedSystemPattern(pattern) {
+                // ASCII-ONLY IN A WIRE-VISIBLE STRING (AGENTS.md, ratified on two
+                // independent crashes). A `§` in an error `message` is CBOR-text-encoded
+                // and sent; Oz's compiled string constant was corrupted by one and Io's
+                // own UTF-8 validator rejected byte-correct UTF-8, killing the process
+                // and cascading 104 FAILs. The citation stays, spelled "section", and
+                // `§` stays in comments, which are never encoded.
                 return try errorResponse(requestID: requestID, status: 403, code: "forbidden_pattern",
-                    message: "§6.2: user-installed handlers MUST NOT register at system/* paths: " + pattern)
+                    message: "section 6.2: user-installed handlers MUST NOT register at system/* paths: " + pattern)
             }
             // The five §6.13a writes (manifest, types, grant, grant-sig, interface).
             try await registerHandler(pattern: pattern)
