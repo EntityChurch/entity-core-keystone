@@ -267,6 +267,48 @@ if [ "${#PEERS[@]}" -eq 0 ]; then
   exit 2
 fi
 
+# ---------------------------------------------------------------------------
+# REFUSE TO START WHILE ANOTHER CONTAINER HOLDS THIS REPO.
+#
+# Ported from `run-cohort-census.sh` (b91046c4, 2026-09-15) on the same day it
+# was written there, because it was written there and NOWHERE ELSE and the gap
+# cost four hours the same night. 41 per-peer harnesses mount `$REPO_ROOT` at
+# /work with `:Z`; two containers relabeling one host path race, and the loser
+# sees the mount vanish mid-run. The failure does NOT look like contention:
+#
+#     Unable to get file info: '/work/protocol-generator/crystal': Permission denied
+#
+# On 2026-09-15 that hit two concurrent `crystal spec` containers. Crystal
+# raises it inside a `spawn`ed fiber under a `WaitGroup`, so the fiber dies, the
+# group never reaches zero, and the process parks FOREVER -- measured at 9h with
+# 48 threads in futex_do_wait and zero sockets, holding the repo against every
+# later census. Both needed SIGKILL. A build step needs a deadline for the same
+# reason a wire read does; this guard is the cheaper half of that lesson.
+#
+# The check is asked ONCE PER SWEEP rather than once per peer: 46 identical
+# refusals would be noise, and the hazard is a property of the run, not the peer.
+# Matching is on the podman MOUNT LIST (`inspect`, where the host SOURCE appears
+# -- `ps --format {{.Mounts}}` prints the CONTAINER-side path and can never fire)
+# and never on the command line, which is the standing `pgrep -f` trap.
+if command -v podman >/dev/null 2>&1; then
+  HOLDERS="$(podman ps -q 2>/dev/null | xargs -r podman inspect \
+               --format '{{.Id}} {{.Config.Image}} {{range .Mounts}}{{.Source}} {{end}}' 2>/dev/null \
+             | awk -v r="$REPO_ROOT" 'index($0, r) { printf "    %.12s  %s\n", $1, $2 }')"
+  if [ -n "$HOLDERS" ]; then
+    echo "$AXIS-sweep: REFUSING TO START — another container already holds this repo:" >&2
+    echo "$HOLDERS" >&2
+    echo "" >&2
+    echo "  Two containers relabeling the same host path with ':Z' race. The loser" >&2
+    echo "  sees /work disappear mid-run and reports 'Permission denied' — which" >&2
+    echo "  reads as a peer defect and is contention. On some runtimes it HANGS" >&2
+    echo "  rather than exiting (crystal: a fiber fault under a WaitGroup)." >&2
+    echo "  Wait for the other run, or set SWEEP_IGNORE_HOLDERS=1 to override." >&2
+    [ "${SWEEP_IGNORE_HOLDERS:-0}" = "1" ] || exit 4
+    echo "$AXIS-sweep: SWEEP_IGNORE_HOLDERS=1 — proceeding anyway; treat any" >&2
+    echo "        permission-denied failure below as contention, not a peer defect." >&2
+  fi
+fi
+
 mkdir -p "$OUT"
 SUMMARY="$OUT/SUMMARY.tsv"
 : > "$SUMMARY"

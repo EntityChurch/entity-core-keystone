@@ -319,6 +319,40 @@ Two conformance **oracles** are ground truth (built from `entity-core-go`, see B
   exits, and after two of them are running, `pgrep` stops answering the question you are asking.
   Discriminate on something the watcher cannot contain — the log's completion marker, or a
   podman-process count.)*
+  **RATIFIED 2026-09-15 — THE GUARD LANDED IN THE CENSUS AND NOWHERE ELSE, AND THE 41 HARNESSES IT
+  WAS NOT PORTED TO ARE THE ONES THAT PRODUCED THE NEXT OUTAGE.** `b91046c4` added the
+  refuse-to-start holder check to `run-cohort-census.sh` on 2026-09-15 at 10:06, for the `:Z`
+  relabel race: two containers relabeling one host path collide, **every check still PASSES and only
+  the report write loses**, so the oracle exits 0 and a stale JSON reads as a result. Measured the
+  same day: `grep -l ':Z' protocol-generator/*/run-s2.sh` returns **41**, and
+  `grep -l "REFUSING TO START" protocol-generator/*/run-*.sh tools/run-axis-sweep.sh` returns
+  **nothing**. So the axis sweeps can still manufacture precisely the contention the census now
+  refuses — **the harden-one-anchor-check-its-siblings rule failing at a four-hour distance, in the
+  session that wrote the anchor.**
+  **It fired the same night, on `crystal`, twice**: two concurrent `crystal spec` containers, both
+  logging `Unable to get file info: '/work/protocol-generator/crystal': Permission denied`. That is
+  the signature this entry already names — *filesystem-permission, therefore contended until proven
+  otherwise* — and it is now a **measured mechanism rather than a heuristic**: the loser of a `:Z`
+  relabel sees the repo mount vanish out from under it mid-compile.
+  **AND THE SECOND HALF IS A RUNTIME PROPERTY WORTH ITS OWN GREP: ON CRYSTAL, AN EXCEPTION RAISED
+  INSIDE A `spawn`ED FIBER UNDER A `WaitGroup` IS A HANG, NOT A FAILURE.** The compiler's own
+  `compiler.cr:643` spawns into `wait_group.cr:68`; the unhandled `File::AccessDeniedError` kills the
+  fiber, the wait group never reaches zero, and the process parks **forever** — measured at 9 h with
+  **48 threads in `futex_do_wait`, zero sockets, 0.07% CPU**, holding the repo and blocking every
+  subsequent census. Both containers needed `SIGKILL`. **A contention fault that should have exited
+  non-zero in seconds instead became an indefinite lock on the tree**, and nothing timed it out
+  because the only deadline in that harness is on the peer socket, not on the build.
+  **Two enforcement points. The first is LANDED the same day, which is the whole point of the rule
+  it was failing:** `tools/run-axis-sweep.sh` carries the holder guard, asked **once per sweep**
+  rather than 41 times — 46 identical refusals would be noise, and the hazard is a property of the
+  run, not of the peer. **Three arms exercised before it was committed, because a guard that was
+  never executed is not a guard:** no holder → proceeds (**with 9 unrelated containers running, so
+  the match is on the mount list and not on "is anything up"**); a holder → **exit 4** naming its id
+  and image; `SWEEP_IGNORE_HOLDERS=1` → proceeds with the contention warning. **The second is still
+  owed: a wall-clock ceiling on every per-peer harness invocation** — *a build step needs a deadline
+  for the same reason a wire read does, and the §4.11 sweep only ever put one on the socket.*
+  Diagnostic, cheap, and it is what separated the two cases here: **`ls -l /proc/<pid>/fd` — sockets
+  mean a protocol hang, a lock file and no sockets mean contention.**
 - **`output/scratch/census/` is NOT scoped to the last run — stale per-peer JSONs from earlier
   censuses sit beside the fresh ones.** A `--tier M1` run leaves the other 40 peers' files untouched,
   so `grep -l budget_exhausted output/scratch/census/*.json` returns the `asm`/`riscv64` trio from a
@@ -507,8 +541,32 @@ contract — check it (not the dated STATUS narrative) first.
   `SEAT-CLEANUP-INSTRUCTIONS-2026-09-09.md`. **`docs/status/TRACKER-<counterpart-repo>.md`**, four
   sections — *Open — asks* (stable ids, **one sentence naming what must be decided**, the packet's
   FULL stem, and the *kind* of answer) · *Corrections we owe them* · *Filed, nothing owed back to
-  us* · *Closed*. Three today: `entity-system-architecture`, `entity-system-generator`,
-  `entity-core-formalization`.
+  us* · *Closed*. **FOUR today** — `entity-system-architecture`, `entity-system-generator`,
+  `entity-core-formalization`, `entity-system-conformance`.
+  **RATIFIED 2026-09-15 — THE FOURTH WAS MISSING FOR THREE DAYS, AND THE ENFORCEMENT CLAUSE IN THIS
+  VERY ENTRY IS STRUCTURALLY BLIND TO THAT.** `entity-system-conformance` opened a
+  `TRACKER-entity-core-keystone.md` on 2026-09-12 carrying **six asks marked `FILED, not routed`
+  (X1–X8) and six more held (X9–X14)**; we had no tracker for that seat, so **not one of the twelve
+  ever reached us** — we learned of them by reading their tree, not by a packet. Their file says so
+  and declines to blame us: *"they have no `TRACKER-entity-system-conformance.md` … which is our
+  seven-packets-unrouted problem and not a defect of theirs."* **It is ours.**
+  **The mechanism is the false-negative family's arithmetic half, one level up: a reconciliation
+  keyed on the trackers you KEEP cannot see the counterpart you OMITTED.** This entry's own
+  enforcement — *"every in-flight packet must appear in exactly one tracker section"* — quantifies
+  over the trackers that exist, so a seat with no file is not an unrowed packet, it is an absent
+  row in an absent table, and the control reports clean. Three days, thirteen gates green.
+  **Enforcement, and the discriminator must come from OUTSIDE our own list — ask which seats keep a
+  tracker for US:** `for r in ../*/; do ls "$r"docs/status/TRACKER-entity-core-keystone.md; done`.
+  Three hits against our three files, **intersection two**. One command, and it is the only form of
+  the check that can name a channel we never thought of. Generalise past trackers: **whenever a
+  convention is "one artifact per member of a set," the set must be derived from the world, never
+  from the artifacts you have already made** — the H4 packaging survey's lesson, reached through an
+  inbox instead of a package manager.
+  *(Two of their asks turned out to be independent re-discoveries of debts WE had recorded
+  internally and never routed — the non-minimal-head / duplicate-key decoder gap, which this file
+  already carries as a deliberate non-fix, and `F47`. **A debt recorded in-tree so that changing it
+  is a decision and not a drift is still unrouted if no counterpart is told**, and the seat whose
+  job is to measure us is exactly the counterpart who should have been.)*
   **The failure it fixes is arch's, and it is the mirror of ours above.** Delivery here is *"commit
   a document to your own tree and the other party reads it"* — no queue, no notification — so a
   counterpart answering *"what does this seat need from us"* has to read a whole tree. Arch did,

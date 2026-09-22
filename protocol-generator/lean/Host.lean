@@ -33,7 +33,7 @@ def b64Decode (s : String) : ByteArray := Id.run do
   let mut out := ByteArray.empty
   let mut acc : Nat := 0
   let mut bits : Nat := 0
-  for c in s.data do
+  for c in s.toList do
     let v := tbl c
     if v ≥ 0 then
       acc := (acc <<< 6) ||| v.toNat
@@ -57,8 +57,11 @@ def loadSeedFromName (name : String) : IO ByteArray := do
       IO.Process.exit 2
   | .ok text =>
       -- strip PEM armor lines (those beginning with '-')
+      -- `startsWith` rather than `l.get 0`, which v4.29 deprecates in favour of
+      -- `String.Pos.Raw.get`. It also subsumes the length guard: `"".startsWith`
+      -- is already false, so the empty line falls out with no special case.
       let body := String.join (text.splitOn "\n" |>.filter (fun l =>
-        !(l.length > 0 && l.get 0 = '-')))
+        !(l.startsWith "-")))
       let seed := b64Decode body
       if seed.size ≠ 32 then
         IO.eprintln s!"error: --name {name}: expected a 32-byte seed, got {seed.size} bytes"
