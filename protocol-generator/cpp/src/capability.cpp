@@ -47,8 +47,47 @@ EntityPtr resolve(const Envelope& env, const Store& store, std::span<const std::
     return store.get_by_hash(h);
 }
 
+std::string text_of(const EcfValue& v);   // defined with the scope helpers below
+
+// The unmatchable value (0.8.2.20). Unreachable as a canonical path by CONSTRUCTION:
+// its first segment cannot be a peer_id, since is_peer_id requires >= 46 Base58
+// characters and '-' is outside kBase58.
+constexpr std::string_view kNeverMatch = "/never-match";
+
+// canonicalize FOR THE MATCHERS, which have no error channel. TOTAL (0.8.2.20): the
+// return domain is "a canonical path OR kNeverMatch".
+//
+// canonicalize() itself keeps its std::optional, because dispatch.cpp's address gate
+// and tree-path consumers use the nullopt as a refusal and are exactly the callers
+// 0.8.2.20 says SHOULD have the diagnostic. The defect was HERE: `covered` did
+// `if (cp && ...)`, so a reserved form was SKIPPED — which is the desired outcome in
+// an INCLUDE and the opposite of it in an EXCLUDE, so a grant exclude carrying
+// "../x" carved out nothing and the grant was silently wider than its author wrote
+// (measured on the wire 2026-09-14).
+std::string canon_match(std::string_view frame, std::string_view path) {
+    return canonicalize(frame, path).value_or(std::string(kNeverMatch));
+}
+
+// AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
+// in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an
+// exclude (carves out nothing), so the reading is chosen where the POSITION is known
+// and matches_pattern stays uniform over its operands. The guard sits outside the
+// scope-type dispatch, transcribing §5.2's loop literally.
+bool exclude_is_unmatchable(std::string_view frame, const EcfValue* excl) {
+    if (!excl) return false;
+    for (const auto& box : std::get<ecf::Array>(excl->as_variant())) {
+        if (!box->is<ecf::Text>()) continue;
+        if (canon_match(frame, text_of(*box)) == kNeverMatch) return true;
+    }
+    return false;
+}
+
 // ── §5.4 pattern matching ──────────────────────────────────────────────────────
 bool matches_pattern(std::string_view path, std::string_view pattern) {
+    // kNeverMatch never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+    // rule rather than a property of the string: the line below returns true for a
+    // bare "*", so safety must not rest on a value merely looking unmatchable.
+    if (path == kNeverMatch || pattern == kNeverMatch) return false;
     if (pattern == "*") return true;
     if (starts_with("/*/", pattern)) {
         std::string_view remainder = pattern.substr(3);
@@ -100,8 +139,7 @@ bool covered(std::string_view frame, const EcfValue* pats, std::string_view cv) 
     if (!pats) return false;
     for (const auto& box : std::get<ecf::Array>(pats->as_variant())) {
         if (!box->is<ecf::Text>()) continue;
-        auto cp = canonicalize(frame, text_of(*box));
-        if (cp && matches_pattern(cv, *cp)) return true;
+        if (matches_pattern(cv, canon_match(frame, text_of(*box)))) return true;
     }
     return false;
 }
@@ -134,6 +172,7 @@ bool covered_id(const EcfValue* pats, std::string_view value) {
 enum class ScopeKind { Id, Path };
 
 bool matches_scope(std::string_view local_peer, std::string_view value, Scope s, ScopeKind kind) {
+    if (exclude_is_unmatchable(local_peer, s.excl)) return false;  // 0.8.2.21 — deny
     if (kind == ScopeKind::Id) {
         return covered_id(s.incl, value) && !covered_id(s.excl, value);
     }
@@ -153,6 +192,10 @@ bool check_resource_scope(std::string_view local_peer, std::string_view granter_
     const auto* caller_excl = as_array(value::get(resource_map, "exclude"));
     if (!targets || std::get<ecf::Array>(targets->as_variant()).empty()) return false;
     Scope s = parse_scope(res_scope_v);
+    // An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+    // target: the coverage test below is correct in isolation and is simply never
+    // reached on a sentinel, because matches_pattern answers false.
+    if (exclude_is_unmatchable(granter_peer, s.excl)) return false;
     for (const auto& tbox : std::get<ecf::Array>(targets->as_variant())) {
         if (!tbox->is<ecf::Text>()) return false;
         auto ct = canonicalize(local_peer, text_of(*tbox));
@@ -172,15 +215,13 @@ bool scope_subset(std::string_view child_peer, std::string_view parent_peer,
     if (child.incl) {
         for (const auto& cbox : std::get<ecf::Array>(child.incl->as_variant())) {
             if (!cbox->is<ecf::Text>()) continue;
-            auto cc = canonicalize(child_peer, text_of(*cbox));
-            if (!cc || !covered(parent_peer, parent.incl, *cc)) return false;
+            if (!covered(parent_peer, parent.incl, canon_match(child_peer, text_of(*cbox)))) return false;
         }
     }
     if (parent.excl) {
         for (const auto& pbox : std::get<ecf::Array>(parent.excl->as_variant())) {
             if (!pbox->is<ecf::Text>()) continue;
-            auto cpe = canonicalize(parent_peer, text_of(*pbox));
-            if (!cpe || !covered(child_peer, child.excl, *cpe)) return false;
+            if (!covered(child_peer, child.excl, canon_match(parent_peer, text_of(*pbox)))) return false;
         }
     }
     return true;

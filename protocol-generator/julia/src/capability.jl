@@ -167,12 +167,43 @@ function normalize_uri(uri::AbstractString)::String
     return String(uri)
 end
 
-"""Resolve peer-relative paths to absolute `/{local}/…` form."""
-canonicalize(local_peer::AbstractString, path::AbstractString)::String =
-    startswith(path, "/") ? String(path) : "/$(local_peer)/$(path)"
+"""The unmatchable value (0.8.2.20). Unreachable as a canonical path by CONSTRUCTION:
+its first segment cannot be a peer_id, since `is_peer_id` requires >= 46 Base58
+characters and `-` is outside the Base58 alphabet."""
+const NEVER_MATCH = "/never-match"
+
+"""Resolve peer-relative paths to absolute `/{local}/…` form.
+
+TOTAL (0.8.2.20): the return domain is "a canonical path OR `NEVER_MATCH`". The two
+reserved arms were ABSENT here — `../x` came back as `/{local}/../x`, which matched
+nothing, so a grant exclude carrying it carved out nothing and the grant was silently
+wider than its author wrote (measured on the wire 2026-09-14). A non-match is the
+desired outcome in an INCLUDE and the opposite of it in an EXCLUDE."""
+function canonicalize(local_peer::AbstractString, path::AbstractString)::String
+    (startswith(path, "./") || startswith(path, "../")) && return NEVER_MATCH
+    startswith(path, "*/") && return NEVER_MATCH
+    startswith(path, "/") && return String(path)
+    return "/$(local_peer)/$(path)"
+end
+
+"""AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
+in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an exclude
+(carves out nothing), so the reading is chosen where the POSITION is known and
+`matches_pattern` stays uniform over its operands. The guard sits outside the
+scope-type dispatch, transcribing §5.2's loop literally."""
+function exclude_unmatchable(frame::AbstractString, excl::Vector{String})::Bool
+    for p in excl
+        canonicalize(frame, p) == NEVER_MATCH && return true
+    end
+    return false
+end
 
 """Both `path` and `pattern` MUST already be canonical (absolute)."""
 function matches_pattern(path::AbstractString, pattern::AbstractString)::Bool
+    # NEVER_MATCH never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+    # rule rather than a property of the string: the line below returns true for a
+    # bare "*", so safety must not rest on a value merely looking unmatchable.
+    (path == NEVER_MATCH || pattern == NEVER_MATCH) && return false
     pattern == "*" && return true
     if startswith(pattern, "/*/")
         remainder = pattern[4:end]           # after "/*/"
@@ -224,6 +255,7 @@ function covered_id(pats::Vector{String}, value::AbstractString)::Bool
 end
 
 function matches_scope(local_peer::AbstractString, value::AbstractString, s::Scope, kind::ScopeKind)::Bool
+    exclude_unmatchable(local_peer, s.excl) && return false   # 0.8.2.21 — deny
     if kind == ID_SCOPE
         return covered_id(s.incl, value) && !covered_id(s.excl, value)
     end
@@ -259,6 +291,10 @@ function check_resource_scope(local_peer::AbstractString, granter_peer::Abstract
     targets = text_list(mapget(resource, "targets"))
     caller_excl = text_list(mapget(resource, "exclude"))
     isempty(targets) && return false
+    # An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+    # target: the coverage test below is correct in isolation and is simply never
+    # reached on a sentinel, because matches_pattern answers false.
+    exclude_unmatchable(granter_peer, s.excl) && return false
     for tgt in targets
         ct = canonicalize(local_peer, tgt)
         covered(local_peer, caller_excl, ct) && continue          # caller excluded (local frame)

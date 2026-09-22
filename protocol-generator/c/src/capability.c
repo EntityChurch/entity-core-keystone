@@ -127,8 +127,62 @@ ec_status ec_extract_peer(const char *local_peer, const char *uri, char **out)
 
 /* ── §5.4 pattern matching ──────────────────────────────────────────────────── */
 
+/* The unmatchable value (0.8.2.20). Unreachable as a canonical path by CONSTRUCTION:
+ * its first segment cannot be a peer_id, since a peer_id needs >= 46 Base58 characters
+ * and '-' is outside the Base58 alphabet. */
+#define EC_NEVER_MATCH "/never-match"
+
+/* ec_canonicalize FOR THE MATCHERS, which have no error channel. TOTAL (0.8.2.20):
+ * the result is "a canonical path OR EC_NEVER_MATCH" (NULL only on OOM).
+ *
+ * ec_canonicalize itself keeps its EC_ERR_BAD_INPUT, because dispatch.c's address gate
+ * and tree-path consumers use it as a refusal and are exactly the callers 0.8.2.20 says
+ * SHOULD have the diagnostic. The defect was HERE: `covered` did `continue` on a
+ * reserved form — the desired outcome in an INCLUDE and the opposite of it in an
+ * EXCLUDE, so a grant exclude carrying "../x" carved out nothing and the grant was
+ * silently wider than its author wrote (measured on the wire 2026-09-14). */
+static char *canon_match(const char *frame, const char *path)
+{
+    char *c = NULL;
+    if (ec_canonicalize(frame, path, &c) == EC_OK) {
+        return c;
+    }
+    return strdup(EC_NEVER_MATCH);
+}
+
+/* AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED in
+ * an include (covers nothing -> the grant grants nothing) and fail-OPEN in an exclude
+ * (carves out nothing), so the reading is chosen where the POSITION is known and
+ * matches_pattern stays uniform over its operands. The guard sits outside the
+ * scope-type dispatch, transcribing §5.2's loop literally. */
+static bool exclude_is_unmatchable(const char *frame, const ec_value *excl)
+{
+    if (!excl || excl->kind != EC_ARRAY) {
+        return false;
+    }
+    for (size_t i = 0; i < excl->as.arr.len; i++) {
+        const ec_value *p = excl->as.arr.items[i];
+        if (!p || p->kind != EC_TEXT) {
+            continue;
+        }
+        char *cp = canon_match(frame, (const char *)p->as.bytes.p);
+        bool nm = (cp != NULL) && strcmp(cp, EC_NEVER_MATCH) == 0;
+        free(cp);
+        if (nm) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool matches_pattern(const char *path, const char *pattern)
 {
+    /* EC_NEVER_MATCH never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+     * rule rather than a property of the string: the arm below returns true for a bare
+     * "*", so safety must not rest on a value merely looking unmatchable. */
+    if (strcmp(path, EC_NEVER_MATCH) == 0 || strcmp(pattern, EC_NEVER_MATCH) == 0) {
+        return false;
+    }
     if (strcmp(pattern, "*") == 0) {
         return true;
     }
@@ -181,9 +235,9 @@ static bool covered(const char *frame, const ec_value *pats, const char *cv)
         if (!p || p->kind != EC_TEXT) {
             continue;
         }
-        char *cp = NULL;
-        if (ec_canonicalize(frame, (const char *)p->as.bytes.p, &cp) != EC_OK) {
-            continue;
+        char *cp = canon_match(frame, (const char *)p->as.bytes.p);
+        if (!cp) {
+            continue;                /* OOM only */
         }
         bool m = matches_pattern(cv, cp);
         free(cp);
@@ -236,6 +290,9 @@ typedef enum { SCOPE_ID, SCOPE_PATH } scope_kind;
 
 static bool matches_scope(const char *local_peer, const char *value, scope s, scope_kind kind)
 {
+    if (exclude_is_unmatchable(local_peer, s.excl)) {
+        return false;                /* 0.8.2.21 — deny, do not carve out nothing */
+    }
     if (kind == SCOPE_ID) {
         return covered_id(s.incl, value) && !covered_id(s.excl, value);
     }
@@ -272,6 +329,12 @@ bool ec_cap_check_resource_scope(const char *local_peer, const char *granter_pee
         return false;
     }
     scope s = parse_scope(res_scope_v);
+    /* An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+     * target: the coverage test below is correct in isolation and is simply never
+     * reached on a sentinel, because matches_pattern answers false. */
+    if (exclude_is_unmatchable(granter_peer, s.excl)) {
+        return false;
+    }
     for (size_t i = 0; i < targets->as.arr.len; i++) {
         const ec_value *t = targets->as.arr.items[i];
         if (!t || t->kind != EC_TEXT) {

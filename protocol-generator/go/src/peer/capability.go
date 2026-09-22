@@ -102,15 +102,24 @@ func normalizeURI(uri string) string {
 	return uri
 }
 
+// neverMatch is the unmatchable value (0.8.2.20). Unreachable as a canonical path
+// by CONSTRUCTION: its first segment cannot be a peer_id, since isPeerID requires
+// >= 46 Base58 characters and '-' is outside the Base58 alphabet.
+const neverMatch = "/never-match"
+
 // canonicalize resolves peer-relative paths to absolute /{local}/... form.
-// Reserved directory-relative + ambiguous bare-wildcard forms are rejected with
-// ok=false (the §1.4/§5.4 errors).
+//
+// TOTAL (0.8.2.20): the string return is "a canonical path OR neverMatch", never
+// empty. The bool is kept for the §1.4 address gate and the tree-path consumers,
+// which want the diagnostic and are exactly the callers 0.8.2.20 says SHOULD have
+// it — under the spec they would reach the same refusal through
+// validate_absolute_path, which neverMatch fails by construction.
 func canonicalize(localPeer, path string) (string, bool) {
 	switch {
 	case startsWith("./", path) || startsWith("../", path):
-		return "", false
+		return neverMatch, false
 	case startsWith("*/", path):
-		return "", false
+		return neverMatch, false
 	case startsWith("/", path):
 		return path, true
 	default:
@@ -118,20 +127,43 @@ func canonicalize(localPeer, path string) (string, bool) {
 	}
 }
 
-// canon is canonicalize with a best-effort fallthrough (returns the input
-// unchanged on the reserved forms) for the matching helpers, where a non-match
-// is the desired outcome rather than an error.
+// canon is canonicalize for the matching helpers, which have no error channel.
+//
+// THIS USED TO RETURN THE INPUT UNCHANGED on the reserved forms, under a comment
+// saying a non-match was the desired outcome. It is the desired outcome in an
+// INCLUDE and the opposite of it in an EXCLUDE: `../nope` came back as the literal
+// `../nope`, matched nothing, and the grant exclude carved out nothing, so the
+// grant was silently wider than its author wrote (measured on the wire
+// 2026-09-14). The sentinel is what lets the exclude-reading sites tell the two
+// positions apart.
 func canon(localPeer, path string) string {
-	c, ok := canonicalize(localPeer, path)
-	if !ok {
-		return path
-	}
+	c, _ := canonicalize(localPeer, path)
 	return c
+}
+
+// excludeIsUnmatchable reports whether any exclude pattern canonicalizes to the
+// sentinel. AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21): the sentinel is
+// fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
+// fail-OPEN in an exclude (carves out nothing), so the reading is chosen where the
+// POSITION is known and matchesPattern stays uniform over its operands. The guard
+// sits outside the scope-type dispatch, transcribing §5.2's loop literally.
+func excludeIsUnmatchable(frame string, excl []string) bool {
+	for _, p := range excl {
+		if canon(frame, p) == neverMatch {
+			return true
+		}
+	}
+	return false
 }
 
 // matchesPattern reports whether (canonical, absolute) path matches pattern.
 func matchesPattern(path, pattern string) bool {
 	switch {
+	// neverMatch never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+	// rule rather than a property of the string: the arm below returns true for a
+	// bare "*", so safety must not rest on a value merely looking unmatchable.
+	case path == neverMatch || pattern == neverMatch:
+		return false
 	case pattern == "*":
 		return true
 	case startsWith("/*/", pattern):
@@ -201,6 +233,9 @@ func covered(localPeer, value string, pats []string, kind scopeKind) bool {
 }
 
 func matchesScope(localPeer, value string, s scope, kind scopeKind) bool {
+	if excludeIsUnmatchable(localPeer, s.excl) {
+		return false // 0.8.2.21 — deny, do not carve out nothing
+	}
 	return covered(localPeer, value, s.incl, kind) && !covered(localPeer, value, s.excl, kind)
 }
 
@@ -258,6 +293,12 @@ func checkResourceScope(localPeer, granterPeer string, resource cbor.Value, s sc
 	exclV, _ := MapField(resource, "exclude")
 	callerExcl := textElems(exclV)
 	if len(targets) == 0 {
+		return false
+	}
+	// An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+	// target: the coverage test below is correct in isolation and is simply never
+	// reached on a sentinel, because matchesPattern answers false.
+	if excludeIsUnmatchable(granterPeer, s.excl) {
 		return false
 	}
 	coveredLocal := func(pats []string, v string) bool {

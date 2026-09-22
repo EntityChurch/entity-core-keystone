@@ -99,6 +99,13 @@ export function checkResourceScope(
   const grantInclude = grantResources.include;
   const grantExclude = grantResources.exclude ?? [];
 
+  // An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+  // target: the coverage tests below are correct in isolation and are simply never
+  // reached on a sentinel, because matchesPattern answers false.
+  if (Paths.excludeIsUnmatchable(grantExclude, granterPeerId)) {
+    return false;
+  }
+
   for (const target of resourceTarget.targets) {
     // Request target canonicalizes on the local/request frame (§5.4).
     const ct = Paths.canonicalize(target, localPeerId);

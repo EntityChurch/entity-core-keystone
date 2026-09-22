@@ -158,8 +158,18 @@ define
    %% §5.2 typed scope match. Kind is id (operations, peers) or path (handlers,
    %% resources) and is given at every call site -- there is no default, so a new one
    %% cannot inherit the wrong matcher silently, which is exactly the F40 defect.
+   %% AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
+   %% fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
+   %% fail-OPEN in an exclude (carves out nothing), so the reading is chosen where the
+   %% POSITION is known and MatchesPattern stays uniform over its operands. The guard
+   %% sits outside the scope-type dispatch, transcribing 5.2s loop literally.
+   fun {ExcludeUnmatchable Frame Excl}
+      {Some Excl fun {$ P} {Hp.canonicalize Frame P} == Hp.neverMatch end}
+   end
+
    fun {MatchesScope LocalPeer Value S Kind}
-      if Kind == id then
+      if {ExcludeUnmatchable LocalPeer S.excl} then false
+      elseif Kind == id then
          {CoveredId S.incl Value} andthen {Not {CoveredId S.excl Value}}
       else
          Cv = {Hp.canonicalize LocalPeer Value}
@@ -174,6 +184,7 @@ define
       CallerExcl = {TextList Resource "exclude"}
    in
       if Targets == nil then 'DENY'
+      elseif {ExcludeUnmatchable GranterPeer S.excl} then 'DENY'   %% 0.8.2.21, FIRST
       else
          local
             fun {Go Ts}

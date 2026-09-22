@@ -102,11 +102,20 @@ def normalize_uri(uri: str) -> str:
     return uri
 
 
+#: The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+#: CONSTRUCTION: its first segment cannot be a peer_id, since :func:`is_peer_id`
+#: requires >= 46 Base58 characters and ``-`` is outside the Base58 alphabet.
+NEVER_MATCH = "/never-match"
+
+
 def canonicalize(local_peer: str, path: str) -> str | None:
     """Resolve a peer-relative path to absolute ``/{local}/...`` form.
 
     Reserved directory-relative + ambiguous bare-wildcard forms return ``None``
-    (the §1.4 / §5.4 errors).
+    (the §1.4 / §5.4 errors). The ``None`` is kept for the address gate and the
+    tree-path consumers, which want the diagnostic and are exactly the callers
+    0.8.2.20 says SHOULD have it; the MATCHERS go through :func:`_canon`, which is
+    total.
     """
     if path.startswith("./") or path.startswith("../") or path.startswith("*/"):
         return None
@@ -116,13 +125,40 @@ def canonicalize(local_peer: str, path: str) -> str | None:
 
 
 def _canon(local_peer: str, path: str) -> str:
-    """canonicalize with a best-effort fallthrough (non-match desired)."""
+    """canonicalize for the matchers, which have no error channel.
+
+    TOTAL (0.8.2.20): the return domain is "a canonical path OR NEVER_MATCH".
+
+    THIS USED TO RETURN THE INPUT UNCHANGED, under a comment saying a non-match was
+    the desired outcome. It is the desired outcome in an INCLUDE and the opposite of
+    it in an EXCLUDE: ``../nope`` came back as the literal ``../nope``, matched
+    nothing, and a grant exclude carrying it carved out nothing, so the grant was
+    silently wider than its author wrote (measured on the wire 2026-09-14). The
+    sentinel is what lets the exclude-reading sites tell the two positions apart.
+    """
     c = canonicalize(local_peer, path)
-    return c if c is not None else path
+    return c if c is not None else NEVER_MATCH
+
+
+def _exclude_is_unmatchable(frame: str, excl: list[str]) -> bool:
+    """AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21).
+
+    The sentinel is fail-CLOSED in an include (covers nothing -> the grant grants
+    nothing) and fail-OPEN in an exclude (carves out nothing), so the reading is
+    chosen where the POSITION is known and :func:`matches_pattern` stays uniform
+    over its operands. The guard sits outside the scope-type dispatch, transcribing
+    §5.2's loop literally.
+    """
+    return any(_canon(frame, p) == NEVER_MATCH for p in excl)
 
 
 def matches_pattern(path: str, pattern: str) -> bool:
     """Whether (canonical, absolute) ``path`` matches ``pattern``."""
+    # NEVER_MATCH never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+    # rule rather than a property of the string: the arm below returns True for a
+    # bare "*", so safety must not rest on a value merely looking unmatchable.
+    if path == NEVER_MATCH or pattern == NEVER_MATCH:
+        return False
     if pattern == "*":
         return True
     if pattern.startswith("/*/"):
@@ -163,6 +199,8 @@ def _matches_scope(local_peer: str, value: str, s: Scope, kind: str) -> bool:
     """§5.2 typed scope match. ``kind`` is ``"id"`` (operations, peers) or ``"path"``
     (handlers, resources) and has no default — every call site names its dimension, so
     a new one cannot silently inherit the wrong matcher (that is the F40 defect)."""
+    if _exclude_is_unmatchable(local_peer, s.excl):
+        return False  # 0.8.2.21 — deny, do not carve out nothing
     return _covered(local_peer, value, s.incl, kind) and not _covered(
         local_peer, value, s.excl, kind
     )
@@ -593,6 +631,11 @@ def _check_resource_scope(local_peer: str, granter_peer: str, resource: Any, s: 
     caller_excl = _text_elems(resource.get("exclude"))
     if not targets:
         return False
+    # An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+    # target: the coverage test below is correct in isolation and is simply never
+    # reached on a sentinel, because matches_pattern answers False.
+    if _exclude_is_unmatchable(granter_peer, s.excl):
+        return False
 
     def covered_local(pats: list[str], v: str) -> bool:
         return any(matches_pattern(v, _canon(local_peer, p)) for p in pats)
@@ -669,32 +712,6 @@ def check_path_permission(
             continue
         return True
     return False
-
-
-def identity_in_authority_chain(
-    included: dict, store: Store, local_peer: str, cap_hash: bytes | None, identity_hash: bytes | None
-) -> bool:
-    """``SDK-OPERATIONS`` §11.3 SEC-3: is ``identity_hash`` a GRANTER in the VERIFIED
-    authority chain of the capability ``cap_hash``?
-
-    The capability is resolved included-first then from the store, must be a
-    ``system/capability/token``, and its chain must verify under §5.5 exactly as a dispatch
-    would (signatures from ``included``) — an unverifiable chain answers ``False``, never
-    "in chain".  An unresolvable hash is never in chain.
-    """
-    if cap_hash is None or identity_hash is None:
-        return False
-    resolve = cap_resolve(included, store)
-    cap = resolve(bytes(cap_hash))
-    if cap is None or cap.type != "system/capability/token":
-        return False
-    if verify_capability_chain(local_peer, store, cap, included) != ALLOW:
-        return False
-    chain = collect_chain(cap, resolve)
-    if chain is None:
-        return False
-    want = bytes(identity_hash)
-    return any(link.bytes_("granter") == want for link in chain)
 
 
 # ── §5.2 verify-request (3-way verdict + carve-outs) ──────────────────────────

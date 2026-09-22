@@ -81,6 +81,14 @@ internal static class Permissions
         IReadOnlyList<string> grantInclude = grantResources.Include;
         IReadOnlyList<string> grantExclude = grantResources.Exclude ?? System.Array.Empty<string>();
 
+        // An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+        // target: the coverage tests below are correct in isolation and are simply never
+        // reached on a sentinel, because MatchesPattern answers false.
+        if (Paths.ExcludeIsUnmatchable(grantExclude, granterPeerId))
+        {
+            return false;
+        }
+
         foreach (string target in resourceTarget.Targets)
         {
             // Request target canonicalizes on the local/request frame (§5.4).

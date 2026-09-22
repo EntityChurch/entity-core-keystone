@@ -8,6 +8,7 @@ import
 export
    StartsWith EndsWith NormalizeUri Canonicalize IsPeerId MatchesPattern
    FirstSegment ExtractPeer PathFlexOk SplitSegs StripLocal DropChars
+   NeverMatch
 define
    Reject = Util.reject
 
@@ -32,12 +33,21 @@ define
       else U end
    end
 
-   %% §5.4 canonicalize — raises on ./ ../ (reserved) and bare */ (ambiguous)
+   %% The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+   %% CONSTRUCTION: its first segment cannot be a peer_id, since IsPeerId requires
+   %% >= 46 Base58 characters and &- is outside Base58Chars.
+   NeverMatch = "/never-match"
+
+   %% §5.4 canonicalize -- TOTAL (0.8.2.20): the return domain is "a canonical path
+   %% OR NeverMatch". This used to RAISE, and the raise was reachable from the wire:
+   %% every normative call site is a matcher with no error channel to consume one, so
+   %% the exception escaped the matcher and any caller who put "../x" in a resource
+   %% exclude got a 400 from the resilience frame rather than the 403 DENY 0.8.2.21
+   %% pins for the GRANT arm. The diagnostic belongs at admission (6.5), which has a
+   %% caller to answer.
    fun {Canonicalize LocalPeer Path}
-      if {StartsWith Path "./"} orelse {StartsWith Path "../"} then
-         {Reject reservedRelative Path} nil
-      elseif {StartsWith Path "*/"} then
-         {Reject ambiguousWildcard Path} nil
+      if {StartsWith Path "./"} orelse {StartsWith Path "../"} then NeverMatch
+      elseif {StartsWith Path "*/"} then NeverMatch
       elseif {StartsWith Path "/"} then Path
       else {Append &/|LocalPeer &/|Path}
       end
@@ -51,7 +61,11 @@ define
 
    %% §5.4 matches_pattern — both sides canonical/absolute
    fun {MatchesPattern Path Pattern}
-      if Pattern == "*" then true
+      %% NeverMatch never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+      %% rule rather than a property of the string: the arm below returns true for a
+      %% bare "*", so safety must not rest on a value merely looking unmatchable.
+      if Path == NeverMatch orelse Pattern == NeverMatch then false
+      elseif Pattern == "*" then true
       elseif {StartsWith Pattern "/*/"} then
          local Remainder = {List.drop Pattern 3} in
             case Path of nil then false

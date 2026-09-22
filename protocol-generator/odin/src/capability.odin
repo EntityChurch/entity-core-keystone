@@ -158,15 +158,51 @@ normalize_uri :: proc(uri: string) -> string {
 }
 
 // canonicalize resolves peer-relative paths to absolute "/{local}/..." form.
+// NEVER_MATCH — the unmatchable value (0.8.2.20). Unreachable as a canonical path by
+// CONSTRUCTION: its first segment cannot be a peer_id, since is_peer_id requires >= 46
+// Base58 characters and "-" is outside the Base58 alphabet.
+NEVER_MATCH :: "/never-match"
+
+// TOTAL (0.8.2.20): the return domain is "a canonical path OR NEVER_MATCH". The two
+// reserved arms were ABSENT here -- "../x" came back as "/{local}/../x", which matched
+// nothing, so a grant exclude carrying it carved out nothing and the grant was silently
+// wider than its author wrote (measured on the wire 2026-09-14). A non-match is the
+// desired outcome in an INCLUDE and the opposite of it in an EXCLUDE.
 canonicalize :: proc(local_peer: string, path: string) -> string {
+	if strings.has_prefix(path, "./") || strings.has_prefix(path, "../") {
+		return NEVER_MATCH
+	}
+	if strings.has_prefix(path, "*/") {
+		return NEVER_MATCH
+	}
 	if strings.has_prefix(path, "/") {
 		return path
 	}
 	return strings.concatenate({"/", local_peer, "/", path}, context.temp_allocator)
 }
 
+// AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED in
+// an include (covers nothing -> the grant grants nothing) and fail-OPEN in an exclude
+// (carves out nothing), so the reading is chosen where the POSITION is known and
+// matches_pattern stays uniform over its operands. The guard sits outside the
+// scope-type dispatch, transcribing 5.2s loop literally.
+exclude_unmatchable :: proc(frame: string, excl: []string) -> bool {
+	for p in excl {
+		if canonicalize(frame, p) == NEVER_MATCH {
+			return true
+		}
+	}
+	return false
+}
+
 // matches_pattern — both path and pattern MUST already be canonical (absolute).
 matches_pattern :: proc(path, pattern: string) -> bool {
+	// NEVER_MATCH never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+	// rule rather than a property of the string: the arm below returns true for a bare
+	// "*", so safety must not rest on a value merely looking unmatchable.
+	if path == NEVER_MATCH || pattern == NEVER_MATCH {
+		return false
+	}
 	if pattern == "*" {
 		return true
 	}
@@ -233,6 +269,9 @@ covered_id :: proc(value: string, pats: []string) -> bool {
 
 @(private = "file")
 matches_scope :: proc(local_peer: string, value: string, s: Scope, kind: Scope_Kind) -> bool {
+	if exclude_unmatchable(local_peer, s.excl) {
+		return false // 0.8.2.21 -- deny, do not carve out nothing
+	}
 	if kind == .Id {
 		return covered_id(value, s.incl) && !covered_id(value, s.excl)
 	}
@@ -278,6 +317,12 @@ check_resource_scope :: proc(
 	targets := text_list(tv, th)
 	caller_excl := text_list(ev, eh)
 	if len(targets) == 0 {
+		return false
+	}
+	// An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+	// target: the coverage test below is correct in isolation and is simply never
+	// reached on a sentinel, because matches_pattern answers false.
+	if exclude_unmatchable(granter_peer, s.excl) {
 		return false
 	}
 	for tgt in targets {

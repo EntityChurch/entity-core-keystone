@@ -42,17 +42,33 @@ proc contains2(s, sub: string): bool =
     inc i
   false
 
+const NeverMatch* = "/never-match"
+  ## The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+  ## CONSTRUCTION: its first segment cannot be a peer_id, since a peer_id needs
+  ## >= 46 Base58 characters and `-` is outside the Base58 alphabet.
+
 proc canonicalize*(path, localPeerId: string): string {.raises: [PathError].} =
   ## Resolve a peer-relative path to absolute form against the local peer (§5.4).
-  ## Rejects empty segments, directory-relative, and bare peer-wildcard forms.
+  ##
+  ## TOTAL for the two RESERVED forms (0.8.2.20): `./` `../` and `*/` answer
+  ## `NeverMatch` instead of raising. The raise was reachable from the wire, and the
+  ## catch at each matcher call site was `except PathError: continue` — which is the
+  ## desired outcome in an INCLUDE and the opposite of it in an EXCLUDE, so a grant
+  ## exclude carrying `../x` carved out nothing and the grant was silently wider than
+  ## its author wrote (measured on the wire 2026-09-14).
+  ##
+  ## The empty-segment (`//`) raise is LEFT IN PLACE deliberately: §1.4 forbids an
+  ## empty segment, the landed `canonicalize` pseudocode has no arm for it, and
+  ## turning that refusal into a silent non-match would weaken an admission check to
+  ## fix a matcher one.
   if contains2(path, "//"):
     raise newException(PathError, "empty path segment (§1.4)")
   if path.len >= 2 and path[0 ..< 2] == "./":
-    raise newException(PathError, "reserved: directory-relative path (§1.4)")
+    return NeverMatch
   if path.len >= 3 and path[0 ..< 3] == "../":
-    raise newException(PathError, "reserved: directory-relative path (§1.4)")
+    return NeverMatch
   if path.len >= 2 and path[0 ..< 2] == "*/":
-    raise newException(PathError, "ambiguous: use /*/rest for peer wildcard (§5.4)")
+    return NeverMatch
   if path.len > 0 and path[0] == '/':
     return path
   "/" & localPeerId & "/" & path
@@ -107,6 +123,10 @@ proc startsWith2(s, pre: string): bool =
 
 proc matchesPattern*(path, pattern: string): bool =
   ## Match a canonicalized path against a canonicalized pattern (§5.4).
+  ## `NeverMatch` never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+  ## rule rather than a property of the string: the line below returns true for a
+  ## bare `*`, so safety must not rest on a value merely looking unmatchable.
+  if path == NeverMatch or pattern == NeverMatch: return false
   if pattern == "*": return true
   # Peer wildcard: /*/rest — match any peer's subtree.
   if startsWith2(pattern, "/*/"):

@@ -18,8 +18,26 @@ export function normalize(uri: string): string {
 }
 
 /**
+ * The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+ * CONSTRUCTION: its first segment cannot be a peer id, since `isPeerId` requires
+ * >= 46 Base58 characters and `-` is outside {@link BASE58_ALPHABET}.
+ */
+export const NEVER_MATCH = "/never-match";
+
+/**
  * Resolve a peer-relative path to absolute form against the local peer (§5.4).
- * Rejects directory-relative and bare peer-wildcard forms.
+ *
+ * TOTAL for the two RESERVED forms (0.8.2.20): `./` `../` and `*` / return
+ * {@link NEVER_MATCH} instead of throwing. The throw was reachable from the wire —
+ * every normative call site is a matcher with no error channel to consume one — so
+ * `../x` in a resource exclude escaped the matcher and was answered by the §6.5
+ * frame, which is the admission answer for the CALLER arm and the wrong one for the
+ * GRANT arm, where 0.8.2.21 pins a 403 DENY.
+ *
+ * The empty-segment (`//`) throw is LEFT IN PLACE and is deliberately not folded
+ * into the sentinel: §1.4 forbids an empty segment, the landed `canonicalize`
+ * pseudocode has no arm for it, and turning that refusal into a silent non-match
+ * would weaken an admission check to fix a matcher one.
  */
 export function canonicalize(path: string, localPeerId: string): string {
   // §1.4: an empty path segment ("a//b") is malformed — every segment of a tree
@@ -29,10 +47,10 @@ export function canonicalize(path: string, localPeerId: string): string {
     throw new EntityProtocolError("empty path segment (§1.4)");
   }
   if (path.startsWith("./") || path.startsWith("../")) {
-    throw new EntityProtocolError("reserved: directory-relative paths (§1.4)");
+    return NEVER_MATCH; // reserved: directory-relative (§1.4)
   }
   if (path.startsWith("*/")) {
-    throw new EntityProtocolError("ambiguous: use /*/rest for peer wildcard patterns (§5.4)");
+    return NEVER_MATCH; // ambiguous bare peer wildcard: use /*/rest (§5.4)
   }
   if (path.startsWith("/")) {
     return path;
@@ -102,8 +120,31 @@ export function isPattern(path: string): boolean {
   return path.includes("*");
 }
 
+/**
+ * True if any exclude pattern canonicalizes to {@link NEVER_MATCH}.
+ *
+ * AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
+ * fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
+ * fail-OPEN in an exclude (carves out nothing -> the grant is SILENTLY WIDER than
+ * its author wrote): same value, same matcher, opposite safety direction, so the
+ * reading is chosen where the POSITION is known and {@link matchesPattern} stays
+ * uniform over its operands.
+ */
+export function excludeIsUnmatchable(
+  excl: readonly string[],
+  frame: string,
+): boolean {
+  return excl.some((p) => canonicalize(p, frame) === NEVER_MATCH);
+}
+
 /** Match a canonicalized path against a canonicalized pattern (§5.4). */
 export function matchesPattern(path: string, pattern: string): boolean {
+  // NEVER_MATCH never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+  // rule rather than a property of the string: the arm below returns true for a
+  // bare "*", so safety must not rest on a value merely looking unmatchable.
+  if (path === NEVER_MATCH || pattern === NEVER_MATCH) {
+    return false;
+  }
   if (pattern === "*") {
     return true;
   }

@@ -62,6 +62,11 @@ export class Scope {
    * interchanged.
    */
   matches(value: string, localPeerId: string, kind: ScopeKind): boolean {
+    // 0.8.2.21 — an unmatchable exclude DENIES rather than carving out nothing. The
+    // guard sits outside the scope-type dispatch, transcribing §5.2's loop literally.
+    if (this.exclude !== null && Paths.excludeIsUnmatchable(this.exclude, localPeerId)) {
+      return false;
+    }
     const canonicalValue = kind === "path" ? Paths.canonicalize(value, localPeerId) : value;
     const covers = (pattern: string): boolean =>
       kind === "id"

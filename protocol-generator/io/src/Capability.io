@@ -76,12 +76,38 @@ Capability := Object clone do(
     isReservedPath := method(path,
         path beginsWithSeq("./") or(path beginsWithSeq("../")) or(path beginsWithSeq("*/"))
     )
+    // The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+    // CONSTRUCTION: its first segment cannot be a peer_id, since a peer_id needs
+    // >= 46 Base58 characters and "-" is outside the Base58 alphabet.
+    NEVER_MATCH := "/never-match"
+
+    // TOTAL (0.8.2.20): the return domain is "a canonical path OR NEVER_MATCH". The
+    // reserved arm used to PASS THE INPUT THROUGH, which matched nothing -- the
+    // desired outcome in an INCLUDE and the opposite of it in an EXCLUDE, so a grant
+    // exclude carrying "../x" carved out nothing and the grant was silently wider
+    // than its author wrote (measured on the wire 2026-09-14).
     canonicalize := method(localPeer, path,
-        if(isReservedPath(path), return path)
+        if(isReservedPath(path), return NEVER_MATCH)
         if(path beginsWithSeq("/"), path, "/" .. localPeer .. "/" .. path)
     )
 
+    // AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
+    // fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
+    // fail-OPEN in an exclude (carves out nothing), so the reading is chosen where
+    // the POSITION is known and matchesPattern stays uniform over its operands. The
+    // guard sits outside the scope-type dispatch, transcribing 5.2s loop literally.
+    _excludeUnmatchable := method(frame, excl,
+        r := false
+        if(excl != nil, excl foreach(p, if(canonicalize(frame, p) == NEVER_MATCH, r = true; break)))
+        r
+    )
+
     matchesPattern := method(path, pattern,
+        // NEVER_MATCH never matches, in EITHER operand (0.8.2.20). FIRST, and a
+        // matcher rule rather than a property of the string: the line below returns
+        // true for a bare "*", so safety must not rest on a value merely looking
+        // unmatchable.
+        if(path == NEVER_MATCH or(pattern == NEVER_MATCH), return false)
         if(pattern == "*", return true)
         if(pattern beginsWithSeq("/*/"),
             remainder := pattern exSlice(3)
@@ -124,6 +150,7 @@ Capability := Object clone do(
     // resources) and is given at every call site — there is no default, so a new one
     // cannot inherit the wrong matcher silently, which is exactly the F40 defect.
     matchesScope := method(localPeer, value, scope, kind,
+        if(_excludeUnmatchable(localPeer, scope at("excl")), return false)  // 0.8.2.21
         if(kind == "id",
             return _coveredId(scope at("incl"), value) and(_coveredId(scope at("excl"), value) not)
         )
@@ -203,6 +230,10 @@ Capability := Object clone do(
         ev := resourceMap at("exclude")
         if(ev != nil and(ev isKindOf(List)), ev foreach(x, if(x isKindOf(Sequence), callerExcl append(x))))
         if(targets size == 0, return false)
+        // An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before
+        // any target: the coverage test below is correct in isolation and is simply
+        // never reached on a sentinel, because matchesPattern answers false.
+        if(_excludeUnmatchable(granterPeer, scope at("excl")), return false)
         good := true
         targets foreach(tgt,
             ct := canonicalize(localPeer, tgt)

@@ -111,14 +111,44 @@ pub fn normalizeUri(arena: std.mem.Allocator, uri: []const u8) Error![]const u8 
     return uri;
 }
 
+/// The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+/// CONSTRUCTION: its first segment cannot be a peer_id, since isPeerId requires
+/// >= 46 Base58 characters and '-' is outside the Base58 alphabet.
+pub const never_match = "/never-match";
+
 /// Resolve peer-relative paths to absolute "/{local}/..." form. Returns owned.
+///
+/// TOTAL (0.8.2.20): the return domain is "a canonical path OR never_match". The two
+/// reserved arms were ABSENT here — "../x" came back as "/{local}/../x", which
+/// matched nothing, so a grant exclude carrying it carved out nothing and the grant
+/// was silently wider than its author wrote (measured on the wire 2026-09-14). A
+/// non-match is the desired outcome in an INCLUDE and the opposite of it in an
+/// EXCLUDE.
 pub fn canonicalize(arena: std.mem.Allocator, local_peer: []const u8, path: []const u8) Error![]const u8 {
+    if (startsWith(path, "./") or startsWith(path, "../")) return never_match;
+    if (startsWith(path, "*/")) return never_match;
     if (startsWith(path, "/")) return path;
     return std.fmt.allocPrint(arena, "/{s}/{s}", .{ local_peer, path });
 }
 
+/// AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
+/// in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an
+/// exclude (carves out nothing), so the reading is chosen where the POSITION is known
+/// and matchesPattern stays uniform over its operands. The guard sits outside the
+/// scope-type dispatch, transcribing §5.2's loop literally.
+fn excludeIsUnmatchable(arena: std.mem.Allocator, frame: []const u8, excl: []const []const u8) Error!bool {
+    for (excl) |p| {
+        if (std.mem.eql(u8, try canonicalize(arena, frame, p), never_match)) return true;
+    }
+    return false;
+}
+
 /// Both path and pattern MUST already be canonical (absolute).
 pub fn matchesPattern(path: []const u8, pattern: []const u8) bool {
+    // never_match never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+    // rule rather than a property of the string: the line below returns true for a
+    // bare "*", so safety must not rest on a value merely looking unmatchable.
+    if (std.mem.eql(u8, path, never_match) or std.mem.eql(u8, pattern, never_match)) return false;
     if (std.mem.eql(u8, pattern, "*")) return true;
     if (startsWith(pattern, "/*/")) {
         const remainder = pattern[3..];
@@ -161,6 +191,7 @@ fn coveredId(value: []const u8, pats: []const []const u8) bool {
 }
 
 fn matchesScope(arena: std.mem.Allocator, local_peer: []const u8, value: []const u8, s: Scope, kind: ScopeKind) Error!bool {
+    if (try excludeIsUnmatchable(arena, local_peer, s.excl)) return false; // 0.8.2.21 — deny
     if (kind == .id) {
         return coveredId(value, s.incl) and !coveredId(value, s.excl);
     }
@@ -201,6 +232,10 @@ fn checkResourceScope(arena: std.mem.Allocator, local_peer: []const u8, granter_
     const targets = try textList(arena, model.mapGet(resource, "targets"));
     const caller_excl = try textList(arena, model.mapGet(resource, "exclude"));
     if (targets.len == 0) return false;
+    // An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+    // target: the coverage test below is correct in isolation and is simply never
+    // reached on a sentinel, because matchesPattern answers false.
+    if (try excludeIsUnmatchable(arena, granter_peer, s.excl)) return false;
     const covered = struct {
         fn f(a: std.mem.Allocator, frame: []const u8, pats: []const []const u8, v: []const u8) Error!bool {
             for (pats) |p| {

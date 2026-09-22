@@ -172,16 +172,44 @@ Cap_NormalizeUri: procedure
   if _sw(uri, 'entity://') then return '/' || substr(uri, 10)
   return uri
 
-/* may set EC.!EXC on a reserved/ambiguous path (mapped to 400 at the top). */
+/* Cap_NeverMatch -- the unmatchable value (0.8.2.20). Unreachable as a canonical path
+   by CONSTRUCTION: its first segment cannot be a peer_id, since Cap_IsPeerId requires
+   >= 46 Base58 characters and '-' is outside the Base58 alphabet. */
+Cap_NeverMatch: procedure
+  return '/never-match'
+
+/* TOTAL (0.8.2.20): the return domain is 'a canonical path OR Cap_NeverMatch'. This
+   used to THROW, and the throw was reachable from the wire -- every normative call site
+   is a matcher with no error channel to consume one, so the condition escaped the
+   matcher and any caller who put '../x' in a resource exclude got a 400 from the top
+   rather than the 403 DENY 0.8.2.21 pins for the GRANT arm. The diagnostic belongs at
+   admission (6.5), which has a caller to answer. */
 Cap_Canonicalize: procedure expose EC.
   parse arg local_peer, path
-  if _sw(path, './') | _sw(path, '../') then do; call Throw 'reserved_relative', 'reserved directory-relative path'; return path; end
-  if _sw(path, '*/') then do; call Throw 'ambiguous_wildcard', 'ambiguous bare peer wildcard'; return path; end
+  if _sw(path, './') | _sw(path, '../') then return Cap_NeverMatch()
+  if _sw(path, '*/') then return Cap_NeverMatch()
   if _sw(path, '/') then return path
   return '/' || local_peer || '/' || path
 
+/* AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED in
+   an include (covers nothing -> the grant grants nothing) and fail-OPEN in an exclude
+   (carves out nothing), so the reading is chosen where the POSITION is known and
+   Cap_MatchesPattern stays uniform over its operands. The guard sits outside the
+   scope-type dispatch, transcribing 5.2s loop literally. */
+_exclude_unmatchable: procedure expose EC.
+  parse arg frame, excl
+  n = Lst_Count(excl)
+  do i = 1 to n
+    if Cap_Canonicalize(frame, Lst_Item(excl, i)) == Cap_NeverMatch() then return 1
+  end
+  return 0
+
 Cap_MatchesPattern: procedure expose EC.
   parse arg path, pattern
+  /* Cap_NeverMatch never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+     rule rather than a property of the string: the line below returns 1 for a bare '*',
+     so safety must not rest on a value merely looking unmatchable. */
+  if path == Cap_NeverMatch() | pattern == Cap_NeverMatch() then return 0
   if pattern == '*' then return 1
   if _sw(pattern, '/*/') then do
     remainder = substr(pattern, 4)
@@ -230,6 +258,7 @@ _covered_id: procedure expose EC.
    cannot inherit the wrong matcher silently, which is exactly the F40 defect. */
 Cap_MatchesScope: procedure expose EC.
   parse arg local_peer, value, s, kind
+  if _exclude_unmatchable(local_peer, Scope_Excl(s)) then return 0   /* 0.8.2.21 */
   if kind == 'id' then do
     if \_covered_id(Scope_Incl(s), value) then return 0
     return \_covered_id(Scope_Excl(s), value)
@@ -267,6 +296,10 @@ Cap_CheckResourceScope: procedure expose EC.
   targets = Ecf_TextList(resource, 'targets')
   caller_excl = Ecf_TextList(resource, 'exclude')
   if Lst_Count(targets) == 0 then return 0
+  /* An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+     target: the coverage test below is correct in isolation and is simply never
+     reached on a sentinel, because Cap_MatchesPattern answers 0. */
+  if _exclude_unmatchable(granter_peer, Scope_Excl(s)) then return 0
   do i = 1 to Lst_Count(targets)
     ct = Cap_Canonicalize(local_peer, Lst_Item(targets, i))
     if Lst_Count(caller_excl) > 0 & _covered(local_peer, caller_excl, ct) then iterate

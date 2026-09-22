@@ -1884,10 +1884,44 @@ static void ecodec_authz_check_validity(t_ecodec *x)
  * `peers`, defaulting to local; requests target the local peer → the peers
  * dimension is a no-op here and is skipped with that assumption). */
 
+/* §5.4's NEVER_MATCH, expressed as a PREDICATE rather than as a sentinel string.
+ *
+ * This peer never materializes a canonical ABSOLUTE form for local grants — its
+ * matchers work in peer-relative terms — so there is no string for the sentinel to
+ * ride on. What the sentinel EXISTS FOR is two observable properties, and both are
+ * implementable directly on the pattern:
+ *   (a) a form canonicalize() cannot resolve never matches, in EITHER operand
+ *       (0.8.2.20);
+ *   (b) such a form in an EXCLUDE denies rather than carving out nothing (0.8.2.21).
+ * Without (b) a grant exclude of "../x" matched nothing, so the grant was silently
+ * wider than its author wrote (measured on the wire 2026-09-14). */
+static int pat_unmatchable(const char *p)
+{
+    return strncmp(p, "./", 2) == 0 || strncmp(p, "../", 3) == 0 || strncmp(p, "*/", 2) == 0;
+}
+
+/* True if any text element of the array at `arr_pos` is an unmatchable form. */
+static int array_any_unmatchable(const unsigned char *buf, size_t len, size_t arr_pos)
+{
+    cbor_rd r = { buf, len, arr_pos }; int major; uint64_t n;
+    if (cbor_head(&r, &major, &n) != 0 || major != 4) return 0;
+    for (uint64_t i = 0; i < n; i++) {
+        char e[512]; cbor_rd ev = { buf, len, r.pos };
+        if (cbor_get_text(&ev, e, sizeof e) != 0) return 0;
+        if (pat_unmatchable(e)) return 1;
+        if (cbor_skip(&r) != 0) return 0;
+    }
+    return 0;
+}
+
 /* §5.4 matches_pattern on peer-relative forms: bare star any; "prefix/" + star
  * prefix match; else exact. (The peer-wildcard form is unused by local grants.) */
 static int matches_pattern_rel(const char *path, const char *pat)
 {
+    /* (a), FIRST — and a matcher rule rather than a property of the string: the arm
+     * below returns 1 for a bare "*" pattern, so safety must not rest on a value
+     * merely looking unmatchable. */
+    if (pat_unmatchable(pat) || pat_unmatchable(path)) return 0;
     if (strcmp(pat, "*") == 0) return 1;
     size_t pl = strlen(pat);
     if (pl >= 2 && pat[pl - 1] == '*' && pat[pl - 2] == '/')
@@ -1913,6 +1947,10 @@ static int array_any_match(const unsigned char *buf, size_t len, size_t arr_pos,
 static int matches_scope_rel(const unsigned char *buf, size_t len, size_t scope_pos, const char *value)
 {
     cbor_rd inc, exc;
+    /* (b) — an unmatchable EXCLUDE denies. Outside the scope-type dispatch,
+     * transcribing §5.2's loop literally. */
+    if (cbor_map_find(buf, len, scope_pos, "exclude", &exc)
+        && array_any_unmatchable(buf, len, exc.pos)) return 0;
     if (!cbor_map_find(buf, len, scope_pos, "include", &inc)) return 0;
     if (!array_any_match(buf, len, inc.pos, value)) return 0;
     if (cbor_map_find(buf, len, scope_pos, "exclude", &exc) && array_any_match(buf, len, exc.pos, value)) return 0;
@@ -1932,6 +1970,7 @@ static int matches_scope_rel(const unsigned char *buf, size_t len, size_t scope_
  * (§5.5a: "bare star MUST NOT be interpreted as universal".) */
 static int matches_resource_pat(const char *reqrel, const char *pat, int granter_local, const char *local_pid)
 {
+    if (pat_unmatchable(pat)) return 0;                 /* (a) */
     if (pat[0] == '/') {
         const char *p = pat + 1;
         const char *slash = strchr(p, '/');
@@ -1951,6 +1990,11 @@ static int matches_resource_scope(const unsigned char *buf, size_t len, size_t s
                                   const char *reqrel, int granter_local, const char *local_pid)
 {
     cbor_rd inc, exc;
+    /* (b) — an unmatchable GRANT exclude denies. FIRST, before any include test:
+     * the exclude loop below is correct in isolation and is simply never reached on
+     * an unmatchable form, because matches_resource_pat answers 0. */
+    if (cbor_map_find(buf, len, scope_pos, "exclude", &exc)
+        && array_any_unmatchable(buf, len, exc.pos)) return 0;
     if (!cbor_map_find(buf, len, scope_pos, "include", &inc)) return 0;
     cbor_rd r = { buf, len, inc.pos }; int mj; uint64_t n; int hit = 0;
     if (cbor_head(&r, &mj, &n) != 0 || mj != 4) return 0;

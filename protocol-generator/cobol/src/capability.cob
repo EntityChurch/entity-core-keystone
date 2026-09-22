@@ -46,8 +46,17 @@ procedure division using lk-seg lk-len lk-res.
 end program cap-ispid.
 
 *> ---- cap-canon : §1.4 canonicalize (frame = peer_id) ----------------
-*> leading "/" -> as-is; else "/"+frame+"/"+in. (./../*/ rejection is gated
-*> upstream by path_flex_ok; here we keep the simple prepend form.)
+*> leading "/" -> as-is; else "/"+frame+"/"+in.
+*>
+*> TOTAL (0.8.2.20): the result is "a canonical path OR /never-match". This program
+*> used to carry the comment "(./../*/ rejection is gated upstream by path_flex_ok;
+*> here we keep the simple prepend form)" -- true of the REQUEST path, which does
+*> reach path_flex_ok, and false of a GRANT PATTERN, which does not. A grant exclude
+*> of "../x" became "/{granter}/../x", matched nothing, and carved out nothing, so
+*> the grant was silently wider than its author wrote (measured on the wire
+*> 2026-09-14). The sentinel is unreachable as a canonical path by CONSTRUCTION: its
+*> only segment cannot be a peer_id, which needs >= 46 Base58 characters, and "-" is
+*> outside the Base58 alphabet.
 identification division.
 program-id. cap-canon.
 data division.
@@ -61,6 +70,13 @@ linkage section.
 01 lk-out   pic x(900).
 01 lk-outlen pic 9(9) comp-5.
 procedure division using lk-in lk-inlen lk-frame lk-framelen lk-out lk-outlen.
+    if (lk-inlen >= 2 and lk-in(1:2) = "./")
+       or (lk-inlen >= 3 and lk-in(1:3) = "../")
+       or (lk-inlen >= 2 and lk-in(1:2) = "*/")
+        move "/never-match" to lk-out(1:12)
+        move 12 to lk-outlen
+        goback
+    end-if
     if lk-inlen >= 1 and lk-in(1:1) = "/"
         move lk-in(1:lk-inlen) to lk-out(1:lk-inlen)
         move lk-inlen to lk-outlen
@@ -98,6 +114,13 @@ linkage section.
 01 lk-res    pic 9(1).
 procedure division using lk-path lk-plen lk-pat lk-patlen lk-res.
     move 0 to lk-res
+    *> /never-match never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+    *> rule rather than a property of the string: the bare-"*" arm below answers 1 for
+    *> any path, so safety must not rest on a value merely looking unmatchable.
+    if (lk-plen = 12 and lk-path(1:12) = "/never-match")
+       or (lk-patlen = 12 and lk-pat(1:12) = "/never-match")
+        goback
+    end-if
     *> pattern == "*"
     if lk-patlen = 1 and lk-pat(1:1) = "*"
         move 1 to lk-res  goback
@@ -228,6 +251,52 @@ procedure division using lk-buf lk-arroff lk-cv lk-cvlen lk-frame lk-framelen lk
     end-perform
     goback.
 end program cap-arr-covers.
+
+*> ---- cap-arr-unmatchable : does any pattern in the array canonicalize to the
+*> §5.4 sentinel? AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The
+*> sentinel is fail-CLOSED in an include (covers nothing -> the grant grants
+*> nothing) and fail-OPEN in an exclude (carves out nothing), so the reading is
+*> chosen where the POSITION is known and cap-match stays uniform over its operands.
+identification division.
+program-id. cap-arr-unmatchable.
+data division.
+working-storage section.
+01 cur   pic 9(9) comp-5.
+01 maj   pic 9(2) comp-5.
+01 addl  pic 9(2) comp-5.
+01 arg   pic 9(18) comp-5.
+01 cnt   pic 9(9) comp-5.
+01 i     pic 9(9) comp-5.
+01 plen  pic 9(9) comp-5.
+01 st    pic s9(9) comp-5.
+01 pat   pic x(900).
+01 cpat  pic x(900).
+01 cpatlen pic 9(9) comp-5.
+linkage section.
+01 lk-buf    pic x(524288).
+01 lk-arroff pic 9(9) comp-5.
+01 lk-frame  pic x(128).
+01 lk-framelen pic 9(9) comp-5.
+01 lk-res    pic 9(1).
+procedure division using lk-buf lk-arroff lk-frame lk-framelen lk-res.
+    move 0 to lk-res
+    move lk-arroff to cur
+    call "cbor-read-head" using lk-buf cur maj addl arg st
+    if maj not = 4 then goback end-if
+    move arg to cnt
+    perform varying i from 1 by 1 until i > cnt
+        call "cbor-read-head" using lk-buf cur maj addl arg st
+        move arg to plen
+        move spaces to pat
+        if plen > 0 and plen <= 900 then move lk-buf(cur:plen) to pat(1:plen) end-if
+        add plen to cur
+        call "cap-canon" using pat plen lk-frame lk-framelen cpat cpatlen
+        if cpatlen = 12 and cpat(1:12) = "/never-match"
+            move 1 to lk-res  goback
+        end-if
+    end-perform
+    goback.
+end program cap-arr-unmatchable.
 
 *> ---- cap-id-covers : exists pattern in array covering an ID-SCOPE value ----
 *> Identical to cap-arr-covers except that NOTHING is canonicalized — neither the
@@ -570,6 +639,13 @@ procedure division using lk-env lk-resoff lk-tbuf lk-gmapoff
     if rsf = 1
         call "cbor-find-key" using lk-tbuf rsoff k-incl k-incl-len gioff gif st
         call "cbor-find-key" using lk-tbuf rsoff k-excl k-excl-len geoff gef st
+    end-if
+    *> An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+    *> target: the coverage test below is correct in isolation and is simply never
+    *> reached on a sentinel, because cap-match answers 0.
+    if gef = 1
+        call "cap-arr-unmatchable" using lk-tbuf geoff lk-granter lk-granterlen cov
+        if cov = 1 then move 0 to lk-out  goback end-if
     end-if
     move 1 to lk-out
     move toff to cur

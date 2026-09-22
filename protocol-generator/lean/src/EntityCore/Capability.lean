@@ -110,13 +110,28 @@ def splitSegs (s : String) : List String :=
 def normalizeUri (uri : String) : String :=
   if uri.startsWith "entity://" then "/" ++ (uri.drop "entity://".length).toString else uri
 
+/-- The unmatchable value (0.8.2.20), in this peer's SEGMENT representation:
+`splitSegs "/never-match"`. Unreachable as a canonical path by CONSTRUCTION — its
+only segment cannot be a peer_id, since `isPeerId` requires >= 46 Base58 characters
+and `-` is outside the Base58 alphabet. -/
+def neverMatch : List String := ["never-match"]
+
 /-- Canonicalize a path/pattern to absolute SEGMENTS under a frame peer (§5.4):
 absolute (`/…`) passes through; a relative path is rooted at `/{frame}/…`. Built
 by splitting the absolute STRING (not consing), so a relative `""` or `foo/`
 yields the correct trailing-empty segment — exactly the cohort `canonicalize`
-(`"" → "/{frame}/"`, `"*" → "/{frame}/*"`). -/
+(`"" → "/{frame}/"`, `"*" → "/{frame}/*"`).
+
+TOTAL (0.8.2.20): the return domain is "canonical segments OR `neverMatch`". The
+two reserved arms were ABSENT here — `../x` came back as `[frame, "..", "x"]`, which
+matched no literal, so a grant exclude carrying it carved out nothing and the grant
+was silently wider than its author wrote (measured on the wire 2026-09-14). A
+non-match is the desired outcome in an INCLUDE and the opposite of it in an EXCLUDE. -/
 def canonSegs (frame : String) (path : String) : List String :=
-  if path.startsWith "/" then splitSegs path else splitSegs ("/" ++ frame ++ "/" ++ path)
+  if path.startsWith "./" || path.startsWith "../" then neverMatch
+  else if path.startsWith "*/" then neverMatch
+  else if path.startsWith "/" then splitSegs path
+  else splitSegs ("/" ++ frame ++ "/" ++ path)
 
 /-- Pattern match over canonical segments (§5.4). Total, structurally recursive on
 both lists — the running matcher AND the T5a proof surface.
@@ -131,11 +146,34 @@ def matchesSeg : List String → List String → Bool
   | _ :: ps, "*" :: pt  => matchesSeg ps pt
   | s :: ps, p :: pt    => s == p && matchesSeg ps pt
 
+/-- `matchesSeg` with the §5.4 sentinel rule in front: `neverMatch` never matches, in
+EITHER operand (0.8.2.20).
+
+This is a WRAPPER rather than a new first arm of `matchesSeg`, deliberately.
+`matchesSeg` is not only the running matcher, it is the T5a PROOF SURFACE — the
+transitivity theorem and its five arm-characterization lemmas in
+`EntityCoreProofs.CapabilityProofs` are `rfl`-level facts about its exact clause
+order. Adding a clause would re-derive every one of them to prove a property that is
+not about pattern matching at all. The rule is a MATCHER rule and not a property of
+the value, which is why it cannot simply be left to the construction: the first arm
+of `matchesSeg` answers `true` for ANY non-empty path against the bare `["*"]`
+pattern, sentinel included. -/
+def matchesSegNM (path pat : List String) : Bool :=
+  if path == neverMatch || pat == neverMatch then false else matchesSeg path pat
+
+/-- AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
+in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an exclude
+(carves out nothing), so the reading is chosen where the POSITION is known and the
+matcher stays uniform over its operands. The guard sits outside the scope-type
+dispatch, transcribing §5.2's loop literally. -/
+def excludeUnmatchable (frame : String) (excl : List String) : Bool :=
+  excl.any (fun p => canonSegs frame p == neverMatch)
+
 /-- `value` (canonicalized in `valueFrame`) is covered by some pattern in `pats`
 (each canonicalized in `patFrame`). -/
 def covered (valueFrame patFrame : String) (value : String) (pats : List String) : Bool :=
   let cv := canonSegs valueFrame value
-  pats.any (fun p => matchesSeg cv (canonSegs patFrame p))
+  pats.any (fun p => matchesSegNM cv (canonSegs patFrame p))
 
 /-- Which §5.2 matcher a grant dimension uses (0.8.1, F40). Named at every call site —
 there is no default — so a new one cannot inherit the wrong matcher silently, which is
@@ -171,7 +209,8 @@ def coveredId (value : String) (pats : List String) : Bool :=
 /-- §5.2 scope membership, typed by scope kind (0.8.1, F40): `path` canonicalizes both
 sides on the LOCAL frame; `id` compares literally. Value in include, not in exclude. -/
 def matchesScope (localPeer : String) (value : String) (s : Scope) (kind : ScopeKind) : Bool :=
-  match kind with
+  if excludeUnmatchable localPeer s.excl then false     -- 0.8.2.21 — deny
+  else match kind with
   | .id => coveredId value s.incl && !coveredId value s.excl
   | .path => covered localPeer localPeer value s.incl && !covered localPeer localPeer value s.excl
 
@@ -403,9 +442,13 @@ def checkResourceScope (localPeer granterPeer : String) (resource : Value) (s : 
   let targets := match mapGet resource "targets" with | some a => textList a | none => []
   let callerExcl := match mapGet resource "exclude" with | some a => textList a | none => []
   let coveredLocal (pats : List String) (ct : List String) : Bool :=
-    pats.any (fun p => matchesSeg ct (canonSegs localPeer p))
+    pats.any (fun p => matchesSegNM ct (canonSegs localPeer p))
   let coveredGrant (pats : List String) (ct : List String) : Bool :=
-    pats.any (fun p => matchesSeg ct (canonSegs granterPeer p))
+    pats.any (fun p => matchesSegNM ct (canonSegs granterPeer p))
+  -- An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+  -- target: the coverage test below is correct in isolation and is simply never
+  -- reached on a sentinel, because matchesSegNM answers false.
+  !excludeUnmatchable granterPeer s.excl &&
   !targets.isEmpty &&
   targets.all (fun tgt =>
     let ct := canonSegs localPeer tgt

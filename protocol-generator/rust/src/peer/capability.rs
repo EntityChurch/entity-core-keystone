@@ -112,8 +112,27 @@ pub fn normalize_uri(uri: &str) -> String {
     }
 }
 
+/// The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+/// CONSTRUCTION: its first segment cannot be a peer_id, since [`is_peer_id`]
+/// requires >= 46 Base58 characters and `-` is outside the Base58 alphabet.
+pub const NEVER_MATCH: &str = "/never-match";
+
 /// Resolve peer-relative paths to absolute `/{local}/...` form.
+///
+/// TOTAL (0.8.2.20): the return domain is "a canonical path OR [`NEVER_MATCH`]".
+/// The two reserved arms were ABSENT here — `../x` came back as `/{local}/../x`,
+/// which matched nothing, so a grant exclude carrying it carved out nothing and the
+/// grant was silently wider than its author wrote (measured on the wire
+/// 2026-09-14). A non-match is the desired outcome in an INCLUDE and the opposite
+/// of it in an EXCLUDE; the sentinel is what lets the exclude-reading sites tell
+/// the two positions apart.
 pub fn canonicalize(local_peer: &str, path: &str) -> String {
+    if path.starts_with("./") || path.starts_with("../") {
+        return NEVER_MATCH.to_string(); // reserved: directory-relative (§1.4)
+    }
+    if path.starts_with("*/") {
+        return NEVER_MATCH.to_string(); // ambiguous bare peer wildcard: use /*/rest
+    }
     if path.starts_with('/') {
         path.to_string()
     } else {
@@ -121,8 +140,23 @@ pub fn canonicalize(local_peer: &str, path: &str) -> String {
     }
 }
 
+/// AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
+/// fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
+/// fail-OPEN in an exclude (carves out nothing), so the reading is chosen where the
+/// POSITION is known and [`matches_pattern`] stays uniform over its operands. The
+/// guard sits outside the scope-type dispatch, transcribing §5.2's loop literally.
+fn exclude_is_unmatchable(frame: &str, excl: &[String]) -> bool {
+    excl.iter().any(|p| canonicalize(frame, p) == NEVER_MATCH)
+}
+
 /// Both `path` and `pattern` MUST already be canonical (absolute).
 pub fn matches_pattern(path: &str, pattern: &str) -> bool {
+    // NEVER_MATCH never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+    // rule rather than a property of the string: the arm below returns true for a
+    // bare "*", so safety must not rest on a value merely looking unmatchable.
+    if path == NEVER_MATCH || pattern == NEVER_MATCH {
+        return false;
+    }
     if pattern == "*" {
         return true;
     }
@@ -180,6 +214,9 @@ fn covered_id(value: &str, pats: &[String]) -> bool {
 }
 
 fn matches_scope(local_peer: &str, value: &str, s: &Scope, kind: ScopeKind) -> bool {
+    if exclude_is_unmatchable(local_peer, &s.excl) {
+        return false; // 0.8.2.21 — deny, do not carve out nothing
+    }
     if kind == ScopeKind::Id {
         return covered_id(value, &s.incl) && !covered_id(value, &s.excl);
     }
@@ -216,6 +253,12 @@ fn check_resource_scope(local_peer: &str, granter_peer: &str, resource: &Value, 
     let targets = text_list(model::map_get(resource, "targets"));
     let caller_excl = text_list(model::map_get(resource, "exclude"));
     if targets.is_empty() {
+        return false;
+    }
+    // An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+    // target: the coverage test below is correct in isolation and is simply never
+    // reached on a sentinel, because matches_pattern answers false.
+    if exclude_is_unmatchable(granter_peer, &s.excl) {
         return false;
     }
     for tgt in &targets {
@@ -271,33 +314,6 @@ pub fn check_permission(
         }
     }
     Verdict::Deny
-}
-
-/// H9 — the public path-permission predicate: is `operation` on `path`, served by the
-/// handler at `handler_pattern`, permitted by some single grant in `token`?
-///
-/// **Resources match against the local peer with NO granter frame.** This is the §6.3
-/// tree handler's defense-in-depth check and the one an extension whose target lives
-/// in its params needs; it is deliberately not the dispatch-boundary check (which takes
-/// the granter frame for resources, §PR-8) and not chain attenuation (a different
-/// function again). Adding a frame here is the over-scoping defect this cohort has
-/// recorded three times.
-///
-/// It answers about the token's grants only; the token's signature, chain, temporal
-/// bounds and revocation are `verify_request`'s, and must already have held.
-pub fn check_path_permission(
-    operation: &str,
-    path: &str,
-    token: &Entity,
-    handler_pattern: &str,
-    local_peer: &str,
-) -> bool {
-    let cp = canonicalize(local_peer, path);
-    grants_of_token(token).iter().any(|g| {
-        matches_scope(local_peer, handler_pattern, &g.handlers, ScopeKind::Path)
-            && matches_scope(local_peer, operation, &g.operations, ScopeKind::Id)
-            && matches_scope(local_peer, &cp, &g.resources, ScopeKind::Path)
-    })
 }
 
 // ── §5.5 / §5.6 chain verification + attenuation ───────────────────────────────
@@ -908,35 +924,6 @@ pub fn multi_granter_value(signers: &[Vec<u8>], threshold: u64) -> Value {
 
 #[cfg(test)]
 mod tests;
-
-/// `SDK-OPERATIONS` §11.3 SEC-3 — whether `identity_hash` appears as a GRANTER in the
-/// authority chain of the capability whose content hash is `cap_hash` (in the chain, not
-/// merely at its root — core §5.5), and that chain verifies for this peer. A handler that
-/// embeds a caller-supplied capability in an entity it creates asks this before persisting.
-///
-/// `false` for a capability that cannot be resolved (from the envelope's `included` or the
-/// store), whose chain is unreachable or too deep, or which does not verify.
-pub fn identity_in_authority_chain(
-    env: &Envelope,
-    st: &Store,
-    local_peer: &str,
-    cap_hash: &[u8],
-    identity_hash: &[u8],
-) -> bool {
-    let cap = match resolve(env, st, cap_hash) {
-        Some(c) if c.typ == "system/capability/token" => c,
-        _ => return false,
-    };
-    if !matches!(verify_capability_chain(env, st, local_peer, &cap), Ok(Verdict::Allow)) {
-        return false;
-    }
-    match collect_chain(env, st, &cap) {
-        ChainResult::Chain(links) => links
-            .iter()
-            .any(|l| l.bytes_field("granter") == Some(identity_hash)),
-        _ => false,
-    }
-}
 
 #[cfg(test)]
 pub(crate) fn verify_capability_chain_for_test(

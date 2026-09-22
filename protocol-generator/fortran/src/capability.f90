@@ -33,6 +33,11 @@ module entity_core_capability
   integer, parameter, public :: CV_ALLOW = 0, CV_AUTHN_FAIL = 1, CV_AUTHZ_DENY = 2, &
                                 CV_CHAIN_TOO_DEEP = 3
 
+  ! The unmatchable value (0.8.2.20). Unreachable as a canonical path by CONSTRUCTION:
+  ! its first segment cannot be a peer_id, since cap_is_peer_id requires >= 46 Base58
+  ! characters and '-' is outside the Base58 alphabet.
+  character(len=*), parameter :: never_match = '/never-match'
+
   public :: cap_now_ms, cap_grant, cap_canonicalize, cap_normalize_uri
   public :: cap_matches_pattern, cap_matches_id_pattern, cap_matches_scope, cap_is_peer_id, cap_extract_peer
   public :: cap_check_permission, cap_resolve, cap_find_signature
@@ -97,17 +102,48 @@ contains
     out = '/' // trim(local) // '/' // path
   end subroutine cap_canonicalize
 
-  function canon(local, path) result(out)      ! invalid-ignoring form (internal patterns)
+  ! canon -- cap_canonicalize FOR THE MATCHERS, which have no error channel.
+  ! TOTAL (0.8.2.20): the result is 'a canonical path OR never_match'.
+  !
+  ! cap_canonicalize itself keeps its `invalid` flag, because the dispatch top uses it
+  ! as a 400 and is exactly the caller 0.8.2.20 says SHOULD have the diagnostic. The
+  ! defect was HERE: this wrapper IGNORED `invalid` and returned the input unchanged,
+  ! which matched nothing -- the desired outcome in an INCLUDE and the opposite of it
+  ! in an EXCLUDE, so a grant exclude carrying '../x' carved out nothing and the grant
+  ! was silently wider than its author wrote (measured on the wire 2026-09-14).
+  function canon(local, path) result(out)
     character(len=*), intent(in) :: local, path
     character(len=:), allocatable :: out
     logical :: inv
     call cap_canonicalize(local, path, out, inv)
+    if (inv) out = never_match
   end function canon
+
+  ! AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
+  ! in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an
+  ! exclude (carves out nothing), so the reading is chosen where the POSITION is known
+  ! and cap_matches_pattern stays uniform over its operands. The guard sits outside the
+  ! scope-type dispatch, transcribing 5.2s loop literally.
+  logical function exclude_unmatchable(frame, excl)
+    character(len=*), intent(in) :: frame
+    type(str_t),      intent(in) :: excl(:)
+    integer :: i
+    exclude_unmatchable = .false.
+    do i = 1, size(excl)
+      if (canon(frame, excl(i)%s) == never_match) then
+        exclude_unmatchable = .true.; return
+      end if
+    end do
+  end function exclude_unmatchable
 
   recursive function cap_matches_pattern(path, pattern) result(m)
     character(len=*), intent(in) :: path, pattern
     logical :: m
     integer :: i
+    ! never_match never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+    ! rule rather than a property of the string: the line below returns .true. for a
+    ! bare '*', so safety must not rest on a value merely looking unmatchable.
+    if (path == never_match .or. pattern == never_match) then; m = .false.; return; end if
     if (pattern == '*') then; m = .true.; return; end if
     if (starts_with(pattern, '/*/')) then
       if (len(path) == 0) then; m = .false.; return; end if
@@ -173,6 +209,9 @@ contains
     type(str_t), allocatable :: incl(:), excl(:)
     incl = text_list(m_array(scope, 'include'))
     excl = text_list(m_array(scope, 'exclude'))
+    if (exclude_unmatchable(local, excl)) then       ! 0.8.2.21 -- deny
+      cap_matches_scope = .false.; return
+    end if
     if (kind == 'id') then
       if (.not. covered_id(incl, value)) then; cap_matches_scope = .false.; return; end if
       cap_matches_scope = .not. covered_id(excl, value)
@@ -225,6 +264,10 @@ contains
     incl = text_list(m_array(scope, 'include'))
     excl = text_list(m_array(scope, 'exclude'))
     if (size(targets) == 0) return
+    ! An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+    ! target: the coverage test below is correct in isolation and is simply never
+    ! reached on a sentinel, because cap_matches_pattern answers .false.
+    if (exclude_unmatchable(granter_peer, excl)) return
     do i = 1, size(targets)
       ct = canon(local, targets(i)%s)
       if (size(caller_excl) > 0) then

@@ -70,6 +70,16 @@ proc matches*(s: Scope; value, localPeerId: string; kind: ScopeKind): bool =
       for pattern in s.excludes:
         if matchesIdPattern(value, pattern): return false
     return true
+  # AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
+  # in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an
+  # exclude (carves out nothing -> the grant is SILENTLY WIDER than its author wrote):
+  # same value, same matcher, opposite safety direction, so the reading is chosen where
+  # the POSITION is known and matchesPattern stays uniform over its operands. The guard
+  # sits outside the scope-type dispatch, transcribing §5.2's loop literally.
+  if s.hasExclude:
+    for pattern in s.excludes:
+      let cpx = try: canonicalize(pattern, localPeerId) except PathError: continue
+      if cpx == NeverMatch: return false
   let cv = try: canonicalize(value, localPeerId) except PathError: return false
   var matched = false
   for pattern in s.includes:
@@ -474,6 +484,13 @@ proc verifyCapabilityChain*(cap: CapabilityToken; env: Envelope; localPeerId: st
 proc checkResourceScope(rt: ResourceTarget; grantResources: Scope;
                         localPeerId, granterPeerId: string): bool =
   let grantInclude = grantResources.includes
+  # An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+  # target: the coverage tests below are correct in isolation and are simply never
+  # reached on a sentinel, because matchesPattern answers false.
+  if grantResources.hasExclude:
+    for ge in grantResources.excludes:
+      let cge0 = try: canonicalize(ge, granterPeerId) except PathError: continue
+      if cge0 == NeverMatch: return false
   for target in rt.targets:
     let ct = try: canonicalize(target, localPeerId) except PathError: return false
     # Caller-supplied excludes stay on the local frame.

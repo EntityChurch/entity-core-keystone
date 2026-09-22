@@ -16,8 +16,28 @@ internal static class Paths
         uri.StartsWith("entity://", StringComparison.Ordinal) ? "/" + uri["entity://".Length..] : uri;
 
     /// <summary>
+    /// The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+    /// CONSTRUCTION: its first segment cannot be a peer id, since a peer id needs
+    /// >= 46 Base58 characters and <c>-</c> is outside the Base58 alphabet.
+    /// </summary>
+    public const string NeverMatch = "/never-match";
+
+    /// <summary>
     /// Resolve a peer-relative path to absolute form against the local peer (§5.4).
-    /// Rejects directory-relative and bare peer-wildcard forms.
+    /// <para>
+    /// TOTAL for the two RESERVED forms (0.8.2.20): <c>./</c> <c>../</c> and <c>*/</c>
+    /// return <see cref="NeverMatch"/> instead of throwing. The throw was reachable from
+    /// the wire — every normative call site is a matcher with no error channel to consume
+    /// one — so <c>../x</c> in a resource exclude escaped the matcher and was answered by
+    /// the §6.5 frame, which is the admission answer for the CALLER arm and the wrong one
+    /// for the GRANT arm, where 0.8.2.21 pins a 403 DENY.
+    /// </para>
+    /// <para>
+    /// The empty-segment (<c>//</c>) throw is LEFT IN PLACE deliberately: §1.4 forbids an
+    /// empty segment, the landed <c>canonicalize</c> pseudocode has no arm for it, and
+    /// turning that refusal into a silent non-match would weaken an admission check to
+    /// fix a matcher one.
+    /// </para>
     /// </summary>
     public static string Canonicalize(string path, string localPeerId)
     {
@@ -30,11 +50,11 @@ internal static class Paths
         }
         if (path.StartsWith("./", StringComparison.Ordinal) || path.StartsWith("../", StringComparison.Ordinal))
         {
-            throw new EntityProtocolException("reserved: directory-relative paths (§1.4)");
+            return NeverMatch;      // reserved: directory-relative (§1.4)
         }
         if (path.StartsWith("*/", StringComparison.Ordinal))
         {
-            throw new EntityProtocolException("ambiguous: use /*/rest for peer wildcard patterns (§5.4)");
+            return NeverMatch;      // ambiguous bare peer wildcard: use /*/rest (§5.4)
         }
         if (path.StartsWith('/'))
         {
@@ -117,9 +137,39 @@ internal static class Paths
 
     public static bool IsPattern(string path) => path.Contains('*');
 
+    /// <summary>
+    /// True if any exclude pattern canonicalizes to <see cref="NeverMatch"/>.
+    /// <para>
+    /// AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
+    /// in an include (covers nothing -&gt; the grant grants nothing) and fail-OPEN in an
+    /// exclude (carves out nothing -&gt; the grant is SILENTLY WIDER than its author
+    /// wrote): same value, same matcher, opposite safety direction, so the reading is
+    /// chosen where the POSITION is known and <see cref="MatchesPattern"/> stays uniform
+    /// over its operands.
+    /// </para>
+    /// </summary>
+    public static bool ExcludeIsUnmatchable(IReadOnlyList<string> exclude, string frame)
+    {
+        foreach (string p in exclude)
+        {
+            if (Canonicalize(p, frame) == NeverMatch)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// <summary>Match a canonicalized path against a canonicalized pattern (§5.4).</summary>
     public static bool MatchesPattern(string path, string pattern)
     {
+        // NeverMatch never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+        // rule rather than a property of the string: the arm below returns true for a
+        // bare "*", so safety must not rest on a value merely looking unmatchable.
+        if (path == NeverMatch || pattern == NeverMatch)
+        {
+            return false;
+        }
         if (pattern == "*")
         {
             return true;

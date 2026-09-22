@@ -68,6 +68,12 @@ internal sealed record Scope(IReadOnlyList<string> Include, IReadOnlyList<string
     /// </summary>
     public bool Matches(string value, string localPeerId, ScopeKind kind)
     {
+        // 0.8.2.21 — an unmatchable exclude DENIES rather than carving out nothing. The
+        // guard sits outside the scope-type dispatch, transcribing §5.2's loop literally.
+        if (Exclude is not null && Paths.ExcludeIsUnmatchable(Exclude, localPeerId))
+        {
+            return false;
+        }
         string canonicalValue = kind == ScopeKind.Path ? Paths.Canonicalize(value, localPeerId) : value;
 
         bool Covers(string pattern) => kind == ScopeKind.Id

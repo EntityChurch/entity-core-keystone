@@ -75,12 +75,33 @@ public enum Capability {
     /// directory-relative and bare peer-wildcard forms. NOTE the granter frame:
     /// cap resource patterns canonicalize against the *granter's* peer_id (§5.5a),
     /// request paths against local (§5.4); the caller supplies the right frame.
+    /// The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+    /// CONSTRUCTION: its first segment cannot be a peer_id, since a peer_id needs
+    /// >= 46 Base58 characters and `-` is outside the Base58 alphabet.
+    public static let neverMatch = "/never-match"
+
     public static func canonicalize(_ path: String, frame peerID: String) -> String {
         let path = normalizeURI(path)                                    // strip entity:// scheme (§1.4)
-        if path.hasPrefix("./") || path.hasPrefix("../") { return path } // reserved; pass through (rejected upstream)
-        if path.hasPrefix("*/") { return path }                          // ambiguous; pass through
+        // TOTAL (0.8.2.20): the return domain is "a canonical path OR neverMatch".
+        // These two arms used to PASS THE INPUT THROUGH under a comment saying it was
+        // rejected upstream. A pass-through matched nothing, which is the desired
+        // outcome in an INCLUDE and the opposite of it in an EXCLUDE: a grant exclude
+        // carrying "../x" carved out nothing and the grant was silently wider than its
+        // author wrote (measured on the wire 2026-09-14).
+        if path.hasPrefix("./") || path.hasPrefix("../") { return neverMatch }
+        if path.hasPrefix("*/") { return neverMatch }                    // use /*/rest
         if path.hasPrefix("/") { return path }                           // already absolute
         return "/" + peerID + "/" + path                                 // peer-relative incl. bare "*"
+    }
+
+    /// AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
+    /// fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
+    /// fail-OPEN in an exclude (carves out nothing), so the reading is chosen where the
+    /// POSITION is known and `matchesPattern` stays uniform over its operands. The
+    /// guard sits outside the scope-type dispatch, transcribing §5.2's loop literally.
+    static func excludeIsUnmatchable(_ excl: [String], frame: String) -> Bool {
+        for p in excl where canonicalize(p, frame: frame) == neverMatch { return true }
+        return false
     }
 
     /// §1.4 universal address space: an `entity://{peer_id}/rest` URI is the
@@ -94,6 +115,10 @@ public enum Capability {
 
     /// §5.4 matches_pattern. Both inputs MUST already be canonical (absolute).
     public static func matchesPattern(_ path: String, _ pattern: String) -> Bool {
+        // neverMatch never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+        // rule rather than a property of the string: the line below returns true for a
+        // bare "*", so safety must not rest on a value merely looking unmatchable.
+        if path == neverMatch || pattern == neverMatch { return false }
         if pattern == "*" { return true }
         // Peer wildcard /*/rest — match any peer's subtree.
         if pattern.hasPrefix("/*/") {
@@ -173,6 +198,7 @@ public enum Capability {
     /// matcher by scope type — `.path` canonicalizes both sides against `frame`, `.id`
     /// compares literally. The two MUST NOT be interchanged.
     public static func matchesScope(_ value: String, _ scope: Scope, frame: String, kind: ScopeKind) -> Bool {
+        if excludeIsUnmatchable(scope.exclude, frame: frame) { return false }  // 0.8.2.21
         if kind == .id {
             var matchedID = false
             for p in scope.include where matchesIDPattern(value, p) { matchedID = true; break }
@@ -258,6 +284,10 @@ public enum Capability {
         _ rt: ResourceTarget, _ grantResources: Scope, localPeerID: String, granterFrame: String
     ) -> Bool {
         let callerExclude = rt.exclude
+        // An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before
+        // any target: the coverage tests below are correct in isolation and are simply
+        // never reached on a sentinel, because matchesPattern answers false.
+        if excludeIsUnmatchable(grantResources.exclude, frame: granterFrame) { return false }
         for target in rt.targets {
             let ct = canonicalize(target, frame: localPeerID)
             if !isPattern(ct) && !validateAbsolutePath(ct) { return false }

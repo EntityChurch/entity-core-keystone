@@ -53,9 +53,52 @@ EndsWith←{((≢⍵)≤≢⍺)∧(,⍵)≡(-≢⍵)↑,⍺}
  Z←path 0 ⋄ →0
  bad:Z←path 1
 ∇
-Canon←{1⊃⍺ CapCanonicalize ⍵}                   ⍝ invalid-ignoring form
+⍝ NeverMatch — the unmatchable value (0.8.2.20). Unreachable as a canonical path by
+⍝ CONSTRUCTION: its only segment cannot be a peer_id, since CapIsPeerId requires
+⍝ >= 46 Base58 characters and "-" is outside B58AL.
+NeverMatch←'/never-match'
+
+⍝ Canon — CapCanonicalize FOR THE MATCHERS, which have no error channel. TOTAL
+⍝ (0.8.2.20): the result is "a canonical path OR NeverMatch". CapCanonicalize keeps
+⍝ its `invalid` flag for the dispatch top, which is exactly the caller 0.8.2.20 says
+⍝ SHOULD have the diagnostic. The defect was HERE: this wrapper IGNORED `invalid` and
+⍝ returned the input unchanged, which matched nothing — the desired outcome in an
+⍝ INCLUDE and the opposite of it in an EXCLUDE, so a grant exclude carrying "../x"
+⍝ carved out nothing and the grant was silently wider than its author wrote (measured
+⍝ on the wire 2026-09-14).
+⍝ NOTE THE FAILURE SET, because reusing CapCanonicalize's `invalid` here was WRONG and
+⍝ the census said so: that flag is BROADER than §5.4's. CapCanonicalize also refuses a
+⍝ null byte, an empty segment, and — the one that bit — an absolute path whose first
+⍝ segment is not a peer_id, which is §5.4's validate_absolute_path and is explicitly
+⍝ "NOT called on patterns". Mapping the whole flag to the sentinel turned every `/*/…`
+⍝ pattern unmatchable: 6 FAILs, all foreign-namespace and id-scope. Only the three
+⍝ RESERVED prefixes §5.4's canonicalize names may become NeverMatch.
+∇Z←local Canon path
+ →(path StartsWith'./')/nm
+ →(path StartsWith'../')/nm
+ →(path StartsWith'*/')/nm
+ Z←1⊃local CapCanonicalize path ⋄ →0
+ nm:Z←NeverMatch
+∇
+
+⍝ AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
+⍝ in an include (covers nothing → the grant grants nothing) and fail-OPEN in an
+⍝ exclude (carves out nothing), so the reading is chosen where the POSITION is known
+⍝ and CapMatchesPattern stays uniform over its operands. The guard sits outside the
+⍝ scope-type dispatch, transcribing §5.2's loop literally.
+∇Z←frame ExcludeUnmatchable pats;i
+ Z←0 ⋄ i←0
+ lp:→(i≥≢pats)/0
+ i←i+1
+ →(~(,NeverMatch)≡,frame Canon(i⊃pats))/lp
+ Z←1 ⋄ →0
+∇
 
 ∇Z←path CapMatchesPattern pattern;sub;i
+ ⍝ NeverMatch never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher rule
+ ⍝ rather than a property of the string: the arm below answers 1 for a bare "*", so
+ ⍝ safety must not rest on a value merely looking unmatchable.
+ →(((,NeverMatch)≡,path)∨((,NeverMatch)≡,pattern))/no
  →((,pattern)≡,'*')/yes    ⍝ ,-ravel both: 3↓pattern yields a 1-elem VECTOR; ≡ also compares rank
  →(~pattern StartsWith'/*/')/nomid
  →(0=≢path)/no
@@ -117,9 +160,10 @@ Canon←{1⊃⍺ CapCanonicalize ⍵}                   ⍝ invalid-ignoring for
 ∇Z←local CapMatchesScope vs;value;scope;cv;incl;excl
  value←1⊃vs ⋄ scope←2⊃vs
  cv←local Canon value
+ excl←TextList scope MArray'exclude'
+ →(local ExcludeUnmatchable excl)/no      ⍝ 0.8.2.21 — deny, do not carve out nothing
  incl←TextList scope MArray'include'
  →(~local Covered incl cv)/no
- excl←TextList scope MArray'exclude'
  Z←~local Covered excl cv ⋄ →0
  no:Z←0
 ∇
@@ -133,6 +177,10 @@ Canon←{1⊃⍺ CapCanonicalize ⍵}                   ⍝ invalid-ignoring for
  incl←TextList scope MArray'include'
  excl←TextList scope MArray'exclude'
  →(0=≢targets)/0
+ ⍝ An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+ ⍝ target: the coverage test below is correct in isolation and is simply never
+ ⍝ reached on a sentinel, because CapMatchesPattern answers 0.
+ →(gp ExcludeUnmatchable excl)/0
  i←0
  lp:→(i≥≢targets)/ok
  i←i+1 ⋄ ct←local Canon(i⊃targets)
