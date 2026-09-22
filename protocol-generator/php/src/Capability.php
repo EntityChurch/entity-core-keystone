@@ -80,14 +80,30 @@ final class Capability
         return \str_starts_with($uri, 'entity://') ? '/' . \substr($uri, 9) : $uri;
     }
 
-    /** Resolve peer-relative paths to absolute /{local}/... form. */
+    /**
+     * The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+     * CONSTRUCTION: its first segment cannot be a peer_id, since isPeerId requires
+     * >= 46 Base58 characters and `-` is outside the Base58 alphabet.
+     */
+    public const NEVER_MATCH = '/never-match';
+
+    /**
+     * Resolve peer-relative paths to absolute /{local}/... form.
+     *
+     * TOTAL (0.8.2.20): the return domain is "a canonical path OR NEVER_MATCH". This
+     * used to THROW, and the throw was reachable from the wire — every normative call
+     * site is a matcher with no error channel to consume one, so the exception escaped
+     * the matcher, the resilience frame caught it, and `../x` in a resource exclude
+     * answered 500 (measured 2026-09-14). The diagnostic belongs at admission (§6.5),
+     * which has a caller to answer.
+     */
     public static function canonicalize(string $localPeer, string $path): string
     {
         if (\str_starts_with($path, './') || \str_starts_with($path, '../')) {
-            throw new ProtocolException('canonicalize: reserved directory-relative path');
+            return self::NEVER_MATCH;
         }
         if (\str_starts_with($path, '*/')) {
-            throw new ProtocolException('canonicalize: ambiguous bare peer wildcard');
+            return self::NEVER_MATCH;
         }
         if (\str_starts_with($path, '/')) {
             return $path;
@@ -97,6 +113,12 @@ final class Capability
 
     public static function matchesPattern(string $path, string $pattern): bool
     {
+        // NEVER_MATCH never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+        // rule rather than a property of the string: the arm below returns true for a
+        // bare '*', so safety must not rest on a value merely looking unmatchable.
+        if ($path === self::NEVER_MATCH || $pattern === self::NEVER_MATCH) {
+            return false;
+        }
         if ($pattern === '*') {
             return true;
         }
@@ -150,8 +172,32 @@ final class Capability
      * @param array{incl:list<string>,excl:list<string>} $s
      * @param 'id'|'path' $kind
      */
+    /**
+     * AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
+     * fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
+     * fail-OPEN in an exclude (carves out nothing -> the grant is SILENTLY WIDER than
+     * its author wrote): same value, same matcher, opposite safety direction, so the
+     * reading is chosen where the POSITION is known and matchesPattern stays uniform
+     * over its operands. The guard sits outside the scope-type dispatch, transcribing
+     * §5.2's loop literally.
+     *
+     * @param list<string> $excl
+     */
+    private static function excludeIsUnmatchable(string $frame, array $excl): bool
+    {
+        foreach ($excl as $p) {
+            if (self::canonicalize($frame, $p) === self::NEVER_MATCH) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static function matchesScope(string $localPeer, string $value, array $s, string $kind): bool
     {
+        if (self::excludeIsUnmatchable($localPeer, $s['excl'])) {
+            return false; // 0.8.2.21 — deny
+        }
         if ($kind === 'id') {
             return self::coveredId($s['incl'], $value) && !self::coveredId($s['excl'], $value);
         }
@@ -213,6 +259,12 @@ final class Capability
         $targets = Ecf::textList($resource, 'targets');
         $callerExcl = Ecf::textList($resource, 'exclude');
         if ($targets === null || $targets === []) {
+            return false;
+        }
+        // An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before
+        // any target: the coverage test below is correct in isolation and is simply
+        // never reached on a sentinel, because matchesPattern answers false.
+        if (self::excludeIsUnmatchable($granterPeer, $s['excl'])) {
             return false;
         }
         foreach ($targets as $tgt) {

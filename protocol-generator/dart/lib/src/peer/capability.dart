@@ -100,19 +100,31 @@ bool _startsWith(String prefix, String s) =>
 String normalizeUri(String uri) =>
     _startsWith('entity://', uri) ? '/${uri.substring(9)}' : uri;
 
+/// The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+/// CONSTRUCTION: its first segment cannot be a peer_id, since [isPeerId] requires
+/// >= 46 Base58 characters and `-` is outside the Base58 alphabet.
+const neverMatch = '/never-match';
+
 /// Resolve peer-relative paths to absolute /{local}/... form.
+///
+/// TOTAL (0.8.2.20): the return domain is "a canonical path OR [neverMatch]". This
+/// used to THROW, and the throw was reachable from the wire — every normative call
+/// site is a matcher with no error channel to consume one, so the exception escaped
+/// the matcher, the resilience frame caught it, and `../x` in a resource exclude
+/// answered 500 (measured 2026-09-14). The diagnostic belongs at admission (§6.5),
+/// which has a caller to answer.
 String canonicalize(String localPeer, String path) {
-  if (_startsWith('./', path) || _startsWith('../', path)) {
-    throw ArgumentError('canonicalize: reserved directory-relative path');
-  }
-  if (_startsWith('*/', path)) {
-    throw ArgumentError('canonicalize: ambiguous bare peer wildcard');
-  }
+  if (_startsWith('./', path) || _startsWith('../', path)) return neverMatch;
+  if (_startsWith('*/', path)) return neverMatch;
   if (_startsWith('/', path)) return path;
   return '/$localPeer/$path';
 }
 
 bool matchesPattern(String path, String pattern) {
+  // neverMatch never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+  // rule rather than a property of the string: the arm below returns true for a
+  // bare '*', so safety must not rest on a value merely looking unmatchable.
+  if (path == neverMatch || pattern == neverMatch) return false;
   if (pattern == '*') return true;
   if (_startsWith('/*/', pattern)) {
     final remainder = pattern.substring(3);
@@ -152,7 +164,18 @@ bool matchesIdPattern(String value, String pattern) {
 bool _coveredId(List<String> pats, String value) =>
     pats.any((p) => matchesIdPattern(value, p));
 
+/// AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
+/// fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
+/// fail-OPEN in an exclude (carves out nothing -> the grant is SILENTLY WIDER than
+/// its author wrote): same value, same matcher, opposite safety direction, so the
+/// reading is chosen where the POSITION is known and [matchesPattern] stays uniform
+/// over its operands. The guard sits outside the scope-type dispatch, transcribing
+/// §5.2's loop literally.
+bool _excludeIsUnmatchable(String frame, List<String> excl) =>
+    excl.any((p) => canonicalize(frame, p) == neverMatch);
+
 bool matchesScope(String localPeer, String value, Scope s, ScopeKind kind) {
+  if (_excludeIsUnmatchable(localPeer, s.excl)) return false; // 0.8.2.21 — deny
   if (kind == ScopeKind.id) {
     return _coveredId(s.incl, value) && !_coveredId(s.excl, value);
   }
@@ -190,6 +213,10 @@ bool checkResourceScope(
   final targets = textList(resource, 'targets');
   final callerExcl = textList(resource, 'exclude');
   if (targets == null || targets.isEmpty) return false;
+  // An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+  // target: the coverage test below is correct in isolation and is simply never
+  // reached on a sentinel, because matchesPattern answers false.
+  if (_excludeIsUnmatchable(granterPeer, s.excl)) return false;
   for (final tgt in targets) {
     final ct = canonicalize(localPeer, tgt);
     if (callerExcl != null && _coveredFrame(localPeer, callerExcl, ct)) {

@@ -115,18 +115,32 @@ let normalize_uri (uri : string) : string =
   if starts_with ~prefix:"entity://" uri then "/" ^ String.sub uri 9 (String.length uri - 9)
   else uri
 
-(* Resolve peer-relative paths to absolute "/{local}/..." form. *)
+(* The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+   CONSTRUCTION: its first segment cannot be a peer_id, since is_peer_id requires
+   >= 46 Base58 characters and '-' is outside the Base58 alphabet. *)
+let never_match = "/never-match"
+
+(* Resolve peer-relative paths to absolute "/{local}/..." form.
+
+   TOTAL (0.8.2.20): the return domain is "a canonical path OR never_match". This
+   used to raise Invalid_argument, and the raise was reachable from the wire —
+   every normative call site is a matcher with no error channel to consume one, so
+   the exception escaped the matcher, the resilience frame caught it, and "../x" in
+   a resource exclude answered 500 (measured 2026-09-14). The diagnostic belongs at
+   admission (§6.5), which has a caller to answer. *)
 let canonicalize ~local_peer (path : string) : string =
-  if starts_with ~prefix:"./" path || starts_with ~prefix:"../" path then
-    invalid_arg "canonicalize: reserved directory-relative path";
-  if starts_with ~prefix:"*/" path then
-    invalid_arg "canonicalize: ambiguous bare peer wildcard";
-  if starts_with ~prefix:"/" path then path
+  if starts_with ~prefix:"./" path || starts_with ~prefix:"../" path then never_match
+  else if starts_with ~prefix:"*/" path then never_match
+  else if starts_with ~prefix:"/" path then path
   else "/" ^ local_peer ^ "/" ^ path
 
 (* Both path and pattern MUST already be canonical (absolute). *)
 let rec matches_pattern (path : string) (pattern : string) : bool =
-  if String.equal pattern "*" then true
+  (* never_match never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+     rule rather than a property of the string: the arm below returns true for a
+     bare "*", so safety must not rest on a value merely looking unmatchable. *)
+  if String.equal path never_match || String.equal pattern never_match then false
+  else if String.equal pattern "*" then true
   else if starts_with ~prefix:"/*/" pattern then begin
     let remainder = String.sub pattern 3 (String.length pattern - 3) in
     (* path is /{peer}/rest — strip the peer segment *)
@@ -163,7 +177,19 @@ let matches_id_pattern (value : string) (pattern : string) : bool =
       && String.equal (String.sub value 0 (plen - 1)) prefix
     else String.equal value pattern
 
+(* AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
+   fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
+   fail-OPEN in an exclude (carves out nothing -> the grant is SILENTLY WIDER than
+   its author wrote): same value, same matcher, opposite safety direction, so the
+   reading is chosen where the POSITION is known and matches_pattern stays uniform
+   over its operands. The guard sits outside the scope-type dispatch, transcribing
+   §5.2's loop literally. *)
+let exclude_is_unmatchable ~frame (excl : string list) : bool =
+  List.exists (fun p -> String.equal (canonicalize ~local_peer:frame p) never_match) excl
+
 let matches_scope ~local_peer ~(kind : scope_kind) (value : string) (s : scope) : bool =
+  if exclude_is_unmatchable ~frame:local_peer s.excl then false   (* 0.8.2.21 — deny *)
+  else
   let covered =
     match kind with
     | Id_scope -> fun pats -> List.exists (fun p -> matches_id_pattern value p) pats
@@ -207,6 +233,10 @@ let check_resource_scope ~local_peer ~granter_peer (resource : Cbor.t) (s : scop
   (* granter frame: the grant's own resource patterns (§PR-8) *)
   let covered_grant pats v = List.exists (fun p -> matches_pattern v (canonicalize ~local_peer:granter_peer p)) pats in
   targets <> [] &&
+  (* An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+     target: the coverage test below is correct in isolation and is simply never
+     reached on a sentinel, because matches_pattern answers false. *)
+  not (exclude_is_unmatchable ~frame:granter_peer s.excl) &&
   List.for_all
     (fun tgt ->
       let ct = canonicalize ~local_peer tgt in

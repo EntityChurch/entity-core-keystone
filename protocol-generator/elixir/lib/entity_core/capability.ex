@@ -73,17 +73,33 @@ defmodule EntityCore.Capability do
   def normalize_uri("entity://" <> rest), do: "/" <> rest
   def normalize_uri(uri), do: uri
 
+  # The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+  # CONSTRUCTION: its first segment cannot be a peer_id, since is_peer_id requires
+  # >= 46 Base58 characters and "-" is outside the Base58 alphabet.
+  @never_match "/never-match"
+
   @doc """
-  Resolve a peer-relative path to absolute `/{local}/...` form. Raises on the
-  reserved directory-relative (`./`, `../`) and bare-peer-wildcard (`*/`) forms.
+  The unmatchable value (0.8.2.20) — see `canonicalize/2`.
+  """
+  def never_match, do: @never_match
+
+  @doc """
+  Resolve a peer-relative path to absolute `/{local}/...` form.
+
+  TOTAL (0.8.2.20): the return domain is "a canonical path OR `#{@never_match}`".
+  This used to RAISE, and the raise was reachable from the wire — every normative
+  call site is a matcher with no error channel to consume one, so the exception
+  escaped the matcher, the resilience frame caught it, and `../x` in a resource
+  exclude answered 500 (measured 2026-09-14). The diagnostic belongs at admission
+  (§6.5), which has a caller to answer.
   """
   def canonicalize(local_peer, path) do
     cond do
       String.starts_with?(path, "./") or String.starts_with?(path, "../") ->
-        raise ArgumentError, "canonicalize: reserved directory-relative path"
+        @never_match
 
       String.starts_with?(path, "*/") ->
-        raise ArgumentError, "canonicalize: ambiguous bare peer wildcard"
+        @never_match
 
       String.starts_with?(path, "/") ->
         path
@@ -104,6 +120,12 @@ defmodule EntityCore.Capability do
   defp slash_from(_s, _start), do: nil
 
   @doc "Match a canonical (absolute) `path` against a canonical `pattern` (§5.4)."
+  # @never_match never matches, in EITHER operand (0.8.2.20). These clauses are FIRST,
+  # and the rule is a matcher rule rather than a property of the string: the clause
+  # below returns true for a bare "*" pattern, so safety must not rest on a value
+  # merely looking unmatchable.
+  def matches_pattern(@never_match, _pattern), do: false
+  def matches_pattern(_path, @never_match), do: false
   def matches_pattern(_path, "*"), do: true
 
   def matches_pattern(path, pattern) do
@@ -145,7 +167,26 @@ defmodule EntityCore.Capability do
   # §5.2 typed scope match. `kind` is `:id` (operations, peers) or `:path` (handlers,
   # resources) and has no default — every call site names its dimension, so a new one
   # cannot silently inherit the wrong matcher, which is exactly the F40 defect.
+  # AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
+  # fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
+  # fail-OPEN in an exclude (carves out nothing -> the grant is SILENTLY WIDER than
+  # its author wrote): same value, same matcher, opposite safety direction, so the
+  # reading is chosen where the POSITION is known and matches_pattern stays uniform
+  # over its operands. The guard sits outside the scope-type dispatch, transcribing
+  # §5.2's loop literally.
+  defp exclude_unmatchable?(frame, excl) do
+    Enum.any?(excl, fn p -> canonicalize(frame, p) == @never_match end)
+  end
+
   defp matches_scope(local_peer, value, s, kind) do
+    if exclude_unmatchable?(local_peer, s.excl) do
+      false
+    else
+      do_matches_scope(local_peer, value, s, kind)
+    end
+  end
+
+  defp do_matches_scope(local_peer, value, s, kind) do
     covered =
       case kind do
         :id ->
@@ -186,6 +227,10 @@ defmodule EntityCore.Capability do
     covered_grant = fn pats, v -> Enum.any?(pats, fn p -> matches_pattern(v, canonicalize(granter_peer, p)) end) end
 
     targets != [] and
+      # An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+      # target: the coverage test below is correct in isolation and is simply never
+      # reached on a sentinel, because matches_pattern answers false.
+      not exclude_unmatchable?(granter_peer, s.excl) and
       Enum.all?(targets, fn tgt ->
         ct = canonicalize(local_peer, tgt)
 

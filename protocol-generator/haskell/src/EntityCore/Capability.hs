@@ -176,19 +176,34 @@ normalizeUri uri
   | "entity://" `T.isPrefixOf` uri = "/" <> T.drop 9 uri
   | otherwise = uri
 
--- | Resolve peer-relative paths to absolute "/{local}/..." form. Throws (via the
--- caller's catch) on reserved directory-relative / ambiguous bare-wildcard paths.
+-- | The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+-- CONSTRUCTION: its first segment cannot be a peer_id, since 'isPeerId' requires
+-- >= 46 Base58 characters and @-@ is outside the Base58 alphabet.
+neverMatch :: Text
+neverMatch = "/never-match"
+
+-- | Resolve peer-relative paths to absolute "/{local}/..." form.
+--
+-- TOTAL (0.8.2.20): the return domain is "a canonical path OR 'neverMatch'". This
+-- used to @error@, and the bottom was reachable from the wire — every normative
+-- call site is a matcher with no error channel to consume one, so the exception
+-- escaped the matcher, the resilience frame caught it, and @../x@ in a resource
+-- exclude answered 500 (measured 2026-09-14). The diagnostic belongs at admission
+-- (§6.5), which has a caller to answer.
 canonicalize :: Text -> Text -> Text
 canonicalize localPeer path
-  | "./" `T.isPrefixOf` path || "../" `T.isPrefixOf` path =
-      error "canonicalize: reserved directory-relative path"
-  | "*/" `T.isPrefixOf` path = error "canonicalize: ambiguous bare peer wildcard"
+  | "./" `T.isPrefixOf` path || "../" `T.isPrefixOf` path = neverMatch
+  | "*/" `T.isPrefixOf` path = neverMatch
   | "/" `T.isPrefixOf` path = path
   | otherwise = "/" <> localPeer <> "/" <> path
 
 -- | Match a canonical (absolute) path against a canonical pattern.
 matchesPattern :: Text -> Text -> Bool
 matchesPattern path pattern
+  -- 'neverMatch' never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+  -- rule rather than a property of the string: the guard below returns True for a
+  -- bare "*", so safety must not rest on a value merely looking unmatchable.
+  | path == neverMatch || pattern == neverMatch = False
   | pattern == "*" = True
   | "/*/" `T.isPrefixOf` pattern =
       let remainder = T.drop 3 pattern
@@ -220,7 +235,19 @@ matchesIdPattern value pattern
   | "/*" `T.isSuffixOf` pattern = T.dropEnd 1 pattern `T.isPrefixOf` value
   | otherwise = value == pattern
 
+-- | AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
+-- fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
+-- fail-OPEN in an exclude (carves out nothing -> the grant is SILENTLY WIDER than
+-- its author wrote): same value, same matcher, opposite safety direction, so the
+-- reading is chosen where the POSITION is known and 'matchesPattern' stays uniform
+-- over its operands. The guard sits outside the scope-type dispatch, transcribing
+-- §5.2's loop literally.
+excludeIsUnmatchable :: Text -> [Text] -> Bool
+excludeIsUnmatchable frame = any (\p -> canonicalize frame p == neverMatch)
+
 matchesScope :: Text -> Text -> Scope -> ScopeKind -> Bool
+matchesScope localPeer _value s _kind
+  | excludeIsUnmatchable localPeer (scExcl s) = False   -- 0.8.2.21 — deny
 matchesScope localPeer value s kind =
   let covered = case kind of
         IdScope -> \pats -> any (matchesIdPattern value) pats
@@ -268,6 +295,10 @@ checkResourceScope localPeer granterPeer resource s =
       coveredLocal pats v = any (\p -> matchesPattern v (canonicalize localPeer p)) pats
       coveredGrant pats v = any (\p -> matchesPattern v (canonicalize granterPeer p)) pats
    in not (null targets)
+        -- An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before
+        -- any target: the coverage test below is correct in isolation and is simply
+        -- never reached on a sentinel, because matchesPattern answers False.
+        && not (excludeIsUnmatchable granterPeer (scExcl s))
         && all
           ( \tgt ->
               let ct = canonicalize localPeer tgt

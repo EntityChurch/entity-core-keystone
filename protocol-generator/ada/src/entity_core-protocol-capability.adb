@@ -15,6 +15,11 @@ package body Entity_Core.Protocol.Capability is
    Base58_Alphabet : constant String :=
      "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
+   --  The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+   --  CONSTRUCTION: its first segment cannot be a peer_id, since Is_Peer_Id requires
+   --  >= 46 Base58 characters and '-' is outside Base58_Alphabet.
+   Never_Match : constant String := "/never-match";
+
    --  §6.2 CAP-6a: the temporal fields whose representability is checked on a
    --  RECEIVED token, before any range comparison.
    type Key_Access is access constant String;
@@ -70,19 +75,51 @@ package body Entity_Core.Protocol.Capability is
    ------------------
    -- Canonicalize --
    ------------------
+   --  TOTAL (0.8.2.20): the return domain is "a canonical path OR Never_Match".
+   --  This used to RAISE, and the raise was reachable from the wire -- every
+   --  normative call site is a matcher with no error channel to consume one, so the
+   --  exception escaped the matcher, the resilience frame caught it, and "../x" in a
+   --  resource exclude answered 500 (measured 2026-09-14). The diagnostic belongs at
+   --  admission (6.5), which has a caller to answer.
    function Canonicalize (Local_Peer : String; Path : String) return String is
    begin
       if Starts_With ("./", Path) or else Starts_With ("../", Path) then
-         raise Constraint_Error with "canonicalize: reserved directory-relative path";
+         return Never_Match;
       end if;
       if Starts_With ("*/", Path) then
-         raise Constraint_Error with "canonicalize: ambiguous bare peer wildcard";
+         return Never_Match;
       end if;
       if Starts_With ("/", Path) then
          return Path;
       end if;
       return "/" & Local_Peer & "/" & Path;
    end Canonicalize;
+
+   --  AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
+   --  fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
+   --  fail-OPEN in an exclude (carves out nothing -> the grant is SILENTLY WIDER than
+   --  its author wrote): same value, same matcher, opposite safety direction, so the
+   --  reading is chosen where the POSITION is known and Matches_Pattern stays uniform
+   --  over its operands. The guard sits outside the scope-type dispatch, transcribing
+   --  5.2s loop literally.
+   function Exclude_Unmatchable (Frame : String; Excl : Ecf_Value) return Boolean is
+   begin
+      if Kind (Excl) /= K_Array then
+         return False;
+      end if;
+      for I in 1 .. Array_Length (Excl) loop
+         declare
+            P : constant Ecf_Value := Array_Element (Excl, I);
+         begin
+            if Kind (P) = K_Text
+              and then Canonicalize (Frame, As_Text (P)) = Never_Match
+            then
+               return True;
+            end if;
+         end;
+      end loop;
+      return False;
+   end Exclude_Unmatchable;
 
    -----------------
    -- Is_Peer_Id --
@@ -131,6 +168,13 @@ package body Entity_Core.Protocol.Capability is
    ----------------------
    function Matches_Pattern (Path : String; Pattern : String) return Boolean is
    begin
+      --  Never_Match never matches, in EITHER operand (0.8.2.20). FIRST, and a
+      --  matcher rule rather than a property of the string: the arm below returns
+      --  True for a bare "*", so safety must not rest on a value merely looking
+      --  unmatchable.
+      if Path = Never_Match or else Pattern = Never_Match then
+         return False;
+      end if;
       if Pattern = "*" then
          return True;
       end if;
@@ -238,6 +282,9 @@ package body Entity_Core.Protocol.Capability is
       Incl : constant Ecf_Value := Field (Scope, "include");
       Excl : constant Ecf_Value := Field (Scope, "exclude");
    begin
+      if Exclude_Unmatchable (Local_Peer, Excl) then
+         return False;  --  0.8.2.21 -- deny
+      end if;
       if Kind_Of = Id_Scope then
          return Covered_Id (Incl, Value) and then not Covered_Id (Excl, Value);
       end if;
@@ -261,6 +308,12 @@ package body Entity_Core.Protocol.Capability is
       Excl     : constant Ecf_Value := Field (Scope, "exclude");
    begin
       if not Found or else Targets'Length = 0 then
+         return False;
+      end if;
+      --  An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before
+      --  any target: the coverage test below is correct in isolation and is simply
+      --  never reached on a sentinel, because Matches_Pattern answers False.
+      if Exclude_Unmatchable (Granter_Peer, Excl) then
          return False;
       end if;
       for T of Targets loop

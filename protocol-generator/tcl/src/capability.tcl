@@ -140,18 +140,31 @@ proc ::entity::core::capability::normalize_uri {uri} {
     return $uri
 }
 
+# NEVER_MATCH — the unmatchable value (0.8.2.20). Unreachable as a canonical path by
+# CONSTRUCTION: its first segment cannot be a peer_id, since is_peer_id requires >= 46
+# Base58 characters and "-" is outside the Base58 alphabet.
+set ::entity::core::capability::NEVER_MATCH "/never-match"
+
+# TOTAL (0.8.2.20): the return domain is "a canonical path OR NEVER_MATCH". This used
+# to THROW, and the throw was reachable from the wire -- every normative call site is a
+# matcher with no error channel to consume one, so the exception escaped the matcher,
+# the resilience frame caught it, and "../x" in a resource exclude answered 500
+# (measured 2026-09-14). The diagnostic belongs at admission (6.5), which has a caller
+# to answer.
 proc ::entity::core::capability::canonicalize {local_peer path} {
-    if {[_sw $path "./"] || [_sw $path "../"]} {
-        throw {ENTITY_CORE PROTOCOL reserved_relative} "canonicalize: reserved directory-relative path"
-    }
-    if {[_sw $path "*/"]} {
-        throw {ENTITY_CORE PROTOCOL ambiguous_wildcard} "canonicalize: ambiguous bare peer wildcard"
-    }
+    variable NEVER_MATCH
+    if {[_sw $path "./"] || [_sw $path "../"]} { return $NEVER_MATCH }
+    if {[_sw $path "*/"]} { return $NEVER_MATCH }
     if {[_sw $path "/"]} { return $path }
     return "/$local_peer/$path"
 }
 
 proc ::entity::core::capability::matches_pattern {path pattern} {
+    variable NEVER_MATCH
+    # NEVER_MATCH never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+    # rule rather than a property of the string: the arm below returns 1 for a bare
+    # "*", so safety must not rest on a value merely looking unmatchable.
+    if {$path eq $NEVER_MATCH || $pattern eq $NEVER_MATCH} { return 0 }
     if {$pattern eq "*"} { return 1 }
     if {[_sw $pattern "/*/"]} {
         set remainder [string range $pattern 3 end]
@@ -196,7 +209,22 @@ proc ::entity::core::capability::_covered_id {pats value} {
 # §5.2 typed scope match. `kind` is id (operations, peers) or path (handlers, resources)
 # and has no default — every call site names its dimension, so a new one cannot silently
 # inherit the wrong matcher, which is exactly the F40 defect.
+# AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
+# in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an
+# exclude (carves out nothing -> the grant is SILENTLY WIDER than its author wrote):
+# same value, same matcher, opposite safety direction, so the reading is chosen where
+# the POSITION is known and matches_pattern stays uniform over its operands. The guard
+# sits outside the scope-type dispatch, transcribing 5.2s loop literally.
+proc ::entity::core::capability::_exclude_unmatchable {frame excl} {
+    variable NEVER_MATCH
+    foreach p $excl {
+        if {[canonicalize $frame $p] eq $NEVER_MATCH} { return 1 }
+    }
+    return 0
+}
+
 proc ::entity::core::capability::matches_scope {local_peer value s kind} {
+    if {[_exclude_unmatchable $local_peer [dict get $s excl]]} { return 0 }
     if {$kind eq "id"} {
         return [expr {[_covered_id [dict get $s incl] $value]
             && ![_covered_id [dict get $s excl] $value]}]
@@ -231,6 +259,10 @@ proc ::entity::core::capability::check_resource_scope {local_peer granter_peer r
     set targets [::entity::core::ecf::textlist $resource targets]
     set caller_excl [::entity::core::ecf::textlist $resource exclude]
     if {$targets eq "" || $targets eq {}} { return 0 }
+    # An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+    # target: the coverage test below is correct in isolation and is simply never
+    # reached on a sentinel, because matches_pattern answers 0.
+    if {[_exclude_unmatchable $granter_peer [dict get $s excl]]} { return 0 }
     foreach tgt $targets {
         set ct [canonicalize $local_peer $tgt]
         if {$caller_excl ne "" && [_covered $local_peer $caller_excl $ct]} { continue }

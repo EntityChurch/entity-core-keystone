@@ -85,13 +85,32 @@ final class Capability {
         return startsWith("entity://", uri) ? "/" + uri.substring(9) : uri;
     }
 
-    /** Resolve peer-relative paths to absolute /{local}/... form. */
+    /**
+     * The unmatchable value (0.8.2.20). A single-segment absolute path whose first
+     * segment cannot be a peer_id — {@code isPeerId} requires >= 46 Base58 characters and
+     * {@code -} is outside the Base58 alphabet — so it is unreachable as a canonical path
+     * by construction rather than by prohibition.
+     */
+    static final String NEVER_MATCH = "/never-match";
+
+    /**
+     * Resolve peer-relative paths to absolute /{local}/... form.
+     *
+     * TOTAL (0.8.2.20): the return domain is "a canonical path OR NEVER_MATCH", and
+     * malformed input yields the sentinel rather than an exception. THIS USED TO THROW,
+     * and the throw was reachable from the wire: every normative call site is a matcher
+     * with no error channel to consume one, so the exception escaped the matcher, was
+     * caught by the peer's resilience frame, and any caller who put {@code ../x} in a
+     * resource exclude got a 500 — measured on the wire 2026-09-14, on this peer and
+     * twelve others generated from the same shape. The diagnostic belongs at admission
+     * (§6.5), which has a caller to answer.
+     */
     static String canonicalize(String localPeer, String path) {
         if (startsWith("./", path) || startsWith("../", path)) {
-            throw new IllegalArgumentException("canonicalize: reserved directory-relative path");
+            return NEVER_MATCH;                 // reserved: directory-relative (§1.4)
         }
         if (startsWith("*/", path)) {
-            throw new IllegalArgumentException("canonicalize: ambiguous bare peer wildcard");
+            return NEVER_MATCH;                 // ambiguous bare peer wildcard: use /*/rest
         }
         if (startsWith("/", path)) {
             return path;
@@ -100,6 +119,13 @@ final class Capability {
     }
 
     static boolean matchesPattern(String path, String pattern) {
+        // NEVER_MATCH never matches, in EITHER operand (0.8.2.20). This arm is FIRST and
+        // is a matcher rule, not a property of the string: the arm below returns true for
+        // a bare "*" operand, so safety MUST NOT rest on a value merely looking
+        // unmatchable.
+        if (path.equals(NEVER_MATCH) || pattern.equals(NEVER_MATCH)) {
+            return false;
+        }
         if (pattern.equals("*")) {
             return true;
         }
@@ -149,7 +175,31 @@ final class Capability {
         return false;
     }
 
+    /**
+     * AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel's "matches
+     * nothing" is fail-CLOSED in an include (covers nothing -> the grant grants nothing)
+     * and fail-OPEN in an exclude (carves out nothing -> the grant is SILENTLY WIDER than
+     * its author wrote). Same value, same matcher, opposite safety direction — so the
+     * reading is chosen HERE, where the position is known, and {@link #matchesPattern}
+     * stays uniform over its operands.
+     *
+     * <p>The guard sits OUTSIDE the scope-type dispatch, transcribing §5.2's loop
+     * literally: a capability carrying such a pattern is invalid at §5.4 and should never
+     * reach this loop at all, so this arm is a net rather than the only gate.
+     */
+    private static boolean excludeIsUnmatchable(String frame, List<String> excl) {
+        for (String p : excl) {
+            if (canonicalize(frame, p).equals(NEVER_MATCH)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     static boolean matchesScope(String localPeer, String value, Scope s, ScopeKind kind) {
+        if (excludeIsUnmatchable(localPeer, s.excl())) {
+            return false;                       // 0.8.2.21 — deny, do not carve out nothing
+        }
         if (kind == ScopeKind.ID) {
             return coveredId(s.incl(), value) && !coveredId(s.excl(), value);
         }
@@ -206,8 +256,18 @@ final class Capability {
         if (targets == null || targets.isEmpty()) {
             return false;
         }
+        // An unmatchable GRANT exclude excludes everything (0.8.2.21). THIS IS FIRST,
+        // before any target is considered: the coverage test below is correct in
+        // isolation and is simply never reached on a sentinel, because matchesPattern
+        // answers false and the grant reads as having carved out nothing.
+        if (excludeIsUnmatchable(granterPeer, s.excl())) {
+            return false;
+        }
         for (String tgt : targets) {
             String ct = canonicalize(localPeer, tgt);
+            // NEVER_MATCH is NOT skipped by the caller-exclude arm — it cannot be covered
+            // by any exclude (§5.4 matcher rule), so it stays in the list and is refused
+            // by the include test below.
             if (callerExcl != null && coveredFrame(localPeer, callerExcl, ct)) {
                 continue;                                  // caller excluded → vacuously ok
             }

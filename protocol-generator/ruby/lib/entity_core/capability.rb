@@ -68,18 +68,32 @@ module EntityCore
       uri.start_with?("entity://") ? "/#{uri[9..]}" : uri
     end
 
+    # The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+    # CONSTRUCTION: its first segment cannot be a peer_id, since peer_id? requires
+    # >= 46 Base58 characters and "-" is outside the Base58 alphabet.
+    NEVER_MATCH = "/never-match"
+
     # Resolve peer-relative paths to absolute /{local}/... form.
+    #
+    # TOTAL (0.8.2.20): the return domain is "a canonical path OR NEVER_MATCH". This
+    # used to RAISE, and the raise was reachable from the wire — every normative call
+    # site is a matcher with no error channel to consume one, so the exception escaped
+    # the matcher, the resilience frame caught it, and "../x" in a resource exclude
+    # answered 500 (measured 2026-09-14). The diagnostic belongs at admission (§6.5),
+    # which has a caller to answer.
     def canonicalize(local_peer, path)
-      if path.start_with?("./") || path.start_with?("../")
-        raise ProtocolError, "canonicalize: reserved directory-relative path"
-      end
-      raise ProtocolError, "canonicalize: ambiguous bare peer wildcard" if path.start_with?("*/")
+      return NEVER_MATCH if path.start_with?("./") || path.start_with?("../")
+      return NEVER_MATCH if path.start_with?("*/")
       return path if path.start_with?("/")
 
       "/#{local_peer}/#{path}"
     end
 
     def matches_pattern(path, pattern)
+      # NEVER_MATCH never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+      # rule rather than a property of the string: the arm below returns true for a
+      # bare "*", so safety must not rest on a value merely looking unmatchable.
+      return false if path == NEVER_MATCH || pattern == NEVER_MATCH
       return true if pattern == "*"
 
       if pattern.start_with?("/*/")
@@ -110,7 +124,21 @@ module EntityCore
     # §5.2 typed scope match. +kind+ is +:id+ (operations, peers) or +:path+ (handlers,
     # resources) and has no default — every call site names its dimension, so a new one
     # cannot silently inherit the wrong matcher, which is exactly the F40 defect.
+    # AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
+    # fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
+    # fail-OPEN in an exclude (carves out nothing -> the grant is SILENTLY WIDER than
+    # its author wrote): same value, same matcher, opposite safety direction, so the
+    # reading is chosen where the POSITION is known and matches_pattern stays uniform
+    # over its operands. The guard sits outside the scope-type dispatch, transcribing
+    # §5.2's loop literally.
+    def exclude_unmatchable?(frame, excl)
+      excl.any? { |p| canonicalize(frame, p) == NEVER_MATCH }
+    end
+    private_class_method :exclude_unmatchable?
+
     def matches_scope(local_peer, value, scope, kind)
+      return false if exclude_unmatchable?(local_peer, scope.excl) # 0.8.2.21 — deny
+
       if kind == :id
         return covered_id(scope.incl, value) && !covered_id(scope.excl, value)
       end
@@ -155,6 +183,10 @@ module EntityCore
       targets = text_list(resource, "targets")
       caller_excl = text_list(resource, "exclude")
       return false if targets.nil? || targets.empty?
+      # An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+      # target: the coverage test below is correct in isolation and is simply never
+      # reached on a sentinel, because matches_pattern answers false.
+      return false if exclude_unmatchable?(granter_peer, scope.excl)
 
       targets.all? do |tgt|
         ct = canonicalize(local_peer, tgt)

@@ -68,19 +68,35 @@ internal object Capability {
     fun normalizeUri(uri: String): String =
         if (startsWith("entity://", uri)) "/" + uri.substring(9) else uri
 
-    /** Resolve peer-relative paths to absolute /{local}/... form. */
+    /**
+     * The unmatchable value (0.8.2.20). Unreachable as a canonical path by CONSTRUCTION:
+     * its first segment cannot be a peer_id, since [isPeerId] requires >= 46 Base58
+     * characters and `-` is outside the Base58 alphabet.
+     */
+    const val NEVER_MATCH = "/never-match"
+
+    /**
+     * Resolve peer-relative paths to absolute /{local}/... form.
+     *
+     * TOTAL (0.8.2.20): the return domain is "a canonical path OR NEVER_MATCH". This used
+     * to THROW, and the throw was reachable from the wire — every normative call site is a
+     * matcher with no error channel to consume one, so the exception escaped the matcher,
+     * the resilience frame caught it, and `../x` in a resource exclude answered 500
+     * (measured 2026-09-14). The diagnostic belongs at admission (§6.5), which has a
+     * caller to answer.
+     */
     fun canonicalize(localPeer: String, path: String): String {
-        if (startsWith("./", path) || startsWith("../", path)) {
-            throw IllegalArgumentException("canonicalize: reserved directory-relative path")
-        }
-        if (startsWith("*/", path)) {
-            throw IllegalArgumentException("canonicalize: ambiguous bare peer wildcard")
-        }
+        if (startsWith("./", path) || startsWith("../", path)) return NEVER_MATCH
+        if (startsWith("*/", path)) return NEVER_MATCH
         if (startsWith("/", path)) return path
         return "/$localPeer/$path"
     }
 
     fun matchesPattern(path: String, pattern: String): Boolean {
+        // NEVER_MATCH never matches, in EITHER operand (0.8.2.20). FIRST, and a matcher
+        // rule rather than a property of the string: the arm below returns true for a
+        // bare "*", so safety must not rest on a value merely looking unmatchable.
+        if (path == NEVER_MATCH || pattern == NEVER_MATCH) return false
         if (pattern == "*") return true
         if (startsWith("/*/", pattern)) {
             val remainder = pattern.substring(3)
@@ -115,7 +131,19 @@ internal object Capability {
         return value == pattern
     }
 
+    /**
+     * AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
+     * in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an
+     * exclude (carves out nothing -> the grant is SILENTLY WIDER than its author wrote):
+     * same value, same matcher, opposite safety direction, so the reading is chosen where
+     * the POSITION is known and [matchesPattern] stays uniform over its operands. The
+     * guard sits outside the scope-type dispatch, transcribing §5.2's loop literally.
+     */
+    private fun excludeIsUnmatchable(frame: String, excl: List<String>): Boolean =
+        excl.any { canonicalize(frame, it) == NEVER_MATCH }
+
     fun matchesScope(localPeer: String, value: String, s: Scope, kind: ScopeKind): Boolean {
+        if (excludeIsUnmatchable(localPeer, s.excl)) return false   // 0.8.2.21 — deny
         if (kind == ScopeKind.ID) {
             return coveredId(s.incl, value) && !coveredId(s.excl, value)
         }
@@ -156,6 +184,10 @@ internal object Capability {
         val targets = Cbor.textList(resource, "targets")
         val callerExcl = Cbor.textList(resource, "exclude")
         if (targets.isNullOrEmpty()) return false
+        // An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+        // target: the coverage test below is correct in isolation and is simply never
+        // reached on a sentinel, because matchesPattern answers false.
+        if (excludeIsUnmatchable(granterPeer, s.excl)) return false
         for (tgt in targets) {
             val ct = canonicalize(localPeer, tgt)
             if (callerExcl != null && coveredFrame(localPeer, callerExcl, ct)) continue // caller excluded → ok

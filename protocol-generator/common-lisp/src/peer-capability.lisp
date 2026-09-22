@@ -80,18 +80,32 @@ MUST run BEFORE the range checks it protects."
       (concatenate 'string "/" (subseq uri 9))
       uri))
 
+(defparameter +never-match+ "/never-match"
+  "The unmatchable value (0.8.2.20). Unreachable as a canonical path by
+CONSTRUCTION: its first segment cannot be a peer_id, since PEER-ID-P requires >= 46
+Base58 characters and #\- is outside the Base58 alphabet.")
+
 (defun canonicalize (local-peer path)
-  "Resolve peer-relative paths to absolute /{local}/... form."
-  (cond ((or (starts-with "./" path) (starts-with "../" path))
-         (error "canonicalize: reserved directory-relative path"))
-        ((starts-with "*/" path)
-         (error "canonicalize: ambiguous bare peer wildcard"))
+  "Resolve peer-relative paths to absolute /{local}/... form.
+
+TOTAL (0.8.2.20): the return domain is \"a canonical path OR +NEVER-MATCH+\". This
+used to signal, and the signal was reachable from the wire — every normative call
+site is a matcher with no error channel to consume one, so the condition escaped the
+matcher, the resilience frame caught it, and \"../x\" in a resource exclude answered
+500 (measured 2026-09-14). The diagnostic belongs at admission (§6.5), which has a
+caller to answer."
+  (cond ((or (starts-with "./" path) (starts-with "../" path)) +never-match+)
+        ((starts-with "*/" path) +never-match+)
         ((starts-with "/" path) path)
         (t (concatenate 'string "/" local-peer "/" path))))
 
 (defun matches-pattern (path pattern)
   "PATH and PATTERN both already canonical (absolute)."
   (cond
+    ;; +NEVER-MATCH+ never matches, in EITHER operand (0.8.2.20). FIRST, and a
+    ;; matcher rule rather than a property of the string: the clause below returns T
+    ;; for a bare "*", so safety must not rest on a value merely looking unmatchable.
+    ((or (string= path +never-match+) (string= pattern +never-match+)) nil)
     ((string= pattern "*") t)
     ((starts-with "/*/" pattern)
      (let ((remainder (subseq pattern 3)))
@@ -119,13 +133,24 @@ MUST run BEFORE the range checks it protects."
 ;; §5.2 typed scope match. KIND is :ID (operations, peers) or :PATH (handlers,
 ;; resources) and has no default — every call site names its dimension, so a new one
 ;; cannot silently inherit the wrong matcher, which is exactly the F40 defect.
+(defun exclude-unmatchable-p (frame excl)
+  "AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
+fail-CLOSED in an include (covers nothing -> the grant grants nothing) and fail-OPEN
+in an exclude (carves out nothing -> the grant is SILENTLY WIDER than its author
+wrote): same value, same matcher, opposite safety direction, so the reading is chosen
+where the POSITION is known and MATCHES-PATTERN stays uniform over its operands. The
+guard sits outside the scope-type dispatch, transcribing §5.2's loop literally."
+  (some (lambda (p) (string= (canonicalize frame p) +never-match+)) excl))
+
 (defun matches-scope (local-peer value s kind)
+  (if (exclude-unmatchable-p local-peer (scope-excl s))
+      nil                                      ; 0.8.2.21 — deny
   (if (eq kind :id)
       (flet ((covered-id (pats) (some (lambda (p) (matches-id-pattern value p)) pats)))
         (and (covered-id (scope-incl s)) (not (covered-id (scope-excl s)))))
       (let ((cv (canonicalize local-peer value)))
         (flet ((covered (pats) (some (lambda (p) (matches-pattern cv (canonicalize local-peer p))) pats)))
-          (and (covered (scope-incl s)) (not (covered (scope-excl s))))))))
+          (and (covered (scope-incl s)) (not (covered (scope-excl s)))))))))
 
 ;; ── §5.2 check-permission ──────────────────────────────────────────────────────
 
@@ -155,6 +180,10 @@ only the foreign-granter cross-peer case flips from admit to deny."
            ;; granter frame: the grant's own resource include/exclude patterns.
            (covered-grant (pats v) (some (lambda (p) (matches-pattern v (canonicalize granter-peer p))) pats)))
       (and targets
+           ;; An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST,
+           ;; before any target: the coverage test below is correct in isolation and
+           ;; is simply never reached on a sentinel, because MATCHES-PATTERN says NIL.
+           (not (exclude-unmatchable-p granter-peer (scope-excl s)))
            (every (lambda (tgt)
                     (let ((ct (canonicalize local-peer tgt)))
                       (cond ((covered-local caller-excl ct) t)

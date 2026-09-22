@@ -349,13 +349,42 @@ grant_field(map(Pairs), Key, Scope) :- ( memberchk(Key-Scope, Pairs) -> true ; S
 normalize_uri(Uri, Path) :-
     ( string_concat("entity://", Rest, Uri) -> string_concat("/", Rest, Path) ; Path = Uri ).
 
-canonicalize(_LocalPeer, Path, _) :- string_concat("./", _, Path), !, throw(ec_capability(reserved_rel_path)).
-canonicalize(_LocalPeer, Path, _) :- string_concat("../", _, Path), !, throw(ec_capability(reserved_rel_path)).
-canonicalize(_LocalPeer, Path, _) :- string_concat("*/", _, Path), !, throw(ec_capability(ambiguous_wildcard)).
+% NEVER_MATCH — the unmatchable value (0.8.2.20). Unreachable as a canonical path by
+% CONSTRUCTION: its first segment cannot be a peer_id, since is_peer_id/1 requires
+% >= 46 Base58 characters and "-" is outside the Base58 alphabet.
+never_match("/never-match").
+
+% canonicalize/3 is TOTAL (0.8.2.20): the return domain is "a canonical path OR
+% NEVER_MATCH". These clauses used to THROW, and the throw was reachable from the wire
+% -- every normative call site is a matcher with no error channel to consume one, so
+% the ball escaped the matcher, was caught by the peer's resilience frame, and "../x"
+% in a resource exclude answered 500 (measured 2026-09-14). The diagnostic belongs at
+% admission (6.5), which has a caller to answer. NOTE the prolog-specific half: a throw
+% does NOT fall through to the next clause, so the clause below a throwing one was
+% never the answer -- the generic catch was.
+canonicalize(_LocalPeer, Path, NM) :- string_concat("./", _, Path), !, never_match(NM).
+canonicalize(_LocalPeer, Path, NM) :- string_concat("../", _, Path), !, never_match(NM).
+canonicalize(_LocalPeer, Path, NM) :- string_concat("*/", _, Path), !, never_match(NM).
 canonicalize(_LocalPeer, Path, Path) :- string_concat("/", _, Path), !.
 canonicalize(LocalPeer, Path, Abs) :- atomics_to_string(["/", LocalPeer, "/", Path], Abs).
 
+% AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED in
+% an include (covers nothing -> the grant grants nothing) and fail-OPEN in an exclude
+% (carves out nothing -> the grant is SILENTLY WIDER than its author wrote): same value,
+% same matcher, opposite safety direction, so the reading is chosen where the POSITION
+% is known and matches_pattern/2 stays uniform over its operands. The guard sits outside
+% the scope-type dispatch, transcribing 5.2s loop literally.
+exclude_unmatchable(Frame, Excl) :-
+    never_match(NM),
+    member(P, Excl), canonicalize(Frame, P, NM), !.
+
 % §5.4 pattern matching. Both PATH and PATTERN are canonical (absolute).
+% NEVER_MATCH never matches, in EITHER operand (0.8.2.20). These clauses are FIRST, and
+% the rule is a matcher rule rather than a property of the string: the clause below
+% succeeds for a bare "*" pattern, so safety must not rest on a value merely looking
+% unmatchable.
+matches_pattern(Path, _Pattern) :- never_match(Path), !, fail.
+matches_pattern(_Path, Pattern) :- never_match(Pattern), !, fail.
 matches_pattern(_Path, "*") :- !.
 matches_pattern(Path, Pattern) :-
     string_concat("/*/", Remainder, Pattern), !,
@@ -386,6 +415,8 @@ matches_id_pattern(Value, Pattern) :- Value == Pattern.
 % §5.2 typed scope match. Kind is `id` (operations, peers) or `path` (handlers,
 % resources) and is given at every call site — there is no default, so a new one cannot
 % inherit the wrong matcher silently, which is exactly the F40 defect.
+matches_scope(LocalPeer, _Value, Scope, _Kind) :-
+    scope_excl(Scope, Excl0), exclude_unmatchable(LocalPeer, Excl0), !, fail.   % 0.8.2.21
 matches_scope(_LocalPeer, Value, Scope, id) :- !,
     scope_incl(Scope, Incl), scope_excl(Scope, Excl),
     once(( member(P, Incl), matches_id_pattern(Value, P) )),
@@ -435,6 +466,10 @@ check_resource_scope(LocalPeer, GranterPeer, map(R), G) :-
     grant_field(G, "resources", RScope),
     scope_incl(RScope, Incl), scope_excl(RScope, Excl),
     Targets \= [],
+    % An unmatchable GRANT exclude excludes everything (0.8.2.21). FIRST, before any
+    % target: the coverage test below is correct in isolation and is simply never
+    % reached on a sentinel, because matches_pattern/2 fails.
+    \+ exclude_unmatchable(GranterPeer, Excl),
     forall(member(T, Targets),
            ( canonicalize(LocalPeer, T, CT),
              ( member(CE, CallerExcl), canonicalize(LocalPeer, CE, CCE), matches_pattern(CT, CCE)
