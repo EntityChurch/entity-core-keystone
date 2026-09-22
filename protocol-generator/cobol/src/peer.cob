@@ -360,12 +360,34 @@ do-chain.
             call "dispatch-outbound-handler" using lk-env root-off rstatus
                 res-ent res-len res-hash
         when other
-            perform resp-404
+            perform resp-501-nobody
     end-evaluate.
 
 resp-404.
     move 404 to rstatus
     move "handler_not_found" to errcode move 17 to errcode-len
+    call "error-result" using errcode errcode-len res-ent res-len res-hash.
+
+*> §6.6 (F62) — TWO MISSES, TWO ANSWERS. Reaching the ladder above means
+*> resolve-handler ALREADY answered hfound=1, i.e. it walked the entity tree and
+*> found a `system/handler` entity bound at this prefix; the hfound=0 arm took
+*> resp-404 twenty lines up. So a `when other` here is not "no such handler" —
+*> it is a handler this peer RESOLVED and has no body to run, because the wire
+*> register op (§6.2 WRITE 1) binds a system/handler entity carrying an
+*> `expression_path` and this peer has no §6.13(a) entity-native evaluator.
+*> Spelling that miss `404 handler_not_found` made the peer contradict itself:
+*> it answered 200 to a register, 200 to a tree.get of the entity it had just
+*> written, and then handler_not_found at that same pattern.
+*>
+*> §6.6 calls a dispatch index an optimisation whose results MUST be equivalent
+*> to the tree walk. The walk was already here and already correct; the ladder
+*> below it is BODY SELECTION, not resolution, and only its verdict was wrong.
+*> `no_handler_body` is what datalog/nim/oz and the reference peer answer; it
+*> appears in no spec revision and the cohort spells this four ways — that gap
+*> is registered as F60 and is deliberately not invented around here.
+resp-501-nobody.
+    move 501 to rstatus
+    move "no_handler_body" to errcode move 15 to errcode-len
     call "error-result" using errcode errcode-len res-ent res-len res-hash.
 
 *> §1.4 / §6.5 step 3 — the ADDRESS gate, ahead of handler resolution and

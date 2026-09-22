@@ -655,8 +655,22 @@ dispatch:
 	mov  x0, x19                     // exec data map
 	bl   uri_handler_known
 	cbnz x0, .Ld_unknown_registered
+	// §6.6 (F62) — THE TREE WALK, the definition of resolution, where the set above is an
+	// index over the handlers this peer routes natively. §6.6: "the index MUST produce
+	// equivalent results to the tree walk". Consulting only the index made this peer answer
+	// 200 to a register, 200 to a tree.get of what register wrote, and 404 at that pattern.
+	// A hit here is a handler RESOLVED with no native body → 501, not 404. Consulted AFTER
+	// the native set, so a peer with an empty store behaves exactly as it did before.
+	mov  x0, x19                     // exec data map
+	bl   uri_handler_in_tree
+	cbnz x0, .Ld_unknown_no_body
 	mov  x0, #404
 	adr_l x1, ec_handler_not_found
+	bl   send_error
+	b    .Ld_ret
+.Ld_unknown_no_body:
+	mov  x0, #501
+	adr_l x1, ec_no_handler_body
 	bl   send_error
 	b    .Ld_ret
 .Ld_unknown_registered:
@@ -985,6 +999,10 @@ ec_not_found: .asciz "not_found"
 // §3.3's 404 RESOLUTION row (0.8.2.7). Distinct from ec_not_found above, which is the
 // neighbouring row: a bound-path miss INSIDE a handler that DID resolve.
 ec_handler_not_found: .asciz "handler_not_found"
+// §6.6 (F62): a handler this peer RESOLVED and cannot RUN. See the x86_64 sibling for the
+// full reasoning. `no_handler_body` is in no spec revision — the cohort spells this failure
+// four ways and that vocabulary gap is F60, not invented around here.
+ec_no_handler_body: .asciz "no_handler_body"
 ec_payload_too_large: .asciz "payload_too_large"
 ec_not_impl:  .asciz "not_implemented"
 ec_unsupported_op: .asciz "unsupported_operation"
@@ -5598,6 +5616,80 @@ uri_handler_known:
 .Luhk_yes:
 	mov  x0, #1
 	ldp  x29, x30, [sp], #16
+	ret
+
+// store_handler_at(x1 = path ptr, x3 = path len) -> x0 = 1 if a `system/handler` entity is
+// bound at the §1.4 CANONICAL form of that path. The canonicalization is what makes this ask
+// the same question the register op answered — reg_store canon_path's every write. The TYPE
+// test is load-bearing: the same register op writes a system/handler/INTERFACE entity (the
+// manifest) at system/handler/<pattern>, and a manifest is not a dispatch target.
+	.type store_handler_at, %function
+store_handler_at:
+	stp  x29, x30, [sp, #-16]!
+	mov  x29, sp
+	bl   canon_path                  // x1/x3 → x0=canon ptr, x2=canon len
+	mov  x1, x0
+	mov  x3, x2
+	bl   store_get                   // x0=blob|0, x2=blob len
+	cbz  x0, .Lsha_no
+	adr_l x1, k_type
+	mov  x2, #4
+	bl   map_find
+	cbz  x0, .Lsha_no
+	bl   read_head                   // x0=after, x1=major, x2=arg
+	cmp  x1, #3                      // text?
+	b.ne .Lsha_no
+	cmp  x2, #14                     // len("system/handler") — excludes the 24-byte interface
+	b.ne .Lsha_no
+	adr_l x1, t_handler
+	mov  x2, #14
+	bl   memeq                       // x0 = 1/0
+	ldp  x29, x30, [sp], #16
+	ret
+.Lsha_no:
+	mov  x0, #0
+	ldp  x29, x30, [sp], #16
+	ret
+
+// uri_handler_in_tree(x0 = exec data map) -> x0 = 1 if SOME prefix of data.uri's peer-relative
+// path carries a system/handler entity in the store. A PREDICATE; the verdict stays at the
+// call site. This IS §6.6's resolve_handler — backward walk, longest prefix first — where
+// uri_handler_known is the compile-time INDEX a third party's run-time install cannot reach.
+	.type uri_handler_in_tree, %function
+uri_handler_in_tree:
+	stp  x29, x30, [sp, #-32]!
+	mov  x29, sp
+	stp  x19, x20, [sp, #16]
+	bl   uri_rel                     // x0 = exec → g_rel_ptr/g_rel_len
+	adr_l x9, g_rel_ptr
+	ldr  x19, [x9]
+	adr_l x9, g_rel_len
+	ldr  x20, [x9]                   // current prefix length
+.Luhit_loop:
+	cbz  x20, .Luhit_no
+	mov  x1, x19
+	mov  x3, x20
+	bl   store_handler_at
+	cbnz x0, .Luhit_yes
+	sub  x9, x20, #1                 // index of the prefix's last byte
+.Luhit_scan:
+	cbz  x9, .Luhit_no               // no separator strictly inside → nothing shorter to try
+	ldrb w10, [x19, x9]
+	cmp  w10, #0x2f
+	b.eq .Luhit_next
+	sub  x9, x9, #1
+	b    .Luhit_scan
+.Luhit_next:
+	mov  x20, x9                     // new length = the '/' index, i.e. the '/' is dropped
+	b    .Luhit_loop
+.Luhit_yes:
+	mov  x0, #1
+	b    .Luhit_ret
+.Luhit_no:
+	mov  x0, #0
+.Luhit_ret:
+	ldp  x19, x20, [sp, #16]
+	ldp  x29, x30, [sp], #32
 	ret
 
 // record_hello_peer(x0 = exec data map) — latch the accepted-hello state for §4.7 rows 8/9.

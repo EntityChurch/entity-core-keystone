@@ -668,8 +668,27 @@ dispatch:
 	call uri_handler_known
 	test %rax, %rax
 	jnz  .Ld_unknown_registered
+	# §6.6 (F62) — THE TREE WALK, and it is the DEFINITION of resolution while the set above
+	# is an index over the handlers this peer routes natively. §6.6's pseudocode ends "the
+	# index MUST produce equivalent results to the tree walk", so consulting only the index
+	# made this peer contradict itself: it answered 200 to a system/handler:register, 200 to a
+	# tree.get of the entity that register wrote, and then 404 handler_not_found at that same
+	# pattern. A hit here is a handler we RESOLVED and have no native body for — the wire
+	# register binds a system/handler entity carrying an expression_path and this peer has no
+	# §6.13(a) entity-native evaluator — so 501, not 404. It is deliberately consulted AFTER
+	# the native set: that set answers every path the conformance suite drives, so a peer with
+	# an empty store is byte-identical to the peer before this arm existed.
+	mov  %rbx, %rdi                  # exec data map
+	call uri_handler_in_tree
+	test %rax, %rax
+	jnz  .Ld_unknown_no_body
 	mov  $404, %rdi
 	lea  ec_handler_not_found(%rip), %rsi
+	call send_error
+	jmp  .Ld_ret
+.Ld_unknown_no_body:
+	mov  $501, %rdi
+	lea  ec_no_handler_body(%rip), %rsi
 	call send_error
 	jmp  .Ld_ret
 .Ld_unknown_registered:
@@ -1004,6 +1023,12 @@ ec_not_found: .asciz "not_found"
 # §3.3's 404 RESOLUTION row (0.8.2.7). Distinct from ec_not_found above, which is the
 # neighbouring row: a bound-path miss INSIDE a handler that DID resolve.
 ec_handler_not_found: .asciz "handler_not_found"
+# §6.6 (F62): a handler this peer RESOLVED and cannot RUN. Distinct from the 404 above (no
+# handler at any prefix) and from ec_unsupported_op below (a handler we route, asked for an
+# operation it does not have). `no_handler_body` is in no spec revision — it is what
+# datalog/nim/oz and the reference peer answer, and the cohort spells this failure four ways.
+# That vocabulary gap is registered as F60 and is deliberately not invented around here.
+ec_no_handler_body: .asciz "no_handler_body"
 ec_payload_too_large: .asciz "payload_too_large"
 ec_not_impl:  .asciz "not_implemented"
 ec_unsupported_op: .asciz "unsupported_operation"
@@ -5704,6 +5729,102 @@ uri_handler_known:
 	ret
 .Luhk_yes:
 	mov  $1, %eax
+	pop  %rbx
+	ret
+
+# store_handler_at(rsi = path ptr, rcx = path len) -> rax = 1 if a `system/handler` entity is
+# bound at the §1.4 CANONICAL form of that path. The canonicalization is what makes this ask the
+# same question the register op answered: reg_store canon_path's every write, so a wire register
+# at pattern `p` lands at /{peer}/p and a probe of the bare `p` would miss it.
+#
+# The TYPE test is load-bearing and is not a formality. The same register op writes a
+# system/handler/INTERFACE entity — the manifest — at system/handler/<pattern>, and a manifest is
+# a description of a handler, not a dispatch target. Accepting any entity here would make every
+# published manifest path dispatchable.
+	.type store_handler_at, @function
+store_handler_at:
+	push %rbx
+	push %r12
+	push %r13                        # 3 (odd) → keep calls 16B-aligned
+	call canon_path                  # rsi/rcx = path → rax=canon ptr, rdx=canon len
+	mov  %rax, %rsi
+	mov  %rdx, %rcx
+	call store_get                   # rax=blob|0, rdx=blob len
+	test %rax, %rax
+	jz   .Lsha_no
+	mov  %rax, %rdi                  # entity map
+	lea  k_type(%rip), %rsi
+	mov  $4, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lsha_no
+	mov  %rax, %rdi
+	call read_head                   # rax=after head, rcx=major, rdx=arg
+	cmp  $3, %rcx                    # text?
+	jne  .Lsha_no
+	cmp  $14, %rdx                   # len("system/handler") — excludes the 24-byte interface
+	jne  .Lsha_no
+	mov  %rax, %rdi
+	lea  t_handler(%rip), %rsi
+	mov  $14, %rcx
+	call memeq                       # rax = 1/0
+	jmp  .Lsha_ret
+.Lsha_no:
+	xor  %eax, %eax
+.Lsha_ret:
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	ret
+
+# uri_handler_in_tree(rdi = exec data map) -> rax = 1 if SOME prefix of data.uri's peer-relative
+# path carries a system/handler entity in the store. A PREDICATE; the verdict stays at the call
+# site, as with its two neighbours.
+#
+# This IS §6.6's resolve_handler: walk backward through the path segments, longest prefix first,
+# and stop at the first one bound to a system/handler entity. uri_handler_known above is the
+# INDEX — the set of patterns this peer routes natively — and §6.6 requires the two to agree.
+# They could not: the index is a compile-time list and a third party installs a handler at run
+# time. Equivalence in the direction that matters is what this restores — everything the walk
+# finds, dispatch now finds. (The reverse direction is not yet true and is not this repair:
+# system/type and system/handler are in the index and carry no dispatch entity in the store,
+# which is a §6.2 publication gap on paths this peer does route, not a resolution defect.)
+	.type uri_handler_in_tree, @function
+uri_handler_in_tree:
+	push %rbx
+	push %r12
+	push %r13                        # 3 (odd)
+	call uri_rel                     # rdi = exec → g_rel_ptr/g_rel_len
+	mov  g_rel_ptr(%rip), %r12
+	mov  g_rel_len(%rip), %r13       # current prefix length
+.Luhit_loop:
+	test %r13, %r13
+	jz   .Luhit_no
+	mov  %r12, %rsi
+	mov  %r13, %rcx
+	call store_handler_at
+	test %rax, %rax
+	jnz  .Luhit_yes
+	mov  %r13, %rbx
+	dec  %rbx                        # index of the prefix's last byte
+.Luhit_scan:
+	test %rbx, %rbx
+	jz   .Luhit_no                   # no separator strictly inside → nothing shorter to try
+	cmpb $0x2f, (%r12,%rbx)
+	je   .Luhit_next
+	dec  %rbx
+	jmp  .Luhit_scan
+.Luhit_next:
+	mov  %rbx, %r13                  # new length = the '/' index, i.e. the '/' is dropped
+	jmp  .Luhit_loop
+.Luhit_yes:
+	mov  $1, %eax
+	jmp  .Luhit_ret
+.Luhit_no:
+	xor  %eax, %eax
+.Luhit_ret:
+	pop  %r13
+	pop  %r12
 	pop  %rbx
 	ret
 

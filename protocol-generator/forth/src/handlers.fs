@@ -94,6 +94,23 @@ variable hnd-count
 : hnd-reset ( -- )  0 hnd-count ! ;
 hnd-reset
 
+\ peer-abs ( sub-a sub-u -- p-a p-u )  build /<local>/<sub> into a dedicated durable buffer
+\ (the peer-rooted absolute form a tree.get canonicalizes to — so a register write and a
+\ subsequent validator TreeGet resolve to the SAME path).
+\
+\ It is defined HERE, above its first user, rather than beside the §6.2 register op where most
+\ of its call sites are: Forth resolves names at compile time, and F62 made both the bootstrap
+\ bind below and the §6.6 walk further down depend on it. One definition, three users — a
+\ second path builder is the shape that drifts.
+create peer-abs-buf 1024 allot
+: peer-abs { sa su -- pa pu }
+  0 { c }
+  [char] / peer-abs-buf c! 1 to c
+  id-peerid peer-abs-buf c + swap dup { l } move  c l + to c
+  [char] / peer-abs-buf c + c!  c 1+ to c
+  sa peer-abs-buf c + su move  c su + to c
+  peer-abs-buf c ;
+
 \ register-handler ( pat-addr pat-u xt -- )  bind a native handler word at a dispatch path,
 \ AND bind a system/handler entity in the tree (so §6.6 resolves it). §6.13(a).
 : register-handler { paddr pu xt -- }
@@ -107,7 +124,15 @@ hnd-reset
   s" pattern" tv-text 2drop  paddr pu tv-text 2drop
   mk am-span
   s" system/handler" 2swap ent-make { haddr hpu }
-  paddr pu  haddr hpu  store-bind ;
+  \ F62: the entity binds at the PEER-ROOTED ABSOLUTE path. It used to bind at the bare
+  \ pattern, which gave this peer two key spaces for one fact — the bootstrap set under
+  \ `<pattern>`, and everything §1.4 canonicalizes (publish-handler-dispatch, the wire
+  \ register op's WRITE 1, every validator TreeGet) under `/<local>/<pattern>`. The §6.6 walk
+  \ read the bare one, so it could see the bootstrap handlers and NOTHING the wire installed.
+  \ One key space is what makes the walk and the registry equivalent by construction; the
+  \ three patterns publish-handler-dispatch also covers simply overwrite this entity with
+  \ their richer {interface: ...} form, since they run later in bootstrap.
+  paddr pu peer-abs  haddr hpu  store-bind ;
 
 \ ── §6.2 handler-manifest publishing: a system/handler/interface entity at
 \ /<local>/system/handler/<pattern> carrying {pattern, name, operations:{op:{...}}} so the
@@ -186,7 +211,7 @@ create ifr-buf 512 allot
       0 hnd-xt i cells + !                 \ tombstone the native word
     then
   loop
-  paddr pu store-unbind ;
+  paddr pu peer-abs store-unbind ;         \ same key register-handler bound (F62)
 
 \ hnd-lookup ( pat-addr pat-u -- xt | 0 )  the native word bound at exactly this pattern.
 : hnd-lookup { paddr pu -- xt }
@@ -201,11 +226,25 @@ create ifr-buf 512 allot
 \ bound to a system/handler entity. Returns 0 0 if none (the dispatcher -> 404). A
 \ begin/while loop carries the current prefix length on the stack; we shorten to the
 \ previous '/' each miss. (No ?do here, so no unloop.)
+\
+\ F62: the probe is the PEER-ROOTED ABSOLUTE path (peer-abs), not the bare prefix. This peer
+\ keyed the same fact two ways — register-handler binds its bootstrap system/handler entity at
+\ the BARE pattern, while publish-handler-dispatch and the WIRE register op (§6.2 WRITE 1) both
+\ bind at /<local>/<pattern>, which is what §1.4 canonicalizes to and what a validator TreeGet
+\ reaches. This walk read only the bare key, so it saw the bootstrap set and was structurally
+\ blind to everything the wire wrote: the peer answered 200 to a register, 200 to a tree.get of
+\ the entity it had just written, and 404 handler_not_found at that same pattern. §6.6 calls a
+\ dispatch index an optimisation whose results MUST equal the tree walk — here the walk itself
+\ was querying a private key space, so there was nothing for an index to be equivalent TO.
+\ Probing the canonical form makes the two equivalent BY CONSTRUCTION: nothing has to remember
+\ to mirror a write, and unregister (which unbinds /<local>/<pattern>) needs no second teardown.
+\ The RELATIVE prefix is still what is returned — hnd-lookup and the §5.2 scope check both
+\ compare against bare patterns, and only the store probe is absolute.
 : resolve-handler { paddr pu -- rpaddr rpu }
   pu                                              ( plen )
   begin dup 0> while
     dup { plen }
-    paddr plen store-get-at ?dup if
+    paddr plen peer-abs store-get-at ?dup if
       ent-type s" system/handler" compare 0= if
         drop paddr plen exit                       \ hit: return (addr, prefix-len)
       then
@@ -889,17 +928,8 @@ create revhex 160 allot
 \ execute the five spec writes; a 501 stub is non-conformant. Byte-parity with the Rexx
 \ cohort peer's _handlers_register / _handlers_unregister.
 
-\ peer-abs ( sub-a sub-u -- p-a p-u )  build /<local>/<sub> into a dedicated durable buffer
-\ (the peer-rooted absolute form a tree.get canonicalizes to — so a register write and a
-\ subsequent validator TreeGet resolve to the SAME path).
-create peer-abs-buf 1024 allot
-: peer-abs { sa su -- pa pu }
-  0 { c }
-  [char] / peer-abs-buf c! 1 to c
-  id-peerid peer-abs-buf c + swap dup { l } move  c l + to c
-  [char] / peer-abs-buf c + c!  c 1+ to c
-  sa peer-abs-buf c + su move  c su + to c
-  peer-abs-buf c ;
+\ (peer-abs is defined ABOVE resolve-handler — the §6.6 walk needs it and Forth resolves
+\ names at compile time, so the definition had to precede its first use, not its densest one.)
 
 \ reg-pattern ( exec -- pa pu | 0 0 )  the register/unregister pattern = resource.targets[0]
 \ with the leading "system/handler/" stripped (§3.2 path-as-resource). 0 0 if the target is

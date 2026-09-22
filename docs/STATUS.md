@@ -170,17 +170,37 @@ standing `apl` lesson.
 
 **Four live items, all measured. Everything below them is closed and kept for the record.**
 
-**A. Seven peers cannot route a request to a handler they just registered (F62).** §6.6 makes
-index-equivalence with the tree walk a **MUST**; `asm-arm64` `asm-x86_64` `cobol` `forth` `fortran`
-`riscv64` `smalltalk` answer `404 handler_not_found` at a pattern where a `system/handler` entity
-provably exists — the oracle's own `core_register_handler_at_path` writes it and asserts its type on
-all 46. **No check catches it**: `core_register_*` is nine checks that prove every WRITE and never
-dispatch at the pattern they just proved exists. **It is two repairs, not one.** `smalltalk` has a
-container dispatch already reads and only the wire register does not reach it — the cheapest of the
-seven. The other six resolve through a static op ladder, a pattern ladder or a bootstrap-only table
-and need a container before they can have an index; on the ISA trio, `cobol`, `forth` and `fortran`
-that is real work. The §6.13(a) evaluator none of the seven has is a **separate** item after it, and
-is the honest `501` rather than a defect. Disclosed in `CONFORMANCE-MATRIX.md` §1 and routed as F62.
+**A. F62 is CLOSED at 7 of 7 — and it mis-scoped three of its own peers.** §6.6 makes
+index-equivalence with the tree walk a **MUST**, and seven peers answered `404 handler_not_found`
+at a pattern where a `system/handler` entity provably exists — the oracle's own
+`core_register_handler_at_path` writes it and asserts its type on all 46. **No check catches it**:
+`core_register_*` is nine checks that prove every WRITE and never dispatch at the pattern they just
+proved exists. All seven now answer `501 no_handler_body`, every negative control is still 404, and
+**0 of 778 severities moved on every peer** — which is what a MUST with no check looks like in
+numbers.
+
+It was **three** repairs, not the two the finding predicted. `smalltalk` had the container and the
+walk and only the wire path unwired. **`cobol`, `fortran` and `forth` were already walking the
+entity tree** — the finding said they needed a container and they did not; the 404 came from the
+rung *below* resolution, where a body-selection ladder spelled "I resolved this and have no body"
+as `handler_not_found`. `forth`'s was the sharpest: its walk was real and **querying a key space
+nothing else wrote** — bootstrap bound at the bare pattern, every other write at
+`/<local>/<pattern>` — so equivalence had nothing to be equivalent to. Only the **ISA trio** needed
+what the finding described, and they got a real §6.6 walk over the store, consulted after the
+native index so an empty store behaves exactly as before.
+
+**The scope error came from our own census field.** `dispatch_read_site` — the H5 field that
+exists precisely to tell a live host from a dead map — named the *ladder* rather than the
+*resolution site* on those three peers, and the estimate built on it was wrong in the expensive
+direction. All six are corrected.
+
+**The gate is owed and is deliberately not six unit tests.** `smalltalk` shipped one, and the same
+shape across COBOL, Forth, Fortran and three assembly languages would be six divergent gates over
+one rule — the ISA units cannot reach the dispatch path at all. The right artifact is one **Kind C**
+independent check for §6.6 index/walk equivalence: 46 peers, one reading, and it retroactively gates
+`smalltalk`. Until it exists, `tools/host-seam-probe` is the evidence and it does not gate. The
+§6.13(a) evaluator none of the seven has is a **separate** item, and is the honest `501` rather
+than a defect.
 
 **B. The extension-host track — H1 measured, the repairs sized, Track A closed.** All 46 profiles
 carry an `[extension_host]` block whose `h1_status` is **measured on the wire**, not read from
@@ -192,10 +212,11 @@ installed in-process. H2/H6/H7 are traced, not measured; a wire probe cannot rea
 
 **C. The architecture backlog — seventeen items, consolidated and routed.** One front door rather
 than seventeen packets, grouped by the kind of answer each needs. The four worth taking first are
-**F62** (a core MUST unmet behind seven green rows), **F59** (the oracle exits non-zero on a fully
-green run, including against `go`), **F61** (0.8.2.13 withdrew a requirement two core checks still
-gate) and **F49** (an id-scope pin that landed in the prose and not in the pseudocode the generator
-reads). Nothing in the set blocks a release. Register:
+**F62** (a core MUST unmet behind seven green rows — our half is now closed, the vector ask is
+not), **F59** (the oracle exits non-zero on a fully green run, including against `go`), **F61**
+(0.8.2.13 withdrew a requirement two core checks still gate) and **F49** (an id-scope pin that
+landed in the prose and not in the pseudocode the generator reads). Nothing in the set blocks a
+release. Register:
 `research/stewardship/SPEC-FINDINGS-LOG.md`.
 
 

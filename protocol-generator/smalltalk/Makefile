@@ -20,7 +20,7 @@ PEERIMG     := entity-core.image
 # UFFI dlopen's the codec .so by soname → it must be on LD_LIBRARY_PATH at run time.
 FFI_ENV = LD_LIBRARY_PATH=$(abspath $(CODEC_BUILD)):$$LD_LIBRARY_PATH EC_CORPUS=$(CORPUS)
 
-.PHONY: all gate test int-boundary crypto-accept sunit ffi image clean dist s3 selftest smoke multisig-accept
+.PHONY: all gate test int-boundary crypto-accept handler-resolution sunit ffi image clean dist s3 selftest smoke multisig-accept
 
 all: gate
 
@@ -32,7 +32,7 @@ gate: test int-boundary crypto-accept
 # cover: identity, store, N5 envelope, §4.10(a)/(b) floor, §6.11 demux) + the two-peer
 # loopback smoke (handshake both ways + 404 + request_id demux). Both run against the
 # snapshotted peer image (A-ST-010). Loopback 127.0.0.1 works under --network=none.
-s3: selftest smoke
+s3: selftest handler-resolution smoke
 
 selftest: image
 	$(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "$$(cat tests/s3-selftest.st)"
@@ -82,22 +82,58 @@ load-verify:
 	  | tee /dev/stderr | grep -q 'load-verify: OK' \
 	  || { echo "make: *** load-verify failed — a src/*.st class did not install" >&2; exit 1; }
 
+# $(call st_driver,<tests/NAME.st>,<extended regex its GREEN verdict must match>) — run a
+# `pharo eval` driver and FAIL unless it prints that verdict.
+#
+# THE SIBLINGS OF A FIXED GATE ARE WHERE THE DEFECT SURVIVES, AND THAT IS WHAT HAPPENED
+# HERE. `sunit` below carries a comment saying, in these words, that `pharo eval` exits 0
+# whatever the suite reports, so a red suite printed `failures=3` and the target passed.
+# That was fixed for `sunit` in 2026-09-02 and for nothing else. Three of its siblings had
+# the identical defect and kept it: `conformance`, `int-boundary` and `crypto-accept` each
+# END by printing their own verdict — `=== crypto-accept: FAILED (1) ===`, `… 3 fail …` —
+# and NOTHING READ IT. Measured rather than reasoned about: with one byte planted in
+# `tests/crypto-accept.st` the driver printed `FAILED (1)` and `make crypto-accept` exited
+# 0. Three gates in the peer's own `gate` target could not go red.
+#
+# `multisig-accept` and `selftest` are NOT wrapped, and the difference is the point: they
+# end with `pass = total ifFalse: [ Error signal: ... ]`, so the exit code is already
+# theirs. Wrapping them would be a second control on one property; leaving them is only
+# safe because the raise was checked, not assumed.
+#
+# The pattern is asserted POSITIVELY (the green verdict must appear), never as the absence
+# of the word FAILED. Absence is a property of the pattern; presence is a property of the
+# run — a driver that dies mid-way, or is renamed out from under this recipe, prints
+# neither word, and only the positive form catches that. Same reason each pattern below
+# pins a NON-ZERO count: `0 pass / 0 fail` is what a driver that examined nothing prints.
+define st_driver
+$(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "$$(cat $(1))" \
+  | tee /dev/stderr | grep -qE '$(2)' \
+  || { echo "make: *** $(1) did not print its green verdict (failed, or produced no verdict at all)" >&2; exit 1; }
+endef
+
 # Full pinned-corpus conformance gate (69 vectors, byte-identical encode+decode+hash).
 test: image
-	$(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "$$(cat tests/conformance.st)"
+	@$(call st_driver,tests/conformance.st,=== conformance: [1-9][0-9]* vectors — [1-9][0-9]* pass / 0 fail /)
 
 # BIGNUM uint64 boundary self-test [2^63, 2^64-1] + mt1 floor (A-ST-001) — pure codec, no FFI.
 int-boundary: image
-	$(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "$$(cat tests/int-boundary.st)"
+	@$(call st_driver,tests/int-boundary.st,=== int-boundary: OK)
 
 # Crypto accept-path unit test (the direction the rejection-heavy oracle can't cover).
 crypto-accept: image
-	$(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "$$(cat tests/crypto-accept.st)"
+	@$(call st_driver,tests/crypto-accept.st,=== crypto-accept: OK)
 
 # S4 MULTISIG accept-path unit test (the keystone payoff): a GENUINE 2-of-3 K-of-N cap the
 # rejection-only `multisig` oracle category can't cover — asserts M3/M4/M6 ACCEPT + each reject.
+# Self-guarding: raises on any failure (see the st_driver comment).
 multisig-accept: image
 	$(FFI_ENV) $(PHARO) ./$(PEERIMG) eval "$$(cat tests/multisig-accept.st)"
+
+# §6.6 index/tree-walk EQUIVALENCE (F62) — the wire register op binds its system/handler
+# entity into the TREE, and dispatch must resolve it there. No conformance check asks:
+# `core_register_*` proves every write and never dispatches at the pattern it just wrote.
+handler-resolution: image
+	@$(call st_driver,tests/handler-resolution.st,=== handler-resolution: OK)
 
 # SUnit suite (bundled xUnit) — the first-class TestCase mirror of the drivers, PLUS the
 # EcCapAuthz §5.2 `peers`-dimension regression suite (2026-08-13 fix; the oracle has zero

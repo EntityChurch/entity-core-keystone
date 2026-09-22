@@ -424,8 +424,19 @@ contains
       oc = out_err(403, 'capability_denied', ''); return
     end if
     stripped = strip_local(pattern)
+    ! BODY SELECTION, not resolution (F62). resolve_handler above walked the entity tree and
+    ! found a `system/handler` entity at `pattern`; the len(pattern)==0 arm took the 404. So a
+    ! routine of 0 here is a handler this peer RESOLVED and has no routine to run — which is
+    ! exactly what the wire register op (§6.2 WRITE 1) produces: a system/handler entity
+    ! carrying an expression_path, on a peer with no §6.13(a) entity-native evaluator.
+    ! Spelling it 404 handler_not_found made the peer contradict itself: 200 to the register,
+    ! 200 to a tree.get of the entity it had just written, then handler_not_found at that same
+    ! pattern. §6.6 calls a dispatch index an optimisation whose results MUST equal the tree
+    ! walk — the walk was already correct and only this verdict, one rung below it, was wrong.
+    ! `no_handler_body` is what datalog/nim/oz and the reference peer answer; it is in no spec
+    ! revision and the cohort spells this four ways, which is F60 and is not invented around here.
     routine = handler_routine(stripped)
-    if (routine == 0) then; oc = out_err(404, 'handler_not_found', pattern); return; end if
+    if (routine == 0) then; oc = out_err(501, 'no_handler_body', pattern); return; end if
     oc = call_handler(routine, slot, operation, env, caller_cap, granter_peer, pattern)
   end function dispatch_inner
 

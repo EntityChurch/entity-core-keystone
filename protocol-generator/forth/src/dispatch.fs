@@ -127,11 +127,27 @@ variable uri-addressed
   \    beats 403 for an unregistered path).
   hpa hpu resolve-handler dup 0= if 2drop 404 s" handler_not_found" 0 0 error-result exit then
     { rpaddr rpu }                        \ ( rpaddr rpu -- ) single locals group (stack order)
-  rpaddr rpu hnd-lookup dup 0= if drop 404 s" handler_not_found" 0 0 error-result exit then
-    { xt }
   \ 3. permission/authz on the resolved handler (§5.5 chain verify + §5.2 scope + §4.10(b) depth).
   exec incA-addr incA-len incA-n cap-authorize { zverdict }
   zverdict VERDICT-ALLOW <> if zverdict cap-verdict-error exit then
+  \ 4. BODY SELECTION — and it is not resolution (F62). resolve-handler above walked the
+  \    entity tree and found a `system/handler` entity bound at rpaddr/rpu, so reaching here
+  \    means this peer RESOLVED a handler and has no native word to run for it. The wire
+  \    register op (§6.2 WRITE 1) binds exactly such an entity, carrying an expression_path,
+  \    and this peer has no §6.13(a) entity-native evaluator — so 501 no_handler_body, the
+  \    answer datalog/nim/oz and the reference peer give. Spelling it 404 handler_not_found
+  \    made the peer contradict itself: 200 to the register, 200 to a tree.get of the entity
+  \    it had just written, then handler_not_found at that same pattern. §6.6 calls a dispatch
+  \    index an optimisation whose results MUST equal the tree walk; the walk was already
+  \    correct and it was this verdict, one rung below it, that was wrong.
+  \    (`no_handler_body` is in no spec revision and the cohort spells this four ways — F60.)
+  \
+  \    It sits BELOW the authz gate, where the 404 above deliberately does not: a 404 for an
+  \    unregistered path discloses nothing, while a 501 here would tell an unauthorized caller
+  \    that a handler exists at this pattern. §6.5 orders resolve -> check_permission ->
+  \    invoke, and body selection is part of invoking. cobol and fortran already order it so.
+  rpaddr rpu hnd-lookup dup 0= if drop 501 s" no_handler_body" 0 0 error-result exit then
+    { xt }
   conn exec  incA-addr incA-len incA-n  xt execute ;
 
 \ ── frame in -> response out ──

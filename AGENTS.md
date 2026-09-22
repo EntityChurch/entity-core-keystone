@@ -2154,6 +2154,47 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   checks ASSERT and sort them into writes and reads. A family that is all writes is a family that has
   never used the thing it built.** The read-back is usually one line at the end of the gate that
   already holds the pattern, the grant and the connection.
+- **A CENSUS FIELD THAT NAMES THE WRONG RUNG PRODUCES A SCOPE ESTIMATE THAT IS WRONG IN THE
+  EXPENSIVE DIRECTION — AND THE FIELD THAT MISLED US IS THE ONE BUILT TO PREVENT EXACTLY THIS.**
+  RATIFIED 2026-09-09, closing F62's remaining six. The finding sized them as one repair —
+  *"they need a container the wire register can write before they can have an index at all"* —
+  and that was **true of three and false of three**: `cobol`, `fortran` and `forth` were
+  ALREADY walking the entity tree at §6.6, correctly, and the `404` came from the rung
+  **below** resolution, where a body-selection ladder spelled *"I resolved this and have no
+  body"* as `handler_not_found`. One arm each. The estimate came from the finding's own
+  evidence table, which was built from each peer's H5 `dispatch_read_site` — and on those three
+  that field named the **ladder**, not the resolution site. `dispatch_read_site` exists
+  *precisely* to tell a live host from a dead map (it is the field the four wrongly-nominated
+  hosts taught us to add), and it mis-scoped a repair by naming the second rung of a
+  two-rung mechanism.
+  **This is the standing "TWO SITES FOR ONE REFUSAL" rule reaching the CENSUS rather than the
+  fix.** There the repair went to the unreachable site and measured as a no-op; here the
+  *measurement* recorded the wrong site and the no-op was in the plan. **Enforcement: for any
+  mechanism that resolves and then selects, the census field names BOTH rungs and says which
+  one answered the observed status.** The one-line form — `resolve X (§6.6 walk, file:line);
+  the ladder below it is BODY SELECTION, file:line` — is what all six now carry, and it is what
+  makes the next reader's estimate right.
+  **AND A WALK CAN BE CORRECT AND QUERY A KEY SPACE NOTHING ELSE WRITES.** `forth`'s
+  `resolve-handler` was a faithful §6.6 backward walk over the store and was structurally blind
+  to every wire write: `register-handler` bound its bootstrap `system/handler` entity at the
+  **bare pattern** while `publish-handler-dispatch`, the §6.2 register op and every validator
+  `TreeGet` use `/<local>/<pattern>`. Two key spaces for one fact, so §6.6 equivalence had
+  nothing to be equivalent TO — and **reading the walk clears the peer**, because the walk is
+  right. **Enforcement: for any store-backed resolution, enumerate every WRITE site's key form
+  and require exactly one.** `git grep` the bind calls, not the lookup.
+  **THE PLANT IS WHERE THAT SHOWS UP, AND A PLANT THAT BREAKS THE PEER HAS NOT DEMONSTRATED THE
+  DEFECT.** Reverting only `forth`'s walk — leaving the canonical bootstrap bind — made every
+  built-in unresolvable: positive control `404`, verdict `UNTRUSTED`, no case executed. That is
+  a red, and it proves nothing about the repair. **Rule: a mutation control must reproduce the
+  ORIGINAL symptom with the positive control still green.** If the positive control fails, the
+  plant is too broad; widen the revert to the whole change and re-run (both halves back to the
+  bare key → `NOT-RESOLVED`, which is the pre-fix peer exactly). The failed plant is worth
+  recording rather than discarding — it is the cheapest proof that two edits are one change.
+  *(Sub-lesson, and it is the examined-zero-things rule catching the person who keeps citing it:
+  the script written to prove "0 severities moved" first printed **`0 of 0`**, because it read a
+  `categories/checks` shape these reports do not have. **The denominator is the only reason that
+  was visible.** Print the count AND assert it non-zero, in a throwaway diff script as much as in
+  a gate.)*
 - **THE COHORT IS THE INSTRUMENT THAT SEPARATES TWO CAUSES ONE PEER CANNOT DISTINGUISH — 404 AND 501
   AT THE SAME STEP ARE DIFFERENT DEFECTS, AND ONLY THE SPLIT SAYS SO.** Same finding, and it is the
   standing *"where a single peer cannot distinguish 'this peer is broken' from 'our request was', the
@@ -2269,6 +2310,28 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   a synthetic `runs=0` line → rejected by the new pattern and accepted by the old one.
   **Generalise to every peer gate, not just the repo's own tooling: if a gate's success message
   does not contain a number, it cannot distinguish "all green" from "nothing ran."**
+  **FIFTH, SIXTH AND SEVENTH OCCURRENCE 2026-09-09 — IN THE SAME FILE AS THE FOURTH, AND THE FIX
+  FOR THE FOURTH DESCRIBES THEM IN ITS OWN COMMENT.** `smalltalk`'s `sunit` was fixed on 2026-09-02
+  and its comment says, in these words, that *"`pharo eval` exits 0 whatever the suite reports, so a
+  red suite printed `failures=3` and the target passed."* **Three sibling targets in the same
+  Makefile had the identical defect and kept it**: `conformance`, `int-boundary` and `crypto-accept`
+  each END by printing their own verdict (`=== crypto-accept: FAILED (1) ===`) and **nothing read
+  it** — so three of the four members of that peer's own `gate` target could not go red. Measured
+  rather than reasoned about: a planted bad SHA-256 KAT made the driver print `FAILED (1)` while
+  `make crypto-accept` exited **0**.
+  **This is the standing "harden one anchor, check its siblings the SAME DAY" rule failing at the
+  shortest possible distance — the siblings were adjacent recipes in the file being edited — and
+  what makes it worth a numbered entry is that the fix WROTE DOWN the class and still did not
+  sweep it.** A comment explaining why a gate was unsound is a description of a defect class, not a
+  record that the class was eliminated; the next reader (me) treated it as the latter for a week.
+  **Enforcement, and it is a question rather than a grep: when a gate is fixed, list every OTHER
+  target in the same file that ends in the same runner and check each one's exit path.** Corollary
+  learned in the doing: **assert the GREEN verdict positively, never the absence of `FAILED`** —
+  absence is a property of your pattern, presence is a property of the run, and a driver that dies
+  midway or is renamed out from under the recipe prints neither word. Two of the six targets
+  (`multisig-accept`, `selftest`) were deliberately left unwrapped because they already `Error
+  signal:` on failure — **checked, not assumed**, because wrapping them would be a second control
+  on one property while leaving them unchecked would have been the same mistake again.
   *(Adjacent, and the same session: a DETECTOR needs the same scepticism as a gate. A probe
   grepping its run log for `panic` reported **30 aborts in 30 clean runs**, because the oracle's
   `agility_decode_1` line contains the word in its own DESCRIPTION — "accepts key_type=0xFE
@@ -2602,6 +2665,28 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   including the §6.2 register guard that reached 44 of 45 peers on 2026-08-17 with `apl` the sole
   omission. **An excluded peer does not hold still; it accumulates every debt the cohort pays
   down**, so the cost of an exclusion grows with exactly the thing that makes it feel safe to keep.)*
+  **AND THE HAPPIEST FORM OF THE SAME CLASS: A PUBLISHED MEASUREMENT CAN BE SUPERSEDED BY THE VERY
+  RULING IT ASKED FOR, AND IT GOES STALE SILENTLY BECAUSE NOTHING ABOUT IT LOOKS WRONG.** 2026-09-09,
+  the §4.7 pre-hello `authenticate` census. We measured a **38/6/1** cohort split on 2026-08-30 and
+  routed the normative question; arch folded it **the next day** (0.8.2.1, FM-1), we vendored it at
+  0.8.2.3 and swept the cohort at `5a53b75c`, and the oracle grew `connect_prehello_authenticate`.
+  Re-measured today: **46 of 46 uniform**, split gone. The register and the matrix had recorded the
+  *ruling* as closed; **the published TABLE of what the peers do was ten days stale in four places**
+  and nothing could see it, because a dated measurement with a date on it reads as history whether
+  or not it still describes the tree.
+  **Two enforcement points, and the second is the reusable one.** (a) **When a finding routes a
+  question, the answer landing upstream is a trigger to RE-MEASURE, not only to update a status
+  cell** — the whole point of the cohort number was the disagreement, and a resolved disagreement
+  changes the number. (b) **A finding that states its own exit condition has handed you a gate;
+  re-read it when the condition fires.** This one said *"if architecture rules, the ruling belongs
+  in `validate-peer` as a vector — at which point this probe should be deleted, not kept as a second
+  source of truth."* That sentence decided the whole disposition ten days later and cost nothing to
+  honour. **Write the exit condition into the finding; it is the cheapest gate in this file.**
+  *(Sub-lesson, and it is calibration in the flattering direction: the one row that looked like a
+  disagreement with `entity-core-formalization`'s source census — `csharp`, which they read as `400`
+  and which now measures `401` — was **the sweep, not a miss**. A one-line `git show` on the sweep
+  commit showed their reading was correct for the source they read. **Before recording a sibling's
+  claim as wrong, check whether YOUR tree moved under it**, and date what each side was looking at.)*
 - **A REFUSAL REACHED BY `throw` INTO A GENERIC CATCH IS NOT THE REFUSAL THE SOURCE APPEARS TO
   STATE — and the clause that states it can be DEAD CODE that has never once run.** Candidate
   (`prolog` 2026-09-01, but it is the standing "a source grep is not a conformance census" rule

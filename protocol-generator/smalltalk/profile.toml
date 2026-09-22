@@ -289,12 +289,12 @@ oracle_commit     = "cc1970f"                   # go oracle for S4 (public HEAD,
 # a profile naming only the registration call cannot tell a live host from a map
 # nothing reads.
 h1_status               = "not-yet"
-h1_wire_verdict         = "NOT-RESOLVED"
+h1_wire_verdict         = "BOUND-NOT-EVALUATED"
 h1_verified_by          = "tools/host-seam-probe @ 2026-09-09, oracle 78db4a9 / executed set 7aa6f3de…, H1 v1.0 @ 62e1a1dd…"
 status                  = "not-yet"
-handler_register_call   = "Peer>>registerHandler:as: writes the `handlers` Dictionary (Smalltalk has no access control, so it is reachable), but the WIRE register op does not reach it"
-handler_body_shape      = "a block [:ctx | ...] in-process; entity-native is not evaluated"
-dispatch_read_site      = "EcPeer>>dispatchTo: -- handlers at: aHandlerPath ifAbsent: [404 handler_not_found]; src/EntityCore-Peer/EcPeer.st:211"
+handler_register_call   = "EcPeer>>registerHandler:as: writes the in-image `handlers` Dictionary (Smalltalk has no access control, so it is reachable); the WIRE register op does not touch that map -- it binds a system/handler entity into the TREE, which resolution now reads (F62)"
+handler_body_shape      = "a block [:ctx | ...] in-process; an entity-native body is bound and not evaluated -> 501 no_handler_body"
+dispatch_read_site      = "EcPeer>>resolveHandler: -- the §6.6 backward walk, hitting on `handlers includesKey: p` OR a system/handler entity at `store getAt: (self peerAbs: p)`; the body then comes from the map in runHandler:, and a resolved path with no block is 501, not 404; src/EntityCore-Peer/EcPeer.st:102, :222"
 consumer_register_call  = "none -- no in-process emit-consumer registration surface"
 frame_budget_accessor   = "absent"
 handle_lifecycle        = "absent -- unregister is the wire op"

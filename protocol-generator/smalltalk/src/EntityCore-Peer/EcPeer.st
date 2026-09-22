@@ -86,12 +86,26 @@ cls compile: 'registerHandler: aPathString as: aBlock
 	handlers at: aPathString put: aBlock'.
 
 "resolveHandler: — the longest bound handler-path prefix of a bare handler path (§6.6
- backward tree-walk). Answers the handler path String, or nil (dispatcher -> 404)."
+ backward tree-walk). Answers the handler path String, or nil (dispatcher -> 404).
+
+ F62 (2026-09-09): the walk consults the ENTITY TREE as well as the in-image `handlers`
+ map. §6.6 defines resolution AS the tree walk and calls a dispatch index an optimisation
+ whose results MUST produce equivalent results to it. This map is written only at
+ bootstrap, while the wire register op binds its system/handler entity (WRITE 1) into the
+ store -- so the two were not equivalent, and the peer answered 404 handler_not_found at a
+ pattern where it had just answered 200 to a register and where the oracle can retrieve
+ the handler entity. Consulting the store makes them equivalent BY CONSTRUCTION rather
+ than by keeping two containers in step: nothing has to remember to mirror a write, and
+ unregister -- which unbinds the path -- needs no second teardown. The type test is
+ load-bearing: system/handler/<pattern> carries a system/handler/interface entity, which
+ is a manifest and not a dispatch target."
 cls compile: 'resolveHandler: aPathString
-	| p idx |
+	| p idx ent |
 	p := aPathString.
 	[ p notEmpty ] whileTrue: [
 		(handlers includesKey: p) ifTrue: [ ^ p ].
+		ent := store getAt: (self peerAbs: p).
+		(ent notNil and: [ ent type = ''system/handler'' ]) ifTrue: [ ^ p ].
 		idx := p lastIndexOf: $/.
 		idx = 0 ifTrue: [ ^ nil ].
 		p := p copyFrom: 1 to: idx - 1 ].
@@ -205,10 +219,24 @@ cls compile: 'uriTargetsLocalPeer: aUri
 	seg := idx = 0 ifTrue: [ u ] ifFalse: [ u copyFrom: 1 to: idx - 1 ].
 	^ seg = identity peerId'.
 
-"runHandler:exec:envelope:on: — invoke a registered handler block with a fresh context."
+"runHandler:exec:envelope:on: — invoke a registered handler block with a fresh context.
+
+ The two misses are DIFFERENT failures and F62 is why they are separated here. No block and
+ no handler entity in the tree is a resolution miss -> 404. No block but a system/handler
+ entity bound at the path is a handler this peer RESOLVED and cannot RUN: the wire register
+ op forwards the manifest verbatim, including its expression_path, and this peer has no
+ 6.13(a) entity-native evaluator to run one with. That is a missing feature, not a broken
+ promise, and 501 is the honest answer -- it is also what the three peers already in that
+ state (datalog, nim, oz) and the reference peer answer. `no_handler_body` appears nowhere
+ in the v0.8.2.11 spec and the cohort spells this failure four ways; that vocabulary gap is
+ registered as F60 and is deliberately NOT invented around here."
 cls compile: 'runHandler: aHandlerPath exec: anExec envelope: anEnvelope on: aConn
 	| block ctx |
-	block := handlers at: aHandlerPath ifAbsent: [ ^ EcHandlerResult error: 404 code: ''handler_not_found'' message: ''no handler bound'' ].
+	block := handlers at: aHandlerPath ifAbsent: [ nil ].
+	block isNil ifTrue: [
+		^ (store getAt: (self peerAbs: aHandlerPath)) isNil
+			ifTrue: [ EcHandlerResult error: 404 code: ''handler_not_found'' message: ''no handler bound'' ]
+			ifFalse: [ EcHandlerResult error: 501 code: ''no_handler_body'' message: ''handler resolved; this peer evaluates no installed body'' ] ].
 	ctx := EcHandlerContext peer: self connection: aConn exec: anExec envelope: anEnvelope.
 	^ block value: ctx'.
 
