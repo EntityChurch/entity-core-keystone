@@ -1270,6 +1270,77 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   the version script alone control exports, verify with `nm -D`). A same-soname differential
   needs `dlmopen(LM_ID_NEWLM, …)`, not `dlopen` (glibc dedups by soname → silently compares a
   lib against itself).
+- **WHICH `ec_content_hash` DID YOU JUST TEST? LINK ORDER DECIDES WHICH SYMBOL WINS, AND A
+  DIFFERENTIAL AGAINST "the same `.so`" IS WORTHLESS IF THE PEER DOES NOT CALL THAT `.so`.**
+  RATIFIED 2026-09-07 (`asm-x86_64`), and it is the standing *"an exported symbol is not a
+  reachable seam"* rule reached from the opposite side: there a symbol that looked reachable was
+  not; here a symbol that looked like **the** implementation was a *different one with the same
+  name*. It cost a whole session and produced a published `Not root-caused.`
+  The peer refused the oracle's 256 KiB `t1_3` staging entity with `hash_mismatch`. The diagnosis
+  traced **every input** — type string, byte-string head, all 262 144 payload bytes against the
+  sender's filler, length, frame containment — and confirmed that *"a standalone call to the same
+  `libentitycore_codec.so` with exactly those bytes returns the SENDER's hash."* Every clause true.
+  **The peer never calls that function.** Its `Makefile` links `codec.o` **before**
+  `-lentitycore_codec`, so the native `ec_content_hash` in `src/codec.s` wins and the `.so` supplies
+  only the crypto floor — **and the Makefile says so, in a comment three lines above the link rule.**
+  A byte-perfect input trace against a function that is never invoked is an unfalsifiable green.
+  **Enforcement, and it is one command before any FFI-vs-native differential: ask the BINARY which
+  one it resolved** — `nm -C bin/host | grep ' T ec_content_hash'` (a `T` means the peer defines it
+  and the `.so`'s copy is dead), or read the link line for a local object preceding the `-l`. In a
+  `dlopen` differential, **assert that `dlsym` did not hand back the symbol you are linked against**
+  (`(void*)so != (void*)native`, abort if equal) — that check is four lines, it fired as intended
+  here, and without it the harness compares the codec to itself and prints `identical`.
+  **Two more defects came out of it, and each would have kept the check red alone.**
+  - **A FIXED BUFFER MUST NAME THE INPUT BOUND IT IS SIZED AGAINST, AND "it has an overflow guard"
+    IS NOT THAT.** `ecf_scratch` was `.space 65536` while the peer accepts frames to `MAX_FRAME`
+    = 16 MiB (`b_req` is already 16 MiB, the store arena 64 MiB) — **256× smaller than the input it
+    can legally receive**, with a perfectly correct `.Loverflow` guard on top. This is the `cobol`
+    fixed-field lesson's *sibling, not its twin*: cobol had a copy with **no** size test, this has a
+    right one on a buffer sized against nothing, so the failure is not corruption but a **capacity
+    gap presenting as a wrong answer**. Sizing it to `MAX_FRAME` is a **derived** bound, not the
+    "raise the buffer instead of guarding" move that entry forbids — and check the *shape* before
+    fearing the cost: this is one `.bss` arena **per process**, demand-paged, where cobol's was
+    `LOCAL-STORAGE` per call per recursion level. Enforcement: for every fixed buffer that receives
+    wire-derived data, state the bound in a comment AT the declaration and tie it to the constant it
+    tracks; a buffer whose size is a bare literal is one nobody has compared to the frame cap.
+  - **AN UNCHECKED RETURN CODE FROM A FALLIBLE RECOMPUTE LIES IN THE DIRECTION OF BLAMING THE
+    SUBMITTER.** `admit_put` called `ec_content_hash` and went straight to the `memeq`. On failure
+    that function unwinds leaving `out` **UNWRITTEN**, and `ch_admit` is `.bss` — zeros, or the
+    previous admission's digest — so a peer capacity limit was emitted as `400 hash_mismatch`: **an
+    accusation about the submitter's bytes.** Fixed to distinguish `-3` `EC_DECODE_ERROR` (genuinely
+    the submitter's, → `invalid_request`) from `-2` `EC_OUT_OF_SPACE` (ours, → `413
+    payload_too_large`), and the `-2` arm is **kept after** the capacity fix made it unreachable,
+    because a silent `-2` becoming a false accusation is wrong at any buffer size. **Enforcement: on
+    any verification path, grep for a call whose result is compared without its status being tested
+    — and note the tell, which is that the failure mode is a CONFORMANT-LOOKING refusal**, not a
+    crash. Being unreachable, it was then **executed by planting the old 64 KiB cap and re-running**
+    (`tree put status 413`, against `hash_mismatch` unfixed) — the standing *a guard that was never
+    executed is not a guard* rule, applied to an arm added the same day.
+  **THE SIBLING CHECK IS WHAT MADE THE SECOND HALF REAL, AND IT INVERTED THE OBVIOUS READING:
+  "INTERCHANGEABLE IMPLEMENTATIONS" AGREE ON SUCCESS AND WERE NEVER ASKED ABOUT FAILURE.**
+  `asm-arm64` and `riscv64` have no `codec.s`, so the *capacity* half is x86_64's alone — but both
+  carried the identical unchecked return code, and the C `.so` returns `EC_OK` for any non-NULL
+  argument, so the arm reads as **dead code** and leaving it alone reads as the disciplined call.
+  The C-ABI has **two** interchangeable impls, so the other one was measured instead of reasoned
+  about: `conformance/abi_failset_probe.c` finds **5 of 8 `type` inputs diverge** — Rust's
+  `ec_content_hash` runs `str::from_utf8` and answers `EC_INVALID_ARGUMENT`, C hashes the bytes —
+  and every divergent case is a **non-UTF-8 `type`, which is attacker-controlled wire bytes on the
+  §6.3 put path** (CBOR major 3 does not enforce UTF-8, and step 1b only checks non-empty). So the
+  "dead" arm is live the moment a peer links the other impl. **`abi_differential`'s 101 probes are
+  structurally blind to this because they drive VALID input** — the `ec_entity_original_bytes`
+  export-asymmetry entry above, in a BEHAVIOURAL rather than a presence shape — and §4.1 declares
+  **no failure set at all**, so neither impl is violating anything written down. **Rule: a
+  cross-implementation differential must drive REFUSAL inputs, not only accepted ones; two impls
+  agreeing on every valid vector is not interchangeability, it is a shared happy path.** And
+  before dismissing an error arm as unreachable, ask *unreachable under which implementation* —
+  the answer for a swappable dependency is not a property of your code. Recorded, unresolved on
+  purpose, in `ffi-generator/c-abi/status/FFI-ARM-STATE.md` §3: picking a winner is a behaviour
+  change for 34 linking peers and a real design question, not a patch.
+  **And record the machinery that worked, because it is the reason this was found at all:** the gap
+  was disclosed in `CONFORMANCE-MATRIX.md`, allowlisted **by name** in `skip-provenance-gate.py`, and
+  that allowlist's own doc says removing the entry is part of closing the gap. An honestly-labelled
+  `Not root-caused.` with a named enforcement hook is what a later session picks up; a reverted
+  ladder and a restored `316P` would have left nothing to find.
 - **A SHARED LIBRARY'S LIFETIME ASSUMPTION IS PART OF ITS ABI, AND "the process exits" IS AN
   ASSUMPTION ABOUT THE CALLER THAT NO CALLER IS TOLD ABOUT.** Candidate (first occurrence, found
   2026-09-04 while measuring `cobol`'s capacity work; the enforcement point is exact and the blast

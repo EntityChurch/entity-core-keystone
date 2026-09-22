@@ -27,6 +27,14 @@
 # unwind target (err_rsp) lets any leaf abort deep recursion in one hop. No libc,
 # no aligned-SSE memory ops (so stack alignment across recursion is a non-issue).
 #
+# ecf_scratch capacity. Must track dispatch.s's MAX_FRAME / b_req (16 MiB): the only
+# values ec_content_hash is asked about are entities that arrived inside one frame,
+# and a canonical re-encode never expands its input. codec.s is deliberately
+# standalone (it does not .include macros.s -- `make diff` and `make parse-test`
+# link it with no dispatch.o), so the constant is restated here rather than shared;
+# if MAX_FRAME moves, this moves with it.
+	.equ	ECF_SCRATCH_CAP, 0x1000000	# 16 MiB, == dispatch.s MAX_FRAME
+#
 # Global register state for the duration of one call (callee-saved, set in prologue):
 #   r12 = in_cur   r13 = in_end   r14 = out_cur   r15 = out_end
 #   rbx = out_base r bp = out_len_ptr
@@ -764,7 +772,7 @@ ec_content_hash:
 	movq	%rsi, %r9		# type len
 	leaq	ecf_scratch(%rip), %r14	# ECF → scratch
 	leaq	ecf_scratch(%rip), %rbx
-	leaq	ecf_scratch+65536(%rip), %r15
+	leaq	ecf_scratch+ECF_SCRATCH_CAP(%rip), %r15
 	call	build_ecf		# ecf in scratch; rax=ecf_len
 	leaq	ecf_scratch(%rip), %rdi
 	movq	%rax, %rsi
@@ -812,7 +820,7 @@ ec_content_hash_with_format:
 	movq	%rsi, %r9		# type len
 	leaq	ecf_scratch(%rip), %r14	# ECF → scratch
 	leaq	ecf_scratch(%rip), %rbx
-	leaq	ecf_scratch+65536(%rip), %r15
+	leaq	ecf_scratch+ECF_SCRATCH_CAP(%rip), %r15
 	pushq	%r10			# save vlen across build_ecf
 	call	build_ecf		# rax=ecf_len
 	popq	%r10
@@ -1180,8 +1188,16 @@ ec_peerid_parse:
 err_rsp:
 	.quad	0
 	.align	16
+# Sized against the input this codec can LEGALLY be handed, not against a guess:
+# an entity reaching ec_content_hash arrived inside the peer's request buffer, which
+# is MAX_FRAME (dispatch.s b_req, 16 MiB), and a canonical re-encode never expands.
+# At 64 KiB this buffer was 256x smaller than the frame the peer advertises, so any
+# entity over ~65.5 KiB of ECF returned EC_OUT_OF_SPACE -- see ECF_SCRATCH_CAP.
+# One buffer per PROCESS (.bss, demand-paged, COW per fork), not per call: build_ecf
+# recurses on the stack and writes into this single arena, so the cost is the pages
+# an actual ECF touches, not a per-level multiple.
 ecf_scratch:
-	.space	65536
+	.space	ECF_SCRATCH_CAP
 	.align	8
 pid_payload:
 	.space	256

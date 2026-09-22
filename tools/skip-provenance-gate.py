@@ -71,14 +71,16 @@ ALLOWLIST = {
     # An entry here is a commitment to the disclosure it cites, and REMOVING it is part
     # of closing the gap it described.
     #
-    # `asm-x86_64` refuses the oracle's 256 KiB t1_3 staging put with 400 hash_mismatch:
-    # its §6.3 recompute of a 262 149-byte `primitive/bytes` value disagrees with the
-    # sender, while its 16 387-byte recomputes agree and `asm-arm64` / `riscv64` / `sql`
-    # / `pd` accept the identical entity. The ladder is correct and NOT reverted — the
-    # peer could never verify a payload that size and simply never tried, so this is a
-    # latent defect the ladder made visible, not one it introduced. NOT root-caused.
-    ("asm-x86_64", "concurrency", "t1_3_no_head_of_line"):
-        "CONFORMANCE-MATRIX.md §1 (asm-x86_64 row) — large-payload content_hash recompute",
+    # EMPTY, and the last entry's removal is the record worth keeping. `asm-x86_64`'s
+    # `concurrency/t1_3_no_head_of_line` was allowlisted 2026-09-07 for a disclosed and
+    # deliberately un-reverted skip: its §6.3 put admission refused the oracle's 256 KiB
+    # staging entity with `400 hash_mismatch`, and it was NOT root-caused at the time.
+    # Root-caused and closed the same week: the peer's `ec_content_hash` is the NATIVE
+    # one in `src/codec.s` (codec.o precedes -lentitycore_codec, so its symbol wins),
+    # which built the ECF into a fixed 64 KiB `ecf_scratch` and returned EC_OUT_OF_SPACE
+    # -- while `admit_put` ignored the return code and compared an unwritten buffer. The
+    # earlier "standalone call to the same .so returns the sender's hash" was true and
+    # tested a DIFFERENT FUNCTION than the peer runs. Both halves fixed; the check PASSes.
 }
 
 

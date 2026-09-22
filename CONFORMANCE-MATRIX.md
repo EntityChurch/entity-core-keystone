@@ -72,20 +72,31 @@ from the first suite onward, against +22.7 MB per suite before.** §3.
 
 **The ISA trio's type-registry over-publication is CLOSED (2026-08-30).** It was the second disclosed gap here, and for as long as it stood the three peers read `594-595P/53-55W` against the cohort-standard `312P/337W`. `src/typestore.s` is now filtered to the 53-name core floor, and the three rows read `312-313P/336-337W` — **the pass count FELL by 282 and that is the fix, not a regression.** Those 282 `type_system` checks are matched-if-present, so publishing extension vocabularies had been converting WARNs into PASSes; the higher number was the scope violation. All three stayed `755 · 0F` and the change touched nothing outside `type_system` (verified per-check, before against after, on each peer). `asm-x86_64` reads one PASS above the other two for the unrelated reason in ⁹. Detail: ⁹ and §3.
 
-**One disclosed skip, and the ladder that revealed it is deliberately NOT reverted.** `asm-x86_64`
-alone reports `316P/336W/0F/106S` — one skip above the cohort — because
-`concurrency/t1_3_no_head_of_line` cannot stage its 256 KiB payload: the peer's §6.3 `put`
-admission (added 2026-09-07) refuses the oracle's staging entity with `400 hash_mismatch`. Measured
-rather than inferred: the peer's recompute of a **262 149-byte `primitive/bytes` value** disagrees
-with the sender, while its **16 387-byte** recomputes agree, and `asm-arm64`, `riscv64`, `sql` and
-`pd` accept the identical entity through the identical C-ABI call. The inputs were traced — type
-string, byte-string head, full payload and length all verified byte-correct against a standalone
-call to the same `libentitycore_codec.so`, which returns the SENDER's hash for exactly those bytes.
-**Not root-caused.** What is established is that the peer could never verify a payload that size and
-had simply never tried: before the ladder it stored the entity under a hash it did not check, so
-this is a latent defect the ladder made visible, not one it introduced. Reverting would restore a
-higher number and a worse peer, which is the overclaim this file exists to prevent. Allowlisted by
-name in `tools/skip-provenance-gate.py`; the entry is deleted when the peer is fixed.
+**The one disclosed skip is CLOSED (2026-09-07), and it was never about the payload.** `asm-x86_64`
+carried `316P/336W/0F/106S` — one skip above the cohort — because
+`concurrency/t1_3_no_head_of_line` could not stage its 256 KiB payload: the peer's §6.3 `put`
+admission refused the oracle's staging entity with `400 hash_mismatch`. It now reads
+**`317P/336W/0F/105S`** and the check PASSes; the allowlist entry is deleted, as its own doc requires.
+
+**Two defects, and the first one is why the disclosure said "not root-caused."** The diagnosis
+recorded here cited a standalone call to `libentitycore_codec.so` returning the sender's hash for
+exactly those bytes. That was true, and it tested a **different function than the peer runs.**
+`asm-x86_64` links `codec.o` *before* `-lentitycore_codec`, so its own native `ec_content_hash`
+(`src/codec.s`) wins over the `.so`'s — the Makefile says so in a comment — and that native one
+built the ECF into a fixed **64 KiB `ecf_scratch`** while the peer accepts frames to **16 MiB**.
+Measured: rc=0 up to a 65 503-byte value, **rc=−2 `EC_OUT_OF_SPACE` from 66 005 up, with the output
+buffer left UNWRITTEN.** Second defect: `admit_put` never checked that return code, so it compared
+the carried hash against an untouched `.bss` buffer and reported `hash_mismatch` — **a peer capacity
+limit stated as an accusation about the submitter's bytes.**
+
+Both fixed. `ecf_scratch` is now sized against the input it can legally receive (`MAX_FRAME`, the
+same 16 MiB as the request buffer the entity arrives in), and the ladder distinguishes `−3` (a
+decode fault, genuinely step 1 → `invalid_request`) from `−2` (a capacity limit → `413
+payload_too_large`, the §4.10(a) disposition this peer already uses for the frame cap) — never
+`hash_mismatch`. The native codec was differentialled against the `.so` across the old boundary
+before the number was believed: **14 sizes, 0 to 4 MiB, byte-identical, 0 divergent**, with the
+compare-against-itself case asserted rather than assumed. Verified per-check: **exactly 1 of 758
+severities moved**, and it is `t1_3` SKIP → PASS.
 
 **A documented wire divergence sits behind these green rows, and it is named here rather than left to be found.** §4.7's status table **contradicts itself** about an `authenticate` that arrives before any `hello`: row 6 says `401 invalid_nonce` (restating §4.6 step 1, with the citation), row 10 says `400 connection_sequence_error`. No check exercises that input, so **no row below moves and the 46-of-46 stands exactly as measured** — but a 0-FAIL verdict says nothing about a surface the suite never asks about, and it should not be read as if it did.
 
@@ -480,7 +491,7 @@ This is not hypothetical and it is not new. The figures in this file's historica
 | **Forth** | probe | v0.8.0 | `c34abcae…` | **758 · 0F** — 316P/337W/0F/105S ✅ *(was 4F; CAP trio + CAP-2 withdrawal form)* | **FFI-hybrid** (pure-Forth **native-float-bits** canonical CBOR + C-ABI) | **FFI** — `libentitycore_codec` via in-process `libcc` `c-function` (libsodium) | deferred (→ FFI, C-ABI `ec_ed448_*`) | `make dist` (git + tarball), `0.1.0-pre` |
 | **Smalltalk** | probe | v0.8.0 | `c34abcae…` | **758 · 0F** — 315P/338W/0F/105S ✅ *(was 4F; CAP trio + CAP-2 withdrawal form)* | **FFI-hybrid** (pure-Smalltalk canonical CBOR + C-ABI) | **FFI** — `libentitycore_codec` via in-process UFFI `ffiCall:module:` (libsodium) | deferred (→ FFI, C-ABI `ec_ed448_*`) | git + Metacello/Tonel, `0.1.0-pre` |
 | **APL** | probe | v0.8.0 | `c34abcae…` | **758 · 0F** — 316P/337W/0F/105S ✅ ¹⁰ *(carried as "not measured — upstream-blocked" until 2026-08-30, on a toolchain claim that was false; 8 real FAILs then closed in one session — §1d)* | **FFI-hybrid** (pure-APL **array value-model** canonical CBOR codec + C-ABI) | **FFI** — `libentitycore_codec` via a GNU APL `⎕FX` native fn (libsodium) | deferred (→ FFI, C-ABI `ec_ed448_*`) | `make dist` (git source), `0.1.0-pre` |
-| **asm-x86_64** | probe | v0.8.0 | `c34abcae…` | **758 · 0F** — 316P/336W/0F/106S ✅ ⁹ *(one disclosed skip: `t1_3_no_head_of_line` cannot stage its 256 KiB payload — see §1. Was an INVALID MEASUREMENT — §1a; that cause was a §4.9(c) silent drop, not connection pressure.)* | **native (L2)** hand-written x86-64 asm — envelope/data-map CBOR **+ canonical ECF codec** (shortest-float ladder, key-sort, `ec_content_hash`, peer-id format/parse); only crypto is FFI | **FFI** — Ed25519 + SHA-256 via `libentitycore_codec` (libsodium); the canonical codec is native asm (L2 boundary) | deferred (→ FFI, C-ABI `ec_ed448_*`) | source (`make host`), `0.1.0-pre` |
+| **asm-x86_64** | probe | v0.8.0 | `c34abcae…` | **758 · 0F** — 317P/336W/0F/105S ✅ ⁹ *(the disclosed `t1_3_no_head_of_line` skip is CLOSED — a 64 KiB ECF scratch in the peer's own native codec, not the payload; see §1. Was an INVALID MEASUREMENT — §1a; that cause was a §4.9(c) silent drop, not connection pressure.)* | **native (L2)** hand-written x86-64 asm — envelope/data-map CBOR **+ canonical ECF codec** (shortest-float ladder, key-sort, `ec_content_hash`, peer-id format/parse); only crypto is FFI | **FFI** — Ed25519 + SHA-256 via `libentitycore_codec` (libsodium); the canonical codec is native asm (L2 boundary) | deferred (→ FFI, C-ABI `ec_ed448_*`) | source (`make host`), `0.1.0-pre` |
 | **asm-arm64** | probe | v0.8.0 | `c34abcae…` | **758 · 0F** — 317P/336W/0F/105S ✅ ⁹ *(was an INVALID MEASUREMENT — §1a; the cause was a §4.9(c) silent drop, not connection pressure.)* | **native (L1)** aarch64 GAS transliteration of the x86-64 peer — envelope/data-map CBOR + dispatch interior in hand-written asm; canonical codec + crypto via `libentitycore_codec` (cross-built for aarch64); run under `qemu-aarch64-static` | **FFI** — Ed25519 + SHA-256 via `libentitycore_codec` (libsodium) | deferred (→ FFI, C-ABI `ec_ed448_*`) | source (`make host`), `0.1.0-pre`|
 | **riscv64** | probe | v0.8.0 | `c34abcae…` | **758 · 0F** — 317P/336W/0F/105S ✅ ⁹ *(was an INVALID MEASUREMENT — §1a; the cause was a §4.9(c) silent drop, not connection pressure.)* | **native (L1)** RV64GC GAS port off the arm64 template via the shared generic syscall table; canonical codec + crypto via `libentitycore_codec` (cross-built for riscv64); run under `qemu-riscv64-static` | **FFI** — Ed25519 + SHA-256 via `libentitycore_codec` (libsodium) | deferred (→ FFI, C-ABI `ec_ed448_*`) | source (`make host`), `0.1.0-pre`|
 | **wasm-wat** | probe | v0.8.0 | `c34abcae…` | **758 · 0F** — 317P/336W/0F/105S ✅ ⁷ | **seam-hybrid** (hand-authored WAT peer + wire codec; Rust codec compiled to `wasm32-wasip1`, wasm-merged as the seam) | **seam** — `entitycore_codec.wasm` (Rust→wasm, Ed25519 + SHA-256) | deferred (→ codec seam `ec_ed448_*`) | source (`make peer`), `0.1.0-pre` |

@@ -1,7 +1,7 @@
 # ffi-generator / c-abi — state of the arm
 
-**Measured 2026-09-04.** Run `ffi-generator/c-abi/run-ffi-gate.sh` for current numbers; this
-file records what the numbers mean and what they do not cover.
+**Measured 2026-09-04, §3 added 2026-09-07.** Run `ffi-generator/c-abi/run-ffi-gate.sh` for
+current numbers; this file records what the numbers mean and what they do not cover.
 
 ## Where it stands
 
@@ -41,7 +41,7 @@ the process, so they report leak records at HEAD that are the *harness's* and no
 library's. A peer never does that — it only ever crosses the exported `ec_*` surface, which is
 what `conformance/abi_leak_probe.c` drives and nothing else.
 
-## Two gaps, open
+## Three gaps, open
 
 **1. The Rust impl has no independent corpus harness.** Its only verification is the
 cross-impl differential, which is a **mutual** check: a defect both impls shared would pass it.
@@ -65,6 +65,48 @@ lockfile*. Here nothing vendors it at all.
 *Owed fix:* seed the closure into `containers/cargo` at image-build time from this crate's own
 `Cargo.lock`, then re-resolve `--offline` inside the image build to prove the closure is
 complete — an unsatisfiable lockfile should fail the IMAGE build, which is the right place.
+
+**3. The two impls disagree about their FAILURE SET, and the spec declares none.**
+Measured 2026-09-07, and this one is a live divergence rather than an absence.** The
+differential's 101 probes drive **valid** input, so they are structurally silent about what
+each impl does with input it refuses. Asked directly — `conformance/abi_failset_probe.c`,
+both libraries `dlopen`ed side by side with the compare-a-lib-to-itself case asserted:
+
+| `type` bytes | C | Rust | |
+|---|---|---|---|
+| `primitive/bytes` (ascii) | `EC_OK` | `EC_OK` | agree |
+| empty | `EC_OK` | `EC_OK` | agree |
+| `ff fe` (invalid UTF-8) | `EC_OK` | `EC_INVALID_ARGUMENT` | **diverge** |
+| `80` (lone continuation) | `EC_OK` | `EC_INVALID_ARGUMENT` | **diverge** |
+| `c3` (truncated 2-byte) | `EC_OK` | `EC_INVALID_ARGUMENT` | **diverge** |
+| `c0 80` (overlong) | `EC_OK` | `EC_INVALID_ARGUMENT` | **diverge** |
+| `ed a0 80` (UTF-16 surrogate) | `EC_OK` | `EC_INVALID_ARGUMENT` | **diverge** |
+| `a\0b` (embedded NUL) | `EC_OK` | `EC_OK` | agree |
+
+**5 of 8.** Rust's `ec_content_hash` runs `str::from_utf8` on `type` and refuses; C hashes the
+bytes as-is. Rust additionally maps a caught panic to `EC_INTERNAL_ERROR`, which C has no
+analogue for. **Spec §4.1's table declares a behaviour for `ec_content_hash` and no failure
+set at all**, so neither impl is violating anything written down — which is the finding.
+
+**Why it matters more than an ordinary divergence: `type` is attacker-controlled wire bytes.**
+On §6.3's `put` admission path a submitted entity's `type` is a CBOR major-3 head, and CBOR does
+not enforce that a text string's bytes are valid UTF-8. So the same submission is hashed by one
+impl and refused by the other, and a consumer that does not check the return code compares an
+**unwritten** output buffer and answers `400 hash_mismatch` — a codec refusal stated as an
+accusation about the submitter's bytes. Found because `asm-x86_64`'s native codec had exactly
+that unchecked-return shape; the three ISA peers now check it, but **the audit of the other
+codec consumers has not been done.**
+
+**Not resolved here, deliberately.** Picking a winner is a behaviour change for 34 linking
+peers and it is a genuine design question, not a bug to patch: RFC 8949 requires major-3 to be
+UTF-8, so Rust's refusal is arguably the more correct of the two, and the C impl silently
+produces a content hash over a byte sequence that is not valid canonical CBOR. Whichever way it
+goes, §4.1 must **declare the failure set** so the next impl is not a third opinion.
+
+*Owed:* (a) settle and specify `ec_content_hash`'s failure set in `spec/ENTITY-CODEC-C-ABI-V1.md`
+§4.1; (b) extend the differential to drive **refusal** inputs, not only valid ones, so a
+failure-set divergence cannot pass a green run again; (c) audit the remaining codec consumers
+for the unchecked-return-code shape.
 
 ## One thing that is NOT a defect, recorded so it is not "fixed" twice
 

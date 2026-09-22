@@ -2858,6 +2858,20 @@ admit_put:
 	mov  x3, x23
 	adr_l x4, ch_admit
 	bl   ec_content_hash
+	// The recompute can FAIL, and its failure is not the submitter's. On any
+	// non-EC_OK the C-ABI leaves `out` UNWRITTEN -- ch_admit is .bss holding zeros
+	// or the previous admission's digest -- so falling into the memeq below reports
+	// hash_mismatch: a codec refusal stated as an accusation about the submitter's
+	// bytes. Reachable, and not hypothetically: measured 2026-09-07, the two
+	// INTERCHANGEABLE C-ABI impls diverge on 5 of 8 `type` inputs -- the C one
+	// hashes a non-UTF-8 `type` and returns EC_OK, the Rust one returns
+	// EC_INVALID_ARGUMENT -- and `type` is attacker-controlled wire bytes here
+	// (CBOR major 3 does not enforce UTF-8, and step 1b only checks non-empty).
+	// A refusal to canonicalize the submission is a step-1 structural fault, so
+	// this is invalid_request. There is deliberately no 413 arm as on asm-x86_64:
+	// that peer's NATIVE codec has a real EC_OUT_OF_SPACE capacity mode and this
+	// one's .so has none. An impl that grows one needs the split.
+	cbnz w0, .Lap_invreq
 	adr_l x0, ch_admit
 	mov  x1, x24
 	mov  x2, #33

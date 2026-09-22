@@ -2883,6 +2883,22 @@ admit_put:
 	mov  %r15, %rcx
 	lea  ch_admit(%rip), %r8
 	call ec_content_hash
+	# The recompute can FAIL, and its failure is not the submitter's. ec_content_hash
+	# unwinds to its epilogue on error and leaves `out` UNWRITTEN -- ch_admit is .bss
+	# holding zeros or the previous admission's digest -- so falling straight into the
+	# memeq below compares the carried hash against a stale buffer and reports
+	# hash_mismatch: a peer capacity limit stated as an accusation about the
+	# submitter's bytes. Measured 2026-09-07 as exactly that (t1_3's 256 KiB staging
+	# entity, refused hash_mismatch with every input byte-correct). Distinguish:
+	#   -3 EC_DECODE_ERROR -- `data` is not decodable CBOR, which IS a step-1
+	#      structural fault -> invalid_request.
+	#   -2 EC_OUT_OF_SPACE (or anything else) -- this peer cannot canonicalize a value
+	#      that large -> 413 payload_too_large, the §4.10(a) disposition already used
+	#      for the frame cap. Never hash_mismatch.
+	cmp  $-3, %eax
+	je   .Lap_invreq
+	test %eax, %eax
+	jnz  .Lap_toobig
 	lea  ch_admit(%rip), %rdi
 	mov  %rbx, %rsi
 	mov  $33, %rcx
@@ -2899,6 +2915,9 @@ admit_put:
 	jmp  .Lap_done
 .Lap_hashmm:
 	mov  $3, %rax
+	jmp  .Lap_done
+.Lap_toobig:
+	mov  $4, %rax
 .Lap_done:
 	pop  %r15
 	pop  %r14
@@ -3006,6 +3025,8 @@ serve_tree_put:
 	je   .Lstp_unsupfmt
 	cmp  $3, %rax
 	je   .Lstp_hashmm
+	cmp  $4, %rax
+	je   .Lstp_toobig
 	jmp  .Lstp_invreq
 .Lstp_admitted:
 	# blob len = skip_value(entity) - entity
@@ -3047,6 +3068,14 @@ serve_tree_put:
 .Lstp_hashmm:
 	mov  $400, %rdi
 	lea  ec_hash_mismatch(%rip), %rsi
+	call send_error
+	jmp  .Lstp_done
+.Lstp_toobig:
+	# The submission is well-formed; this peer cannot canonicalize a value that
+	# large. A capacity refusal, correlated (unlike the §4.10(a) frame-cap 413,
+	# where the request_id is unavailable by construction).
+	mov  $413, %rdi
+	lea  ec_payload_too_large(%rip), %rsi
 	call send_error
 	jmp  .Lstp_done
 .Lstp_invalid:
