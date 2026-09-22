@@ -40,7 +40,10 @@ Every guess goes in `protocol-generator/<lang>/status/SPEC-AMBIGUITY-LOG.md`. Fo
 **Escalation:** <"arch — spec needs clarification" / "research — profile needs field" / "operator — local decision">
 ```
 
-**No silent guesses.** Items escalate to architecture as proposal candidates per `research/stewardship/HANDOFF-FROM-ARCH-v1.md`.
+**No silent guesses.** Every entry above is a proposal candidate for architecture. Keystone never
+edits the spec and never routes a change into a sibling repo: an entry is logged in the peer's own
+`status/SPEC-AMBIGUITY-LOG.md` (the format at the top of this section), and escalation is drafted
+here and pulled upstream on architecture's own schedule.
 
 ## No language-specific syntax in shared spec-data
 

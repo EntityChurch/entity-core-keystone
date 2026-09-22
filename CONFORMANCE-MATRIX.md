@@ -1035,9 +1035,15 @@ tools/run-cohort-census.sh                # everything (pre-release)
 A tier run gates **only the peers it ran** — otherwise `--tier M1` would exit non-zero because of a
 probe nobody re-ran, and the exit code would stop meaning anything.
 
-### Current state — 2026-08-30 @ the 755-check pin `95edd774…` (cohort closed, 46/46)
+### Current state — 2026-09-08 @ the 778-check pin `7aa6f3de…` (cohort closed, 46/46)
 
-| Tier | Current & 0-FAIL | State |
+**Every tier is current and 0-FAIL at the pin above**, confirmed by `tools/tier-status.py`. The
+`State` column below records when each tier was **first** brought to 0-FAIL — at the retired
+755-check pin `95edd774…` — because that closure is the evidence for how the debt was distributed,
+and back-dating it would destroy that. Each tier has since been **re-measured at every re-pin**
+(755 → 756 → 758 → 778); the current numbers are §1's, not this table's.
+
+| Tier | Current & 0-FAIL | First closed (755-check pin `95edd774…`) |
 |---|:---:|---|
 | **M1** | **5 / 5** | **Fixed 2026-08-21 — the re-pin is LANDED.** `tools/tier-status.py --gate` exits 0 |
 | **M2** | **8 / 8** | **Fixed 2026-08-22.** `typescript` 84F → 0F and `csharp` INVALID → 0F were the *same* §6.3 defect in its two presentations (§1b/§1c); the other 6 took the same CAP fix |

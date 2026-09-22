@@ -1919,6 +1919,58 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   verification is for is calibration in both directions:** the point is that the check is cheap
   and answers directly, not that packets are unreliable. One line, two minutes, and it either
   corroborates the sender or catches the thing they skimmed.
+- **RATIFIED, FOURTH OCCURRENCE OF THE PUBLISHED-PROSE CLASS — A CITATION THAT NEVER RESOLVED IS
+  INVISIBLE TO EVERY GATE, AND THE ONE WE HAD WAS NAMED IN AN ECOSYSTEM ADR TWO MONTHS AGO.**
+  2026-09-09, found by hand-walking the published surface during a status audit with all eleven
+  gates green. Three instances, one class — **published prose rots exactly where the gates are
+  scoped somewhere else** — and the third is the durable one:
+  - **The canonical register cited in-flight escalation packets by PATH.** `SPEC-FINDINGS-LOG.md`
+    is declared canonical; F54 and F58 each ended `Routed in \`…/HANDOFF-TO-ARCH-<date>-<slug>.md\``,
+    and those packets are undeclared under a doc-root prefix, so they strip. That is the standing
+    *"the index shipped and the evidence did not"* shape **in the exact file AGENTS.md names as its
+    enforcement point** — and `link-gate` is right not to fail it, because prose-to-prose citations
+    are parked by ruling. **A parked class still needs a rule for the one member the ruling was not
+    about: the register's evidence citations.** Fixed by naming the ROUTING DATE, never the path —
+    the packet is a process artifact, the finding is the research output, and only the second one
+    publishes. **Enforcement: `grep -n 'research/stewardship/HANDOFF' research/stewardship/SPEC-FINDINGS-LOG.md`
+    must return nothing.**
+  - **A section headed "Current state" was anchored to a pin retired three flips earlier**
+    (`CONFORMANCE-MATRIX.md` §4, `2026-08-30 @ the 755-check pin`, while §1 published `778`).
+    `coherence-gate` is scoped to §1's rows and the 46 per-peer banners, so §2–§4 prose can go
+    stale with every gate green. The table's contents were still TRUE — they record when each tier
+    FIRST closed — so the fix is to say which question the table answers, not to back-date it.
+  - **A HANDOFF-FROM-ARCH doc HAS NEVER EXISTED — `git log --all` on it is empty — and it was
+    cited from `protocol-generator/shared/lifecycle/PROMPT-CONSTANTS.md`, which PUBLISHES.** Both
+    link-gate checks are structurally blind to it: check 1 resolves markdown links in the
+    bracket-then-parenthesis form and this is a **backticked inline path**, check 2 fires on
+    non-prose citations only. **[ADR-0021]'s own
+    follow-up list names it** — *"keystone HANDOFF-FROM-ARCH-v1 → non-HANDOFF name"* — having
+    assumed it existed and needed renaming off a scrubbed prefix. It did not need renaming; it
+    needed deleting, and the sentence it anchored was redundant with line 31 of its own file.
+  **Three things generalize, and the second is a correction of this entry's own first draft.**
+  (a) **A dangler that never existed cannot be found by any diff, any rename sweep, or any tool
+  that reasons from history — only by resolving the path.**
+  (b) **THE OBVIOUS GATE DOES NOT SURVIVE THE TREE, AND MEASURING IT IS WHAT SAID SO.** This entry
+  first prescribed "harvest every backticked `.md` and stat it" as a link-gate check 3. Measured:
+  **863 candidates → 318 unresolved**, because root-relative shorthand (`status/PHASE-S2.md` means
+  *this peer's*) is correct prose and unresolvable by construction; scoping to repo-rooted paths
+  gives **418 → 38**, and even those carry an irreducible ambiguity because **`docs/` is a top-level
+  directory here AND in every sibling**, so the generator's `docs/spec/…` is indistinguishable from
+  ours by path alone. That is the standing *"a check that cannot separate its signal from its noise
+  is broken, not weak — scope it or drop it, and say which"* rule applied to a gate **I had already
+  written into this file**. It ships as a probe with its triage in its own docstring
+  (`shared/diagnostics/backticked-path-resolution-probe.py`), not as an eleventh-and-a-half gate.
+  (c) **THE DISCRIMINATOR IS NOT "DOES IT RESOLVE" — IT IS LIVE INSTRUCTION vs PROVENANCE.** Of the
+  38, one was a live instruction (*"escalate per `X`"*) and was fixed; **~15 are `research/RELEASE-
+  READINESS.md`, a peer-selection slate that also never existed here**, cited by four peers' dated
+  phase records — and those were deliberately NOT rewritten, because a dated snapshot that gets
+  back-edited stops being evidence of anything. Sweeping the two together would have destroyed
+  fifteen records to fix one pointer. **Fix what points a reader somewhere on purpose; leave what
+  records what was believed on a date.**
+  (d) **An ADR follow-up item is a claim about the tree with no gate on it** — this one was wrong
+  about the defect's nature for two months and nothing re-read it. When an ADR names a known defect
+  in your repo, resolve it or record why it is still open; an unactioned follow-up reads as tracked
+  and is not.
 - **NO GATE ASKS WHETHER THE PUBLISHED TREE IS INTERNALLY COHERENT — and every defect this
   release cycle was found by walking it by hand.** Ratified 2026-08-23 (arrived as the one habit
   the release earned, and it is now ours because we are the repo it kept finding things in).
