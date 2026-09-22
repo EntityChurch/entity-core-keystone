@@ -493,6 +493,56 @@ contract — check it (not the dated STATUS narrative) first.
   evidence. References in `docs/status/` and `docs/archive/` were deliberately left pointing at
   the old names — a dated snapshot that gets back-edited stops being evidence of anything — and
   the old→new map sits beside the register as an internal breadcrumb, undeclared on purpose.
+- **A PACKET NOBODY ENUMERATES IS A PACKET NOBODY RECEIVES — one TRACKER per counterpart, at a
+  predictable path, edited in place.** Ecosystem convention, adopted 2026-09-09 on arch's
+  `SEAT-CLEANUP-INSTRUCTIONS-2026-09-09.md`. **`docs/status/TRACKER-<counterpart-repo>.md`**, four
+  sections — *Open — asks* (stable ids, **one sentence naming what must be decided**, the packet's
+  FULL stem, and the *kind* of answer) · *Corrections we owe them* · *Filed, nothing owed back to
+  us* · *Closed*. Three today: `entity-system-architecture`, `entity-system-generator`,
+  `entity-core-formalization`.
+  **The failure it fixes is arch's, and it is the mirror of ours above.** Delivery here is *"commit
+  a document to your own tree and the other party reads it"* — no queue, no notification — so a
+  counterpart answering *"what does this seat need from us"* has to read a whole tree. Arch did,
+  counted **one seat's private architecture notes as an inbox, and reported 44 open items where
+  that seat's own tracker said eleven.**
+  **Four rules, and the last two are the ones that will bite here.** Stable ids, never renumbered —
+  ours are the register's `F<NN>` for arch, because minting a parallel `A-n` space for asks already
+  cited in both trees is the citation-collision problem in a new place, and that deviation is
+  stated *in* the tracker. **"Filed, nothing owed back" is a real section and most documents belong
+  in it** — a review sent for information is not an open ask, and treating one as an ask is exactly
+  what produced the 44. **`Filed` ≠ `routed` ≠ `answered`; default to NOT ESTABLISHED** — every row
+  says which, and a packet committed to our tree with no cited reply is *not* delivered. **Archived
+  is not delivered: close on their receipt, never on our own completion.**
+  **Enforcement, and it is a reconciliation rather than a grep:** `git ls-files
+  research/stewardship/HANDOFF-TO-*` names the packets, `docs/status/TRACKER-*.md` names the asks,
+  and **every in-flight packet must appear in exactly one tracker section.** The trackers are under
+  `docs/status/`, which never publishes ([ADR-0031]) — that is correct and deliberate: this is
+  ecosystem operations, which by the publication rule does not belong in any file we declare
+  canonical.
+  **Routing, going forward only — do not rename history:** `docs/status/ROUTING-<date>-<letter>-<recipient>-<slug>.md`,
+  opening with `**To:**` / `**From:**` / `**cc:**` **each on its own line**, `To:` naming
+  REPOSITORIES (a brace list is fine), `cc:` meaning *not on the hook*. **Cite a packet by its FULL
+  stem, never `ROUTING-<date>-<letter>`** — that id is unique to one repo on one day, which is not
+  unique, and three ids in this ecosystem already reach three different packets each.
+  **AND THE SECTION THAT SPECIFIES ALL THIS IS NOT IN OUR COPY OF THE STANDARD — a finding that
+  was ALREADY MADE, better, by the seat next door.** The instructions say `AGENTS-STANDARD.md`
+  §*Routing packets* *"already specifies this and it has simply not been adopted."* Measured across
+  six repos the day we adopted it: the section exists in `entity-system-architecture` and
+  `entity-system-generator` **only** — absent from `entity-core-keystone`, `entity-core-go`,
+  `entity-core-protocol`, `entity-core-formalization` **and from the meta-root canonical copy.**
+  `entity-system-generator`'s `HANDOFF-2026-09-09-c-the-outbox-nobody-could-route-and-the-standard-that-moved-in-one-tree.md`
+  §1 had it first and with better evidence — line counts and sha256 (canonical and theirs 231 /
+  `c3b32f98…`, arch's **305** / `674cfad7…`) — plus the mechanism, which we did not have: **arch
+  edited its own copy under a clause arch added to its own copy the same day**, and the operator
+  ruled that seat may take §*Routing packets* alone with a provenance blockquote. **We did NOT take
+  it**: line 4 of our copy still says *"Do not edit it in your repo"* and no ruling reaches this
+  seat, so the convention lives HERE, in the file that is ours to write.
+  **Two things generalize.** (a) **Before recording that a convention was ignored, check that it
+  was DELIVERED** — *"not adopted"* and *"not injected"* read identically from the receiving end
+  and have opposite owners. (b) **Check whether a sibling already found it before writing it up as
+  yours** — the standing rule to record corroboration with the same weight as a catch, reached from
+  the side where WE are the second finder. `git log --since` in the sibling's `docs/status/` is one
+  command, and it is the same discipline as re-deriving a routed claim.
 - **After any repo-wide mechanical commit** (global find/replace, date-stamp, rename), don't
   trust the "just docs" framing — re-verify the SHA-256 spec-data pins and machine-consumed
   values (lockfile build-metadata, Containerfile `ARG …=DATE`, Go pseudo-versions) before

@@ -236,6 +236,20 @@ cannot express it.
 
 ### 3c. Standing, lower priority
 
+- **The F62 gate — one Kind C check for §6.6 index/walk equivalence.** The *peers* are closed (7 of
+  7, 2026-09-09); what is owed is the thing that keeps them closed. **`smalltalk` is the only one of
+  the seven with a gate**, a peer-local unit test, and replicating that shape across COBOL, Forth,
+  Fortran and three assembly languages would be six divergent gates over one rule — in three of
+  which the unit harness cannot reach the dispatch path at all. One Kind C check covers all 46,
+  retroactively gates `smalltalk`, and is F62's own Ask 1 in the form this repo is permitted to
+  author (`docs/VERIFICATION-ARCHITECTURE.md` — it corroborates the oracle, never overrides it, and
+  never enters a published number). **Sizing:** the wire plumbing is `host-seam-probe`'s, which has
+  been driven against all 46 peers — transport is not semantics, so borrowing it removes a class of
+  instrument bugs rather than adding one; the new work is the spec derivation, the controls and the
+  roster runner. **Sequencing note, and it is the reason this sits here rather than higher:** if
+  arch takes Ask 1, the oracle ships a vector on this surface and a Kind C check on it becomes a
+  second source of truth for something already measured — so this is better decided *with* the arch
+  conversation than before it.
 - **S3 has 28 no-gate peers**, and it is the one axis with no external authority — which is exactly
   the axis whose checks have twice gone stale silently.
 - **The two FFI gaps** in §2.

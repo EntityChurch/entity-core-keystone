@@ -53,6 +53,15 @@ That is the state 20 of 46 peers are in, and no published number says so.
 > **F62**; chain in [`handler-resolution-index-equivalence.md`](handler-resolution-index-equivalence.md).
 > The verdict names and the measurement in this document are unchanged and correct — what was wrong
 > is the conformance framing laid over them.
+>
+> **All seven are repaired as of 2026-09-09 and the `NOT-RESOLVED` group is empty.** The counts
+> below are the measurement as taken and stay that way; F62 carries the current state. One detail
+> from the repair belongs here rather than there, because it is about **this document's own
+> method**: the per-peer `dispatch_read_site` values this census reasoned from named the
+> **body-selection ladder** rather than the §6.6 resolution site on three of the seven, which made
+> F62 size their repair as *"needs a container first"* when they were already walking the tree.
+> **A census keyed on a hand-traced source field inherits that field's errors** — the field is
+> corrected on all six, and the durable form of the lesson is in `AGENTS.md`.
 
 ## The three ways to fail are different problems
 
@@ -61,8 +70,12 @@ The split is the part a source read could not have produced, and each row is a d
 - **`REGISTER-DROPPED-EXPRESSION-PATH` (9).** `system/handler:register` answers **200** and binds a
   handler entity carrying **no `expression_path`** — the body reference is accepted and silently
   discarded. The caller is told it succeeded.
-- **`NOT-RESOLVED` (7).** The handler entity is bound *with* its `expression_path`, and dispatch
-  answers **404 `handler_not_found`**. §6.6 resolution does not see what register wrote.
+- **`NOT-RESOLVED` (7 as measured; **0 as of 2026-09-09** — all seven repaired, see F62).** The
+  handler entity is bound *with* its `expression_path`, and dispatch answers **404
+  `handler_not_found`**. §6.6 resolution does not see what register wrote. **The seven are now
+  `BOUND-NOT-EVALUATED`**, which moves them into the third row below and leaves this row empty; the
+  census figures in this document are the 2026-09-09 measurement and are deliberately not
+  back-edited, since the split is what the finding is evidence OF.
 - **`BOUND-NOT-EVALUATED` (3).** Bound correctly, dispatch answers **501** — the honest shape. The
   peer stores an installed body and has no evaluator. This is the only one of the three that is
   merely a missing feature rather than a broken promise.

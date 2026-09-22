@@ -10,6 +10,33 @@ Cross-language register of findings surfaced by keystone work. Per-language spec
 
 **Why this section exists**: arch caught itself twice in one session about to draft proposals for already-folded work because the pipe-table cells below carried stale "Open" status. Cells are append-only history; this section is the **current** disposition. Read here first; pipe-table is for provenance.
 
+> **F62 — OUR HALF IS CLOSED at 7 of 7, measured 2026-09-09. THE TWO ASKS ARE UNCHANGED AND STILL
+> OPEN.** Both halves matter and they are separate: the peers are repaired, and **nothing in the
+> 778-check set can tell you that**, which is exactly what the vector ask is for.
+> **Peers:** all seven that answered `404 handler_not_found` at a pattern where a `system/handler`
+> entity provably exists — `asm-arm64 asm-x86_64 cobol forth fortran riscv64 smalltalk` — now answer
+> `501 no_handler_body`, with every negative control still `404` and **`0 of 778` severities moved on
+> every peer** at the pinned executed set (`7aa6f3de…`).
+> **The row below says "the other six need a container first". That was wrong about three of them,
+> and the correction is worth more than the closure.** `cobol` and `fortran` were **already walking
+> the entity tree** at §6.6; their `404` came from the rung *below* resolution, where a
+> body-selection ladder spelled *"resolved, no body"* as `handler_not_found`. `forth` was walking
+> too — and **querying a key space nothing else wrote** (bootstrap bound at the bare pattern, every
+> other write at `/<local>/<pattern>`), so §6.6 equivalence had nothing to be equivalent to. Only
+> the ISA trio needed a walk built. The bad estimate came from this finding's own evidence table,
+> which was keyed on each peer's H5 `dispatch_read_site` — and on those three that field named the
+> **ladder** rather than the resolution site. **The field that exists to tell a live host from a
+> dead map is the field that mis-scoped the repair**; all six are corrected in `profile.toml`.
+> **Still owed on our side: the gate.** `smalltalk` shipped a peer-local unit test; six of those
+> across COBOL, Forth, Fortran and three assembly languages would be six divergent gates over one
+> rule, and the ISA units cannot reach the dispatch path. The right artifact is one **Kind C**
+> independent check for §6.6 index/walk equivalence — 46 peers, one reading, and it retroactively
+> gates `smalltalk`. Until it exists the evidence is `tools/host-seam-probe`, which measures and
+> does not gate. **Ask (a)** — one vector, EXECUTE at `coreRegisterTestPattern` after
+> `core_register_handler_at_path`, *not* asserting 200 — and **ask (b)**, confirming that the
+> index-equivalence MUST binds a peer that builds no index at all, are both unchanged: a repaired
+> cohort is not a reason to withdraw a request for the check that would have caught it.
+
 > **CLOSED (operator), measured 2026-09-02 — F53: a superseded DUPLICATE of the crypto-agility
 > corpus was answering, and the peers that transcribed it passed the defect the peers that loaded
 > it failed on.**
