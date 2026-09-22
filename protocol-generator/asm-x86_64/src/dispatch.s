@@ -2292,7 +2292,8 @@ serve_tree_get:
 	ret
 
 # typestore_lookup(rsi = target ptr, rcx = target len) -> rax = blob ptr|0, rdx = blob len.
-# Linear scan of the generated type_table (200 entries); exact string match on the path
+# Linear scan of the generated type_table (the core floor, currently 58 entries;
+# the count is read from type_table_count, never assumed); exact string match on the path
 # (the listing path "system/type/" carries its trailing slash, so it matches verbatim too).
 	.type typestore_lookup, @function
 typestore_lookup:

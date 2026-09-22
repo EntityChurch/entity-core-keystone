@@ -11,6 +11,57 @@ Work since the initial public research-preview. No release has been cut; this se
 running record, not a version claim. **`CONFORMANCE-MATRIX.md` is the authoritative per-peer
 state** — the entries here are a summary of what moved and why, and they defer to it on numbers.
 
+### ISA host hardening ported (2026-08-30) — `asm-arm64` and `riscv64` reach `313P/336W`
+
+`asm-x86_64`'s four `host.s`/`dispatch.s` hardenings went across to the other two ISA peers, so all
+three now sit on the same row: the child closes the **inherited listen fd**; a **30 s socket idle
+deadline** bounds a connection waiting on bytes that never arrive; the **§4.10(c) admission bound**
+caps live connection children at 64 and refuses the rest by close; and the **§4.10(a) oversize path**
+answers `413 payload_too_large` immediately rather than draining the declared body first.
+
+- `r3_connection_flood` WARN → PASS on both. **Exactly one check moved on each peer**, verified
+  per-check before against after; both stay `755 · 0F`.
+- **This was ISA parity, not catch-up.** `r3_connection_flood` was WARNing on 44 of 46 peers with
+  only `asm-x86_64` and `pd` self-bound, and is now 42 of 46. §4.10(c) is a SHOULD that most peers
+  delegate to the supervisor; the cohort-wide finding is unchanged.
+- **The admission counter has to be reaped twice** — before the blocking `accept4` *and* after it
+  returns. The first reap runs before the parent parks, so children that exit while it is parked are
+  still counted as live when it wakes; at the bound that makes a working cap present as a dead peer.
+- **On RISC-V the bound is a value comparison, not a compare-then-branch-on-flag**, since the ISA has
+  no condition-flags register — the same restatement §5.6 rule 3's overflow test needed.
+- §4.10(a)'s "reject *before* fully buffering" forbids the drain that reads as the more polite
+  choice: draining a declared body to keep the stream framed is the fully-buffering the section
+  forbids, one buffer at a time.
+
+### ISA type-registry scope (2026-08-30) — **a correct fix that lowered a published pass count by 282**
+
+The last unambiguous defect behind a green row is closed. `asm-x86_64`, `asm-arm64` and `riscv64`
+published ~200 type-registry entries including whole standard-extension vocabularies — `compute/*`,
+`system/registry/*`, `clock/*`, `continuation/*`, `relay/*`, `query/*` and more — against the
+standing rule that a core peer never pre-publishes them. The oracle scores non-floor types
+*matched-if-present*, so those entries had been converting **282 `type_system` WARNs into PASSes**.
+
+- **`src/typestore.s` is now filtered to the 53-name core floor.** `asm-x86_64` `595P/54W →
+  313P/336W`; `asm-arm64` and `riscv64` `594P/55W → 312P/337W`. All three remain `755 · 0F`, and all
+  three now sit on the cohort-standard row instead of above it.
+- **The pass count falling by 282 IS the fix.** Verified per-check on each peer, before against
+  after: exactly 282 checks changed, every one in `type_system`, every one PASS→WARN, and nothing
+  outside that category moved. The three remaining severity deltas against `go` are all pre-existing
+  and named elsewhere. A higher pass count from a scope violation is not better conformance.
+- **The scope filter belongs at the point of publication, not in the harvest.** These peers have no
+  data model to reflect a registry over, so the store is harvested byte-exact from the *reference*
+  peer — which is a full peer and serves every extension vocabulary. The harvest is left intact as
+  evidence of what it serves; `gen-typestore.py` filters, carrying the floor as a fail-closed
+  **keep-list** (a drop-list would silently publish whatever a future harvest adds, while a missing
+  floor type is a loud hard FAIL).
+- **`riscv64`'s harvest input had never been committed** — 0 files tracked, not gitignored, simply
+  absent — so its generator could not run from a clean clone and its `typestore.s` was an artifact
+  with no in-tree input. Now committed; all three regenerate byte-identically from their own copy.
+
+The floor was corroborated exact rather than assumed: `rust python haskell ocaml swift java c
+typescript` publish a set byte-for-name identical to `go`'s 53, with no extension vocabulary in any
+of them.
+
 ### `apl` was never unmeasurable (2026-08-30) — **45 → 46 of 46, the cohort closes for real**
 
 Filed hours after the entry below, which claimed the cohort was closed at 45 with `apl` excluded
@@ -98,7 +149,8 @@ upstream toolchain reason (GNU deleted the pinned tarball), which is not a confo
 
 **Disclosed rather than closed.** The ISA trio still over-publishes extension type vocabularies, so
 their `594-595P/53-55W` is a scope violation and not better conformance than the cohort-standard
-`312P/337W`; `asm-arm64`/`riscv64` never received `asm-x86_64`'s §4.10(c) admission bound (a SHOULD,
+`312P/337W` *(closed later the same day — see the ISA type-registry scope entry above)*;
+`asm-arm64`/`riscv64` never received `asm-x86_64`'s §4.10(c) admission bound (a SHOULD,
 scored WARN); `cobol` cannot accept two concurrency probes' payloads and now refuses them with `413`
 instead of crashing. **45 of 45 is cohort-consistency, not independent convergence** — one
 generation lineage, one author's vectors, one pinned check set.

@@ -42,10 +42,12 @@ held all the way through the cohort.
 lineage and pass one author's vectors at one pinned check set: **cohort-consistent, not
 independent convergence**. Three of the four defects closed on 2026-08-30 had been *passing*
 checks for months for reasons unrelated to what those checks test — and one of the four peers
-was quarantined that whole time under a diagnosis that turned out to be wrong. Two rows carry a
-disclosed gap behind a green verdict (the ISA trio's type-registry over-publication; `cobol`'s
-two unreachable concurrency payloads); both are named in `CONFORMANCE-MATRIX.md` §1a and its
-footnotes rather than left to be discovered.
+was quarantined that whole time under a diagnosis that turned out to be wrong. One row carries a
+disclosed gap behind a green verdict — `cobol`'s two unreachable concurrency payloads — named in
+`CONFORMANCE-MATRIX.md` §1a and its footnotes rather than left to be discovered. The ISA trio's
+type-registry over-publication was the second such gap and is **closed as of 2026-08-30**; the fix
+*lowered* those peers' pass counts by 282, which is what closing a matched-if-present scope
+violation looks like.
 
 **The last five peers, 2026-08-30.** `cobol` 30F → 0F: 24 of the 30 were a cascade behind one
 unchecked copy of wire data into a fixed field, which hardened libc turned into a process kill.
@@ -83,18 +85,29 @@ convergence** — they share a generation lineage and, for the FFI-hybrid peers,
    with a real three-row verdict, so a standalone peer can decide it; `go` WARNs because all three
    rows return `404 handler_not_found` — unrouted, not undecidable. Read a PASS peer against `go`
    and find out whether the 39 share one defect.
-2. **The ISA trio's type-registry over-publication** (`CONFORMANCE-MATRIX.md` §1a.4). `typestore.s`
-   publishes ~200 entries including whole standard-extension vocabularies, which the oracle scores
-   *matched-if-present* — so 283 `type_system` checks that WARN for every other peer PASS for these
-   three. That is the whole reason they read `594-595P/53-55W` against the cohort-standard
-   `312P/337W`. **Their reaching 0-FAIL did not retire this**; if anything it makes it easier to
-   miss, because no FAIL count draws the eye there any more.
-3. **Port `asm-x86_64`'s four `host.s` hardenings to `asm-arm64` and `riscv64`** — the inherited
-   listen fd, the idle read deadline, the §4.10(c) admission bound and the §4.10(a) oversize path.
-   Worth doing for ISA parity, but **not** because those two rows are behind the cohort: measured
-   2026-08-30, `r3_connection_flood` WARNs on **44 of 46 peers** and only `asm-x86_64` and `pd`
-   self-bound admission. §4.10(c) is a SHOULD that most peers delegate to the supervisor, so this
-   never gates — and describing it as something two ISA peers owe a third had it backwards.
+2. ~~**The ISA trio's type-registry over-publication**~~ ✅ **CLOSED 2026-08-30**
+   (`CONFORMANCE-MATRIX.md` ⁹). `typestore.s` published ~200 entries including whole
+   standard-extension vocabularies, which the oracle scores *matched-if-present* — so 282
+   `type_system` checks that WARN for every other peer PASSed for these three, which was the whole
+   reason they read `594-595P/53-55W` against the cohort-standard `312P/337W`. Now filtered to the
+   53-name core floor: `313P/336W` / `312P/337W` / `312P/337W`, all still `755 · 0F`, exactly 282
+   checks changed and none outside `type_system`. **The fix lowered a published pass count**, which
+   is the correct direction here and the one a reviewer reverts by reflex. Two things surfaced in
+   the doing: the filter lives in the generator as a fail-closed **keep-list** (the harvest is taken
+   from the FULL reference peer and stays intact as evidence), and **`riscv64`'s harvest input had
+   never been committed**, so its generator could not run from a clean clone.
+3. ~~**Port `asm-x86_64`'s four `host.s` hardenings to `asm-arm64` and `riscv64`**~~ ✅ **DONE
+   (2026-08-30)** — the inherited listen fd, the 30 s socket idle deadline, the §4.10(c) admission
+   bound and the §4.10(a) oversize path. `r3_connection_flood` WARN→PASS on both, exactly one check
+   moved on each peer, and all three ISA rows now read `313P/336W` at `755 · 0F`. Done for **ISA
+   parity, not catch-up**: `r3_connection_flood` was WARNing on **44 of 46 peers** with only
+   `asm-x86_64` and `pd` self-bound, and is now 42 of 46. §4.10(c) is a SHOULD that most peers
+   delegate to the supervisor, so this never gates — and describing it as something two ISA peers
+   owed a third had it backwards. Two things worth carrying: the admission counter must be **reaped
+   twice** (before the blocking `accept4` *and* after it returns, or children that exit while the
+   parent is parked still count as live and the bound presents as a dead peer), and on **RISC-V the
+   bound is a value comparison** rather than a compare-then-branch-on-flag, the same restatement
+   §5.6 rule 3's overflow test needed.
 4. **`cobol`'s 8192-byte per-entity ceiling**, if a peer that can hold larger entities is wanted.
    Two concurrency probes stage 256 KiB and 16 KiB payloads; the first cannot fit its 65535-byte
    frame cap at all, and the second is refused with `413`. Raising the ceiling means raising every

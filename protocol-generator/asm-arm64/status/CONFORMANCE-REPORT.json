@@ -1,14 +1,14 @@
 {
   "peer_addr": "127.0.0.1:7777",
   "peer_id": "2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg",
-  "timestamp": "2026-08-30T13:05:45Z",
+  "timestamp": "2026-08-30T17:35:28Z",
   "summary": {
     "total": 755,
-    "passed": 594,
-    "warned": 55,
+    "passed": 313,
+    "warned": 336,
     "failed": 0,
     "skipped": 106,
-    "elapsed_ms": 17978,
+    "elapsed_ms": 11739,
     "self_checks": 4
   },
   "checks": [
@@ -261,325 +261,325 @@
       "severity": "PASS",
       "message": "system/type/ listing returned 7 entries",
       "spec_ref": "Types §11.4",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_apply_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/apply",
+      "severity": "WARN",
+      "message": "compute/apply absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_apply_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_arithmetic_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/arithmetic",
+      "severity": "WARN",
+      "message": "compute/arithmetic absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_arithmetic_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_closure_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/closure",
+      "severity": "WARN",
+      "message": "compute/closure absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_closure_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_compare_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/compare",
+      "severity": "WARN",
+      "message": "compute/compare absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_compare_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_construct_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/construct",
+      "severity": "WARN",
+      "message": "compute/construct absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_construct_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_error_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/error",
+      "severity": "WARN",
+      "message": "compute/error absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_error_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_field_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/field",
+      "severity": "WARN",
+      "message": "compute/field absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_field_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_if_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/if",
+      "severity": "WARN",
+      "message": "compute/if absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_if_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_index_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/index",
+      "severity": "WARN",
+      "message": "compute/index absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_index_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_lambda_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/lambda",
+      "severity": "WARN",
+      "message": "compute/lambda absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_lambda_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_length_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/length",
+      "severity": "WARN",
+      "message": "compute/length absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_length_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_let_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/let",
+      "severity": "WARN",
+      "message": "compute/let absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_let_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_literal_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/literal",
+      "severity": "WARN",
+      "message": "compute/literal absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_literal_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_logic_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/logic",
+      "severity": "WARN",
+      "message": "compute/logic absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_logic_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_lookup_hash_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/lookup/hash",
+      "severity": "WARN",
+      "message": "compute/lookup/hash absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_lookup_hash_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_lookup_scope_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/lookup/scope",
+      "severity": "WARN",
+      "message": "compute/lookup/scope absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_lookup_scope_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_lookup_tree_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/lookup/tree",
+      "severity": "WARN",
+      "message": "compute/lookup/tree absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_lookup_tree_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_numeric_cast_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/numeric-cast",
+      "severity": "WARN",
+      "message": "compute/numeric-cast absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_numeric_cast_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/result",
+      "severity": "WARN",
+      "message": "compute/result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_scope_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/compute/scope",
+      "severity": "WARN",
+      "message": "compute/scope absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_compute_scope_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -877,7 +877,7 @@
       "severity": "PASS",
       "message": "fetched system/type/system/capability/path-scope",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -970,144 +970,144 @@
     {
       "category": "type_system",
       "name": "type_system_clock_compare_params_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/clock/compare-params",
+      "severity": "WARN",
+      "message": "system/clock/compare-params absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_compare_params_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_compare_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/clock/compare-result",
+      "severity": "WARN",
+      "message": "system/clock/compare-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_compare_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_config_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/clock/config",
+      "severity": "WARN",
+      "message": "system/clock/config absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_config_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_hlc_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/clock/hlc",
+      "severity": "WARN",
+      "message": "system/clock/hlc absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_hlc_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_logical_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/clock/logical",
+      "severity": "WARN",
+      "message": "system/clock/logical absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_logical_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_state_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/clock/state",
+      "severity": "WARN",
+      "message": "system/clock/state absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_state_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_tick_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/clock/tick",
+      "severity": "WARN",
+      "message": "system/clock/tick absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_tick_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_timestamp_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/clock/timestamp",
+      "severity": "WARN",
+      "message": "system/clock/timestamp absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_timestamp_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_vector_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/clock/vector",
+      "severity": "WARN",
+      "message": "system/clock/vector absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_clock_vector_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -1146,32 +1146,32 @@
     {
       "category": "type_system",
       "name": "type_system_compute_filter_args_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/compute/filter-args",
+      "severity": "WARN",
+      "message": "system/compute/filter-args absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_compute_filter_args_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_compute_fold_args_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/compute/fold-args",
+      "severity": "WARN",
+      "message": "system/compute/fold-args absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_compute_fold_args_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -1194,48 +1194,48 @@
     {
       "category": "type_system",
       "name": "type_system_compute_install_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/compute/install-request",
+      "severity": "WARN",
+      "message": "system/compute/install-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_compute_install_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_compute_install_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/compute/install-result",
+      "severity": "WARN",
+      "message": "system/compute/install-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_compute_install_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_compute_map_args_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/compute/map-args",
+      "severity": "WARN",
+      "message": "system/compute/map-args absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_compute_map_args_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -1258,48 +1258,48 @@
     {
       "category": "type_system",
       "name": "type_system_compute_scope_binding_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/compute/scope-binding",
+      "severity": "WARN",
+      "message": "system/compute/scope-binding absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_compute_scope_binding_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_compute_store_args_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/compute/store-args",
+      "severity": "WARN",
+      "message": "system/compute/store-args absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_compute_store_args_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_compute_subgraph_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/compute/subgraph",
+      "severity": "WARN",
+      "message": "system/compute/subgraph absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_compute_subgraph_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -1322,88 +1322,88 @@
     {
       "category": "type_system",
       "name": "type_system_content_blob_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/content/blob",
+      "severity": "WARN",
+      "message": "system/content/blob absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_content_blob_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_content_chunk_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/content/chunk",
+      "severity": "WARN",
+      "message": "system/content/chunk absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_content_chunk_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_content_descriptor_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/content/descriptor",
+      "severity": "WARN",
+      "message": "system/content/descriptor absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_content_descriptor_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/continuation",
+      "severity": "WARN",
+      "message": "system/continuation absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_abandon_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/continuation/abandon-request",
+      "severity": "WARN",
+      "message": "system/continuation/abandon-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_abandon_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_advance_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/continuation/advance-request",
+      "severity": "WARN",
+      "message": "system/continuation/advance-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
@@ -1411,31 +1411,31 @@
       "category": "type_system",
       "name": "type_system_continuation_advance_request_match",
       "severity": "WARN",
-      "message": "hash mismatch with 1 structural difference(s) (open-type-tolerable): [field \"round_id\": optional locally, missing remotely (spec: primitive/uint?)] (local: ecf-sha256:460df364f645fd85f7728ff0a99fb94528645fd842897bf6a68a850f6f0e00a5, remote: ecf-sha256:6787b3db655529a9633f37dbba0778e439aae42a317c41eec584a76da39de94e)",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_install_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/continuation/install-result",
+      "severity": "WARN",
+      "message": "system/continuation/install-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_install_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_join_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/continuation/join",
+      "severity": "WARN",
+      "message": "system/continuation/join absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
@@ -1443,71 +1443,71 @@
       "category": "type_system",
       "name": "type_system_continuation_join_match",
       "severity": "WARN",
-      "message": "hash mismatch with 5 structural difference(s) (open-type-tolerable): [field \"completion_deadline_ms\": optional locally, missing remotely (spec: primitive/uint?) field \"on_incomplete\": optional locally, missing remotely (spec: primitive/string?) field \"received_status\": optional locally, missing remotely (spec: map_of(primitive/uint)?) field \"round_id\": optional locally, missing remotely (spec: primitive/uint?) field \"round_started_ms\": optional locally, missing remotely (spec: primitive/uint?)] (local: ecf-sha256:47f49647501c6af98a5e54a98846c5d4bcec835721a33c7badfe5f7de473d56f, remote: ecf-sha256:3c65eb66a24001409c21472b73b274e0565fc850a02ec04230090a3511e81a7d)",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_resume_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/continuation/resume-request",
+      "severity": "WARN",
+      "message": "system/continuation/resume-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_resume_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_suspended_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/continuation/suspended",
+      "severity": "WARN",
+      "message": "system/continuation/suspended absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_suspended_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_transform_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/continuation/transform",
+      "severity": "WARN",
+      "message": "system/continuation/transform absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_transform_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_transform_op_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/continuation/transform-op",
+      "severity": "WARN",
+      "message": "system/continuation/transform-op absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_continuation_transform_op_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -1546,272 +1546,272 @@
     {
       "category": "type_system",
       "name": "type_system_discovery_announce_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/discovery/announce-request",
+      "severity": "WARN",
+      "message": "system/discovery/announce-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_discovery_announce_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_discovery_announce_stop_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/discovery/announce-stop-request",
+      "severity": "WARN",
+      "message": "system/discovery/announce-stop-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_discovery_announce_stop_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_discovery_candidate_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/discovery/candidate",
+      "severity": "WARN",
+      "message": "system/discovery/candidate absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_discovery_candidate_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_discovery_decision_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/discovery/decision",
+      "severity": "WARN",
+      "message": "system/discovery/decision absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_discovery_decision_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_discovery_identity_claim_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/discovery/identity-claim",
+      "severity": "WARN",
+      "message": "system/discovery/identity-claim absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_discovery_identity_claim_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_discovery_scan_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/discovery/scan-request",
+      "severity": "WARN",
+      "message": "system/discovery/scan-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_discovery_scan_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_discovery_scan_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/discovery/scan-result",
+      "severity": "WARN",
+      "message": "system/discovery/scan-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_discovery_scan_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_durability_advertisement_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/durability-advertisement",
+      "severity": "WARN",
+      "message": "system/durability-advertisement absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_durability_advertisement_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_durability_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/durability-request",
+      "severity": "WARN",
+      "message": "system/durability-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_durability_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_durability_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/durability-result",
+      "severity": "WARN",
+      "message": "system/durability-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_durability_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_encrypted_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/encrypted",
+      "severity": "WARN",
+      "message": "system/encrypted absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_encrypted_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_encryption_pubkey_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/encryption-pubkey",
+      "severity": "WARN",
+      "message": "system/encryption-pubkey absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_encryption_pubkey_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_encryption_handoff_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/encryption/handoff",
+      "severity": "WARN",
+      "message": "system/encryption/handoff absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_encryption_handoff_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_encryption_kdf_params_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/encryption/kdf-params",
+      "severity": "WARN",
+      "message": "system/encryption/kdf-params absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_encryption_kdf_params_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_encryption_key_backup_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/encryption/key-backup",
+      "severity": "WARN",
+      "message": "system/encryption/key-backup absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_encryption_key_backup_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_encryption_revocation_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/encryption/revocation",
+      "severity": "WARN",
+      "message": "system/encryption/revocation absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_encryption_revocation_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_encryption_wrapped_key_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/encryption/wrapped-key",
+      "severity": "WARN",
+      "message": "system/encryption/wrapped-key absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_encryption_wrapped_key_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -1853,7 +1853,7 @@
       "severity": "PASS",
       "message": "fetched system/type/system/handler/interface",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -2077,7 +2077,7 @@
       "severity": "PASS",
       "message": "system/network/observe-address-result absent — EXTENSION-NETWORK §6.7 (reachability facts) is OPTIONAL as a whole (§12.3) and a peer that declines the section does not owe its types (ruled 2026-08-07, arch c78b3dc, MUST: a type is owed by the surface that uses it). NOT OWED — conformant, and not a warning, because nothing is outstanding. NOTE the limit: this check cannot see whether the peer actually OFFERS §6.7; a peer shipping the operations while omitting their types is under-reported here, and the `reachability` category is where that surfaces",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -2186,16 +2186,16 @@
     {
       "category": "type_system",
       "name": "type_system_note_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/note",
+      "severity": "WARN",
+      "message": "system/note absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_note_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -2205,7 +2205,7 @@
       "severity": "PASS",
       "message": "fetched system/type/system/peer",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -2221,7 +2221,7 @@
       "severity": "PASS",
       "message": "fetched system/type/system/peer-id",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -2234,40 +2234,40 @@
     {
       "category": "type_system",
       "name": "type_system_peer_inbox_relay_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/peer/inbox-relay",
+      "severity": "WARN",
+      "message": "system/peer/inbox-relay absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_peer_inbox_relay_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_peer_inbox_relay_entry_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/peer/inbox-relay-entry",
+      "severity": "WARN",
+      "message": "system/peer/inbox-relay-entry absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_peer_inbox_relay_entry_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_peer_published_root_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/peer/published-root",
+      "severity": "WARN",
+      "message": "system/peer/published-root absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
@@ -2275,7 +2275,7 @@
       "category": "type_system",
       "name": "type_system_peer_published_root_match",
       "severity": "WARN",
-      "message": "outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; divergence is not a core FAIL): 1 interop-breaking issue(s): [field \"prefix\": REQUIRED locally but MISSING remotely (spec: system/tree/path)] (warn-level diffs also: [])",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -2298,16 +2298,16 @@
     {
       "category": "type_system",
       "name": "type_system_peer_transport_http_poll_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/peer/transport/http-poll",
+      "severity": "WARN",
+      "message": "system/peer/transport/http-poll absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_peer_transport_http_poll_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -2426,128 +2426,128 @@
     {
       "category": "type_system",
       "name": "type_system_query_allowances_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/query/allowances",
+      "severity": "WARN",
+      "message": "system/query/allowances absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_query_allowances_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_query_constraints_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/query/constraints",
+      "severity": "WARN",
+      "message": "system/query/constraints absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_query_constraints_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_query_expression_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/query/expression",
+      "severity": "WARN",
+      "message": "system/query/expression absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_query_expression_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_query_field_predicate_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/query/field-predicate",
+      "severity": "WARN",
+      "message": "system/query/field-predicate absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_query_field_predicate_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_query_index_config_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/query/index-config",
+      "severity": "WARN",
+      "message": "system/query/index-config absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_query_index_config_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_query_match_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/query/match",
+      "severity": "WARN",
+      "message": "system/query/match absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_query_match_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_query_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/query/result",
+      "severity": "WARN",
+      "message": "system/query/result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_query_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_binding_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/binding",
+      "severity": "WARN",
+      "message": "system/registry/binding absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_binding_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -2570,40 +2570,40 @@
     {
       "category": "type_system",
       "name": "type_system_registry_dispatch_entry_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/dispatch-entry",
+      "severity": "WARN",
+      "message": "system/registry/dispatch-entry absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_dispatch_entry_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_invalidate_cache_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/invalidate-cache-request",
+      "severity": "WARN",
+      "message": "system/registry/invalidate-cache-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_invalidate_cache_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_issuer_policy_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/issuer-policy",
+      "severity": "WARN",
+      "message": "system/registry/issuer-policy absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
@@ -2611,135 +2611,135 @@
       "category": "type_system",
       "name": "type_system_registry_issuer_policy_match",
       "severity": "WARN",
-      "message": "hash mismatch with 1 structural difference(s) (open-type-tolerable): [field \"max_ttl\": optional locally, missing remotely (spec: primitive/uint?)] (local: ecf-sha256:732b3b39ad573b2b2538a258a118b8593625867e7acc4fc62149bcef5a02112d, remote: ecf-sha256:43b64e351e4bdb0c5876defe5d8dd4bcdf7678d5596a6485ba17732e7eacb35d)",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_config_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/local-name-config",
+      "severity": "WARN",
+      "message": "system/registry/local-name-config absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_config_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_bind_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/local-name/bind-request",
+      "severity": "WARN",
+      "message": "system/registry/local-name/bind-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_bind_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_bind_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/local-name/bind-result",
+      "severity": "WARN",
+      "message": "system/registry/local-name/bind-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_bind_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_list_entry_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/local-name/list-entry",
+      "severity": "WARN",
+      "message": "system/registry/local-name/list-entry absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_list_entry_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_list_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/local-name/list-request",
+      "severity": "WARN",
+      "message": "system/registry/local-name/list-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_list_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_list_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/local-name/list-result",
+      "severity": "WARN",
+      "message": "system/registry/local-name/list-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_list_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_unbind_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/local-name/unbind-request",
+      "severity": "WARN",
+      "message": "system/registry/local-name/unbind-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_unbind_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_update_transports_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/local-name/update-transports-request",
+      "severity": "WARN",
+      "message": "system/registry/local-name/update-transports-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_local_name_update_transports_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -2749,7 +2749,7 @@
       "severity": "WARN",
       "message": "system/registry/pending-binding absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
@@ -2762,160 +2762,160 @@
     {
       "category": "type_system",
       "name": "type_system_registry_pinned_entry_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/pinned-entry",
+      "severity": "WARN",
+      "message": "system/registry/pinned-entry absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_pinned_entry_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_register_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/register-request",
+      "severity": "WARN",
+      "message": "system/registry/register-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_register_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_renew_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/renew-request",
+      "severity": "WARN",
+      "message": "system/registry/renew-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_renew_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_resolution_log_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/resolution-log",
+      "severity": "WARN",
+      "message": "system/registry/resolution-log absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_resolution_log_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_resolution_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/resolution-result",
+      "severity": "WARN",
+      "message": "system/registry/resolution-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_resolution_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_resolve_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/resolve-request",
+      "severity": "WARN",
+      "message": "system/registry/resolve-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_resolve_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_resolver_chain_entry_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/resolver-chain-entry",
+      "severity": "WARN",
+      "message": "system/registry/resolver-chain-entry absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_resolver_chain_entry_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_resolver_config_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/resolver-config",
+      "severity": "WARN",
+      "message": "system/registry/resolver-config absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_resolver_config_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_revocation_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/revocation",
+      "severity": "WARN",
+      "message": "system/registry/revocation absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_revocation_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_revoke_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/registry/revoke-request",
+      "severity": "WARN",
+      "message": "system/registry/revoke-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_registry_revoke_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -2938,128 +2938,128 @@
     {
       "category": "type_system",
       "name": "type_system_relay_advertise_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/relay/advertise",
+      "severity": "WARN",
+      "message": "system/relay/advertise absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_relay_advertise_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_relay_advertise_limits_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/relay/advertise-limits",
+      "severity": "WARN",
+      "message": "system/relay/advertise-limits absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_relay_advertise_limits_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_relay_forward_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/relay/forward-request",
+      "severity": "WARN",
+      "message": "system/relay/forward-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_relay_forward_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_relay_forward_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/relay/forward-result",
+      "severity": "WARN",
+      "message": "system/relay/forward-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_relay_forward_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_relay_poll_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/relay/poll-request",
+      "severity": "WARN",
+      "message": "system/relay/poll-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_relay_poll_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_relay_poll_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/relay/poll-result",
+      "severity": "WARN",
+      "message": "system/relay/poll-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_relay_poll_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_relay_put_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/relay/put-result",
+      "severity": "WARN",
+      "message": "system/relay/put-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_relay_put_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_relay_store_entry_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/relay/store-entry",
+      "severity": "WARN",
+      "message": "system/relay/store-entry absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_relay_store_entry_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -3082,16 +3082,16 @@
     {
       "category": "type_system",
       "name": "type_system_route_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/route",
+      "severity": "WARN",
+      "message": "system/route absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_route_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -3114,48 +3114,48 @@
     {
       "category": "type_system",
       "name": "type_system_subscription_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/subscription",
+      "severity": "WARN",
+      "message": "system/subscription absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_subscription_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_subscription_cancel_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/subscription/cancel",
+      "severity": "WARN",
+      "message": "system/subscription/cancel absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_subscription_cancel_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_subscription_limits_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/subscription/limits",
+      "severity": "WARN",
+      "message": "system/subscription/limits absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_subscription_limits_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -3178,96 +3178,96 @@
     {
       "category": "type_system",
       "name": "type_system_subscription_redirect_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/subscription/redirect",
+      "severity": "WARN",
+      "message": "system/subscription/redirect absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_subscription_redirect_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_subscription_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/subscription/request",
+      "severity": "WARN",
+      "message": "system/subscription/request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_subscription_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_substitute_endpoint_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/substitute/endpoint",
+      "severity": "WARN",
+      "message": "system/substitute/endpoint absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_substitute_endpoint_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_substitute_snapshot_manifest_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/substitute/snapshot-manifest",
+      "severity": "WARN",
+      "message": "system/substitute/snapshot-manifest absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_substitute_snapshot_manifest_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_substitute_source_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/substitute/source",
+      "severity": "WARN",
+      "message": "system/substitute/source absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_substitute_source_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_substitute_try_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/substitute/try-request",
+      "severity": "WARN",
+      "message": "system/substitute/try-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_substitute_try_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -3370,296 +3370,296 @@
     {
       "category": "type_system",
       "name": "type_system_type_adopt_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/adopt-request",
+      "severity": "WARN",
+      "message": "system/type/adopt-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_adopt_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_compare_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/compare-request",
+      "severity": "WARN",
+      "message": "system/type/compare-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_compare_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_compare_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/compare-result",
+      "severity": "WARN",
+      "message": "system/type/compare-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_compare_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_compatibility_report_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/compatibility-report",
+      "severity": "WARN",
+      "message": "system/type/compatibility-report absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_compatibility_report_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_compatible_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/compatible-request",
+      "severity": "WARN",
+      "message": "system/type/compatible-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_compatible_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_format_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/constraint/format",
+      "severity": "WARN",
+      "message": "system/type/constraint/format absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_format_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_max_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/constraint/max",
+      "severity": "WARN",
+      "message": "system/type/constraint/max absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_max_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_max_count_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/constraint/max-count",
+      "severity": "WARN",
+      "message": "system/type/constraint/max-count absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_max_count_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_max_length_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/constraint/max-length",
+      "severity": "WARN",
+      "message": "system/type/constraint/max-length absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_max_length_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_min_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/constraint/min",
+      "severity": "WARN",
+      "message": "system/type/constraint/min absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_min_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_min_count_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/constraint/min-count",
+      "severity": "WARN",
+      "message": "system/type/constraint/min-count absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_min_count_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_min_length_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/constraint/min-length",
+      "severity": "WARN",
+      "message": "system/type/constraint/min-length absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_min_length_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_not_one_of_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/constraint/not-one-of",
+      "severity": "WARN",
+      "message": "system/type/constraint/not-one-of absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_not_one_of_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_one_of_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/constraint/one-of",
+      "severity": "WARN",
+      "message": "system/type/constraint/one-of absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_one_of_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_pattern_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/constraint/pattern",
+      "severity": "WARN",
+      "message": "system/type/constraint/pattern absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_pattern_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_type_pattern_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/constraint/type-pattern",
+      "severity": "WARN",
+      "message": "system/type/constraint/type-pattern absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_type_pattern_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_validate_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/constraint/validate-request",
+      "severity": "WARN",
+      "message": "system/type/constraint/validate-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_validate_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_validate_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/constraint/validate-result",
+      "severity": "WARN",
+      "message": "system/type/constraint/validate-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_constraint_validate_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_converge_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/converge-request",
+      "severity": "WARN",
+      "message": "system/type/converge-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
@@ -3667,39 +3667,39 @@
       "category": "type_system",
       "name": "type_system_type_converge_request_match",
       "severity": "WARN",
-      "message": "hash mismatch with 1 structural difference(s) (open-type-tolerable): [field \"type_paths\": constraint(s) [system/type/constraint/min-count] present locally, absent remotely] (local: ecf-sha256:06f005991d695fb9fe7d4e7ad79a79221b1073f6932aff3c8af16550d5e9b31c, remote: ecf-sha256:7ce279b3d1b4ddc392124715e5c19cc4e1fea71a8cc576ccfc8f6def041af98e)",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_field_comparison_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/field-comparison",
+      "severity": "WARN",
+      "message": "system/type/field-comparison absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_field_comparison_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_field_incompatibility_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/field-incompatibility",
+      "severity": "WARN",
+      "message": "system/type/field-incompatibility absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_field_incompatibility_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -3738,8 +3738,8 @@
     {
       "category": "type_system",
       "name": "type_system_type_reconcile_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/reconcile-request",
+      "severity": "WARN",
+      "message": "system/type/reconcile-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
@@ -3747,71 +3747,71 @@
       "category": "type_system",
       "name": "type_system_type_reconcile_request_match",
       "severity": "WARN",
-      "message": "hash mismatch with 1 structural difference(s) (open-type-tolerable): [field \"type_paths\": constraint(s) [system/type/constraint/min-count] present locally, absent remotely] (local: ecf-sha256:b8015aff7a02f67ddef25947e2066bf777462afa89c95532c06bfd707aae21ec, remote: ecf-sha256:4dbbb6a1e0cb553766c59681f8f43f86c491893cb672152977afed10b789d6ae)",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_reconcile_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/reconcile-result",
+      "severity": "WARN",
+      "message": "system/type/reconcile-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_reconcile_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_validate_request_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/validate-request",
+      "severity": "WARN",
+      "message": "system/type/validate-request absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_validate_request_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_validate_result_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/validate-result",
+      "severity": "WARN",
+      "message": "system/type/validate-result absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_validate_result_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_violation_fetch",
-      "severity": "PASS",
-      "message": "fetched system/type/system/type/violation",
+      "severity": "WARN",
+      "message": "system/type/violation absent — outside V7 v7.72 §9.5 Core Type Floor — matched-if-present under --profile core, not-a-FAIL-if-absent",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
     {
       "category": "type_system",
       "name": "type_system_type_violation_match",
-      "severity": "PASS",
-      "message": "content hash match",
+      "severity": "WARN",
+      "message": "remote type definition not available — outside V7 v7.72 §9.5 Core Type Floor (--profile core matches if present; absence is not a core FAIL)",
       "spec_ref": "Types §12.3",
       "elapsed_ms": 0
     },
@@ -3819,7 +3819,7 @@
       "category": "type_system",
       "name": "types_all_present",
       "severity": "PASS",
-      "message": "all 197 V7 §9.5 core-floor types fetchable from remote (+22 provisional + non-§9.5-floor (matched-if-present) types absent, not counted: [system/compute/assoc-args system/compute/concat-args system/compute/group-by-args system/compute/range-args system/connection system/inbox/delivery system/network/backoff-config system/network/close-request system/network/keepalive-config system/network/maintain-request system/network/maintain-result system/network/peer-summary system/network/ping system/network/pong system/network/release-request system/network/release-result system/network/status system/peer/status system/registry/binding-manifest system/registry/pending-binding system/registry/set-resolver-config-request system/subscription/notification]) (+3 NOT-OWED types absent — optional sections the peer declines, conformant and not warned: [system/network/candidate system/network/check-reachability-result system/network/observe-address-result])",
+      "message": "all 53 V7 §9.5 core-floor types fetchable from remote (+166 provisional + non-§9.5-floor (matched-if-present) types absent, not counted: [compute/apply compute/arithmetic compute/closure compute/compare compute/construct compute/error compute/field compute/if compute/index compute/lambda compute/length compute/let compute/literal compute/logic compute/lookup/hash compute/lookup/scope compute/lookup/tree compute/numeric-cast compute/result compute/scope system/clock/compare-params system/clock/compare-result system/clock/config system/clock/hlc system/clock/logical system/clock/state system/clock/tick system/clock/timestamp system/clock/vector system/compute/assoc-args system/compute/concat-args system/compute/filter-args system/compute/fold-args system/compute/group-by-args system/compute/install-request system/compute/install-result system/compute/map-args system/compute/range-args system/compute/scope-binding system/compute/store-args system/compute/subgraph system/connection system/content/blob system/content/chunk system/content/descriptor system/continuation system/continuation/abandon-request system/continuation/advance-request system/continuation/install-result system/continuation/join system/continuation/resume-request system/continuation/suspended system/continuation/transform system/continuation/transform-op system/discovery/announce-request system/discovery/announce-stop-request system/discovery/candidate system/discovery/decision system/discovery/identity-claim system/discovery/scan-request system/discovery/scan-result system/durability-advertisement system/durability-request system/durability-result system/encrypted system/encryption-pubkey system/encryption/handoff system/encryption/kdf-params system/encryption/key-backup system/encryption/revocation system/encryption/wrapped-key system/inbox/delivery system/network/backoff-config system/network/close-request system/network/keepalive-config system/network/maintain-request system/network/maintain-result system/network/peer-summary system/network/ping system/network/pong system/network/release-request system/network/release-result system/network/status system/note system/peer/inbox-relay system/peer/inbox-relay-entry system/peer/published-root system/peer/status system/peer/transport/http-poll system/query/allowances system/query/constraints system/query/expression system/query/field-predicate system/query/index-config system/query/match system/query/result system/registry/binding system/registry/binding-manifest system/registry/dispatch-entry system/registry/invalidate-cache-request system/registry/issuer-policy system/registry/local-name-config system/registry/local-name/bind-request system/registry/local-name/bind-result system/registry/local-name/list-entry system/registry/local-name/list-request system/registry/local-name/list-result system/registry/local-name/unbind-request system/registry/local-name/update-transports-request system/registry/pending-binding system/registry/pinned-entry system/registry/register-request system/registry/renew-request system/registry/resolution-log system/registry/resolution-result system/registry/resolve-request system/registry/resolver-chain-entry system/registry/resolver-config system/registry/revocation system/registry/revoke-request system/registry/set-resolver-config-request system/relay/advertise system/relay/advertise-limits system/relay/forward-request system/relay/forward-result system/relay/poll-request system/relay/poll-result system/relay/put-result system/relay/store-entry system/route system/subscription system/subscription/cancel system/subscription/limits system/subscription/notification system/subscription/redirect system/subscription/request system/substitute/endpoint system/substitute/snapshot-manifest system/substitute/source system/substitute/try-request system/type/adopt-request system/type/compare-request system/type/compare-result system/type/compatibility-report system/type/compatible-request system/type/constraint/format system/type/constraint/max system/type/constraint/max-count system/type/constraint/max-length system/type/constraint/min system/type/constraint/min-count system/type/constraint/min-length system/type/constraint/not-one-of system/type/constraint/one-of system/type/constraint/pattern system/type/constraint/type-pattern system/type/constraint/validate-request system/type/constraint/validate-result system/type/converge-request system/type/field-comparison system/type/field-incompatibility system/type/reconcile-request system/type/reconcile-result system/type/validate-request system/type/validate-result system/type/violation]) (+3 NOT-OWED types absent — optional sections the peer declines, conformant and not warned: [system/network/candidate system/network/check-reachability-result system/network/observe-address-result])",
       "spec_ref": "Types §11.2",
       "elapsed_ms": 0
     },
@@ -3829,7 +3829,7 @@
       "severity": "PASS",
       "message": "system/handler/ listing returned 1 entries",
       "spec_ref": "V7 §6",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "handlers",
@@ -4285,7 +4285,7 @@
       "severity": "PASS",
       "message": "entity-native echo body bound at app/validate/core-register/echo/expr",
       "spec_ref": "V7 §9.4, PROPOSAL v7.74 §10.1 step 1",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "handlers",
@@ -4331,7 +4331,7 @@
       "category": "handlers",
       "name": "core_register_grant_signature_at_invariant_path",
       "severity": "PASS",
-      "message": "grant signature at system/signature/00aa8de3f4225e708cc8833d6704cc5c0587d7c4e2144dc03fd3077de934d7df69 targets grant.content_hash",
+      "message": "grant signature at system/signature/00d0cabf6678771affaa7a5eef59346d789df57a8b527635e4b445b737eb53f276 targets grant.content_hash",
       "spec_ref": "V7 §3.5, v7.74 v0.4 §3.4; PROPOSAL v7.74 §10.1 step 4",
       "elapsed_ms": 0
     },
@@ -4347,7 +4347,7 @@
       "category": "handlers",
       "name": "core_register_unregister_signature_removed",
       "severity": "PASS",
-      "message": "signature at system/signature/00aa8de3f4225e708cc8833d6704cc5c0587d7c4e2144dc03fd3077de934d7df69 removed by unregister",
+      "message": "signature at system/signature/00d0cabf6678771affaa7a5eef59346d789df57a8b527635e4b445b737eb53f276 removed by unregister",
       "spec_ref": "v7.74 v0.4 §3.4 writer/unregister symmetry; PROPOSAL v7.74 §10.1 unregister teardown",
       "elapsed_ms": 0
     },
@@ -4379,9 +4379,9 @@
       "category": "capability",
       "name": "request_returns_grant",
       "severity": "PASS",
-      "message": "issued token ecf-sha256:5db3fe5de9c969f6b43d8e743c494bccb047cf7ad27a15a5c7bb172f4a1c4442",
+      "message": "issued token ecf-sha256:cf2fc91fb01e05d1c84ef28b34589db34e76515d5688480b6bb83d2b7caf7d9f",
       "spec_ref": "V7 §6.2 request → system/capability/grant",
-      "elapsed_ms": 2
+      "elapsed_ms": 1
     },
     {
       "category": "capability",
@@ -4435,7 +4435,7 @@
       "category": "capability",
       "name": "configure_writes_policy_entry",
       "severity": "PASS",
-      "message": "configure wrote policy-entry at system/capability/policy/00d6d6d78ee8e342a22708c216543197223b1891807419543518b9045ad6d42cc2",
+      "message": "configure wrote policy-entry at system/capability/policy/000a5c2e5666bf99af807e2f3924b3f0c4c37a1c6c2e2d106c57c0aee2963935df",
       "spec_ref": "V7 v7.62 §6.2 §4 + closeout F8 — configure → entry bound at system/capability/policy/{peer_pattern}; fallback segment is literal \"default\" (renamed from \"*\")",
       "elapsed_ms": 1
     },
@@ -4451,7 +4451,7 @@
       "category": "capability",
       "name": "revoke_happy_path_writes_marker",
       "severity": "PASS",
-      "message": "revoke wrote marker at system/capability/revocations/005db3fe5de9c969f6b43d8e743c494bccb047cf7ad27a15a5c7bb172f4a1c4442 with revoked_at=1788095145570",
+      "message": "revoke wrote marker at system/capability/revocations/00cf2fc91fb01e05d1c84ef28b34589db34e76515d5688480b6bb83d2b7caf7d9f with revoked_at=1788111328819",
       "spec_ref": "V7 v7.62 §5 + §6 — revoke writes marker at system/capability/revocations/{cap_hash_hex} with handler-set revoked_at",
       "elapsed_ms": 1
     },
@@ -4491,7 +4491,7 @@
       "category": "capability",
       "name": "request_mint_temporal_ceiling",
       "severity": "PASS",
-      "message": "over-long request clamped to the caller cap exactly (expires_at=1788098745575) and returned 200 — CAP-5",
+      "message": "over-long request clamped to the caller cap exactly (expires_at=1788114928823) and returned 200 — CAP-5",
       "spec_ref": "V7 §6.2/§5.6 CAP-5 (0.8.1) — request over-long ttl_ms mints a CLAMPED token: 200 AND expires_at == MIN_DEFINED exactly (not a 403, not a `\u003c=` check)",
       "elapsed_ms": 1
     },
@@ -4501,7 +4501,7 @@
       "severity": "PASS",
       "message": "ttl_ms:0 mints an immediately-expired token (created_at, before the caller cap) and an overflowing ttl_ms drops out leaving the caller-cap ceiling — CAP-6; no-ceiling overflow minted NO expiry (term absent, not huge-finite/saturated)",
       "spec_ref": "V7 §5.6 CAP-6 (0.8.1) — ttl_ms:0 = expire immediately (created_at, before caller cap); overflow term drops out (no wrap, no saturate)",
-      "elapsed_ms": 4
+      "elapsed_ms": 3
     },
     {
       "category": "capability",
@@ -4941,7 +4941,7 @@
       "severity": "PASS",
       "message": "PUT deletion-marker → GET returns marker, listing omits the path (V7 v7.72 §9.5a CORE-TREE-DELETE-1)",
       "spec_ref": "V7 v7.72 §9.5a (CORE-TREE-DELETE-1) — system/deletion-marker semantics",
-      "elapsed_ms": 5
+      "elapsed_ms": 4
     },
     {
       "category": "tree_operations",
@@ -4949,7 +4949,7 @@
       "severity": "PASS",
       "message": "listing prefix returns system/tree/listing with both seeded entries as bare keys (2 entries) (V7 §6.3 / v7.72 §9.5a CORE-TREE-LISTING-1)",
       "spec_ref": "V7 v7.72 §9.5a (CORE-TREE-LISTING-1) — §6.3 cap-coverage listing filter (MUST)",
-      "elapsed_ms": 3
+      "elapsed_ms": 4
     },
     {
       "category": "tree_operations",
@@ -4957,7 +4957,7 @@
       "severity": "PASS",
       "message": "all 3 sub-pins passed (V7 §1.4 + §5.4 / v7.72 §9.5a CORE-TREE-PATH-FLEX-1)",
       "spec_ref": "V7 v7.72 §9.5a (CORE-TREE-PATH-FLEX-1) — §1.4 path validation flex set",
-      "elapsed_ms": 3
+      "elapsed_ms": 4
     },
     {
       "category": "tree_operations",
@@ -5125,7 +5125,7 @@
       "severity": "PASS",
       "message": "correctly rejected with 403 AND wrote nothing (§2.4a all three conjuncts: refused, no state change, no publication)",
       "spec_ref": "V7 v7.72 §9.0 carve-out (--profile core variant)",
-      "elapsed_ms": 2
+      "elapsed_ms": 1
     },
     {
       "category": "security",
@@ -5205,7 +5205,7 @@
       "severity": "PASS",
       "message": "3-link chain with an expired middle link (leaf still valid): correctly denied (status 403)",
       "spec_ref": "V7 §5.5 (per-link expiry walk, V1)",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "security",
@@ -5229,7 +5229,7 @@
       "severity": "PASS",
       "message": "capability whose bytes were substituted after signing: correctly denied (status 403)",
       "spec_ref": "V7 §5.2 (F6)",
-      "elapsed_ms": 5
+      "elapsed_ms": 7
     },
     {
       "category": "security",
@@ -5269,7 +5269,7 @@
       "severity": "PASS",
       "message": "3-link chain, foreign-granter mid (bare *) + explicit-cross-peer leaf with wildcard suffix /{verifier}/system/*: correctly denied (status 403)",
       "spec_ref": "V7 §5.5a (Amendment 1, chain-walk subset-check with wildcard suffix leaf)",
-      "elapsed_ms": 1
+      "elapsed_ms": 2
     },
     {
       "category": "multisig",
@@ -5285,7 +5285,7 @@
       "severity": "PASS",
       "message": "peer correctly rejected with status 403",
       "spec_ref": "V7 §3.6 (multisig M3)",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "multisig",
@@ -5341,7 +5341,7 @@
       "severity": "PASS",
       "message": "correctly rejected with 403 (v7.71 §3.3 authz-class DENY); guarded op is a read, so §2.4a conjuncts 2+3 are vacuous",
       "spec_ref": "V7 §5.5 (multisig M4)",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "multisig",
@@ -5411,9 +5411,9 @@
       "category": "concurrency",
       "name": "t1_1_concurrent_demux",
       "severity": "PASS",
-      "message": "N=16 concurrent gets all returned + demuxed correctly; sequential baseline 11.038531ms \u003c 50ms floor, parallel-speedup signal suppressed (peer too fast for noise-free measurement)",
+      "message": "N=16 concurrent gets all returned + demuxed correctly; sequential baseline 17.450048ms \u003c 50ms floor, parallel-speedup signal suppressed (peer too fast for noise-free measurement)",
       "spec_ref": "V7 §6.11(a)(b) — multiplexed reader + per-id demux on one connection",
-      "elapsed_ms": 33
+      "elapsed_ms": 44
     },
     {
       "category": "concurrency",
@@ -5427,9 +5427,9 @@
       "category": "concurrency",
       "name": "t1_3_no_head_of_line",
       "severity": "PASS",
-      "message": "fast.get latency p50 stable under contention: solo=713.969µs → while-slow=845.969µs (ratio 1.18 ≤ 4.0x)",
+      "message": "fast.get latency p50 stable under contention: solo=664.266µs → while-slow=1.067488ms (ratio 1.61 ≤ 4.0x)",
       "spec_ref": "V7 §6.11(a) — fast not gated behind slow on one connection",
-      "elapsed_ms": 23
+      "elapsed_ms": 24
     },
     {
       "category": "concurrency",
@@ -5437,15 +5437,15 @@
       "severity": "PASS",
       "message": "RT-13b Part A: 64 concurrent distinct 16 KB responses over 3 windows all framed cleanly, demuxed by request_id, and were byte-identical — no frame-write splice detected. Best-effort detection; the RT-13b verdict is gated on each peer's Part-B atomicity attestation (keystone §8.4 vacuous-green guard).",
       "spec_ref": "V7 §6.11 a′ / RT-13b Part A — bytes of distinct response frames MUST NOT interleave on one connection under concurrent outbound (best-effort detection; verdict gated on each peer's Part-B attestation)",
-      "elapsed_ms": 215
+      "elapsed_ms": 218
     },
     {
       "category": "concurrency",
       "name": "t2_1_sustained_load",
       "severity": "PASS",
-      "message": "C=16 × K=10000 sustained load: zero drops; p50 stable across windows (first=10.045664ms, last=9.945565ms, ratio 0.99 ≤ 4.0x)",
+      "message": "C=16 × K=10000 sustained load: zero drops; p50 stable across windows (first=10.887062ms, last=10.083703ms, ratio 0.93 ≤ 4.0x)",
       "spec_ref": "V7 §6.11 robustness — no drops, no latency runaway under sustained C×K load",
-      "elapsed_ms": 6355
+      "elapsed_ms": 6428
     },
     {
       "category": "concurrency",
@@ -5453,15 +5453,15 @@
       "severity": "PASS",
       "message": "100 connect → handshake → 1 req → close cycles all succeeded (cycle 100 worked as well as cycle 1 — no observable per-connection resource leak)",
       "spec_ref": "V7 §6.11 robustness — accept loop + per-conn lifecycle across N cycles",
-      "elapsed_ms": 4685
+      "elapsed_ms": 4512
     },
     {
       "category": "resource_bounds",
       "name": "r1_payload_over_limit",
       "severity": "PASS",
-      "message": "declared_max_payload=16777216 → wrote 16778240-byte length prefix; connection terminated without a 413 frame: read tcp 127.0.0.1:50392-\u003e127.0.0.1:7777: i/o timeout (spec-allowed: 'coded frame OR close'); reconnect + tree.get succeeded (keeps serving)",
+      "message": "declared_max_payload=16777216 → wrote 16778240-byte length prefix; 413 payload_too_large frame returned (spec-preferred: coded frame + close); reconnect + tree.get succeeded (keeps serving)",
       "spec_ref": "V7 §4.10(a) (v7.75 §9.1 floor MUST) — oversize inbound → 413 payload_too_large + keeps serving",
-      "elapsed_ms": 5052
+      "elapsed_ms": 44
     },
     {
       "category": "resource_bounds",
@@ -5469,15 +5469,15 @@
       "severity": "PASS",
       "message": "declared_max_chain_depth=64 → sent 65-deep chain → 400 chain_depth_exceeded; tree.get on the same connection still succeeded (keeps serving)",
       "spec_ref": "V7 §4.10(b) (v7.75 §9.1 floor MUST) — cap chain over max depth → 400 chain_depth_exceeded + keeps serving",
-      "elapsed_ms": 49
+      "elapsed_ms": 46
     },
     {
       "category": "resource_bounds",
       "name": "r3_connection_flood",
-      "severity": "WARN",
-      "message": "admitted all 256 connections without refusal and kept serving — no self-imposed bound, so admission is delegated externally (systemd / proxy / OS fd limit) or absent; §4.10(c) is a SHOULD, so this is not gated",
+      "severity": "PASS",
+      "message": "admitted 60/256 connections, then refused: 196 of 256 connections were accepted then closed by the peer (§4.10(c) close-refusal) (self-bounded admission); refused the probe while at capacity (correct — it is bounded), and served again once the flood drained",
       "spec_ref": "V7 §4.10(c) SHOULD (v7.75) — admission bound; clean refusal or external-delegation Warn",
-      "elapsed_ms": 1448
+      "elapsed_ms": 324
     },
     {
       "category": "attestation",
@@ -5571,7 +5571,7 @@
       "category": "universal_address_space",
       "name": "local_peer_relative_equals_absolute",
       "severity": "PASS",
-      "message": "peer-relative \"system/validate/uas/local-relative-1\" ≡ absolute \"/2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg/system/validate/uas/local-relative-1\" (same entity, hash=ecf-sha256:68ab4eda09729c9d43bdcc33cf840194972d22c4ffe327a93fb448fa4e367e18)",
+      "message": "peer-relative \"system/validate/uas/local-relative-1\" ≡ absolute \"/2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg/system/validate/uas/local-relative-1\" (same entity, hash=ecf-sha256:8a5716770cfc6a4fed43125a4f174f4bb4ab145fcc5f6752dbcb0daf57bed291)",
       "spec_ref": "V7 §1.4 — peer-relative `foo` ≡ absolute `/{localPeerID}/foo` (canonicalization is bidirectional round-trip)",
       "elapsed_ms": 1
     },
@@ -5579,7 +5579,7 @@
       "category": "universal_address_space",
       "name": "local_absolute_equals_peer_relative",
       "severity": "PASS",
-      "message": "absolute \"/2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg/system/validate/uas/local-absolute-1\" ≡ peer-relative \"system/validate/uas/local-absolute-1\" (same entity, hash=ecf-sha256:03c7045f0cfc650d240086530edbaf33626a4f492da7adfbb3da5e97fb013801)",
+      "message": "absolute \"/2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg/system/validate/uas/local-absolute-1\" ≡ peer-relative \"system/validate/uas/local-absolute-1\" (same entity, hash=ecf-sha256:72131a21e4ff6d24aab8b301dd4fec6ad2128a67a6cd103d9aaefd8aa98c7c39)",
       "spec_ref": "V7 §1.4 — absolute `/{localPeerID}/foo` ≡ peer-relative `foo` (inverse round-trip)",
       "elapsed_ms": 1
     },
@@ -5587,7 +5587,7 @@
       "category": "universal_address_space",
       "name": "foreign_namespace_publish_lands_at_absolute_path",
       "severity": "PASS",
-      "message": "foreign \"/1HtVqLgPqkScVxjVN8VFGFiH7T2P3aSDwJxQ8DGEoooo2z/system/validate/uas/probe-1\" binding round-trips (hash=ecf-sha256:f2682c1da9651c736275e1b3bdc63407884693db05a74805f59d7d70bae1dd09, 61 bytes)",
+      "message": "foreign \"/1HtVqLgPqkScVxjVN8VFGFiH7T2P3aSDwJxQ8DGEoooo2z/system/validate/uas/probe-1\" binding round-trips (hash=ecf-sha256:d1c8ebf758b449b5a0f7d29e8722b3968daf5d082a67398864f74b36561e3b42, 61 bytes)",
       "spec_ref": "V7 §1.4 — `tree:put` with Resource.Targets[0]=`/{otherID}/foo` to `entity://localPeer/system/tree` lands a binding at that absolute path (universal address space slot is addressable)",
       "elapsed_ms": 1
     },
@@ -5613,7 +5613,7 @@
       "severity": "PASS",
       "message": "listing at \"/1HtVqLgPqkScVxjVN8VFGFiH7T2P3aSDwJxQ8DGEoooo2z/\" surfaces foreign-namespace children (system/ present)",
       "spec_ref": "V7 §1.4 — `tree:get` listing at `/{otherID}/` lists children written under that peer-id (universal-tree-root walks foreign namespace)",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "universal_address_space",
@@ -5699,7 +5699,7 @@
       "category": "peer_canonicalization",
       "name": "peer_canon_2_canonicalize_on_storage",
       "severity": "PASS",
-      "message": "PEER-CANON-2: two distinct wire forms (2KE7G2gSDvLA64vyKwNwfKKopNq7fHVYpwxqiTXooJa4tR, 2KTUxyS6d3NpquZNwjVq81QRy3X2Fiamw3tV7EK3jkVW4R) map to single canonical storage hash 000000000000…",
+      "message": "PEER-CANON-2: two distinct wire forms (2K5wdDveDMU36xuA6Gz7Ysq8Qfir9xkPiDFkWR1esU2SQG, 2KZu1SBb7cMwQbDNfPXa5beTJUHLEH8QBFqMLNw7kDvMhy) map to single canonical storage hash 000000000000…",
       "spec_ref": "V7 §1.5 v7.65 §5 (PEER-CANON-2: non-canonical wire form decodes; storage form is canonical)",
       "elapsed_ms": 0
     },
@@ -5715,7 +5715,7 @@
       "category": "peer_canonicalization",
       "name": "peer_pattern_2_lazy_canon_mint",
       "severity": "PASS",
-      "message": "PEER-PATTERN-2: Base58 peer_pattern (2K7tzWmEMTRXmZASahBGuRGseYDk1CVmXefoGdyxwFKkUq) accepted in pending-canonicalization state for unknown peer per v7.65 §3.6 rule 3",
+      "message": "PEER-PATTERN-2: Base58 peer_pattern (2K8pdCpYeyAnfFgQ4PVcuKgQtTjAqNKNXjY7FAqV1eY2BA) accepted in pending-canonicalization state for unknown peer per v7.65 §3.6 rule 3",
       "spec_ref": "V7 §3.6 v7.65 rule 3 (PEER-PATTERN-2: Base58 mint for unknown peer accepted in pending-canonicalization state)",
       "elapsed_ms": 0
     },
@@ -5733,13 +5733,13 @@
       "severity": "PASS",
       "message": "PEER-MUT-2: target returned status=403 for probe on synthetic unrelated SHA-256-form peer_id; no auto-correlation per v7.65 §1.5 norm 5",
       "spec_ref": "V7 §1.5 v7.65 norm 5 (PEER-MUT-2: previously-unseen form treated as new route observation; NO auto-correlation pre-handshake — T1 floor)",
-      "elapsed_ms": 1
+      "elapsed_ms": 0
     },
     {
       "category": "peer_canonicalization",
       "name": "composition_1_interleaved_chain",
       "severity": "PASS",
-      "message": "COMPOSITION-1: v7.64-shape (hash=006c3bfe5c…) and v7.65-shape (hash=000605dc47…) entities both valid; envelope interleave validates per v7.65 §2.4",
+      "message": "COMPOSITION-1: v7.64-shape (hash=008b6db2d1…) and v7.65-shape (hash=00201e3e90…) entities both valid; envelope interleave validates per v7.65 §2.4",
       "spec_ref": "V7 §1.3 v7.65 §2.4 (COMPOSITION-1: cap chain interleaving v7.64-shape and v7.65-shape system/peer entities — both shapes verify against their referenced content_hash)",
       "elapsed_ms": 0
     },
@@ -5829,7 +5829,7 @@
       "severity": "PASS",
       "message": "KEY-TYPE-ED448-1: canonical (0x02, 0x01) peer_id 3dR1gAppfHXSGMvPRuAfYkkt4P2C1fvnFYpxPBSQP8RLs4; data.key_type=\"ed448\"; sign/verify ok over fixed seed; pubkey len 57; sig len 114",
       "spec_ref": "V7 §1.5 (KEY-TYPE-ED448-1: system/peer({public_key, key_type=\"ed448\"}) constructs canonical-form (0x02, 0x01) peer_id; content_hash byte-equal cross-impl; sign/verify round-trip on fixed 57-byte Ed448 seed)",
-      "elapsed_ms": 1,
+      "elapsed_ms": 0,
       "self_check": true
     },
     {

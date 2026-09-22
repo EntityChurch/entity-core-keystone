@@ -51,6 +51,8 @@ s_err_open:   .asciz "FATAL: cannot open keypair\n"
 s_err_b64:    .asciz "FATAL: keypair seed not 32 bytes\n"
 s_err_sock:   .asciz "FATAL: socket/bind/listen failed\n"
 .Lone:        .long 1
+	.balign 8
+.Lconn_timeo:	.dword 30, 0   # struct timeval { tv_sec = 30, tv_usec = 0 }
 
 	.bss
 	.lcomm g_name_ptr, 8
@@ -61,6 +63,7 @@ s_err_sock:   .asciz "FATAL: socket/bind/listen failed\n"
 	.globl g_opengrants
 	.lcomm g_opengrants, 8         # 0/1
 	.lcomm g_listenfd, 8
+	.lcomm g_live_conns, 8   # §4.10(c) admission counter (parent only)
 	.lcomm g_envp, 8
 	.globl g_seed
 	.globl g_pubkey
@@ -292,13 +295,7 @@ main:
 	# (wait4 WNOHANG) so zombies never accumulate, accepts, clones a worker per connection,
 	# serves inline on clone failure (never drops a connection).
 .Laccept:
-.Lreap:
-	li   a0, -1
-	li   a1, 0                      # status = NULL
-	li   a2, WNOHANG
-	li   a3, 0
-	ksys SYS_wait4
-	bgtz a0, .Lreap                 # reaped one (pid>0) → keep draining
+	call reap_children              # drain zombies before parking in accept4
 	lla  t0, g_listenfd
 	ld   a0, 0(t0)
 	li   a1, 0                      # addr = NULL
@@ -307,6 +304,35 @@ main:
 	ksys SYS_accept4
 	bltz a0, .Laccept               # EINTR/again → retry
 	mv   s5, a0                     # connfd (callee-saved across clone)
+	# Reap AGAIN, here, before the admission decision — not only above.
+	#
+	# The reap above runs before a BLOCKING accept4, so every child that exits while
+	# the parent is parked in it is still counted as live when the parent wakes. At
+	# an idle peer that is invisible; at the bound it is fatal, and it is exactly how
+	# a working admission cap presents as a dead peer: on x86-64 the peer correctly
+	# refused 194 of 256 flood connections and then refused the ONE probe that
+	# followed, because the count still read 64 with every child already gone. The
+	# oracle named it outright — "admission slots leaked; the bound must release when
+	# connections close". A bound that never releases is not a bound, it is an outage
+	# with a threshold.
+	call reap_children
+	# §4.10(c) admission: over the bound, refuse by closing. The spec names close as
+	# an allowed refusal ("an implementation MAY instead refuse by closing"), and it
+	# is the only one available here — a 503 frame would need the request_id, which
+	# is not read until after admission. Refusing costs one close and keeps the
+	# accept loop hot, which is the property the check actually gates.
+	#
+	# RISC-V has no condition-flags register, so this is a direct value comparison
+	# rather than a compare-then-branch-on-flag — the same restatement §5.6 rule 3's
+	# overflow test needed when it was ported off x86-64/aarch64.
+	lla  t0, g_live_conns
+	ld   t1, 0(t0)
+	li   t2, MAX_CONNS
+	blt  t1, t2, .Ladmit
+	mv   a0, s5
+	ksys SYS_close
+	j    .Laccept
+.Ladmit:
 	# clone(SIGCHLD, 0, 0, 0, 0) == fork
 	li   a0, SIGCHLD
 	li   a1, 0
@@ -317,12 +343,22 @@ main:
 	bltz a0, .Lserve_inline         # clone FAILED (resource pressure) → serve in-process
 	bnez a0, .Lparent               # parent: pid>0
 	# --- child ---
+	# The listening socket was inherited across the clone and is NOT this child's to
+	# hold. Measured on x86-64: every stuck child kept its fd open on the parent's
+	# listen inode, so the port stayed bound by processes that were never going to
+	# serve it again. Close it first — before anything that can block — so it cannot
+	# outlive the decision to serve one connection.
+	lla  t0, g_listenfd
+	ld   a0, 0(t0)
+	ksys SYS_close
 	mv   a0, s5                     # connfd
 	li   a1, IPPROTO_TCP
 	li   a2, TCP_NODELAY
 	lla  a3, .Lone
 	li   a4, 4
 	ksys SYS_setsockopt
+	mv   a0, s5
+	call set_conn_deadlines
 	mv   a0, s5
 	call conn_serve                 # handles + closes the connection
 	li   a0, 0
@@ -337,14 +373,85 @@ main:
 	li   a4, 4
 	ksys SYS_setsockopt
 	mv   a0, s5
+	call set_conn_deadlines
+	mv   a0, s5
 	call conn_serve
 	mv   a0, s5
 	ksys SYS_close
 	j    .Laccept
 .Lparent:
+	lla  t0, g_live_conns           # admitted one; reap_children decrements on exit
+	ld   t1, 0(t0)
+	addi t1, t1, 1
+	sd   t1, 0(t0)
 	mv   a0, s5                     # close our copy of connfd
 	ksys SYS_close
 	j    .Laccept
+
+# reap_children — wait4(WNOHANG) until dry, decrementing the live-connection count
+# once per reaped child. Called both before the blocking accept4 and again after it
+# returns, so the §4.10(c) count the admission test reads is never stale.
+#
+# s5 holds the accept loop's connfd and is untouched here. ra is saved because the
+# caller reaches this with `call`.
+	.type reap_children, @function
+reap_children:
+	addi sp, sp, -16
+	sd   ra, 8(sp)
+.Lrc_loop:
+	li   a0, -1
+	li   a1, 0                      # status = NULL
+	li   a2, WNOHANG
+	li   a3, 0
+	ksys SYS_wait4
+	blez a0, .Lrc_done              # 0 = none exited, <0 = ECHILD
+	lla  t0, g_live_conns
+	ld   t1, 0(t0)
+	addi t1, t1, -1
+	sd   t1, 0(t0)
+	j    .Lrc_loop
+.Lrc_done:
+	ld   ra, 8(sp)
+	addi sp, sp, 16
+	ret
+
+# set_conn_deadlines(a0 = connfd) — an idle deadline on a served connection.
+#
+# Without one, a cloned child that is waiting on bytes that never arrive blocks in
+# read(2) FOREVER. On a goroutine-per-connection peer that costs a parked goroutine;
+# here it costs a whole process holding a 16 MiB COW b_req, so it is an accumulation
+# defect, and §4.10's "rejection is clean, not collapse" is what it eventually breaks.
+#
+# This is a SOCKET-level idle deadline on a connection this child owns exclusively
+# and serves one frame at a time. It is deliberately NOT the §6.11(c) per-request
+# deadline, which that section requires and separately forbids being implemented as
+# a connection-wide primitive that races across concurrent in-flight requests —
+# there are no concurrent in-flight requests inside one child.
+#
+# 30 s is well above any inter-frame gap the suite produces and well below the point
+# at which stuck children matter. read_full already treats a short/failed read as
+# end-of-connection, so an expiry lands on the existing close-and-exit path.
+	.type set_conn_deadlines, @function
+set_conn_deadlines:
+	addi sp, sp, -16
+	sd   ra, 8(sp)
+	sd   s1, 0(sp)
+	mv   s1, a0                     # connfd, kept across both setsockopt calls
+	li   a1, SOL_SOCKET
+	li   a2, SO_RCVTIMEO
+	lla  a3, .Lconn_timeo
+	li   a4, 16
+	ksys SYS_setsockopt
+	mv   a0, s1
+	li   a1, SOL_SOCKET
+	li   a2, SO_SNDTIMEO
+	lla  a3, .Lconn_timeo
+	li   a4, 16
+	ksys SYS_setsockopt
+	ld   s1, 0(sp)
+	ld   ra, 8(sp)
+	addi sp, sp, 16
+	ret
 
 .Lfatal_open:
 	lla  a0, s_err_open

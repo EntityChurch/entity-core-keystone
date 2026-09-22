@@ -59,8 +59,19 @@
 	.equ SOCK_NONBLOCK,   0x800
 	.equ SOL_SOCKET,      1
 	.equ SO_REUSEADDR,    2
+	.equ SO_RCVTIMEO,     20         // SO_RCVTIMEO_OLD — struct timeval optval
+	.equ SO_SNDTIMEO,     21         // SO_SNDTIMEO_OLD — struct timeval optval
 	.equ IPPROTO_TCP,     6
 	.equ TCP_NODELAY,     1
+
+	// -- §4.10(c) connection admission (SHOULD; spec allows refusal BY CLOSE) --
+	// Bound on simultaneously-live connection children. The parent counts clones and
+	// reaps; over the bound it closes the accepted fd immediately rather than cloning.
+	// Chosen against the substrate, not the check: each child COWs a 16 MiB b_req plus
+	// its seeded store, so an unbounded clone-per-connection peer converts a connection
+	// flood into a memory-cap event and stops serving — which is the MUST half of
+	// §4.10 ("rejection is clean, not collapse") failing, not the SHOULD half.
+	.equ MAX_CONNS,       64
 
 	// -- epoll --
 	.equ EPOLLIN,         0x001

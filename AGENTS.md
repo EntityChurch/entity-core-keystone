@@ -877,12 +877,66 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   structurally unlike the cohort's, diff the per-check severities before believing the
   headline number — a peer can look *better* than its siblings by doing something it
   shouldn't. (Detail: `CONFORMANCE-MATRIX.md` §1a.)
-  **STILL OPEN as of 2026-08-30, and now the ONLY thing keeping those three off the cohort-standard
-  row.** The trio reached `755 · 0F` that day, at **594-595P/53-55W** against the cohort's
-  `312P/337W` — the whole gap is this violation, and their `type_system` reads `395P/51W` where the
-  cohort reads `~307P/327W`. **A 0-FAIL row does not retire an over-publication finding**; if
-  anything it makes it easier to miss, because there is no longer a FAIL count drawing the eye to
-  those peers. The grep is unchanged and still returns all three.
+  **CLOSED 2026-08-30 — the grep returns nothing, and the fix is the cohort's cleanest example of a
+  correct change that LOWERS a published number.** The trio was filtered to the 53-name core floor:
+  `595P/54W → 313P/336W` (`asm-x86_64`) and `594P/55W → 312P/337W` (`asm-arm64`, `riscv64`), all
+  three still `755 · 0F`. Verified per-check before/after on each peer: **exactly 282 checks changed,
+  every one `type_system`, every one PASS→WARN, nothing outside that category moved.** The remaining
+  deltas against `go` are all pre-existing and named elsewhere (F51 `authz_peers_target_from_uri`
+  PASSes on all three; `authz_scope_exceeds_1` WARNed before and after; `r3_connection_flood` PASSes
+  on `asm-x86_64` alone). **A 0-FAIL row does not retire an over-publication finding** — that stands,
+  and it is why this one survived two weeks past the peers going green with no FAIL count drawing
+  the eye to it.
+  **THREE THINGS GENERALIZE, and the fix itself is the least of them.**
+  - **The SCOPE FILTER BELONGS AT THE POINT OF PUBLICATION, NOT IN THE HARVEST.** These peers have
+    no data model to reflect a registry over, so `typestore.s` is harvested byte-exact from the
+    *reference* peer — which is a **FULL** peer and therefore serves every standard-extension
+    vocabulary. The over-publication was not a mistake in the harvest; it was the *absence of a
+    scoping step between harvesting and publishing*. The harvest stays intact (it is evidence of
+    what the reference peer serves, and re-harvesting to prune it destroys that); `gen-typestore.py`
+    filters. Generalize: **whenever a peer's data is captured from a richer source than the peer
+    itself, name the filter and put it in the generator** — capture and publish are different scopes
+    and the gap between them is silent.
+  - **A KEEP-LIST, NEVER A DROP-LIST — the same argument as `CANONICAL-DOCS.toml`, one layer down.**
+    A drop-list of extension prefixes fails **open**: a vocabulary added to a future harvest
+    publishes silently and nothing objects. A keep-list of the 53 floor names fails **closed**: an
+    omitted core type is a hard `type_system` FAIL on the next run, i.e. loud. Prefer the failure
+    mode that shouts, and assert it in the generator (`CORE_FLOOR - harvested` must be empty) so it
+    fires at generation time rather than at S4.
+  - **`riscv64`'s `reference/typestore/` HAD NEVER BEEN COMMITTED — 0 files tracked, not gitignored,
+    simply absent.** Its `gen-typestore.py` could not run from a clean clone and its `src/typestore.s`
+    was a committed artifact with **no in-tree input**, byte-identical to its siblings' and
+    unreproducible. This is the `forth` `bin/peer.fs` shape one level up: there the *entrypoint* went
+    untracked, here the *generator's input* did, and in both cases everything worked locally forever.
+    **Enforcement, and it is cheap: for any `tools/gen-*.py` that reads a directory, check
+    `git ls-files` on that directory returns non-empty** — a generator whose input is untracked is a
+    generator nobody can run but you. All three now regenerate byte-identically from their own
+    committed harvest.
+  **The cohort corroboration is worth recording because it was exact, not approximate:** 8 peers
+  (`rust python haskell ocaml swift java c typescript`) publish a set **byte-for-name identical** to
+  `go`'s 53, none publishes a 54th name, and none publishes any extension vocabulary. The floor is a
+  hardcoded, order-stable list replicated across each peer's `tools/gen-typedefs.py`. When a scope
+  question has 45 existing answers in the tree, ask them before deriving one.
+- **A RESOURCE BOUND MUST RELEASE ON THE SAME PATH IT IS TESTED ON — and a bound that never
+  releases presents as a DEAD PEER, not as an over-permissive one.** Candidate (first occurrence
+  here was `asm-x86_64`'s §4.10(c) admission cap, 2026-08-29; ported to `asm-arm64` and `riscv64`
+  2026-08-30, where the same double-reap was required and the failure mode would have been
+  identical). A fork-per-connection parent that counts admissions must reap **twice** — once before
+  the blocking `accept4` and **again after it returns** — because the first reap runs before the
+  parent parks, so every child that exits while it is parked is still counted as live when it wakes.
+  At an idle peer that is invisible; at the bound it is fatal. Measured: the peer correctly refused
+  194 of 256 flood connections and then refused **the one probe that followed**, with every child
+  already gone and the count still reading 64. The oracle named it outright — *"admission slots
+  leaked; the bound must release when connections close."* **Generalize past sockets: for any
+  counter that gates admission, the release path must be reachable from the same loop that reads the
+  counter, and it must run AFTER the blocking call, not only before it.**
+  Two sub-lessons from the port, both cheap: **§4.10(a)'s "reject BEFORE fully buffering" forbids the
+  drain that looks more polite** — draining a declared body to keep the stream framed *is* the
+  fully-buffering the section forbids, done one buffer at a time, and a sender declaring 4 GiB and
+  sending 1 KiB parks the peer forever while no 413 is ever emitted. And **a connection-wide socket
+  idle deadline is NOT the §6.11(c) per-request deadline** — §6.11 separately forbids implementing
+  that one as a connection-wide primitive; the two are only compatible because a forked child owns
+  its connection exclusively and serves one frame at a time. Say which one you built.
 - **FFI shared-lib gotchas** (every `entity-core-codec-ffi-<lang>` + any dual-impl
   differential): with a verbatim header + linker version-script, do **not** use
   `-fvisibility=hidden` (hidden symbols can't be promoted by `global:` → zero exports; let
@@ -1402,11 +1456,13 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
     alone makes the peer worse. When a fix moves a number the WRONG way, the second defect is the
     finding — this is the standing "a fix that raises the FAIL count is a finding" rule with the two
     halves inside one dimension.
-  **Owed, and named rather than quietly carried:** the ISA trio still over-publishes extension type
-  vocabularies (the standing `system/type/compute/apply` grep), which is why they read 594-595P/
-  53-55W against the cohort-standard 312P/337W — a higher pass count that means a scope violation.
-  `asm-arm64`/`riscv64` never received b6371d7's four `host.s` hardenings (they WARN on
-  `r3_connection_flood`; §4.10(c) is a SHOULD). `cobol` skips two concurrency checks its 65535-byte
+  **Owed, and named rather than quietly carried:** ~~the ISA trio still over-publishes extension type
+  vocabularies~~ — **closed 2026-08-30**, the grep returns nothing and the three now read
+  `313P/336W` / `312P/337W` / `312P/337W` against the cohort-standard `312P/337W` (the fix lowered
+  the pass count by 282; see the type-registry entry above).
+  ~~`asm-arm64`/`riscv64` never received b6371d7's four `host.s` hardenings~~ — **ported 2026-08-30;
+  `r3_connection_flood` WARN→PASS on both, all three ISA rows now `313P/336W`, and the cohort finding
+  moves 44/2 → 42/4.** `cobol` skips two concurrency checks its 65535-byte
   frame cap and 8192-byte entity ceiling make unreachable.
 - **RATIFIED, and it BROADENS the routed-claim rule: the exculpation most likely to be wrong is the
   one WE wrote, because nothing routes it back for review.** Second occurrence 2026-08-30, in the

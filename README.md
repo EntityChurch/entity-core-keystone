@@ -272,10 +272,12 @@ stopped standing in for two authorization checks it had never implemented.
 > **The honest one-line summary: all 46 peers in the tree are publishable today.** "No green report
 > → no publish" is unchanged and now withholds nothing. **Read that as a statement about the wire,
 > not about the peers.** These 46 share a generation lineage and pass one author's vectors at one pinned check
-> set: cohort-consistent, not independent convergence. Two rows carry a disclosed gap behind their
-> 0-FAIL verdict — the ISA trio still over-publishes extension type vocabularies, and `cobol` cannot
-> accept two of the concurrency probes' payloads — both named in `CONFORMANCE-MATRIX.md` rather than
-> left to be found. That file is authoritative: its banner carries the full accounting, §1a the
+> set: cohort-consistent, not independent convergence. One row carries a disclosed gap behind its
+> 0-FAIL verdict — `cobol` cannot accept two of the concurrency probes' payloads — named in
+> `CONFORMANCE-MATRIX.md` rather than left to be found. The ISA trio's extension type-vocabulary
+> over-publication, disclosed here until 2026-08-30, is **closed**; the fix *lowered* those three
+> peers' pass counts by 282, which is the correct direction for a scope violation the oracle scores
+> matched-if-present. That file is authoritative: its banner carries the full accounting, §1a the
 > retracted invalid-measurement diagnosis, §1b the cascade.
 
 ### On the word "independent"

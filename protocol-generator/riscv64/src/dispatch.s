@@ -303,30 +303,31 @@ conn_serve:
 	call dispatch
 	j    .Lcs_loop
 .Lcs_oversize:
-	# §9.1/§4.10(a): an over-cap frame must not tear down the connection. Drain its body from
-	# the socket (into b_req in ≤1 MiB chunks) to keep the stream framed, answer 413
-	# payload_too_large, then keep serving. request_id is unknown (unparsed) → echo empty.
-	mv   s2, t0                     # remaining bytes to drain (zero-extended)
+	# §4.10(a): answer 413 payload_too_large NOW, then close. request_id is unknown
+	# (the body was never parsed) → echo empty, which the section's emission shape
+	# explicitly provides for: "SHOULD emit a 413 correlated by request_id when the
+	# id is available, and otherwise MAY close the connection after a best-effort
+	# coded frame".
+	#
+	# This used to DRAIN the whole declared body first — in <=1 MiB chunks, up to the
+	# 4 GiB a 32-bit length header can name — so the connection could stay framed and
+	# keep serving. That reads as the more conformant choice and is the opposite:
+	# §4.10(a) requires rejecting "BEFORE fully buffering or decoding it where the
+	# transport allows", and the drain is the fully-buffering it forbids, done one
+	# buffer at a time. A sender that declares 4 GiB and sends 1 KiB parks the child
+	# in read(2) for as long as it likes, and no 413 is ever emitted because the peer
+	# is still politely waiting for the payload it already knows it will refuse.
+	# Measured on x86-64 2026-08-29: the oracle timed out reading the response every
+	# time and recorded "connection terminated without a 413 frame".
+	#
+	# Staying framed is worth nothing once the frame is known to be unservable, and
+	# the connection is the attacker's to waste, not ours.
 	lla  t0, g_rid_len
 	sd   zero, 0(t0)
-.Lcs_drain:
-	beqz s2, .Lcs_drained
-	mv   a2, s2
-	li   t0, 1048576                # 0x100000
-	bleu a2, t0, .Lcs_drain_sz
-	li   a2, 1048576               # 1048576
-.Lcs_drain_sz:
-	mv   a0, s1
-	lla  a1, b_req
-	call read_full
-	blez a0, .Lcs_done             # EOF mid-drain → peer gone
-	sub  s2, s2, a0
-	j    .Lcs_drain
-.Lcs_drained:
 	li   a0, 413
 	lla  a1, ec_payload_too_large
 	call send_error
-	j    .Lcs_loop
+	j    .Lcs_done
 .Lcs_done:
 	mv   a0, s1
 	ksys SYS_close
@@ -2408,7 +2409,8 @@ serve_tree_get:
 	ret
 
 # typestore_lookup(a1 = target ptr, a3 = target len) -> a0 = blob ptr|0, a2 = blob len.
-# Linear scan of the generated type_table (200 entries); exact string match on the path
+# Linear scan of the generated type_table (the core floor, currently 58 entries;
+# the count is read from type_table_count, never assumed); exact string match on the path
 # (the listing path "system/type/" carries its trailing slash, so it matches verbatim too).
 	.type typestore_lookup, @function
 typestore_lookup:
