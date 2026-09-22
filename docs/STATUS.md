@@ -1,6 +1,6 @@
 # entity-core-keystone — status
 
-_Updated: 2026-09-02 · oracle pin: the 756-check set `d30c3dd0…` · spec snapshot `v0.8.2.3`_
+_Updated: 2026-09-03 · oracle pin: the 758-check set `c34abcae…` · spec snapshot `v0.8.2.3`_
 
 > **`CONFORMANCE-MATRIX.md` is authoritative for every per-peer number.** This file is a
 > short orientation note, deliberately kept thin. When the two disagree, the matrix wins.
@@ -24,17 +24,24 @@ evolving as spec amendments run through the generator.
 
 ## Conformance state
 
-**46 peers in the tree · 46 measured · all 46 at one pin — the 756-check set
-`d30c3dd0…` (2026-09-01).** The pin is a content digest, not a commit; `CONFORMANCE-MATRIX.md`
+**46 peers in the tree · 46 measured · all 46 at one pin — the 758-check set
+`c34abcae…` (2026-09-03).** The pin is a content digest, not a commit; `CONFORMANCE-MATRIX.md`
 §"The pin" carries the full anchor set and why. Nothing is carried forward from an earlier pin.
 
 | State | Count | Peers |
 |---|---:|---|
-| **0-FAIL** — publishable | **46** | M1 5/5 · M2 8/8 · M3 13/13 · probe 18/18 · exploratory 2/2 |
+| **0-FAIL** — publishable | **45** | M1 5/5 · M2 8/8 · M3 13/13 · probe 17/18 · exploratory 2/2 |
+| **RED** — not publishable | **1** | `io` — 28F, caused by this pin's own coverage increase (item 11) |
 | Not measured | 0 | — |
 
-**The headline is one sentence: every peer in the cohort is at 0-FAIL, with no exclusions and no
-unmeasured row.**
+**The headline changed on 2026-09-03 and it changed in the honest direction.** The census now passes
+`-reference-peer`, so the executed set went **756 → 758** and three `origination` checks run for all
+46 peers rather than the 31 that happened to have a separate harness. Forty-five peers are at 0-FAIL
+on the larger set. **`io` is not**, and the regression is this change's own doing — measured
+pre-fold **0 of 6** against post-fold **3 of 6**, not asserted. It is disclosed rather than reverted,
+because new coverage that reddens a peer is the coverage working.
+
+**The two sets are NOT comparable and no row may be diffed across the boundary.**
 
 The most recent re-pin added a check for a **privilege escalation**, and five peers were live to
 it. An inbound EXECUTE naming *another* peer's namespace must be refused on the address itself,
@@ -82,8 +89,9 @@ defect. `nim` was the only peer that already *had* a §5.6 ceiling, and having a
 worse than having none — it minted tokens that outlived their own authority by ten years and
 still returned `200`.
 
-**Publication rule is unchanged: "no green report → no publish."** Today it withholds nothing —
-all forty-six peers have a green report. Per [ADR-0012] they are **cohort-consistent, not independent
+**Publication rule is unchanged: "no green report → no publish."** As of 2026-09-03 it withholds
+exactly one: `io` has no green report at the current pin (item 11), so it does not publish. The
+other forty-five do. Per [ADR-0012] they are **cohort-consistent, not independent
 convergence** — they share a generation lineage and, for the FFI-hybrid peers, one codec `.so`.
 
 ## The verification axes
@@ -109,7 +117,7 @@ the scorer to write the exam."*
 |---|---|---|---|
 | **S2** codec / crypto-agility | do our bytes match the corpus | **architecture** — ECF + crypto-agility fixture corpora, vendored byte-identical, digest-pinned (guide §2, §6) | 46 GREEN · 0 RED |
 | **S4** conformance | the published number | **`entity-core-go`** — the `validate-peer` oracle, `--profile core`, pinned by content digest | 46 GREEN · 0 RED |
-| **origination** §6.11 reentry | does the peer originate outbound | **the same oracle** — `-category origination -reference-peer`; not a separate suite, it is the category a single-peer census structurally cannot reach | 31 GREEN · 0 RED · 15 no gate |
+| ~~**origination**~~ | *(retired 2026-09-03)* | folded into S4 — the census now passes `-reference-peer`, so its three checks run for **all 46** peers instead of the 31 that had a harness | n/a |
 | **S3** loopback interop | do two peers talk, both directions | **ours** — hand-written assertions, 17 of 18 with no oracle behind them | 17 GREEN · **1 RED** · 28 no gate |
 
 So three of the four axes are consumption of somebody else's ground truth, and nothing in them is
@@ -249,17 +257,15 @@ standing `apl` lesson.
    it from the spec diff (≈197 changed lines in `ENTITY-CORE-PROTOCOL.md`, 29 in the CBOR encoding,
    40 in the type system), not from the assumption that the cohort is a version behind on the wire.
 6. **Package-registry publish** and **Ed448/SHA-384 agility** stay demand-driven.
-7. **Fold `-reference-peer` into the census; the origination axis then ceases to exist.** Measured
-   2026-09-03 against the reference peer: `--profile core` alone executes **756** checks, and
-   `--profile core -reference-peer <addr>` executes **758** — the three `origination` checks
-   (`dispatch_outbound_reentry`, `reference_connect`, `reference_ready`) replacing the single
-   `origination: skipped` placeholder. **Our census has never passed that flag**, which is the only
-   reason a separate `run-origination-core.sh` exists on 31 peers and is absent on 15. Folding the
-   flag in retires an entire axis and 31 scripts, and gives the 15 uncovered peers the checks for
-   free. Cost: the executed check set moves 756 → 758, so `core_executed_check_set_digest` re-pins
-   and **all 46 peers re-census** with tracked reports, banners and matrix rows refreshed — large
-   but wholly mechanical, and the tooling for it already exists (`--to-status`, `status-banner.py`,
-   `coherence-gate`).
+7. ~~**Fold `-reference-peer` into the census**~~ ✅ **DONE 2026-09-03.** The census now passes
+   the flag; the executed set moved **756 → 758** (`core_executed_check_set_digest`
+   `d30c3dd0…` → `c34abcae…`), the three `origination` checks replaced the single
+   `origination: skipped` placeholder, and the delta is exactly +3/−1 and nothing else —
+   verified by diffing the sorted check-name sets. **The origination axis is retired and its 31
+   harnesses are deleted**; the 15 peers that never had one now carry the checks. All 46 re-censused
+   and all 46 tracked reports, prose banners and §1 rows re-measured (never copied). The invariant is
+   gated: `tools/fold-reference-peer.py --check`, the ninth `make lint` gate, regression-tested
+   against four planted defects. **Cost, stated plainly: `io` regressed — see item 11.**
 8. ~~**Retire S3 in favour of `validate-peer -peers`**~~ ❌ **WITHDRAWN 2026-09-03, same day it was
    proposed — measure before recommending.** The proposal was that the oracle's Live-peer-matrix
    surface should replace our hand-written S3 assertions. Measured: `-peers` does **not** extend a
@@ -294,6 +300,19 @@ standing `apl` lesson.
    Lean proof vector *"the highest-signal channel"*; it has been ungated for its whole life while
    describing a guarantee it does not provide. **Do not add it to `run-axis-sweep.sh` until it
    actually runs here** — a row that cannot execute is the defect, not the fix.
+
+11. **`io` is RED at 28F, and this change caused it.** Measured on the same host in the same
+   session: **pre-fold 0 of 6** runs failed, **post-fold 3 of 6**. Always at
+   `concurrency/t1_2_concurrent_reentry` (3 of 8 concurrent reentries time out), always 28 FAILs with
+   27 cascading behind the first. **The three new checks all PASS**, at idx 674–676, immediately
+   before it — so the finding is not that `io` fails them; it is that nothing had ever driven its
+   reentry path directly before the *concurrent* one. Control with the reference peer running but
+   origination not executed (`-category concurrency`): clean 6 of 6, which narrows toward residue
+   over CPU contention **without proving it**, because an isolated category is a different timing
+   regime. **NOT root-caused** — that is an honest state, and "flaky" and "load" are claims. Likely
+   family: the peer's known single-event-loop per-request accumulation (A-IO-025/026). `io` leaves
+   the publishable set until fixed; its tracked report deliberately records a **failing** run,
+   because publishing the passing half of a coin-flip is the overclaim.
 
 **New this session — `tools/coherence-gate.py`, in `make lint`.** The sixth root-level gate, and
 the first that asks whether a document agrees with itself: all 46 primary-table rows and all 46

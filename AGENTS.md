@@ -2102,6 +2102,45 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   Makefile describes as committed, `git ls-files` it** — the same one-line check the `riscv64`
   `reference/typestore/` and `forth` `bin/peer.fs` entries already prescribe, applied to a
   build INPUT rather than an output.
+- **AN INSERTED CALL AND THE DEFINITION IT NEEDS MUST BE ANCHORED TO THE SAME SCOPE — AND THE
+  OBVIOUS ANCHOR IS IN A DIFFERENT SHELL ON A THIRD OF THE COHORT.** RATIFIED 2026-09-03, folding
+  `-reference-peer` into all 46 `run-s4.sh`. Both defects were in MY sweep and both were found by
+  running it, not by reading it:
+  - **Scope.** The natural anchor for a `. <helper>` line is the harness's own `ORACLE=` default near
+    the top. For the **19 peers that re-exec into their container that line runs on the HOST**, while
+    the oracle invocation runs INSIDE — so the helper was sourced where `/work` does not exist and the
+    function was undefined where it was called. Measured on `c`. **Fix: anchor the definition to the
+    CALL SITE, not to the top of the file** — then the scope question cannot be asked wrongly. Same
+    reasoning forced the teardown call to be `if command -v f >/dev/null; then f; fi`: the trap is
+    installed *before* the helper is sourced, and an `&&` form returns non-zero, which under `set -e`
+    aborts the teardown **before the target is reaped** — a helper detail turned into a leaked peer.
+  - **A line-start anchor misses exactly the peers that had a REASON to deviate.** Five harnesses
+    (`io pd python ruby sql`) write `rc=0; "$ORACLE" -addr … || rc=$?` because their oracle call has
+    no `|| true` under `set -e` and the exit code has to be held — the deviation this file already
+    documents. A `^"$ORACLE"` pattern skipped all five. **The peers that do not match your template
+    are the ones that had a reason not to, so a template-shaped pattern misses them systematically,
+    not randomly** — and five reads as "a few odd peers" rather than as a broken pattern.
+  **Enforcement, and it is the postcondition rule again: gate the PROPERTY, not the edit.**
+  `tools/fold-reference-peer.py --check` (ninth `make lint` gate) re-parses every harness for the
+  four properties independently of how they got there, and **prints the count** — 46 of 46 — because
+  a sweep that patched zero files prints the same word as one that patched 46.
+- **NEW COVERAGE THAT TURNS A PEER RED IS THE COVERAGE WORKING — MEASURE THE BEFORE AND AFTER RATES
+  BEFORE CALLING IT ANYTHING.** RATIFIED 2026-09-03 (`io`), and it is the standing *"a fix that raises
+  a peer's FAIL count is a finding, not a regression"* rule reached from the coverage side rather than
+  the fix side. Folding `-reference-peer` in took 45 peers to `758 · 0F` and `io` to **28F**. The
+  temptation is to call a 50%-reproducing failure flaky, or to revert to protect a 46-of-46 row. Both
+  are forbidden and the counting is what settles it:
+  `pre-fold (756, no reference peer) 0 of 6 FAIL · post-fold (758, with it) 3 of 6 FAIL`, always at
+  idx 678 `concurrency/t1_2_concurrent_reentry`, always 28 FAILs with 27 cascading behind one.
+  **The three new checks all PASS, at idx 674–676, immediately before the failure** — so the finding
+  is not that io fails the new checks, it is that nothing had ever driven io's reentry path
+  immediately before the *concurrent* one. Control (reference peer up, origination not executed via
+  `-category concurrency`): clean 6 of 6 — which **narrows toward residue over CPU contention and does
+  not prove it**, because an isolated category is a different timing regime (the `c` lesson). So it is
+  recorded as **NOT root-caused**, which is an honest state; "load" and "flaky" are claims.
+  **The rule: a coverage change that reddens a peer gets a before/after RATE on the same host in the
+  same session, and the peer leaves the publishable set until it is fixed.** Do not revert, and do not
+  publish the passing sample — for an intermittent, cite the rate.
 - **A PATH SWEEP'S FALSE NEGATIVE IS THE DIRECTORY AS A SEPARATE STRING — VERIFY THAT PATHS RESOLVE,
   NEVER THAT THE OLD STRING IS GONE.** Candidate, same session, and it is the third false-negative
   grep in this file after the `dart`/`ruby` NUL byte (a grep that could not SEE the file) and F51 (a

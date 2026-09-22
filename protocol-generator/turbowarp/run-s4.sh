@@ -91,6 +91,7 @@ BR=$!
 # not the peer -- so reaping only $PEER would leave the port bound. $PEER is not set
 # until step 2, hence the :- default rather than a second trap.
 reap_host() {
+  if command -v refpeer_reap >/dev/null 2>&1; then refpeer_reap; fi
   for p in "${BR:-}" "${PEER:-}"; do
     [ -n "$p" ] || continue
     kill -0 "$p" 2>/dev/null || continue
@@ -119,7 +120,9 @@ echo "BRIDGE + PEER up (tcp:$EC_PORT ws:$WS_PORT)"
 
 # 3. Oracle.
 if [ "$#" -eq 0 ]; then set -- -profile core -json-out "$TW/../status/CONFORMANCE-REPORT.json"; fi
-"$ORACLE" -addr "127.0.0.1:$EC_PORT" "$@" || true
+. /work/protocol-generator/shared/tools/refpeer.sh
+refpeer_up
+"$ORACLE" -addr "127.0.0.1:$EC_PORT" $REFPEER_FLAG "$@" || true
 
 # SURFACE THE STDERR OF THE PEER ITSELF. /tmp/peer.err is a path INSIDE a --rm
 # container, so without this the dying words of the peer are discarded with the

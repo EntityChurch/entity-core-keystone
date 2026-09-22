@@ -1,14 +1,14 @@
 {
   "peer_addr": "127.0.0.1:7777",
   "peer_id": "2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg",
-  "timestamp": "2026-09-01T19:20:26Z",
+  "timestamp": "2026-09-03T22:07:10Z",
   "summary": {
-    "total": 756,
-    "passed": 314,
+    "total": 758,
+    "passed": 317,
     "warned": 336,
     "failed": 0,
-    "skipped": 106,
-    "elapsed_ms": 7283,
+    "skipped": 105,
+    "elapsed_ms": 7245,
     "self_checks": 4
   },
   "checks": [
@@ -4342,7 +4342,7 @@
       "category": "handlers",
       "name": "core_register_grant_signature_at_invariant_path",
       "severity": "PASS",
-      "message": "grant signature at system/signature/004b6fdc13d4367b124c0e00c59016bec9f1d9bf15a16e2371135ffd4ff02d8966 targets grant.content_hash",
+      "message": "grant signature at system/signature/0081dfa7d52132ac711583d57e8330cd24c9b2477a46169850a0557b6406e19ff8 targets grant.content_hash",
       "spec_ref": "V7 §3.5, v7.74 v0.4 §3.4; PROPOSAL v7.74 §10.1 step 4",
       "elapsed_ms": 0
     },
@@ -4358,7 +4358,7 @@
       "category": "handlers",
       "name": "core_register_unregister_signature_removed",
       "severity": "PASS",
-      "message": "signature at system/signature/004b6fdc13d4367b124c0e00c59016bec9f1d9bf15a16e2371135ffd4ff02d8966 removed by unregister",
+      "message": "signature at system/signature/0081dfa7d52132ac711583d57e8330cd24c9b2477a46169850a0557b6406e19ff8 removed by unregister",
       "spec_ref": "v7.74 v0.4 §3.4 writer/unregister symmetry; PROPOSAL v7.74 §10.1 unregister teardown",
       "elapsed_ms": 0
     },
@@ -4390,7 +4390,7 @@
       "category": "capability",
       "name": "request_returns_grant",
       "severity": "PASS",
-      "message": "issued token ecf-sha256:9e10ecffd13ff64011bee99d233d2c79b1ccde16429566b5a64eba08f6e78e4a",
+      "message": "issued token ecf-sha256:7248d59c4fb730f7c0f6a9aec5f5b2bd6228ba2e93fd52d179e7aad4f38dc24f",
       "spec_ref": "V7 §6.2 request → system/capability/grant",
       "elapsed_ms": 0
     },
@@ -4446,7 +4446,7 @@
       "category": "capability",
       "name": "configure_writes_policy_entry",
       "severity": "PASS",
-      "message": "configure wrote policy-entry at system/capability/policy/00a5013b270970534b48bfde3435cb598ae1a6a848c022e5e3eff6105074a3aec5",
+      "message": "configure wrote policy-entry at system/capability/policy/004eed349fbc4700f60134f247585b4d462b1ee31b12d0ae816983bdbd57a35982",
       "spec_ref": "V7 v7.62 §6.2 §4 + closeout F8 — configure → entry bound at system/capability/policy/{peer_pattern}; fallback segment is literal \"default\" (renamed from \"*\")",
       "elapsed_ms": 0
     },
@@ -4462,7 +4462,7 @@
       "category": "capability",
       "name": "revoke_happy_path_writes_marker",
       "severity": "PASS",
-      "message": "revoke wrote marker at system/capability/revocations/009e10ecffd13ff64011bee99d233d2c79b1ccde16429566b5a64eba08f6e78e4a with revoked_at=1788290426671",
+      "message": "revoke wrote marker at system/capability/revocations/007248d59c4fb730f7c0f6a9aec5f5b2bd6228ba2e93fd52d179e7aad4f38dc24f with revoked_at=1788473230700",
       "spec_ref": "V7 v7.62 §5 + §6 — revoke writes marker at system/capability/revocations/{cap_hash_hex} with handler-set revoked_at",
       "elapsed_ms": 0
     },
@@ -4502,7 +4502,7 @@
       "category": "capability",
       "name": "request_mint_temporal_ceiling",
       "severity": "PASS",
-      "message": "over-long request clamped to the caller cap exactly (expires_at=1788294026672) and returned 200 — CAP-5",
+      "message": "over-long request clamped to the caller cap exactly (expires_at=1788476830701) and returned 200 — CAP-5",
       "spec_ref": "V7 §6.2/§5.6 CAP-5 (0.8.1) — request over-long ttl_ms mints a CLAMPED token: 200 AND expires_at == MIN_DEFINED exactly (not a 403, not a `\u003c=` check)",
       "elapsed_ms": 0
     },
@@ -4512,7 +4512,7 @@
       "severity": "PASS",
       "message": "ttl_ms:0 mints an immediately-expired token (created_at, before the caller cap) and an overflowing ttl_ms drops out leaving the caller-cap ceiling — CAP-6; no-ceiling overflow minted NO expiry (term absent, not huge-finite/saturated)",
       "spec_ref": "V7 §5.6 CAP-6 (0.8.1) — ttl_ms:0 = expire immediately (created_at, before caller cap); overflow term drops out (no wrap, no saturate)",
-      "elapsed_ms": 0
+      "elapsed_ms": 1
     },
     {
       "category": "capability",
@@ -4968,7 +4968,7 @@
       "severity": "PASS",
       "message": "all 3 sub-pins passed (V7 §1.4 + §5.4 / v7.72 §9.5a CORE-TREE-PATH-FLEX-1)",
       "spec_ref": "V7 v7.72 §9.5a (CORE-TREE-PATH-FLEX-1) — §1.4 path validation flex set",
-      "elapsed_ms": 0
+      "elapsed_ms": 1
     },
     {
       "category": "tree_operations",
@@ -5412,19 +5412,35 @@
     },
     {
       "category": "origination",
-      "name": "skipped",
-      "severity": "SKIP",
-      "message": "category skipped: outside --profile core (V7 v7.72 §9.0 — extension-only category)",
-      "spec_ref": "",
+      "name": "reference_connect",
+      "severity": "PASS",
+      "message": "connected to reference peer 127.0.0.1:7778 (shared keypair with target)",
+      "spec_ref": "harness precondition (not a spec vector) — dial the reference peer with the TARGET's keypair, so the validator presents one byte-equal identity to both peers per EXTENSION-CONTINUATION §4.2 case 3",
+      "elapsed_ms": 0
+    },
+    {
+      "category": "origination",
+      "name": "reference_ready",
+      "severity": "PASS",
+      "message": "reference peer 127.0.0.1:7778 ready as B-role (core slice)",
+      "spec_ref": "harness precondition (not a spec vector) — the reference peer completed its connectivity checks and is usable as the handshake half",
+      "elapsed_ms": 4
+    },
+    {
+      "category": "origination",
+      "name": "dispatch_outbound_reentry",
+      "severity": "PASS",
+      "message": "dispatch-outbound reentry round-tripped (validator-as-B served 1 inbound echo on the same connection)",
+      "spec_ref": "GUIDE-CONFORMANCE §7a.1 + §7a.2a; PROPOSAL v7.74 §10.2",
       "elapsed_ms": 0
     },
     {
       "category": "concurrency",
       "name": "t1_1_concurrent_demux",
       "severity": "PASS",
-      "message": "N=16 concurrent gets all returned + demuxed correctly; sequential baseline 2.813502ms \u003c 50ms floor, parallel-speedup signal suppressed (peer too fast for noise-free measurement)",
+      "message": "N=16 concurrent gets all returned + demuxed correctly; sequential baseline 3.999599ms \u003c 50ms floor, parallel-speedup signal suppressed (peer too fast for noise-free measurement)",
       "spec_ref": "V7 §6.11(a)(b) — multiplexed reader + per-id demux on one connection",
-      "elapsed_ms": 47
+      "elapsed_ms": 49
     },
     {
       "category": "concurrency",
@@ -5438,9 +5454,9 @@
       "category": "concurrency",
       "name": "t1_3_no_head_of_line",
       "severity": "PASS",
-      "message": "fast.get latency p50 stable under contention: solo=181.272µs → while-slow=171.955µs (ratio 0.95 ≤ 4.0x)",
+      "message": "fast.get latency p50 stable under contention: solo=259.029µs → while-slow=173.778µs (ratio 0.67 ≤ 4.0x)",
       "spec_ref": "V7 §6.11(a) — fast not gated behind slow on one connection",
-      "elapsed_ms": 52
+      "elapsed_ms": 53
     },
     {
       "category": "concurrency",
@@ -5448,15 +5464,15 @@
       "severity": "PASS",
       "message": "RT-13b Part A: 64 concurrent distinct 16 KB responses over 3 windows all framed cleanly, demuxed by request_id, and were byte-identical — no frame-write splice detected. Best-effort detection; the RT-13b verdict is gated on each peer's Part-B atomicity attestation (keystone §8.4 vacuous-green guard).",
       "spec_ref": "V7 §6.11 a′ / RT-13b Part A — bytes of distinct response frames MUST NOT interleave on one connection under concurrent outbound (best-effort detection; verdict gated on each peer's Part-B attestation)",
-      "elapsed_ms": 179
+      "elapsed_ms": 181
     },
     {
       "category": "concurrency",
       "name": "t2_1_sustained_load",
       "severity": "PASS",
-      "message": "C=16 × K=10000 sustained load: zero drops; p50 stable across windows (first=2.181869ms, last=2.139579ms, ratio 0.98 ≤ 4.0x)",
+      "message": "C=16 × K=10000 sustained load: zero drops; p50 stable across windows (first=2.324888ms, last=2.126364ms, ratio 0.91 ≤ 4.0x)",
       "spec_ref": "V7 §6.11 robustness — no drops, no latency runaway under sustained C×K load",
-      "elapsed_ms": 1425
+      "elapsed_ms": 1408
     },
     {
       "category": "concurrency",
@@ -5464,15 +5480,15 @@
       "severity": "PASS",
       "message": "100 connect → handshake → 1 req → close cycles all succeeded (cycle 100 worked as well as cycle 1 — no observable per-connection resource leak)",
       "spec_ref": "V7 §6.11 robustness — accept loop + per-conn lifecycle across N cycles",
-      "elapsed_ms": 235
+      "elapsed_ms": 219
     },
     {
       "category": "resource_bounds",
       "name": "r1_payload_over_limit",
       "severity": "PASS",
-      "message": "declared_max_payload=16777216 → wrote 16778240-byte length prefix; connection terminated without a 413 frame: read tcp 127.0.0.1:57922-\u003e127.0.0.1:7777: i/o timeout (spec-allowed: 'coded frame OR close'); reconnect + tree.get succeeded (keeps serving)",
+      "message": "declared_max_payload=16777216 → wrote 16778240-byte length prefix; connection terminated without a 413 frame: read tcp 127.0.0.1:44004-\u003e127.0.0.1:7777: i/o timeout (spec-allowed: 'coded frame OR close'); reconnect + tree.get succeeded (keeps serving)",
       "spec_ref": "V7 §4.10(a) (v7.75 §9.1 floor MUST) — oversize inbound → 413 payload_too_large + keeps serving",
-      "elapsed_ms": 5006
+      "elapsed_ms": 5004
     },
     {
       "category": "resource_bounds",
@@ -5488,7 +5504,7 @@
       "severity": "WARN",
       "message": "admitted all 256 connections without refusal and kept serving — no self-imposed bound, so admission is delegated externally (systemd / proxy / OS fd limit) or absent; §4.10(c) is a SHOULD, so this is not gated",
       "spec_ref": "V7 §4.10(c) SHOULD (v7.75) — admission bound; clean refusal or external-delegation Warn",
-      "elapsed_ms": 288
+      "elapsed_ms": 274
     },
     {
       "category": "attestation",
@@ -5582,7 +5598,7 @@
       "category": "universal_address_space",
       "name": "local_peer_relative_equals_absolute",
       "severity": "PASS",
-      "message": "peer-relative \"system/validate/uas/local-relative-1\" ≡ absolute \"/2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg/system/validate/uas/local-relative-1\" (same entity, hash=ecf-sha256:c3004f614a0775f32e3ddc1641f13688a5a272b748b833958c97673773274a80)",
+      "message": "peer-relative \"system/validate/uas/local-relative-1\" ≡ absolute \"/2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg/system/validate/uas/local-relative-1\" (same entity, hash=ecf-sha256:8b6b581d97ad50905a13c1d357d8b7cfcb4cc23e41c060235b1f71785a2e99f3)",
       "spec_ref": "V7 §1.4 — peer-relative `foo` ≡ absolute `/{localPeerID}/foo` (canonicalization is bidirectional round-trip)",
       "elapsed_ms": 0
     },
@@ -5590,7 +5606,7 @@
       "category": "universal_address_space",
       "name": "local_absolute_equals_peer_relative",
       "severity": "PASS",
-      "message": "absolute \"/2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg/system/validate/uas/local-absolute-1\" ≡ peer-relative \"system/validate/uas/local-absolute-1\" (same entity, hash=ecf-sha256:652ac57fbec9f982b3496646639b4bf6e0e606065b17f7b4f334cdcad2cef392)",
+      "message": "absolute \"/2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg/system/validate/uas/local-absolute-1\" ≡ peer-relative \"system/validate/uas/local-absolute-1\" (same entity, hash=ecf-sha256:9837e5ed78f2637eb09fecca3a3c2ca429127b120ca37a1dfb09c6a64b65c4b2)",
       "spec_ref": "V7 §1.4 — absolute `/{localPeerID}/foo` ≡ peer-relative `foo` (inverse round-trip)",
       "elapsed_ms": 0
     },
@@ -5598,7 +5614,7 @@
       "category": "universal_address_space",
       "name": "foreign_namespace_publish_lands_at_absolute_path",
       "severity": "PASS",
-      "message": "foreign \"/1HtVqLgPqkScVxjVN8VFGFiH7T2P3aSDwJxQ8DGEoooo2z/system/validate/uas/probe-1\" binding round-trips (hash=ecf-sha256:0033ba30ada8f95c477c29fe31db03f48607368d5c53b342991aa0430c2a98de, 61 bytes)",
+      "message": "foreign \"/1HtVqLgPqkScVxjVN8VFGFiH7T2P3aSDwJxQ8DGEoooo2z/system/validate/uas/probe-1\" binding round-trips (hash=ecf-sha256:3e5576be9e356e56ac45e63e460a791631482b4588f446c6925f781375da7c9b, 61 bytes)",
       "spec_ref": "V7 §1.4 — `tree:put` with Resource.Targets[0]=`/{otherID}/foo` to `entity://localPeer/system/tree` lands a binding at that absolute path (universal address space slot is addressable)",
       "elapsed_ms": 0
     },
@@ -5710,7 +5726,7 @@
       "category": "peer_canonicalization",
       "name": "peer_canon_2_canonicalize_on_storage",
       "severity": "PASS",
-      "message": "PEER-CANON-2: two distinct wire forms (2KJ3ufoBxy6GD3XtaneZyBB4JMQf5eVFFkbxExk4LygQoa, 2KPx6T8zfW6kjVQt6BPFqBGwNRXWVxP7VCqV1N23EuCdqE) map to single canonical storage hash 000000000000…",
+      "message": "PEER-CANON-2: two distinct wire forms (2K5XcnFJ8pVTJedxWNnRf8AaauHxt8GWyLtaFpoCe5uSkE, 2KQbj2F8SJiDzRhr5iEhuJphYTQYN8FzHPuk6dRU2DqZwk) map to single canonical storage hash 000000000000…",
       "spec_ref": "V7 §1.5 v7.65 §5 (PEER-CANON-2: non-canonical wire form decodes; storage form is canonical)",
       "elapsed_ms": 0
     },
@@ -5726,7 +5742,7 @@
       "category": "peer_canonicalization",
       "name": "peer_pattern_2_lazy_canon_mint",
       "severity": "PASS",
-      "message": "PEER-PATTERN-2: Base58 peer_pattern (2KBJSt3Xgk8i7pkrWsz6ekBbmdFQDAtPgVieSHJMfvFEWo) accepted in pending-canonicalization state for unknown peer per v7.65 §3.6 rule 3",
+      "message": "PEER-PATTERN-2: Base58 peer_pattern (2KAANxeiCLFe8rUoJWUtr7nwwDMZfTj1RoAjnEonnT3a4u) accepted in pending-canonicalization state for unknown peer per v7.65 §3.6 rule 3",
       "spec_ref": "V7 §3.6 v7.65 rule 3 (PEER-PATTERN-2: Base58 mint for unknown peer accepted in pending-canonicalization state)",
       "elapsed_ms": 0
     },
@@ -5750,7 +5766,7 @@
       "category": "peer_canonicalization",
       "name": "composition_1_interleaved_chain",
       "severity": "PASS",
-      "message": "COMPOSITION-1: v7.64-shape (hash=00b837e884…) and v7.65-shape (hash=00db5460aa…) entities both valid; envelope interleave validates per v7.65 §2.4",
+      "message": "COMPOSITION-1: v7.64-shape (hash=003028d9e6…) and v7.65-shape (hash=00cf8b0093…) entities both valid; envelope interleave validates per v7.65 §2.4",
       "spec_ref": "V7 §1.3 v7.65 §2.4 (COMPOSITION-1: cap chain interleaving v7.64-shape and v7.65-shape system/peer entities — both shapes verify against their referenced content_hash)",
       "elapsed_ms": 0
     },

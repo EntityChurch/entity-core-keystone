@@ -83,6 +83,7 @@ fi
 # This peer had the correct shape first; the other 45 were swept to match it on
 # 2026-09-02, and the wording is shared so one grep can check all 46.
 reap_host() {
+  if command -v refpeer_reap >/dev/null 2>&1; then refpeer_reap; fi
   [ -n "${HOST_PID:-}" ] || return 0
   kill -0 "$HOST_PID" 2>/dev/null || return 0
   kill -TERM "$HOST_PID" 2>/dev/null || true
@@ -119,7 +120,9 @@ head -1 /tmp/host.out
 if [ "$#" -eq 0 ]; then
   set -- -profile core -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
 fi
-"$ORACLE" -addr "127.0.0.1:$PORT" "$@" || true
+. /work/protocol-generator/shared/tools/refpeer.sh
+refpeer_up
+"$ORACLE" -addr "127.0.0.1:$PORT" $REFPEER_FLAG "$@" || true
 
 # Reap the host cleanly HERE (before the EXIT trap fires) so its stderr is
 # complete and any shutdown crash surfaces in /tmp/host.err rather than being

@@ -71,6 +71,13 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # ---------------------------------------------------------------------------
 # THE AXIS INVENTORY. One row per axis: <key> <per-peer script> <description>
+# ORIGINATION WAS RETIRED 2026-09-03 AND THAT IS THE POINT OF THE TABLE. It was
+# never an axis: `--profile core -reference-peer` runs its three checks inside the
+# ordinary census, and the separate harness existed on 31 peers only because the
+# census had never passed the flag -- so 15 peers had no coverage of it at all. A
+# separate harness that exists because a flag was never passed is a workaround with
+# a directory. The 31 scripts are deleted; the checks now run for all 46.
+#
 # S4 is deliberately ABSENT and that is not an oversight: it has its own runner
 # (`run-cohort-census.sh`) plus three gates on the numbers it produces, because
 # an S4 result is a published measurement and needs comparability enforcement
@@ -80,7 +87,6 @@ axis_script() {
   case "$1" in
     s2)          echo "run-s2.sh" ;;
     s3)          echo "run-s3.sh" ;;
-    origination) echo "run-origination-core.sh" ;;
     *)           return 1 ;;
   esac
 }
@@ -88,7 +94,6 @@ axis_desc() {
   case "$1" in
     s2)          echo "codec / crypto-agility corpus gate" ;;
     s3)          echo "two-direction loopback interop against the Go reference peer" ;;
-    origination) echo "§6.11 origination-core reentry (the oracle, reference-peer-gated)" ;;
   esac
 }
 # EVERY AXIS NAMES ITS AUTHORITY. GUIDE-CONFORMANCE.md §7.0 recognises exactly
@@ -104,7 +109,7 @@ axis_authority() {
     origination) echo "entity-core-go ORACLE — validate-peer -category origination -reference-peer; the category a single-peer census cannot reach" ;;
   esac
 }
-ALL_AXES="s2 s3 origination"
+ALL_AXES="s2 s3"
 
 TIER_SEL=""
 GATE=0

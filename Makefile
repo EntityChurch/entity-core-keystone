@@ -89,7 +89,7 @@ help:
 	@echo "  fmt      no-op at root — generated src is formatted by its own toolchain;"
 	@echo "           spec-data is byte-pinned and MUST NOT be reformatted"
 	@echo "  check    lint + test — STATIC ONLY; verifies no peer behaviour"
-	@echo "  gate     THE gate: lint + S2 + S3 + origination + the S4 census,"
+	@echo "  gate     THE gate: lint + S2 + S3 + the S4 census,"
 	@echo "           one command, one verdict (~2-4 h, census-dominated)"
 	@echo "  gate-sweeps   the fast three axes, no census — reports INCOMPLETE"
 	@echo "  clean    remove every built keystone toolchain image"
@@ -230,6 +230,18 @@ lint:
 	@#   the tracked, signed-off report it was meant to be diagnosed against.
 	@# Regression suite: `python3 tools/harness-gate.py --self-test`.
 	@python3 tools/harness-gate.py --quiet
+	@echo "lint: gating the B-role reference peer in every harness (read-only)…"
+	@# The ninth gate. `--profile core` alone executes 756 checks; with -reference-peer
+	@# it executes 758, and the three it adds are the WHOLE origination axis. The census
+	@# never passed the flag, which is the only reason a separate run-origination-core.sh
+	@# existed on 31 peers and was ABSENT on 15 — an axis that was a workaround for an
+	@# unpassed flag, and 15 peers with no coverage of it at all.
+	@# This gates the property rather than the edit: each harness must source the shared
+	@# helper, bring the reference up, pass $$REFPEER_FLAG to the oracle, and reap it from
+	@# its existing teardown. A peer that regresses any of the four drops back to 756 and
+	@# its number stops being comparable — silently, which is the failure mode this whole
+	@# fold exists to end.
+	@python3 tools/fold-reference-peer.py --check
 	@echo "lint: gating skip provenance — every SKIP explained (read-only)…"
 	@python3 tools/skip-provenance-gate.py
 
@@ -252,9 +264,10 @@ check: lint test
 # on two axes nobody swept.
 #
 # Runs: lint, S2 (arch's vendored fixture corpora), S3 (our loopback smoke),
-# origination (the oracle's own category, which a single-peer census cannot
-# reach), and the S4 conformance census. Sequentially -- concurrent containers
-# relabel each other's :Z mount and manufacture false REDs.
+# and the S4 conformance census -- which since 2026-09-03 passes -reference-peer
+# and therefore carries the three origination checks that used to need their own
+# harness. Sequentially -- concurrent containers relabel each other's :Z mount
+# and manufacture false REDs.
 #
 # ~2-4 h, dominated by the census. `make gate-sweeps` is the fast three and
 # announces itself as INCOMPLETE, because it is not the gate.

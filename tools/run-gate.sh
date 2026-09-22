@@ -23,7 +23,8 @@
 #                  DERIVED type-registry drift target (labelled non-normative)
 #     S4           the validate-peer oracle, --profile core, authored by
 #                  entity-core-go (guide §7.0 row 1), pinned by content digest
-#     origination  THE SAME ORACLE — `-category origination -reference-peer`.
+#     (origination retired 2026-09-03 — its three checks now run inside the S4
+#      census, which passes -reference-peer. See tools/run-axis-sweep.sh.)
 #                  Not a separate suite: it is the category a single-peer census
 #                  structurally cannot reach, because it needs a second peer.
 #     S3           OURS. Hand-written loopback smoke assertions, 17 of 18 with no
@@ -93,7 +94,6 @@ stage() { # <label> <logfile> <command...>
 stage "lint (static gates)"        "$OUT/lint.log"        make lint
 stage "S2 codec / crypto-agility"  "$OUT/s2.log"          bash tools/run-axis-sweep.sh s2 --gate
 stage "S3 loopback interop"        "$OUT/s3.log"          bash tools/run-axis-sweep.sh s3 --gate
-stage "origination (oracle)"       "$OUT/origination.log" bash tools/run-axis-sweep.sh origination --gate
 
 if [ "$SWEEPS_ONLY" -eq 0 ]; then
   stage "S4 conformance census"    "$OUT/s4.log"          bash tools/run-cohort-census.sh

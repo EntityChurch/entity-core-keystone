@@ -99,6 +99,7 @@ HOST_PID=$!
 # property of the peer runtime, not of the harness, which is why every peer carries
 # this and not only the ones that were seen to fail.
 reap_host() {
+  if command -v refpeer_reap >/dev/null 2>&1; then refpeer_reap; fi
   [ -n "${HOST_PID:-}" ] || return 0
   # SIGKILL is preserved from the original teardown, which chose -9 deliberately; the
   # fix here is the wait, which is what makes the port released before we return.
@@ -130,7 +131,9 @@ RC=0
 if [ "$#" -eq 0 ]; then
   set -- -profile core -timeout "${ORACLE_TIMEOUT:-180s}" -json-out "$JSON_OUT"
 fi
-"$ORACLE" -addr "127.0.0.1:$PORT" "$@" || RC=$?
+. /work/protocol-generator/shared/tools/refpeer.sh
+refpeer_up
+"$ORACLE" -addr "127.0.0.1:$PORT" $REFPEER_FLAG "$@" || RC=$?
 
 echo
 echo "=== host stderr (tail) ==="

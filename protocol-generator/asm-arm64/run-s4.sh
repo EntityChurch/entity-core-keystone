@@ -75,6 +75,7 @@ HOST_PID=$!
 # property of the peer runtime, not of the harness, which is why every peer carries
 # this and not only the ones that were seen to fail.
 reap_host() {
+  if command -v refpeer_reap >/dev/null 2>&1; then refpeer_reap; fi
   [ -n "${HOST_PID:-}" ] || return 0
   kill -0 "$HOST_PID" 2>/dev/null || return 0
   kill -TERM "$HOST_PID" 2>/dev/null || true
@@ -107,7 +108,9 @@ head -1 /tmp/host.out
 if [ "$#" -eq 0 ]; then
   set -- -profile core -json-out "$PROJ/status/CONFORMANCE-REPORT.json"
 fi
-"$ORACLE" -addr "127.0.0.1:$PORT" "$@" || true
+. /work/protocol-generator/shared/tools/refpeer.sh
+refpeer_up
+"$ORACLE" -addr "127.0.0.1:$PORT" $REFPEER_FLAG "$@" || true
 
 # SURFACE THE STDERR OF THE PEER ITSELF. /tmp/host.err is a path INSIDE a --rm
 # container, so without this the dying words of the peer are discarded with the

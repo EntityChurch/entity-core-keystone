@@ -104,6 +104,7 @@ podman run $PODMAN_RUN_CAPS --rm --network=none \
     # property of the peer runtime, not of the harness, which is why every peer carries
     # this and not only the ones that were seen to fail.
     reap_host() {
+      if command -v refpeer_reap >/dev/null 2>&1; then refpeer_reap; fi
       [ -n "${PDPID:-}" ] || return 0
       kill -0 "$PDPID" 2>/dev/null || return 0
       kill -TERM "$PDPID" 2>/dev/null || true
@@ -121,7 +122,9 @@ podman run $PODMAN_RUN_CAPS --rm --network=none \
     trap reap_host EXIT
     sleep 2
     kill -0 $PDPID 2>/dev/null || { echo "pd failed to start:"; cat build/s4-pd.log build/s4-pd.err; exit 1; }
-    rc=0; "$ORACLE" -addr "127.0.0.1:$PORT" "$@" || rc=$?
+    . /work/protocol-generator/shared/tools/refpeer.sh
+    refpeer_up
+    rc=0; "$ORACLE" -addr "127.0.0.1:$PORT" $REFPEER_FLAG "$@" || rc=$?
 
     # SURFACE THE STDERR OF THE PEER ITSELF. build/s4-pd.err is a path INSIDE a --rm
     # container, so without this the dying words of the peer are discarded with the

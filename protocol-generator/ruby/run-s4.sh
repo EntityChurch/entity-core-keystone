@@ -67,6 +67,7 @@ podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WOR
     # property of the peer runtime, not of the harness, which is why every peer carries
     # this and not only the ones that were seen to fail.
     reap_host() {
+      if command -v refpeer_reap >/dev/null 2>&1; then refpeer_reap; fi
       [ -n "${HOST_PID:-}" ] || return 0
       # SIGKILL is preserved from the original teardown, which chose -9 deliberately; the
       # fix here is the wait, which is what makes the port released before we return.
@@ -88,7 +89,9 @@ podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WOR
     # with its quoting intact (sql/io/pd/datalog already did it that way -- the word
     # bash is argv[0], and the caller args land as $1.. inside the block).
     if [ "$#" -eq 0 ]; then set -- -profile core -json-out "$JSON_OUT"; fi
-    rc=0; "$ORACLE" -addr "127.0.0.1:$PORT" "$@" || rc=$?
+    . /work/protocol-generator/shared/tools/refpeer.sh
+    refpeer_up
+    rc=0; "$ORACLE" -addr "127.0.0.1:$PORT" $REFPEER_FLAG "$@" || rc=$?
 
     # SURFACE THE STDERR OF THE PEER ITSELF. /tmp/host.err is a path INSIDE a --rm
     # container, so without this the dying words of the peer are discarded with the

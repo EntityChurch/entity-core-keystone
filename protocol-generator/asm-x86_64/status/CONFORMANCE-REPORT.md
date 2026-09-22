@@ -1,6 +1,6 @@
-<!-- current-pin-banner:d30c3dd0d4a1 -->
-> **CURRENT (2026-09-01) — spec snapshot `v0.8.2.3`, executed check set `d30c3dd0d4a1…`.**
-> `validate-peer --profile core` → **PASS, 0 FAIL** · **756 total · 314 pass · 336 warn · 0 FAIL · 106 skip** (elapsed 1455 ms).
+<!-- current-pin-banner:c34abcae04c4 -->
+> **CURRENT (2026-09-03) — spec snapshot `v0.8.2.3`, executed check set `c34abcae04c4…`.**
+> `validate-peer --profile core` → **PASS, 0 FAIL** · **758 total · 317 pass · 336 warn · 0 FAIL · 105 skip** (elapsed 1434 ms).
 >
 > That digest is the pinned `core_executed_check_set_digest`, so this number is
 > comparable to every other row in `CONFORMANCE-MATRIX.md` §1 — and it is a CONTENT

@@ -87,6 +87,7 @@ podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WOR
     # property of the peer runtime, not of the harness, which is why every peer carries
     # this and not only the ones that were seen to fail.
     reap_host() {
+      if command -v refpeer_reap >/dev/null 2>&1; then refpeer_reap; fi
       [ -n "${HOST_PID:-}" ] || return 0
       kill -0 "$HOST_PID" 2>/dev/null || return 0
       kill -TERM "$HOST_PID" 2>/dev/null || true
@@ -118,7 +119,9 @@ podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WOR
     # value containing a space, a glob or a semicolon is silently mangled or executed.
     # The trailing `bash "$@"` after the -c script is the form sql/io/pd/datalog already
     # used: bash is argv[0] and the caller args arrive as $1.. with their quoting intact.
-    "$ORACLE" -addr "127.0.0.1:$PORT" "$@" || true
+    . /work/protocol-generator/shared/tools/refpeer.sh
+    refpeer_up
+    "$ORACLE" -addr "127.0.0.1:$PORT" $REFPEER_FLAG "$@" || true
 
     # SURFACE THE STDERR OF THE PEER ITSELF. /tmp/host.err is a path INSIDE a --rm
     # container, so without this the dying words of the peer are discarded with the
