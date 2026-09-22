@@ -116,10 +116,21 @@ grep -q "^LISTENING" /tmp/host.out 2>/dev/null || { echo "host never reached LIS
 head -1 /tmp/host.out
 
 RC=0
-# -timeout: the per-run budget. security (~20s) + concurrency (~38s) blow the
-# default; give the full core sweep ample headroom so no category budget-SKIPs.
-"$ORACLE" -addr "127.0.0.1:$PORT" -profile core -timeout "${ORACLE_TIMEOUT:-180s}" \
-  -json-out "$JSON_OUT" || RC=$?
+# Forward the CALLER ARGS. This line used to hardcode its whole argument list and drop
+# "$@", so `run-s4.sh -category connectivity` silently ran the full 756-check suite and
+# rewrote the tracked, signed-off CONFORMANCE-REPORT.json -- a diagnostic run
+# overwriting the record it is meant to be diagnosed against. 38 of 46 peers already
+# honoured "$@"; this is one of the three that did not.
+#
+# -timeout stays inside the DEFAULT rather than ahead of "$@", so a caller supplying
+# args gets the oracle's own budget and can set whatever it needs. That is safe in the
+# direction that matters: this 180s was written against an older 60s oracle default and
+# the current pin defaults to 10m (verified: `validate-peer -h`), so dropping it widens
+# the budget rather than starving a category.
+if [ "$#" -eq 0 ]; then
+  set -- -profile core -timeout "${ORACLE_TIMEOUT:-180s}" -json-out "$JSON_OUT"
+fi
+"$ORACLE" -addr "127.0.0.1:$PORT" "$@" || RC=$?
 
 echo
 echo "=== host stderr (tail) ==="

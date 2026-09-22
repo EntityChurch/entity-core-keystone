@@ -2,7 +2,7 @@
 # harness-teardown-probe.sh — does a peer still own the listening socket AFTER its
 # run-s4.sh has exited?
 #
-# THIS IS THE MEASUREMENT SETUP BEHIND THE NUMBERS IN AGENTS.md AND tools/teardown-gate.py.
+# THIS IS THE MEASUREMENT SETUP BEHIND THE NUMBERS IN AGENTS.md AND tools/harness-gate.py.
 # It is committed for the reason the zig probe beside it is: a rate, or a latency, is a
 # claim about a setup, and a setup that was not kept can only be re-argued.
 #
@@ -15,7 +15,7 @@
 # full --profile core), which are the first two peers anyone would test. Only one of the
 # two durations is a property of the harness, so measure that one directly.
 #
-# RESULTS AT THE FIRE-AND-FORGET TRAP (before tools/teardown-gate.py existed), ms between
+# RESULTS AT THE FIRE-AND-FORGET TRAP (before tools/harness-gate.py existed), ms between
 # the harness exiting and the port refusing a connection:
 #
 #   rexx       never   the ecnet daemon was not reaped at all; run 2 onward exited 1
@@ -51,8 +51,10 @@ listening() { (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; }
 
 # -category connectivity keeps each run to a couple of seconds. The teardown path is
 # identical whatever the oracle was asked, and passing explicit args keeps the tracked
-# CONFORMANCE-REPORT.json out of it. (Caveat, measured: python/run-s4.sh ignores caller
-# args and always writes its tracked report — check before probing a re-exec peer.)
+# CONFORMANCE-REPORT.json out of it -- which only works because every harness now
+# forwards "$@". Three (python, ruby, prolog) did not until 2026-09-02: they hardcoded
+# their argument list, so a probe run silently ran the full suite and rewrote the very
+# report it was probing against. tools/harness-gate.py is what keeps that true.
 n=1
 while [ "$n" -le "$RUNS" ]; do
   sh "$PEER/$SCRIPT" -profile core -category connectivity >/tmp/tp.log 2>&1

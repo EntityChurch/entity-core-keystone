@@ -9,6 +9,16 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AssemblyName>EntityCore.Protocol.Agility</AssemblyName>
     <RootNamespace>EntityCore.Protocol.Agility</RootNamespace>
+    <!-- Same reason the Host project records: an OutputType=Exe project asks NuGet for
+         Microsoft.NETCore.App.Host.<rid> purely to emit a native launcher stub, and that
+         pack is published for neither the SDK library-packs nor nuget.org, so an offline
+         restore dies NU1301. Every caller was passing -p:UseAppHost=false to work around
+         it, which means the property was right and its LOCATION was wrong: the published
+         `dotnet test` / `dotnet run` reproduce commands did not pass the flag and failed
+         offline. A build requirement that every caller must remember is not a
+         requirement, it is a trap. Nothing here runs the apphost; these are driven as
+         `dotnet <dll>`. -->
+    <UseAppHost>false</UseAppHost>
   </PropertyGroup>
 
   <ItemGroup>

@@ -118,7 +118,14 @@ podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WOR
     done
     head -1 /tmp/host.out
     # 3. Point the oracle at it — the profile IS the gate.
-    "$ORACLE" -addr "127.0.0.1:$PORT" '"$*"' || true
+    # Caller args cross the podman boundary as REAL ARGV, not as spliced text. This was
+    # `'"$*"'`, which works for ordinary flags -- the outer quotes are consumed by the
+    # outer shell and the inner shell word-splits what is left -- but it flattens the
+    # argument vector into one string and hands it back to a shell to re-parse, so any
+    # value containing a space, a glob or a semicolon is silently mangled or executed.
+    # The trailing `bash "$@"` after the -c script is the form sql/io/pd/datalog already
+    # used: bash is argv[0] and the caller args arrive as $1.. with their quoting intact.
+    "$ORACLE" -addr "127.0.0.1:$PORT" "$@" || true
 
     # SURFACE THE STDERR OF THE PEER ITSELF. /tmp/host.err is a path INSIDE a --rm
     # container, so without this the dying words of the peer are discarded with the
@@ -132,4 +139,4 @@ podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WOR
       echo "--- peer stderr (/tmp/host.err) ---" >&2
       cat /tmp/host.err >&2
     fi
-  '
+  ' bash "$@"

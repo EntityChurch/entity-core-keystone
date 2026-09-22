@@ -114,6 +114,49 @@ procedure division using lk-root lk-root-len lk-inc lk-inc-len lk-out lk-out-len
     goback.
 end program env-wrap.
 
+*> ---- oversize-result : the §4.10(a) 413 for a frame we refuse to buffer ----
+*> §4.10(a) is a MUST: "the peer MUST reject an inbound EXECUTE whose wire size
+*> exceeds its configured maximum with 413 payload_too_large, before fully
+*> buffering or decoding it". The serve loop (netshim.c) had the first half and
+*> not the second — it drained the oversize body and kept serving, which is
+*> correct about the connection and answers NOTHING, so the caller waits out its
+*> own deadline. That is a §4.9(c) silent drop, and it bills the caller, so it
+*> reads as the peer being slow rather than wrong: `concurrency/t1_3_no_head_of_line`
+*> reported "read response: i/o timeout" and was filed as a payload-capacity skip.
+*>
+*> The request_id is NOT available here by construction — refusing before decoding
+*> is the point of the rule — so this is §4.10(a)'s other branch, the "best-effort
+*> coded frame". The id goes out empty rather than guessed. The connection stays
+*> up: MAY close is permitted, and closing would drop the caller's pooled
+*> connection and break every later request on it (the lean cascade).
+identification division.
+program-id. oversize-result.
+data division.
+working-storage section.
+01 errc     pic x(17) value "payload_too_large".
+01 errcl    pic 9(9) comp-5 value 17.
+01 res-ent  pic x(60000). 01 res-len  pic 9(9) comp-5. 01 res-hash  pic x(33).
+01 resp-ent pic x(65535). 01 resp-len pic 9(9) comp-5. 01 resp-hash pic x(33).
+01 incmap   pic x(16384). 01 incmap-len pic 9(9) comp-5.
+01 rid      pic x(128).   01 rid-len  pic 9(9) comp-5 value 0.
+01 rstatus  pic 9(9) comp-5 value 413.
+01 n0       pic 9(18) comp-5 value 0.
+linkage section.
+01 lk-out     pic x(65535).
+01 lk-out-len pic 9(9) comp-5.
+procedure division using lk-out lk-out-len.
+    move spaces to rid
+    move 0 to rid-len
+    move 0 to incmap-len
+    call "b-map" using incmap incmap-len n0
+    call "error-result" using errc errcl res-ent res-len res-hash
+    call "make-response" using rid rid-len rstatus res-ent res-len
+        resp-ent resp-len resp-hash
+    call "env-wrap" using resp-ent resp-len incmap incmap-len
+        lk-out lk-out-len
+    goback.
+end program oversize-result.
+
 *> ---- dispatch (§6.5 chain) -----------------------------------------
 *> Parse the inbound envelope, route the EXECUTE root through the §6.5 chain
 *> (ingest → verify_request → resolve_handler → check_permission → handler),

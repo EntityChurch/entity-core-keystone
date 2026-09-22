@@ -11,14 +11,18 @@
 #   ./run-s2.sh          # ECF corpus (71) + unit tests (34) + agility harness
 #   ./run-s2.sh agility  # agility harness only
 #
-# NETWORK: on, unlike most siblings. `dotnet restore` reaches nuget.org for the
-# service index and vulnerability data even when every package is already in the
-# cache volume, so --network=none fails at restore rather than at download. The
-# packages themselves are pinned by the committed packages.lock.json and cached
-# in the `kc-nuget` podman volume. Sealing this peer offline means vendoring the
-# NuGet closure into the image the way ghc-toolchain now vendors the Hackage one;
-# that is a real gap and it is named here rather than papered over with a
-# comment claiming offline operation.
+# NETWORK: none, like every sibling. This used to say the opposite, and named the gap
+# rather than papering over it: `dotnet restore` reaches nuget.org for the service index
+# even when every package is already cached, so this peer ran with a network namespace
+# and a host-local `kc-nuget` podman volume. That made csharp the one peer whose
+# conformance run was not reproducible on a machine that had not already populated the
+# volume -- measured 2026-09-02 on a clean run: NU1301, no build, no report.
+#
+# Closed the way ghc-toolchain vendors Hackage and python-toolchain vendors pip: the
+# dotnet9 image seeds /opt/nuget at BUILD time from this peer's own packages.lock.json
+# with --locked-mode, then re-restores against an empty source list to prove the closure
+# is complete. An unsatisfiable lockfile now fails the image build, which is the right
+# place to find out.
 #
 # -p:UseAppHost=false: building an apphost wants the
 # Microsoft.NETCore.App.Host.fedora.43-x64 pack, which is published for neither
@@ -33,8 +37,8 @@ WORKDIR="/work/protocol-generator/csharp"
 NOAPPHOST="-p:UseAppHost=false"
 
 run() {
-  podman run $PODMAN_RUN_CAPS --rm \
-    -v "$REPO_ROOT":/work:Z -v kc-nuget:/nuget -w "$WORKDIR" "$IMAGE" \
+  podman run $PODMAN_RUN_CAPS --rm --network=none \
+    -v "$REPO_ROOT":/work:Z -w "$WORKDIR" "$IMAGE" \
     bash -c "$1"
 }
 

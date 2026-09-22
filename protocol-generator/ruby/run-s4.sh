@@ -80,7 +80,15 @@ podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WOR
       i=$((i+1)); sleep 0.1
     done
     echo "$(head -1 /tmp/host.out)"
-    rc=0; "$ORACLE" -addr "127.0.0.1:$PORT" -profile core -json-out "$JSON_OUT" || rc=$?
+    # Forward the CALLER ARGS. This line used to hardcode the profile and json-out and
+    # drop "$@", so `run-s4.sh -category connectivity` silently ran the whole 756-check
+    # suite AND rewrote the tracked, signed-off CONFORMANCE-REPORT.json -- a diagnostic
+    # run overwriting the record it is meant to be diagnosed against. The trailing
+    # `bash "$@"` after the -c script is what carries argv across the podman boundary
+    # with its quoting intact (sql/io/pd/datalog already did it that way -- the word
+    # bash is argv[0], and the caller args land as $1.. inside the block).
+    if [ "$#" -eq 0 ]; then set -- -profile core -json-out "$JSON_OUT"; fi
+    rc=0; "$ORACLE" -addr "127.0.0.1:$PORT" "$@" || rc=$?
 
     # SURFACE THE STDERR OF THE PEER ITSELF. /tmp/host.err is a path INSIDE a --rm
     # container, so without this the dying words of the peer are discarded with the
@@ -95,4 +103,4 @@ podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WOR
       cat /tmp/host.err >&2
     fi
     exit "$rc"
-  '
+  ' bash "$@"

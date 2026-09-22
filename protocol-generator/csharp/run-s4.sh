@@ -8,8 +8,10 @@
 # launches it with --debug-open-grants, waits for its LISTENING line, points
 # validate-peer at it, tears the host down.
 #
-# Invoke from the repo root (network ON — NuGet restore from kc-nuget cache):
-#   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm -v "$PWD":/work:Z -v kc-nuget:/nuget \
+# Invoke from the repo root. Sealed offline like every sibling since 2026-09-02: the
+# NuGet closure is baked into the dotnet9 image from this peer's own packages.lock.json,
+# so there is no --network and no kc-nuget volume to have populated first.
+#   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm --network=none -v "$PWD":/work:Z \
 #     entity-core-keystone/dotnet9:latest sh /work/protocol-generator/csharp/run-s4.sh [validate-peer-args...]
 #
 # Default args: -profile core. ORACLE/PORT/NOBUILD env overrides.

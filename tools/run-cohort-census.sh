@@ -213,7 +213,11 @@ census_one() {
     crystal)
       run_podman "$peer" entity-core-keystone/crystal-toolchain:latest --network=none >>"$log" 2>&1; rc=$? ;;
     csharp)
-      run_podman "$peer" entity-core-keystone/dotnet9:latest -v kc-nuget:/nuget >>"$log" 2>&1; rc=$? ;;
+      # Sealed offline since 2026-09-02: the NuGet closure is baked into the image from
+      # this peer's own packages.lock.json. It used to run WITH a network namespace and
+      # a host-local kc-nuget volume -- the one peer in the census whose result depended
+      # on state no adopter has.
+      run_podman "$peer" entity-core-keystone/dotnet9:latest --network=none >>"$log" 2>&1; rc=$? ;;
     dart)
       run_podman_timeout "$peer" entity-core-keystone/dart-toolchain:latest 5m --network=none >>"$log" 2>&1; rc=$? ;;
     elixir)

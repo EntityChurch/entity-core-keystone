@@ -340,7 +340,31 @@ int ec_serve(int listen_fd)
                         if (flen < 0 || flen > EC_FRAMECAP) {
                             /* §4.10(a) oversize: do NOT close the connection (that would
                              * drop the caller's pooled/main connection and break every
-                             * later request on it). Drain the frame body and keep serving. */
+                             * later request on it). Drain the frame body and keep serving.
+                             *
+                             * ANSWER IT. Draining alone is the half of §4.10(a) that is
+                             * about the connection, and it silently omits the half that is
+                             * a MUST: reject "with 413 payload_too_large". Emitting nothing
+                             * is a §4.9(c) drop billed entirely to the caller's deadline,
+                             * so it presents as the peer being slow rather than wrong —
+                             * concurrency/t1_3_no_head_of_line reported "read response:
+                             * i/o timeout" and was recorded as a payload-capacity skip.
+                             * The request_id is unavailable by construction (refusing
+                             * before decoding is the point), so this is the section's
+                             * best-effort-coded-frame branch. Emitted once per oversize
+                             * frame, before the drain, so the answer does not wait on the
+                             * rest of a body we are throwing away. */
+                            int32_t ov_len = 0;
+                            void *ovargv[2] = { out, &ov_len };
+                            cob_call("oversize-result", 2, ovargv);
+                            if (ov_len > 0) {
+                                outhdr[0] = (unsigned char)((ov_len >> 24) & 0xff);
+                                outhdr[1] = (unsigned char)((ov_len >> 16) & 0xff);
+                                outhdr[2] = (unsigned char)((ov_len >> 8) & 0xff);
+                                outhdr[3] = (unsigned char)(ov_len & 0xff);
+                                (void)ec_fd_write(s->fd, outhdr, 4);
+                                (void)ec_fd_write(s->fd, out, ov_len);
+                            }
                             long buffered = s->have - 4;
                             if (buffered >= flen) {
                                 memmove(s->in, s->in + 4 + flen, (size_t)(s->have - 4 - flen));

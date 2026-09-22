@@ -53,7 +53,7 @@ do while rest \== ''
     when tok == '--debug-open-grants' then opengrants = 1
     when tok == '--validate'          then conformance = 1
     otherwise do
-      call lineout stderr, 'peer: unknown flag' tok
+      call lineout '<stderr>', 'peer: unknown flag' tok
       exit 2
     end
   end
@@ -75,7 +75,7 @@ EC.!CRYPTO_VIA = 'daemon'
 peer = Peer_Create(seed, opengrants, conformance)
 bound = Transport_Listen(peer, port)
 if bound == -1 then do
-  call lineout stderr, 'peer: LISTEN failed on port' port
+  call lineout '<stderr>', 'peer: LISTEN failed on port' port
   exit 1
 end
 say 'LISTENING' bound
@@ -93,7 +93,7 @@ Load_Seed_From_Name: procedure expose EC.
   if home == '' then home = '/root'
   path = home || '/.entity/peers/' || nm || '/keypair'
   if stream(path, 'c', 'query exists') == '' then do
-    call lineout stderr, 'peer: --name' nm '— cannot read keypair at' path
+    call lineout '<stderr>', 'peer: --name' nm '— cannot read keypair at' path
     exit 2
   end
   body = ''
@@ -106,7 +106,7 @@ Load_Seed_From_Name: procedure expose EC.
   call stream path, 'c', 'close'
   seed = B64_Decode(body)
   if length(seed) \== 32 then do
-    call lineout stderr, 'peer: --name' nm '— expected a 32-byte seed, got' length(seed)
+    call lineout '<stderr>', 'peer: --name' nm '— expected a 32-byte seed, got' length(seed)
     exit 2
   end
   return seed
@@ -132,7 +132,7 @@ B64_Decode: procedure
   return out
 
 Fatal:
-  call lineout stderr, 'PEER FATAL SYNTAX rc='rc 'line='sigl '('errortext(rc)')'
-  call lineout stderr, '  src=['strip(sourceline(sigl))']'
-  call lineout stderr, '  D=['condition('D')']'
+  call lineout '<stderr>', 'PEER FATAL SYNTAX rc='rc 'line='sigl '('errortext(rc)')'
+  call lineout '<stderr>', '  src=['strip(sourceline(sigl))']'
+  call lineout '<stderr>', '  D=['condition('D')']'
   exit 3

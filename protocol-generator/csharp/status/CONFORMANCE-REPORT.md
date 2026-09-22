@@ -57,13 +57,13 @@ matching the rust-ffi / c-ffi 69/69 baseline exactly.)
 ## How to reproduce
 
 ```sh
-podman run --rm -v "$PWD":/work:Z -v kc-nuget:/nuget \
+podman run --rm --network=none -v "$PWD":/work:Z \
   entity-core-keystone/dotnet9:latest sh -c '
     cd /work/protocol-generator/csharp
-    dotnet test -c Release'                      # xUnit gate (24 tests, incl. the corpus fact)
+    dotnet test -c Release'                      # xUnit gate (34 tests, incl. the corpus fact)
 
 # or the standalone harness (prints the table above, exit code = gate):
-podman run --rm -v "$PWD":/work:Z -v kc-nuget:/nuget \
+podman run --rm --network=none -v "$PWD":/work:Z \
   entity-core-keystone/dotnet9:latest sh -c '
     cd /work/protocol-generator/csharp
     dotnet run -c Release --project test/EntityCore.Protocol.Conformance'

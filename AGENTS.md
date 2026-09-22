@@ -2131,7 +2131,7 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   scope question has 45 existing answers in the tree, ask them before deriving one"* rule, in the one
   direction that is easy to miss: the cohort can already contain the fix. The sweep propagated
   `crystal`'s function rather than authoring one.
-  **Enforcement: `tools/teardown-gate.py`, in `make lint`** — exactly one non-comment `trap` per
+  **Enforcement: `tools/harness-gate.py`, in `make lint`** — exactly one non-comment `trap` per
   harness, it must name a FUNCTION (an inline `trap 'kill …'` is the defect by construction), that
   function must exist, and its body must `wait` on a pid. It deliberately does not gate the signal
   (`python` `ruby` `prolog` chose `-9` deliberately, and SIGKILL + `wait` is correct) or the poll
@@ -2173,10 +2173,30 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   `PDPID`, `NR_PID`, the five one-line `cleanup()` peers, and the three hand-edited ones. Six peers
   (`java` `sql` `python` `io` `pd` `rexx`) were run to a full `--profile core` and each reproduced its
   committed row **exactly**; seven more were driven through the port probe.
-  **Named, not fixed:** `python/run-s4.sh` hardcodes `-profile core -json-out "$JSON_OUT"` and
-  **ignores caller arguments entirely**, so a diagnostic run rewrites a signed-off tracked report
-  (caught here, reverted; the `JSON_OUT` env var is the only escape). That is the *"a gate must not
-  rewrite a committed artifact"* shape in a harness.
+  **AND THE SIBLING CHECK FOUND THE SECOND INVARIANT: `run-s4.sh [validate-peer-args...]` IS THE
+  DOCUMENTED INTERFACE, AND THREE PEERS DROPPED IT ON THE FLOOR.** Noticed because `python`
+  rewrote its own tracked `CONFORMANCE-REPORT.json` during a teardown probe that had explicitly
+  passed `-json-out /tmp/…`. `python` `ruby` `prolog` hardcoded their entire argument list, so
+  `run-s4.sh -category connectivity` ran **756 checks where the caller asked for 25** *and*
+  overwrote the signed-off record it was meant to be diagnosed against — the *"a gate must not
+  rewrite a committed artifact"* rule, in a harness, with the artifact being the number this repo
+  publishes.
+  **The five-peer `'"$*"'` splice is the more interesting half, because the prediction was wrong
+  and measuring is what corrected it.** `ada` `c` `common-lisp` `java` `kotlin` spliced `$*` into
+  their container block, which reads like it flattens argv into ONE argument. It does not: the
+  outer shell CONSUMES those quotes and the inner shell word-splits what is left, so ordinary
+  flags survive — `java -category connectivity` measured **25 checks**, correctly. So it is a
+  latent quoting hazard (any value containing a space, a glob or a `;` is mangled or re-executed),
+  not a break. **Say which it is; a hazard reported as a break is as much a misreport as the
+  reverse.** All eight now use the `bash -c SCRIPT bash "$@"` form the other four re-exec peers
+  (`sql` `io` `pd` `datalog`) already had, where the interpreter word is argv[0] and the caller
+  args arrive as `$1..` with quoting intact.
+  **The gate is `tools/harness-gate.py` — teardown AND args, one file, because both are
+  invariants of the same interface.** It counts its ANCHORS, not just its failures: `46 wait ·
+  46 forward · 11 hand argv across a container boundary`, and that 11 is asserted non-zero and
+  independently corroborated by `inner-container-script-check.sh` finding the same 11. Six planted
+  defects, and the two arg plants are on DIFFERENT victims (`go` plain, `java` re-exec) because
+  the two shapes fail through different mechanisms.
 - **A SECOND AXIS WITH NO COHORT GATE IS AN EXCLUSION NOBODY DECLARED — and it will be defended by
   the fact that the FIRST axis is green.** RATIFIED 2026-09-02, and it is the `apl` exclusion lesson
   moved up one level: there, the one peer nobody could measure was the one peer the census refused to
