@@ -1,6 +1,6 @@
 # entity-core-keystone — status
 
-_Updated: 2026-09-01 · oracle pin: the 756-check set `d30c3dd0…` · spec snapshot `v0.8.2.3`_
+_Updated: 2026-09-02 · oracle pin: the 756-check set `d30c3dd0…` · spec snapshot `v0.8.2.3`_
 
 > **`CONFORMANCE-MATRIX.md` is authoritative for every per-peer number.** This file is a
 > short orientation note, deliberately kept thin. When the two disagree, the matrix wins.
@@ -86,6 +86,30 @@ still returned `200`.
 all forty-six peers have a green report. Per [ADR-0012] they are **cohort-consistent, not independent
 convergence** — they share a generation lineage and, for the FFI-hybrid peers, one codec `.so`.
 
+## The verification axes
+
+Conformance is **one of four** per-peer axes, and until 2026-09-02 only it had a cohort runner. The
+other three were measured per-peer, by hand, whenever someone happened to touch them — which is to
+say they rotted, invisibly, behind a green conformance number that was never wrong. The inventory is
+now data in `tools/run-axis-sweep.sh` (`--list`); an axis absent from it has no cohort runner.
+
+| Axis | What it asks | Runner | State |
+|---|---|---|---|
+| **S2** codec / crypto-agility | does the codec match the corpus | `run-axis-sweep.sh s2` | 46 GREEN · 0 RED |
+| **S3** loopback interop | do two peers talk, both directions | `run-axis-sweep.sh s3` | 17 GREEN · **1 RED** · 28 no gate |
+| **origination** §10.2/§6.11 reentry | does the peer originate outbound | `run-axis-sweep.sh origination` | 31 GREEN · 0 RED · 15 no gate |
+| **S4** conformance | the published number | `run-cohort-census.sh` | 46 GREEN · 0 RED |
+
+**First sweep of S3 and origination found 21 failures** — a third of the authored S3 gates and half
+the authored origination gates — on a tree publishing 46 of 46 at `756 · 0F`. Fifteen were one class
+(an entry point that only worked the way its author invoked it), one was an unpinned Go reference
+built from the wrong sibling checkout, two were units that had gone stale under peers that kept
+getting fixed. Twenty are closed; `sql`'s S3 selftest is the one that is not (below).
+
+**A `NO-GATE` column entry is backlog, not an exemption.** It means that peer has no harness on that
+axis; the count is printed on every run so it cannot quietly become an exclusion, which is the
+standing `apl` lesson.
+
 ## What's next
 
 1. ~~**`authz_peers_target_from_uri`**~~ ✅ **CLOSED 2026-09-01 — and we had the answer the whole
@@ -153,6 +177,16 @@ convergence** — they share a generation lineage and, for the FFI-hybrid peers,
    failed **9 of 30** runs on plain saturation; a 64-connection bound eliminated that shape (**0 of
    60**) and took `r3` WARN→PASS, moving zig to `315P/335W`. Two independent defects behind one
    check — the bound is not the fix for the abort.
+3c. **`sql`'s S3 selftest** — OPEN, root-caused 2026-09-02, not fixed. The peer is right and the
+   test is under-built: it sends its post-auth EXECUTEs through a helper commented *"no
+   author/capability — §4.2 pre-authorized"*, true of the connect path and false of everything
+   after it, so the peer correctly answers `401 authentication_failed` and two checks fail. It
+   passed while the peer was more permissive and has been red since the §5.5a/§6.2 authority work
+   landed under it. Fixing it means lifting the granted capability entity out of the leg2
+   response's `included` and re-including it with a request signature — real CBOR work in
+   `src/host/peer.c`, where a subtle error produces a false green, which is worse than the red.
+   The diagnostic is landed: the check line now prints the disposition **code**, not just the
+   status, because `401` is nine sites in that file and `401 authentication_failed` is one.
 4. **`cobol`'s 8192-byte per-entity ceiling**, if a peer that can hold larger entities is wanted.
    Two concurrency probes stage 256 KiB and 16 KiB payloads; the first cannot fit its 65535-byte
    frame cap at all, and the second is refused with `413`. Raising the ceiling means raising every

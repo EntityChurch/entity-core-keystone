@@ -25,13 +25,24 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 IMAGE="entity-core-keystone/node24:latest"
 WORKDIR="/work/protocol-generator/typescript"
 
+# No -v kc-npm:/npm-cache. The dependency closure is baked into the image from
+# THIS peer's own package-lock.json (containers/node24/Containerfile), so the run
+# is sealed by construction rather than by a host-local volume somebody warmed
+# once — the csharp/kc-nuget defect, closed here 2026-09-02. Mounting a volume at
+# /npm-cache would SHADOW the baked closure and restore it.
 run() {
   podman run $PODMAN_RUN_CAPS --rm --network=none \
-    -v "$REPO_ROOT":/work:Z -v kc-npm:/npm-cache -w "$WORKDIR" "$IMAGE" \
+    -v "$REPO_ROOT":/work:Z -w "$WORKDIR" "$IMAGE" \
     bash -lc "$1"
 }
 
+# `npm ci --offline` first, and it is not decoration. Until 2026-09-02 this gate
+# ran `npm test` directly and therefore depended on an UNTRACKED node_modules/
+# already sitting in the working tree — measured from a clean tree it died with
+# `tsc: command not found`, exit 127. That is the same class as the kc-npm volume
+# this file just stopped mounting, one level down: the gate worked on the machine
+# that had warmed it and nowhere else.
 case "${1:-test}" in
-  conformance) run 'npm run conformance' ;;
-  *)           run 'npm test' ;;
+  conformance) run 'npm ci --offline && npm run conformance' ;;
+  *)           run 'npm ci --offline && npm test' ;;
 esac

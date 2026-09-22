@@ -7,9 +7,11 @@
 # listens on TCP for the oracle. This is the optional oracle-gate path from PHASE-S1
 # (default scope is visualization-first).
 #
-# Run from repo root (network for the one-time bundle install; then loopback only):
+# Run from repo root — sealed offline, loopback only. There is no first-run
+# network step and no kc-npm volume: the npm closure is baked into the node24
+# image from the committed lockfiles (containers/node24/Containerfile).
 #   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm \
-#     -v "$PWD":/work:Z -v kc-npm:/root/.npm entity-core-keystone/node24:latest \
+#     --network=none -v "$PWD":/work:Z entity-core-keystone/node24:latest \
 #     sh /work/protocol-generator/turbowarp/run-s4.sh [validate-peer-args...]
 
 set -eu
@@ -40,16 +42,28 @@ TW="/work/protocol-generator/turbowarp/src"
 TS="/work/protocol-generator/typescript"
 
 if [ "${NOBUILD:-0}" != "1" ]; then
-  # Build/install only if MISSING (online; network needed on first run). Not `npm ci
-  # --offline` (wipes node_modules then fails on an incomplete cache).
-  if [ ! -f "$TS/dist/src/index.js" ] || [ ! -d "$TS/node_modules/@noble" ]; then
-    (cd "$TS" && npm install --no-audit --no-fund >/dev/null 2>&1 && ./node_modules/.bin/tsc -p tsconfig.json) \
-      || { echo "ERROR: TS codec build failed (network needed on first run)" >&2; exit 1; }
-  fi
-  if [ ! -d "$TW/node_modules/esbuild" ]; then
-    (cd "$TW" && npm install --no-audit --no-fund >/dev/null 2>&1) \
-      || { echo "ERROR: turbowarp deps install failed (network needed on first run)" >&2; exit 1; }
-  fi
+  # `npm ci --offline`, never `npm install`: the committed package-lock.json is
+  # authoritative and the closure is baked into the node24 image, so this needs no
+  # network and no host-local kc-npm volume. It used to be `npm install` behind a
+  # network namespace, which made this peer's conformance result depend on the
+  # registry being reachable and on whatever `install` resolved that day — the
+  # csharp/kc-nuget defect, closed cohort-wide 2026-09-02.
+  #
+  # Installs are guarded on the LOCKFILE's mtime, not merely on node_modules being
+  # missing. The COMPILE and BUNDLE steps are unconditional: "build only if the
+  # output is MISSING" is the standing stale-build-artifact defect, and it has
+  # already cost this repo three peers measured against week-old binaries.
+  npm_sync() { # <dir> — reinstall when the lockfile is newer than the tree
+    _d=$1
+    if [ ! -d "$_d/node_modules" ] || [ "$_d/package-lock.json" -nt "$_d/node_modules" ]; then
+      (cd "$_d" && npm ci --offline --no-audit --no-fund >/dev/null 2>&1) \
+        || { echo "ERROR: npm ci --offline failed in $_d (is the node24 image current?)" >&2; return 1; }
+    fi
+  }
+  npm_sync "$TS" || exit 1
+  (cd "$TS" && ./node_modules/.bin/tsc -p tsconfig.json) \
+    || { echo "ERROR: TS codec build failed" >&2; exit 1; }
+  npm_sync "$TW" || exit 1
   (cd "$TW" && npm run bundle >/dev/null 2>&1) || { echo "ERROR: bundle build failed" >&2; exit 1; }
 fi
 

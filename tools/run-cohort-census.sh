@@ -260,10 +260,16 @@ census_one() {
       run_podman "$peer" entity-core-keystone/swift-toolchain:latest --network=none >>"$log" 2>&1; rc=$? ;;
     tcl)
       run_podman "$peer" entity-core-keystone/tcl-toolchain:latest --network=none >>"$log" 2>&1; rc=$? ;;
+    # The three node peers used to be the last unsealed rows in this census:
+    # turbowarp ran with a NETWORK NAMESPACE and `npm install`, and typescript
+    # was offline only if a host-local kc-npm volume had been warmed first. Both
+    # are the csharp/kc-nuget defect. The closure is now baked into the node24
+    # image from their own committed lockfiles, so every row here is --network=none
+    # with no volume, and mounting one at /npm-cache would shadow the closure.
     turbowarp)
-      run_podman "$peer" entity-core-keystone/node24:latest -v kc-npm:/root/.npm >>"$log" 2>&1; rc=$? ;;
+      run_podman "$peer" entity-core-keystone/node24:latest --network=none >>"$log" 2>&1; rc=$? ;;
     typescript)
-      run_podman "$peer" entity-core-keystone/node24:latest --network=none -v kc-npm:/npm-cache >>"$log" 2>&1; rc=$? ;;
+      run_podman "$peer" entity-core-keystone/node24:latest --network=none >>"$log" 2>&1; rc=$? ;;
     wasm-wat)
       run_podman "$peer" entity-core-keystone/wasm-wat-toolchain:latest --network=none >>"$log" 2>&1; rc=$? ;;
     zig)

@@ -2281,6 +2281,32 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   remember is not a requirement, it is a trap** — treat a flag that appears at every invocation as
   evidence it belongs in the manifest. (Both published commands now run offline: 34/34 xUnit,
   71/71 corpus. The published xUnit count said 24.)
+  **IT WAS NEVER ONE PEER — THE SAME DEFECT WAS ON THREE MORE, AND THE FIX FOR csharp NAMED THEM AND
+  STOPPED.** Closed 2026-09-02, the same day. `typescript` ran `--network=none` but mounted a
+  host-local `kc-npm` volume, so it was sealed from the registry and **dependent on a machine having
+  warmed that volume**; `turbowarp` ran with a **network namespace** and `npm install` (not `ci`), so
+  its conformance result depended on the registry being reachable and on whatever `install` resolved
+  that day; `node-red` inherited both through the `typescript` build it delegates to. The closure now
+  bakes into `containers/node24` from **all three peers' own committed lockfiles**, proved complete by
+  wiping `node_modules` and re-running `npm ci --offline` **inside the image build**, and the census
+  mounts no volume — mounting one at `/npm-cache` would shadow the baked closure, which the file says.
+  Verified the ratified way, **with the local build state deleted**: `node_modules/` and `dist/` were
+  removed from all three before measuring. `typescript` `756 · 315P/335W/0F/106S`, `turbowarp` and
+  `node-red` `756 · 313P/337W/0F/106S`, 3/3 comparable at the pinned digest, no network, no volume.
+  **The delete is what found the next one down: `typescript`'s S2 gate ran `npm test` directly and
+  therefore depended on an UNTRACKED `node_modules/` sitting in the working tree** — from clean it
+  died `tsc: command not found`, rc=127. Its `pretest` hook (added earlier the same day to fix a
+  build-on-the-past defect) cannot help if the compiler was never installed. **Generalize: a gate that
+  assumes a derived directory is a gate on somebody's machine.** `npm ci --offline` now runs first.
+  *(`turbowarp` and `node-red` also carried the standing build-only-if-MISSING defect — the exact
+  shape that had `node-red` measured against a week-old bundle on 2026-08-28. Installs are now guarded
+  on the LOCKFILE mtime and the compile is unconditional.)*
+  **One row moved and it is NOT reported as an improvement:** `typescript` measured `315P/335W`
+  against its committed `314P/336W`, a single check — `concurrency/t1_1_concurrent_demux`, the
+  timing-ratio one, WARN→PASS. Per-check diff confirmed **exactly 1 of 756 severities moved**. Two
+  re-runs came back WARN, so the PASS is the outlier, the tracked report was left alone, and no
+  banner was regenerated. **A single sample is not a rate**, and the temptation to bank a number that
+  went the right way is exactly when that rule matters.
 - **FIFTH AND SIXTH OCCURRENCE OF THE EXAMINED-ZERO-THINGS CLASS, AND THE FIFTH IS THE WORST FORM:
   AN INCREMENTAL BUILD TOOL DOES NOT RUN THE SUITE AT ALL.** RATIFIED 2026-09-02. `kotlin`'s S2
   gate was `gradle test --offline` and nothing else. Gradle's entire design is to skip work it
@@ -2339,6 +2365,74 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   how the remaining 4 encode inheritance as an executable edge check rather than an exclusion.
   **Generalize past S2: for every axis a number is published on, name the sweep AND the gate. An axis
   with a per-peer harness and no cohort runner is one nobody is measuring.**
+  **CLOSED 2026-09-02 by ENUMERATING THE AXES — and the enumeration is the artifact, not the sweeps.**
+  The S2 entry above was written the same day and stopped at S2. There were **two more**: `run-s3.sh`
+  (18 peers, two-direction loopback interop) and `run-origination-core.sh` (31 peers, §10.2/§6.11
+  reentry). Neither had ever been run across the cohort. First sweep of each: **S3 12 GREEN / 6 RED,
+  origination 16 GREEN / 15 RED** — *half the authored origination gates and a third of the authored
+  S3 gates were failing*, while `CONFORMANCE-MATRIX.md` published 46 of 46 at `756 · 0F` and was not
+  wrong. `tools/run-axis-sweep.sh` is now the single engine with the axis table as DATA (`--list`
+  prints it), `run-s2-sweep.sh`-style copies are not made per axis, and **an axis absent from that
+  table has no cohort runner, which is an exclusion nobody declared.** S4 is deliberately excluded and
+  says why in the file: it has its own runner plus three gates on the comparability of what it emits.
+- **A PER-PEER ENTRY POINT ONLY WORKS THE WAY ITS AUTHOR HAPPENED TO INVOKE IT, AND NOTHING FINDS
+  THAT UNTIL SOMETHING INVOKES IT DIFFERENTLY — this one class was 15 of the 21 failures across two
+  axes.** RATIFIED 2026-09-02, and it is the third and largest occurrence of the shape already
+  recorded for `prolog`'s `run-s2.sh` (*"a `run-*.sh` whose guard tests a CONTAINER path must be
+  INVOKED in the container"*). **Fourteen** `run-origination-core.sh` were inside-container-only and
+  died from the host with `cd: /work/...: No such file or directory`; `prolog` added `swipl: command
+  not found`. Every one of them named the correct `podman run` line **in its own header comment** —
+  the invocation was documented and not executed. Fixed by making each script re-exec itself into the
+  image its header already named; 15 RED → 0 in one pass, verified by running every one.
+  **Two things generalize.** (a) **The defect is invisible to the author by construction**: it only
+  appears under an invocation the author never used, so it cannot be found by reading, only by
+  sweeping. (b) **`rc=127` and `cd: No such file` are the signature** — both read as a broken tree or
+  a missing toolchain, i.e. they point the reader at the peer instead of at the call. Enforcement:
+  every per-peer entry point is invoked by its axis sweep from the host, so a new one that is
+  container-only fails the first time the axis runs. *(Sub-lesson: `go`'s was a different bug wearing
+  the same clothes — it mounted `protocol-generator/go/output/s4-oracles`, a path that has never
+  existed, and failed with `statfs`. Do not batch-classify by exit signature alone; read each log.)*
+- **A REFERENCE BUILT FROM A SIBLING CHECKOUT'S HEAD IS AN UNPINNED INPUT DECIDING A VERDICT — and
+  it can be a DIFFERENT REPO than the one you think.** RATIFIED 2026-09-02 (`ada`), and it is the
+  content-anchor rule ([ADR-0012] Am. 1) reaching the one axis nobody had swept. `ada`'s `run-s3.sh`
+  did `go build ./entity-peer ./probe-peer` out of `$HOME/projects/entity-systems/entity-core-go`,
+  printed the HEAD it used, warned if the tree was dirty, and carried on. Measured: that directory is
+  **a different line of history altogether** — branch `main`, remote `digi`, subjects *"testing
+  validate continuation refinements"* — in which the pinned commit `f313028` **does not exist**. The
+  canonical sibling is `<keystone>/../entity-core-go` (what `oracle-bootstrap.sh` defaults to) and it
+  has the pin. So the gate reported `[FAIL] session established (§4.1 handshake) — authenticate
+  failed`, which reads as an `ada` defect and is not one: pointed at the pinned artifacts it is
+  **GREEN, 3 check-groups, both directions**.
+  **The fix is to consume `output/s4-oracles/`, never to build a reference** — those artifacts are
+  content-anchored and `oracle-bootstrap.sh` hard-stops rather than falling back silently. `datalog`
+  and `sql` already did this; `ada` was the only S3 harness that did not. **`probe-peer` joined the
+  pinned set in the same commit**, because the reason `ada` was building its own was that the pinned
+  set carried a reference *responder* and no reference *client* — **if the reference peer is pinned,
+  so must be the reference client**, or the gap gets filled by whatever is on the disk.
+  **Enforcement: `git grep -n "entity-core-go\|GO_ORACLE" -- "protocol-generator/*/run-*.sh"` must
+  only ever match a COMMENT.** A harness that names the sibling repo at all is one that can build
+  something the pin does not describe.
+- **A UNIT THAT NOBODY RUNS GOES STALE UNDER A PEER THAT KEEPS GETTING FIXED, AND IT FAILS IN THE
+  DIRECTION THAT LOOKS LIKE A PEER BUG.** RATIFIED 2026-09-02, two peers, both at `756 · 0F` on the
+  wire while their own S3 selftests were red — which is the inverse of the standing *"a check that
+  passes can be passing for a reason unrelated to what it tests"* and just as misleading.
+  - `apl`: `[FAIL] permission check ALLOWs system/tree:get`. The assertion passed
+    `CapCheckPermission` the **absolute** `/{peer}/system/tree` while `DispatchInner` passes
+    `StripLocal pattern` and the fixture grants the handler **relatively** (`CapGrant('system/tree')`).
+    An absolute path cannot match a relative grant, so the unit could only ever deny. This is the
+    `cobol` id-scope lesson exactly — *an id is compared literally, and the value handed to the
+    matcher decides everything* — sitting in a test that had not run since the peer took that fix.
+  - `sql`: `[FAIL] 404 unregistered path → status=401`. The selftest sends its post-auth EXECUTEs
+    through a helper commented *"no author/capability — §4.2 pre-authorized"*, which is true of the
+    connect path and false of everything after it. The peer correctly answers
+    `401 authentication_failed`; the unit never signs. It passed while the peer was more permissive
+    and has been red since the §5.5a/§6.2 authority work landed under it.
+  **Enforcement is the sweep — there is no static form of this.** A stale unit compiles, runs, and
+  reports a confident failure about the wrong thing. What made both diagnosable in minutes was
+  reading the peer's OWN call site for the function under test and comparing argument shapes, and, for
+  `sql`, **printing the disposition CODE next to the status**: `401` is nine different sites in that
+  file and `401 authentication_failed` is one. **A gate line that prints only a status is a gate line
+  that will be misread** — the code costs one field and names the branch.
 - **AN IMAGE THAT RESOLVES THE LIBRARY CLOSURE AND NOT THE TEST CLOSURE LOOKS COMPLETE — the peer
   builds, and only the GATE is missing its dependencies.** RATIFIED 2026-09-02: second and third
   occurrence of the `dart-toolchain` class (*"any image that vendors a dependency closure must derive

@@ -45,11 +45,21 @@ RUN dnf install -y git xz tar && dnf clean all && \
     rm -f "node-v${NODE_VERSION}-linux-x64.tar.xz" && \
     node --version && npm --version
 
-# ── Supply-chain: dependency minimization + offline-by-default ──────────────
-# npm cache on a mountable path so the conformance loop (runs this many times)
-# never refetches — and so the registry is reachable in exactly ONE step. Mount a
-# named volume at /npm-cache. Defaults below kill the noise + the network-y bits
-# npm does opportunistically (audit/funding pings, update checks).
+# ── Supply-chain: the dependency closure is VENDORED INTO THE IMAGE ─────────
+# It used to be a host-local podman volume named kc-npm, populated by a
+# documented "phase 1, network on, run once" step. That made the three node
+# peers' results depend on whether the machine had ever run phase 1 — the exact
+# defect csharp carried until 2026-09-02 (`--network` plus a kc-nuget volume),
+# and the same class as containers/dart-toolchain and containers/ghc-toolchain.
+# An adopter with no warm volume got a failure at install time, not a report.
+#
+# `turbowarp` was the sharper half: it ran with a NETWORK NAMESPACE and
+# `npm install` (not `ci`), so its conformance result depended on the registry
+# being reachable and on whatever `install` resolved that day.
+#
+# The cache is baked below from the peers' OWN committed lockfiles. Do NOT mount
+# a volume at /npm-cache — it shadows the baked closure and restores the defect.
+# Defaults below kill the noise + the network-y bits npm does opportunistically.
 ENV npm_config_cache=/npm-cache \
     npm_config_audit=false \
     npm_config_fund=false \
@@ -57,29 +67,60 @@ ENV npm_config_cache=/npm-cache \
     npm_config_loglevel=warn \
     CI=true
 
+# ── Seed /npm-cache from the peers' OWN committed lockfiles ────────────────
+# The cache is derived from each peer's package-lock.json BY CONSTRUCTION, never
+# from a hand-maintained restatement of the top-level pins in this file. That is
+# the rule containers/dart-toolchain earned the hard way: pinning the DIRECT deps
+# and letting the transitive ones float re-resolved source_maps 0.10.13 -> 0.10.14
+# on a --no-cache rebuild, the image built perfectly, and the peer would not start.
+#
+# Only the manifest + lock files are copied, never the sources: this layer must
+# not be invalidated by an ordinary edit to a peer. A peer that GAINS a lockfile
+# and is not listed here fails its own offline run, which is the loud direction.
+COPY protocol-generator/typescript/package.json \
+     protocol-generator/typescript/package-lock.json \
+     /seed/typescript/
+COPY protocol-generator/node-red/src/package.json \
+     protocol-generator/node-red/src/package-lock.json \
+     /seed/node-red/
+COPY protocol-generator/turbowarp/src/package.json \
+     protocol-generator/turbowarp/src/package-lock.json \
+     /seed/turbowarp/
+
+# `npm ci` (never `npm install`) makes the committed lockfile authoritative: an
+# unsatisfiable lockfile fails the IMAGE BUILD, which is the right place to find
+# out.
+#
+# Then PROVE the closure is complete by wiping node_modules and re-running with
+# --offline, which forbids every network round-trip. A seed that happens to be
+# sufficient on the build host and short by one package for everyone else is the
+# failure this whole layer exists to prevent, and only asking offline can tell
+# the difference. (Verified the same way csharp's was: the first "offline" pass
+# there passed only because a stale obj/ was still on disk.)
+RUN set -eu; \
+    for p in typescript node-red turbowarp; do \
+      (cd "/seed/$p" && npm ci --no-audit --no-fund); \
+    done; \
+    for p in typescript node-red turbowarp; do \
+      rm -rf "/seed/$p/node_modules"; \
+      (cd "/seed/$p" && npm ci --offline --no-audit --no-fund); \
+    done; \
+    rm -rf /seed; \
+    npm cache verify
+
 WORKDIR /work
 
-# ── How the two-phase network lockdown is USED (dev loop) ───────────────────
-# The image itself pulls nothing from npm. Dependencies enter the cache in ONE
-# network-on step, then every subsequent run is sealed with --network=none.
+# ── How this is USED ────────────────────────────────────────────────────────
+# Every run is sealed. There is no phase 1.
 #
-#  Phase 1 — populate the cache (network ON, run ONCE per lockfile change):
-#    podman run --rm \
-#      -v <repo>/protocol-generator/typescript:/work:Z -v kc-npm:/npm-cache \
+#    podman run --rm --network=none -v <repo>:/work:Z \
 #      localhost/entity-core-keystone/node24:latest \
-#      npm ci            # resolves the COMMITTED package-lock.json into /npm-cache + node_modules
-#
-#  Phase 2 — build / test / conformance (network OFF, every other run):
-#    podman run --rm --network=none \
-#      -v <repo>/protocol-generator/typescript:/work:Z -v kc-npm:/npm-cache \
-#      localhost/entity-core-keystone/node24:latest \
-#      sh -c 'npm ci --offline && npx tsc -p tsconfig.json && node --test'
+#      sh -c 'cd /work/protocol-generator/typescript && npm ci --offline && npx tsc -p tsconfig.json'
 #
 # --network=none guarantees nothing can fetch a transitive package mid-build (the
 # "left-pad / minus-split" failure mode). The S4 conformance run needs loopback to
-# the validate-peer oracle, not internet — run peer + oracle in a shared pod (or
-# --network with a localhost-only namespace), still with NO registry egress.
-# `npm ci` (never `npm install`) makes the committed lockfile authoritative.
+# the validate-peer oracle, not internet — peer + oracle share the container's
+# loopback, still with NO registry egress.
 
 # Sentinel
 LABEL org.entity-core-keystone.role="node24"

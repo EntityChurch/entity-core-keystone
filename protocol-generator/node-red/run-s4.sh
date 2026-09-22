@@ -43,16 +43,29 @@ TS="/work/protocol-generator/typescript"
 
 # 1. Build the DELEGATED TS codec (dist/) — the interop dependency.
 if [ "${NOBUILD:-0}" != "1" ]; then
-  # Build/install only if MISSING (online; needs network on first run). Avoids the
-  # `npm ci --offline` foot-gun (it wipes node_modules then fails on an incomplete cache).
-  if [ ! -f "$TS/dist/src/index.js" ] || [ ! -d "$TS/node_modules/@noble" ]; then
-    (cd "$TS" && npm install --no-audit --no-fund >/dev/null 2>&1 && ./node_modules/.bin/tsc -p tsconfig.json) \
-      || { echo "ERROR: TS codec build failed (network needed on first run)" >&2; exit 1; }
-  fi
-  if [ ! -x "$NR/node_modules/.bin/node-red" ]; then
-    (cd "$NR" && npm install --no-audit --no-fund >/dev/null 2>&1) \
-      || { echo "ERROR: Node-RED install failed (network needed on first run)" >&2; exit 1; }
-  fi
+  # `npm ci --offline`, never `npm install`. The comment this replaces called
+  # --offline a "foot-gun (it wipes node_modules then fails on an incomplete
+  # cache)" — true of a cache that lives in a host-local kc-npm volume somebody
+  # warmed once, and no longer true: the closure is baked into the node24 image
+  # from these peers' OWN committed lockfiles, so an incomplete cache fails the
+  # IMAGE build instead. Failing loudly here is the point, not the foot-gun.
+  #
+  # Installs are guarded on the LOCKFILE's mtime, not merely on node_modules being
+  # missing, and the COMPILE is unconditional. "Rebuild dist/ only when index.js is
+  # MISSING, never when it is merely stale" is precisely how this peer was measured
+  # against a week-old bundle on 2026-08-28 and reported as failing a fix it
+  # already had.
+  npm_sync() { # <dir> — reinstall when the lockfile is newer than the tree
+    _d=$1
+    if [ ! -d "$_d/node_modules" ] || [ "$_d/package-lock.json" -nt "$_d/node_modules" ]; then
+      (cd "$_d" && npm ci --offline --no-audit --no-fund >/dev/null 2>&1) \
+        || { echo "ERROR: npm ci --offline failed in $_d (is the node24 image current?)" >&2; return 1; }
+    fi
+  }
+  npm_sync "$TS" || exit 1
+  (cd "$TS" && ./node_modules/.bin/tsc -p tsconfig.json) \
+    || { echo "ERROR: TS codec build failed" >&2; exit 1; }
+  npm_sync "$NR" || exit 1
 fi
 
 # 2. Provision the peer's persistent identity at the standard on-disk location so the
