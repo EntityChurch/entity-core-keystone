@@ -542,7 +542,7 @@ memorized, not the content.**
 
 | tier | what | when |
 |---|---|---|
-| **0 — always** | `AGENTS.md` + `AGENTS-STANDARD.md` | auto-loaded. **Keep them small.** |
+| **0 — always** | `AGENTS.md` + `AGENTS-STANDARD.md` | **`AGENTS.md` ≤ 30 KiB · `AGENTS-STANDARD.md` ≤ 24 KiB · tier 0 total ≤ 54 KiB, in bytes** |
 | **1 — cold start, once** | this document §1–§4 (kinds · ratchet · ladder · D1–D12) · the repo charter's discipline list · the latest handoff | a session asking *"how do we work here?"* |
 | **2 — by trigger** | **the one doctrine matching the task** (§7) · the substrate model · the workflow the doctrine's step names | at task start, never speculatively |
 | **3 — looked up** | anti-pattern entries · guides · references · dated status docs · this document's §5–§11 | when something points at them |
@@ -560,6 +560,24 @@ memorized, not the content.**
 content.** Any section of it that could be replaced by *"when X, open Y"* should be. An
 `AGENTS.md` that grows into a library stops being read at all — measured, at 4,663 lines, on
 the repo where it had become the front door.
+
+### ⚠ This tiering is a mechanism, not a preference — say which half is enforced
+
+**`METHODOLOGY.md` is tier 1, not tier 0** ([ADR-0028] Am. 1). It is carried byte-identical in
+every repo (`R2b`) so it can be opened on demand, and it is **not** part of the default load.
+That is why it is allowed to be this long: it escapes the byte budget by escaping tier 0, and
+capping it instead would have compressed the material rather than deferring it.
+
+**And a warning about this very table, because it was wrong for a month.** This row used to
+read *"auto-loaded"* for both tier-0 files. **Only `AGENTS.md` is auto-loaded** — through
+`CLAUDE.md`'s `@AGENTS.md` import, the one real import in the system. `AGENTS-STANDARD.md`
+reaches context because **`AGENTS.md` instructs the full read and additionally imports it**;
+the instruction is the load-bearing half and works for any agent, while the import is an
+optimization only some agents honor. Agents differ: Claude Code follows `@` imports
+recursively, Codex has no import syntax and concatenates only files *named* `AGENTS.md`.
+
+**A tier that is declared but not wired is a control that does not exist.** If you add a tier-0
+file, wire it and say how it loads — do not write it into this table and assume a mechanism.
 
 **And then go and read the actual area.** The doctrines tell you the shape of the work; they
 do not tell you the domain. Once the matching doctrine is open, the next move is research on
