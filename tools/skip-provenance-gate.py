@@ -68,20 +68,6 @@ ALLOWLIST = {
         "CONFORMANCE-MATRIX.md §1 + shared/findings/conformance-payload-capacity-floor.md "
         "(F53): a 264109-byte probe against a spec-legal 65535-byte frame cap, refused "
         "with a correlated 413.",
-    # io's three are CASCADE, not gaps — and they are allowlisted only because the FAIL
-    # that produces them is itself published. The peer is NOT in the publishable set
-    # (CONFORMANCE-MATRIX.md §1, `io` row: 758 · 28F, ❌ NOT PUBLISHABLE), so nothing
-    # green is resting on them. If `io` is ever fixed to 0-FAIL these three MUST come
-    # back out of this list rather than be inherited — an allowlist entry that outlives
-    # its disclosure is exactly the silent carve-out this gate exists to prevent.
-    ("io", "concurrency", "t1_3_no_head_of_line"):
-        "CONFORMANCE-MATRIX.md §1 `io` row: downstream of the disclosed "
-        "t1_2_concurrent_reentry FAIL (measured 3 of 6 runs), which takes the connection "
-        "with it. Not an unexercised surface — an unreachable one, behind a published FAIL.",
-    ("io", "concurrency", "t1_4_frame_write_atomicity"):
-        "CONFORMANCE-MATRIX.md §1 `io` row: same cascade as t1_3.",
-    ("io", "concurrency", "t2_1_sustained_load"):
-        "CONFORMANCE-MATRIX.md §1 `io` row: same cascade as t1_3.",
 }
 
 

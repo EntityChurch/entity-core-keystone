@@ -1011,6 +1011,66 @@ static int send_execute(int fd, const char *rid, const char *uri, const char *op
     int rc = bad ? -1 : send_envelope(fd, env.p, env.len);
     free(par.p); free(ed.p); free(ee.p); free(env.p); return rc;
 }
+/* Post-auth EXECUTE, SIGNED and CAPABILITY-BEARING (§4.2: only system/protocol/connect is
+ * pre-authorized; everything after leg 2 must present author + capability + a request
+ * signature). The selftest used to reuse send_execute() for these, under a comment saying
+ * "no author/capability -- §4.2 pre-authorized", which is true of the connect path and false
+ * of every request after it. The peer answered `401 authentication_failed`, correctly, and the
+ * gate read as a peer defect for as long as nobody ran it.
+ *
+ * The capability cannot be reconstructed client-side -- its `created_at` is the peer's wall
+ * clock, so its hash is unpredictable -- so leg 2's grant is lifted VERBATIM out of the
+ * response envelope's `included` and re-presented here. */
+static int send_execute_signed(int fd, const char *rid, const char *uri, const char *op,
+                               const unsigned char *author33, const unsigned char *cap33,
+                               const unsigned char *ipriv,
+                               const unsigned char *ipeer_ent, size_t ipeer_len,
+                               inc_ent *grant_ents, int n_grant) {
+    static const unsigned char empty = 0xa0;
+    unsigned char ph[33]; ec_entity_hash("primitive/any", &empty, 1, ph);
+    wbuf par = {0}; if (wb_entity(&par, "primitive/any", &empty, 1, ph)) { free(par.p); return -1; }
+    /* canonical key order is length-then-lex: uri(3) author(6) params(6) operation(9)
+     * capability(10) request_id(10). */
+    wbuf ed = {0};
+    int bad = wb_head(&ed, 5, 6)
+        || wb_text(&ed, "uri")        || wb_text(&ed, uri)
+        || wb_text(&ed, "author")     || wb_bytes(&ed, author33, 33)
+        || wb_text(&ed, "params")     || wb_raw(&ed, par.p, par.len)
+        || wb_text(&ed, "operation")  || wb_text(&ed, op)
+        || wb_text(&ed, "capability") || wb_bytes(&ed, cap33, 33)
+        || wb_text(&ed, "request_id") || wb_text(&ed, rid);
+    unsigned char eh[33];
+    bad = bad || ec_entity_hash("system/protocol/execute", ed.p, ed.len, eh);
+    /* the request signature targets the EXECUTE root hash, signed by the author */
+    unsigned char xsig[64];
+    bad = bad || ec_ed25519_sign(ipriv, eh, 33, xsig) != EC_OK;
+    wbuf xsd = {0};
+    bad = bad || wb_head(&xsd, 5, 4)
+        || wb_text(&xsd, "signer")    || wb_bytes(&xsd, author33, 33)
+        || wb_text(&xsd, "target")    || wb_bytes(&xsd, eh, 33)
+        || wb_text(&xsd, "algorithm") || wb_text(&xsd, "ed25519")
+        || wb_text(&xsd, "signature") || wb_bytes(&xsd, xsig, 64);
+    unsigned char xsh[33];
+    bad = bad || ec_entity_hash("system/signature", xsd.p, xsd.len, xsh);
+    wbuf xse = {0}; bad = bad || wb_entity(&xse, "system/signature", xsd.p, xsd.len, xsh);
+
+    /* included = leg2's grant material (cap token + granter peer + cap signature), verbatim,
+     * plus this caller's own peer entity and the request signature. wb_included sorts. */
+    inc_ent ie[8]; int n = 0;
+    for (int i = 0; i < n_grant && n < 6; i++) ie[n++] = grant_ents[i];
+    memcpy(ie[n].key, author33, 33); ie[n].ent = ipeer_ent; ie[n].elen = ipeer_len; n++;
+    memcpy(ie[n].key, xsh, 33);      ie[n].ent = xse.p;     ie[n].elen = xse.len; n++;
+    wbuf inc = {0}; bad = bad || wb_included(&inc, ie, n);
+
+    wbuf ee = {0}, env = {0};
+    bad = bad || wb_entity(&ee, "system/protocol/execute", ed.p, ed.len, eh)
+        || wb_head(&env, 5, 2) || wb_text(&env, "root") || wb_raw(&env, ee.p, ee.len)
+        || wb_text(&env, "included") || wb_raw(&env, inc.p, inc.len);
+    int rc = bad ? -1 : send_envelope(fd, env.p, env.len);
+    free(par.p); free(ed.p); free(xsd.p); free(xse.p); free(inc.p); free(ee.p); free(env.p);
+    return rc;
+}
+
 static int selftest_client(int port) {
     int fd = socket(AF_INET,SOCK_STREAM,0); if (fd<0) return 2;
     struct sockaddr_in a; memset(&a,0,sizeof a); a.sin_family=AF_INET; a.sin_addr.s_addr=htonl(INADDR_LOOPBACK); a.sin_port=htons((uint16_t)port);
@@ -1059,28 +1119,74 @@ static int selftest_client(int port) {
     wbuf inc={0}; abad = abad || wb_head(&inc,5,2) || wb_bytes(&inc,iph,33)||wb_entity(&inc,"system/peer",ipd.p,ipd.len,iph) || wb_bytes(&inc,sh,33)||wb_entity(&inc,"system/signature",sd.p,sd.len,sh);
     if (abad) { fprintf(stderr,"build auth\n"); return 2; }
     if (send_execute(fd,"auth-1","system/protocol/connect","authenticate",ad.p,ad.len,inc.p,inc.len)) return 2;
-    if (recv_response(fd,rid,&st,rt)) return 2;
-    int ok2 = (st==200 && strcmp(rt,"system/capability/grant")==0 && strcmp(rid,"auth-1")==0);
-    printf("  [%s] leg2 authenticate (PoP) → status=%u type=%s rid=%s\n", ok2?"PASS":"FAIL", st, rt, rid); fails += !ok2;
-    free(ad.p); free(ipd.p); free(sd.p); free(inc.p);
+    /* Read leg 2 WITHOUT discarding the frame: the granted capability, its granter peer entity
+     * and the cap signature all live in this envelope's `included`, and every request after
+     * this one has to re-present them (§4.2). They cannot be rebuilt client-side -- the token's
+     * created_at is the peer's wall clock. */
+    unsigned char cap33[33]; size_t cap_len = 0;
+    inc_ent grant_ents[4]; int n_grant = 0;
+    unsigned char *grant_own[4]; int n_own = 0;
+    { unsigned char *fb; uint32_t fl; if (read_frame(fd,&fb,&fl)!=1) { fprintf(stderr,"recv auth\n"); return 2; }
+      cbor_rd root,rdata,ridf,statf,res,resd,tokf,incf; st=0; rt[0]=rid[0]=0;
+      if (cbor_map_find(fb,fl,0,"root",&root)) {
+        if (cbor_map_find(fb,fl,root.pos,"data",&rdata)) {
+          if (cbor_map_find(fb,fl,rdata.pos,"request_id",&ridf)) cbor_get_text(&ridf,rid,sizeof rid);
+          if (cbor_map_find(fb,fl,rdata.pos,"status",&statf)) { int mj; uint64_t v; cbor_rd t=statf; if (cbor_head(&t,&mj,&v)==0&&mj==0) st=(unsigned)v; }
+          if (cbor_map_find(fb,fl,rdata.pos,"result",&res)) {
+            cbor_rd rtt; if (cbor_map_find(fb,fl,res.pos,"type",&rtt)) cbor_get_text(&rtt,rt,sizeof rt);
+            if (cbor_map_find(fb,fl,res.pos,"data",&resd) && cbor_map_find(fb,fl,resd.pos,"token",&tokf))
+              cbor_get_bytes(&tokf,cap33,sizeof cap33,&cap_len);
+          }
+        }
+      }
+      /* copy each included entity out before the frame buffer goes away */
+      if (cbor_map_find(fb,fl,0,"included",&incf)) {
+        cbor_rd a = incf; int am; uint64_t ac;
+        if (cbor_head(&a,&am,&ac)==0 && am==5) {
+          for (uint64_t j=0; j<ac && n_grant<4; j++) {
+            unsigned char k[33]; size_t kl=0; cbor_rd kv=a;
+            if (cbor_get_bytes(&kv,k,sizeof k,&kl) || kl!=33) { if(cbor_skip(&a)) break; if(cbor_skip(&a)) break; continue; }
+            if (cbor_skip(&a)) break;                 /* key consumed -> a is at the value */
+            const unsigned char *vp; size_t vl;
+            if (cbor_value_slice(fb,fl,a.pos,&vp,&vl)==0) {
+              unsigned char *cp = malloc(vl);
+              if (cp) { memcpy(cp,vp,vl); grant_own[n_own++]=cp;
+                        memcpy(grant_ents[n_grant].key,k,33);
+                        grant_ents[n_grant].ent=cp; grant_ents[n_grant].elen=vl; n_grant++; }
+            }
+            if (cbor_skip(&a)) break;                 /* value consumed */
+          }
+        }
+      }
+      free(fb);
+    }
+    int ok2 = (st==200 && strcmp(rt,"system/capability/grant")==0 && strcmp(rid,"auth-1")==0
+               && cap_len==33 && n_grant==3);
+    printf("  [%s] leg2 authenticate (PoP) → status=%u type=%s rid=%s cap=%zuB included=%d\n",
+           ok2?"PASS":"FAIL", st, rt, rid, cap_len, n_grant); fails += !ok2;
+    free(ad.p); free(sd.p); free(inc.p);
+    /* the caller's own system/peer entity, re-included on every signed request */
+    wbuf ipe={0}; if (wb_entity(&ipe,"system/peer",ipd.p,ipd.len,iph)) { free(ipd.p); return 2; }
+    free(ipd.p);
 
     /* post-auth EXECUTE to an unregistered path → 404 */
     char unreg[256]; snprintf(unreg,sizeof unreg,"/%s/local/nope/x", g_peer_id);
-    if (send_execute(fd,"req-404",unreg,"get",NULL,0,NULL,0)) return 2;
+    if (send_execute_signed(fd,"req-404",unreg,"get",iph,cap33,ipriv,ipe.p,ipe.len,grant_ents,n_grant)) return 2;
     if (recv_response(fd,rid,&st,rt)) return 2;
     int ok3 = (st==404 && strcmp(rid,"req-404")==0);
     printf("  [%s] 404 unregistered path   → status=%u code=%s rid=%s\n", ok3?"PASS":"FAIL", st, g_last_code, rid); fails += !ok3;
 
     /* request_id demux: two interleaved requests, distinct ids, each response echoes its own id */
     char reg[256]; snprintf(reg,sizeof reg,"/%s/system/tree", g_peer_id);
-    if (send_execute(fd,"rid-A",reg,"get",NULL,0,NULL,0)) return 2;
-    if (send_execute(fd,"rid-B",unreg,"get",NULL,0,NULL,0)) return 2;
+    if (send_execute_signed(fd,"rid-A",reg,"get",iph,cap33,ipriv,ipe.p,ipe.len,grant_ents,n_grant)) return 2;
+    if (send_execute_signed(fd,"rid-B",unreg,"get",iph,cap33,ipriv,ipe.p,ipe.len,grant_ents,n_grant)) return 2;
     char ridA[128], ridB[128]; unsigned stA, stB; char rtA[80], rtB[80];
     if (recv_response(fd,ridA,&stA,rtA) || recv_response(fd,ridB,&stB,rtB)) return 2;
     int ok4 = (strcmp(ridA,"rid-A")==0 && strcmp(ridB,"rid-B")==0 && stA==200 && stB==404);
     printf("  [%s] request_id demux        → (%s:%u)(%s:%u)\n", ok4?"PASS":"FAIL", ridA,stA, ridB,stB); fails += !ok4;
 
     close(fd);
+    free(ipe.p); for (int i=0;i<n_own;i++) free(grant_own[i]);
     printf("== smoke: %d checks failed ==\n", fails);
     return fails ? 1 : 0;
 }

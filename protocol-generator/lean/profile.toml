@@ -115,8 +115,11 @@ spdx = "Apache-2.0"             # S9 default; Lean ecosystem has no strong MIT-o
 [testing]
 # Lean #guard / native test exes for behavioral tests; the ECF conformance harness
 # (Appendix E vectors) for S2; validate-peer --profile core for S4. Track B proofs are
-# their own gate: `lake build` of the proofs/ target = the proofs check (a sorry or a
-# failed proof fails the build). `#print axioms` guards against accidental sorry.
+# their own gate: `lake build` of the proofs/ target, PLUS the axiom grading in
+# run-s2.sh. The exit code alone is not the check: measured 2026-09-03 in this pinned
+# toolchain, a `sorry` is a WARNING (lake prints "Build completed successfully" and
+# exits 0) and a hand-written `axiom` exits 0 with no warning at all. Only a proof that
+# fails to TYPE-CHECK is non-zero. `#print axioms` is what catches the other two.
 unit = "Lean native test exes + #guard"
 conformance = "ECF Appendix-E vectors (S2); validate-peer --profile core + origination-core (S4)"
 

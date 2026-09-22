@@ -49,9 +49,22 @@ reality directly (all confirmed):
 
 ## Track B — the proof vector: T3 complete, T2 reflexivity, T1/T2-totality deferred
 
-`lake build EntityCoreProofs` IS the proof check (a `sorry`/failed proof fails the
-build). Every theorem's `#print axioms` reports **`[propext, Quot.sound]` only —
-no `sorryAx`**. Full per-theorem ledger: `status/FORMALIZATION-REPORT.md`.
+> **CORRECTED 2026-09-03.** This paragraph used to read *"`lake build EntityCoreProofs` IS the
+> proof check (a `sorry`/failed proof fails the build)"*. **The parenthetical was false for two of
+> three failure modes**, measured in this peer's own pinned toolchain: a `sorry` is a **warning** —
+> `lake` prints `Build completed successfully` and **exits 0** — and a hand-written `axiom`
+> substituted for a proof exits 0 with no warning at all. Only a proof that fails to **type-check**
+> is non-zero. And nothing invoked the target at all until 2026-09-03: `run-s2.sh` built the peer,
+> `run-s4.sh` builds `host`, neither built the proofs.
+
+The proof check is `lake build EntityCoreProofs` **plus the axiom grading in `run-s2.sh`**, which
+asserts that no declaration depends on `sorryAx` or on any axiom outside the Lean-standard three,
+and that the number of graded declarations meets a floor (a module that stopped emitting
+`#print axioms` would otherwise pass every name check vacuously). Measured: **37 declarations
+graded**, all on `[propext, Classical.choice, Quot.sound]` or a subset — no `sorryAx`.
+Regression-tested by planting a `sorry` and by raising the floor above reality; both are caught.
+
+Full per-theorem ledger: `status/FORMALIZATION-REPORT.md`.
 
 - **T3 (headline) — PROVEN, 7 theorems** over `encodeFloatBits` (the kernel-
   reducible bit core; the running encoder is `encodeFloatBits ∘ Float.toBits`):

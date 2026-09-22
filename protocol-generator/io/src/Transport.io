@@ -21,7 +21,8 @@ Conn := Object clone do(
     new := method(sock,
         Map clone atPut("sock", sock) atPut("rbuf", Sequence clone) atPut("wbuf", Sequence clone asMutable) \
             atPut("established", false) atPut("issued_nonce", nil) \
-            atPut("hello_peer_id", nil) atPut("out_counter", 0) atPut("idle", Date clone now asNumber) atPut("outbound_transport", nil)
+            atPut("hello_peer_id", nil) atPut("out_counter", 0) atPut("idle", Date clone now asNumber) atPut("outbound_transport", nil) \
+            atPut("resp_park", Map clone)
     )
 )
 
@@ -128,6 +129,20 @@ Transport := Object clone do(
         sock := conn at("sock")
         _sendFrame(conn, reqEnv)
         resp := nil
+        // A RESPONSE FOR A DIFFERENT IN-FLIGHT REENTRY MUST BE PARKED, NEVER DROPPED.
+        // Two reentries can be live on ONE connection: dispatching a non-correlated
+        // inbound EXECUTE below re-enters `peer dispatch`, whose handler may itself
+        // call outboundDispatch on the same conn. The inner loop then sees the OUTER
+        // request_id on a response frame -- which matches neither its own rid nor the
+        // `system/protocol/execute` arm -- and used to fall off the end of the foreach
+        // and be discarded. The outer loop can never see it again, so it waits out the
+        // full 20 s deadline and, on this single-threaded event loop, starves every
+        // other connection behind it. That is a §4.9(c) silent drop of a correlated
+        // response, and it presents as a concurrency/latency problem rather than a
+        // correctness one.
+        park := conn at("resp_park")
+        if(park == nil, park = Map clone; conn atPut("resp_park", park))
+        if(park hasKey(rid), resp := park at(rid); park removeAt(rid); return resp)
         deadline := Date clone now asNumber + 20
         loop(
             if(sock isOpen not, break)
@@ -140,17 +155,27 @@ Transport := Object clone do(
             frames foreach(payload,
                 fenv := Wire envelopeOfFrame(payload)
                 if(fenv == nil, continue)
-                if(fenv root entityType == "system/protocol/execute/response" and(fenv root text("request_id") == rid),
-                    resp = fenv
+                if(fenv root entityType == "system/protocol/execute/response",
+                    if(fenv root text("request_id") == rid,
+                        resp = fenv
+                    ,
+                        // another reentry's response, arriving while we hold the fd.
+                        // PARK it for that loop rather than dropping it on the floor.
+                        park atPut(fenv root text("request_id"), fenv)
+                    )
                 ,
-                    // a non-correlated inbound EXECUTE (or other response) —
-                    // hand back to the assembler by dispatching it now
+                    // a non-correlated inbound EXECUTE — hand back to the assembler
+                    // by dispatching it now (behavioral presence, §6.11)
                     if(fenv root entityType == "system/protocol/execute",
                         r2 := peer dispatch(conn, fenv)
                         if(r2 != nil, _sendFrame(conn, r2)))
                 )
             )
             if(resp != nil, break)
+            // a nested reentry (dispatched above) may have read OUR response and
+            // parked it; collect it rather than waiting out the deadline for a frame
+            // that has already arrived.
+            if(park hasKey(rid), resp = park at(rid); park removeAt(rid); break)
         )
         resp
     )

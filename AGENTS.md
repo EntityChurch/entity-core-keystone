@@ -2141,6 +2141,78 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   **The rule: a coverage change that reddens a peer gets a before/after RATE on the same host in the
   same session, and the peer leaves the publishable set until it is fixed.** Do not revert, and do not
   publish the passing sample — for an intermittent, cite the rate.
+  **CLOSED THE SAME DAY, and the defect was real: A RESPONSE FRAME FOR A DIFFERENT IN-FLIGHT REENTRY
+  ON THE SAME CONNECTION WAS SILENTLY DISCARDED.** Two reentries can be live on ONE connection —
+  dispatching a non-correlated inbound EXECUTE re-enters `peer dispatch`, and that handler may itself
+  call `outboundDispatch` on the same conn. The inner loop saw the OUTER `request_id` on a response
+  frame, which matched neither its own rid nor the `system/protocol/execute` arm, and **fell off the
+  end of the `foreach`.** The outer could never see that frame again, so it waited out its full
+  20-second deadline — and on a single-threaded event loop that starves every connection behind it.
+  **This is a §4.9(c) silent drop of a CORRELATED RESPONSE, and it presents as a concurrency/latency
+  problem rather than a correctness one** — the same "bills the caller, so it reads as slow" signature
+  as the ISA op-ladder and `cobol`'s oversize frame, one layer up. Fix: park a non-matching response
+  under its rid for the loop that is waiting on it; check the park on entry and each pass.
+  **Measured: pre-fix 3 of 6, post-fix 0 of 12** (p≈0.02% against that baseline), with a per-check
+  diff confirming **exactly 1 of 758** severities moved and that one being the known
+  `t1_1_concurrent_demux` timing flake (WARN in 5 of the 6 post-fix runs, so the stable row is
+  unchanged).
+  **Two things generalize.** (a) **The 20-second wall in the failure message was the peer's OWN
+  deadline, not the oracle's** — reading which side owns a timeout is what turned "the oracle timed
+  out" into "our loop waited for a frame that had already arrived and been thrown away." (b) **Build
+  the small reproduction before the fix, not after.** Driving `-category origination` then
+  `-category concurrency` against ONE long-lived peer reproduced it in **9 checks instead of 758**,
+  in about a minute instead of twenty-five — and it also showed the small form is much rarer (~1 in
+  9 vs 1 in 2), which is itself the evidence that accumulated state from the full run is part of the
+  trigger. A cheap reproduction that is *rarer* than the real one is still worth having; just do not
+  measure the fix with it.
+- **RATIFIED — A CONTROL THAT CANNOT BE EXERCISED IS NOT A CONTROL, AND IT REPORTS THE SAME WORD AS
+  ONE THAT PASSED.** Two occurrences in one session (2026-09-03), different mechanisms, and both
+  produced a confident green from a plant that had never been applied:
+  - **The mutation never landed.** A `sed -i 's|…ec_ed25519_sign(...)…|…|'` meant to corrupt a
+    request signature died with ``unknown option to `s'`` (the pattern contained `||`), left the
+    source UNMUTATED, and the run printed PASS. Caught only because the plant COUNT was checked
+    (`grep -c 'PLANTED DEFECT'`) before the result was believed.
+  - **The mutation could not reach the code.** `PROOF_FLOOR=99` against a harness that re-execs into
+    its container, which did not forward the variable. The floor check ran at its default and
+    passed. The gate was fine; the control was inert.
+  **Enforcement, and it is one line each: assert that the plant is PRESENT before running the
+  mutated case, and prefer a mutation applied by a tool that fails loudly** (python with the anchor
+  asserted, not `sed`). For any control that crosses a container boundary, forward the variable
+  explicitly and prove it arrived. This is the examined-zero-things class pointed at the regression
+  suite instead of at the gate — and a regression suite is exactly where nobody looks for it.
+- **A DOCUMENTED CHECK THAT NOTHING INVOKES IS THE 2d ROT PATTERN, AND ITS EXIT CODE IS USUALLY NOT
+  THE CHECK EITHER.** RATIFIED 2026-09-03 (`lean`). `lake build EntityCoreProofs` was called *"the
+  proof check"* in three of this repo's own documents and **no Makefile, script or harness built that
+  target** — `run-s2.sh` built the peer, `run-s4.sh` builds `host`. `AGENTS.md` calls the Lean proof
+  vector *"the highest-signal channel"*; it was ungated for its whole life.
+  **The sharper half is that calling the tool would not have been enough.** Measured in the peer's
+  own pinned toolchain: a `sorry` is a **warning** — `lake` prints `Build completed successfully` and
+  **exits 0** — and a hand-written `axiom` substituted for a proof exits 0 with **no warning at
+  all**; only a type-check failure is non-zero. **A gate trusting that exit code catches one failure
+  mode in three, and misses the two a proof check exists for.** The check is the **axiom set**: no
+  declaration may depend on `sorryAx` or on anything outside the Lean-standard three, plus a FLOOR on
+  the number of graded declarations, because a module that stops emitting `#print axioms` passes
+  every name check vacuously.
+  **Generalize past Lean: for any gate that shells out to a build tool, ask what that tool does with
+  the failure you actually care about before trusting its exit status** — this is the Gradle
+  `UP-TO-DATE` and Maven no-tests lesson in a third package manager, and the answer differed from the
+  documented one in two of three cases.
+- **A UNIT THAT NOBODY RUNS FAILS IN THE DIRECTION THAT LOOKS LIKE A PEER BUG — AND THE COMMENT
+  EXPLAINING WHY IT IS SAFE IS WHERE THE DEFECT LIVES.** Second occurrence 2026-09-03 (`sql`, after
+  `apl`), and it closes the S3 axis at 18 GREEN / 0 RED. `sql`'s S3 selftest drove its **post-auth**
+  EXECUTEs through a helper commented *"no author/capability — §4.2 pre-authorized"*. That sentence
+  is true of the connect path and **false of every request after leg 2**, so the peer answered `401
+  authentication_failed` — correctly — and the gate read as a peer regression for as long as nobody
+  ran it. It had been red since the §5.5a/§6.2 authority work landed underneath it.
+  **The fix is a real request, never a relaxed assertion**, and the shape generalizes to any
+  self-driven client: the capability **cannot be rebuilt client-side** (its `created_at` is the
+  peer's wall clock, so its hash is unpredictable), so leg 2 must be read **without discarding the
+  frame** and its `included` entities copied out and re-presented verbatim. Assert the lifted
+  material in leg 2's own line (`cap=33B included=3`) so a leg-2 shape change fails *there* rather
+  than silently producing an unsigned leg 3.
+  **Two controls, not one, and they must produce DIFFERENT dispositions** — corrupt the request
+  signature → `401 authentication_failed`; withhold the grant material → `403 capability_denied`. One
+  control would not distinguish "the signature is checked" from "something is checked."
 - **A PATH SWEEP'S FALSE NEGATIVE IS THE DIRECTORY AS A SEPARATE STRING — VERIFY THAT PATHS RESOLVE,
   NEVER THAT THE OLD STRING IS GONE.** Candidate, same session, and it is the third false-negative
   grep in this file after the `dart`/`ruby` NUL byte (a grep that could not SEE the file) and F51 (a

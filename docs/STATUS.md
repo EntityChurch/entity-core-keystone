@@ -30,16 +30,15 @@ evolving as spec amendments run through the generator.
 
 | State | Count | Peers |
 |---|---:|---|
-| **0-FAIL** — publishable | **45** | M1 5/5 · M2 8/8 · M3 13/13 · probe 17/18 · exploratory 2/2 |
-| **RED** — not publishable | **1** | `io` — 28F, caused by this pin's own coverage increase (item 11) |
+| **0-FAIL** — publishable | **46** | M1 5/5 · M2 8/8 · M3 13/13 · probe 18/18 · exploratory 2/2 |
 | Not measured | 0 | — |
 
 **The headline changed on 2026-09-03 and it changed in the honest direction.** The census now passes
 `-reference-peer`, so the executed set went **756 → 758** and three `origination` checks run for all
 46 peers rather than the 31 that happened to have a separate harness. Forty-five peers are at 0-FAIL
-on the larger set. **`io` is not**, and the regression is this change's own doing — measured
-pre-fold **0 of 6** against post-fold **3 of 6**, not asserted. It is disclosed rather than reverted,
-because new coverage that reddens a peer is the coverage working.
+on the larger set. **`io` briefly was not** — the new coverage exposed a real §4.9(c) silent drop in
+its §6.11 reentry loop, which was found and fixed the same day (item 11). New coverage that reddens a
+peer is the coverage working, and this is what it bought.
 
 **The two sets are NOT comparable and no row may be diffed across the boundary.**
 
@@ -89,9 +88,8 @@ defect. `nim` was the only peer that already *had* a §5.6 ceiling, and having a
 worse than having none — it minted tokens that outlived their own authority by ten years and
 still returned `200`.
 
-**Publication rule is unchanged: "no green report → no publish."** As of 2026-09-03 it withholds
-exactly one: `io` has no green report at the current pin (item 11), so it does not publish. The
-other forty-five do. Per [ADR-0012] they are **cohort-consistent, not independent
+**Publication rule is unchanged: "no green report → no publish."** Today it withholds nothing — all
+forty-six peers have a green report at the 758-check pin. Per [ADR-0012] they are **cohort-consistent, not independent
 convergence** — they share a generation lineage and, for the FFI-hybrid peers, one codec `.so`.
 
 ## The verification axes
@@ -118,7 +116,7 @@ the scorer to write the exam."*
 | **S2** codec / crypto-agility | do our bytes match the corpus | **architecture** — ECF + crypto-agility fixture corpora, vendored byte-identical, digest-pinned (guide §2, §6) | 46 GREEN · 0 RED |
 | **S4** conformance | the published number | **`entity-core-go`** — the `validate-peer` oracle, `--profile core`, pinned by content digest | 46 GREEN · 0 RED |
 | ~~**origination**~~ | *(retired 2026-09-03)* | folded into S4 — the census now passes `-reference-peer`, so its three checks run for **all 46** peers instead of the 31 that had a harness | n/a |
-| **S3** loopback interop | do two peers talk, both directions | **ours** — hand-written assertions, 17 of 18 with no oracle behind them | 17 GREEN · **1 RED** · 28 no gate |
+| **S3** loopback interop | do two peers talk, both directions | **ours** — hand-written assertions, 17 of 18 with no oracle behind them | **18 GREEN · 0 RED** · 28 no gate |
 
 So three of the four axes are consumption of somebody else's ground truth, and nothing in them is
 invented here. One is not, and it is the one that rotted.
@@ -146,7 +144,12 @@ the wire. **A test with no authority behind it drifts against the code it is mea
 **First sweep of S3 and origination found 21 failures** — a third of the authored S3 gates and half
 the authored origination gates. Fifteen were one class (an entry point that only worked the way its
 author invoked it), one was an unpinned Go reference built from the wrong sibling checkout, two were
-the stale assertions above. Twenty are closed; `sql`'s S3 selftest is the one that is not.
+the stale assertions above. All twenty-one are closed as of 2026-09-03: `sql`'s selftest was the last, and it was the test
+that was wrong — it drove its post-auth EXECUTEs through a helper commented *"no author/capability —
+§4.2 pre-authorized"*, which is true of the connect path and false of everything after leg 2. It now
+presents a signed, capability-bearing request built from the grant material lifted out of leg 2, and
+two planted controls confirm the green discriminates: a corrupted signature returns `401
+authentication_failed`, withheld grant material returns `403 capability_denied`.
 
 **A `NO-GATE` column entry is backlog, not an exemption.** It means that peer has no harness on that
 axis; the count is printed on every run so it cannot quietly become an exclusion, which is the
@@ -287,32 +290,52 @@ standing `apl` lesson.
    authority has nothing watching it. The general form of that boundary — what binds every peer,
    what binds only the peers we generate, and what binds only this repo — is now
    **`docs/CONTRACT-LAYERS.md`**.
-10. **Run the Lean proof gate here — a fifth axis, and it is invoked by nothing.**
-   `lake build EntityCoreProofs` is called *the proof check* in three of our own documents
-   (`lean/profile.toml:118`, `lean/status/PHASE-S2.md:52`, `lean/status/PHASE-S3.md:6`) and **no
-   Makefile, script or harness builds that target** — `run-s2.sh:43` builds the peer, `run-s4.sh:65`
-   builds `host`. Verified here 2026-09-03. Worse, the claim itself is false for two of three failure
-   modes: `entity-core-formalization` built all three in **our own pinned toolchain** and measured
-   that a `sorry` is a *warning* (`lake build` exits **0**) and a hand-written `axiom` substituted
-   for a proof exits 0 with no warning at all; only a type-check failure is caught. **The gate
-   already exists** — they built it (37 `#print axioms` declarations graded against a declared axiom
-   set, 1 green + 5 negative controls) and routed the ask that keystone run it. `AGENTS.md` calls the
-   Lean proof vector *"the highest-signal channel"*; it has been ungated for its whole life while
-   describing a guarantee it does not provide. **Do not add it to `run-axis-sweep.sh` until it
-   actually runs here** — a row that cannot execute is the defect, not the fix.
+10. ~~**Run the Lean proof gate here**~~ ✅ **DONE 2026-09-03 — and the claim it was making was
+   false.** `lake build EntityCoreProofs` was called *the proof check* in three of this repo's own
+   documents and **no Makefile, script or harness built that target**; `run-s2.sh` built the peer,
+   `run-s4.sh` builds `host`. Worse, **the exit code is not the check**: measured in the peer's own
+   pinned toolchain, a `sorry` is a *warning* — `lake` prints `Build completed successfully` and
+   exits **0** — and a hand-written `axiom` substituted for a proof exits 0 with no warning at all.
+   Only a type-check failure is non-zero, so a gate trusting the exit code catches one failure mode
+   in three, and misses the two a proof check exists for. `protocol-generator/lean/run-s2.sh` now
+   builds the target and **grades the axiom set**: no declaration may depend on `sorryAx` or on any
+   axiom outside the Lean-standard three, and the count of graded declarations must meet a floor,
+   because a module that stopped emitting `#print axioms` would pass every name check vacuously.
+   **Measured: 37 declarations graded, all clean.** Regression-tested by planting a `sorry` (caught)
+   and by raising the floor above reality — which was **not** caught on the first attempt, because
+   the harness re-execs into its container and did not forward the variable, so the control could
+   not run. Fixed and both plants now fire. The false parenthetical is corrected in all three
+   documents rather than quietly dropped. *(The sibling gate in `entity-core-formalization` grades
+   the same declarations against a declared per-declaration axiom set and is the stronger check;
+   this one is the keystone-side obligation — the target our own documents name is now built and
+   graded by the axis that runs on every peer.)*
 
-11. **`io` is RED at 28F, and this change caused it.** Measured on the same host in the same
-   session: **pre-fold 0 of 6** runs failed, **post-fold 3 of 6**. Always at
-   `concurrency/t1_2_concurrent_reentry` (3 of 8 concurrent reentries time out), always 28 FAILs with
-   27 cascading behind the first. **The three new checks all PASS**, at idx 674–676, immediately
-   before it — so the finding is not that `io` fails them; it is that nothing had ever driven its
-   reentry path directly before the *concurrent* one. Control with the reference peer running but
-   origination not executed (`-category concurrency`): clean 6 of 6, which narrows toward residue
-   over CPU contention **without proving it**, because an isolated category is a different timing
-   regime. **NOT root-caused** — that is an honest state, and "flaky" and "load" are claims. Likely
-   family: the peer's known single-event-loop per-request accumulation (A-IO-025/026). `io` leaves
-   the publishable set until fixed; its tracked report deliberately records a **failing** run,
-   because publishing the passing half of a coin-flip is the overclaim.
+11. ~~**`io` is RED at 28F**~~ ✅ **FIXED 2026-09-03, same day, and the defect was real.** The
+   `-reference-peer` fold exposed it; it did not create it. **A response frame for a DIFFERENT
+   in-flight reentry on the same connection was silently discarded.** Two reentries can be live on
+   one connection, because dispatching a non-correlated inbound EXECUTE re-enters `peer dispatch`
+   and that handler may itself call `outboundDispatch` on the same conn. The inner loop then saw the
+   outer's `request_id` on a response frame, matched neither its own rid nor the
+   `system/protocol/execute` arm, and fell off the end of the `foreach`. The outer loop could never
+   see that frame again, so it waited out its **full 20-second deadline** — and on this
+   single-threaded event loop that starves every other connection behind it. So a §4.9(c) silent
+   drop of a *correlated response*, presenting as a concurrency and latency problem rather than a
+   correctness one. The fix parks a non-matching response for its own loop instead of dropping it.
+   **Measured: pre-fix 3 of 6 full-suite runs failed, post-fix 0 of 12** (p≈0.02% by chance against
+   that baseline). Per-check diff: exactly **1 of 758** severities moved, and it was
+   `t1_1_concurrent_demux` WARN→PASS, which is the known timing-ratio flake — WARN in 5 of the 6
+   post-fix runs, so the stable row is `316P/337W/0F/105S`, identical to the pre-fix passing run.
+   The fix removed the failure mode and changed nothing else.
+
+12. ~~**Note to `entity-core-go`: a bare `-peers` core run is red against their own reference peer**~~
+   ✅ **DRAFTED 2026-09-03** at
+   `research/stewardship/HANDOFF-TO-ARCH-2026-09-03-peers-core-run-red-on-reference.md`, in flight.
+   `validate-peer -profile core -peers a,b` against two instances of the pinned `entity-peer`
+   returns `200 total, 161 passed, 1 failed, 38 skipped` — the FAIL naming a missing
+   `--inbox-relay-registry`. Reads as a harness/config gap their own `validate-complete.sh` exists
+   to close, not a peer defect, and RELAY/NETWORK/SUBSCRIPTION are out of scope here so we are not
+   asking for the 38 skips. The one ask is whether a bare `-peers` run should preflight its own
+   configuration and skip-with-a-reason rather than FAIL.
 
 **New this session — `tools/coherence-gate.py`, in `make lint`.** The sixth root-level gate, and
 the first that asks whether a document agrees with itself: all 46 primary-table rows and all 46
