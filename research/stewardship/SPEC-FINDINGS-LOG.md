@@ -10,6 +10,24 @@ Cross-language register of findings surfaced by keystone work. Per-language spec
 
 **Why this section exists**: arch caught itself twice in one session about to draft proposals for already-folded work because the pipe-table cells below carried stale "Open" status. Cells are append-only history; this section is the **current** disposition. Read here first; pipe-table is for provenance.
 
+> **OPEN, routed 2026-08-30 — F51: the §5.2 `peers` dimension is structurally unreachable in 40 of 46 peers.**
+> Evidence: [`peers-dimension-reachability.md`](../../protocol-generator/shared/findings/peers-dimension-reachability.md)
+> — filed with the findings, not in `research/stewardship/`, because this register PUBLISHES and
+> `research/**` is stripped at release: an index whose evidence is deleted is the documented failure.
+> Companion to the earlier [`peers-grant-dimension-oracle-gap.md`](../../protocol-generator/shared/findings/peers-grant-dimension-oracle-gap.md) (2026-08-13), which
+> closed the *oracle-coverage* half of this dimension; this is the *reachability* half it exposed.
+> **The question:** when an EXECUTE names a URI in a FOREIGN peer's namespace, must a core peer resolve its own
+> handler and let §5.2 decide, or may it refuse at routing with `404 handler_not_found`? 40 peers refuse
+> (including `go` and all of M1); 6 route it and return a full three-row verdict on `authz_peers_target_from_uri`.
+> The split correlates perfectly with one line of routing — no PASS peer has a local-target gate, and every peer
+> carrying one WARNs. **The spec does not settle it**, and §3.6's *"`peers` … when absent, defaults to local peer
+> only"* is a default that can never deny anything under the majority reading, which is the argument that the
+> minority of 6 is correct. Not fixed here: whichever way it resolves, one side of the cohort is non-conformant,
+> and deriving the answer from the oracle's Go source would invert the keystone's purpose.
+> **Process note carried with it:** this sat in `CONFORMANCE-MATRIX.md` §3 for two weeks as *"WARN on every peer ·
+> Low — inconclusive by design · needs a real two-peer harness"* — every clause false, and it was an exculpation
+> we wrote about ourselves and never re-checked. One severity-diff across the cohort answered it.
+
 > **Critical-review capstone (2026-07-18):** a four-dimension adversarial review of core (minimality/security/
 > design/implementation-history) is complete. Converged view: [`../../protocol-generator/shared/syntheses/synthesis-reconciliation.md`](../../protocol-generator/shared/syntheses/synthesis-reconciliation.md)
 > (front door); net-new arch items: [`critical-review-outputs.md`](../../protocol-generator/shared/findings/critical-review-outputs.md).

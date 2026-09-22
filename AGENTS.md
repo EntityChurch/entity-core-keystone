@@ -1408,6 +1408,28 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   `asm-arm64`/`riscv64` never received b6371d7's four `host.s` hardenings (they WARN on
   `r3_connection_flood`; §4.10(c) is a SHOULD). `cobol` skips two concurrency checks its 65535-byte
   frame cap and 8192-byte entity ceiling make unreachable.
+- **RATIFIED, and it BROADENS the routed-claim rule: the exculpation most likely to be wrong is the
+  one WE wrote, because nothing routes it back for review.** Second occurrence 2026-08-30, in the
+  same session as the `apl` exclusion below — which is the same defect wearing a different hat. The
+  standing rule (*"verify a routed claim before acting on it, especially the exculpatory half"*)
+  only ever pointed at **inbound** claims from a sibling repo. Both of this session's findings were
+  self-authored exculpations that had never been re-read:
+  - `CONFORMANCE-MATRIX.md` §3 carried `authz_peers_target_from_uri` for two weeks as *"WARN on
+    every peer · **Low — inconclusive by design** · a single standalone peer cannot resolve
+    `target_peer` against a synthetic foreign URI; needs a real two-peer harness. Not attempted
+    since it was found 2026-08-16."* Measured: **40 WARN, 6 PASS**. The six return a full three-row
+    verdict, so a standalone peer decides it fine and no harness was ever needed. The real split is
+    one line of routing (a `!= localPeer → 404 handler_not_found` gate ahead of handler resolution),
+    it is a **spec ambiguity worth a handoff**, and the phrase "inconclusive by design" had been
+    doing the work of a decision nobody made.
+  - `apl`'s `UNMEASURABLE — upstream-blocked` (below).
+  **Both were single-command questions.** The severity-diff that answered the first is the standing
+  highest-yield diagnostic in this file, applied to a *check* instead of a *peer*:
+  `for each report → severity of check X`, then look at what the two groups have in common. **Rule:
+  a row that explains why something CANNOT be measured, or need not be, is a claim — date it, name
+  the command that would refute it, and re-run that command before citing the row.** A row asserting
+  work is *owed* gets re-read every time someone looks for work; a row asserting work is *excused*
+  is read once and never again, which is exactly backwards from how often each is wrong.
 - **AN EXCLUSION IS A CLAIM WITH AN EXPIRY DATE — and the one that hides longest is enforced by
   the tool that would disprove it.** RATIFIED 2026-08-30 (`apl`; second occurrence of the
   stale-input class in the shape where the *gate itself* is the stale input, after
