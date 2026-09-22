@@ -186,6 +186,18 @@ lint:
 	@# links, not backticked paths, wrapped fragments, or a path a tool prints at runtime.
 	@# The hand-walk of the published tree stays mandatory (AGENTS.md).
 	@python3 tools/link-gate.py --quiet
+	@echo "lint: gating internal coherence of published numbers (read-only)…"
+	@# Sixth root-level invariant, and the one the other five structurally cannot see.
+	@# check-set-gate asks whether numbers are COMPARABLE, pin-gate whether anchors
+	@# RESOLVE, link-gate whether links reach real FILES — all three pass a tree in which
+	@# CONFORMANCE-MATRIX.md §1 publishes 595P/54W for a peer whose own committed report
+	@# says 313P/336W. Every documentation defect found in the two weeks before this gate
+	@# existed was found by walking the tree BY HAND with `make lint` green throughout.
+	@# Gates the 46 §1 rows and the 46 per-peer prose banners against the committed
+	@# reports; reports (does not gate) superseded figures quoted elsewhere in prose,
+	@# because this repo keeps those deliberately as evidence. Regression suite:
+	@# `python3 tools/coherence-gate.py --self-test`. The hand-walk stays mandatory.
+	@python3 tools/coherence-gate.py --quiet
 	@echo "lint: gating container recipe reproducibility (read-only, offline)…"
 	@# Fifth root-level invariant. Every image in containers/ is a recipe an adopter has
 	@# to be able to run, and until 2026-08-27 nothing asked whether they still could:

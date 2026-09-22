@@ -11,6 +11,43 @@ Work since the initial public research-preview. No release has been cut; this se
 running record, not a version claim. **`CONFORMANCE-MATRIX.md` is the authoritative per-peer
 state** — the entries here are a summary of what moved and why, and they defer to it on numbers.
 
+### A gate for internal coherence (2026-08-30) — the hole the other five could not see
+
+`make lint` gained `tools/coherence-gate.py`. The five existing gates ask whether numbers are
+*comparable*, whether anchors *resolve*, whether links reach real *files* — and all of them pass
+a tree in which the status matrix publishes `595P/54W` for a peer whose own committed report says
+`313P/336W`. Every documentation defect found in the fortnight before this existed was found by
+walking the tree by hand with `make lint` green throughout.
+
+- **Gating:** all 46 primary-table rows and all 46 per-peer prose banners must equal the peer's
+  committed `CONFORMANCE-REPORT.json`, headline total and FAIL count included. A row whose name
+  does not resolve to a peer directory is an error, never a skip.
+- **Reported, not gating:** superseded figures quoted elsewhere in prose. This repo keeps those
+  deliberately — one footnote preserves a peer's entire FAIL-count progression because the
+  sequence is the finding — and hard-failing them would hold the gate permanently red.
+- **Dated `>` note blocks are exempt everywhere.** They are a build log, and a build log that
+  gets back-edited stops being evidence of anything.
+- **Regression suite included** (`--self-test`): every check is proved against a planted defect,
+  including that a dated block is *not* gated and that an external `§9z` is *not* flagged.
+
+**The first thing it found was ours, and eight days stale: 13 published per-peer banners were
+still anchored on a dead `dev` commit.** `status-banner.py` was built on 2026-08-28 precisely so
+these cite the **content digest** rather than the oracle's commit ([ADR-0012] Am. 1) — but it
+only ever changed what *new* banners say. The thirteen written by an earlier hand pass were never
+regenerated and still named a commit that resolves for no outside reader, in files that publish.
+All 46 are now digest-form, and the gate fails on any banner citing an oracle commit. **A tool
+that prevents a defect going forward is not a fix for the instances already on disk** — after
+landing one, grep the tree for the class and count.
+
+Two things the build itself taught, both now in `AGENTS.md`. The banner check searched for the
+compact `NNNP/NNW/NF/NNNS` form while banners spell the figures longhand, so it matched nothing
+and printed *"OK — 46 rows and **0** banners agree"* — **a vacuous check reads exactly like a
+passing one, and only printing the count exposed it**; the self-test now asserts the population,
+not just an empty error list. And the requested "flag a `§N` with no matching heading" check was
+**cut back rather than shipped noisy**: there is no textual discriminator between `§5` meaning
+this file's §5 and `§5` meaning the spec's, and the heuristic produced 124 false positives and 0
+true positives across the tree. It is scoped to three files with the fragility stated in source.
+
 ### ISA host hardening ported (2026-08-30) — `asm-arm64` and `riscv64` reach `313P/336W`
 
 `asm-x86_64`'s four `host.s`/`dispatch.s` hardenings went across to the other two ISA peers, so all

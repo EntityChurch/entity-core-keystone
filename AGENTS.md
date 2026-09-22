@@ -1337,6 +1337,57 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   in a second, and it would have caught the fortran dangler and every link the findings move
   broke. It does **not** catch inline-code paths in backticks, prose fragments, or a path printed
   by a tool at runtime, which is why the hand-walk stays.
+- **A GATE THAT EXAMINES ZERO THINGS PRINTS THE SAME WORD AS ONE THAT EXAMINES FORTY-SIX —
+  always print the COUNT, and assert on it in the regression suite.** RATIFIED 2026-08-30
+  (second occurrence of the vacuous-control class after `check-set-gate`'s `Path.stem`
+  collision, which keyed 45 reports into one dict entry and would have "passed" having read a
+  single file). Building `tools/coherence-gate.py`, its per-peer banner check searched for the
+  compact `NNNP/NNW/NF/NNNS` form; the banners spell the same figures longhand
+  (`755 total · 312 pass · 337 warn · 0 FAIL · 106 skip`), so the pattern matched **nothing**,
+  every peer was `continue`d, and the gate printed *"OK — 46 §1 rows and **0** peer banners
+  agree"*. **The only reason it was caught is that the line printed the number.** Reading the
+  code would not have found it; the code is correct, it is the pattern that was wrong.
+  **Enforcement, and it is one line in the self-test:** assert the count equals the population
+  (`n_banners == len(peers)`), not merely that the error list is empty. An empty error list is
+  the expected output of both a passing check and an absent one.
+  **The gate this came from is worth its own note, because it closes a hole the other five
+  structurally cannot see.** `check-set-gate` asks whether numbers are COMPARABLE, `pin-gate`
+  whether anchors RESOLVE, `link-gate` whether links reach real FILES — **all three pass a tree
+  in which §1 publishes `595P/54W` for a peer whose own committed report says `313P/336W`.**
+  Every documentation defect found in the two weeks before it existed was found by hand-walking
+  the tree with `make lint` green throughout. It gates the 46 §1 rows and the 46 per-peer prose
+  banners against the committed reports, and **reports rather than gates** superseded figures
+  quoted elsewhere — this repo keeps those on purpose (footnote ⁷ preserves a peer's whole
+  FAIL-count progression because the sequence is the finding), and hard-failing them would hold
+  the gate permanently red, which is the "teaches people to skip it" failure written down twice
+  already.
+  **AND THE FIRST THING IT FOUND WAS OUR OWN, EIGHT DAYS STALE: 13 published banners were still
+  anchored on a dead dev SHA.** `status-banner.py` was built on 2026-08-28 specifically so a
+  per-peer number would cite the **content digest** rather than the oracle's commit ([ADR-0012]
+  Am. 1) — and this file already records that *"the 2026-08-22 hand pass wrote `oracle
+  entity-core-go @ c1b0708` into all thirteen; generating the banner is what stopped that
+  reaching the other twenty-six."* **What it does not say, because nobody checked, is that the
+  original thirteen were never regenerated.** They still named `c1b0708` — a `dev` commit that
+  resolves for no outside reader — in files that **publish** (`protocol-generator/**` sits
+  outside every doc-root prefix and ships with no declaration). `pin-gate` did not see them: it
+  is scoped to §1's pin column and `oracle-pin.env`, not to per-peer status files.
+  **This is the standing "when you build a durable anchor, apply it to the history you already
+  have, not only to the next entry" rule failing again, in the same shape as the unrecorded
+  `retired_ref*` digests** — a tool that prevents the defect going forward is not a fix for the
+  instances already on disk, and nothing was watching them. All 46 are now digest-form, and
+  `coherence-gate` fails on any banner citing an oracle commit, with a planted-defect test.
+  **Generalize: after landing a generator that fixes a class, grep the tree for the class and
+  count. If the count is not zero, the fix has not landed — it has only been scheduled.**
+  **And one check was CUT rather than shipped noisy, which is the part to imitate.** The
+  handoff asked for "flag a `§N` reference with no matching heading in the same file", and it
+  sounds mechanical. It is not: there is **no textual discriminator between `§5` meaning *this
+  file's* §5 and `§5` meaning the *spec's* §5**, and resolving against the pinned spec does not
+  help because the spec has a §5. The heuristic that works on `CONFORMANCE-MATRIX.md` (whose
+  own numbering, §1–§4, happens not to collide with the spec refs it makes at §5–§7b) produced
+  **124 false positives and 0 true positives** across the tree, because a peer's `PHASE-S5.md`
+  has a `## 7.` section and cites the spec's §7a/§7b. It is now scoped to three files with the
+  fragility stated in the source. **A check that cannot separate its signal from its noise is
+  not a weak check, it is a broken one** — scope it or drop it, and say which.
 - **RATIFIED (second occurrence, different shape): a budget-starved run reads as a clean run,
   and the starved categories are where the real FAILs are.** First shape — **Unison #43**: two
   *slow* categories consumed the global budget and seven core categories reported
