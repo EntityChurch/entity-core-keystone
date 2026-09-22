@@ -178,6 +178,91 @@ TreeHandler := Handler clone do(
         ok(e, nil)
     )
 
+    // Digest byte length for a content_hash_format code per the §1.2 seed table,
+    // or nil when this peer cannot VERIFY that code. The total wire length is
+    // this plus the varint prefix, which is not a constant of the code (§7.3):
+    // codes >= 0x80 occupy more than one byte.
+    hashDigestLen := method(code,
+        if(code == 0, return 32)
+        if(code == 1, return 48)
+        nil
+    )
+
+    // §6.3's `put` admission ladder (normative, 0.8.2.11).
+    //
+    // `put` is a RECEIPT path: the submitter authors the entity, the peer
+    // validates what it received (§1.8 item 1) and MUST NOT author a submitted
+    // entity's content_hash on the submitter's behalf. Two ordered steps:
+    //
+    //   1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data`
+    //      (any CBOR value; null is a legal payload), and a `content_hash` that
+    //      is a well-formed system/hash whose total byte length matches its
+    //      format code (§1.2). Any failure -> 400 invalid_request. A well-formed
+    //      hash naming a format code this peer cannot verify is the separate
+    //      §1.2 ingest-dispatch case -> 400 unsupported_content_hash_format.
+    //   2. HASH — carried content_hash vs contentHash({type, data}).
+    //      Disagreement -> 400 hash_mismatch.
+    //
+    // Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step
+    // 2's inputs are exactly what step 1 establishes, so a submission that is
+    // both malformed and mis-hashed is step 1's and answers invalid_request.
+    //
+    // Structural admission is not semantic validation: `data` is never checked
+    // against the type named by `type`.
+    //
+    // Returns list("admitted", entity) or list("refused", outcome).
+    admitPut := method(v,
+        refuse := block(code, msg, list("refused", fail(400, code, msg)))
+        if(v == nil or((v hasSlot("ecKind")) not) or(v ecKind != "map"),
+            return refuse call("invalid_request", "put: entity is not a map"))
+        t := v at("type")
+        if(t == nil or(t isKindOf(Sequence) not) or(t hasSlot("ecKind")) or(t size == 0),
+            return refuse call("invalid_request",
+                "put: entity.type absent, empty or not a text string"))
+        // Presence, not truthiness: a CBOR null is a legal `data` payload, so the
+        // map's own hasKey is the presence test rather than a nil check.
+        if(v hasKey("data") not,
+            return refuse call("invalid_request", "put: entity.data absent"))
+        d := v at("data")
+        ch := v at("content_hash")
+        if(ch == nil or((ch hasSlot("ecKind")) not) or(ch ecKind != "bytes") or(ch seq size == 0),
+            return refuse call("invalid_request",
+                "put: entity.content_hash absent or not a byte string"))
+        carried := ch seq
+        // Leading multicodec LEB128 format-code varint (§7.3).
+        code := 0
+        shift := 0
+        n := 0
+        done := false
+        while(n < carried size and(done not),
+            b := carried at(n)
+            // Explicit bit methods, not the `&`/`<<` operators: in Io `==` binds
+            // TIGHTER than `&`, so `b & 0x80 == 0` parses as `b & (0x80 == 0)`.
+            code = code + (b bitwiseAnd(127) * (2 ** shift))
+            n = n + 1
+            if(b bitwiseAnd(128) == 0, done = true, shift = shift + 7)
+        )
+        if(done not,
+            return refuse call("invalid_request",
+                "put: entity.content_hash is not a well-formed system/hash"))
+        digestLen := hashDigestLen(code)
+        // §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+        // invalid_request: the shape is fine, the algorithm is what we lack.
+        if(digestLen == nil,
+            return refuse call("unsupported_content_hash_format",
+                "put: unsupported content_hash_format"))
+        if(carried size != n + digestLen,
+            return refuse call("invalid_request",
+                "put: content_hash length does not match its format code"))
+        computed := EntityCodec contentHashWithFormat(t, EntityCodec encode(d), code)
+        if(computed != carried,
+            return refuse call("hash_mismatch",
+                "put: content_hash does not match content_hash({type, data})"))
+        // The carried hash IS the entity's address; recomputing it into the store
+        // would be the authoring arm §6.3 forbids.
+        list("admitted", Entity admitted(t, d, carried))
+    )
+
     op_put := method(ctx,
         exec := execOf(ctx)
         local := peer localPeer
@@ -187,7 +272,7 @@ TreeHandler := Handler clone do(
         if(HandlerUtil pathFlexOk(target) not, return fail(400, "invalid_path", target))
         path := Capability canonicalize(local, target)
         params := exec entityField("params")
-        entity := if(params != nil, params entityField("entity"), nil)
+        rawEntity := if(params != nil, params field("entity"), nil)
         expected := if(params != nil, params bytes("expected_hash"), nil)
         current := store hashAt(path)
         casOk := if(expected == nil,
@@ -200,7 +285,10 @@ TreeHandler := Handler clone do(
             )
         )
         if(casOk not, return fail(409, "hash_mismatch", path))
-        if(entity == nil, return fail(400, "unexpected_params", "put: missing entity"))
+        if(rawEntity == nil, return fail(400, "unexpected_params", "put: missing entity"))
+        admitted := admitPut(rawEntity)
+        if(admitted at(0) == "refused", return admitted at(1))
+        entity := admitted at(1)
         store bind(path, entity)
         ok(Entity with("system/hash", EcMap with("hash", EcBytes with(entity hash))), nil)
     )

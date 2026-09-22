@@ -861,6 +861,102 @@ static void h_connect(ec_peer *p, ec_conn *conn, const ec_envelope *env,
 
 static void build_listing(ec_peer *p, const char *path, ec_outcome *out);
 
+/* Digest byte length for a content_hash_format code per the §1.2 seed table, or 0
+ * when this peer cannot VERIFY that code. The total wire length is this plus the
+ * varint prefix, which is not a constant of the code (§7.3): codes >= 0x80 occupy
+ * more than one byte. This peer's ec_entity carries a fixed uint8_t hash[33], so
+ * the SHA-256 floor is the only code it can hold, let alone verify. */
+static size_t hash_digest_len(uint64_t format_code)
+{
+    return format_code == 0x00 ? 32 : 0;
+}
+
+/* §6.3's `put` admission ladder (normative, 0.8.2.11).
+ *
+ * `put` is a RECEIPT path: the submitter authors the entity, the peer validates
+ * what it received (§1.8 item 1) and MUST NOT author a submitted entity's
+ * content_hash on the submitter's behalf. Two ordered steps:
+ *
+ *   1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data` (any
+ *      CBOR value; null is a legal payload), and a `content_hash` that is a
+ *      well-formed system/hash whose total byte length matches its format code
+ *      (§1.2). Any failure -> 400 invalid_request. A well-formed hash naming a
+ *      format code this peer cannot verify is the separate §1.2 ingest-dispatch
+ *      case -> 400 unsupported_content_hash_format.
+ *   2. HASH — carried content_hash vs content_hash({type, data}). Disagreement ->
+ *      400 hash_mismatch.
+ *
+ * Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's
+ * inputs are exactly what step 1 establishes, so a submission that is both
+ * malformed and mis-hashed is step 1's and answers invalid_request.
+ *
+ * Structural admission is not semantic validation: `data` is never checked against
+ * the type named by `type`.
+ *
+ * On success returns true and *out is a +1 reference the caller unrefs. On refusal
+ * returns false with *code / *message set to static strings. */
+static bool admit_put(const ec_value *v, ec_entity **out,
+                      const char **code, const char **message)
+{
+    *out = NULL;
+    if (!v || v->kind != EC_MAP) {
+        *code = "invalid_request"; *message = "put: entity is not a map";
+        return false;
+    }
+    const ec_value *type_v = ec_v_get(v, "type");
+    if (!type_v || type_v->kind != EC_TEXT || type_v->as.bytes.len == 0) {
+        *code = "invalid_request";
+        *message = "put: entity.type absent, empty or not a text string";
+        return false;
+    }
+    /* Presence, not truthiness: a CBOR null is a legal `data` payload and is a
+     * NODE here, so a non-NULL lookup is exactly the presence test §6.3 wants. */
+    const ec_value *data_v = ec_v_get(v, "data");
+    if (!data_v) {
+        *code = "invalid_request"; *message = "put: entity.data absent";
+        return false;
+    }
+    const ec_value *ch = ec_v_get(v, "content_hash");
+    if (!ch || ch->kind != EC_BYTES || ch->as.bytes.len == 0) {
+        *code = "invalid_request";
+        *message = "put: entity.content_hash absent or not a byte string";
+        return false;
+    }
+    uint64_t format_code = 0;
+    size_t consumed = 0;
+    if (ec_varint_decode(ch->as.bytes.p, ch->as.bytes.len, &format_code, &consumed) != EC_OK) {
+        *code = "invalid_request";
+        *message = "put: entity.content_hash is not a well-formed system/hash";
+        return false;
+    }
+    size_t digest_len = hash_digest_len(format_code);
+    if (digest_len == 0) {
+        /* §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+         * invalid_request: the shape is fine, the algorithm is what we lack. */
+        *code = "unsupported_content_hash_format";
+        *message = "put: unsupported content_hash_format";
+        return false;
+    }
+    if (ch->as.bytes.len != consumed + digest_len) {
+        *code = "invalid_request";
+        *message = "put: content_hash length does not match its format code";
+        return false;
+    }
+    /* Step 2. ec_entity_of_cbor recomputes {type, data} and refuses on a carried
+     * mismatch — it VERIFIES the submitter's hash rather than authoring one, which
+     * is what §6.3 forbids here. At the only code this peer verifies (0x00) the
+     * verified value and the carried bytes are the same 33 bytes, so binding the
+     * recomputed hash binds the submitted address. */
+    ec_entity *e = NULL;
+    if (ec_entity_of_cbor(v, &e) != EC_OK) {
+        *code = "hash_mismatch";
+        *message = "put: content_hash does not match content_hash({type, data})";
+        return false;
+    }
+    *out = e;
+    return true;
+}
+
 static void h_tree(ec_peer *p, ec_conn *conn, const ec_envelope *env,
                    const ec_entity *exec, const ec_entity *caller_cap,
                    const char *op, ec_outcome *out)
@@ -927,6 +1023,7 @@ static void h_tree(ec_peer *p, ec_conn *conn, const ec_envelope *env,
         return;
     }
     if (strcmp(op, "put") == 0) {
+        /* §6.3 put admission — see admit_put() below. */
         size_t target_len = 0;
         const char *target = exec_resource_target_n(exec, &target_len);
         if (!target) {
@@ -943,7 +1040,7 @@ static void h_tree(ec_peer *p, ec_conn *conn, const ec_envelope *env,
             return;
         }
         ec_entity *params = ec_ent_entity_field(exec, "params");
-        ec_entity *entity = params ? ec_ent_entity_field(params, "entity") : NULL;
+        const ec_value *raw_entity = params ? ec_ent_field(params, "entity") : NULL;
         size_t exl = 0;
         const uint8_t *expected = params ? ec_ent_bytes(params, "expected_hash", &exl) : NULL;
         char *current = NULL;
@@ -960,13 +1057,20 @@ static void h_tree(ec_peer *p, ec_conn *conn, const ec_envelope *env,
         }
         free(current);
         if (!cas_ok) {
-            free(path); ec_entity_unref(params); ec_entity_unref(entity);
+            free(path); ec_entity_unref(params);
             outcome_err(out, 409, "hash_mismatch", target);
             return;
         }
-        if (!entity) {
+        if (!raw_entity) {
             free(path); ec_entity_unref(params);
             outcome_err(out, 400, "unexpected_params", "put: missing entity");
+            return;
+        }
+        ec_entity *entity = NULL;
+        const char *refuse_code = NULL, *refuse_msg = NULL;
+        if (!admit_put(raw_entity, &entity, &refuse_code, &refuse_msg)) {
+            free(path); ec_entity_unref(params);
+            outcome_err(out, 400, refuse_code, refuse_msg);
             return;
         }
         ec_store_bind(p->store, path, entity);

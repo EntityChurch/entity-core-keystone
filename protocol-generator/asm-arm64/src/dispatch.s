@@ -98,6 +98,7 @@ hexchars:     .ascii "0123456789abcdef"
 ec_unexpected_params: .asciz "unexpected_params"
 ec_hash_mismatch:     .asciz "hash_mismatch"
 ec_invalid_path:      .asciz "invalid_path"
+ec_unsupported_chf:   .asciz "unsupported_content_hash_format"
 
 	.bss
 	.lcomm b_req,    16777216
@@ -106,6 +107,8 @@ ec_invalid_path:      .asciz "invalid_path"
 	.lcomm b_env,    16384
 	.lcomm ch_hello, 64
 	.lcomm ch_resp,  64
+	// §6.3 put-admission scratch: the recomputed content_hash of the SUBMITTED entity.
+	.lcomm ch_admit, 64
 	.lcomm b_nonce,  32
 	.lcomm b_ts,     16
 	.lcomm b_hdr,    8
@@ -2753,6 +2756,131 @@ cas_check:
 	ldp  x29, x30, [sp], #64
 	ret
 // =====================================================================
+// =====================================================================
+// admit_put(x0 = submitted entity value) -> x0: 0 admitted · 1 invalid_request
+// · 2 unsupported_content_hash_format · 3 hash_mismatch
+//
+// §6.3's put admission ladder (normative, 0.8.2.11). `put` is a RECEIPT path: the
+// submitter authors the entity, the peer validates what it received (§1.8 item 1)
+// and MUST NOT author a submitted entity's content_hash on the submitter's behalf.
+// Two ORDERED steps, and the order is a data dependency rather than a choice —
+// step 2's inputs are exactly what step 1 establishes, so a submission that is both
+// malformed and mis-hashed is step 1's and answers invalid_request.
+//   1. STRUCTURE — a map with a non-empty text `type`, a PRESENT `data` (any CBOR
+//      value; null is legal), and a `content_hash` that is a well-formed system/hash
+//      whose total byte length matches its format code (§1.2). Any failure ->
+//      invalid_request; a well-formed hash naming a format code this peer cannot
+//      VERIFY is the separate §1.2 row -> unsupported_content_hash_format. The
+//      ec_content_hash FFI is the SHA-256 floor, so 0x00 is the whole verifiable set.
+//   2. HASH — carried vs content_hash({type, data}) -> hash_mismatch.
+// Structural admission is not semantic validation: `data` is never checked against
+// the type named by `type`.
+// =====================================================================
+	.type admit_put, %function
+admit_put:
+	stp  x29, x30, [sp, #-80]!
+	mov  x29, sp
+	stp  x19, x20, [sp, #16]
+	stp  x21, x22, [sp, #32]
+	stp  x23, x24, [sp, #48]
+	stp  x25, x26, [sp, #64]
+	mov  x19, x0                     // entity value ptr
+	// step 1a — must be a map.
+	mov  x0, x19
+	bl   read_head                   // x0=after, x1=major, x2=arg
+	cmp  x1, #5
+	b.ne .Lap_invreq
+	// step 1b — non-empty text `type`.
+	mov  x0, x19
+	adr_l x1, k_type
+	mov  x2, #4
+	bl   map_find
+	cbz  x0, .Lap_invreq
+	bl   read_head
+	cmp  x1, #3
+	b.ne .Lap_invreq
+	cbz  x2, .Lap_invreq
+	mov  x20, x0                     // type bytes ptr
+	mov  x21, x2                     // type len
+	// step 1c — `data` PRESENT. Presence, not truthiness: a CBOR null is a legal
+	// payload and map_find reports it found, which is the test §6.3 wants.
+	mov  x0, x19
+	adr_l x1, k_data
+	mov  x2, #4
+	bl   map_find
+	cbz  x0, .Lap_invreq
+	mov  x22, x0                     // data value ptr
+	bl   skip_value
+	sub  x23, x0, x22                // data len
+	// step 1d — `content_hash` present and a byte string.
+	mov  x0, x19
+	adr_l x1, k_chash
+	mov  x2, #12
+	bl   map_find
+	cbz  x0, .Lap_invreq
+	bl   read_head
+	cmp  x1, #2
+	b.ne .Lap_invreq
+	cbz  x2, .Lap_invreq
+	mov  x24, x0                     // carried bytes ptr
+	mov  x25, x2                     // carried len
+	// leading multicodec LEB128 format-code varint (§7.3).
+	mov  x26, xzr                    // fmt
+	mov  x9, xzr                     // shift
+	mov  x10, xzr                    // i
+	mov  x11, xzr                    // done
+.Lap_vd:
+	cmp  x10, x25
+	b.hs .Lap_vdend
+	ldrb w12, [x24, x10]
+	and  x13, x12, #0x7f
+	lsl  x13, x13, x9
+	orr  x26, x26, x13
+	add  x10, x10, #1
+	tst  x12, #0x80
+	b.eq .Lap_vdone
+	add  x9, x9, #7
+	cmp  x9, #64
+	b.hs .Lap_vdend
+	b    .Lap_vd
+.Lap_vdone:
+	mov  x11, #1
+.Lap_vdend:
+	cbz  x11, .Lap_invreq
+	cbnz x26, .Lap_unsupfmt          // §1.2 / §4.7 row 5 — shape fine, algorithm absent
+	add  x9, x10, #32
+	cmp  x25, x9
+	b.ne .Lap_invreq
+	// step 2 — carried vs content_hash({type, data}).
+	mov  x0, x20
+	mov  x1, x21
+	mov  x2, x22
+	mov  x3, x23
+	adr_l x4, ch_admit
+	bl   ec_content_hash
+	adr_l x0, ch_admit
+	mov  x1, x24
+	mov  x2, #33
+	bl   memeq
+	cbz  x0, .Lap_hashmm
+	mov  x0, xzr
+	b    .Lap_done
+.Lap_invreq:
+	mov  x0, #1
+	b    .Lap_done
+.Lap_unsupfmt:
+	mov  x0, #2
+	b    .Lap_done
+.Lap_hashmm:
+	mov  x0, #3
+.Lap_done:
+	ldp  x25, x26, [sp, #64]
+	ldp  x23, x24, [sp, #48]
+	ldp  x21, x22, [sp, #32]
+	ldp  x19, x20, [sp, #16]
+	ldp  x29, x30, [sp], #80
+	ret
+
 // serve_tree_put(x0 = exec data map) — §5.2-gated write of params.data.entity at
 // resource.targets[0] into the per-fork store; 200 system/tree/put-result{content_hash}.
 // x20=exec, x21=path ptr, x22=path len, x23=params.data map, x19=entity blob start.
@@ -2825,6 +2953,17 @@ serve_tree_put:
 	mov  x2, x22
 	bl   cas_check
 	cbnz x0, .Lstp_409
+	// §6.3 put ADMISSION (0.8.2.11), AFTER the §3.9 CAS gate so a stale precondition
+	// stays a 409 whatever was submitted. See admit_put below.
+	mov  x0, x19
+	bl   admit_put
+	cbz  x0, .Lstp_admitted
+	cmp  x0, #2
+	b.eq .Lstp_unsupfmt
+	cmp  x0, #3
+	b.eq .Lstp_hashmm
+	b    .Lstp_invreq
+.Lstp_admitted:
 	// blob len = skip_value(entity) - entity
 	mov  x0, x19
 	bl   skip_value                  // x0 = entity end
@@ -2846,6 +2985,21 @@ serve_tree_put:
 	b    .Lstp_done
 .Lstp_409:
 	mov  x0, #409
+	adr_l x1, ec_hash_mismatch
+	bl   send_error
+	b    .Lstp_done
+.Lstp_invreq:
+	mov  x0, #400
+	adr_l x1, ec_invalid_request
+	bl   send_error
+	b    .Lstp_done
+.Lstp_unsupfmt:
+	mov  x0, #400
+	adr_l x1, ec_unsupported_chf
+	bl   send_error
+	b    .Lstp_done
+.Lstp_hashmm:
+	mov  x0, #400
 	adr_l x1, ec_hash_mismatch
 	bl   send_error
 	b    .Lstp_done

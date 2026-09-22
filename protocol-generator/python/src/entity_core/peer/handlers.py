@@ -19,6 +19,8 @@ from .capability import (
     canonicalize,
     is_peer_id,
 )
+from .._varint import decode_varint
+from ..content_hash import content_hash
 from .identity import verify_signature
 from .model import Entity
 from .wire import (
@@ -272,6 +274,76 @@ def _find_sig(target: bytes, included: dict) -> Entity | None:
     return find_signature(target, included)
 
 
+# ── §6.3 put admission (0.8.2.11) ─────────────────────────────────────────────
+def _hash_digest_len(format_code: int) -> int | None:
+    """Digest byte length for a ``content_hash_format`` code (§1.2 seed table),
+    or ``None`` when this peer cannot VERIFY that code.
+
+    The total wire length is this plus the varint prefix, which is not a
+    constant of the code (§7.3): codes >= 0x80 occupy more than one byte. This
+    peer computes SHA-256 only.
+    """
+    return {0x00: 32}.get(format_code)
+
+
+def _admit_put(v: Any) -> Entity | Outcome:
+    """§6.3's ``put`` admission ladder (normative, 0.8.2.11).
+
+    ``put`` is a RECEIPT path: the submitter authors the entity, the peer
+    validates what it received (§1.8 item 1) and MUST NOT author a submitted
+    entity's ``content_hash`` on the submitter's behalf. Two ordered steps:
+
+    1. STRUCTURE — a map carrying a non-empty text ``type``, a PRESENT ``data``
+       (any CBOR value; null is a legal payload), and a ``content_hash`` that is
+       a well-formed ``system/hash`` whose total byte length matches its format
+       code (§1.2). Any failure -> 400 ``invalid_request``. A well-formed hash
+       naming a format code this peer cannot verify is the separate §1.2
+       ingest-dispatch case -> 400 ``unsupported_content_hash_format``.
+    2. HASH — carried ``content_hash`` vs ``content_hash({type, data})``.
+       Disagreement -> 400 ``hash_mismatch``.
+
+    Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's
+    inputs are exactly what step 1 establishes, so a submission that is both
+    malformed and mis-hashed is step 1's and answers ``invalid_request``.
+
+    Structural admission is not semantic validation: ``data`` is never checked
+    against the type named by ``type``.
+
+    Returns the admitted ``Entity``, or the ``Outcome`` it was refused with.
+    """
+    def refuse(code: str, message: str) -> Outcome:
+        return Outcome.err(400, code, message)
+
+    if not isinstance(v, dict):
+        return refuse("invalid_request", "put: entity is not a map")
+    typ = v.get("type")
+    if not isinstance(typ, str) or typ == "":
+        return refuse("invalid_request", "put: entity.type absent, empty or not a text string")
+    if "data" not in v:
+        return refuse("invalid_request", "put: entity.data absent")
+    data = v["data"]
+    carried = v.get("content_hash")
+    if not isinstance(carried, (bytes, bytearray)) or len(carried) == 0:
+        return refuse("invalid_request", "put: entity.content_hash absent or not a byte string")
+    carried = bytes(carried)
+    try:
+        format_code, n = decode_varint(carried)
+    except Exception:
+        return refuse("invalid_request", "put: entity.content_hash is not a well-formed system/hash")
+    digest_len = _hash_digest_len(format_code)
+    if digest_len is None:
+        # §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it.
+        # NOT invalid_request: the shape is fine, the algorithm is what we lack.
+        return refuse("unsupported_content_hash_format", "put: unsupported content_hash_format")
+    if len(carried) != n + digest_len:
+        return refuse("invalid_request", "put: content_hash length does not match its format code")
+    if content_hash(typ, data, format_code) != carried:
+        return refuse("hash_mismatch", "put: content_hash does not match content_hash({type, data})")
+    # The carried hash IS the entity's address; recomputing it into the store
+    # would be the authoring arm §6.3 forbids.
+    return Entity(type=typ, data=data, hash=carried)
+
+
 # ── tree handler (§6.3) ───────────────────────────────────────────────────────
 class TreeHandler:
     def __init__(self, p) -> None:
@@ -343,7 +415,7 @@ class TreeHandler:
             return Outcome.err(400, "invalid_path", target)
         path = canonicalize(p.local_peer, target)
         params = _params_entity(exec_e)
-        entity = params.sub_entity("entity") if params is not None else None
+        raw_entity = params.field("entity") if params is not None else None
         expected = params.bytes_("expected_hash") if params is not None else None
         current = p.store.hash_at(path)
         cas_ok = True
@@ -354,8 +426,12 @@ class TreeHandler:
                 cas_ok = current != "" and current == expected.hex()
         if not cas_ok:
             return Outcome.err(409, "hash_mismatch", path)
-        if entity is None:
+        if raw_entity is None:
             return Outcome.err(400, "unexpected_params", "put: missing entity")
+        admitted = _admit_put(raw_entity)
+        if isinstance(admitted, Outcome):
+            return admitted
+        entity = admitted
         p.store.bind(path, entity)
         return Outcome.ok(Entity.make("system/hash", {"hash": bytes(entity.hash)}))
 

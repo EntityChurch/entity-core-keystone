@@ -97,6 +97,7 @@ hexchars:     .ascii "0123456789abcdef"
 ec_unexpected_params: .asciz "unexpected_params"
 ec_hash_mismatch:     .asciz "hash_mismatch"
 ec_invalid_path:      .asciz "invalid_path"
+ec_unsupported_chf:   .asciz "unsupported_content_hash_format"
 
 	.bss
 	.lcomm b_req,    16777216
@@ -105,6 +106,8 @@ ec_invalid_path:      .asciz "invalid_path"
 	.lcomm b_env,    16384
 	.lcomm ch_hello, 64
 	.lcomm ch_resp,  64
+	# §6.3 put-admission scratch: the recomputed content_hash of the SUBMITTED entity.
+	.lcomm ch_admit, 64
 	.lcomm b_nonce,  32
 	.lcomm b_ts,     16
 	.lcomm b_hdr,    8
@@ -2763,6 +2766,148 @@ cas_check:
 	ret
 
 # =====================================================================
+# admit_put(rdi = submitted entity value) -> rax: 0 admitted · 1 invalid_request
+# · 2 unsupported_content_hash_format · 3 hash_mismatch
+#
+# §6.3's put admission ladder (normative, 0.8.2.11). `put` is a RECEIPT path: the
+# submitter authors the entity, the peer validates what it received (§1.8 item 1)
+# and MUST NOT author a submitted entity's content_hash on the submitter's behalf.
+# Two ORDERED steps, and the order is a data dependency rather than a choice —
+# step 2's inputs are exactly what step 1 establishes, so a submission that is both
+# malformed and mis-hashed is step 1's and answers invalid_request.
+#   1. STRUCTURE — a map with a non-empty text `type`, a PRESENT `data` (any CBOR
+#      value; null is legal), and a `content_hash` that is a well-formed system/hash
+#      whose total byte length matches its format code (§1.2). Any failure ->
+#      invalid_request; a well-formed hash naming a format code this peer cannot
+#      VERIFY is the separate §1.2 row -> unsupported_content_hash_format. The
+#      ec_content_hash FFI is the SHA-256 floor, so 0x00 is the whole verifiable set.
+#   2. HASH — carried vs content_hash({type, data}) -> hash_mismatch.
+# Structural admission is not semantic validation: `data` is never checked against
+# the type named by `type`.
+# =====================================================================
+	.type admit_put, @function
+admit_put:
+	push %rbx
+	push %r12
+	push %r13
+	push %r14
+	push %r15                         # 5 (odd) -> align
+	mov  %rdi, %rbx                   # entity value ptr
+	# step 1a — must be a map.
+	mov  %rbx, %rdi
+	call read_head
+	cmp  $5, %rcx
+	jne  .Lap_invreq
+	# step 1b — non-empty text `type`.
+	mov  %rbx, %rdi
+	lea  k_type(%rip), %rsi
+	mov  $4, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lap_invreq
+	mov  %rax, %rdi
+	call read_head                    # rax=after head, rcx=major, rdx=arg
+	cmp  $3, %rcx
+	jne  .Lap_invreq
+	test %rdx, %rdx
+	jz   .Lap_invreq
+	mov  %rax, %r12                   # type bytes ptr
+	mov  %rdx, %r13                   # type len
+	# step 1c — `data` PRESENT. Presence, not truthiness: a CBOR null is a legal
+	# payload and map_find reports it found, which is the test §6.3 wants.
+	mov  %rbx, %rdi
+	lea  k_data(%rip), %rsi
+	mov  $4, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lap_invreq
+	mov  %rax, %r14                   # data value ptr
+	mov  %rax, %rdi
+	call skip_value
+	sub  %r14, %rax
+	mov  %rax, %r15                   # data len
+	# step 1d — `content_hash` present and a byte string.
+	mov  %rbx, %rdi
+	lea  k_chash(%rip), %rsi
+	mov  $12, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lap_invreq
+	mov  %rax, %rdi
+	call read_head
+	cmp  $2, %rcx
+	jne  .Lap_invreq
+	test %rdx, %rdx
+	jz   .Lap_invreq
+	mov  %rax, %rbx                   # carried bytes ptr (entity ptr no longer needed)
+	mov  %rdx, %rcx                   # carried len
+	# leading multicodec LEB128 format-code varint (§7.3).
+	xor  %r8, %r8                     # fmt
+	xor  %r9, %r9                     # shift
+	xor  %r10, %r10                   # i
+	xor  %r11, %r11                   # done
+.Lap_vd:
+	cmp  %rcx, %r10
+	jae  .Lap_vdend
+	movzbq (%rbx,%r10,1), %rax
+	mov  %rax, %rdx
+	and  $0x7f, %rdx
+	mov  %r9, %rsi                    # shl needs cl; stash shift
+	push %rcx
+	mov  %rsi, %rcx
+	shl  %cl, %rdx
+	pop  %rcx
+	or   %rdx, %r8
+	inc  %r10
+	test $0x80, %al
+	jz   .Lap_vdone
+	add  $7, %r9
+	cmp  $64, %r9
+	jae  .Lap_vdend
+	jmp  .Lap_vd
+.Lap_vdone:
+	mov  $1, %r11
+.Lap_vdend:
+	test %r11, %r11
+	jz   .Lap_invreq
+	test %r8, %r8
+	jnz  .Lap_unsupfmt                # §1.2 / §4.7 row 5 — shape fine, algorithm absent
+	mov  %r10, %rax
+	add  $32, %rax
+	cmp  %rax, %rcx
+	jne  .Lap_invreq
+	# step 2 — carried vs content_hash({type, data}).
+	mov  %r12, %rdi
+	mov  %r13, %rsi
+	mov  %r14, %rdx
+	mov  %r15, %rcx
+	lea  ch_admit(%rip), %r8
+	call ec_content_hash
+	lea  ch_admit(%rip), %rdi
+	mov  %rbx, %rsi
+	mov  $33, %rcx
+	call memeq
+	test %rax, %rax
+	jz   .Lap_hashmm
+	xor  %rax, %rax
+	jmp  .Lap_done
+.Lap_invreq:
+	mov  $1, %rax
+	jmp  .Lap_done
+.Lap_unsupfmt:
+	mov  $2, %rax
+	jmp  .Lap_done
+.Lap_hashmm:
+	mov  $3, %rax
+.Lap_done:
+	pop  %r15
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	ret
+
+# =====================================================================
 # serve_tree_put(rdi = exec data map) — §5.2-gated write of params.data.entity at
 # resource.targets[0] into the per-fork store; 200 system/tree/put-result{content_hash}.
 # =====================================================================
@@ -2851,6 +2996,18 @@ serve_tree_put:
 	call cas_check
 	test %rax, %rax
 	jnz  .Lstp_409
+	# §6.3 put ADMISSION (0.8.2.11), AFTER the §3.9 CAS gate so a stale precondition
+	# stays a 409 whatever was submitted. See admit_put below.
+	mov  %rbx, %rdi
+	call admit_put
+	test %rax, %rax
+	jz   .Lstp_admitted
+	cmp  $2, %rax
+	je   .Lstp_unsupfmt
+	cmp  $3, %rax
+	je   .Lstp_hashmm
+	jmp  .Lstp_invreq
+.Lstp_admitted:
 	# blob len = skip_value(entity) - entity
 	mov  %rbx, %rdi
 	call skip_value                  # rax = entity end
@@ -2874,6 +3031,21 @@ serve_tree_put:
 	jmp  .Lstp_done
 .Lstp_409:
 	mov  $409, %rdi
+	lea  ec_hash_mismatch(%rip), %rsi
+	call send_error
+	jmp  .Lstp_done
+.Lstp_invreq:
+	mov  $400, %rdi
+	lea  ec_invalid_request(%rip), %rsi
+	call send_error
+	jmp  .Lstp_done
+.Lstp_unsupfmt:
+	mov  $400, %rdi
+	lea  ec_unsupported_chf(%rip), %rsi
+	call send_error
+	jmp  .Lstp_done
+.Lstp_hashmm:
+	mov  $400, %rdi
 	lea  ec_hash_mismatch(%rip), %rsi
 	call send_error
 	jmp  .Lstp_done

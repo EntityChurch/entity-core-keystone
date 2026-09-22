@@ -147,12 +147,131 @@ internal sealed class TreeHandler : IHandler
             return HandlerResult.Ok(EmptyAck());
         }
 
-        Entity entity = Entity.FromDecoded(entityField);
-        if (!ctx.Peer.Tree.CompareAndPut(path, entity, expectedHash))
+        (Entity? entity, HandlerResult? refusal) = AdmitPut(entityField);
+        if (refusal is not null)
+        {
+            return refusal;
+        }
+        if (!ctx.Peer.Tree.CompareAndPut(path, entity!, expectedHash))
         {
             return Errors.Error(Status.Conflict, "hash_mismatch", "conditional write failed");
         }
         return HandlerResult.Ok(EmptyAck());
+    }
+
+    /// <summary>
+    /// Digest byte length for a <c>content_hash_format</c> code per the §1.2 seed
+    /// table, or -1 when this peer cannot VERIFY that code. The total wire length is
+    /// this plus the LEB128 prefix, which is not a constant of the code (§7.3):
+    /// codes &gt;= 0x80 occupy more than one byte.
+    /// </summary>
+    private static int HashDigestLen(ulong formatCode) => formatCode switch
+    {
+        HashFormats.Sha256 => 32,
+        HashFormats.Sha384 => 48,
+        _ => -1,
+    };
+
+    /// <summary>
+    /// Presence, not truthiness: <c>Ecf.Field</c> collapses a CBOR null into
+    /// <c>null</c>, and §6.3 makes a null <c>data</c> a legal payload.
+    /// </summary>
+    private static bool HasKey(EcfValue value, string key)
+    {
+        if (value is not EcfValue.Map map)
+        {
+            return false;
+        }
+        foreach (KeyValuePair<EcfValue, EcfValue> pair in map.Pairs)
+        {
+            if (pair.Key is EcfValue.Text t && t.Value == key)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// §6.3's <c>put</c> admission ladder (normative, 0.8.2.11).
+    ///
+    /// <para><c>put</c> is a RECEIPT path: the submitter authors the entity, the peer
+    /// validates what it received (§1.8 item 1) and MUST NOT author a submitted
+    /// entity's <c>content_hash</c> on the submitter's behalf. Two ordered steps:</para>
+    ///
+    /// <list type="number">
+    /// <item>STRUCTURE — a map carrying a non-empty text <c>type</c>, a PRESENT
+    /// <c>data</c> (any CBOR value; null is a legal payload), and a
+    /// <c>content_hash</c> that is a well-formed <c>system/hash</c> whose total byte
+    /// length matches its format code (§1.2). Any failure -&gt; 400
+    /// <c>invalid_request</c>. A well-formed hash naming a format code this peer
+    /// cannot verify is the separate §1.2 ingest-dispatch case -&gt; 400
+    /// <c>unsupported_content_hash_format</c>.</item>
+    /// <item>HASH — carried <c>content_hash</c> vs <c>content_hash({type, data})</c>.
+    /// Disagreement -&gt; 400 <c>hash_mismatch</c>.</item>
+    /// </list>
+    ///
+    /// <para>Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step
+    /// 2's inputs are exactly what step 1 establishes, so a submission that is both
+    /// malformed and mis-hashed is step 1's and answers <c>invalid_request</c>.</para>
+    ///
+    /// <para>Structural admission is not semantic validation: <c>data</c> is never
+    /// checked against the type named by <c>type</c>.</para>
+    /// </summary>
+    private static (Entity?, HandlerResult?) AdmitPut(EcfValue v)
+    {
+        static (Entity?, HandlerResult?) Refuse(string code, string message) =>
+            (null, Errors.Error(Status.BadRequest, code, message));
+
+        if (v is not EcfValue.Map)
+        {
+            return Refuse("invalid_request", "put: entity is not a map");
+        }
+        if (Ecf.Field(v, "type") is not EcfValue.Text typeV || typeV.Value.Length == 0)
+        {
+            return Refuse("invalid_request", "put: entity.type absent, empty or not a text string");
+        }
+        if (!HasKey(v, "data"))
+        {
+            return Refuse("invalid_request", "put: entity.data absent");
+        }
+        if (Ecf.Field(v, "content_hash") is not EcfValue.Bytes chV || chV.Value.Length == 0)
+        {
+            return Refuse("invalid_request", "put: entity.content_hash absent or not a byte string");
+        }
+        byte[] carried = chV.Value.ToArray();
+        int next = 0;
+        ulong formatCode;
+        try
+        {
+            formatCode = Leb128.Decode(carried, ref next);
+        }
+        catch (EntityCoreException)
+        {
+            return Refuse("invalid_request", "put: entity.content_hash is not a well-formed system/hash");
+        }
+        int digestLen = HashDigestLen(formatCode);
+        if (digestLen < 0)
+        {
+            // §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+            // invalid_request: the shape is fine, the algorithm is what we lack.
+            return Refuse("unsupported_content_hash_format", "put: unsupported content_hash_format");
+        }
+        if (carried.Length != next + digestLen)
+        {
+            return Refuse("invalid_request", "put: content_hash length does not match its format code");
+        }
+        try
+        {
+            // FromDecoded VERIFIES the carried hash and keeps it — it does not author
+            // one, which is what §6.3 forbids here. A mismatch throws, and that throw
+            // is step 2's row rather than a codec fault.
+            return (Entity.FromDecoded(v), null);
+        }
+        catch (EntityCoreException)
+        {
+            return Refuse("hash_mismatch", "put: content_hash does not match content_hash({type, data})");
+        }
     }
 
     private static bool AuthorizePath(HandlerContext ctx, string operation, string path) =>

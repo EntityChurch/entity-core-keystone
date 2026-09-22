@@ -1,4 +1,9 @@
-import { type Socket } from "node:net";
+// `import type` — not `import { type Socket }`. The inline-type form leaves the
+// STATEMENT a value import, so tsc emits a side-effect `import {} from "node:net"`
+// into dist/, and esbuild's BROWSER bundle then cannot resolve a Node builtin. That
+// is the whole of turbowarp's "bundle build failed": the one peer nobody could
+// measure was blocked by an emitted no-op import of a type this file only names.
+import type { Socket } from "node:net";
 import { concatBytes } from "../codec/bytes.js";
 import { WireProtocolError } from "../errors.js";
 

@@ -654,23 +654,109 @@ contains
     oc = out_ok0(e)
   end function tree_get
 
+  ! §6.3's `put` admission ladder (normative, 0.8.2.11).
+  !
+  ! `put` is a RECEIPT path: the submitter authors the entity, the peer validates what
+  ! it received (§1.8 item 1) and MUST NOT author a submitted entity's content_hash on
+  ! the submitter's behalf. Two ordered steps:
+  !
+  !   1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data` (any CBOR
+  !      value; null is a legal payload), and a `content_hash` that is a well-formed
+  !      system/hash whose total byte length matches its format code (§1.2). Any failure
+  !      -> 400 invalid_request. A well-formed hash naming a format code this peer cannot
+  !      VERIFY is the separate §1.2 ingest-dispatch case -> 400
+  !      unsupported_content_hash_format. This peer's entity carries a fixed
+  !      HASH_LEN-byte hash and hashes through the SHA-256 FFI floor, so 0x00 is the
+  !      whole verifiable set here.
+  !   2. HASH — carried content_hash vs content_hash({type, data}) -> 400 hash_mismatch.
+  !
+  ! Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's inputs
+  ! are exactly what step 1 establishes, so a submission that is both malformed and
+  ! mis-hashed is step 1's and answers invalid_request.
+  !
+  ! Structural admission is not semantic validation: `data` is never checked against the
+  ! type named by `type`.
+  subroutine admit_put(v, e, admitted, oc)
+    type(ecf_value_t), intent(in)  :: v
+    type(entity_t),    intent(out) :: e
+    logical,           intent(out) :: admitted
+    type(outcome_t),   intent(out) :: oc
+    character(len=:), allocatable :: etype
+    type(ecf_value_t) :: data
+    integer(int8), allocatable :: carried(:)
+    integer :: i, shift, consumed
+    integer(int64) :: code
+    logical :: done
+    type(entity_t) :: computed
+    admitted = .false.
+    if (v%vkind /= EV_MAP) then
+      oc = out_err(400, 'invalid_request', 'put: entity is not a map'); return
+    end if
+    etype = m_text(v, 'type')
+    if (len(etype) == 0) then
+      oc = out_err(400, 'invalid_request', 'put: entity.type absent, empty or not a text string'); return
+    end if
+    ! Presence, not truthiness: a CBOR null is a legal `data` payload, so m_has is the
+    ! presence predicate rather than a kind test.
+    if (.not. m_has(v, 'data')) then
+      oc = out_err(400, 'invalid_request', 'put: entity.data absent'); return
+    end if
+    data = m_get(v, 'data')
+    carried = m_bytes(v, 'content_hash')
+    if (size(carried) == 0) then
+      oc = out_err(400, 'invalid_request', 'put: entity.content_hash absent or not a byte string'); return
+    end if
+    ! Leading multicodec LEB128 format-code varint (§7.3).
+    code = 0_int64; shift = 0; consumed = 0; done = .false.
+    do i = 1, size(carried)
+      code = code + int(iand(int(carried(i)), 127), int64) * (2_int64 ** shift)
+      consumed = consumed + 1
+      if (iand(int(carried(i)), 128) == 0) then; done = .true.; exit; end if
+      shift = shift + 7
+      if (shift >= 63) exit
+    end do
+    if (.not. done) then
+      oc = out_err(400, 'invalid_request', 'put: entity.content_hash is not a well-formed system/hash'); return
+    end if
+    ! §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+    ! invalid_request: the shape is fine, the algorithm is what we lack.
+    if (code /= 0_int64) then
+      oc = out_err(400, 'unsupported_content_hash_format', 'put: unsupported content_hash_format'); return
+    end if
+    if (size(carried) /= consumed + 32) then
+      oc = out_err(400, 'invalid_request', 'put: content_hash length does not match its format code'); return
+    end if
+    computed = ent_make(etype, data)
+    if (.not. all(computed%hash == carried)) then
+      oc = out_err(400, 'hash_mismatch', 'put: content_hash does not match content_hash({type, data})'); return
+    end if
+    ! The carried hash IS the entity's address. At the only code this peer verifies
+    ! (0x00) the computed value and the carried bytes are the same 33 bytes, so binding
+    ! the verified entity binds the submitted address rather than an authored one.
+    e = computed
+    admitted = .true.
+  end subroutine admit_put
+
   function tree_put(env) result(oc)
     type(envelope_t), intent(in) :: env
     type(outcome_t) :: oc
     type(entity_t)  :: exec, params, entity
+    type(ecf_value_t) :: raw_entity
     character(len=:), allocatable :: target, path, current
     integer(int8), allocatable :: expected(:)
-    logical :: invalid, cas_ok
+    logical :: invalid, cas_ok, has_raw, admitted
     exec = env%root
     target = exec_resource_target(exec)
     if (len(target) == 0) then; oc = out_err(400, 'ambiguous_resource', 'tree: missing resource target'); return; end if
     if (.not. path_flex_ok(target)) then; oc = out_err(400, 'invalid_path', target); return; end if
     call cap_canonicalize(g_local, target, path, invalid)
     params = ent_entity_field(exec, 'params')
-    entity%present = .false.
+    raw_entity%vkind = EV_ABSENT
+    has_raw = .false.
     allocate(expected(0))
     if (params%present) then
-      entity = ent_entity_field(params, 'entity')
+      has_raw = m_has(ent_data_map(params), 'entity')
+      if (has_raw) raw_entity = ent_field(params, 'entity')
       expected = ent_bytes(params, 'expected_hash')
     end if
     current = store_hash_at(g_store, path)
@@ -678,7 +764,9 @@ contains
     else if (hash_is_zero(expected)) then; cas_ok = (len(current) == 0)
     else; cas_ok = (len(current) > 0 .and. current == hexlc(expected)); end if
     if (.not. cas_ok) then; oc = out_err(409, 'hash_mismatch', path); return; end if
-    if (.not. entity%present) then; oc = out_err(400, 'unexpected_params', 'put: missing entity'); return; end if
+    if (.not. has_raw) then; oc = out_err(400, 'unexpected_params', 'put: missing entity'); return; end if
+    call admit_put(raw_entity, entity, admitted, oc)
+    if (.not. admitted) return
     call store_bind(g_store, path, entity)
     oc = out_ok0(ent_make('system/hash', v_map_put(v_map_empty(), 'hash', v_bytes(ent_hash(entity)))))
   end function tree_put

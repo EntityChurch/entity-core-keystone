@@ -3026,16 +3026,68 @@ static void ecodec_tree_put_serve(t_ecodec *x)
         emit_response_frame(x, 200, "primitive/any", &empty_map, 1);
         return;
     }
+    /* §6.3 put ADMISSION (normative, 0.8.2.11). `put` is a RECEIPT path: the
+     * submitter authors the entity, the peer validates what it received (§1.8
+     * item 1) and MUST NOT author a submitted entity's content_hash on the
+     * submitter's behalf. Two ORDERED steps, and the order is a data dependency
+     * rather than a choice -- step 2's inputs are exactly what step 1 establishes,
+     * so a submission that is both malformed and mis-hashed is step 1's and
+     * answers invalid_request.
+     *   1. STRUCTURE -- a map with a non-empty text `type`, a PRESENT `data` (any
+     *      CBOR value; null is legal), and a `content_hash` that is a well-formed
+     *      system/hash whose total byte length matches its format code (§1.2).
+     *      Any failure -> invalid_request; a well-formed hash naming a format code
+     *      this peer cannot VERIFY is the separate §1.2 row ->
+     *      unsupported_content_hash_format.
+     *   2. HASH -- carried vs content_hash({type, data}) -> hash_mismatch.
+     * Structural admission is not semantic validation: `data` is never checked
+     * against the type named by `type`. */
+    {   cbor_rd em = { buf, len, entf.pos }; int emaj; uint64_t earg;
+        if (cbor_head(&em, &emaj, &earg) != 0 || emaj != 5) {
+            emit_error_response(x, 400, "invalid_request"); return;
+        } }
     cbor_rd etypef, edataf; char etype[128];
-    if (!cbor_map_find(buf, len, entf.pos, "type", &etypef)
-        || !cbor_map_find(buf, len, entf.pos, "data", &edataf)) {
-        emit_error_response(x, 400, "unexpected_params"); return;
+    if (!cbor_map_find(buf, len, entf.pos, "type", &etypef)) {
+        emit_error_response(x, 400, "invalid_request"); return;
     }
     { cbor_rd tv = { buf, len, etypef.pos };
-      if (cbor_get_text(&tv, etype, sizeof etype) != 0) { emit_error_response(x, 400, "unexpected_params"); return; } }
+      if (cbor_get_text(&tv, etype, sizeof etype) != 0 || etype[0] == 0) {
+          emit_error_response(x, 400, "invalid_request"); return; } }
+    /* Presence, not truthiness: a CBOR null is a legal `data` payload and
+     * cbor_map_find reports it found, which is the test §6.3 wants. */
+    if (!cbor_map_find(buf, len, entf.pos, "data", &edataf)) {
+        emit_error_response(x, 400, "invalid_request"); return;
+    }
     const unsigned char *edp; size_t edl;
     if (cbor_value_slice(buf, len, edataf.pos, &edp, &edl) != 0) {
-        emit_error_response(x, 400, "unexpected_params"); return;
+        emit_error_response(x, 400, "invalid_request"); return;
+    }
+    {   cbor_rd chf; unsigned char carried[33]; size_t chl = 0;
+        if (!cbor_map_find(buf, len, entf.pos, "content_hash", &chf)) {
+            emit_error_response(x, 400, "invalid_request"); return;
+        }
+        { cbor_rd cv = { buf, len, chf.pos };
+          if (cbor_get_bytes(&cv, carried, sizeof carried, &chl) != 0 || chl == 0) {
+              emit_error_response(x, 400, "invalid_request"); return; } }
+        /* leading multicodec LEB128 format-code varint (§7.3) */
+        uint64_t fmt = 0; unsigned shift = 0; size_t i = 0; int done = 0;
+        while (i < chl) { unsigned char b = carried[i++];
+            fmt |= (uint64_t)(b & 0x7f) << shift;
+            if (!(b & 0x80)) { done = 1; break; }
+            shift += 7; if (shift >= 64) break; }
+        if (!done) { emit_error_response(x, 400, "invalid_request"); return; }
+        /* §1.2 / §4.7 row 5 -- well-formed, but this peer cannot interpret it.
+         * NOT invalid_request: the shape is fine, the algorithm is what we lack.
+         * ec_entity_hash computes the SHA-256 floor only. */
+        if (fmt != 0) { emit_error_response(x, 400, "unsupported_content_hash_format"); return; }
+        if (chl != i + 32) { emit_error_response(x, 400, "invalid_request"); return; }
+        unsigned char computed[33];
+        if (ec_entity_hash(etype, edp, edl, computed)) {
+            emit_error_response(x, 500, "internal_error"); return;
+        }
+        if (memcmp(computed, carried, 33) != 0) {
+            emit_error_response(x, 400, "hash_mismatch"); return;
+        }
     }
     if (dstore_bind(path, etype, edp, edl)) { emit_error_response(x, 500, "internal_error"); return; }
 

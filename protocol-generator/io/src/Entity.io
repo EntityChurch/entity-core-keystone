@@ -21,6 +21,21 @@ Entity := Object clone do(
         e
     )
 
+    // The §6.3 RECEIPT constructor: bind an entity to a content_hash the CALLER
+    // has already verified against contentHash({type, data}).
+    //
+    // `with` AUTHORS a hash. On the system/tree:put path that is exactly what
+    // §6.3 (0.8.2.11) forbids — the submitter authors, the peer verifies. This
+    // constructor takes the carried bytes verbatim and is reachable only from
+    // the admission ladder, which has just proved they match.
+    admitted := method(t, d, verifiedHash,
+        e := self clone
+        e setEntityType(t)
+        e setData(d)
+        e setHash(verifiedHash)
+        e
+    )
+
     // parse a wire entity EcMap {type, data, content_hash}; recompute the hash
     // (§1.8 fidelity). NON-RAISING (A-IO-025): structurally-broken input → nil;
     // a carried-hash mismatch → the entity with hashOk=false (the §5.2 step-1

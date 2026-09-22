@@ -102,7 +102,7 @@ check — and it has no vendored crate closure, so its build needs the network.
 
 ### 3a. The `0.8.2.11` catch-up — **re-measured 2026-09-06, and the target moved twice under it**
 
-Our snapshot is `v0.8.2.3`; the protocol is at **`0.8.2.11`** — **eight** bumps. The governing packet
+Our snapshot is now **`v0.8.2.11`** (vendored 2026-09-06; no peer regenerated against it yet). The protocol is at `0.8.2.11` — it was **eight** bumps ahead when this section was written. The governing packet
 is **`ROUTING-2026-09-06-d`**, which supersedes `-b`, which had already superseded the
 `ROUTING-2026-09-05-b` this section was first written against. Arch retracts its own sequencing
 promise in it and says why: *"this is the last arch fold queued today" was true when written at 06:23
@@ -161,15 +161,22 @@ non-conformant"*, with the **code slot** as the unit of conformance rather than 
 read to emit `404 not_found` at the handler-resolution-miss site. It has never been measured here:
 the check that drives it is absent from all 46 committed reports and arrives with the re-pin.
 
-**A fourth item arrived with `0.8.2.11` and is the only unmeasured one: the §6.3 `put` admission
-ladder** — 6 new `catTreeOps` checks, an accept-side rule, and a surface **no generated peer has ever
-been driven on**. The discriminating probe is one input (`{type, data}` with no `content_hash` → must
-answer `400 invalid_request`) and it separates three behaviours, the worst of which is *silently
-author and store*. It is specified, with its two required controls, in `docs/status/HANDOFF-2026-09-06`.
+**A fourth item arrived with `0.8.2.11`: the §6.3 `put` admission ladder** — 6 new `catTreeOps`
+checks, an accept-side rule, and a surface no generated peer had ever been driven on. **Measured
+2026-09-06 and it is no longer the unmeasured item; it is the largest one.** `tools/put-probe` over
+the wire on every peer: of the **40 measurable, ZERO implement any row**. **37 accept the two-key
+`{type, data}` form and 36 STORE it** — arch's worst-case class, near-universal. **40 of 40 accept an
+empty-string `type`.** **10 accept an entity whose `content_hash` does not match its content** (a
+§1.8 validate-before-trust failure that no code-table fix touches). No peer emits `invalid_request`,
+`hash_mismatch` or `unsupported_content_hash_format` anywhere on this surface. 5 peers unmeasurable
+(they refuse or drop a *valid* `put`; probe self-check clean on all five), `turbowarp` unbuildable.
+Detail: `protocol-generator/shared/findings/put-admission-wire-census.md`.
 
-**The emit-side half is not a regeneration** — it is the shape of the §5.6 mint-ceiling sweep that
-went across 36 languages: author once, propagate, re-census. The accept-side half is not yet sized.
-Order: **probe `put` across 46** → vendor `v0.8.2.11` → fix → sweep 46 → re-pin the oracle → re-census
+**So the accept-side half is now sized, and it is NOT a re-vendor**: it is new implementation on
+every peer, and two of its three defect classes are outside the code table. **The emit-side half is
+not a regeneration either** — it is the shape of the §5.6 mint-ceiling sweep that went across 36
+languages: author once, propagate, re-census.
+Order: ~~probe `put` across 46~~ (**done**) → ~~vendor `v0.8.2.11`~~ (**done**) → fix → sweep 46 → re-pin the oracle → re-census
 and re-measure the tracked reports. **The vendor and the re-pin are deliberately decoupled**: go is 54
 commits past our pinned oracle and landed two `fix(tree)` commits on this exact surface on 2026-09-06,
 with rust and py being routed the same day, so pinning to a moving HEAD buys a second census.

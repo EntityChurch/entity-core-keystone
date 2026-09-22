@@ -65,6 +65,21 @@ final class Entity
         return $e;
     }
 
+    /**
+     * The §6.3 RECEIPT constructor: bind an entity to a content_hash the CALLER has
+     * already verified against `content_hash({type, data})`.
+     *
+     * Every other constructor here AUTHORS a hash. On the `system/tree:put` path
+     * that is exactly what §6.3 (0.8.2.11) forbids — the submitter authors, the peer
+     * verifies. This factory therefore takes the carried bytes verbatim and is
+     * reachable only from the admission ladder, which has just proved they match.
+     * Do not call it from anywhere that has not run that comparison.
+     */
+    public static function admitted(string $type, mixed $data, string $verifiedHash): self
+    {
+        return new self($type, $data, $verifiedHash);
+    }
+
     /** The 33-byte content_hash octets. */
     public function hash(): string
     {

@@ -109,6 +109,76 @@ ecPeer compile: 'treeEntityFromParams: aParamsEntity
 	etv isAbsent ifTrue: [ ^ nil ].
 	^ [ EcEntity fromWireValue: etv ] on: EntityCoreError do: [ :e | nil ]'.
 
+"hashDigestLenFor: — digest byte length for a content_hash_format code per the §1.2 seed
+ table, or nil when this peer cannot VERIFY that code. The total wire length is this plus the
+ varint prefix, which is not a constant of the code (§7.3): codes >= 0x80 occupy more than one
+ byte."
+ecPeer compile: 'hashDigestLenFor: aCode
+	aCode = 0 ifTrue: [ ^ 32 ].
+	aCode = 1 ifTrue: [ ^ 48 ].
+	^ nil'.
+
+"admitPut: — §6.3''s put admission ladder (normative, 0.8.2.11).
+
+ put is a RECEIPT path: the submitter authors the entity, the peer validates what it received
+ (§1.8 item 1) and MUST NOT author a submitted entity''s content_hash on the submitter''s
+ behalf. Two ordered steps:
+
+   1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data` (any CBOR value;
+      null is a legal payload), and a `content_hash` that is a well-formed system/hash whose
+      total byte length matches its format code (§1.2). Any failure -> 400 invalid_request. A
+      well-formed hash naming a format code this peer cannot verify is the separate §1.2
+      ingest-dispatch case -> 400 unsupported_content_hash_format.
+   2. HASH — carried content_hash vs content_hash({type, data}) -> 400 hash_mismatch.
+
+ Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2''s inputs are
+ exactly what step 1 establishes, so a submission that is both malformed and mis-hashed is
+ step 1''s and answers invalid_request.
+
+ Structural admission is not semantic validation: `data` is never checked against the type
+ named by `type`.
+
+ Answers an EcEntity, or an EcHandlerResult when refused."
+ecPeer compile: 'admitPut: aValue
+	| typeV dataV chV carried decoded code consumed digestLen |
+	(aValue isKindOf: EcMap) ifFalse: [
+		^ EcHandlerResult error: 400 code: ''invalid_request'' message: ''put: entity is not a map'' ].
+	typeV := aValue entryAt: ''type''.
+	((typeV isKindOf: EcTextString) and: [ typeV string notEmpty ]) ifFalse: [
+		^ EcHandlerResult error: 400 code: ''invalid_request''
+			message: ''put: entity.type absent, empty or not a text string'' ].
+	"Presence, not truthiness: a CBOR null is a legal `data` payload, and entryAt: answers the
+	 null NODE for it rather than nil (A-ST-000 — the absent sentinel is the peer''s, not the
+	 language''s)."
+	dataV := aValue entryAt: ''data''.
+	dataV isNil ifTrue: [
+		^ EcHandlerResult error: 400 code: ''invalid_request'' message: ''put: entity.data absent'' ].
+	chV := aValue entryAt: ''content_hash''.
+	((chV isKindOf: EcByteString) and: [ chV bytes notEmpty ]) ifFalse: [
+		^ EcHandlerResult error: 400 code: ''invalid_request''
+			message: ''put: entity.content_hash absent or not a byte string'' ].
+	carried := chV bytes.
+	decoded := [ EcVarint decodeFrom: carried at: 1 ] on: Error do: [ :e | nil ].
+	decoded isNil ifTrue: [
+		^ EcHandlerResult error: 400 code: ''invalid_request''
+			message: ''put: entity.content_hash is not a well-formed system/hash'' ].
+	code := decoded key. consumed := decoded value.
+	digestLen := self hashDigestLenFor: code.
+	"§1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT invalid_request:
+	 the shape is fine, the algorithm is what we lack."
+	digestLen isNil ifTrue: [
+		^ EcHandlerResult error: 400 code: ''unsupported_content_hash_format''
+			message: ''put: unsupported content_hash_format'' ].
+	carried size = (consumed + digestLen) ifFalse: [
+		^ EcHandlerResult error: 400 code: ''invalid_request''
+			message: ''put: content_hash length does not match its format code'' ].
+	(EcContentHash of: typeV string data: dataV format: code) = carried ifFalse: [
+		^ EcHandlerResult error: 400 code: ''hash_mismatch''
+			message: ''put: content_hash does not match content_hash({type, data})'' ].
+	"The carried hash IS the entity''s address; recomputing it into the store would be the
+	 authoring arm §6.3 forbids."
+	^ EcEntity admittedType: typeV string data: dataV hash: carried'.
+
 "handleTreePut: — §6.3 put + §3.9 CAS. params {entity, expected_hash}. CAS: expected absent ->
  unconditional; zero-hash -> create-only (409 if bound); else must equal the current binding."
 ecPeer compile: 'handleTreePut: ctx
@@ -119,8 +189,10 @@ ecPeer compile: 'handleTreePut: ctx
 	canon := self treeCanon: target.
 	params := ctx params.
 	params isNil ifTrue: [ ^ EcHandlerResult error: 400 code: ''unexpected_params'' message: nil ].
-	ent := self treeEntityFromParams: params.
-	ent isNil ifTrue: [ ^ EcHandlerResult error: 400 code: ''unexpected_params'' message: nil ].
+	ent := params field: ''entity''.
+	ent isAbsent ifTrue: [ ^ EcHandlerResult error: 400 code: ''unexpected_params'' message: nil ].
+	ent := self admitPut: ent.
+	(ent isKindOf: EcHandlerResult) ifTrue: [ ^ ent ].
 	expected := params bytesAt: ''expected_hash''.
 	curHash := store hashAt: canon.
 	expected ifNotNil: [

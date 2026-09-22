@@ -440,6 +440,110 @@ public final class Peer {
             return Outcome.ok(e);
         }
 
+        /**
+         * Digest byte length for a {@code content_hash_format} code per the §1.2 seed
+         * table, or -1 when this peer cannot VERIFY that code. The total wire length is
+         * this plus the varint prefix, which is not a constant of the code (§7.3):
+         * codes &ge; 0x80 occupy more than one byte.
+         */
+        private int hashDigestLen(long formatCode) {
+            if (formatCode == 0x00L) {
+                return 32;
+            }
+            if (formatCode == 0x01L) {
+                return 48;
+            }
+            return -1;
+        }
+
+        /**
+         * §6.3's {@code put} admission ladder (normative, 0.8.2.11).
+         *
+         * <p>{@code put} is a RECEIPT path: the submitter authors the entity, the peer
+         * validates what it received (§1.8 item 1) and MUST NOT author a submitted
+         * entity's {@code content_hash} on the submitter's behalf. Two ordered steps:
+         *
+         * <ol>
+         * <li>STRUCTURE — a map carrying a non-empty text {@code type}, a PRESENT
+         * {@code data} (any CBOR value; null is a legal payload), and a
+         * {@code content_hash} that is a well-formed {@code system/hash} whose total
+         * byte length matches its format code (§1.2). Any failure &rarr; 400
+         * {@code invalid_request}. A well-formed hash naming a format code this peer
+         * cannot verify is the separate §1.2 ingest-dispatch case &rarr; 400
+         * {@code unsupported_content_hash_format}.</li>
+         * <li>HASH — carried {@code content_hash} vs {@code content_hash({type, data})}.
+         * Disagreement &rarr; 400 {@code hash_mismatch}.</li>
+         * </ol>
+         *
+         * <p>Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step
+         * 2's inputs are exactly what step 1 establishes, so a submission that is both
+         * malformed and mis-hashed is step 1's and answers {@code invalid_request}.
+         *
+         * <p>Structural admission is not semantic validation: {@code data} is never
+         * checked against the type named by {@code type}.
+         *
+         * <p>Returns the admitted entity in {@code entity}, or the refusal in
+         * {@code refusal} — exactly one is non-null.
+         */
+        private record PutAdmission(Entity entity, Outcome refusal) { }
+
+        private PutAdmission admitPut(EcfValue v) {
+            if (!(v instanceof EcfValue.Map m)) {
+                return refusePut("invalid_request", "put: entity is not a map");
+            }
+            if (!(m.get("type") instanceof EcfValue.Text t) || t.value().isEmpty()) {
+                return refusePut("invalid_request",
+                        "put: entity.type absent, empty or not a text string");
+            }
+            EcfValue data = m.get("data");
+            if (data == null) {
+                return refusePut("invalid_request", "put: entity.data absent");
+            }
+            if (!(m.get("content_hash") instanceof EcfValue.Bytes chb)
+                    || chb.octets().length == 0) {
+                return refusePut("invalid_request",
+                        "put: entity.content_hash absent or not a byte string");
+            }
+            byte[] carried = chb.octets();
+            org.entitycore.protocol.codec.Varint.Decoded decoded;
+            try {
+                decoded = org.entitycore.protocol.codec.Varint.decode(carried, 0);
+            } catch (org.entitycore.protocol.codec.EntityCodecException e) {
+                return refusePut("invalid_request",
+                        "put: entity.content_hash is not a well-formed system/hash");
+            }
+            int digestLen = hashDigestLen(decoded.value());
+            if (digestLen < 0) {
+                // §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it.
+                // NOT invalid_request: the shape is fine, the algorithm is what we lack.
+                return refusePut("unsupported_content_hash_format",
+                        "put: unsupported content_hash_format");
+            }
+            if (carried.length != decoded.next() + digestLen) {
+                return refusePut("invalid_request",
+                        "put: content_hash length does not match its format code");
+            }
+            byte[] computed;
+            try {
+                computed = org.entitycore.protocol.crypto.ContentHash.compute(
+                        EcfValue.Map.of("type", t, "data", data), (int) decoded.value());
+            } catch (org.entitycore.protocol.codec.EntityCodecException e) {
+                return refusePut("hash_mismatch",
+                        "put: content_hash does not match content_hash({type, data})");
+            }
+            if (!java.util.Arrays.equals(computed, carried)) {
+                return refusePut("hash_mismatch",
+                        "put: content_hash does not match content_hash({type, data})");
+            }
+            // The carried hash IS the entity's address; recomputing it into the store
+            // would be the authoring arm §6.3 forbids.
+            return new PutAdmission(Entity.admitted(t.value(), data, carried), null);
+        }
+
+        private PutAdmission refusePut(String code, String message) {
+            return new PutAdmission(null, Outcome.err(400, code, message));
+        }
+
         private Outcome put(HandlerContext ctx) {
             Entity exec = ctx.exec();
             String target = execResourceTarget(exec);
@@ -451,7 +555,7 @@ public final class Peer {
             }
             String path = Capability.canonicalize(localPeer, target);
             Entity params = exec.entityField("params");
-            Entity entity = (params != null) ? params.entityField("entity") : null;
+            EcfValue rawEntity = (params != null) ? params.field("entity") : null;
             byte[] expected = (params != null) ? params.bytes("expected_hash") : null;
             String current = store.hashAt(path);
             boolean casOk;
@@ -465,9 +569,14 @@ public final class Peer {
             if (!casOk) {
                 return Outcome.err(409, "hash_mismatch", path);
             }
-            if (entity == null) {
+            if (rawEntity == null) {
                 return Outcome.err(400, "unexpected_params", "put: missing entity");
             }
+            PutAdmission admission = admitPut(rawEntity);
+            if (admission.refusal() != null) {
+                return admission.refusal();
+            }
+            Entity entity = admission.entity();
             store.bind(path, entity);
             return Outcome.ok(Entity.make("system/hash", Cbor.map("hash", Cbor.bytes(entity.hash()))));
         }

@@ -34,7 +34,15 @@ if [ "${INCONTAINER:-0}" != "1" ]; then
     echo "  podman run \$PODMAN_RUN_CAPS --rm -v \"$HOSTREPO\":/work:Z -w /work/ffi-generator/c-abi/entity-core-codec-ffi-rust localhost/entity-core-keystone/cargo:latest cargo build --release" >&2
     exit 2
   }
-  exec podman run $PODMAN_RUN_CAPS --rm \
+  # Forward this script's OWN documented env overrides across the container
+  # boundary. Without this an ORACLE= set by the caller is silently DROPPED and
+  # the inner run falls back to the real validator -- the run then SUCCEEDS and
+  # writes a perfectly good conformance report where a probe report was expected.
+  # Measured 2026-09-06: 5 of these 8 harnesses did exactly that during the §6.3
+  # put-admission sweep. `${VAR:+...}` so an unset var adds no flag and the inner
+  # default still decides -- forwarding, never policy.
+  exec podman run ${ORACLE:+-e ORACLE="$ORACLE"} ${JSON_OUT:+-e JSON_OUT="$JSON_OUT"} ${NOBUILD:+-e NOBUILD="$NOBUILD"} ${VALIDATE:+-e VALIDATE="$VALIDATE"} \
+    $PODMAN_RUN_CAPS --rm \
     -e INCONTAINER=1 \
     -v "$HOSTREPO":/work:Z \
     -v "$HOSTREPO/$CODEC_DIR_HOST_REL":/codec:z,ro \

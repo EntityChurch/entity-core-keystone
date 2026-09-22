@@ -75,6 +75,7 @@
   (data $b_paytoobig "payload_too_large")  ;; §4.10(a) 413 code
   (data $b_invreq "invalid_request")       ;; §1.4/§6.5 step 3 address-gate code
   (data $b_entity "entity") (data $b_exphash "expected_hash") (data $b_hashmm "hash_mismatch")  ;; §6.3 tree put
+  (data $b_unsupfmt "unsupported_content_hash_format")   ;; §6.3 step-1 / §1.2 ingest-dispatch row
   (data $b_scheme   "entity://")   (data $b_star   "*")          (data $b_slashstar "/*")
   ;; store: paths, keys, values, types
   (data $b_pconn "system/handler/system/protocol/connect")
@@ -432,6 +433,7 @@
     (memory.init $b_entity  (i32.const 0x466700) (i32.const 0) (i32.const 6))
     (memory.init $b_exphash (i32.const 0x466720) (i32.const 0) (i32.const 13))
     (memory.init $b_hashmm  (i32.const 0x466740) (i32.const 0) (i32.const 13))
+    (memory.init $b_unsupfmt (i32.const 0x466760) (i32.const 0) (i32.const 31))
     ;; §6.13a / §10.1 handler register/unregister constants
     (memory.init $b_thand      (i32.const 0x466800) (i32.const 0) (i32.const 14))
     (memory.init $b_tregres    (i32.const 0x466820) (i32.const 0) (i32.const 30))
@@ -4295,9 +4297,93 @@
         (call $store_remove (local.get $tp) (local.get $tlen))
         (call $build_put_ok (local.get $out) (local.get $rid) (local.get $rlen)))
       (else
+        ;; §6.3 put ADMISSION (normative, 0.8.2.11). `put` is a RECEIPT path: the submitter
+        ;; authors the entity, the peer validates what it received (§1.8 item 1) and MUST NOT
+        ;; author a submitted entity's content_hash on the submitter's behalf. Two ORDERED
+        ;; steps — step 2's inputs are exactly what step 1 establishes, so a submission that
+        ;; is both malformed and mis-hashed is step 1's and answers invalid_request.
+        ;;   1. STRUCTURE — a map with a non-empty text `type`, a PRESENT `data` (any CBOR
+        ;;      value; null is legal), and a `content_hash` that is a well-formed system/hash
+        ;;      whose total byte length matches its format code (§1.2). Any failure ->
+        ;;      invalid_request; a well-formed hash naming a format code this peer cannot
+        ;;      VERIFY is the separate §1.2 row -> unsupported_content_hash_format. The
+        ;;      imported ec_content_hash is the SHA-256 floor, so 0x00 is the whole
+        ;;      verifiable set here.
+        ;;   2. HASH — carried vs content_hash({type, data}) -> hash_mismatch.
+        ;; Structural admission is not semantic validation: `data` is never checked against
+        ;; the type named by `type`.
+        (local.set $e (call $admit_put (local.get $ent) (local.get $out) (local.get $rid) (local.get $rlen)))
+        (if (local.get $e) (then (return (local.get $e))))
         (local.set $entlen (i32.sub (call $skip (local.get $ent)) (local.get $ent)))
         (call $store_put (local.get $tp) (local.get $tlen) (local.get $ent) (local.get $entlen))
         (call $build_get_ok (local.get $out) (local.get $ent) (local.get $entlen) (local.get $rid) (local.get $rlen)))))
+
+  ;; 400 invalid_request shorthand for the §6.3 admission ladder.
+  (func $err_invreq (param $out i32) (param $rid i32) (param $rlen i32) (result i32)
+    (call $build_error (local.get $out) (i32.const 0x462c00) (i32.const 15) (i32.const 400) (local.get $rid) (local.get $rlen)))
+
+  ;; $admit_put — §6.3's put admission ladder over the SUBMITTED entity value at $ent.
+  ;; Returns 0 when admitted, or a built refusal frame length (the $build_error result)
+  ;; the caller returns verbatim. See the block comment at the call site.
+  (func $admit_put (param $ent i32) (param $out i32) (param $rid i32) (param $rlen i32) (result i32)
+    (local $tv i32) (local $tp i32) (local $tlen i32)
+    (local $dv i32) (local $dp i32) (local $dlen i32)
+    (local $cv i32) (local $cp i32) (local $clen i32)
+    (local $i i32) (local $b i32) (local $shift i32) (local $fmt i32) (local $done i32)
+    ;; step 1a — the submitted value must be a map.
+    (drop (call $rd_head (local.get $ent)))
+    (if (i32.ne (global.get $g_major) (i32.const 5))
+      (then (return (call $err_invreq (local.get $out) (local.get $rid) (local.get $rlen)))))
+    ;; step 1b — non-empty text `type`.
+    (local.set $tv (call $map_find (local.get $ent) (i32.const 0x460020) (i32.const 4)))
+    (if (i32.eq (local.get $tv) (i32.const -1))
+      (then (return (call $err_invreq (local.get $out) (local.get $rid) (local.get $rlen)))))
+    (local.set $tp (call $rd_head (local.get $tv)))
+    (if (i32.or (i32.ne (global.get $g_major) (i32.const 3)) (i64.eqz (global.get $g_arg)))
+      (then (return (call $err_invreq (local.get $out) (local.get $rid) (local.get $rlen)))))
+    (local.set $tlen (i32.wrap_i64 (global.get $g_arg)))
+    ;; step 1c — `data` PRESENT. Presence, not truthiness: a CBOR null is a legal payload
+    ;; and map_find reports it found, which is the test §6.3 wants.
+    (local.set $dv (call $map_find (local.get $ent) (i32.const 0x460010) (i32.const 4)))
+    (if (i32.eq (local.get $dv) (i32.const -1))
+      (then (return (call $err_invreq (local.get $out) (local.get $rid) (local.get $rlen)))))
+    (local.set $dlen (i32.sub (call $skip (local.get $dv)) (local.get $dv)))
+    ;; step 1d — `content_hash` present, a byte string, well-formed.
+    (local.set $cv (call $map_find (local.get $ent) (i32.const 0x460030) (i32.const 12)))
+    (if (i32.eq (local.get $cv) (i32.const -1))
+      (then (return (call $err_invreq (local.get $out) (local.get $rid) (local.get $rlen)))))
+    (local.set $cp (call $rd_head (local.get $cv)))
+    (if (i32.or (i32.ne (global.get $g_major) (i32.const 2)) (i64.eqz (global.get $g_arg)))
+      (then (return (call $err_invreq (local.get $out) (local.get $rid) (local.get $rlen)))))
+    (local.set $clen (i32.wrap_i64 (global.get $g_arg)))
+    ;; leading multicodec LEB128 format-code varint (§7.3)
+    (local.set $i (i32.const 0)) (local.set $fmt (i32.const 0))
+    (local.set $shift (i32.const 0)) (local.set $done (i32.const 0))
+    (block $vd (loop $VL
+      (br_if $vd (i32.ge_u (local.get $i) (local.get $clen)))
+      (local.set $b (i32.load8_u (i32.add (local.get $cp) (local.get $i))))
+      (local.set $fmt (i32.or (local.get $fmt)
+        (i32.shl (i32.and (local.get $b) (i32.const 0x7f)) (local.get $shift))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (if (i32.eqz (i32.and (local.get $b) (i32.const 0x80)))
+        (then (local.set $done (i32.const 1)) (br $vd)))
+      (local.set $shift (i32.add (local.get $shift) (i32.const 7)))
+      (br_if $vd (i32.ge_u (local.get $shift) (i32.const 32)))
+      (br $VL)))
+    (if (i32.eqz (local.get $done))
+      (then (return (call $err_invreq (local.get $out) (local.get $rid) (local.get $rlen)))))
+    (if (i32.ne (local.get $fmt) (i32.const 0))
+      (then (return (call $build_error (local.get $out) (i32.const 0x466760) (i32.const 31)
+                      (i32.const 400) (local.get $rid) (local.get $rlen)))))
+    (if (i32.ne (local.get $clen) (i32.add (local.get $i) (i32.const 32)))
+      (then (return (call $err_invreq (local.get $out) (local.get $rid) (local.get $rlen)))))
+    ;; step 2 — carried vs content_hash({type, data}); scratch @0x9a0000.
+    (drop (call $content_hash (local.get $tp) (local.get $tlen)
+                              (local.get $dv) (local.get $dlen) (i32.const 0x9a0000)))
+    (if (call $mcmp33 (i32.const 0x9a0000) (local.get $cp))
+      (then (return (call $build_error (local.get $out) (i32.const 0x466740) (i32.const 13)
+                      (i32.const 400) (local.get $rid) (local.get $rlen)))))
+    (i32.const 0))
 
   ;; 400 invalid_params shorthand (capability write handlers).
   (func $err_invparams (param $out i32) (param $rid i32) (param $rlen i32) (result i32)

@@ -23,6 +23,17 @@ Ent_Make: procedure expose EC.
   h = Hash_Content(type, data)
   return 'E' || d2c(length(type), 4) || type || d2c(length(h), 4) || h || data
 
+/* Ent_Admitted — the §6.3 RECEIPT constructor: bind an entity to a content_hash the
+ * CALLER has already verified against Hash_Content(type, data).
+ *
+ * Ent_Make AUTHORS a hash. On the system/tree:put path that is exactly what §6.3
+ * (0.8.2.11) forbids — the submitter authors, the peer verifies. This takes the
+ * carried bytes verbatim and is reachable only from the admission ladder, which has
+ * just proved they match. */
+Ent_Admitted: procedure expose EC.
+  parse arg type, data, verified_hash
+  return 'E' || d2c(length(type), 4) || type || d2c(length(verified_hash), 4) || verified_hash || data
+
 Ent_Type: procedure
   parse arg e
   numeric digits 40

@@ -16,6 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::authority::{self, AuthFacts};
 use crate::cbor_host::{self, Key, Value};
+use crate::codec_ffi;
 use crate::identity::{self, Identity};
 use crate::model::{hex, Entity, Envelope};
 use crate::store::Store;
@@ -110,6 +111,105 @@ fn ok_inc(result: Entity, included: Vec<Entity>) -> Outcome {
         included,
     }
 }
+/// Digest byte length for a `content_hash_format` code per the §1.2 seed table,
+/// or `None` when this peer cannot VERIFY that code. The total wire length is
+/// this plus the varint prefix, which is not a constant of the code (§7.3):
+/// codes >= 0x80 occupy more than one byte.
+fn hash_digest_len(format_code: u64) -> Option<usize> {
+    match format_code {
+        0x00 => Some(32),
+        0x01 => Some(48),
+        _ => None,
+    }
+}
+
+/// §6.3's `put` admission ladder (normative, 0.8.2.11).
+///
+/// `put` is a RECEIPT path: the submitter authors the entity, the peer validates
+/// what it received (§1.8 item 1) and MUST NOT author a submitted entity's
+/// `content_hash` on the submitter's behalf. Two ordered steps:
+///
+/// 1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data` (any
+///    CBOR value; null is a legal payload), and a `content_hash` that is a
+///    well-formed `system/hash` whose total byte length matches its format code
+///    (§1.2). Any failure -> 400 `invalid_request`. A well-formed hash naming a
+///    format code this peer cannot verify is the separate §1.2 ingest-dispatch
+///    case -> 400 `unsupported_content_hash_format`.
+/// 2. HASH — carried `content_hash` vs `content_hash({type, data})`.
+///    Disagreement -> 400 `hash_mismatch`.
+///
+/// Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's
+/// inputs are exactly what step 1 establishes, so a submission that is both
+/// malformed and mis-hashed is step 1's and answers `invalid_request`.
+///
+/// Structural admission is not semantic validation: `data` is never checked
+/// against the type named by `type`.
+fn admit_put(v: &Value) -> Result<Entity, Outcome> {
+    if !matches!(v, Value::Map(_)) {
+        return Err(err_out(400, "invalid_request"));
+    }
+    let typ = match cbor_host::map_get(v, "type") {
+        Some(Value::Text(t)) if !t.is_empty() => t.clone(),
+        _ => return Err(err_out(400, "invalid_request")),
+    };
+    // Presence, not truthiness: a CBOR null is a legal `data` payload and map_get
+    // returns the null NODE for it, which is exactly the test §6.3 wants.
+    let data = match cbor_host::map_get(v, "data") {
+        Some(d) => d.clone(),
+        None => return Err(err_out(400, "invalid_request")),
+    };
+    let carried = match cbor_host::map_get(v, "content_hash") {
+        Some(Value::Bytes(b)) if !b.is_empty() => b.clone(),
+        _ => return Err(err_out(400, "invalid_request")),
+    };
+    // Leading multicodec LEB128 format-code varint (§7.3).
+    let (format_code, consumed) = {
+        let (mut acc, mut shift, mut n, mut done) = (0u64, 0u32, 0usize, false);
+        for &b in &carried {
+            acc |= u64::from(b & 0x7f) << shift;
+            n += 1;
+            if b & 0x80 == 0 {
+                done = true;
+                break;
+            }
+            shift += 7;
+            if shift >= 64 {
+                break;
+            }
+        }
+        if !done {
+            return Err(err_out(400, "invalid_request"));
+        }
+        (acc, n)
+    };
+    let digest_len = match hash_digest_len(format_code) {
+        Some(n) => n,
+        // §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+        // invalid_request: the shape is fine, the algorithm is what we lack.
+        None => return Err(err_out(400, "unsupported_content_hash_format")),
+    };
+    if carried.len() != consumed + digest_len {
+        return Err(err_out(400, "invalid_request"));
+    }
+    let canonical = match codec_ffi::encode_bare_value(&cbor_host::encode(&data)) {
+        Ok(b) => b,
+        Err(_) => return Err(err_out(400, "invalid_request")),
+    };
+    let computed = codec_ffi::content_hash_with_format(typ.as_bytes(), &canonical, format_code);
+    match computed {
+        Ok(h) if h == carried => {
+            // The carried hash IS the entity's address; recomputing it into the
+            // store would be the authoring arm §6.3 forbids.
+            Ok(Entity {
+                typ,
+                data,
+                hash: carried,
+            })
+        }
+        _ => Err(err_out(400, "hash_mismatch")),
+    }
+}
+
 fn err_out(status: u64, code: &str) -> Outcome {
     Outcome {
         status,
@@ -1030,9 +1130,13 @@ impl Peer {
                 let expected = params
                     .as_ref()
                     .and_then(|p| p.bytes_field("expected_hash").map(|b| b.to_vec()));
-                let entity = params.as_ref().and_then(|p| p.entity_field("entity"));
-                match entity {
-                    Some(e) => {
+                let raw_entity = params.as_ref().and_then(|p| p.field("entity")).cloned();
+                match raw_entity {
+                    Some(raw) => {
+                        let e = match admit_put(&raw) {
+                            Ok(e) => e,
+                            Err(refusal) => return refusal,
+                        };
                         // §3.9 CAS: a present expected_hash is a conditional write —
                         // zero hash = create-only (must be absent), non-zero = must
                         // equal the current binding, else 409 hash_mismatch.

@@ -21,6 +21,8 @@ const wire = @import("wire.zig");
 const store_mod = @import("store.zig");
 const identity_mod = @import("identity.zig");
 const cap = @import("capability.zig");
+const hash = @import("hash.zig");
+const varint = @import("varint.zig");
 const type_defs = @import("type_defs.zig");
 const sign = @import("sign.zig");
 const peer_id = @import("peer_id.zig");
@@ -458,20 +460,110 @@ fn treeHandler(p: *Peer, a: std.mem.Allocator, exec: Entity) Error!Outcome {
         if (target == null) return errOut(a, 400, "ambiguous_resource", "tree: missing resource target");
         const path = try cap.canonicalize(a, p.local_peer, target.?);
         const params = try exec.entityField(a, "params");
-        const entity = if (params) |pe| try pe.entityField(a, "entity") else null;
+        const raw_entity = if (params) |pe| pe.field("entity") else null;
         const expected = if (params) |pe| pe.bytesField("expected_hash") else null;
         // §3.9 CAS
         const current = p.store.hashAt(path);
         const zero33 = [_]u8{0} ** 33;
         const cas_ok = if (expected) |h| (if (std.mem.eql(u8, h, &zero33)) current == null else (current != null and std.mem.eql(u8, current.?, h))) else true;
         if (!cas_ok) return errOut(a, 409, "hash_mismatch", path);
-        if (entity) |e| {
-            try p.store.bind(path, e);
-            return ok(try Entity.make(a, "system/hash", try model.bytesVal(a, e.hash)));
+        if (raw_entity) |rv| {
+            switch (try admitPut(a, rv)) {
+                .refused => |r| return r,
+                .admitted => |e| {
+                    try p.store.bind(path, e);
+                    return ok(try Entity.make(a, "system/hash", try model.bytesVal(a, e.hash)));
+                },
+            }
         }
         return errOut(a, 400, "unexpected_params", "put: missing entity");
     }
     return errOut(a, 501, "unsupported_operation", op);
+}
+
+/// Digest byte length for a `content_hash_format` code per the §1.2 seed table,
+/// or null when this peer cannot VERIFY that code. The total wire length is this
+/// plus the varint prefix, which is not a constant of the code (§7.3): codes
+/// >= 0x80 occupy more than one byte.
+fn hashDigestLen(format_code: u64) ?usize {
+    return switch (format_code) {
+        0x00 => 32,
+        0x01 => 48,
+        else => null,
+    };
+}
+
+/// The outcome of §6.3's put admission ladder.
+const PutAdmission = union(enum) { admitted: Entity, refused: Outcome };
+
+/// §6.3's `put` admission ladder (normative, 0.8.2.11).
+///
+/// `put` is a RECEIPT path: the submitter authors the entity, the peer validates
+/// what it received (§1.8 item 1) and MUST NOT author a submitted entity's
+/// `content_hash` on the submitter's behalf. Two ordered steps:
+///
+///   1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data` (any
+///      CBOR value; null is a legal payload), and a `content_hash` that is a
+///      well-formed system/hash whose total byte length matches its format code
+///      (§1.2). Any failure -> 400 invalid_request. A well-formed hash naming a
+///      format code this peer cannot verify is the separate §1.2 ingest-dispatch
+///      case -> 400 unsupported_content_hash_format.
+///   2. HASH — carried content_hash vs content_hash({type, data}). Disagreement ->
+///      400 hash_mismatch.
+///
+/// Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's
+/// inputs are exactly what step 1 establishes, so a submission that is both
+/// malformed and mis-hashed is step 1's and answers invalid_request.
+///
+/// Structural admission is not semantic validation: `data` is never checked
+/// against the type named by `type`.
+fn admitPut(a: std.mem.Allocator, v: Value) Error!PutAdmission {
+    const refuse = struct {
+        fn f(al: std.mem.Allocator, code: []const u8, msg: []const u8) Error!PutAdmission {
+            return .{ .refused = try errOut(al, 400, code, msg) };
+        }
+    }.f;
+
+    switch (v) {
+        .map => {},
+        else => return refuse(a, "invalid_request", "put: entity is not a map"),
+    }
+    const typ = switch (model.mapGet(v, "type") orelse Value{ .null = {} }) {
+        .text => |s| s,
+        else => return refuse(a, "invalid_request", "put: entity.type absent, empty or not a text string"),
+    };
+    if (typ.len == 0)
+        return refuse(a, "invalid_request", "put: entity.type absent, empty or not a text string");
+    // Presence, not truthiness: a CBOR null is a legal `data` payload.
+    const data_src = model.mapGet(v, "data") orelse
+        return refuse(a, "invalid_request", "put: entity.data absent");
+    const carried = switch (model.mapGet(v, "content_hash") orelse Value{ .null = {} }) {
+        .bytes => |b| b,
+        else => return refuse(a, "invalid_request", "put: entity.content_hash absent or not a byte string"),
+    };
+    if (carried.len == 0)
+        return refuse(a, "invalid_request", "put: entity.content_hash absent or not a byte string");
+    const dec = varint.decode(carried, 0) catch
+        return refuse(a, "invalid_request", "put: entity.content_hash is not a well-formed system/hash");
+    // §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+    // invalid_request: the shape is fine, the algorithm is what we lack.
+    const digest_len = hashDigestLen(dec.value) orelse
+        return refuse(a, "unsupported_content_hash_format", "put: unsupported content_hash_format");
+    if (carried.len != dec.len + digest_len)
+        return refuse(a, "invalid_request", "put: content_hash length does not match its format code");
+
+    const computed = try hash.contentHash(a, dec.value, typ, data_src);
+    if (!std.mem.eql(u8, computed, carried))
+        return refuse(a, "hash_mismatch", "put: content_hash does not match content_hash({type, data})");
+
+    // The carried hash IS the entity's address; recomputing it into the store would
+    // be the authoring arm §6.3 forbids. Built field-by-field rather than through
+    // Entity.make, which hardcodes format 0x00.
+    return .{ .admitted = .{
+        .typ = try a.dupe(u8, typ),
+        .data = try model.cloneValue(a, data_src),
+        .hash = try a.dupe(u8, carried),
+    } };
 }
 
 // ── capability handler (§6.2) ────────────────────────────────────────────────

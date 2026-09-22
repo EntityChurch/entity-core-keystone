@@ -277,6 +277,72 @@ func (h treeHandler) get(ctx *dispatchCtx) outcome {
 	}
 }
 
+// admitPut implements §6.3's `put` admission ladder (normative, 0.8.2.11).
+//
+// `put` is a RECEIPT path: the submitter authors the entity, the peer validates
+// what it received (§1.8 item 1) and MUST NOT author a submitted entity's
+// content_hash on the submitter's behalf. Two ordered steps:
+//
+//  1. STRUCTURE — the value is an entity when it is a map carrying a non-empty
+//     text `type`, a PRESENT `data` (any CBOR value; null is a legal payload),
+//     and a `content_hash` that is a well-formed system/hash whose total byte
+//     length matches its format code (§1.2). Any failure → 400 invalid_request.
+//     A well-formed hash naming a format code this peer cannot verify is the
+//     separate §1.2 ingest-dispatch case → 400 unsupported_content_hash_format.
+//  2. HASH — carried content_hash vs content_hash({type, data}). Disagreement
+//     → 400 hash_mismatch.
+//
+// Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's
+// inputs are exactly what step 1 establishes, so a submission that is both
+// malformed and mis-hashed is step 1's and answers invalid_request.
+//
+// Structural admission is not semantic validation — `data` is never checked
+// against the type named by `type`. Step 1 asks *is this an entity*, never
+// *is this a well-formed instance of its type*.
+func admitPut(v cbor.Value) (Entity, outcome, bool) {
+	bad := func(code, msg string) (Entity, outcome, bool) {
+		return Entity{}, errOutcome(400, code, msg), false
+	}
+	// Step 1 — structure.
+	if v.Kind != cbor.KindMap {
+		return bad("invalid_request", "put: entity is not a map")
+	}
+	typV, ok := MapField(v, "type")
+	if !ok || typV.Kind != cbor.KindText || typV.Text == "" {
+		return bad("invalid_request", "put: entity.type absent, empty or not a text string")
+	}
+	data, ok := MapField(v, "data")
+	if !ok {
+		return bad("invalid_request", "put: entity.data absent")
+	}
+	chV, ok := MapField(v, "content_hash")
+	if !ok || chV.Kind != cbor.KindBytes {
+		return bad("invalid_request", "put: entity.content_hash absent or not a byte string")
+	}
+	code, n, err := entitycore.DecodeHashFormat(chV.Bytes)
+	if err != nil {
+		return bad("invalid_request", "put: entity.content_hash is not a well-formed system/hash")
+	}
+	digestLen, supported := entitycore.HashDigestLen(code)
+	if !supported {
+		// §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it.
+		// Deliberately NOT invalid_request: the shape is fine, the algorithm
+		// is the thing we do not have.
+		return bad("unsupported_content_hash_format", "put: unsupported content_hash_format")
+	}
+	if len(chV.Bytes) != n+digestLen {
+		return bad("invalid_request", "put: content_hash length does not match its format code")
+	}
+	// Step 2 — hash.
+	match, err := (entitycore.Entity{Type: typV.Text, Data: data}).VerifyContentHash(chV.Bytes)
+	if err != nil || !match {
+		return bad("hash_mismatch", "put: content_hash does not match content_hash({type, data})")
+	}
+	// The carried hash is the entity's address — recomputing it here would be
+	// the authoring arm §6.3 forbids. It provably equals the computed value.
+	return Entity{Type: typV.Text, Data: data, Hash: append([]byte(nil), chV.Bytes...)}, outcome{}, true
+}
+
 func (h treeHandler) put(ctx *dispatchCtx) outcome {
 	p, exec := h.p, ctx.exec
 	target, hasTarget := execResourceTarget(exec)
@@ -288,7 +354,7 @@ func (h treeHandler) put(ctx *dispatchCtx) outcome {
 	}
 	path, _ := canonicalize(p.localPeer, target)
 	params, _ := paramsEntity(exec)
-	entity, hasEntity := params.SubEntity("entity")
+	rawEntity, hasEntity := params.Field("entity")
 	expected, hasExpected := params.Bytes("expected_hash")
 	current := p.store.HashAt(path)
 
@@ -306,6 +372,10 @@ func (h treeHandler) put(ctx *dispatchCtx) outcome {
 	}
 	if !hasEntity {
 		return errOutcome(400, "unexpected_params", "put: missing entity")
+	}
+	entity, refusal, admitted := admitPut(rawEntity)
+	if !admitted {
+		return refusal
 	}
 	p.store.Bind(path, entity)
 	return okOutcome(mustEntity("system/hash", cbor.NewMap(cbor.Entry("hash", cbor.Bytes(entity.Hash)))))

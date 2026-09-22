@@ -17,6 +17,7 @@
 #include <set>
 
 #include "entity_core/core_typedefs.hpp"
+#include "entity_core/varint.hpp"
 #include "entity_core/wire.hpp"
 
 namespace entity_core {
@@ -445,6 +446,101 @@ void Peer::build_listing(const std::string& path, Outcome& o) {
     if (r) ok(o, *r); else err(o, 500, "internal_error");
 }
 
+namespace {
+
+// Digest byte length for a content_hash_format code per the §1.2 seed table, or 0 when
+// this peer cannot VERIFY that code. The total wire length is this plus the varint
+// prefix, which is not a constant of the code (§7.3): codes >= 0x80 occupy more than one
+// byte. This peer's Hash is a fixed std::array<std::byte, 33>, so the SHA-256 floor is
+// the only code it can hold, let alone verify.
+std::size_t hash_digest_len(std::uint64_t format_code) {
+    return format_code == 0x00 ? 32 : 0;
+}
+
+// §6.3's `put` admission ladder (normative, 0.8.2.11).
+//
+// `put` is a RECEIPT path: the submitter authors the entity, the peer validates what it
+// received (§1.8 item 1) and MUST NOT author a submitted entity's content_hash on the
+// submitter's behalf. Two ordered steps:
+//
+//   1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data` (any CBOR
+//      value; null is a legal payload), and a `content_hash` that is a well-formed
+//      system/hash whose total byte length matches its format code (§1.2). Any failure
+//      -> 400 invalid_request. A well-formed hash naming a format code this peer cannot
+//      verify is the separate §1.2 ingest-dispatch case -> 400
+//      unsupported_content_hash_format.
+//   2. HASH — carried content_hash vs content_hash({type, data}). Disagreement -> 400
+//      hash_mismatch.
+//
+// Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's inputs are
+// exactly what step 1 establishes, so a submission that is both malformed and mis-hashed
+// is step 1's and answers invalid_request.
+//
+// Structural admission is not semantic validation: `data` is never checked against the
+// type named by `type`.
+bool admit_put(const EcfValue& v, std::shared_ptr<const Entity>& out,
+               const char*& code, const char*& message) {
+    out = nullptr;
+    if (!v.is<ecf::Map>()) {
+        code = "invalid_request"; message = "put: entity is not a map";
+        return false;
+    }
+    const auto* type_v = v.find("type");
+    const auto* t = type_v ? std::get_if<ecf::Text>(&type_v->as_variant()) : nullptr;
+    if (!t || t->empty()) {
+        code = "invalid_request";
+        message = "put: entity.type absent, empty or not a text string";
+        return false;
+    }
+    // Presence, not truthiness: a CBOR null is a legal `data` payload and is a NODE here,
+    // so a non-null lookup is exactly the presence test §6.3 wants.
+    if (!v.find("data")) {
+        code = "invalid_request"; message = "put: entity.data absent";
+        return false;
+    }
+    const auto* ch = v.find("content_hash");
+    const auto* cb = ch ? std::get_if<ecf::Bytes>(&ch->as_variant()) : nullptr;
+    if (!cb || cb->empty()) {
+        code = "invalid_request";
+        message = "put: entity.content_hash absent or not a byte string";
+        return false;
+    }
+    auto decoded = varint::decode(std::span<const std::byte>(cb->data(), cb->size()));
+    if (!decoded) {
+        code = "invalid_request";
+        message = "put: entity.content_hash is not a well-formed system/hash";
+        return false;
+    }
+    std::size_t digest_len = hash_digest_len(decoded->value);
+    if (digest_len == 0) {
+        // §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+        // invalid_request: the shape is fine, the algorithm is what we lack.
+        code = "unsupported_content_hash_format";
+        message = "put: unsupported content_hash_format";
+        return false;
+    }
+    if (cb->size() != decoded->consumed + digest_len) {
+        code = "invalid_request";
+        message = "put: content_hash length does not match its format code";
+        return false;
+    }
+    // Step 2. from_cbor recomputes {type, data} and refuses on a carried mismatch — it
+    // VERIFIES the submitter's hash rather than authoring one, which is what §6.3 forbids
+    // here. At the only code this peer verifies (0x00) the verified value and the carried
+    // bytes are the same 33 bytes, so binding the recomputed hash binds the submitted
+    // address.
+    auto e = Entity::from_cbor(v);
+    if (!e) {
+        code = "hash_mismatch";
+        message = "put: content_hash does not match content_hash({type, data})";
+        return false;
+    }
+    out = *e;
+    return true;
+}
+
+}  // namespace
+
 void Peer::h_tree(const Envelope& /*env*/, const Entity& exec, const std::string& op,
                   Outcome& o) {
     if (op == "get") {
@@ -482,7 +578,7 @@ void Peer::h_tree(const Envelope& /*env*/, const Entity& exec, const std::string
         auto path = cap::canonicalize(local_, *target);
         if (!path) { err(o, 400, "invalid_path", *target); return; }
         auto params = exec.entity_field("params");
-        auto entity = params ? params->entity_field("entity") : nullptr;
+        const EcfValue* raw_entity = params ? params->field("entity") : nullptr;
         auto expected = params ? params->bytes("expected_hash") : std::nullopt;
         auto current = store_.hash_hex_at(*path);
         bool cas_ok;
@@ -494,7 +590,14 @@ void Peer::h_tree(const Envelope& /*env*/, const Entity& exec, const std::string
             cas_ok = current && *current == identity::hex_lower(*expected);
         }
         if (!cas_ok) { err(o, 409, "hash_mismatch", *target); return; }
-        if (!entity) { err(o, 400, "unexpected_params", "put: missing entity"); return; }
+        if (!raw_entity) { err(o, 400, "unexpected_params", "put: missing entity"); return; }
+        std::shared_ptr<const Entity> entity;
+        const char* refuse_code = nullptr;
+        const char* refuse_msg = nullptr;
+        if (!admit_put(*raw_entity, entity, refuse_code, refuse_msg)) {
+            err(o, 400, refuse_code, refuse_msg);
+            return;
+        }
         store_.bind(*path, entity);
         auto m = EcfValue::map();
         m.put(EcfValue::text("hash"), value::bytes_value(entity->hash()));

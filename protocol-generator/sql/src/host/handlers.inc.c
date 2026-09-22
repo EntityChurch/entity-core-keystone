@@ -499,13 +499,58 @@ static void dispatch_body(int fd, conn_state *cs, const char *rid, const char *p
                 if (!ok) { (void)emit_error(fd,rid,409,"hash_mismatch"); return; }
             }
             cbor_rd entf; if (!cbor_map_find(pd,pl,0,"entity",&entf)) { (void)emit_error(fd,rid,400,"unexpected_params"); return; }
-            cbor_rd etf,edf; char ety[80]="primitive/any";
-            if (cbor_map_find(pd,pl,entf.pos,"type",&etf)) cbor_get_text(&etf,ety,sizeof ety);
-            if (!cbor_map_find(pd,pl,entf.pos,"data",&edf)) { (void)emit_error(fd,rid,400,"unexpected_params"); return; }
+            /* §6.3 put ADMISSION (normative, 0.8.2.11). `put` is a RECEIPT path: the
+             * submitter authors the entity, the peer validates what it received (§1.8
+             * item 1) and MUST NOT author a submitted entity's content_hash on the
+             * submitter's behalf. Two ORDERED steps, and the order is a data dependency
+             * rather than a choice -- step 2's inputs are exactly what step 1
+             * establishes, so a submission that is both malformed and mis-hashed is
+             * step 1's and answers invalid_request.
+             *   1. STRUCTURE -- a map with a non-empty text `type`, a PRESENT `data`
+             *      (any CBOR value; null is legal), and a `content_hash` that is a
+             *      well-formed system/hash whose total byte length matches its format
+             *      code (§1.2). Any failure -> invalid_request; a well-formed hash
+             *      naming a format code this peer cannot VERIFY is the separate §1.2
+             *      row -> unsupported_content_hash_format.
+             *   2. HASH -- carried vs content_hash({type, data}) -> hash_mismatch.
+             * Structural admission is not semantic validation: `data` is never checked
+             * against the type named by `type`. */
+            {   cbor_rd em = entf; int emaj; uint64_t earg;
+                if (cbor_head(&em,&emaj,&earg)!=0 || emaj!=5) { (void)emit_error(fd,rid,400,"invalid_request"); return; }
+            }
+            cbor_rd etf,edf; char ety[80];
+            /* No "primitive/any" default: an absent or empty `type` is step 1's refusal,
+             * and defaulting it would author a type the submitter never sent. */
+            if (!cbor_map_find(pd,pl,entf.pos,"type",&etf) || cbor_get_text(&etf,ety,sizeof ety)!=0 || ety[0]==0) {
+                (void)emit_error(fd,rid,400,"invalid_request"); return;
+            }
+            /* Presence, not truthiness: a CBOR null is a legal `data` payload and
+             * cbor_map_find reports it found, which is the test §6.3 wants. */
+            if (!cbor_map_find(pd,pl,entf.pos,"data",&edf)) { (void)emit_error(fd,rid,400,"invalid_request"); return; }
             const unsigned char *edp=NULL; size_t edl=0;
-            if (cbor_value_slice(pd,pl,edf.pos,&edp,&edl)!=0 || !edp) { (void)emit_error(fd,rid,400,"unexpected_params"); return; }
-            store_bind(path,ety,edp,edl);
+            if (cbor_value_slice(pd,pl,edf.pos,&edp,&edl)!=0 || !edp) { (void)emit_error(fd,rid,400,"invalid_request"); return; }
+            cbor_rd chf; unsigned char carried[33]; size_t chl=0;
+            if (!cbor_map_find(pd,pl,entf.pos,"content_hash",&chf)
+                || cbor_get_bytes(&chf,carried,sizeof carried,&chl)!=0 || chl==0) {
+                (void)emit_error(fd,rid,400,"invalid_request"); return;
+            }
+            {   /* leading multicodec LEB128 format-code varint (§7.3) */
+                uint64_t fmt=0; unsigned shift=0; size_t i=0; int done=0;
+                while (i < chl) { unsigned char b = carried[i++];
+                    fmt |= (uint64_t)(b & 0x7f) << shift;
+                    if (!(b & 0x80)) { done=1; break; }
+                    shift += 7; if (shift >= 64) break; }
+                if (!done) { (void)emit_error(fd,rid,400,"invalid_request"); return; }
+                /* §1.2 / §4.7 row 5 -- well-formed, but this peer cannot interpret it.
+                 * NOT invalid_request: the shape is fine, the algorithm is what we
+                 * lack. ec_entity_hash computes the SHA-256 floor only, so 0x00 is the
+                 * whole verifiable set here. */
+                if (fmt != 0) { (void)emit_error(fd,rid,400,"unsupported_content_hash_format"); return; }
+                if (chl != i + 32) { (void)emit_error(fd,rid,400,"invalid_request"); return; }
+            }
             unsigned char h33[33]; ec_entity_hash(ety,edp,edl,h33);
+            if (memcmp(h33,carried,33)!=0) { (void)emit_error(fd,rid,400,"hash_mismatch"); return; }
+            store_bind(path,ety,edp,edl);
             emit_hash_result(fd,rid,h33); return;
         }
         (void)emit_error(fd,rid,501,"unsupported_operation"); return;

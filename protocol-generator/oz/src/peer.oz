@@ -25,6 +25,7 @@ import
    Conn at 'conn.ozf'
    Crypto at 'crypto.ozf'
    Util at 'util.ozf'
+   Varint at 'varint.ozf'
 export
    Create Identity StoreOf LocalPeer Dispatch RandomBytes
 define
@@ -484,6 +485,90 @@ define
       end
    end
 
+   %% Digest byte length for a content_hash_format code per the §1.2 seed table,
+   %% or absent when this peer cannot VERIFY that code. The total wire length is
+   %% this plus the varint prefix, which is not a constant of the code (§7.3):
+   %% codes >= 0x80 occupy more than one byte. {Ent.contentHash} emits the
+   %% SHA-256 floor unconditionally, so 0x00 is the whole verifiable set here.
+   fun {HashDigestLen Code}
+      if Code == 0 then 32 else absent end
+   end
+
+   %% §6.3's `put` admission ladder (normative, 0.8.2.11).
+   %%
+   %% `put` is a RECEIPT path: the submitter authors the entity, the peer
+   %% validates what it received (§1.8 item 1) and MUST NOT author a submitted
+   %% entity's content_hash on the submitter's behalf. Two ordered steps:
+   %%
+   %%   1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data`
+   %%      (any CBOR value; null is a legal payload), and a `content_hash` that
+   %%      is a well-formed system/hash whose total byte length matches its
+   %%      format code (§1.2). Any failure -> 400 invalid_request. A well-formed
+   %%      hash naming a format code this peer cannot verify is the separate
+   %%      §1.2 ingest-dispatch case -> 400 unsupported_content_hash_format.
+   %%   2. HASH — carried content_hash vs contentHash({type, data}).
+   %%      Disagreement -> 400 hash_mismatch.
+   %%
+   %% Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step
+   %% 2's inputs are exactly what step 1 establishes, so a submission that is
+   %% both malformed and mis-hashed is step 1's and answers invalid_request.
+   %%
+   %% Structural admission is not semantic validation: `data` is never checked
+   %% against the type named by `type`.
+   %%
+   %% Returns admitted(E) or refused(Outcome).
+   fun {AdmitPut V}
+      fun {Refuse Code Msg} refused({OutErr 400 Code Msg}) end
+   in
+      case V of map(_) then
+         local
+            T = {Val.getText V "type"}
+            D = {Val.get V "data"}
+            Carried = {Val.getBytes V "content_hash"}
+         in
+            if T == absent orelse T == nil then
+               {Refuse "invalid_request" "put: entity.type absent, empty or not a text string"}
+            %% Presence, not truthiness: a CBOR null is a legal `data` payload and
+            %% {Val.get} answers the null NODE for it, not absent.
+            elseif D == absent then {Refuse "invalid_request" "put: entity.data absent"}
+            elseif Carried == absent orelse Carried == nil then
+               {Refuse "invalid_request" "put: entity.content_hash absent or not a byte string"}
+            else
+               local Code Rest DigestLen in
+                  try
+                     {Varint.decode Carried Code Rest}
+                  catch _ then Code = absent Rest = nil
+                  end
+                  if Code == absent then
+                     {Refuse "invalid_request"
+                        "put: entity.content_hash is not a well-formed system/hash"}
+                  else
+                     DigestLen = {HashDigestLen Code}
+                     %% §1.2 / §4.7 row 5 — well-formed, but this peer cannot
+                     %% interpret it. NOT invalid_request: the shape is fine, the
+                     %% algorithm is what we lack.
+                     if DigestLen == absent then
+                        {Refuse "unsupported_content_hash_format"
+                           "put: unsupported content_hash_format"}
+                     elseif {Length Rest} \= DigestLen then
+                        {Refuse "invalid_request"
+                           "put: content_hash length does not match its format code"}
+                     elseif {Ent.contentHash T D} \= Carried then
+                        {Refuse "hash_mismatch"
+                           "put: content_hash does not match content_hash({type, data})"}
+                     else
+                        %% The carried hash IS the entity's address; recomputing it
+                        %% into the store would be the authoring arm §6.3 forbids.
+                        admitted({Ent.admitted T D Carried})
+                     end
+                  end
+               end
+            end
+         end
+      else {Refuse "invalid_request" "put: entity is not a map"}
+      end
+   end
+
    fun {TreePut P Ctx}
       Exec = {CtxExec Ctx}
       Local = P.localPeer
@@ -496,7 +581,7 @@ define
          local
             Path = {Hp.canonicalize Local Target}
             Params = {Ent.getEntity Exec "params"}
-            Entity = if Params == absent then absent else {Ent.getEntity Params "entity"} end
+            RawEntity = if Params == absent then absent else {Val.get {Ent.dataMap Params} "entity"} end
             Expected = if Params == absent then absent else {Ent.getBytes Params "expected_hash"} end
             CurrentA = {Store.hashAt St Path}
             Current = if CurrentA == unit then absent else CurrentA end
@@ -505,10 +590,16 @@ define
                     else Current \= absent andthen Current == {String.toAtom {HexOf Expected}} end
          in
             if {Not CasOk} then {OutErr 409 "hash_mismatch" Path}
-            elseif Entity == absent then {OutErr 400 "unexpected_params" "put: missing entity"}
+            elseif RawEntity == absent then {OutErr 400 "unexpected_params" "put: missing entity"}
             else
-               {Store.bind St Path Entity}
-               {OutOk {Ent.make "system/hash" map([{Val.mkPair "hash" bytes({Ent.hash Entity})}])} nil}
+               local Adm = {AdmitPut RawEntity} in
+                  case Adm
+                  of refused(O) then O
+                  [] admitted(Entity) then
+                     {Store.bind St Path Entity}
+                     {OutOk {Ent.make "system/hash" map([{Val.mkPair "hash" bytes({Ent.hash Entity})}])} nil}
+                  end
+               end
             end
          end
       end

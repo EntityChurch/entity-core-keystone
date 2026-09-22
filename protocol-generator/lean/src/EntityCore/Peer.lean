@@ -489,6 +489,69 @@ def buildListing (peer : Peer) (path : String) : IO Outcome := do
            (.text "count", .uint (UInt64.ofNat entries.length)),
            (.text "offset", .uint 0)])))
 
+/-- Digest byte length for a `content_hash_format` code per the §1.2 seed table,
+or `none` when this peer cannot VERIFY that code. The total wire length is this
+plus the varint prefix, which is not a constant of the code (§7.3): codes ≥ 0x80
+occupy more than one byte. This peer computes SHA-256 only. -/
+def hashDigestLen : Nat → Option Nat
+  | 0x00 => some 32
+  | _    => none
+
+/-- §6.3's `put` admission ladder (normative, 0.8.2.11).
+
+`put` is a RECEIPT path: the submitter authors the entity, the peer validates
+what it received (§1.8 item 1) and MUST NOT author a submitted entity's
+`content_hash` on the submitter's behalf. Two ordered steps:
+
+1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data` (any
+   CBOR value; null is a legal payload), and a `content_hash` that is a
+   well-formed `system/hash` whose total byte length matches its format code
+   (§1.2). Any failure → 400 `invalid_request`. A well-formed hash naming a
+   format code this peer cannot verify is the separate §1.2 ingest-dispatch case
+   → 400 `unsupported_content_hash_format`.
+2. HASH — carried `content_hash` vs `content_hash({type, data})`. Disagreement →
+   400 `hash_mismatch`.
+
+Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's
+inputs are exactly what step 1 establishes, so a submission that is both
+malformed and mis-hashed is step 1's and answers `invalid_request`.
+
+Structural admission is not semantic validation: `data` is never checked against
+the type named by `type`. -/
+def admitPut (v : Value) : Except Outcome Entity :=
+  let refuse (code msg : String) : Except Outcome Entity :=
+    .error (err 400 code (some msg))
+  match v with
+  | .map _ =>
+    match mapGet v "type" with
+    | some (.text typ) =>
+      if typ.isEmpty then
+        refuse "invalid_request" "put: entity.type absent, empty or not a text string"
+      else match mapGet v "data" with
+      | none => refuse "invalid_request" "put: entity.data absent"
+      | some dataV => match mapGet v "content_hash" with
+        | some (.bytes carried) =>
+          match EntityCore.Codec.Varint.varintDecode carried with
+          | none => refuse "invalid_request" "put: entity.content_hash is not a well-formed system/hash"
+          | some (code, n) => match hashDigestLen code with
+            -- §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret
+            -- it. NOT invalid_request: the shape is fine, the algorithm is what
+            -- we lack.
+            | none => .error (err 400 "unsupported_content_hash_format"
+                                (some "put: unsupported content_hash_format"))
+            | some digestLen =>
+              if carried.size != n + digestLen then
+                refuse "invalid_request" "put: content_hash length does not match its format code"
+              else if baEq carried (EntityCore.ContentHash.contentHash code typ dataV) then
+                -- The carried hash IS the entity's address; recomputing it into
+                -- the store would be the authoring arm §6.3 forbids.
+                .ok { typ, data := dataV, hash := carried }
+              else
+                refuse "hash_mismatch" "put: content_hash does not match content_hash({type, data})"
+        | _ => refuse "invalid_request" "put: entity.content_hash absent or not a byte string"
+    | _ => refuse "invalid_request" "put: entity.type absent, empty or not a text string"
+  | _ => refuse "invalid_request" "put: entity is not a map"
+
 def treeHandler (peer : Peer) (exec : Entity) : IO Outcome := do
   let op := (textField exec "operation").getD ""
   let tgt := resourceTarget exec
@@ -511,7 +574,7 @@ def treeHandler (peer : Peer) (exec : Entity) : IO Outcome := do
     else do
       let path := canonPath peer.localPeer target
       let params := entityField exec "params"
-      let entity := params.bind (fun p => entityField p "entity")
+      let entity := params.bind (fun p => field p "entity")
       let expected := params.bind (fun p => bytesField p "expected_hash")
       let current ← EntityCore.Store.hashAt peer.store path
       let zero33 := ByteArray.mk (List.replicate 33 (0 : UInt8)).toArray
@@ -521,8 +584,10 @@ def treeHandler (peer : Peer) (exec : Entity) : IO Outcome := do
                     else match current with | some c => baEq c h | none => false
       if !casOk then pure (err 409 "hash_mismatch" (some path))
       else match entity with
-           | some e => do EntityCore.Store.bind peer.store path e
-                          pure (ok (make "system/hash" (.bytes e.hash)))
+           | some raw => match admitPut raw with
+             | .error refusal => pure refusal
+             | .ok e => do EntityCore.Store.bind peer.store path e
+                           pure (ok (make "system/hash" (.bytes e.hash)))
            | none => pure (err 400 "unexpected_params" (some "put: missing entity"))
   | "put", none => pure (err 400 "ambiguous_resource" (some "tree: missing resource target"))
   | other, _ => pure (err 501 "unsupported_operation" (some s!"tree: {other}"))

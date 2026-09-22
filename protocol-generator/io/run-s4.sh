@@ -106,5 +106,14 @@ podman run $PODMAN_RUN_CAPS --rm --network=none \
       echo "--- peer stderr (build/s4-peer.err) ---" >&2
       cat build/s4-peer.err >&2
     fi
+    # Io writes an uncaught exception + backtrace to STDOUT, not stderr, so the
+    # stderr guard above is blind to exactly the failure it exists to catch. Dump
+    # the stdout log too, but ONLY when it carries an exception — the normal log
+    # is just the listening banner and printing it every run would train people to
+    # skip it.
+    if grep -q "Exception" build/s4-peer.log 2>/dev/null; then
+      echo "--- peer stdout (build/s4-peer.log) — carries an Io exception ---" >&2
+      cat build/s4-peer.log >&2
+    fi
     exit "$rc"
   ' bash "$@"

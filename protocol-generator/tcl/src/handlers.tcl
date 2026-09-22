@@ -226,6 +226,84 @@ proc ::entity::core::handlers::_tree_get {peer_h ctx} {
     return [ok $e]
 }
 
+# Digest byte length for a content_hash_format code per the §1.2 seed table, or ""
+# when this peer cannot VERIFY that code. The total wire length is this plus the
+# varint prefix, which is not a constant of the code (§7.3): codes >= 0x80 occupy
+# more than one byte.
+proc ::entity::core::handlers::_hash_digest_len {code} {
+    if {$code == 0} { return 32 }
+    if {$code == 1} { return 48 }
+    return ""
+}
+
+# §6.3's `put` admission ladder (normative, 0.8.2.11).
+#
+# `put` is a RECEIPT path: the submitter authors the entity, the peer validates
+# what it received (§1.8 item 1) and MUST NOT author a submitted entity's
+# content_hash on the submitter's behalf. Two ordered steps:
+#
+#   1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data` (any
+#      CBOR value; null is a legal payload), and a `content_hash` that is a
+#      well-formed system/hash whose total byte length matches its format code
+#      (§1.2). Any failure -> 400 invalid_request. A well-formed hash naming a
+#      format code this peer cannot verify is the separate §1.2 ingest-dispatch
+#      case -> 400 unsupported_content_hash_format.
+#   2. HASH — carried content_hash vs content_hash({type, data}). Disagreement ->
+#      400 hash_mismatch.
+#
+# Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's
+# inputs are exactly what step 1 establishes, so a submission that is both
+# malformed and mis-hashed is step 1's and answers invalid_request.
+#
+# Structural admission is not semantic validation: `data` is never checked
+# against the type named by `type`.
+#
+# Returns {admitted <entity>} or {refused <outcome>}.
+proc ::entity::core::handlers::_admit_put {v} {
+    if {[lindex $v 0] ne "map"} {
+        return [list refused [err 400 invalid_request "put: entity is not a map"]]
+    }
+    set type [::entity::core::ecf::text $v type]
+    if {$type eq ""} {
+        return [list refused [err 400 invalid_request \
+            "put: entity.type absent, empty or not a text string"]]
+    }
+    # Presence, not truthiness: a CBOR null is a legal `data` payload, and `has`
+    # is the peer's own presence predicate rather than the language's empty test.
+    if {![::entity::core::ecf::has $v data]} {
+        return [list refused [err 400 invalid_request "put: entity.data absent"]]
+    }
+    set data [::entity::core::ecf::get $v data]
+    set carried [::entity::core::ecf::bytes $v content_hash]
+    if {$carried eq ""} {
+        return [list refused [err 400 invalid_request \
+            "put: entity.content_hash absent or not a byte string"]]
+    }
+    set pos 0
+    if {[catch {::entity::core::varint::decode $carried pos} format_code]} {
+        return [list refused [err 400 invalid_request \
+            "put: entity.content_hash is not a well-formed system/hash"]]
+    }
+    set digest_len [_hash_digest_len $format_code]
+    if {$digest_len eq ""} {
+        # §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+        # invalid_request: the shape is fine, the algorithm is what we lack.
+        return [list refused [err 400 unsupported_content_hash_format \
+            "put: unsupported content_hash_format"]]
+    }
+    if {[string length $carried] != $pos + $digest_len} {
+        return [list refused [err 400 invalid_request \
+            "put: content_hash length does not match its format code"]]
+    }
+    if {[::entity::core::hash::content_hash $type $data $format_code] ne $carried} {
+        return [list refused [err 400 hash_mismatch \
+            "put: content_hash does not match content_hash({type, data})"]]
+    }
+    # The carried hash IS the entity's address; recomputing it into the store
+    # would be the authoring arm §6.3 forbids.
+    return [list admitted [dict create type $type data $data hash $carried]]
+}
+
 proc ::entity::core::handlers::_tree_put {peer_h ctx} {
     set exec [dict get $ctx exec]
     set local [::entity::core::peer::local_peer $peer_h]
@@ -235,7 +313,7 @@ proc ::entity::core::handlers::_tree_put {peer_h ctx} {
     if {![path_flex_ok $target]} { return [err 400 invalid_path $target] }
     set path [::entity::core::capability::canonicalize $local $target]
     set params [::entity::core::entity::entity_field $exec params]
-    set entity [expr {$params ne "" ? [::entity::core::entity::entity_field $params entity] : ""}]
+    set raw_entity [expr {$params ne "" ? [::entity::core::entity::field $params entity] : ""}]
     set expected [expr {$params ne "" ? [::entity::core::entity::bytes $params expected_hash] : ""}]
     set current [::entity::core::store::hash_at $store_h $path]
     if {$expected eq ""} {
@@ -246,7 +324,10 @@ proc ::entity::core::handlers::_tree_put {peer_h ctx} {
         set cas_ok [expr {$current ne "" && $current eq [binary encode hex $expected]}]
     }
     if {!$cas_ok} { return [err 409 hash_mismatch $path] }
-    if {$entity eq ""} { return [err 400 unexpected_params "put: missing entity"] }
+    if {$raw_entity eq ""} { return [err 400 unexpected_params "put: missing entity"] }
+    set admitted [_admit_put $raw_entity]
+    if {[lindex $admitted 0] eq "refused"} { return [lindex $admitted 1] }
+    set entity [lindex $admitted 1]
     ::entity::core::store::bind $store_h $path $entity
     return [ok [::entity::core::entity::make system/hash [::entity::core::ecf::map \
         hash [::entity::core::ecf::bstr [::entity::core::entity::hash $entity]]]]]

@@ -20,7 +20,7 @@ defmodule EntityCore.Peer do
       OFF by default.
   """
 
-  alias EntityCore.{Capability, Identity, Model, Signature, Store, TypeDefs, Wire}
+  alias EntityCore.{Capability, Entity, Hash, Identity, Model, Signature, Store, TypeDefs, Varint, Wire}
   alias EntityCore.Model.Envelope
 
   @enforce_keys [:identity, :store, :local_peer]
@@ -570,10 +570,101 @@ defmodule EntityCore.Peer do
     end
   end
 
+  # Digest byte length for a `content_hash_format` code per the §1.2 seed table,
+  # or nil when this peer cannot VERIFY that code. The total wire length is this
+  # plus the varint prefix, which is not a constant of the code (§7.3): codes
+  # ≥ 0x80 occupy more than one byte.
+  defp hash_digest_len(0x00), do: 32
+  defp hash_digest_len(0x01), do: 48
+  defp hash_digest_len(_), do: nil
+
+  # §6.3's `put` admission ladder (normative, 0.8.2.11).
+  #
+  # `put` is a RECEIPT path: the submitter authors the entity, the peer validates
+  # what it received (§1.8 item 1) and MUST NOT author a submitted entity's
+  # `content_hash` on the submitter's behalf. Two ordered steps:
+  #
+  #   1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data`
+  #      (any CBOR value; null is a legal payload), and a `content_hash` that is
+  #      a well-formed `system/hash` whose total byte length matches its format
+  #      code (§1.2). Any failure → 400 `invalid_request`. A well-formed hash
+  #      naming a format code this peer cannot verify is the separate §1.2
+  #      ingest-dispatch case → 400 `unsupported_content_hash_format`.
+  #   2. HASH — carried `content_hash` vs `content_hash({type, data})`.
+  #      Disagreement → 400 `hash_mismatch`.
+  #
+  # Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's
+  # inputs are exactly what step 1 establishes, so a submission that is both
+  # malformed and mis-hashed is step 1's and answers `invalid_request`.
+  #
+  # Structural admission is not semantic validation: `data` is never checked
+  # against the type named by `type`.
+  defp admit_put(v) when not is_map(v),
+    do: {:refused, err(400, "invalid_request", "put: entity is not a map")}
+
+  defp admit_put(v) do
+    typ = Map.get(v, "type")
+    carried = Map.get(v, "content_hash")
+
+    cond do
+      not is_binary(typ) or typ == "" ->
+        {:refused,
+         err(400, "invalid_request", "put: entity.type absent, empty or not a text string")}
+
+      not Map.has_key?(v, "data") ->
+        {:refused, err(400, "invalid_request", "put: entity.data absent")}
+
+      not match?({:bytes, b} when is_binary(b) and b != "", carried) ->
+        {:refused,
+         err(400, "invalid_request", "put: entity.content_hash absent or not a byte string")}
+
+      true ->
+        {:bytes, carried_bytes} = carried
+        admit_put_hash(typ, Map.fetch!(v, "data"), carried_bytes)
+    end
+  end
+
+  defp admit_put_hash(typ, data, carried) do
+    case Varint.decode(carried) do
+      {:error, _} ->
+        {:refused,
+         err(400, "invalid_request", "put: entity.content_hash is not a well-formed system/hash")}
+
+      {:ok, format_code, rest} ->
+        case hash_digest_len(format_code) do
+          # §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it.
+          # NOT invalid_request: the shape is fine, the algorithm is what we lack.
+          nil ->
+            {:refused,
+             err(400, "unsupported_content_hash_format", "put: unsupported content_hash_format")}
+
+          digest_len when byte_size(rest) != digest_len ->
+            {:refused,
+             err(400, "invalid_request", "put: content_hash length does not match its format code")}
+
+          _ ->
+            computed = Hash.content_hash(%{"type" => typ, "data" => data}, format_code)
+
+            if computed == carried do
+              # The carried hash IS the entity's address; recomputing it into the
+              # store would be the authoring arm §6.3 forbids.
+              {:admitted, %Entity{type: typ, data: data, hash: carried}}
+            else
+              {:refused,
+               err(
+                 400,
+                 "hash_mismatch",
+                 "put: content_hash does not match content_hash({type, data})"
+               )}
+            end
+        end
+    end
+  end
+
   defp tree_put(t, exec, target) do
     path = Capability.canonicalize(t.local_peer, target)
     params = entity_field(exec, "params")
-    entity = with p when p != nil <- params, do: entity_field(p, "entity")
+    raw_entity = with p when p != nil <- params, do: Model.field(p, "entity")
     expected = with p when p != nil <- params, do: Model.bytes_field(p, "expected_hash")
     zero33 = :binary.copy(<<0>>, 33)
 
@@ -584,29 +675,41 @@ defmodule EntityCore.Peer do
         h -> {:match, h}
       end
 
-    case entity do
-      %{} = e ->
-        case Store.bind_cas(t.store, path, e, expected_mode) do
-          :ok -> ok(Model.make("system/hash", {:bytes, e.hash}))
-          :mismatch -> err(409, "hash_mismatch", path)
-        end
-
+    case raw_entity do
       nil ->
         # §3.9 CAS check still applies even with no entity → mirror OCaml's order:
         # a CAS mismatch is 409; a present-but-missing entity is 400.
-        case Store.hash_at(t.store, path) do
-          current ->
-            cas_ok =
-              case expected_mode do
-                :any -> true
-                :create_only -> current == nil
-                {:match, h} -> current == h
-              end
+        if cas_ok?(t, path, expected_mode),
+          do: err(400, "unexpected_params", "put: missing entity"),
+          else: err(409, "hash_mismatch", path)
 
-            if cas_ok,
-              do: err(400, "unexpected_params", "put: missing entity"),
+      raw ->
+        case admit_put(raw) do
+          # §3.9 CAS ranks ahead of §6.3 admission here, matching the order every
+          # other peer's put takes: a stale precondition is a 409 whatever was
+          # submitted. Only bind_cas can decide it atomically, so the refusal
+          # path has to ask separately.
+          {:refused, refusal} ->
+            if cas_ok?(t, path, expected_mode),
+              do: refusal,
               else: err(409, "hash_mismatch", path)
+
+          {:admitted, e} ->
+            case Store.bind_cas(t.store, path, e, expected_mode) do
+              :ok -> ok(Model.make("system/hash", {:bytes, e.hash}))
+              :mismatch -> err(409, "hash_mismatch", path)
+            end
         end
+    end
+  end
+
+  defp cas_ok?(t, path, expected_mode) do
+    current = Store.hash_at(t.store, path)
+
+    case expected_mode do
+      :any -> true
+      :create_only -> current == nil
+      {:match, h} -> current == h
     end
   end
 

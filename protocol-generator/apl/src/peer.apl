@@ -452,7 +452,67 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  dirlist:cn←gLocal CapCanonicalize target ⋄ Z←TreeListing 1⊃cn
 ∇
 
-∇Z←TreePut env;exec;target;cn;path;params;entity;expected;current;casOk;hm
+⍝ Digest byte length for a content_hash_format code per the §1.2 seed table, or ¯1
+⍝ when this peer cannot VERIFY that code. The total wire length is this plus the
+⍝ varint prefix, which is not a constant of the code (§7.3): codes ≥ 0x80 occupy
+⍝ more than one byte. ContentHash here is the SHA-256 floor unconditionally, so
+⍝ 0x00 is the whole verifiable set.
+∇Z←HashDigestLen fmt
+ Z←¯1
+ →(fmt≠0)/0
+ Z←32
+∇
+
+⍝ §6.3's `put` admission ladder (normative, 0.8.2.11) → (admitted value):
+⍝ (1 entity) when admitted, (0 outcome) when refused.
+⍝
+⍝ `put` is a RECEIPT path: the submitter authors the entity, the peer validates
+⍝ what it received (§1.8 item 1) and MUST NOT author a submitted entity's
+⍝ content_hash on the submitter's behalf. Two ORDERED steps:
+⍝   1. STRUCTURE — a map with a non-empty text `type`, a PRESENT `data` (any CBOR
+⍝      value; null is legal), and a `content_hash` that is a well-formed
+⍝      system/hash whose total byte length matches its format code (§1.2). Any
+⍝      failure → 400 invalid_request; a well-formed hash naming a format code
+⍝      this peer cannot verify is the separate §1.2 row → 400
+⍝      unsupported_content_hash_format.
+⍝   2. HASH — carried vs content_hash({type, data}) → 400 hash_mismatch.
+⍝ Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's
+⍝ inputs are exactly what step 1 establishes, so a submission that is both
+⍝ malformed and mis-hashed is step 1's and answers invalid_request.
+⍝ Structural admission is not semantic validation: `data` is never checked
+⍝ against the type named by `type`.
+∇Z←AdmitPut v;type;data;carried;dec;fmt;consumed;dl
+ →(EV_MAP=1⊃v)/ismap
+ Z←0(OutErr(400)('invalid_request')('put: entity is not a map')) ⋄ →0
+ ismap:type←v MText'type'
+ →(0<≢type)/hastype
+ Z←0(OutErr(400)('invalid_request')('put: entity.type absent, empty or not a text string')) ⋄ →0
+ ⍝ Presence, not truthiness: a CBOR null is a legal `data` payload, so MHas is the
+ ⍝ presence predicate rather than an emptiness test on the value.
+ hastype:→(v MHas'data')/hasdata
+ Z←0(OutErr(400)('invalid_request')('put: entity.data absent')) ⋄ →0
+ hasdata:data←v MGet'data'
+ carried←v MBytes'content_hash'
+ →(0<≢carried)/hasch
+ Z←0(OutErr(400)('invalid_request')('put: entity.content_hash absent or not a byte string')) ⋄ →0
+ hasch:dec←1 VarintDecode carried
+ →(EC_OK=3⊃dec)/decoded
+ Z←0(OutErr(400)('invalid_request')('put: entity.content_hash is not a well-formed system/hash')) ⋄ →0
+ decoded:fmt←1⊃dec ⋄ consumed←(2⊃dec)-1 ⋄ dl←HashDigestLen fmt
+ →(dl≥0)/known
+ ⍝ §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+ ⍝ invalid_request: the shape is fine, the algorithm is what we lack.
+ Z←0(OutErr(400)('unsupported_content_hash_format')('put: unsupported content_hash_format')) ⋄ →0
+ known:→((≢carried)=consumed+dl)/lenok
+ Z←0(OutErr(400)('invalid_request')('put: content_hash length does not match its format code')) ⋄ →0
+ lenok:→(carried≡fmt ContentHash(VText type)(data))/match
+ Z←0(OutErr(400)('hash_mismatch')('put: content_hash does not match content_hash({type, data})')) ⋄ →0
+ ⍝ The carried hash IS the entity's address; recomputing it into the store would
+ ⍝ be the authoring arm §6.3 forbids.
+ match:Z←1(1(,type)(data)(carried))
+∇
+
+∇Z←TreePut env;exec;target;cn;path;params;entity;rawEnt;hasEnt;adm;expected;current;casOk;hm
  exec←EnvRoot env
  target←ExecResourceTarget exec
  →(0<≢target)/ht
@@ -460,9 +520,10 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  ht:cn←gLocal CapCanonicalize target ⋄ path←1⊃cn
  →(2⊃cn)/einval           ⍝ §1.4: null byte / empty segment / reserved-relative → 400
  params←exec EntEntityField'params'
- entity←EntAbsent ⋄ expected←⍬
+ hasEnt←0 ⋄ rawEnt←⍬ ⋄ expected←⍬
  →(~EntPresent params)/nocas
- entity←params EntEntityField'entity'
+ hasEnt←(EntDataMap params)MHas'entity'
+ rawEnt←params EntFieldV'entity'
  expected←params EntBytes'expected_hash'
  nocas:current←StoreHashAt path
  →(0=≢expected)/okcas
@@ -472,9 +533,12 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  okcas:casOk←1
  caschk:→(casOk)/hasent
  Z←OutErr(409)('hash_mismatch')(path) ⋄ →0
- hasent:→(EntPresent entity)/bind
+ hasent:→(hasEnt)/admit
  Z←OutErr(400)('unexpected_params')('put: missing entity') ⋄ →0
- bind:path StoreBind entity
+ admit:adm←AdmitPut rawEnt
+ →(1⊃adm)/bind
+ Z←2⊃adm ⋄ →0
+ bind:entity←2⊃adm ⋄ path StoreBind entity
  hm←VMapEmpty VmPut('hash')(VBytes EntHash entity)
  Z←OutOk0('system/hash'EntMake hm) ⋄ →0
  einval:Z←OutErr(400)('invalid_path')(target)

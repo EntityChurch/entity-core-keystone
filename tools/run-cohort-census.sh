@@ -71,16 +71,23 @@ CONCURRENCY="${CONCURRENCY:-1}"
 # TRACKED status/CONFORMANCE-REPORT.json). See the --to-status block in the header.
 DEST="${DEST:-census}"
 
-# THIRD DESTINATION: "probe" (--probe). Same dispatch table, a different tool at
-# the end of it — ORACLE is swapped for a one-off measurement binary and the
-# output goes to output/scratch/p47/, NEVER to output/scratch/census/. That
+# THIRD DESTINATION: "probe" (--probe [NAME]). Same dispatch table, a different
+# tool at the end of it — ORACLE is swapped for a one-off measurement binary and
+# the output goes to output/scratch/<NAME>/, NEVER to output/scratch/census/. That
 # separation is the whole point: a probe report is not a conformance report, and
 # writing one where check-set-gate and tier-status look for the other would be the
 # stale/foreign-input defect this repo has already been bitten by three times.
+#
+# The probe NAME is a parameter (default `p47-probe`, the first one built) rather
+# than a hardcode, because the second probe — `put-probe`, for §6.3's 0.8.2.11
+# admission ladder — needed this identical dispatch table, and the header above
+# already says why a second copy of it is the wrong answer. `--probe put-probe`
+# reads `output/s4-oracles/put-probe` and writes `output/scratch/put-probe/`.
+PROBE="${PROBE:-p47-probe}"
 jout_for() {
   case "$DEST" in
     status) echo "/work/protocol-generator/$1/status/CONFORMANCE-REPORT.json" ;;
-    probe)  echo "/work/output/scratch/p47/$1.json" ;;
+    probe)  echo "/work/output/scratch/$PROBE/$1.json" ;;
     *)      echo "/work/output/scratch/census/$1.json" ;;
   esac
 }
@@ -89,7 +96,7 @@ jout_for() {
 hostout_for() {
   case "$DEST" in
     status) echo "$REPO_ROOT/protocol-generator/$1/status/CONFORMANCE-REPORT.json" ;;
-    probe)  echo "$REPO_ROOT/output/scratch/p47/$1.json" ;;
+    probe)  echo "$REPO_ROOT/output/scratch/$PROBE/$1.json" ;;
     *)      echo "$OUT/$1.json" ;;
   esac
 }
@@ -103,9 +110,9 @@ hostout_for() {
 # else". Derived from the script itself rather than from a second dispatch table.
 oracle_for() {
   if grep -q 'ORACLE:-\$REPO_ROOT' "$REPO_ROOT/protocol-generator/$1/run-s4.sh" 2>/dev/null; then
-    echo "$REPO_ROOT/output/s4-oracles/p47-probe"
+    echo "$REPO_ROOT/output/s4-oracles/$PROBE"
   else
-    echo "/work/output/s4-oracles/p47-probe"
+    echo "/work/output/s4-oracles/$PROBE"
   fi
 }
 
@@ -150,13 +157,23 @@ census_one() {
   # from some EARLIER run is sitting there" -- see the STALE JSON branch.
   local t0; t0=$(date +%s)
   local rc=0
-  # PROBE-ONLY special case, and it exists because of a measured gap rather than a
-  # preference: `lean` and `unison` re-exec into their container forwarding ONLY
-  # `-e INCONTAINER=1`, so an ORACLE set in the environment is silently DROPPED at
-  # the container boundary and the inner run falls back to the real validator. That
-  # is invisible — the run succeeds and writes a perfectly good conformance report
-  # where a probe report was expected. Enter their container directly with
-  # INCONTAINER=1 so ORACLE survives. (Checked across all 46: only these two.)
+  # PROBE-ONLY special case. `lean` and `unison` re-exec into their container, so an
+  # ORACLE set in the environment used to be silently DROPPED at that boundary and the
+  # inner run fell back to the real validator — invisible, because the run SUCCEEDS and
+  # writes a perfectly good conformance report where a probe report was expected.
+  #
+  # "(Checked across all 46: only these two.)" — that parenthetical was here and it was
+  # WRONG. Measured 2026-09-06 by the §6.3 put-admission sweep, which is the first thing
+  # to drive a probe through the whole roster: EIGHT peers silently ran the real
+  # validator. Five were self-relaunching harnesses with the same defect nobody had
+  # looked for (`forth fortran oz rexx smalltalk`) and three were hand-written branches
+  # in THIS file that predate run_podman's ${ORACLE:+...} (`prolog rust-wasm
+  # rust-wasm-wasmtime`). All eight are fixed at the source now — the harnesses forward
+  # their own documented overrides — so this block is belt-and-braces rather than the
+  # only thing holding those two up. The lesson is the standing one: a source-read claim
+  # about the cohort ("only these two") reads exactly like a measured one, and the
+  # discriminator is the OUTPUT SHAPE — a conformance report sitting in the probe
+  # directory IS a dropped ORACLE.
   if [ "$DEST" = "probe" ]; then
     case "$peer" in
       lean)
@@ -168,7 +185,7 @@ census_one() {
       unison)
         # Entered directly, so the repo is at /work here regardless of what
         # unison's own host-side REPO_ROOT resolution would have chosen.
-        ORACLE=/work/output/s4-oracles/p47-probe; export ORACLE
+        ORACLE=/work/output/s4-oracles/$PROBE; export ORACLE
         run_podman "$peer" localhost/entity-core-keystone/unison-toolchain:latest \
           --network=none -e INCONTAINER=1 >>"$log" 2>&1; rc=$?
         echo "=== $peer done rc=$rc $(date -u +%H:%M:%S) ===" >>"$log"; return $rc ;;
@@ -244,16 +261,19 @@ census_one() {
       run_podman "$peer" entity-core-keystone/php-toolchain:latest --network=none >>"$log" 2>&1; rc=$? ;;
     prolog)
       podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w /work \
+        ${ORACLE:+-e ORACLE="$ORACLE"} \
         -e JSON_OUT="$jout" entity-core-keystone/prolog-toolchain:latest \
         protocol-generator/prolog/run-s4.sh >>"$log" 2>&1; rc=$? ;;
     rust)
       run_podman "$peer" entity-core-keystone/rust-toolchain:latest --network=none --security-opt label=disable >>"$log" 2>&1; rc=$? ;;
     rust-wasm)
       podman run $PODMAN_RUN_CAPS --rm --network=none \
+        ${ORACLE:+-e ORACLE="$ORACLE"} \
         -v "$REPO_ROOT":/work:Z -v kc-rw-cargo:/cargo:Z localhost/entity-core-keystone/rust-wasm-toolchain:latest \
         sh -c "NOBUILD=1 sh /work/protocol-generator/$peer/run-s4.sh -profile core -json-out $jout" >>"$log" 2>&1; rc=$? ;;
     rust-wasm-wasmtime)
       podman run $PODMAN_RUN_CAPS --rm --network=none \
+        ${ORACLE:+-e ORACLE="$ORACLE"} \
         -v "$REPO_ROOT":/work:Z -v kc-rw-cargo:/cargo:Z localhost/entity-core-keystone/rust-wasm-wasmtime-toolchain:latest \
         sh -c "NOBUILD=1 sh /work/protocol-generator/$peer/run-s4.sh -profile core -json-out $jout" >>"$log" 2>&1; rc=$? ;;
     swift)
@@ -309,7 +329,7 @@ census_one() {
   fi
 }
 export -f oracle_for census_one run_direct run_direct_envjson run_podman run_podman_timeout jout_for hostout_for
-export REPO_ROOT OUT LOGS PODMAN_RUN_CAPS DEST
+export REPO_ROOT OUT LOGS PODMAN_RUN_CAPS DEST PROBE
 export ORACLE 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
@@ -352,11 +372,26 @@ while [ "$#" -gt 0 ]; do
     --tier=*) TIER_SEL="${1#--tier=}"; shift ;;
     --stale) STALE_ONLY=1; shift ;;
     --to-status) DEST=status; shift ;;
-    --probe) DEST=probe; mkdir -p "$REPO_ROOT/output/scratch/p47"; shift ;;
+    --probe)
+      DEST=probe; shift
+      # Optional NAME argument. A bare `--probe` keeps the p47 default so the
+      # original invocation in the 2026-08-30 session notes still works verbatim.
+      case "${1:-}" in ""|-*) : ;; *) PROBE="$1"; shift ;; esac
+      [ -n "$PROBE" ] && [ -f "$REPO_ROOT/output/s4-oracles/$PROBE" ] &&
+        [ -x "$REPO_ROOT/output/s4-oracles/$PROBE" ] || {
+        echo "run-cohort-census: no probe BINARY at output/s4-oracles/${PROBE:-<empty>}" >&2
+        echo "  (-f as well as -x: [ -x <directory> ] is true, so an empty name passed)" >&2
+        exit 2; }
+      mkdir -p "$REPO_ROOT/output/scratch/$PROBE" ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done
-export DEST
+# PROBE travels with DEST: census_one runs under `xargs bash -c`, so ONLY exported
+# vars survive. Unexported, $PROBE was empty inside oracle_for and every peer was
+# handed ORACLE=/work/output/s4-oracles/ -- a DIRECTORY, which is why the guard below
+# is -f -x and not the -x it started as. `[ -x <dir> ]` is TRUE, so the check that
+# existed to catch a missing probe passed vacuously on the emptiest possible name.
+export DEST PROBE
 
 CUR_REF="$(awk -F= '/^ref[ \t]*=/{gsub(/[ \t]/,"",$2); print $2; exit}' "$REPO_ROOT/tools/oracle-pin.env")"
 
@@ -433,7 +468,7 @@ echo "=============================================================="
 # oracle pin. Summarize and stop.
 if [ "$DEST" = "probe" ]; then
   echo
-  echo "probe results (output/scratch/p47/) — NOT a conformance measurement:"
+  echo "probe results (output/scratch/$PROBE/) — NOT a conformance measurement:"
   printf '  %-24s %-8s %-28s %s\n' PEER STATUS CODE TRUSTED
   for peer in "${PEERS[@]}"; do
     f="$(hostout_for "$peer")"

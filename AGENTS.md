@@ -1800,6 +1800,64 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   in a second, and it would have caught the fortran dangler and every link the findings move
   broke. It does **not** catch inline-code paths in backticks, prose fragments, or a path printed
   by a tool at runtime, which is why the hand-walk stays.
+- **AN ENV OVERRIDE DROPPED AT A CONTAINER BOUNDARY PRODUCES A SUCCESSFUL RUN AND A WRONG-SHAPED
+  ARTIFACT — the discriminator is the OUTPUT SHAPE, never the exit code.** RATIFIED 2026-09-06,
+  found by driving a probe across the whole roster for the first time (`tools/put-probe`, §6.3's
+  put-admission census). **Eight of 46 peers silently ran the REAL validator** and wrote a perfectly
+  good 758-check conformance report where a probe report was expected. Nothing failed: the run exits
+  0, the file exists, `check-set-gate` would have been happy with it, and the only thing that says
+  the measurement never happened is that the JSON has a `checks` key instead of a `cases` key.
+  **The claim that said otherwise was ours, in the tree, and it was a source read wearing a
+  measurement's clothes.** `run-cohort-census.sh` carried *"(Checked across all 46: only these
+  two.)"* beside a `lean`/`unison` special case. That is the standing false-negative class — sixth
+  occurrence, after the `dart`/`ruby` NUL byte, F51's wrong vocabulary, the de-versioning sweep's
+  un-spannable pattern, the `host.err` right-token-wrong-branch, and the H4 packaging survey keyed on
+  a self-authored filename list. **Enforcement, and it is one line rather than a grep: classify the
+  ARTIFACT, not the source.** A conformance report sitting in the probe directory *is* a dropped
+  `ORACLE`, and that check is indifferent to how many ways a harness can drop one.
+  **TWO CAUSES, AND A SURVEY THAT FINDS ONE MISSES THE OTHER.** Five were self-relaunching harnesses
+  (`forth fortran oz rexx smalltalk`) that `exec podman run` and forward nothing — so their own
+  header's *"ORACLE/PORT/NOBUILD/VALIDATE env overrides"* line had been false for as long as it had
+  existed. Three were hand-written branches **in the census itself** (`prolog rust-wasm
+  rust-wasm-wasmtime`) predating `run_podman`'s `${ORACLE:+...}`. `apl` `lean` `unison` carry the
+  same harness defect and were masked because the census happens to enter their containers directly.
+  Fixed at the SOURCE — all eight harnesses forward their own documented overrides — which also
+  **closes the carried `JSON_OUT`-not-forwarded-through-`lean` item**, where the documented escape
+  hatch was dropped and a bare run therefore wrote the TRACKED report. Same defect, different
+  variable, already on the list.
+  **`${VAR:+-e VAR="$VAR"}`, never `-e VAR=${VAR:-default}`** — the second form SETS policy while
+  appearing to forward it, which is the `cobol` `run-s4-host.sh` defect this file already records.
+  **Verify a forwarding fix in BOTH directions or it is unmeasured:** the probe direction (6 of the 8
+  now produce probe reports) says the variable arrives; only the conformance direction says the edit
+  changed nothing — `lean` and `smalltalk` re-measured through the edited harnesses reproduced their
+  committed reports at **exactly 0 of 758** severities different.
+  *(Sub-lesson, and it is the examined-zero-things class inside the fix itself: **`[ -x <directory> ]`
+  is TRUE.** The guard added to reject a missing probe binary was `[ -x "$dir/$PROBE" ]`, and with
+  `$PROBE` empty — it was unexported and `census_one` runs under `xargs bash -c`, so only exported
+  vars survive — it tested the DIRECTORY and passed. Every peer was then handed
+  `ORACLE=/work/output/s4-oracles/` and died with `Is a directory`. The guard written to catch a
+  missing name passed vacuously on the emptiest possible name; it is `-n` and `-f` and `-x` now.)*
+- **A PROBE THAT FORWARDS MATERIAL IT DID NOT AUTHOR MUST VERIFY THAT MATERIAL AGAINST ITS OWN KEY,
+  OR A SLICING BUG AND A PEER DEFECT ARE THE SAME OBSERVATION.** Candidate (first occurrence,
+  enforcement exact). `put-probe` must replay the handshake's capability material verbatim on every
+  authenticated EXECUTE — §5.2 step 3 resolves the cap out of that map — so it slices raw byte spans
+  out of the response rather than re-encoding a decoded structure, because a one-byte difference
+  changes a content hash and an unverifiable capability looks exactly like a peer that refuses.
+  **The span arithmetic is then unfalsifiable from the outside**: five peers refused or dropped the
+  probe's valid `put`, and "my slicing is wrong" and "these five peers are strict" predict the
+  identical output. The self-check re-decodes every forwarded entry and re-hashes its `{type, data}`
+  against the map key it is filed under (§3.1 requires them equal); it reports **0 of 4 bad on every
+  peer**, and *that* is what licenses reporting the five as a peer-side observation instead of a
+  probe bug. **Generalize: whenever a harness replays bytes it received, assert the invariant the
+  sender was obliged to satisfy — the assertion costs ten lines and converts an unfalsifiable
+  suspicion into a measurement.**
+  **And the POSITIVE control caught two probe faults before either could become a cohort finding**,
+  which is the p47 lesson paying out on its second instrument: a stray decode call left the
+  forwarded material silently empty (`403 capability_denied`), and then a `system/peer` entity
+  carrying `peer_id` in its hashable basis produced `401 unresolvable_grantee`. **§3.5 (v7.65) says
+  `peer_id` MUST NOT be in that basis; §4.6's own pseudocode still shows the pre-v7.65 three-field
+  form**, and the probe had been written against the pseudocode. Both would have published as
+  cohort-wide defects. **A wire probe's first two runs are about the probe.**
 - **A GATE THAT EXAMINES ZERO THINGS PRINTS THE SAME WORD AS ONE THAT EXAMINES FORTY-SIX —
   always print the COUNT, and assert on it in the regression suite.** RATIFIED 2026-08-30
   (second occurrence of the vacuous-control class after `check-set-gate`'s `Path.stem`

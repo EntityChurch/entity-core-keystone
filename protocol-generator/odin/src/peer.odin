@@ -550,12 +550,12 @@ tree_handler :: proc(p: ^Peer, exec: Entity) -> Outcome {
 		}
 		path := canonicalize(p.local_peer, target)
 		params, has_params, _ := entity_field_entity(exec, "params", a)
-		entity: Entity
+		raw_entity: Ec_Value
 		has_entity := false
 		expected: []u8 = nil
 		if has_params {
-			if inner, hi, _ := entity_field_entity(params, "entity", a); hi {
-				entity = inner
+			if inner, hi := entity_field(params, "entity"); hi {
+				raw_entity = inner
 				has_entity = true
 			}
 			if ex, he := entity_bytes(params, "expected_hash"); he {
@@ -577,6 +577,10 @@ tree_handler :: proc(p: ^Peer, exec: Entity) -> Outcome {
 			return err_out(409, "hash_mismatch", path)
 		}
 		if has_entity {
+			entity, refuse_code, refuse_msg, admitted := admit_put(raw_entity, a)
+			if !admitted {
+				return err_out(400, refuse_code, refuse_msg)
+			}
 			store_bind(&p.store, path, entity, context.allocator)
 			he, _ := entity_make("system/hash", bytes_val(entity.hash, a), a)
 			return ok_out(he)
@@ -584,6 +588,112 @@ tree_handler :: proc(p: ^Peer, exec: Entity) -> Outcome {
 		return err_out(400, "unexpected_params", "put: missing entity")
 	}
 	return err_out(501, "unsupported_operation", op)
+}
+
+// Digest byte length for a `content_hash_format` code per the §1.2 seed table, or 0
+// when this peer cannot VERIFY that code. The total wire length is this plus the
+// varint prefix, which is not a constant of the code (§7.3): codes >= 0x80 occupy
+// more than one byte.
+@(private = "file")
+hash_digest_len :: proc(format_code: u64) -> int {
+	switch format_code {
+	case 0x00:
+		return 32
+	case 0x01:
+		return 48
+	}
+	return 0
+}
+
+// §6.3's `put` admission ladder (normative, 0.8.2.11).
+//
+// `put` is a RECEIPT path: the submitter authors the entity, the peer validates what
+// it received (§1.8 item 1) and MUST NOT author a submitted entity's content_hash on
+// the submitter's behalf. Two ordered steps:
+//
+//   1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data` (any CBOR
+//      value; null is a legal payload), and a `content_hash` that is a well-formed
+//      system/hash whose total byte length matches its format code (§1.2). Any failure
+//      -> 400 invalid_request. A well-formed hash naming a format code this peer
+//      cannot verify is the separate §1.2 ingest-dispatch case -> 400
+//      unsupported_content_hash_format.
+//   2. HASH — carried content_hash vs content_hash({type, data}). Disagreement -> 400
+//      hash_mismatch.
+//
+// Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's inputs
+// are exactly what step 1 establishes, so a submission that is both malformed and
+// mis-hashed is step 1's and answers invalid_request.
+//
+// Structural admission is not semantic validation: `data` is never checked against the
+// type named by `type`.
+@(private = "file")
+admit_put :: proc(
+	v: Ec_Value,
+	a := context.allocator,
+) -> (entity: Entity, code: string, message: string, admitted: bool) {
+	m, is_map := v.(Ec_Map)
+	if !is_map {
+		return Entity{}, "invalid_request", "put: entity is not a map", false
+	}
+	_ = m
+
+	tv, has_type := map_get(v, "type")
+	typ, is_text := Ec_Text(""), false
+	if has_type {
+		typ, is_text = tv.(Ec_Text)
+	}
+	if !is_text || len(string(typ)) == 0 {
+		return Entity{}, "invalid_request",
+			"put: entity.type absent, empty or not a text string", false
+	}
+	// Presence, not truthiness: a CBOR null is a legal `data` payload and map_get
+	// reports it present, which is exactly the test §6.3 wants.
+	data_src, has_data := map_get(v, "data")
+	if !has_data {
+		return Entity{}, "invalid_request", "put: entity.data absent", false
+	}
+	chv, has_ch := map_get(v, "content_hash")
+	carried, is_bytes := Ec_Bytes(nil), false
+	if has_ch {
+		carried, is_bytes = chv.(Ec_Bytes)
+	}
+	if !is_bytes || len(([]u8)(carried)) == 0 {
+		return Entity{}, "invalid_request",
+			"put: entity.content_hash absent or not a byte string", false
+	}
+	format_code, consumed, verr := varint_decode(([]u8)(carried))
+	if verr != .None {
+		return Entity{}, "invalid_request",
+			"put: entity.content_hash is not a well-formed system/hash", false
+	}
+	digest_len := hash_digest_len(format_code)
+	if digest_len == 0 {
+		// §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+		// invalid_request: the shape is fine, the algorithm is what we lack.
+		return Entity{}, "unsupported_content_hash_format",
+			"put: unsupported content_hash_format", false
+	}
+	if len(([]u8)(carried)) != consumed + digest_len {
+		return Entity{}, "invalid_request",
+			"put: content_hash length does not match its format code", false
+	}
+
+	preimage := Ec_Map([]Ec_Pair{{Ec_Text("type"), tv}, {Ec_Text("data"), data_src}})
+	computed, herr := content_hash(preimage, format_code, a)
+	if herr != .None || !slice.equal(computed, ([]u8)(carried)) {
+		return Entity{}, "hash_mismatch",
+			"put: content_hash does not match content_hash({type, data})", false
+	}
+
+	// The carried hash IS the entity's address; recomputing it into the store would be
+	// the authoring arm §6.3 forbids. Built field-by-field rather than through
+	// entity_make, which hardcodes format 0x00.
+	e := Entity {
+		typ  = strings.clone(string(typ), a),
+		data = value_clone(data_src, a),
+		hash = slice.clone(([]u8)(carried), a),
+	}
+	return e, "", "", true
 }
 
 // ── capability handler (§6.2) ─────────────────────────────────────────────────

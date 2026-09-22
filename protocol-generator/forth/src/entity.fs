@@ -32,6 +32,20 @@ s" EC_TRACE" getenv nip 0<> constant EC-TRACE?
   daddr du bytes,
   mk am-span ;
 
+\ ent-admitted ( taddr tu daddr du haddr hu -- eaddr eu )  the §6.3 RECEIPT
+\ constructor: bind an entity to a content_hash the CALLER has already verified
+\ against hash-content. ent-make AUTHORS a hash; on the system/tree:put path that
+\ is exactly what §6.3 (0.8.2.11) forbids — the submitter authors, the peer
+\ verifies. Reachable only from the admission ladder, which has just proved the
+\ carried bytes match.
+: ent-admitted { taddr tu daddr du haddr hu -- eaddr eu }
+  am-mark { mk }
+  [char] E b,
+  tu 4 >be  taddr tu bytes,
+  hu 4 >be  haddr hu bytes,
+  daddr du bytes,
+  mk am-span ;
+
 \ ── field accessors over the (addr,len) record ──
 \ NOTE: @be is ( base-addr offset width -- u ) — always pass an explicit offset (A-FT-011).
 : ent-type ( eaddr -- t-addr t-u )

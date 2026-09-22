@@ -18,6 +18,8 @@
 module Peer
 
 using ..Cbor: CborMap
+using ..Varint: decode_varint
+using ..ContentHash: content_hash
 using ..Model
 using ..Model: Entity, Envelope, make_entity, entity_tocbor, textfield, bytesfield,
                uintfield, entityfield, included_get, efield, mapget
@@ -124,6 +126,8 @@ end
 
 # ── helpers ───────────────────────────────────────────────────────────────────────────
 err(status::Int, code::AbstractString)::HandlerResult = (status, error_result(code), NO_INCLUDED)
+err(status::Int, code::AbstractString, message::AbstractString)::HandlerResult =
+    (status, error_result(code, message), NO_INCLUDED)
 okr(result::Entity)::HandlerResult = (200, result, NO_INCLUDED)
 okr(result::Entity, inc::Vector{Inc})::HandlerResult = (200, result, inc)
 
@@ -310,7 +314,7 @@ function tree_handler(p::Peer_t, exec::Entity)::HandlerResult
         target === nothing && return err(400, "ambiguous_resource")
         path = canonicalize(p.peer_id, target)
         params = entityfield(exec, "params")
-        entity = params === nothing ? nothing : entityfield(params, "entity")
+        raw_entity = params === nothing ? nothing : efield(params, "entity")
         expected = params === nothing ? nothing : bytesfield(params, "expected_hash")
         current = store_hash_at(p.store, path)
         if expected !== nothing
@@ -318,11 +322,86 @@ function tree_handler(p::Peer_t, exec::Entity)::HandlerResult
             cas_ok = expected == zero33 ? current === nothing : (current !== nothing && current == expected)
             cas_ok || return err(409, "hash_mismatch")
         end
-        entity === nothing && return err(400, "unexpected_params")
+        raw_entity === nothing && return err(400, "unexpected_params")
+        admitted = admit_put(raw_entity)
+        admitted isa Entity || return admitted
+        entity = admitted
         store_bind!(p.store, path, entity)
         return okr(make_entity("system/hash", entity.hash))
     end
     return err(501, "unsupported_operation")
+end
+
+# Digest byte length for a `content_hash_format` code per the §1.2 seed table, or
+# `nothing` when this peer cannot VERIFY that code. The total wire length is this plus
+# the varint prefix, which is not a constant of the code (§7.3): codes >= 0x80 occupy
+# more than one byte.
+hash_digest_len(code::Integer) = code == 0 ? 32 : (code == 1 ? 48 : nothing)
+
+# PRESENCE, not truthiness. `mapget` answers `nothing` for an absent key AND for a key
+# bound to a CBOR null, and §6.3 makes a null `data` a legal payload — so the presence
+# test has to walk the pairs.
+has_text_key(m::CborMap, key::AbstractString) = any(p -> p.first == key, m.pairs)
+has_text_key(::Any, ::AbstractString) = false
+
+"""
+§6.3's `put` admission ladder (normative, 0.8.2.11).
+
+`put` is a RECEIPT path: the submitter authors the entity, the peer validates what it
+received (§1.8 item 1) and MUST NOT author a submitted entity's `content_hash` on the
+submitter's behalf. Two ordered steps:
+
+ 1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data` (any CBOR
+    value; null is a legal payload), and a `content_hash` that is a well-formed
+    system/hash whose total byte length matches its format code (§1.2). Any failure ->
+    400 invalid_request. A well-formed hash naming a format code this peer cannot
+    verify is the separate §1.2 ingest-dispatch case -> 400
+    unsupported_content_hash_format.
+ 2. HASH — carried content_hash vs content_hash({type, data}). Disagreement -> 400
+    hash_mismatch.
+
+Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's inputs are
+exactly what step 1 establishes, so a submission that is both malformed and mis-hashed
+is step 1's and answers invalid_request.
+
+Structural admission is not semantic validation: `data` is never checked against the
+type named by `type`.
+
+Returns the admitted `Entity`, or the refusal `HandlerResult`.
+"""
+function admit_put(v)
+    refuse(code, message) = err(400, code, message)
+
+    v isa CborMap || return refuse("invalid_request", "put: entity is not a map")
+    typ = mapget(v, "type")
+    (typ isa AbstractString && !isempty(typ)) ||
+        return refuse("invalid_request", "put: entity.type absent, empty or not a text string")
+    has_text_key(v, "data") || return refuse("invalid_request", "put: entity.data absent")
+    data = mapget(v, "data")
+    carried = mapget(v, "content_hash")
+    (carried isa AbstractVector{UInt8} && !isempty(carried)) ||
+        return refuse("invalid_request", "put: entity.content_hash absent or not a byte string")
+
+    local format_code, consumed
+    try
+        format_code, consumed = decode_varint(carried, 1)
+    catch
+        return refuse("invalid_request", "put: entity.content_hash is not a well-formed system/hash")
+    end
+    digest_len = hash_digest_len(format_code)
+    # §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+    # invalid_request: the shape is fine, the algorithm is what we lack.
+    digest_len === nothing &&
+        return refuse("unsupported_content_hash_format", "put: unsupported content_hash_format")
+    length(carried) == consumed + digest_len ||
+        return refuse("invalid_request", "put: content_hash length does not match its format code")
+
+    content_hash(format_code, String(typ), data) == carried ||
+        return refuse("hash_mismatch", "put: content_hash does not match content_hash({type, data})")
+
+    # The carried hash IS the entity's address; recomputing it into the store would be
+    # the authoring arm §6.3 forbids.
+    return Entity(String(typ), data, Vector{UInt8}(carried))
 end
 
 # ── capability handler (§6.2) ─────────────────────────────────────────────────────────

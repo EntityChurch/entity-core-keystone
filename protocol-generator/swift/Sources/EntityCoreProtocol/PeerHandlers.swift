@@ -186,8 +186,15 @@ extension Peer {
             guard let p = params(ctx.execute) else {
                 return try errorResponse(requestID: requestID, status: 400, code: "bad_request")
             }
-            guard let entity = decodeEntity(p.mapValue("entity")) else {
+            guard let rawEntity = p.mapValue("entity") else {
                 return try errorResponse(requestID: requestID, status: 400, code: "bad_request")
+            }
+            let entity: Entity
+            switch admitPut(rawEntity) {
+            case let .refused(code, message):
+                return try errorResponse(requestID: requestID, status: 400, code: code, message: message)
+            case let .admitted(e):
+                entity = e
             }
             // §3.9 CAS: expected_hash present → must match current binding (zero =
             // create-only). Mismatch → 409 conflict.
@@ -258,6 +265,86 @@ extension Peer {
 
     /// Decode a `core/entity` materialized `{type, data, content_hash?}` map into
     /// an `Entity`, recomputing the content_hash (§7.1; do not trust the wire hash).
+    /// The outcome of §6.3's `put` admission ladder — an admitted entity, or the
+    /// 400-row the submission fell on.
+    enum PutAdmission {
+        case admitted(Entity)
+        case refused(code: String, message: String)
+    }
+
+    /// Digest byte length for a `content_hash_format` code per the §1.2 seed
+    /// table, or nil when this peer cannot VERIFY that code. The total wire
+    /// length is this plus the varint prefix, which is not a constant of the
+    /// code (§7.3): codes ≥ 0x80 occupy more than one byte.
+    func hashDigestLen(_ formatCode: UInt64) -> Int? {
+        switch formatCode {
+        case 0x00: return 32
+        case 0x01: return 48
+        case 0x02: return 64
+        default: return nil
+        }
+    }
+
+    /// §6.3's `put` admission ladder (normative, 0.8.2.11).
+    ///
+    /// `put` is a RECEIPT path: the submitter authors the entity, the peer
+    /// validates what it received (§1.8 item 1) and MUST NOT author a submitted
+    /// entity's `content_hash` on the submitter's behalf. Two ordered steps:
+    ///
+    /// 1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data`
+    ///    (any CBOR value; null is a legal payload), and a `content_hash` that is
+    ///    a well-formed `system/hash` whose total byte length matches its format
+    ///    code (§1.2). Any failure → 400 `invalid_request`. A well-formed hash
+    ///    naming a format code this peer cannot verify is the separate §1.2
+    ///    ingest-dispatch case → 400 `unsupported_content_hash_format`.
+    /// 2. HASH — carried `content_hash` vs `content_hash({type, data})`.
+    ///    Disagreement → 400 `hash_mismatch`.
+    ///
+    /// Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step
+    /// 2's inputs are exactly what step 1 establishes, so a submission that is
+    /// both malformed and mis-hashed is step 1's and answers `invalid_request`.
+    ///
+    /// Structural admission is not semantic validation: `data` is never checked
+    /// against the type named by `type`.
+    func admitPut(_ v: CBORValue) -> PutAdmission {
+        guard case .map = v else {
+            return .refused(code: "invalid_request", message: "put: entity is not a map")
+        }
+        guard let type = v.mapValue("type")?.textValue, !type.isEmpty else {
+            return .refused(code: "invalid_request",
+                            message: "put: entity.type absent, empty or not a text string")
+        }
+        guard let data = v.mapValue("data") else {
+            return .refused(code: "invalid_request", message: "put: entity.data absent")
+        }
+        guard let carried = v.mapValue("content_hash")?.bytesValue, !carried.isEmpty else {
+            return .refused(code: "invalid_request",
+                            message: "put: entity.content_hash absent or not a byte string")
+        }
+        guard let (formatCode, next) = try? Varint.decode(carried, at: 0) else {
+            return .refused(code: "invalid_request",
+                            message: "put: entity.content_hash is not a well-formed system/hash")
+        }
+        guard let digestLen = hashDigestLen(formatCode) else {
+            // §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it.
+            // NOT invalid_request: the shape is fine, the algorithm is what we lack.
+            return .refused(code: "unsupported_content_hash_format",
+                            message: "put: unsupported content_hash_format")
+        }
+        guard carried.count == next + digestLen else {
+            return .refused(code: "invalid_request",
+                            message: "put: content_hash length does not match its format code")
+        }
+        guard let computed = try? ContentHash.contentHash(formatCode: formatCode, type: type, data: data),
+              computed.elementsEqual(carried) else {
+            return .refused(code: "hash_mismatch",
+                            message: "put: content_hash does not match content_hash({type, data})")
+        }
+        // The carried hash IS the entity's address; recomputing it into the store
+        // would be the authoring arm §6.3 forbids.
+        return .admitted(Entity(type: type, data: data, contentHash: carried))
+    }
+
     func decodeEntity(_ v: CBORValue?) -> Entity? {
         guard let v, let type = v.textAt("type") else { return nil }
         let data = v.mapValue("data") ?? .map([])

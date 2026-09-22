@@ -23,7 +23,15 @@ if [ ! -d /work/protocol-generator/forth ]; then
   REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
   . "$REPO_ROOT/tools/podman-caps.sh"
   IMAGE="entity-core-keystone/forth-toolchain:latest"
-  exec podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z \
+  # Forward this script's OWN documented env overrides across the container
+  # boundary. Without this an ORACLE= set by the caller is silently DROPPED and
+  # the inner run falls back to the real validator -- the run then SUCCEEDS and
+  # writes a perfectly good conformance report where a probe report was expected.
+  # Measured 2026-09-06: 5 of these 8 harnesses did exactly that during the §6.3
+  # put-admission sweep. `${VAR:+...}` so an unset var adds no flag and the inner
+  # default still decides -- forwarding, never policy.
+  exec podman run ${ORACLE:+-e ORACLE="$ORACLE"} ${JSON_OUT:+-e JSON_OUT="$JSON_OUT"} ${NOBUILD:+-e NOBUILD="$NOBUILD"} ${VALIDATE:+-e VALIDATE="$VALIDATE"} \
+    $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z \
     -w /work/protocol-generator/forth "$IMAGE" sh /work/protocol-generator/forth/run-s4.sh "$@"
 fi
 

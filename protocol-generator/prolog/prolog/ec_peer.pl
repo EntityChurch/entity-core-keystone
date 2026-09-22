@@ -455,15 +455,103 @@ handle_op("system/tree", "put", ctx(Peer, _, Exec, _, _), Outcome) :- !,
     -> ( \+ path_flex_ok(Target)
        -> error_result("invalid_path", Target, R), Outcome = outcome(400, R, [])
        ;  canonicalize(Local, Target, Path),
-          ( ent_entity(Exec, "params", Params), ent_entity(Params, "entity", Entity)
+          ( ent_entity(Exec, "params", Params), ent_field(Params, "entity", RawEntity)
           -> ( cas_ok(StoreId, Path, Params)
-             -> store_bind(StoreId, Path, Entity),
-                entity_hash(Entity, H), string_codes(H, HC),
-                make_entity("system/hash", map(["hash"-bytes(HC)]), HashE),
-                Outcome = outcome(200, HashE, [])
+             -> admit_put(RawEntity, Admission),
+                ( Admission = admitted(Entity)
+                -> store_bind(StoreId, Path, Entity),
+                   entity_hash(Entity, H), string_codes(H, HC),
+                   make_entity("system/hash", map(["hash"-bytes(HC)]), HashE),
+                   Outcome = outcome(200, HashE, [])
+                ;  Admission = refused(Outcome) )
              ;  error_result("hash_mismatch", Path, R), Outcome = outcome(409, R, []) )
           ;  error_result("unexpected_params", "put: missing entity", R), Outcome = outcome(400, R, []) ) )
     ;  error_result("ambiguous_resource", "tree: missing resource target", R), Outcome = outcome(400, R, []) ).
+
+% ── §6.3 put admission (normative, 0.8.2.11) ──
+%
+% `put` is a RECEIPT path: the submitter authors the entity, the peer validates
+% what it received (§1.8 item 1) and MUST NOT author a submitted entity's
+% content_hash on the submitter's behalf. Two ordered steps:
+%
+%   1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data` (any
+%      CBOR value; null is a legal payload), and a `content_hash` that is a
+%      well-formed system/hash whose total byte length matches its format code
+%      (§1.2). Any failure -> 400 invalid_request. A well-formed hash naming a
+%      format code this peer cannot verify is the separate §1.2 ingest-dispatch
+%      case -> 400 unsupported_content_hash_format.
+%   2. HASH — carried content_hash vs content_hash({type, data}). Disagreement ->
+%      400 hash_mismatch.
+%
+% Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's
+% inputs are exactly what step 1 establishes, so a submission that is both
+% malformed and mis-hashed is step 1's and answers invalid_request. The clause
+% order below IS that ordering — each rung cuts, so a later rung is unreachable
+% once an earlier one has committed.
+%
+% Structural admission is not semantic validation: `data` is never checked
+% against the type named by `type`.
+
+% Digest byte length for a content_hash_format code per the §1.2 seed table.
+% Fails for a code this peer cannot VERIFY — the total wire length is this plus
+% the varint prefix, which is not a constant of the code (§7.3).
+hash_digest_len(0, 32).
+hash_digest_len(1, 48).
+
+% Decode one multicodec LEB128 varint from a code list. FAILS (rather than
+% throwing) when the prefix runs off the end, which is the truncated case.
+varint_decode_codes(Codes, Value, Consumed) :-
+    varint_decode_codes_(Codes, 0, 0, 0, Value, Consumed).
+varint_decode_codes_([B|Rest], Shift, Acc, N, Value, Consumed) :-
+    Acc1 is Acc \/ ((B /\ 0x7f) << Shift),
+    N1 is N + 1,
+    ( B /\ 0x80 =:= 0
+    -> Value = Acc1, Consumed = N1
+    ;  Shift1 is Shift + 7,
+       varint_decode_codes_(Rest, Shift1, Acc1, N1, Value, Consumed) ).
+
+put_refusal(Code, Message, refused(outcome(400, R, []))) :-
+    error_result(Code, Message, R).
+
+admit_put(V, Result) :-
+    ( V = map(Pairs)
+    -> admit_put_map(Pairs, Result)
+    ;  put_refusal("invalid_request", "put: entity is not a map", Result) ).
+
+admit_put_map(Pairs, Result) :-
+    ( memberchk("type"-Type, Pairs), string(Type), Type \== ""
+    -> ( memberchk("data"-Data, Pairs)          % PRESENCE: a CBOR null is legal
+       -> ( memberchk("content_hash"-bytes(CarriedCodes), Pairs), CarriedCodes \== []
+          -> admit_put_hash(Type, Data, CarriedCodes, Result)
+          ;  put_refusal("invalid_request",
+                         "put: entity.content_hash absent or not a byte string", Result) )
+       ;  put_refusal("invalid_request", "put: entity.data absent", Result) )
+    ;  put_refusal("invalid_request",
+                   "put: entity.type absent, empty or not a text string", Result) ).
+
+admit_put_hash(Type, Data, CarriedCodes, Result) :-
+    ( varint_decode_codes(CarriedCodes, FormatCode, Consumed)
+    -> ( hash_digest_len(FormatCode, DigestLen)
+       -> length(CarriedCodes, Total),
+          ( Total =:= Consumed + DigestLen
+          -> string_codes(Carried, CarriedCodes),
+             cbor_encode_bytes(Data, DataBytes),
+             ec_content_hash_with_format(Type, DataBytes, FormatCode, Computed),
+             ( Computed == Carried
+             -> % The carried hash IS the entity's address; recomputing it into
+                % the store would be the authoring arm §6.3 forbids.
+                Result = admitted(entity(Type, Data, Carried))
+             ;  put_refusal("hash_mismatch",
+                            "put: content_hash does not match content_hash({type, data})",
+                            Result) )
+          ;  put_refusal("invalid_request",
+                         "put: content_hash length does not match its format code", Result) )
+       %  §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+       %  invalid_request: the shape is fine, the algorithm is what we lack.
+       ;  put_refusal("unsupported_content_hash_format",
+                      "put: unsupported content_hash_format", Result) )
+    ;  put_refusal("invalid_request",
+                   "put: entity.content_hash is not a well-formed system/hash", Result) ).
 
 % §3.9 compare-and-swap. expected_hash absent → always admit. A 33-byte zero hash
 % is create-only (admit iff the path is currently unbound). A non-zero hash must

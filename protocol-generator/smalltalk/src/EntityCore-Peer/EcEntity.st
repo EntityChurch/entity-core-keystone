@@ -107,6 +107,20 @@ entity class compile: 'fromWireMap: anEcMap
 		ent contentHash = carried bytes ifFalse: [ ^ EcWireError signal: ''entity: content_hash mismatch'' ] ].
 	^ ent'.
 
+"admittedType:data:hash: — the §6.3 RECEIPT constructor: bind an entity to a content_hash
+ the CALLER has already verified against content_hash({type, data}).
+
+ Every other constructor AUTHORS a hash (contentHash memoizes a fresh EcContentHash). On the
+ system/tree:put path that is exactly what §6.3 (0.8.2.11) forbids — the submitter authors,
+ the peer verifies. This takes the carried bytes verbatim and is reachable only from the
+ admission ladder, which has just proved they match."
+entity class compile: 'admittedType: aTypeString data: aDataValue hash: verifiedHash
+	| e |
+	e := self type: aTypeString data: aDataValue.
+	e setContentHash: verifiedHash.
+	^ e'.
+entity compile: 'setContentHash: aByteArray  hash := aByteArray'.
+
 "fromWireValue: — accept either a nested wire map OR a bytes-wrapped CBOR of one."
 entity class compile: 'fromWireValue: anEcValue
 	(anEcValue isKindOf: EcMap) ifTrue: [ ^ self fromWireMap: anEcValue ].

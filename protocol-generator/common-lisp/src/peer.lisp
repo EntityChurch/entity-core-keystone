@@ -378,6 +378,85 @@ caller leading slash whose first seg is not a peer_id, ./ ../ interior empty."
                    (ok e)))
              (err 404 "not_found" path)))))))
 
+(defun hash-digest-len (format-code)
+  "Digest byte length for a content_hash_format code per the §1.2 seed table, or
+NIL when this peer cannot VERIFY that code. The total wire length is this plus
+the varint prefix, which is not a constant of the code (§7.3): codes >= 0x80
+occupy more than one byte."
+  (case format-code (0 32) (1 48) (t nil)))
+
+(defun admit-put (v)
+  "§6.3's `put` admission ladder (normative, 0.8.2.11).
+
+`put` is a RECEIPT path: the submitter authors the entity, the peer validates
+what it received (§1.8 item 1) and MUST NOT author a submitted entity's
+content_hash on the submitter's behalf. Two ordered steps:
+
+  1. STRUCTURE — a map carrying a non-empty text `type', a PRESENT `data' (any
+     CBOR value; null is a legal payload), and a `content_hash' that is a
+     well-formed system/hash whose total byte length matches its format code
+     (§1.2). Any failure -> 400 invalid_request. A well-formed hash naming a
+     format code this peer cannot verify is the separate §1.2 ingest-dispatch
+     case -> 400 unsupported_content_hash_format.
+  2. HASH — carried content_hash vs content_hash({type, data}). Disagreement ->
+     400 hash_mismatch.
+
+Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's
+inputs are exactly what step 1 establishes, so a submission that is both
+malformed and mis-hashed is step 1's and answers invalid_request.
+
+Structural admission is not semantic validation: `data' is never checked against
+the type named by `type'.
+
+Returns (values ENTITY NIL) when admitted, or (values NIL OUTCOME) when refused."
+  (flet ((refuse (code message) (values nil (err 400 code message))))
+    (if (not (cbor-map-p v))
+        (refuse "invalid_request" "put: entity is not a map")
+        (let ((typ (map-field v "type"))
+              ;; PRESENCE, not truthiness: `data' may legally be a CBOR
+              ;; null, which map-field cannot distinguish from absence.
+              (has-data (and (assoc "data" (cbor-map-pairs v) :test #'equal) t))
+              (ch (map-field v "content_hash")))
+          (cond
+            ((not (and (stringp typ) (plusp (length typ))))
+             (refuse "invalid_request" "put: entity.type absent, empty or not a text string"))
+            ((not has-data)
+             (refuse "invalid_request" "put: entity.data absent"))
+            ((not (and (bytes-p ch) (plusp (length (bytes-octets ch)))))
+             (refuse "invalid_request" "put: entity.content_hash absent or not a byte string"))
+            (t
+             (let ((carried (bytes-octets ch))
+                   (data (map-field v "data")))
+               (multiple-value-bind (format-code next)
+                   ;; Catch ONLY the codec's own truncation condition. A blanket
+                   ;; (error () ...) here silently turns a program fault into a
+                   ;; conformance-shaped refusal — it did exactly that once, and
+                   ;; the positive control is what caught it.
+                   (handler-case (varint-decode carried 0)
+                     (truncated-input () (values nil nil)))
+                 (cond
+                   ((null format-code)
+                    (refuse "invalid_request"
+                            "put: entity.content_hash is not a well-formed system/hash"))
+                   ;; §1.2 / §4.7 row 5 — well-formed, but this peer cannot
+                   ;; interpret it. NOT invalid_request: the shape is fine, the
+                   ;; algorithm is what we lack.
+                   ((null (hash-digest-len format-code))
+                    (refuse "unsupported_content_hash_format"
+                            "put: unsupported content_hash_format"))
+                   ((/= (length carried) (+ next (hash-digest-len format-code)))
+                    (refuse "invalid_request"
+                            "put: content_hash length does not match its format code"))
+                   ((not (octets-equal carried
+                                       (content-hash (map-of "type" typ "data" data)
+                                                     format-code)))
+                    (refuse "hash_mismatch"
+                            "put: content_hash does not match content_hash({type, data})"))
+                   (t
+                    ;; The carried hash IS the entity's address; recomputing it
+                    ;; into the store would be the authoring arm §6.3 forbids.
+                    (values (%make-entity typ data carried) nil)))))))))))
+
 (defmethod handle-op ((h tree-handler) (op (eql :put)) ctx)
   (let* ((peer (handler-peer h)) (store (peer-store peer)) (exec (ctx-exec ctx))
          (target (exec-resource-target exec)))
@@ -387,7 +466,7 @@ caller leading slash whose first seg is not a peer_id, ./ ../ interior empty."
       (t
        (let* ((path (canonicalize (peer-local-peer peer) target))
               (params (entity-entity exec "params"))
-              (entity (and params (entity-entity params "entity")))
+              (raw-entity (and params (entity-field params "entity")))
               (expected (and params (entity-bytes params "expected_hash")))
               (current (store-hash-at store path))
               (zero33 (make-octet-vector 33))
@@ -395,9 +474,12 @@ caller leading slash whose first seg is not a peer_id, ./ ../ interior empty."
                             ((octets-equal expected zero33) (null current))
                             (t (and current (string= current (hex expected)))))))
          (if (not cas-ok) (err 409 "hash_mismatch" path)
-             (if entity
-                 (progn (store-bind store path entity)
-                        (ok (make-entity "system/hash" (map-of "hash" (make-bytes (entity-hash entity))))))
+             (if raw-entity
+                 (multiple-value-bind (entity refusal) (admit-put raw-entity)
+                   (or refusal
+                       (progn (store-bind store path entity)
+                              (ok (make-entity "system/hash"
+                                               (map-of "hash" (make-bytes (entity-hash entity))))))))
                  (err 400 "unexpected_params" "put: missing entity"))))))))
 
 ;; ── capability handler (§6.2) ─────────────────────────────────────────────────

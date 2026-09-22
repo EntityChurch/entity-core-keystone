@@ -532,6 +532,70 @@ s" 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz" 2constant B58-ALP
   st-hash-addr idx cells + @ dup 0= if drop 0 0 exit then
   st-hash-len idx cells + @ ;
 
+\ hash-digest-len ( fmt -- u )  digest byte length for a content_hash_format code per
+\ the §1.2 seed table, or 0 when this peer cannot VERIFY that code. The total wire
+\ length is this plus the varint prefix, which is not a constant of the code (§7.3):
+\ codes >= 0x80 occupy more than one byte.
+: hash-digest-len ( fmt -- u )
+  dup 0 = if drop 32 exit then
+  1 = if 48 else 0 then ;
+
+\ admit-put ( etv -- eaddr caddr cu maddr mu )  §6.3's put admission ladder
+\ (normative, 0.8.2.11). eaddr = 0 means REFUSED and (caddr cu)(maddr mu) carry the
+\ code + message; otherwise eaddr is the admitted entity and the strings are empty.
+\
+\ put is a RECEIPT path: the submitter authors the entity, the peer validates what it
+\ received (§1.8 item 1) and MUST NOT author a submitted entity's content_hash on the
+\ submitter's behalf. Two ORDERED steps, and the order is a data dependency rather
+\ than a choice — step 2's inputs are exactly what step 1 establishes, so a submission
+\ that is both malformed and mis-hashed is step 1's and answers invalid_request.
+\   1. STRUCTURE — a map with a non-empty text `type`, a PRESENT `data` (any CBOR
+\      value; null is legal), and a `content_hash` that is a well-formed system/hash
+\      whose total byte length matches its format code (§1.2). Any failure ->
+\      invalid_request; a well-formed hash naming a format code this peer cannot
+\      verify is the separate §1.2 row -> unsupported_content_hash_format.
+\   2. HASH — carried vs hash-content({type, data}) -> hash_mismatch.
+\ Structural admission is not semantic validation: `data` is never checked against the
+\ type named by `type`.
+: admit-put { etv -- eaddr caddr cu maddr mu }
+  etv c@ [char] m <> if
+    0 s" invalid_request" s" put: entity is not a map" exit then
+  etv s" type" tv-map-get dup 0= if drop
+    0 s" invalid_request" s" put: entity.type absent, empty or not a text string" exit then
+  dup c@ [char] t <> if drop
+    0 s" invalid_request" s" put: entity.type absent, empty or not a text string" exit then
+  tv-payload { tu } { taddr }
+  tu 0= if
+    0 s" invalid_request" s" put: entity.type absent, empty or not a text string" exit then
+  \ Presence, not truthiness: a CBOR null is a legal `data` payload and tv-map-get
+  \ answers its NODE address, which is exactly the presence test §6.3 wants.
+  etv s" data" tv-map-get dup 0= if drop
+    0 s" invalid_request" s" put: entity.data absent" exit then
+  { dtv }
+  etv s" content_hash" tv-map-get dup 0= if drop
+    0 s" invalid_request" s" put: entity.content_hash absent or not a byte string" exit then
+  dup c@ [char] b <> if drop
+    0 s" invalid_request" s" put: entity.content_hash absent or not a byte string" exit then
+  tv-payload { chu } { cha }
+  chu 0= if
+    0 s" invalid_request" s" put: entity.content_hash absent or not a byte string" exit then
+  cha chu ['] varint-decode catch if 2drop
+    0 s" invalid_request" s" put: entity.content_hash is not a well-formed system/hash" exit then
+  { nb } { fmt }
+  fmt hash-digest-len dup 0= if drop
+    \ §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+    \ invalid_request: the shape is fine, the algorithm is what we lack.
+    0 s" unsupported_content_hash_format" s" put: unsupported content_hash_format" exit then
+  { dl }
+  chu nb dl + <> if
+    0 s" invalid_request" s" put: content_hash length does not match its format code" exit then
+  taddr tu dtv dtv tv-node-len fmt hash-content { hu } { ha }
+  ha hu cha chu compare 0<> if
+    0 s" hash_mismatch" s" put: content_hash does not match content_hash({type, data})" exit then
+  \ The carried hash IS the entity's address; recomputing it into the store would be
+  \ the authoring arm §6.3 forbids.
+  taddr tu dtv dtv tv-node-len cha chu ent-admitted drop  0 0 0 0 ;
+
 \ tree-put ( exec -- status raddr ru )  §6.3 put + §3.9 CAS. params: {entity, expected_hash}.
 \ CAS: expected absent -> unconditional; zero-hash -> create-only (409 if bound); else must
 \ equal the current binding (409 hash_mismatch). Returns system/hash{hash} on success.
@@ -542,8 +606,6 @@ s" 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz" 2constant B58-ALP
   exec params-of dup 0= if drop 400 s" unexpected_params" 0 0 error-result exit then { p }
   p s" entity" ent-field { etv }                          \ the entity value TV
   etv 0= if 400 s" unexpected_params" 0 0 error-result exit then
-  etv c@ [char] m = if etv ent<-wire else                  \ nested entity wire-map
-    etv c@ [char] b = if etv tv-payload cbor-decode drop ent<-wire else 0 then then { ent }
   p s" expected_hash" ent-text { xa xu }                  \ CAS expectation (0 0 if absent)
   ca cu store-hash-at { curh curhu }                       \ current binding hash
   xu 0<> if
@@ -554,7 +616,10 @@ s" 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz" 2constant B58-ALP
       xa xu curh curhu compare 0<> if 409 s" hash_mismatch" 0 0 error-result exit then
     then
   then
-  ent 0= if 400 s" unexpected_params" 0 0 error-result exit then
+  \ §6.3 admission runs AFTER the §3.9 CAS gate, matching the order every other peer's
+  \ put takes: a stale precondition is a 409 whatever was submitted.
+  etv admit-put { ent aca acu ama amu }
+  ent 0= if 400 aca acu ama amu error-result exit then
   \ §9.5a deletion-marker: putting a system/deletion-marker tombstones the path (a subsequent
   \ get -> 404). We still bind the marker (so its hash is returned) then unbind the path.
   ca cu ent ent ent-len store-bind

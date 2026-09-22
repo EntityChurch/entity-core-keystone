@@ -5,6 +5,8 @@ with Ada.Environment_Variables;
 with Interfaces;
 with Entity_Core.Codec.Value;
 with Entity_Core.Codec.Peer_Id;
+with Entity_Core.Codec.Varint;
+with Entity_Core.Codec.Hash;
 with Entity_Core.Protocol.Entity;
 with Entity_Core.Protocol.Cbor_Util;
 with Entity_Core.Protocol.Wire;
@@ -768,6 +770,129 @@ package body Entity_Core.Protocol.Handlers is
       return True;
    end Valid_Tree_Path;
 
+   ---------------------------------------------------------------------------
+   --  §6.3 put admission (normative, 0.8.2.11).
+   ---------------------------------------------------------------------------
+
+   --  Digest byte length for a content_hash_format code per the §1.2 seed
+   --  table, or 0 when this peer cannot VERIFY that code. The total wire length
+   --  is this plus the varint prefix, which is not a constant of the code
+   --  (§7.3): codes >= 16#80# occupy more than one byte. This peer's
+   --  Content_Hash subtype is a fixed 33-byte array, so the SHA-256 floor is
+   --  the only code it can hold, let alone verify.
+   function Hash_Digest_Len (Format_Code : Interfaces.Unsigned_64) return Natural is
+     (if Format_Code = 0 then 32 else 0);
+
+   --  §6.3's `put` admission ladder.
+   --
+   --  `put` is a RECEIPT path: the submitter authors the entity, the peer
+   --  validates what it received (§1.8 item 1) and MUST NOT author a submitted
+   --  entity's content_hash on the submitter's behalf. Two ordered steps:
+   --
+   --    1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data`
+   --       (any CBOR value; null is a legal payload), and a `content_hash` that
+   --       is a well-formed system/hash whose total byte length matches its
+   --       format code (§1.2). Any failure -> 400 invalid_request. A well-formed
+   --       hash naming a format code this peer cannot verify is the separate
+   --       §1.2 ingest-dispatch case -> 400 unsupported_content_hash_format.
+   --    2. HASH — carried content_hash vs content_hash({type, data}).
+   --       Disagreement -> 400 hash_mismatch.
+   --
+   --  Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step
+   --  2's inputs are exactly what step 1 establishes, so a submission that is
+   --  both malformed and mis-hashed is step 1's and answers invalid_request.
+   --
+   --  Structural admission is not semantic validation: `data` is never checked
+   --  against the type named by `type`.
+   procedure Admit_Put
+     (V        : Ecf_Value;
+      Admitted : out Boolean;
+      E        : out Materialized_Entity;
+      O        : out Outcome)
+   is
+      Type_Found, Data_Found, Ch_Found : Boolean;
+   begin
+      Admitted := False;
+      if Kind (V) /= K_Map then
+         O := Err (400, "invalid_request", "put: entity is not a map");
+         return;
+      end if;
+      declare
+         Type_V : constant Ecf_Value := Field (V, "type", Type_Found);
+      begin
+         if not Type_Found or else Kind (Type_V) /= K_Text
+           or else As_Text (Type_V)'Length = 0
+         then
+            O := Err (400, "invalid_request",
+                      "put: entity.type absent, empty or not a text string");
+            return;
+         end if;
+         --  Presence, not truthiness: a CBOR null is a legal `data` payload and
+         --  Field reports it FOUND, which is exactly the test §6.3 wants.
+         declare
+            Data_V : constant Ecf_Value := Field (V, "data", Data_Found);
+         begin
+            if not Data_Found then
+               O := Err (400, "invalid_request", "put: entity.data absent");
+               return;
+            end if;
+            declare
+               Carried : constant Byte_Array :=
+                 Bytes_Field (V, "content_hash", Ch_Found);
+            begin
+               if not Ch_Found or else Carried'Length = 0 then
+                  O := Err (400, "invalid_request",
+                            "put: entity.content_hash absent or not a byte string");
+                  return;
+               end if;
+               declare
+                  Format_Code : Interfaces.Unsigned_64;
+                  Consumed    : Positive;
+                  Digest_Len  : Natural;
+               begin
+                  begin
+                     Entity_Core.Codec.Varint.Decode
+                       (Carried, Carried'First, Format_Code, Consumed);
+                  exception
+                     when others =>
+                        O := Err (400, "invalid_request",
+                                  "put: entity.content_hash is not a well-formed system/hash");
+                        return;
+                  end;
+                  Digest_Len := Hash_Digest_Len (Format_Code);
+                  if Digest_Len = 0 then
+                     --  §1.2 / §4.7 row 5 — well-formed, but this peer cannot
+                     --  interpret it. NOT invalid_request: the shape is fine,
+                     --  the algorithm is what we lack.
+                     O := Err (400, "unsupported_content_hash_format",
+                               "put: unsupported content_hash_format");
+                     return;
+                  end if;
+                  if Carried'Length /= Consumed + Digest_Len then
+                     O := Err (400, "invalid_request",
+                               "put: content_hash length does not match its format code");
+                     return;
+                  end if;
+                  if not Octets_Equal
+                       (Carried,
+                        Entity_Core.Codec.Hash.Content_Hash
+                          (Format_Code, As_Text (Type_V), Data_V))
+                  then
+                     O := Err (400, "hash_mismatch",
+                               "put: content_hash does not match content_hash({type, data})");
+                     return;
+                  end if;
+               end;
+               --  Step 2 passed. Of_Cbor re-verifies rather than authors, and at
+               --  the only code this peer verifies (16#00#) its recomputed hash
+               --  and the carried bytes are the same 33 bytes.
+               E := Of_Cbor (V);
+               Admitted := True;
+            end;
+         end;
+      end;
+   end Admit_Put;
+
    function Handle_Tree_Put
      (Peer : Peer_Access; Exec : Materialized_Entity) return Outcome is
       Target : constant String := Exec_Resource_Target (Exec);
@@ -819,8 +944,11 @@ package body Entity_Core.Protocol.Handlers is
             end;
          end if;
 
-         --  No entity in the request → §6.3 removal (unbind the path).
-         if not Ent_Found or else Kind (Ent_V) /= K_Map or else not Has (Ent_V, "type") then
+         --  §6.3 removal is `entity` ABSENT or NULL. A present-but-malformed
+         --  value is NOT a removal — it used to fall in here and UNBIND the
+         --  path, which is a destructive reading of a submission the ladder
+         --  below refuses outright.
+         if not Ent_Found or else Kind (Ent_V) = K_Null then
             if Cur_Found then
                Peer.St.Unbind (Path);
             end if;
@@ -828,8 +956,14 @@ package body Entity_Core.Protocol.Handlers is
               Map_Of ((1 => (Key => K ("hash"), Value => Make_Bytes (Empty_Bytes))))));
          end if;
          declare
-            Ent : constant Materialized_Entity := Of_Cbor (Ent_V);
+            Ent      : Materialized_Entity;
+            Refusal  : Outcome;
+            Admitted : Boolean;
          begin
+            Admit_Put (Ent_V, Admitted, Ent, Refusal);
+            if not Admitted then
+               return Refusal;
+            end if;
             Peer.St.Bind (Path, Ent);
             return Ok (Make ("system/hash",
               Map_Of ((1 => (Key => K ("hash"), Value => Make_Bytes (Hash (Ent)))))));

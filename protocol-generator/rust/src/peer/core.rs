@@ -65,6 +65,107 @@ fn ok_inc(result: Entity, included: Vec<Entity>) -> Outcome {
         included,
     }
 }
+/// Digest byte length for a `content_hash_format` code per the §1.2 seed table,
+/// or `None` when this peer cannot VERIFY that code. The total wire length is
+/// this plus the varint prefix, which is not a constant of the code (§7.3):
+/// codes >= 0x80 occupy more than one byte. This peer computes SHA-256 only.
+fn hash_digest_len(format_code: u64) -> Option<usize> {
+    match format_code {
+        0x00 => Some(32),
+        _ => None,
+    }
+}
+
+/// §6.3's `put` admission ladder (normative, 0.8.2.11).
+///
+/// `put` is a RECEIPT path: the submitter authors the entity, the peer validates
+/// what it received (§1.8 item 1) and MUST NOT author a submitted entity's
+/// `content_hash` on the submitter's behalf. Two ordered steps:
+///
+/// 1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data` (any
+///    CBOR value; null is a legal payload), and a `content_hash` that is a
+///    well-formed `system/hash` whose total byte length matches its format code
+///    (§1.2). Any failure -> 400 `invalid_request`. A well-formed hash naming a
+///    format code this peer cannot verify is the separate §1.2 ingest-dispatch
+///    case -> 400 `unsupported_content_hash_format`.
+/// 2. HASH — carried `content_hash` vs `content_hash({type, data})`.
+///    Disagreement -> 400 `hash_mismatch`.
+///
+/// Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's
+/// inputs are exactly what step 1 establishes, so a submission that is both
+/// malformed and mis-hashed is step 1's and answers `invalid_request`.
+///
+/// Structural admission is not semantic validation: `data` is never checked
+/// against the type named by `type`.
+fn admit_put(v: &Value) -> Result<Entity, Outcome> {
+    let refuse = |code: &str, msg: &str| Err(err_out(400, code, Some(msg)));
+    if !matches!(v, Value::Map(_)) {
+        return refuse("invalid_request", "put: entity is not a map");
+    }
+    let typ = match model::map_get(v, "type") {
+        Some(Value::Text(t)) if !t.is_empty() => t.clone(),
+        _ => {
+            return refuse(
+                "invalid_request",
+                "put: entity.type absent, empty or not a text string",
+            )
+        }
+    };
+    let data = match model::map_get(v, "data") {
+        Some(d) => d.clone(),
+        None => return refuse("invalid_request", "put: entity.data absent"),
+    };
+    let carried = match model::map_get(v, "content_hash") {
+        Some(Value::Bytes(b)) if !b.is_empty() => b.clone(),
+        _ => {
+            return refuse(
+                "invalid_request",
+                "put: entity.content_hash absent or not a byte string",
+            )
+        }
+    };
+    let (format_code, n) = match crate::varint::decode(&carried) {
+        Ok(r) => r,
+        Err(_) => {
+            return refuse(
+                "invalid_request",
+                "put: entity.content_hash is not a well-formed system/hash",
+            )
+        }
+    };
+    let digest_len = match hash_digest_len(format_code) {
+        Some(n) => n,
+        // §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it.
+        // NOT invalid_request: the shape is fine, the algorithm is what we lack.
+        None => {
+            return Err(err_out(
+                400,
+                "unsupported_content_hash_format",
+                Some("put: unsupported content_hash_format"),
+            ))
+        }
+    };
+    if carried.len() != n + digest_len {
+        return refuse(
+            "invalid_request",
+            "put: content_hash length does not match its format code",
+        );
+    }
+    if crate::content_hash::content_hash(&typ, data.clone(), format_code) != carried {
+        return refuse(
+            "hash_mismatch",
+            "put: content_hash does not match content_hash({type, data})",
+        );
+    }
+    // The carried hash IS the entity's address; recomputing it into the store
+    // would be the authoring arm §6.3 forbids.
+    Ok(Entity {
+        typ,
+        data,
+        hash: carried,
+    })
+}
+
 fn err_out(status: u64, code: &str, message: Option<&str>) -> Outcome {
     Outcome {
         status,
@@ -746,7 +847,7 @@ impl Peer {
                 };
                 let path = cap::canonicalize(&self.local_peer, &target);
                 let params = exec.entity_field("params");
-                let entity = params.as_ref().and_then(|p| p.entity_field("entity"));
+                let entity = params.as_ref().and_then(|p| p.field("entity")).cloned();
                 let expected = params.as_ref().and_then(|p| p.bytes_field("expected_hash"));
                 // §3.9 CAS.
                 let current = self.store.hash_at(&path);
@@ -765,10 +866,13 @@ impl Peer {
                     return err_out(409, "hash_mismatch", Some(&path));
                 }
                 match entity {
-                    Some(e) => {
-                        self.store.bind(&path, &e);
-                        ok(Entity::make("system/hash", model::bytes(&e.hash)))
-                    }
+                    Some(raw) => match admit_put(&raw) {
+                        Ok(e) => {
+                            self.store.bind(&path, &e);
+                            ok(Entity::make("system/hash", model::bytes(&e.hash)))
+                        }
+                        Err(refusal) => refusal,
+                    },
                     None => err_out(400, "unexpected_params", Some("put: missing entity")),
                 }
             }

@@ -197,6 +197,63 @@ _tree_get: procedure expose EC.
   if mode == 'hash' then return Out_Ok(Ent_Make('system/hash', Ecf_Map('hash', Ecf_Bytes(Ent_Hash(e)))), '')
   return Out_Ok(e, '')
 
+/* _hash_digest_len — digest byte length for a content_hash_format code per the §1.2
+ * seed table, or '' when this peer cannot VERIFY that code. The total wire length is
+ * this plus the varint prefix, which is not a constant of the code (§7.3): codes
+ * >= 0x80 occupy more than one byte. */
+_hash_digest_len: procedure expose EC.
+  parse arg code
+  if code == 0 then return 32
+  if code == 1 then return 48
+  return ''
+
+/* _admit_put — §6.3's put admission ladder (normative, 0.8.2.11).
+ *
+ * put is a RECEIPT path: the submitter authors the entity, the peer validates what it
+ * received (§1.8 item 1) and MUST NOT author a submitted entity's content_hash on the
+ * submitter's behalf. Two ordered steps:
+ *
+ *   1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data` (any CBOR
+ *      value; null is a legal payload), and a `content_hash` that is a well-formed
+ *      system/hash whose total byte length matches its format code (§1.2). Any failure
+ *      -> 400 invalid_request. A well-formed hash naming a format code this peer cannot
+ *      verify is the separate §1.2 ingest-dispatch case -> 400
+ *      unsupported_content_hash_format.
+ *   2. HASH — carried content_hash vs content_hash({type, data}) -> 400 hash_mismatch.
+ *
+ * Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's inputs
+ * are exactly what step 1 establishes, so a submission that is both malformed and
+ * mis-hashed is step 1's and answers invalid_request.
+ *
+ * Structural admission is not semantic validation: `data` is never checked against the
+ * type named by `type`.
+ *
+ * Returns an entity node (leading 'E') or a refusal Outcome. */
+_admit_put: procedure expose EC.
+  parse arg v
+  if Tv_Tag(v) \== 'm' then return Out_Err(400, 'invalid_request', 'put: entity is not a map')
+  type = Ecf_Text(v, 'type')
+  if type == '' then return Out_Err(400, 'invalid_request', 'put: entity.type absent, empty or not a text string')
+  /* Presence, not truthiness: a CBOR null is a legal `data` payload, so Ecf_Has is the
+   * presence predicate rather than an empty-string test. */
+  if \Ecf_Has(v, 'data') then return Out_Err(400, 'invalid_request', 'put: entity.data absent')
+  data = Ecf_Get(v, 'data')
+  carried = Ecf_GetBytes(v, 'content_hash')
+  if carried == '' then return Out_Err(400, 'invalid_request', 'put: entity.content_hash absent or not a byte string')
+  EC.!OK = 1
+  code = Varint_Decode(carried, 1)
+  if \EC.!OK then return Out_Err(400, 'invalid_request', 'put: entity.content_hash is not a well-formed system/hash')
+  consumed = EC.!VPOS - 1
+  digest_len = _hash_digest_len(code)
+  /* §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+   * invalid_request: the shape is fine, the algorithm is what we lack. */
+  if digest_len == '' then return Out_Err(400, 'unsupported_content_hash_format', 'put: unsupported content_hash_format')
+  if length(carried) \== consumed + digest_len then return Out_Err(400, 'invalid_request', 'put: content_hash length does not match its format code')
+  if Hash_Content(type, data, code) \== carried then return Out_Err(400, 'hash_mismatch', 'put: content_hash does not match content_hash({type, data})')
+  /* The carried hash IS the entity's address; recomputing it into the store would be
+   * the authoring arm §6.3 forbids. */
+  return Ent_Admitted(type, data, carried)
+
 _tree_put: procedure expose EC.
   parse arg peer_h, ctx
   exec = Ctx_Exec(ctx)
@@ -207,10 +264,10 @@ _tree_put: procedure expose EC.
   if \Hnd_PathFlexOk(target) then return Out_Err(400, 'invalid_path', target)
   path = Cap_Canonicalize(local, target)
   params = Ent_EntityField(exec, 'params')
-  entity = ''
+  raw_entity = ''
   expected = ''
   if params \== '' then do
-    entity = Ent_EntityField(params, 'entity')
+    raw_entity = Ent_Field(params, 'entity')
     expected = Ent_Bytes(params, 'expected_hash')
   end
   current = Store_HashAt(store_h, path)
@@ -218,7 +275,11 @@ _tree_put: procedure expose EC.
   else if Hnd_IsZeroHash(expected) then cas_ok = (current == '')
   else cas_ok = (current \== '' & current == Hexlc(expected))
   if \cas_ok then return Out_Err(409, 'hash_mismatch', path)
-  if entity == '' then return Out_Err(400, 'unexpected_params', 'put: missing entity')
+  if raw_entity == '' then return Out_Err(400, 'unexpected_params', 'put: missing entity')
+  adm = _admit_put(raw_entity)
+  /* An entity node starts with 'E'; anything else is the refusal Outcome. */
+  if left(adm, 1) \== 'E' then return adm
+  entity = adm
   call Store_Bind store_h, path, entity
   return Out_Ok(Ent_Make('system/hash', Ecf_Map('hash', Ecf_Bytes(Ent_Hash(entity)))), '')
 

@@ -1,6 +1,6 @@
 # entity-core-keystone — status
 
-_Updated: 2026-09-05 · oracle pin: the 758-check set `c34abcae…` · spec snapshot `v0.8.2.3`_
+_Updated: 2026-09-06 · oracle pin: the 758-check set `c34abcae…` · spec snapshot **`v0.8.2.11`** (vendored; no peer regenerated against it yet)_
 
 > **For where this is going — the seats keystone sits between, the state of every verification
 > axis, the measured size of the queued work and what freeze looks like — see
@@ -185,10 +185,25 @@ submitter's behalf** — accepting the two-key `{type, data}` form leaves the pe
 under a hash nobody agreed to. **The `tree:put` admission of all 46 peers has never been driven**;
 the row did not exist until `EXTENSION-TREE` v4.4 and had no predicate until v4.5. Arch's instruction
 is explicit and is followed here: *do not size this from the assumption that the cohort is
-conformant.* That exposure is **unmeasured and is not estimated** — the discriminating probe is
-specified in `docs/status/HANDOFF-2026-09-06`, and a source grep will not answer it (our own `37/46`
-count for the 404 slot was inflated by the oracle's vocabulary appearing in each peer's generated
-report).
+conformant.*
+
+**MEASURED 2026-09-06, and it is the maximum.** `tools/put-probe` drives the ladder over the wire on
+every peer. Of the **40 peers it could be measured on, ZERO implement any row**. **37 of 40 accept
+the two-key `{type, data}` form and 36 of them STORE it** — the peer authors a hash the submitter
+never supplied. **40 of 40 accept an empty-string `type`.** **10 of 40 accept an entity whose
+`content_hash` does not match its own content**, which is a §1.8 validate-before-trust failure
+independent of the code table. The strings `invalid_request`, `hash_mismatch` and
+`unsupported_content_hash_format` are emitted by **no peer, on any input, on this surface**. Five
+peers are **unmeasurable** (they refuse or drop even a valid `put`; the probe's own self-check is
+clean on all five, so this is reported as an observation about them and not as a probe fault) and
+`turbowarp` is unbuildable — coverage is stated as **40 measured / 5 unmeasurable / 1 unbuildable**.
+**So this is not a re-vendor and not a code-spelling sweep**: two of the three defect classes sit
+outside the code table entirely. Detail:
+`protocol-generator/shared/findings/put-admission-wire-census.md`.
+
+The ordering question §6.3 raises — step 1 strictly precedes step 2, and no single-fault vector can
+discriminate it — is reported **INDETERMINATE cohort-wide** rather than inferred: every peer accepts
+the step-1-only input, so there is no refusal for a step-2 refusal to be ordered against.
 
 **The figures in the rest of this paragraph are the previous pin's and are a FLOOR.** They were taken
 at `0.8.2.7` against go `c42bbf3`; the delta above supersedes their scope but the per-defect detail

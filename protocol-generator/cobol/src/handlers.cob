@@ -456,6 +456,42 @@ working-storage section.
 01 k-entk-len pic 9(9) comp-5 value 6.
 01 k-exph pic x(13) value "expected_hash".
 01 k-exph-len pic 9(9) comp-5 value 13.
+*> §6.3 put-admission ladder (0.8.2.11) scratch.
+01 k-type pic x(4) value "type".
+01 k-type-len pic 9(9) comp-5 value 4.
+01 k-data pic x(4) value "data".
+01 k-data-len pic 9(9) comp-5 value 4.
+01 k-chash pic x(12) value "content_hash".
+01 k-chash-len pic 9(9) comp-5 value 12.
+01 admok  pic 9(1).
+01 admc   pic x(32).
+01 admcl  pic 9(9) comp-5.
+01 toff   pic 9(9) comp-5.
+01 doff   pic 9(9) comp-5.
+01 dend   pic 9(9) comp-5.
+01 dlen   pic 9(9) comp-5.
+01 choff  pic 9(9) comp-5.
+01 chlen  pic 9(9) comp-5.
+01 ptype  pic x(128).
+01 ptypel pic 9(9) comp-5.
+01 pdata  pic x(524288).
+01 pdatal pic 9(9) comp-5.
+01 cdata  pic x(524288).
+01 cdatal pic 9(9) comp-5.
+01 carried pic x(33).
+01 chash  pic x(33).
+01 fmtcode pic 9(18) comp-5.
+01 fmtlen pic 9(9) comp-5.
+01 vshift pic 9(9) comp-5.
+01 vbyte  pic x.
+01 vbn    redefines vbyte pic 9(3) comp-5.
+01 vpos   pic 9(9) comp-5.
+01 vdone  pic 9(1).
+01 vbad   pic 9(1).
+01 rmaj   pic 9(2) comp-5.
+01 raddl  pic 9(2) comp-5.
+01 rarg   pic 9(18) comp-5.
+01 rc     pic s9(9) comp-5.
 01 t-hash pic x(11) value "system/hash".
 01 t-hash-len pic 9(9) comp-5 value 11.
 01 errc   pic x(32).
@@ -583,6 +619,12 @@ do-put.
         call "error-result" using errc errcl lk-res lk-reslen lk-reshash
         exit paragraph
     end-if
+    perform put-admit
+    if admok = 0
+        move 400 to lk-status
+        call "error-result" using admc admcl lk-res lk-reslen lk-reshash
+        exit paragraph
+    end-if
     move lk-env(eoff:nentlen) to nent(1:nentlen)
     call "ent-hash" using nent one nhash
     *> expected_hash (optional)
@@ -609,6 +651,126 @@ do-put.
     call "b-entity" using t-hash t-hash-len nd nd-len
         lk-res lk-reslen lk-reshash st
     move 200 to lk-status.
+
+*> §6.3 put ADMISSION (normative, 0.8.2.11). `put` is a RECEIPT path: the
+*> submitter authors the entity, the peer validates what it received (§1.8 item 1)
+*> and MUST NOT author a submitted entity's content_hash on the submitter's
+*> behalf. Two ORDERED steps, and the order is a data dependency rather than a
+*> choice — step 2's inputs are exactly what step 1 establishes, so a submission
+*> that is both malformed and mis-hashed is step 1's and answers invalid_request.
+*>   1. STRUCTURE — a map with a non-empty text `type`, a PRESENT `data` (any CBOR
+*>      value; null is legal), and a `content_hash` that is a well-formed
+*>      system/hash whose total byte length matches its format code (§1.2). Any
+*>      failure -> invalid_request; a well-formed hash naming a format code this
+*>      peer cannot VERIFY is the separate §1.2 row -> unsupported_content_hash_format.
+*>   2. HASH — carried vs content_hash({type, data}) -> hash_mismatch.
+*> Structural admission is not semantic validation: `data` is never checked
+*> against the type named by `type`.
+put-admit.
+    move 0 to admok
+    *> step 1a — the submitted value must be a map.
+    move eoff to vpos
+    call "cbor-read-head" using lk-env vpos rmaj raddl rarg st
+    if rmaj not = 5
+        move "invalid_request" to admc  move 15 to admcl
+        exit paragraph
+    end-if
+    *> step 1b — non-empty text `type`.
+    call "cbor-find-key" using lk-env eoff k-type k-type-len toff vf st
+    if vf = 0
+        move "invalid_request" to admc  move 15 to admcl
+        exit paragraph
+    end-if
+    move toff to vpos
+    call "cbor-read-head" using lk-env vpos rmaj raddl rarg st
+    if rmaj not = 3 or rarg = 0 or rarg > 128
+        move "invalid_request" to admc  move 15 to admcl
+        exit paragraph
+    end-if
+    call "read-text" using lk-env toff ptype ptypel
+    *> step 1c — `data` PRESENT. Presence, not truthiness: a CBOR null is a legal
+    *> payload, and cbor-find-key reports it found, which is the test §6.3 wants.
+    call "cbor-find-key" using lk-env eoff k-data k-data-len doff vf st
+    if vf = 0
+        move "invalid_request" to admc  move 15 to admcl
+        exit paragraph
+    end-if
+    *> step 1d — `content_hash` present, a byte string, well-formed.
+    call "cbor-find-key" using lk-env eoff k-chash k-chash-len choff vf st
+    if vf = 0
+        move "invalid_request" to admc  move 15 to admcl
+        exit paragraph
+    end-if
+    move choff to vpos
+    call "cbor-read-head" using lk-env vpos rmaj raddl rarg st
+    *> The LENGTH is checked before any copy: `carried` is a fixed 33-byte field
+    *> and this value comes straight off the wire.
+    if rmaj not = 2 or rarg = 0 or rarg > 33
+        move "invalid_request" to admc  move 15 to admcl
+        exit paragraph
+    end-if
+    move rarg to chlen
+    *> decode the leading multicodec LEB128 format-code varint in place (§7.3).
+    move 0 to fmtcode  move 0 to fmtlen  move 0 to vshift
+    move 0 to vdone    move 0 to vbad
+    perform until vdone = 1 or vbad = 1
+        if fmtlen >= chlen
+            move 1 to vbad
+        else
+            move lk-env(vpos + fmtlen:1) to vbyte
+            compute fmtcode = fmtcode + (function mod(vbn 128) * (2 ** vshift))
+            add 1 to fmtlen
+            if vbn < 128
+                move 1 to vdone
+            else
+                add 7 to vshift
+            end-if
+        end-if
+    end-perform
+    if vbad = 1
+        move "invalid_request" to admc  move 15 to admcl
+        exit paragraph
+    end-if
+    *> §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+    *> invalid_request: the shape is fine, the algorithm is what we lack. The
+    *> content-hash FFI computes the SHA-256 floor only, so 0x00 is the whole
+    *> verifiable set here and saying otherwise would be a claim we cannot keep.
+    if fmtcode not = 0
+        move "unsupported_content_hash_format" to admc  move 31 to admcl
+        exit paragraph
+    end-if
+    if chlen not = fmtlen + 32
+        move "invalid_request" to admc  move 15 to admcl
+        exit paragraph
+    end-if
+    move all x"00" to carried
+    move lk-env(vpos:chlen) to carried(1:chlen)
+    *> step 2 — carried vs content_hash({type, data}).
+    move doff to dend
+    call "cbor-skip" using lk-env dend st
+    compute dlen = dend - doff
+    if dlen = 0 or dlen > entmax
+        move "invalid_request" to admc  move 15 to admcl
+        exit paragraph
+    end-if
+    move lk-env(doff:dlen) to pdata(1:dlen)
+    move dlen to pdatal
+    call "b-canon" using pdata pdatal cdata cdatal st
+    if st not = 0
+        move "invalid_request" to admc  move 15 to admcl
+        exit paragraph
+    end-if
+    call "ec_content_hash" using
+        by reference ptype(1:ptypel) by value ptypel
+        by reference cdata(1:cdatal) by value cdatal
+        by reference chash returning rc
+    if rc not = 0 or chash not = carried
+        move "hash_mismatch" to admc  move 13 to admcl
+        exit paragraph
+    end-if
+    *> Admitted. The store binds the CARRIED hash (ent-hash reads it back off the
+    *> wire entity), which is the receipt §6.3 asks for rather than an authorship.
+    move 1 to admok.
 
 put-conflict.
     move 409 to lk-status

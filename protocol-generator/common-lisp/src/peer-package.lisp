@@ -22,7 +22,7 @@
                 #:cbor-encode #:cbor-decode #:cbor-decode-salvage
                 #:bytes #:make-bytes #:bytes-octets #:bytes-p
                 #:cbor-map #:make-cbor-map #:cbor-map-pairs #:cbor-map-p #:map-of
-                #:content-hash
+                #:content-hash #:varint-decode #:truncated-input
                 #:peer-id-from-public-key #:peer-id-parse
                 #:ed-sign #:ed-verify #:ed-public-key
                 #:octet-vector #:make-octet-vector)

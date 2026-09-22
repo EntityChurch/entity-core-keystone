@@ -51,6 +51,8 @@ import EntityCore.Capability
   )
 import qualified EntityCore.Capability as Cap
 import EntityCore.Codec.Value (Value (..))
+import EntityCore.Codec.Varint (varintDecode)
+import EntityCore.ContentHash (contentHash)
 import EntityCore.Identity (Identity (..), ed25519VerifyRaw, identityOfSeed, peerEntityOfPubkey, peerIdOfPubkey, signEntity, verifySignature)
 import EntityCore.Model
 import EntityCore.SeedPolicy (SeedPolicy (..))
@@ -433,6 +435,72 @@ filterM :: Monad m => (a -> m Bool) -> [a] -> m [a]
 filterM _ [] = pure []
 filterM f (x : xs) = do b <- f x; rest <- filterM f xs; pure (if b then x : rest else rest)
 
+-- | §6.3's @put@ admission ladder (normative, 0.8.2.11).
+--
+-- @put@ is a RECEIPT path: the submitter authors the entity, the peer validates
+-- what it received (§1.8 item 1) and MUST NOT author a submitted entity's
+-- @content_hash@ on the submitter's behalf. Two ordered steps:
+--
+--   1. STRUCTURE — a map carrying a non-empty text @type@, a PRESENT @data@
+--      (any CBOR value; null is a legal payload), and a @content_hash@ that is
+--      a well-formed @system/hash@ whose total byte length matches its format
+--      code (§1.2). Any failure → 400 @invalid_request@. A well-formed hash
+--      naming a format code this peer cannot verify is the separate §1.2
+--      ingest-dispatch case → 400 @unsupported_content_hash_format@.
+--   2. HASH — carried @content_hash@ vs @content_hash({type, data})@.
+--      Disagreement → 400 @hash_mismatch@.
+--
+-- Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's
+-- inputs are exactly what step 1 establishes, so a submission that is both
+-- malformed and mis-hashed is step 1's and answers @invalid_request@.
+--
+-- Structural admission is not semantic validation: @data@ is never checked
+-- against the type named by @type@.
+admitPut :: Value -> Either Outcome Entity
+admitPut v = do
+  pairs <- case v of
+    VMap ps -> Right ps
+    _ -> refuse "invalid_request" "put: entity is not a map"
+  let get k = lookup (VText k) pairs
+  typ <- case get "type" of
+    Just (VText t) | not (T.null t) -> Right t
+    _ -> refuse "invalid_request" "put: entity.type absent, empty or not a text string"
+  dataV <- case get "data" of
+    Just d -> Right d
+    Nothing -> refuse "invalid_request" "put: entity.data absent"
+  carried <- case get "content_hash" of
+    Just (VBytes b) -> Right b
+    _ -> refuse "invalid_request" "put: entity.content_hash absent or not a byte string"
+  (code, rest) <- case varintDecode carried of
+    Right r -> Right r
+    Left _ -> refuse "invalid_request" "put: entity.content_hash is not a well-formed system/hash"
+  digestLen <- case hashDigestLen code of
+    -- §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+    -- invalid_request: the shape is fine, the algorithm is what we lack.
+    Nothing -> refuse "unsupported_content_hash_format" "put: unsupported content_hash_format"
+    Just n -> Right n
+  if BS.length rest /= digestLen
+    then refuse "invalid_request" "put: content_hash length does not match its format code"
+    else case contentHash code typ dataV of
+      Right computed
+        | computed == carried ->
+            -- The carried hash IS the entity's address; recomputing it into the
+            -- store would be the authoring arm §6.3 forbids.
+            Right (Entity typ dataV carried)
+      _ -> refuse "hash_mismatch" "put: content_hash does not match content_hash({type, data})"
+  where
+    refuse code msg = Left (errMsg 400 code msg)
+
+-- | Digest byte length for a @content_hash_format@ code per the §1.2 seed
+-- table, or 'Nothing' when this peer cannot verify that code. The total wire
+-- length is this plus the varint prefix, which is not a constant of the code
+-- (§7.3): codes ≥ 0x80 occupy more than one byte.
+hashDigestLen :: Integer -> Maybe Int
+hashDigestLen 0x00 = Just 32
+hashDigestLen 0x01 = Just 48
+hashDigestLen 0x02 = Just 64
+hashDigestLen _ = Nothing
+
 treeHandler :: Peer -> Entity -> IO Outcome
 treeHandler p exec = do
   let op = fromMaybe "" (textField exec "operation")
@@ -457,7 +525,7 @@ treeHandler p exec = do
     ("put", Just target) -> do
       let path = canonicalize (peerLocal p) target
           params = entityField exec "params"
-          entity = params >>= (`entityField` "entity")
+          entity = params >>= (`field` "entity")
           expected = params >>= (`bytesField` "expected_hash")
       current <- Store.hashAt (peerStore p) path
       let zero33 = BS.replicate 33 0
@@ -468,9 +536,11 @@ treeHandler p exec = do
       if not casOk
         then pure (errMsg 409 "hash_mismatch" path)
         else case entity of
-          Just e -> do
-            Store.bind (peerStore p) path e
-            pure (ok (makeEntity "system/hash" (VBytes (entHash e))))
+          Just raw -> case admitPut raw of
+            Left refusal -> pure refusal
+            Right e -> do
+              Store.bind (peerStore p) path e
+              pure (ok (makeEntity "system/hash" (VBytes (entHash e))))
           Nothing -> pure (errMsg 400 "unexpected_params" "put: missing entity")
     (_, Nothing) -> pure (errMsg 400 "ambiguous_resource" "tree: missing resource target")
     (other, _) -> pure (errMsg 501 "unsupported_operation" ("tree: " <> other))

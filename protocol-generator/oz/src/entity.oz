@@ -9,7 +9,7 @@ import
    Util at 'util.ozf'
    Crypto at 'crypto.ozf'
 export
-   Make Typ Hash Data DataMap ToCbor OfCbor ContentHash
+   Make Admitted Typ Hash Data DataMap ToCbor OfCbor ContentHash
    GetText GetBytes GetUint GetField GetMap GetEntity TypeIs
 define
    %% content hash of (type-bytes, data-TV)
@@ -25,6 +25,17 @@ define
       TB = {Util.vsToBytes TypeVs}
    in
       ent(typ:TB data:DataTV hash:{ContentHash TB DataTV})
+   end
+
+   %% The §6.3 RECEIPT constructor: bind an entity to a content_hash the CALLER
+   %% has already verified against {ContentHash Type Data}.
+   %%
+   %% {Make} AUTHORS a hash. On the system/tree:put path that is exactly what
+   %% §6.3 (0.8.2.11) forbids — the submitter authors, the peer verifies. This
+   %% takes the carried bytes verbatim and is reachable only from the admission
+   %% ladder, which has just proved they match.
+   fun {Admitted TypeBytes DataTV VerifiedHash}
+      ent(typ:TypeBytes data:DataTV hash:VerifiedHash)
    end
 
    fun {Typ E} E.typ end

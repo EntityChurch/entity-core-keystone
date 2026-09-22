@@ -125,6 +125,35 @@ func (e Entity) VerifyContentHash(claimed []byte) (bool, error) {
 	return bytesEqual(want, claimed), nil
 }
 
+// DecodeHashFormat reads the leading content_hash_format varint of a wire
+// system/hash, returning the code and the number of bytes it occupied (§1.2).
+// An empty or truncated prefix is an error: the value is not a well-formed
+// system/hash at all, which is a SHAPE fault rather than a format one.
+func DecodeHashFormat(h []byte) (uint64, int, error) {
+	if len(h) == 0 {
+		return 0, 0, cbor.ErrTruncated
+	}
+	return varint.Decode(h)
+}
+
+// HashDigestLen returns the digest byte length for formatCode per the §1.2
+// seed table, and whether this peer supports the code on the VERIFICATION
+// path. Callers needing the total wire length add the varint prefix length
+// from DecodeHashFormat — codes ≥ 0x80 occupy more than one byte (§7.3), so
+// the total is not a constant of the code alone.
+func HashDigestLen(formatCode uint64) (int, bool) {
+	switch formatCode {
+	case FormatECFv1SHA256:
+		return sha256.Size, true
+	case FormatECFv1SHA384:
+		return sha512.Size384, true
+	case FormatECFv1SHA512:
+		return sha512.Size, true
+	default:
+		return 0, false
+	}
+}
+
 // supportedHashFormat reports whether formatCode is one this peer can verify.
 // Only the active code 0x00 is REQUIRED; reserved-but-known 0x01/0x02 are
 // computable, so they verify. Anything else is rejected on the verify path.

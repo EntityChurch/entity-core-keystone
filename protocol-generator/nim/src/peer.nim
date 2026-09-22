@@ -27,6 +27,9 @@ import ./crypto
 import ./peer_id
 import ./paths
 import ./capability
+import ./content_hash
+import ./varint
+import ./errors
 import ./types
 
 const
@@ -407,6 +410,84 @@ proc treeGet(p: Peer; params: Entity; cap: CapabilityToken; rt: ResourceTarget; 
     return okOut(makeEntity("primitive/any", bytesV(ent.get.hash)))
   okOut(ent.get)
 
+type PutAdmission = object
+  ## The outcome of §6.3's put admission ladder — `refused` selects which arm.
+  refused: bool
+  outcome: Outcome
+  entity: Entity
+
+proc hashDigestLen(formatCode: uint64): int =
+  ## Digest byte length for a `content_hash_format` code per the §1.2 seed table,
+  ## or -1 when this peer cannot VERIFY that code. The total wire length is this
+  ## plus the varint prefix, which is not a constant of the code (§7.3): codes
+  ## >= 0x80 occupy more than one byte. This peer's SHA-384 arm is
+  ## agility-deferred and raises, so the floor is the only code it can verify.
+  if formatCode == 0'u64: 32 else: -1
+
+proc admitPut(v: EcValue): PutAdmission =
+  ## §6.3's `put` admission ladder (normative, 0.8.2.11).
+  ##
+  ## `put` is a RECEIPT path: the submitter authors the entity, the peer validates
+  ## what it received (§1.8 item 1) and MUST NOT author a submitted entity's
+  ## `content_hash` on the submitter's behalf. Two ordered steps:
+  ##
+  ## 1. STRUCTURE — a map carrying a non-empty text `type`, a PRESENT `data` (any
+  ##    CBOR value; null is a legal payload), and a `content_hash` that is a
+  ##    well-formed system/hash whose total byte length matches its format code
+  ##    (§1.2). Any failure -> 400 invalid_request. A well-formed hash naming a
+  ##    format code this peer cannot verify is the separate §1.2 ingest-dispatch
+  ##    case -> 400 unsupported_content_hash_format.
+  ## 2. HASH — carried content_hash vs content_hash({type, data}). Disagreement ->
+  ##    400 hash_mismatch.
+  ##
+  ## Step 1 strictly precedes step 2 as a DATA DEPENDENCY, not a choice: step 2's
+  ## inputs are exactly what step 1 establishes, so a submission that is both
+  ## malformed and mis-hashed is step 1's and answers invalid_request.
+  ##
+  ## Structural admission is not semantic validation: `data` is never checked
+  ## against the type named by `type`.
+  template refuse(code, message: string): PutAdmission =
+    PutAdmission(refused: true, outcome: errOut(400, code, some(message)))
+
+  if v == nil or v.kind != ekMap:
+    return refuse("invalid_request", "put: entity is not a map")
+  let typV = mapGet(v, "type")
+  if typV == nil or typV.kind != ekText or typV.t.len == 0:
+    return refuse("invalid_request", "put: entity.type absent, empty or not a text string")
+  # Presence, not truthiness: a CBOR null is a legal `data` payload, and mapGet
+  # returns the null NODE for it rather than nil.
+  let dataV = mapGet(v, "data")
+  if dataV == nil:
+    return refuse("invalid_request", "put: entity.data absent")
+  let chV = mapGet(v, "content_hash")
+  if chV == nil or chV.kind != ekBytes or chV.b.len == 0:
+    return refuse("invalid_request", "put: entity.content_hash absent or not a byte string")
+  var formatCode: uint64
+  var consumed: int
+  try:
+    let d = varintDecode(chV.b, 0)
+    formatCode = d.value
+    consumed = d.len
+  except TruncatedInput:
+    return refuse("invalid_request", "put: entity.content_hash is not a well-formed system/hash")
+  let digestLen = hashDigestLen(formatCode)
+  if digestLen < 0:
+    # §1.2 / §4.7 row 5 — well-formed, but this peer cannot interpret it. NOT
+    # invalid_request: the shape is fine, the algorithm is what we lack.
+    return refuse("unsupported_content_hash_format", "put: unsupported content_hash_format")
+  if chV.b.len != consumed + digestLen:
+    return refuse("invalid_request", "put: content_hash length does not match its format code")
+  var computed: seq[byte]
+  try:
+    computed = contentHash(formatCode, typV.t, dataV)
+  except CatchableError:
+    return refuse("hash_mismatch", "put: content_hash does not match content_hash({type, data})")
+  if computed != chV.b:
+    return refuse("hash_mismatch", "put: content_hash does not match content_hash({type, data})")
+  # The carried hash IS the entity's address; recomputing it into the store would
+  # be the authoring arm §6.3 forbids.
+  PutAdmission(refused: false, entity: Entity(typ: typV.t, data: dataV, hash: chV.b))
+
 proc treePut(p: Peer; params: Entity; cap: CapabilityToken; rt: ResourceTarget; pattern: string): Outcome =
   let target = rt.targets[0]
   try: validateCallerTarget(target)
@@ -424,9 +505,9 @@ proc treePut(p: Peer; params: Entity; cap: CapabilityToken; rt: ResourceTarget; 
         return errOut(409, "hash_mismatch")
     p.store.removeAt(path)
     return okOut(emptyAck())
-  var ent: Entity
-  try: ent = entityOfValue(entityV)
-  except CatchableError: return errOut(400, "invalid_entity")
+  let admitted = admitPut(entityV)
+  if admitted.refused: return admitted.outcome
+  let ent = admitted.entity
   # §3.9 / v7.72 §9.5a CAS: a ZERO expected_hash is CREATE-ONLY (path must be
   # currently unbound → 409 if it exists); a non-zero expected_hash must match the
   # current binding (§CORE-TREE-PUT-CAS-1).
