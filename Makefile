@@ -210,6 +210,17 @@ lint:
 	@# they run every lint; whether the pins still RESOLVE and whether the images still
 	@# BUILD need the network and live in `make images-audit` / `make images-cold`.
 	@python3 tools/containers-gate.py --quiet
+	@echo "lint: gating peer-harness teardown (read-only)…"
+	@# Seventh root-level invariant, and the first about the HARNESS rather than about a
+	@# number or a document. 45 of 46 run-s4.sh tore the peer down with a fire-and-forget
+	@# `trap 'kill "$$HOST_PID" ...'`: kill(1) delivers the signal and returns, so the
+	@# script exited while the peer still owned the listening socket. Measured 2026-09-02,
+	@# port still ACCEPTING after the harness had exited — elixir >400ms (and the next run
+	@# in that container exited 1), julia ~88ms, smalltalk ~4ms, zig and go 0ms. The two
+	@# peers anyone reaches for first are the two that do not show it, which is exactly why
+	@# this is a gate and not a fix. Regression suite:
+	@# `python3 tools/teardown-gate.py --self-test`.
+	@python3 tools/teardown-gate.py --quiet
 
 # fmt = autoformat (writes). Intentionally a no-op: generated source is formatted
 # by its own toolchain, and spec-data/<version>/ is a SHA-256-pinned immutable

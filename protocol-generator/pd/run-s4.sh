@@ -96,7 +96,29 @@ podman run $PODMAN_RUN_CAPS --rm --network=none \
       || { echo "make external FAILED:" >&2; cat build/s4-make.log >&2; exit 1; }
     pd -nogui -noaudio -stderr -path build -open "$PATCH" >build/s4-pd.log 2>build/s4-pd.err &
     PDPID=$!
-    trap "kill $PDPID 2>/dev/null || true" EXIT
+    # Deterministic teardown. kill(1) only DELIVERS the signal, so a fire-and-forget
+    # trap returns while the peer still owns the listening socket and a second invocation
+    # in the same container fails to bind. Measured 2026-09-02 -- how long the port kept
+    # accepting connections AFTER the harness had exited: elixir >400ms (and the next run
+    # did fail, rc=1), julia ~88ms, smalltalk ~4ms, zig and go 0ms. The window is a
+    # property of the peer runtime, not of the harness, which is why every peer carries
+    # this and not only the ones that were seen to fail.
+    reap_host() {
+      [ -n "${PDPID:-}" ] || return 0
+      kill -0 "$PDPID" 2>/dev/null || return 0
+      kill -TERM "$PDPID" 2>/dev/null || true
+      # Poll rather than a bare wait: a peer that ignores TERM is bounded at ~5s and then
+      # killed, instead of hanging the run forever.
+      j=0
+      while [ "$j" -lt 50 ]; do
+        kill -0 "$PDPID" 2>/dev/null || return 0
+        j=$((j + 1))
+        sleep 0.1
+      done
+      kill -KILL "$PDPID" 2>/dev/null || true
+      wait "$PDPID" 2>/dev/null || true
+    }
+    trap reap_host EXIT
     sleep 2
     kill -0 $PDPID 2>/dev/null || { echo "pd failed to start:"; cat build/s4-pd.log build/s4-pd.err; exit 1; }
     rc=0; "$ORACLE" -addr "127.0.0.1:$PORT" "$@" || rc=$?

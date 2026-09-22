@@ -59,7 +59,21 @@ podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WOR
       "-----END ENTITY PRIVATE KEY-----" > "$KPDIR/keypair"
     ruby -Ilib exe/entity-core-peer --port "$PORT" --name conformance --debug-open-grants --validate >/tmp/host.out 2>/tmp/host.err &
     HOST_PID=$!
-    trap "kill -9 $HOST_PID 2>/dev/null || true" EXIT INT TERM
+    # Deterministic teardown. kill(1) only DELIVERS the signal, so a fire-and-forget
+    # trap returns while the peer still owns the listening socket and a second invocation
+    # in the same container fails to bind. Measured 2026-09-02 -- how long the port kept
+    # accepting connections AFTER the harness had exited: elixir >400ms (and the next run
+    # did fail, rc=1), julia ~88ms, smalltalk ~4ms, zig and go 0ms. The window is a
+    # property of the peer runtime, not of the harness, which is why every peer carries
+    # this and not only the ones that were seen to fail.
+    reap_host() {
+      [ -n "${HOST_PID:-}" ] || return 0
+      # SIGKILL is preserved from the original teardown, which chose -9 deliberately; the
+      # fix here is the wait, which is what makes the port released before we return.
+      kill -9 "$HOST_PID" 2>/dev/null || true
+      wait "$HOST_PID" 2>/dev/null || true
+    }
+    trap reap_host EXIT INT TERM
     i=0; while [ "$i" -lt 300 ]; do
       grep -q "^LISTENING" /tmp/host.out 2>/dev/null && break
       kill -0 "$HOST_PID" 2>/dev/null || { echo "Ruby host exited:"; cat /tmp/host.err >&2; exit 1; }

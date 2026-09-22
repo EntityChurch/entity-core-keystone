@@ -65,7 +65,36 @@ cd "$TW"
 # 1. Bridge (TCP for the oracle + WS for the peer).
 EC_PORT="$EC_PORT" WS_PORT="$WS_PORT" node bridge/ws-tcp-bridge.js >/tmp/bridge.out 2>&1 &
 BR=$!
-trap 'kill "$BR" "${PEER:-0}" 2>/dev/null || true' EXIT INT TERM
+# Deterministic teardown. kill(1) only DELIVERS the signal, so a fire-and-forget
+# trap returns while the peer still owns the listening socket and a second invocation
+# in the same container fails to bind. Measured 2026-09-02 -- how long the port kept
+# accepting connections AFTER the harness had exited: elixir >400ms (and the next run
+# did fail, rc=1), julia ~88ms, smalltalk ~4ms, zig and go 0ms. The window is a
+# property of the peer runtime, not of the harness, which is why every peer carries
+# this and not only the ones that were seen to fail.
+#
+# Two processes here, and the one that owns the oracle-facing TCP port is the BRIDGE,
+# not the peer -- so reaping only $PEER would leave the port bound. $PEER is not set
+# until step 2, hence the :- default rather than a second trap.
+reap_host() {
+  for p in "${BR:-}" "${PEER:-}"; do
+    [ -n "$p" ] || continue
+    kill -0 "$p" 2>/dev/null || continue
+    kill -TERM "$p" 2>/dev/null || true
+  done
+  # Poll rather than a bare wait: a process that ignores TERM is bounded at ~5s and
+  # then killed, instead of hanging the run forever.
+  for p in "${BR:-}" "${PEER:-}"; do
+    [ -n "$p" ] || continue
+    j=0
+    while [ "$j" -lt 50 ] && kill -0 "$p" 2>/dev/null; do
+      j=$((j + 1)); sleep 0.1
+    done
+    kill -KILL "$p" 2>/dev/null || true
+    wait "$p" 2>/dev/null || true
+  done
+}
+trap reap_host EXIT INT TERM
 i=0; while [ "$i" -lt 100 ]; do grep -q "^BRIDGE-LISTENING" /tmp/bridge.out 2>/dev/null && break; kill -0 "$BR" 2>/dev/null || { echo "bridge died:"; cat /tmp/bridge.out; exit 1; }; i=$((i+1)); sleep 0.1; done
 
 # 2. Peer harness (connects OUT to the bridge over WS; the Scratch-extension stand-in).

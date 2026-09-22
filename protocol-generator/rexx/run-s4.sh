@@ -80,9 +80,50 @@ LD_LIBRARY_PATH="$CODEC_BUILD" rexx "$PEERBIN" \
   --port "$PORT" --name "$NAME" --net "$NET" --base "$BASE" \
   --debug-open-grants $VALIDATE_FLAG >/tmp/host.out 2>/tmp/host.err &
 HOST_PID=$!
+# Deterministic teardown. kill(1) only DELIVERS the signal, so a fire-and-forget
+# trap returns while the peer still owns the listening socket and a second invocation
+# in the same container fails to bind. Measured 2026-09-02 -- how long the port kept
+# accepting connections AFTER the harness had exited: elixir >400ms (and the next run
+# did fail, rc=1), julia ~88ms, smalltalk ~4ms, zig and go 0ms. The window is a
+# property of the peer runtime, not of the harness, which is why every peer carries
+# this and not only the ones that were seen to fail.
+#
+# This peer is the one case where the listening socket is NOT owned by $HOST_PID: the
+# Regina interpreter spawns a separate $NET (ecnet) co-process daemon that holds it,
+# and the daemon reparents when the interpreter goes, so `wait` cannot see it.
+#
+# The previous teardown reached for `pkill -f "$NET $BASE"`. THAT COMMAND IS NOT
+# INSTALLED IN THIS IMAGE (nor are pgrep or ps), so the line had been a silent no-op
+# for as long as it existed: `2>/dev/null || true` swallows the command-not-found and
+# the cleanup reports success having reaped nothing. Measured 2026-09-02, at HEAD and
+# unchanged by the rest of this sweep -- the daemon survived every run and kept 127.0.0.1
+# bound, so the SECOND invocation in a container exited 1 and every one after it.
+# That is the "a guard that was never executed is not a guard" shape with the guard
+# missing rather than misrouted. Scan /proc, which needs no tooling at all.
+ecnet_pids() {
+  for d in /proc/[0-9]*; do
+    [ -r "$d/cmdline" ] || continue
+    case "$(tr '\0' ' ' < "$d/cmdline")" in
+      "$NET $BASE"*) echo "${d#/proc/}" ;;
+    esac
+  done
+}
 cleanup() {
-  kill "$HOST_PID" 2>/dev/null || true
-  pkill -f "$NET $BASE" 2>/dev/null || true
+  if [ -n "${HOST_PID:-}" ] && kill -0 "$HOST_PID" 2>/dev/null; then
+    kill -TERM "$HOST_PID" 2>/dev/null || true
+    j=0
+    while [ "$j" -lt 50 ] && kill -0 "$HOST_PID" 2>/dev/null; do
+      j=$((j + 1)); sleep 0.1
+    done
+    kill -KILL "$HOST_PID" 2>/dev/null || true
+    wait "$HOST_PID" 2>/dev/null || true
+  fi
+  for p in $(ecnet_pids); do kill -TERM "$p" 2>/dev/null || true; done
+  j=0
+  while [ "$j" -lt 50 ] && [ -n "$(ecnet_pids)" ]; do
+    j=$((j + 1)); sleep 0.1
+  done
+  for p in $(ecnet_pids); do kill -KILL "$p" 2>/dev/null || true; done
   rm -f "$BASE.cmd" "$BASE.evt" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM

@@ -75,7 +75,29 @@ EC_VALIDATE="${EC_VALIDATE:-1}" EC_DEBUG_OPEN_GRANTS="${EC_DEBUG_OPEN_GRANTS:-1}
   node_modules/.bin/node-red --userDir "$NR" --settings "$NR/settings.js" flows.json \
   >/tmp/nr.out 2>/tmp/nr.err &
 NR_PID=$!
-trap 'kill "$NR_PID" 2>/dev/null || true' EXIT INT TERM
+# Deterministic teardown. kill(1) only DELIVERS the signal, so a fire-and-forget
+# trap returns while the peer still owns the listening socket and a second invocation
+# in the same container fails to bind. Measured 2026-09-02 -- how long the port kept
+# accepting connections AFTER the harness had exited: elixir >400ms (and the next run
+# did fail, rc=1), julia ~88ms, smalltalk ~4ms, zig and go 0ms. The window is a
+# property of the peer runtime, not of the harness, which is why every peer carries
+# this and not only the ones that were seen to fail.
+reap_host() {
+  [ -n "${NR_PID:-}" ] || return 0
+  kill -0 "$NR_PID" 2>/dev/null || return 0
+  kill -TERM "$NR_PID" 2>/dev/null || true
+  # Poll rather than a bare wait: a peer that ignores TERM is bounded at ~5s and then
+  # killed, instead of hanging the run forever.
+  j=0
+  while [ "$j" -lt 50 ]; do
+    kill -0 "$NR_PID" 2>/dev/null || return 0
+    j=$((j + 1))
+    sleep 0.1
+  done
+  kill -KILL "$NR_PID" 2>/dev/null || true
+  wait "$NR_PID" 2>/dev/null || true
+}
+trap reap_host EXIT INT TERM
 
 # 4. Wait up to 15s for the readiness line.
 i=0

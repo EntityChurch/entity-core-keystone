@@ -68,7 +68,28 @@ ozengine "$PROJ/build/host.ozf" \
   --port "$PORT" --name "$NAME" --daemon "$DAEMON" \
   --debug-open-grants $VALIDATE_FLAG >/tmp/host.out 2>/tmp/host.err &
 HOST_PID=$!
-cleanup() { kill "$HOST_PID" 2>/dev/null || true; }
+# Deterministic teardown. kill(1) only DELIVERS the signal, so a fire-and-forget
+# trap returns while the peer still owns the listening socket and a second invocation
+# in the same container fails to bind. Measured 2026-09-02 -- how long the port kept
+# accepting connections AFTER the harness had exited: elixir >400ms (and the next run
+# did fail, rc=1), julia ~88ms, smalltalk ~4ms, zig and go 0ms. The window is a
+# property of the peer runtime, not of the harness, which is why every peer carries
+# this and not only the ones that were seen to fail.
+cleanup() {
+  [ -n "${HOST_PID:-}" ] || return 0
+  kill -0 "$HOST_PID" 2>/dev/null || return 0
+  kill -TERM "$HOST_PID" 2>/dev/null || true
+  # Poll rather than a bare wait: a peer that ignores TERM is bounded at ~5s and then
+  # killed, instead of hanging the run forever.
+  j=0
+  while [ "$j" -lt 50 ]; do
+    kill -0 "$HOST_PID" 2>/dev/null || return 0
+    j=$((j + 1))
+    sleep 0.1
+  done
+  kill -KILL "$HOST_PID" 2>/dev/null || true
+  wait "$HOST_PID" 2>/dev/null || true
+}
 trap cleanup EXIT INT TERM
 
 # Wait up to 30s for the readiness line (ozengine startup + daemon spawn + bind).

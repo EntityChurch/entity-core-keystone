@@ -1504,6 +1504,23 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   **Enforcement, and it is one line in the self-test:** assert the count equals the population
   (`n_banners == len(peers)`), not merely that the error list is empty. An empty error list is
   the expected output of both a passing check and an absent one.
+  **THIRD AND FOURTH OCCURRENCE 2026-09-02, both in PEER GATES rather than repo tooling, and the
+  fix is the same one line in each.** `swift/run-s2.sh` ran `swift test` and trusted its exit
+  code, which is 0 for a suite that executed 35 cases and for one that executed none — a dropped
+  test file or a mis-declared target leaves it green. `smalltalk`'s `st_suite` grepped
+  `failures=0 errors=0`, and an **empty** SUnit suite reports exactly that (`runs=0 passes=0
+  failures=0 errors=0`), so a `buildSuite` over a class whose methods failed to compile passes
+  perfectly. Both now assert the count — an XCTest floor (`SWIFT_TEST_FLOOR`, currently 35) and
+  `runs=[1-9]` — and both were regression-tested by planting: floor raised above reality → exit 1;
+  a synthetic `runs=0` line → rejected by the new pattern and accepted by the old one.
+  **Generalise to every peer gate, not just the repo's own tooling: if a gate's success message
+  does not contain a number, it cannot distinguish "all green" from "nothing ran."**
+  *(Adjacent, and the same session: a DETECTOR needs the same scepticism as a gate. A probe
+  grepping its run log for `panic` reported **30 aborts in 30 clean runs**, because the oracle's
+  `agility_decode_1` line contains the word in its own DESCRIPTION — "accepts key_type=0xFE
+  without panic/hardcode-reject". **Scope a detector to the region that can contain the signal**
+  — here the peer-stderr section, not the whole log — and treat a detector that fires on every
+  sample exactly like one that fires on none: neither has measured anything.)*
   **The gate this came from is worth its own note, because it closes a hole the other five
   structurally cannot see.** `check-set-gate` asks whether numbers are COMPARABLE, `pin-gate`
   whether anchors RESOLVE, `link-gate` whether links reach real FILES — **all three pass a tree
@@ -1901,6 +1918,65 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   20**. State the resolution rather than implying proof — against a ~10% base rate, 20 clean runs is
   roughly 88% confidence. **Corollary to the standing "drive the starved category directly" advice:
   that is right for COVERAGE and wrong for a RACE — an isolated category is a different heap.**
+- **A REPRODUCTION IS A MEASUREMENT SETUP, NOT A COMMAND — and if the probe script is not kept, the
+  rate cannot be re-measured, only re-argued.** RATIFIED 2026-09-02 (`zig`), and it is the standing
+  *"re-run N times and count"* rule failing at its own next step. That rule produced an honest number
+  in the morning — **5 aborts in 60 full `--profile core` runs (8%)** — and the probe that produced it
+  was never saved. The same afternoon, on the **same source**, the abort would not reproduce at all:
+  **0 of 130** sequential runs at `--cpus=4`, uncapped across all 32 cores, and with 12 CPU burners
+  oversubscribing the container, plus **0 of 100** `-category concurrency` runs. Nothing in the tree
+  had changed. The only surviving evidence of how the morning had measured it was a **port number in
+  a log** (`LISTENING 127.0.0.1:7714` on run 14 — one port per run, i.e. the runs were concurrent),
+  and reconstructing that regime from scratch cost more than keeping the script would have.
+  **Three things generalise, and the second is the one that changes what you write down:**
+  (a) **Commit the probe beside the finding.** A rate is a claim about a setup; without the setup it is
+  an anecdote with a denominator. `output/scratch/zig-abort-probe.sh` now carries its own conditions in
+  its header, including the ones that did NOT reproduce.
+  (b) **A fix for an intermittent you can no longer reproduce is justified STRUCTURALLY or not at
+  all — and 100 clean runs is not evidence when the baseline is also 0 of 100.** Post-fix greens are
+  the number everyone wants to publish and they say nothing here; the honest claim is *"the mechanism
+  is removed and the count cannot speak to it"*, and the enforcement point is a grep (`detach()`
+  returns 0 outside comments), not a tally.
+  (c) **When the headline intermittent will not reproduce, measure what WILL.** The same change also
+  removed a 20.6-second `t2_2_connection_churn` stall — unfixed **7 of 100**, fixed **0 of 100** — and
+  a third build carrying only HALF the fix scored **10 of 100**, which is what isolated the cause to
+  the other half. A variant that changes one half at a time is how an attribution stops being a story;
+  it cost one extra 100-run batch and replaced a plausible sentence with a measured one.
+- **`detach()` IS THE HAZARD, EVEN WHEN THE BORROWED STATE IS SAFE — the victim can be the RUNTIME'S
+  OWN bookkeeping.** RATIFIED 2026-09-02 (`zig`, second occurrence in the same peer, and the entry
+  above's structural half). The 2026-09-01 fix made the detached dispatch threads safe *for our
+  memory* with an in-flight counter, and left the abort: Zig's `entryFn` ends in
+  `switch (completion.swap(.completed))` whose `.completed => unreachable` arm can only be reached if
+  an `Instance` mapping was reused while a previous thread was still finishing with it — which only
+  the detached path can produce, because `freeAndExit` munmaps the thread's own stack+TLS from INSIDE
+  the dying thread and the kernel's `CLONE_CHILD_CLEARTID` write lands afterwards. **Own the handle
+  and the whole shape goes away**: `join()` frees the mapping from the owner, after the kernel is
+  finished. Enforcement, cohort-wide and one line: `git grep -n 'detach()\|pthread_detach' -- '*/src/*'`
+  and, for each hit, name what keeps the borrowed state alive. Answers found: `zig` none (fixed),
+  `c` an in-flight count + drain (fixed 2026-09-02), `cpp` `shared_ptr` copies captured by the lambda
+  (correct by construction — refcounting IS the discipline on that substrate), `python` daemon threads
+  over refcounted state (no manual free, so no such class).
+  **Sub-lesson worth its own line, because it was measured rather than reasoned: a SPIN is not a
+  cheap `join`.** The counter it replaced was drained with a `std.Thread.yield()` busy-wait, and on a
+  4-core container a reader spinning in that loop can starve the very dispatch thread it is waiting
+  for — 7 of 100 runs paid a full 20-second request deadline for it. A futex wait cannot do that.
+  Prefer the primitive that blocks; a yield-spin is a scheduler bet, not a synchronisation.
+- **A COMMENT THAT NAMES A LIFECYCLE STEP IS NOT EVIDENCE THE STEP EXISTS — count the resource at two
+  points in time instead of reading the code that manages it.** Candidate (`cpp` 2026-09-02, found by
+  asking the `zig` question of its siblings the same day, which is the standing sibling-check rule
+  paying out for the third time). `Listener::Impl::conns` was **push_back-only** — no `erase` anywhere
+  in the file — under a struct comment reading *"keep its Io + Connection + reader thread alive until
+  reaped."* Nothing reaped. `close_io()` only `shutdown()`s; `~Io` is what calls `::close(fd_)`, and it
+  could not run while the list held the `shared_ptr`. **Measured on the running peer: 4 fds idle →
+  1419 after one `--profile core` suite → 2834 after two**, linear, unbounded, and triggerable by
+  anyone who can open a connection. It had never failed a run because the toolchain container's soft
+  limit is **524288** — under the conventional 1024 the peer exhausts descriptors partway through a
+  single suite and `accept()` starts returning `EMFILE`. **The generalisation is about which question
+  finds it:** reading `transport.cpp` for a use-after-free (what the sibling sweep was looking for)
+  clears this peer completely, because the `shared_ptr`s make the lifetimes correct — the defect is
+  that they are *too* correct, held by a list with no other end. `ls /proc/<pid>/fd | wc -l` at idle,
+  after one suite and after two is the whole diagnostic, and a leak is a CURVE where a high-water mark
+  is a plateau.
 - **PROSE IN A COMMENT IS CODE, IN ANY FORMAT WHERE PUNCTUATION TERMINATES A RECORD — and the errors
   it produces are invisible if the peer logs to a file that dies with the container.** Candidate
   (first occurrence, but the enforcement point is exact). `pd` had been printing three errors on every
@@ -2033,6 +2109,74 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   now re-execs itself into its container like the 21 siblings that already did.** A cohort axis is
   swept by invoking one conventional entry point per peer; the odd one out does not fail *informatively*,
   it fails as `command not found`, which is the single most misleading exit a sweep can produce.
+- **A TEARDOWN THAT SIGNALS IS NOT A TEARDOWN THAT WAITS — and when the symptom is a RACE BETWEEN TWO
+  DURATIONS, only one of which you own, it is absent on exactly the peers you would test first.**
+  RATIFIED 2026-09-02 (cohort-wide sweep, 45 of 46 harnesses). Every `run-s4.sh` tore its peer down
+  with `trap 'kill "$HOST_PID" 2>/dev/null || true' EXIT` — fire-and-forget. `kill(1)` DELIVERS a
+  signal and returns, so the trap returns, the script exits, and **the peer is still holding the
+  listening socket.**
+  **The methodological half is the durable one, and it nearly killed the work.** The reported symptom
+  was *"a back-to-back invocation in the same container cannot rebind the port."* Reproducing it on
+  `go` (5 of 5 clean) and on `zig` (10 of 10 clean at a full `--profile core`) says the defect does not
+  exist — and those are the two peers anyone reaches for. The symptom is a race between *how long the
+  old peer takes to die* and *how long the next invocation takes to reach its bind*, so a slow build
+  step hides it and a fast runtime hides it. **Only one of those two durations is a property of the
+  harness. Measure that one.** A probe that connects to the port in a tight loop the instant the
+  harness returns answers directly, in one run per peer: `rexx` **never** released it, `elixir` **>400 ms**
+  (and the next invocation exited 1, alternating), `julia` **~88 ms**, `smalltalk` **~4 ms**, `crystal`
+  `zig` `go` **0 ms**. After: every one of them 0–1 ms. Generalise past ports — **when a reported
+  defect will not reproduce, ask whether the symptom is a race you only half own, and instrument the
+  half you do.**
+  **`crystal` had the correct teardown the whole time and nobody had looked** — the standing *"when a
+  scope question has 45 existing answers in the tree, ask them before deriving one"* rule, in the one
+  direction that is easy to miss: the cohort can already contain the fix. The sweep propagated
+  `crystal`'s function rather than authoring one.
+  **Enforcement: `tools/teardown-gate.py`, in `make lint`** — exactly one non-comment `trap` per
+  harness, it must name a FUNCTION (an inline `trap 'kill …'` is the defect by construction), that
+  function must exist, and its body must `wait` on a pid. It deliberately does not gate the signal
+  (`python` `ruby` `prolog` chose `-9` deliberately, and SIGKILL + `wait` is correct) or the poll
+  bound. It asserts the harness count against the peer roster, so a peer with no `run-s4.sh` is an
+  ERROR rather than a silent skip, and it is regression-tested against four planted defects plus that
+  vacuity case. It found one on its first run: `crystal` writes `trap 'reap_host' EXIT`, and the
+  first cut rejected the quotes.
+  **A SWEEP OF 46 HARNESSES IS NOT VERIFIED BY `sh -n`, BECAUSE 11 OF THEM RE-EXEC INTO A CONTAINER
+  AND THE EDITED TEXT IS A STRING THERE.** `sh -n run-s4.sh` parses that argument as a literal and
+  returns 0 whatever is inside it — so the obvious check covers 35 files and reports 46.
+  Reconstructing the block with a regex fails too, and fails *plausibly*: those blocks contain
+  `PORT="'"$PORT"'"`, where the outer shell CLOSES the quote, splices a value and reopens it, so a
+  scanner that stops at the first unescaped quote captures a fragment and `sh -n` then reports a
+  syntax error in text that never existed. **Shim `podman` and let the real shell do the quoting**
+  (`protocol-generator/shared/diagnostics/inner-container-script-check.sh`). Its own first cut read
+  the argument after a literal `-c` and captured **nothing** for the four peers using `bash -lc`,
+  reporting them as "no inner script" — a false clean, which is the same defect class the sweep was
+  about. Corollary for any text inserted into those blocks: **not one apostrophe may appear in it**,
+  comments included; the rewriter asserts that before it writes anything.
+  **`rexx` is the peer that proves the rule, and its two defects were both invisible-by-construction.**
+  (a) The listening socket is held by a reparented `ecnet` co-process, not by the harness child, so
+  `wait` cannot see it — and the existing cleanup reached for **`pkill -f`, WHICH IS NOT INSTALLED IN
+  THAT IMAGE** (nor are `pgrep` or `ps`). `2>/dev/null || true` swallowed the command-not-found and
+  the cleanup reported success having reaped nothing, so the daemon survived *every* run and the
+  second invocation in a container exited 1 forever. Bisected against HEAD before attributing it —
+  identical there, pre-existing. **Generalise: `|| true` on a command that may not exist converts
+  "missing tool" into "success", and a cleanup path is where nobody notices.** The fix scans `/proc`,
+  which needs no tooling at all. (b) Every diagnostic this peer emits — including its `PEER FATAL
+  SYNTAX` handler — was written as `call lineout stderr, …`, where **`stderr` is an unset REXX
+  variable and therefore evaluates to the literal string `STDERR`, a FILENAME.** For as long as the
+  peer has existed its dying words went to an untracked file in the working tree. **This is the
+  cohort-wide keep-the-peer-stderr fix meeting its second half: the harness now preserves fd 2
+  faithfully, and this peer was not writing to it.** `'<stderr>'` is the stream (pinned by
+  `protocol-generator/rexx/test/stderr-stream-name.rex`, which shows both spellings side by side).
+  Neither defect moved a check: `rexx` measured `756 · 313P/337W/0F/106S` before and after, equal to
+  its committed report.
+  **Verification standard used, and it is the one the sweep rule demands:** every *shape* executed,
+  not one representative — `HOST_PID` at top level, `HOST_PID` inside a re-exec block, `PEER`, `PP`,
+  `PDPID`, `NR_PID`, the five one-line `cleanup()` peers, and the three hand-edited ones. Six peers
+  (`java` `sql` `python` `io` `pd` `rexx`) were run to a full `--profile core` and each reproduced its
+  committed row **exactly**; seven more were driven through the port probe.
+  **Named, not fixed:** `python/run-s4.sh` hardcodes `-profile core -json-out "$JSON_OUT"` and
+  **ignores caller arguments entirely**, so a diagnostic run rewrites a signed-off tracked report
+  (caught here, reverted; the `JSON_OUT` env var is the only escape). That is the *"a gate must not
+  rewrite a committed artifact"* shape in a harness.
 - **A SECOND AXIS WITH NO COHORT GATE IS AN EXCLUSION NOBODY DECLARED — and it will be defended by
   the fact that the FIRST axis is green.** RATIFIED 2026-09-02, and it is the `apl` exclusion lesson
   moved up one level: there, the one peer nobody could measure was the one peer the census refused to
