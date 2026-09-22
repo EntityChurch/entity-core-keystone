@@ -1,6 +1,6 @@
 ;;;; conformance.lisp — ECF conformance harness (hand-rolled, no test framework).
 ;;;;
-;;;; Loads the normative fixture (conformance-vectors-v1.cbor), decodes it with THIS
+;;;; Loads the normative fixture (conformance-vectors.cbor), decodes it with THIS
 ;;;; peer's own decoder (a decoder bug here is itself a conformance failure, per
 ;;;; ENTITY-CBOR-ENCODING.md §E.3), runs every vector, and byte-compares against the
 ;;;; cross-blessed `canonical` field. The fixture is the Go wire-conformance oracle's
@@ -96,7 +96,7 @@
 
 (defun default-fixture-path ()
   (or (uiop:getenv "ECF_FIXTURE")
-      "../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"))
+      "../shared/test-vectors/ecf-conformance/conformance-vectors.cbor"))
 
 (defun run-conformance (&optional (path (default-fixture-path)))
   "Run the ECF conformance corpus at PATH. Returns (values pass fail total)."

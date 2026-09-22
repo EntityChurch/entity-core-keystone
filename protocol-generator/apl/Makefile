@@ -37,7 +37,7 @@ S3MODS      := $(MODS) src/val.apl src/ent.apl src/identity.apl src/keystore.apl
                src/transport.apl src/coretypes.apl src/peer.apl
 S3LOAD      := $(patsubst %,-f %,$(S3MODS))
 
-CORPUS      := ../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+CORPUS      := ../shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 
 .PHONY: all test conf unit codec shim clean dist s3 selftest smoke
 all: test

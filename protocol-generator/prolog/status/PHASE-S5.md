@@ -22,7 +22,7 @@ artifacts + the runbook + the synthesis; an operator publishes when arch signs o
 |---|---|---|
 | S4 `--profile core` green | ✅ | **653 / 291P / 269W / 0F / 93S** @ `entity-core-go @75c532e`, machine-verified `summary.failed == 0`. All 16 core categories 0-FAIL. **Re-ran GREEN in-container at S5.** ([`CONFORMANCE-REPORT.{md,json}`](CONFORMANCE-REPORT.md)) |
 | origination-core (reentry) | ✅ | 3/3 over real two-peer TCP (`reference_connect` · `reference_ready` · `dispatch_outbound_reentry`) — proven at S4, the §6.11 seam |
-| S2 lower bar (codec byte-identical) | ✅ | **69/69** vs `conformance-vectors-v1` through the foreign codec + **10/10** crypto KAT. **Re-ran GREEN at S5.** |
+| S2 lower bar (codec byte-identical) | ✅ | **69/69** vs `conformance-vectors` through the foreign codec + **10/10** crypto KAT. **Re-ran GREEN at S5.** |
 | §9.5 53-type floor byte-identical | ✅ | **53/53** (content_hash recomputed via the C-ABI codec through the Prolog surface, asserted == Go @75c532e). **Re-ran GREEN at S5.** |
 | S3 two-peer loopback smoke | ✅ | **11/11** (handshake + dispatch + capability + 8-way request_id demux + emit hook + §7a echo). **Re-ran GREEN at S5.** |
 | Ed25519 + Ed448 crypto KAT | ✅ | 10/10 — Ed25519 floor + Ed448 RFC-8032 (57-B pubkey, 114-B sig, §1.5 peer_id) byte-equal, via the C-ABI (A-PL-002/003: SWI library(crypto) has neither) |

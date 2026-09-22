@@ -17,7 +17,7 @@
 
 # entity-core-protocol-dart — S2 wire-conformance report
 
-**Corpus:** v7.71 (`protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor`)
+**Corpus:** v7.71 (`protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor`)
 · **Image:** `entity-core-keystone/dart-toolchain:latest` (Dart SDK 3.11.6, sealed `--network=none`)
 · **Result: 69/69 wire-conformance PASS, 0 FAIL · all self-tests PASS.**
 

@@ -25,7 +25,7 @@ record + the operator handoff.
 | S4 `--profile core` green | ✅ | **665** / 292P / 278W / **0F** / 95S, machine-verified `summary.failed == 0` @ the v7.77 oracle `e8524ed` (core_gate `e09a865f…` matches the committed pin). (`status/CONFORMANCE-REPORT.json`, `status/PHASE-S4.md`.) |
 | origination-core (reentry) | ✅ | 3/3 over real two-peer TCP (`reference_connect` · `reference_ready` · `dispatch_outbound_reentry`). |
 | multisig (genuine K-of-N) | ✅ | 11/11, 0 skip — incl. `valid_2of3_peer_signed_accepted` PASS (`--name conformance` persistent identity; validator co-signs AS the peer → 200, RUN not SKIP). |
-| S2 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors-v1`, 0 codec fixes. |
+| S2 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors`, 0 codec fixes. |
 | §9.5 53-type floor byte-identical | ✅ | 53/53 (content_hash recomputed by the PHP codec, asserted equal to the Go reference — not ingested). |
 | S3 two-peer loopback smoke | ✅ | 12/12 (handshake + dispatch + capability + multi-request_id demux). |
 | Ed25519 (floor crypto) | ✅ | ext-sodium (libsodium) `sodium_crypto_sign_*`, deterministic RFC-8032; SHA-256/384 via stdlib `hash()`. Zero Composer/PECL dep, zero FFI. |

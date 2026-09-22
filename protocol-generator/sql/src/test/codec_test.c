@@ -2,7 +2,7 @@
  * codec_test.c — S2 wire-conformance differential for the SQL peer's codec seam.
  *
  * THE GATE (byte-identity): drives ec_seam_* against the pinned 71-vector ECF
- * corpus (protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor)
+ * corpus (protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor)
  * and requires byte-identical output for every vector. If a byte disagrees, the
  * SEAM is wrong, never the corpus (the keystone rule). Because the codec is
  * DELEGATED to libentitycore_codec (shared C-ABI lineage), a pass is
@@ -481,7 +481,7 @@ static void run_sql_seam_kat(void)
 int main(int argc, char **argv)
 {
     const char *fixture = (argc > 1) ? argv[1]
-        : "../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor";
+        : "../shared/test-vectors/ecf-conformance/conformance-vectors.cbor";
 
     printf("SQL peer S2 codec-seam differential (delegated → libentitycore_codec)\n");
     printf("  provenance: %s\n", ec_seam_impl_info());

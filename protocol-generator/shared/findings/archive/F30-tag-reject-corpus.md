@@ -19,7 +19,7 @@ all five vectors and passes S2 **69/69**.
 ## Summary
 
 In the pinned v0.8.0 ECF conformance corpus
-`protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor`
+`protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor`
 (SHA-256 `41d68d2d…`, pin verified at S2 entry), the `tag_reject` category has **5** vectors
 whose `.diag` descriptions claim each carries a CBOR **major-type-6 (tag)** item:
 

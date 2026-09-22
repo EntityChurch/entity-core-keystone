@@ -1,7 +1,7 @@
 -- entity-core-protocol-unison — embedded v0.8.0 ECF conformance corpus (S2 harness)
 --
--- Byte-identical copy of protocol-generator/shared/test-vectors/v0.8.0/
--- conformance-vectors-v1.cbor (71 vectors), embedded as base16 so the headless
+-- Byte-identical copy of protocol-generator/shared/test-vectors/ecf-conformance/
+-- conformance-vectors.cbor (71 vectors), embedded as base16 so the headless
 -- transcript harness is fully offline + self-contained. The harness re-derives
 -- SHA-256 over the decoded bytes and asserts it equals corpusSha (the MANIFEST.md
 -- pin) — any drift from the pinned corpus fails LOUDLY. NOT the source of truth:

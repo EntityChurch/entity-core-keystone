@@ -83,7 +83,7 @@ here), §5.10 verdict-timestamp determinism.
    binding + static link — de-risk with a trivial in-container Ed25519/SHA-256 KAT).
 2. Hand-roll `src/ecf.nim` (+ `base58.nim`, `varint.nim`) with macro/template compile-time
    dispatch. **First spike: the `float` and `map_keys` v0.8.0 vectors**
-   (`protocol-generator/shared/test-vectors/v0.8.0/`) — the shortest-float f16 ladder +
+   (`protocol-generator/shared/test-vectors/ecf-conformance/`) — the shortest-float f16 ladder +
    length-then-lex CTAP2 ordering are the highest-bug-density legs.
 3. Add the **`[2^63, 2^64-1]` head-form self-test** (fixed-width axis; A-NIM-002) as a
    codec gate — a signed-int64 carrier would silently overflow.

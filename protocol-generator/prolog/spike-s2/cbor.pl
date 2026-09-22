@@ -234,7 +234,7 @@ f32_decode(U32, F) :-
 % ===========================================================================
 % SPIKE HARNESS — push the map_keys.* + float.* vectors through encode/2 and
 % compare byte-exact against the corpus `canonical` field (hand-transcribed
-% from conformance-vectors-v1.diag; NEVER doctored to pass).
+% from conformance-vectors.diag; NEVER doctored to pass).
 % ===========================================================================
 
 :- discontiguous spike_vector/3.
@@ -295,7 +295,7 @@ spike_vector('map_keys.3', map(["b"-int(2), "a"-int(1)]),
 spike_vector('map_keys.4',
     map(["aaaaaaaaaaaaaaaaaaaaaaaa"-int(24), "aaaaaaaaaaaaaaaaaaaaaaa"-int(23)]),
     Bytes) :- hex_bytes_list(
-    % hex string lifted verbatim from conformance-vectors-v1.diag map_keys.4 canonical
+    % hex string lifted verbatim from conformance-vectors.diag map_keys.4 canonical
     "a27761616161616161616161616161616161616161616161611778186161616161616161616161616161616161616161616161611818",
     Bytes).
 spike_vector('map_keys.5',

@@ -11,7 +11,7 @@ namespace EntityCore.Protocol.Types;
 /// <para>
 /// Declared natively in C# (single source of truth in code), rendered through the
 /// byte-green codec, and diffed for content-hash equality against the Go-rendered
-/// vector set <c>test-vectors/v0.8.0/type-registry-vectors-v1.cbor</c>.
+/// vector set <c>test-vectors/type-registry/type-registry-vectors.cbor</c>.
 /// </para>
 /// </summary>
 internal static class CoreTypeRegistry

@@ -13,7 +13,7 @@ import java.nio.file.Path
 /**
  * ECF wire-conformance harness (the codec gate).
  *
- * The normative fixture `conformance-vectors-v1.cbor` is itself a canonical-ECF-encoded
+ * The normative fixture `conformance-vectors.cbor` is itself a canonical-ECF-encoded
  * array of vector maps, each carrying its own cross-blessed `canonical` bytes (the Go
  * `wire-conformance` oracle's build-fixture/emit-canonical output, 3-way Go × Rust ×
  * Python byte-locked). The harness decodes the fixture with THIS peer's OWN decoder (a
@@ -39,7 +39,7 @@ object ConformanceHarness {
     fun defaultFixture(): Path {
         val env = System.getenv("ECF_FIXTURE")
         if (!env.isNullOrEmpty()) return Path.of(env)
-        return Path.of("../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor")
+        return Path.of("../shared/test-vectors/ecf-conformance/conformance-vectors.cbor")
     }
 
     fun run(fixture: Path): Result {

@@ -1,7 +1,7 @@
 # entity-core-protocol-tcl — S2 codec conformance harness.
 #
-# Walks the PINNED v0.8.0 corpus (protocol-generator/shared/test-vectors/v0.8.0/
-# conformance-vectors-v1.cbor) — decoded with OUR OWN decoder (the corpus is trusted
+# Walks the PINNED v0.8.0 corpus (protocol-generator/shared/test-vectors/ecf-conformance/
+# conformance-vectors.cbor) — decoded with OUR OWN decoder (the corpus is trusted
 # canonical ECF) — and asserts, per vector:
 #   encode_equal   : encode(reconstructed value) == canonical bytes
 #   decode_reject  : decode(canonical bytes) throws

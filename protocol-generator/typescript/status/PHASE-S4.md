@@ -40,7 +40,7 @@ logic**, only the conformance scaffolding:
 The 53-type `CoreTypeRegistry` renders natively (single source of truth in code) and
 seeds at `system/type/*`, but S3 never byte-checked it. `test/type-registry.test.ts`
 renders all 53 and diffs each `content_hash` against the Go-rendered
-`type-registry-vectors-v1.cbor` → **53/53 byte-identical, first run.** A byte-equal
+`type-registry-vectors.cbor` → **53/53 byte-identical, first run.** A byte-equal
 content_hash is a hard equality: the TS ECF render of every core type's data is
 byte-for-byte the Go render. This is what then made the live `type_system` category
 land 108 pass / 0 core fail with no surprises. Full `node:test` suite **55/55**, no

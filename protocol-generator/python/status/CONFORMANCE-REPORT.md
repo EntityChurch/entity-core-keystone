@@ -100,7 +100,7 @@
 # entity-core-protocol-python — S2 Wire-Conformance Report
 
 **Phase:** S2 (codec). **Branch:** `lang/python` (worktree).
-**Corpus:** `protocol-generator/shared/test-vectors/v7.56/conformance-vectors-v1.cbor`
+**Corpus:** `protocol-generator/shared/test-vectors/v7.56/conformance-vectors.cbor`
 (fixture `v1`, `ENTITY-CBOR-ENCODING.md` v1.5 Appendix E; SHA `41d68d2d…`).
 **Result:** **69 / 69 PASS · 0 FAIL.**
 

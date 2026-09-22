@@ -941,7 +941,7 @@ pub extern "C" fn ec_encode_bare_value(
 // These cover the surfaces NO corpus vector drives (envelope verify, keygen
 // round-trips) plus the agility reject paths. The byte-pinned agility vectors
 // (Ed448/SHA-384 positive bytes) are exercised by the conformance harness
-// against test-vectors/v0.8.0/agility-vectors-v1.cbor.
+// against test-vectors/crypto-agility/agility-vectors.cbor.
 #[cfg(test)]
 mod v11_tests {
     use crate::api;

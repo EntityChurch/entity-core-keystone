@@ -14,7 +14,7 @@ BASEIMG     := /opt/pharo/image
 CODEC_SRC   := ../../ffi-generator/c-abi/entity-core-codec-ffi-c
 CODEC_BUILD := $(CODEC_SRC)/build
 CODEC_SO    := $(CODEC_BUILD)/libentitycore_codec.so
-CORPUS      := ../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+CORPUS      := ../shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 PEERIMG     := entity-core.image
 
 # UFFI dlopen's the codec .so by soname → it must be on LD_LIBRARY_PATH at run time.

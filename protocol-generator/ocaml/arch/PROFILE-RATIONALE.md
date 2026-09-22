@@ -99,7 +99,7 @@ stands.
 ## Spec version: read v7.72, codec corpus v0.8.0
 
 Profile + (future) peer derive from `spec-data/v7.72` (latest). The codec uses the
-`test-vectors/v0.8.0` corpus because `ENTITY-CBOR-ENCODING.md` and
+`test-vectors/ecf-conformance` corpus because `ENTITY-CBOR-ENCODING.md` and
 `ENTITY-NATIVE-TYPE-SYSTEM.md` are **byte-identical** v7.71→v7.72 (SHA-256 verified)
 — no wire-format change — so the v0.8.0 corpus is valid at v7.72. The F12/v7.73
 nonce-echo fold is a peer-layer (§4.6 authenticate) concern, not a codec one, and is

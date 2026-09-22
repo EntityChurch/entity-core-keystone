@@ -2,7 +2,7 @@
 // range / Ed25519 RFC-8032 self-tests, hand-rolled assert/count driver (no test
 // framework, A-CPP-004), built + run under ASan/LSan/UBSan.
 //
-// The normative fixture conformance-vectors-v1.cbor is itself a canonical-ECF
+// The normative fixture conformance-vectors.cbor is itself a canonical-ECF
 // array of vector maps, each carrying its own cross-blessed `canonical` bytes
 // (the Go wire-conformance oracle output, 3-way Go × Rust × Python byte-locked).
 // The harness decodes the fixture with THIS peer's OWN decoder (a decoder bug is

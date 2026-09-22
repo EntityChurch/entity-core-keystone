@@ -102,7 +102,7 @@ honest-SKIPs it).
 
 ## Lower bar — codec (S2): 69 / 69 PASS — byte-identical
 
-**Corpus:** `test-vectors/v0.8.0/conformance-vectors-v1.cbor` (LOCKED ECF v1, byte-identical
+**Corpus:** `test-vectors/ecf-conformance/conformance-vectors.cbor` (LOCKED ECF v1, byte-identical
 v7.56→v7.75; 3-way Go × Rust × Python byte-locked). **Oracle:**
 `entity-core-go/cmd/internal/wire-conformance`.
 

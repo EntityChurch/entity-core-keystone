@@ -4,7 +4,7 @@
 //! `/{peer}/system/type/{name}`. Each type's data is rendered NATIVELY from an
 //! in-code declaration (the single source of truth) through the byte-green S2
 //! codec; the resulting content_hash is byte-identical to the Go-rendered
-//! `type-registry-vectors-v1.cbor` set (the cohort drift target — every peer
+//! `type-registry-vectors.cbor` set (the cohort drift target — every peer
 //! diffs against it). This is the render-from-model design the whole cohort
 //! follows (mirrors the Zig type_defs / C# CoreTypeRegistry / OCaml
 //! type_defs_data).
@@ -610,8 +610,8 @@ mod tests {
 
         // Load the vector file (array of {name, content_hash, ...}).
         let candidates = [
-            "../shared/test-vectors/v0.8.0/type-registry-vectors-v1.cbor",
-            "protocol-generator/shared/test-vectors/v0.8.0/type-registry-vectors-v1.cbor",
+            "../shared/test-vectors/type-registry/type-registry-vectors.cbor",
+            "protocol-generator/shared/test-vectors/type-registry/type-registry-vectors.cbor",
         ];
         let bytes = candidates.iter().find_map(|p| std::fs::read(p).ok());
         let bytes = match bytes {

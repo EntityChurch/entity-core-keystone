@@ -98,7 +98,7 @@ podman run $PODMAN_RUN_CAPS --rm --network=none -v "$PWD":/work:Z \
 
 ## S2 — codec layer · `wire-conformance` → **PASS (71/71)**
 
-**Corpus:** `conformance-vectors-v1` (v0.8.0 / V8; sha256
+**Corpus:** `conformance-vectors` (v0.8.0 / V8; sha256
 `9695b1f1d939cfdfdd4297f8ad32122d424b1ec180cfae74c92d509d88f7c6dc`, the F29/F30
 re-vendor, 71 vectors). **Result: 71 / 71 PASS, 0 FAIL.** **First compile-run, 0
 codec fixes.**
@@ -112,7 +112,7 @@ sh protocol-generator/nim/run-wire-conformance.sh
 #     -w /work/protocol-generator/nim entity-core-keystone/nim-toolchain:latest \
 #     nim c -r --mm:orc --overflowChecks:on -d:release --hints:off \
 #       -o:/tmp/tconformance tests/tconformance.nim \
-#       /work/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+#       /work/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 ```
 
 ## Scoreboard (byte-identity vs the cross-blessed fixture)

@@ -8,7 +8,7 @@ CODEC_BUILD := $(CODEC_SRC)/build
 SPEC        := ../../ffi-generator/c-abi/spec
 STUB        := $(shell find /usr/lib64 /usr/lib -name 'libtclstub*.a' 2>/dev/null | head -1)
 SHIM        := src/ffi/libentitycorecrypto.so
-CORPUS      := ../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+CORPUS      := ../shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 
 .PHONY: all test spike codec shim s3 smoke selftest clean
 all: test

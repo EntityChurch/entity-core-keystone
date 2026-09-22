@@ -15,7 +15,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$REPO_ROOT/tools/podman-caps.sh"
 
 IMAGE="entity-core-keystone/julia-toolchain:latest"
-FIXTURE="/work/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"
+FIXTURE="/work/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor"
 
 if [ "${1:-}" = "--tests" ]; then
     ENTRY="test/runtests.jl"; ARG=""

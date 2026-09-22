@@ -15,6 +15,10 @@ defmodule EntityCore.Agility do
 
   alias EntityCore.{Cbor, Hash, PeerId, Signature}
 
+  # ECFv1-SHA-256. The `system/peer` identity entity is authored at this floor
+  # unconditionally (§4.5a item 1a) — it is the one type with no home format.
+  @peer_identity_floor_format 0x00
+
   @type gate :: {String.t(), :pass | :skip | {:fail, term()}}
 
   @spec run(binary()) :: [gate()]
@@ -129,10 +133,18 @@ defmodule EntityCore.Agility do
   end
 
   # ── Matrix per-peer identity gates (pubkey / peer_id / content_hash@home) ──
+  # `system/peer` is the ONE type with no home format: §4.5a item 1a pins the
+  # identity entity to the ECFv1-SHA-256 floor UNCONDITIONALLY — whatever the
+  # peer's home format, whatever the active format — because its data is wholly
+  # recoverable from the public peer-id, so an entity nobody fetches to learn its
+  # hash cannot be hold-and-fetch. Hashing it under `home_content_hash_format`
+  # produces a 49-byte `01…` form that is not a construction the protocol admits.
+  #
+  # This peer did exactly that, and it went unmeasured because the corpus it was
+  # being checked against was a superseded copy that still expected the old form.
   defp check_matrix_peer(prefix, peer, v, ab) do
     curve = curve_atom(peer["key_type"])
     seed = unwrap(peer["secret_seed"])
-    home_fmt = peer["home_content_hash_format"]
     {pub, _} = :crypto.generate_key(:eddsa, curve, seed)
     pid = PeerId.from_public_key(pub, curve)
 
@@ -144,7 +156,7 @@ defmodule EntityCore.Agility do
     [
       gate("#{prefix}.pubkey", pub, unwrap(v["expected_peer_#{ab}_pubkey"])),
       gate("#{prefix}.peer_id", pid, v["expected_peer_#{ab}_peer_id_base58"]),
-      gate("#{prefix}.content_hash", Hash.content_hash(entity, home_fmt), expected_content_hash(v, ab))
+      gate("#{prefix}.content_hash", Hash.content_hash(entity, @peer_identity_floor_format), expected_content_hash(v, ab))
     ]
   end
 

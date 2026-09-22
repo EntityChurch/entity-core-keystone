@@ -7,7 +7,7 @@
 - **Spec version.** Latest `spec-data` snapshot is **v7.72**; spec HEAD is v7.74
   (folded as proposal text). `ENTITY-CBOR-ENCODING.md` + `ENTITY-NATIVE-TYPE-SYSTEM.md`
   are byte-identical v7.71→v7.72 (SHA-verified upstream) → the v7.71 codec corpus is
-  valid at v7.72. Profile reads `spec-data/v7.72`; codec corpus `test-vectors/v0.8.0`.
+  valid at v7.72. Profile reads `spec-data/v7.72`; codec corpus `test-vectors/ecf-conformance`.
   The v7.73/v7.74 peer-layer folds are S3+ and do not affect S1/S2 (A-CL-001).
 - **No-peek discipline.** Derived from V7 + Common Lisp / SBCL ecosystem only.
   Read the C#/TS/OCaml/Elixir `profile.toml` for the field *schema* (config

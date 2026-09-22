@@ -1,5 +1,5 @@
 //! ECF conformance harness — loads the normative fixture
-//! (conformance-vectors-v1.cbor) and runs every vector through the codec,
+//! (conformance-vectors.cbor) and runs every vector through the codec,
 //! checking byte-identity (encode_equal) or rejection (decode_reject) per
 //! Appendix E §E.3. The fixture carries its own cross-blessed `canonical` bytes
 //! (produced + 3-way cross-blessed by the Go/Rust/Python oracles), so this is
@@ -120,7 +120,7 @@ pub fn main() !void {
     var args = try std.process.argsWithAllocator(gpa);
     defer args.deinit();
     _ = args.next(); // exe name
-    const path = args.next() orelse "../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor";
+    const path = args.next() orelse "../shared/test-vectors/ecf-conformance/conformance-vectors.cbor";
 
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();

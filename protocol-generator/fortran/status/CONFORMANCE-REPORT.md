@@ -101,7 +101,7 @@ leg runs live under `concurrency.t1_2` (PASS); only the deeper `origination` cat
 
 ## S2 — codec (wire conformance) — GREEN
 
-**Gate:** pinned v0.8.0 ECF corpus (`shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor`),
+**Gate:** pinned v0.8.0 ECF corpus (`shared/test-vectors/ecf-conformance/conformance-vectors.cbor`),
 **69 vectors — 69 pass / 0 fail / 0 skip.** **Reproduce:** `./run-s2.sh` → `make test`.
 Codec compiles clean under `-std=f2018 -O2 -Wall -fimplicit-none -fcheck=bounds` (zero warns).
 

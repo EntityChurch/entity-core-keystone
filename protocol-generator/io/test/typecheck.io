@@ -1,7 +1,7 @@
 // Render-from-model drift check: compute content_hash for every §9.5 floor type
 // via THIS peer's codec and diff against the oracle's type-registry-vectors
 // (the Go-rendered golden set). Catches type_system drift before S4.
-// Usage: io test/typecheck.io <type-registry-vectors-v1.cbor>
+// Usage: io test/typecheck.io <type-registry-vectors.cbor>
 
 EntityCodec
 doRelativeFile("../src/Ec.io")

@@ -10,6 +10,35 @@ Cross-language register of findings surfaced by keystone work. Per-language spec
 
 **Why this section exists**: arch caught itself twice in one session about to draft proposals for already-folded work because the pipe-table cells below carried stale "Open" status. Cells are append-only history; this section is the **current** disposition. Read here first; pipe-table is for provenance.
 
+> **CLOSED (operator), measured 2026-09-02 — F53: a superseded DUPLICATE of the crypto-agility
+> corpus was answering, and the peers that transcribed it passed the defect the peers that loaded
+> it failed on.**
+> Evidence: [`superseded-corpus-duplicate-and-transcribed-pins.md`](../../protocol-generator/shared/findings/superseded-corpus-duplicate-and-transcribed-pins.md)
+> — filed with the findings for the same publish reason as F51/F52 below.
+> **Not a spec gap and not routed to arch** — the spec rule (§4.5a item 1a: `system/peer` is
+> authored at the ECFv1-SHA-256 floor unconditionally) is clear and upstream's corpus already
+> encodes it. This is entirely ours: `shared/test-vectors/` carried the corpus twice, and the
+> version-stamped copy the peers actually read had been superseded — `hash-format-sha-384.2` was
+> INVERTED upstream (the re-hash it pinned is now a construction that MUST be refused) and M3/M6
+> `expected_peer_a_content_hash` moved to floor-form. **Nothing failed while both copies existed.**
+> **Measured:** `elixir` and `ruby` LOAD the corpus and both failed the same two gates the moment
+> the duplicate went — computing `0166f421…` where the corpus wants `00af37ab…`, i.e. the peers
+> were deriving a `system/peer` hash under the home format. `ocaml` and `csharp` TRANSCRIBE the
+> pins and both **PASSED** (`ocaml` at `RESULT: PASS (25/25)`) while carrying the identical defect,
+> because peer and test were wrong in the same direction. All four fixed and re-measured green.
+> **`haskell` is predicted to fail and is UNMEASURED** — its spec reads a `canonical_content_hash`
+> field the inverted vector no longer has, and the `ghc-toolchain` image cannot resolve its
+> test-suite dependencies (`cabal: repoContextWithSecureRepo: unknown repo`), so that peer's S2 has
+> no runnable gate on this host. Stated as a source-derived prediction, not a result.
+> **No published conformance number moves** — the agility corpus is not in `--profile core`; all
+> four peers were and remain `756 · 0F`. That is the point worth keeping: **a second axis was red
+> on two peers while the gated axis was green.**
+> **Left open on purpose:** the NEGATIVE half. `GUIDE-CONFORMANCE` §2.4a and the current vector both
+> ask for an assertion that the forbidden construction is REFUSED; no peer refuses it, and the four
+> fixed harnesses assert the floor form without faking the refusal, each saying so at the site.
+> Implementing it is a peer-behaviour change (the constructor must reject a non-floor home format
+> for one type), not a test edit.
+>
 > **OPEN, measured 2026-08-30 — F52: §4.7's status table contradicts itself on a pre-hello
 > `authenticate`, and the cohort splits 38 / 6 / 1 on the wire.**
 > Raised by `entity-core-formalization` (`ROUTING-2026-08-30-PREHELLO-AUTHENTICATE`) from a SOURCE

@@ -71,7 +71,7 @@ tracking allocator —
   primitive is IMPLEMENTED, not just fail-closed.
 - `single_sig_root_still_verifies` — the strict-superset sanity.
 - `type_registry_byte_identical_to_go` — all 53 core types render byte-identical to
-  the Go `type-registry-vectors-v1` drift target.
+  the Go `type-registry-vectors` drift target.
 - `echo_round_trips_params` — the §7a echo interface bootstraps under `--validate`.
 
 ## Reproduce

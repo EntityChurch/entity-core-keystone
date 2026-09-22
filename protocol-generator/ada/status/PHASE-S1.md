@@ -8,7 +8,7 @@ NOT built (S1 boundary)**
 ## Preconditions resolved at session start
 - **Spec version.** Read `spec-data/v7.75` (the latest snapshot). The current-state-menu
   items were verified **directly in spec-data/v7.75** (see "verified-in-spec" below).
-  Codec corpus = `test-vectors/v0.8.0` (the latest test-vectors snapshot);
+  Codec corpus = `test-vectors/ecf-conformance` (the latest test-vectors snapshot);
   `ENTITY-CBOR-ENCODING.md` is byte-stable v7.71→v7.75 (the v7.72–75 folds are peer-layer
   resilience/resource-bounds, no wire-format change; the cohort SHA-verified this), so the
   v0.8.0 corpus is valid at v7.75.

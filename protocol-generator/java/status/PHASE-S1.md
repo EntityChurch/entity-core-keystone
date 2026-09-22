@@ -6,7 +6,7 @@
 - **Spec version.** Read `spec-data/v7.72` (latest available). Per the cohort
   finding, `ENTITY-CBOR-ENCODING.md` + `ENTITY-NATIVE-TYPE-SYSTEM.md` are
   byte-identical v7.71→v7.72 (no wire-format change), so the v7.71 codec corpus is
-  valid at v7.72. Profile reads `spec-data/v7.72`; codec corpus `test-vectors/v0.8.0`.
+  valid at v7.72. Profile reads `spec-data/v7.72`; codec corpus `test-vectors/ecf-conformance`.
 - **peer_id verified directly in spec-data.** `ENTITY-CORE-PROTOCOL-V7.md`
   **line 448** (§1.5 canonical-form table) = Ed25519 → `0x00` identity-multihash,
   "the digest IS the public_key (v7.64)"; **lines 436/437–438/442/3561** (§1.5

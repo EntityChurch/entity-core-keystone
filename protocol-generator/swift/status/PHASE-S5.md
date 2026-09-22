@@ -16,11 +16,11 @@ record + the operator handoff. Twin of the OCaml/Zig/Elixir `PHASE-S5.md`.
 
 | Gate | State | Note |
 |---|---|---|
-| S2 codec green | ✅ | 69/69 byte-identical vs `conformance-vectors-v1`, first run, 0 codec fixes |
+| S2 codec green | ✅ | 69/69 byte-identical vs `conformance-vectors`, first run, 0 codec fixes |
 | S3 smoke green | ✅ | `swift run smoke` 11/11 (two-peer loopback handshake + dispatch + reentry) |
 | S4 `--profile core` green | ✅ | 573 / 288P / 196W / **0F** / 89skip, machine-verified `failed==0` (`status/CONFORMANCE-REPORT.{md,json}`) |
 | §10.1 register + §10.2 origination + §7b concurrency gates | ✅ | 10/10 + 3/3 (incl. `dispatch_outbound_reentry` over real TCP) + 5/5 |
-| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors-v1` |
+| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors` |
 | S7 higher bar (validate-peer core) | ✅ | same fixed point as C#/TS/OCaml/Zig/Elixir/CL, reached spec-first |
 | `swift build -c release` (sealed offline) | ✅ | re-run green in-container at S5 (`--network=none`, `Package.resolved` committed); 1 benign warning (swift-asn1 used by no target — the A-SW-005 explicit transitive pin, expected) |
 | `swift test` | ✅ | 27/27 (codec 69/69 + 25 selftests + A-SW-009 53-type byte-diff) |

@@ -175,7 +175,7 @@ peer follows this; the live oracle's `capability.revoked_cap_denied_on_use` +
 authenticated; the grant is simply no longer valid) → 403, not 401. The single §5.2 **401**
 carve-out is `unresolvable_grantee` only.
 **Escalation:** **research — doc note only (non-blocking).** The keystone-vendored
-`shared/test-vectors/v0.8.0/type-registry-vendor MANIFEST.md` AUTHZ-* table annotates
+`shared/test-vectors/type-registry/type-registry-vendor MANIFEST.md` AUTHZ-* table annotates
 `AUTHZ-REVOKED-1` as **401 capability_revoked**, which disagrees with both §5.2a and the
 `cc1970f` oracle (403). The peer conforms to the oracle/§5.2a (403) and passes; logged so a
 future reader does not mistake the stale doc annotation for a peer bug. No spec change

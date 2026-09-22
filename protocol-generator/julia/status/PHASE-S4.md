@@ -16,7 +16,7 @@ faithful port of the settled Zig peer onto Julia's substrate):
 
 | Module | S4 work |
 |---|---|
-| `typedefs.jl` | **NEW.** The 53-type §9.5 core floor rendered natively (multiple-dispatch over the peer's own field-spec model + omit-empty), published at `/{peer}/system/type/<name>`. **53/53 byte-identical** to `type-registry-vectors-v1.cbor` (test/typedefs_bytecheck.jl). |
+| `typedefs.jl` | **NEW.** The 53-type §9.5 core floor rendered natively (multiple-dispatch over the peer's own field-spec model + omit-empty), published at `/{peer}/system/type/<name>`. **53/53 byte-identical** to `type-registry-vectors.cbor` (test/typedefs_bytecheck.jl). |
 | `capability.jl` | **NEW.** Full §5.2 `verify_request` (4-way §5.2a verdict), §5.4 pattern matching, §5.5 multi-link chain-walk + §5.6 attenuation + §5.7 caveats, §5.1 revocation, §4.10(b) chain-depth pre-check, and the §3.6 M3 K-of-N multi-signature root (M3 structure → M4 quorum → M6 root-at-local). |
 | `store.jl` | Tree ops added: `store_bind!` / `store_unbind!` / `store_hash_at` / `store_listing` (directory-style child listing with deletion-marker tombstones). |
 | `peer.jl` | **Rewritten.** Store bootstrap (types + 5 MUST handlers + §7a validate handlers + §6.9a owner cap & default policy), §6.5 dispatch chain (ingest signatures → verify_request → resolve → check_permission → body), and all core handler bodies: **tree** (get/put/list, mode=hash, §3.9 CAS), **capability** (request/delegate/revoke/configure with §6.2 subset-validation → `403 scope_exceeds_authority`), **handler** (register/unregister + §10.1 entity-native round-trip), **type** (bootstrap-only), **validate** (echo + dispatch-outbound). |

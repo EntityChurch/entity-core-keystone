@@ -1,5 +1,5 @@
 // S2 corpus gate — run the pinned v0.8.0 ECF conformance corpus
-// (conformance-vectors-v1.cbor, 71 vectors) through the EntityCodec addon.
+// (conformance-vectors.cbor, 71 vectors) through the EntityCodec addon.
 //
 // Per ENTITY-CBOR-ENCODING.md Appendix E §E.3: the fixture itself is loaded
 // with the impl's own decoder (a decoder bug here is itself a conformance
@@ -9,7 +9,7 @@
 //                    Class-B construction on top of the decoded input)
 //   decode_reject — decode(canonical) MUST raise
 //
-// Usage: io test/s2-corpus.io <path-to-conformance-vectors-v1.cbor>
+// Usage: io test/s2-corpus.io <path-to-conformance-vectors.cbor>
 
 EntityCodec  // force addon load
 

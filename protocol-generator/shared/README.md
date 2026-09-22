@@ -21,19 +21,39 @@ Source of truth: `entity-core-architecture/V8/entity-core-protocol/specs/`, pinn
 
 > **Not in the snapshot:** conformance *scaffolding* (the §7a `system/validate/*` handlers, §7b concurrency gate, §4.10 `resource_bounds` probe, recommended bound defaults) is **operator-carried** — it lives in arch's `GUIDE-CONFORMANCE.md` + the generator menu, not in these three files. See the snapshot `MANIFEST.md` for the full carve-out.
 
-## The diagnostic / conformance vectors — `test-vectors/<version>/`
+## The diagnostic / conformance vectors — `test-vectors/<corpus-name>/`
 
-**Current version: `v0.8.0`.** Byte-identical copies of architecture's canonical golden-vector fixtures (keystone does **not** author canonical bytes — S5). CI hash-checks them against the tables in the `MANIFEST.md`. The `.diag` files are CBOR diagnostic notation (the human source-of-truth); the `.cbor` files are the byte-pinned fixtures.
+**A corpus is identified by its name, never by a version stamp** (`GUIDE-CONFORMANCE.md` §5.1, MUST).
+One directory per corpus, named for what the corpus tests; artifacts carry no `-v1`; each corpus's
+`CHANGELOG.md` *is* its version, because an integer in a filename only ever said "something moved"
+and was never once incremented while the ECF corpus grew 69 → 71 vectors. A conformance citation
+names `(spec-version, corpus-name, artifact sha256)`.
+
+The `.diag` files are CBOR diagnostic notation (the human source-of-truth); the `.cbor` files are the
+byte-pinned fixtures impls actually load.
 
 ```
-test-vectors/v0.8.0/
-├── conformance-vectors-v1.{cbor,diag}   ← ECF codec corpus (71 vectors: 64 encode + 5 reject + 2 meta)
-├── agility-vectors-v1.{cbor,diag}       ← crypto-agility corpus (Ed448 / SHA-384 / key+hash matrix)
-├── agility-SEEDS.md                     ← seed-construction reference for the agility corpus
-├── type-registry-vectors-v1.{cbor,diag} ← system/type/* registry shapes
-├── type-registry-shapes.json            ← type-registry shape reference
-└── MANIFEST.md                          ← SHA-256 of every fixture + arch source commit + inventory
+test-vectors/
+├── ecf-conformance/                   ← vendored, byte-identical to arch
+│   ├── conformance-vectors.{cbor,diag}  ECF codec corpus (71 vectors: 66 encode + 5 reject)
+│   └── CHANGELOG.md
+├── crypto-agility/                    ← vendored, byte-identical to arch
+│   ├── agility-vectors.{cbor,diag}      Ed448 / SHA-384 / key+hash matrix
+│   ├── SEEDS.md                         seed-construction reference
+│   ├── README.md                        vector inventory
+│   └── CHANGELOG.md
+└── type-registry/                     ← DERIVED here, not vendored
+    ├── type-registry-vectors.{cbor,diag}  system/type/* render drift target (150 types)
+    ├── type-registry-shapes.json          shape reference consumed by each peer's gen-typedefs
+    └── CHANGELOG.md
 ```
+
+**The third one is a different kind of thing and the distinction is load-bearing.** `ecf-conformance/`
+and `crypto-agility/` are byte-identical copies of architecture's canonical fixtures — keystone does
+**not** author canonical bytes (S5). `type-registry/` is **harvested** from the reference
+implementation's registry: a drift/diff target a peer renders against, not a normative pin. It is
+also harvested from a *full* peer, so it carries extension vocabularies a core peer must not publish
+— the 53-name core-floor filter belongs in each peer's `tools/gen-typedefs.py`, never in the harvest.
 
 ## The rest of `shared/`
 

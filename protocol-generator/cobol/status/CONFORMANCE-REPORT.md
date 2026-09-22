@@ -20,7 +20,7 @@
 ## S2 codec — ECF corpus (v0.8.0), FFI-hybrid
 
 **Result: PASS — 68 pass / 0 fail / 1 skip** against the pinned normative fixture
-`conformance-vectors-v1.cbor` (69 vectors), byte-identical to **both** conforming
+`conformance-vectors.cbor` (69 vectors), byte-identical to **both** conforming
 C-ABI impls (`entity-core-codec-ffi-c` and `-rust` — provenance-independent per
 `ec_impl_info`). Harness: `test/codec-selftest.cob` (+ `src/cbor.cob`, `test/fileio.c`).
 

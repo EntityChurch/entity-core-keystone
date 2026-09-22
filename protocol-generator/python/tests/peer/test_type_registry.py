@@ -1,7 +1,7 @@
 """S3 type-registry gate: every V7 §9.5 floor type rendered from the peer's OWN
 model must reproduce the canonical content_hash (sha256 digest hex) byte-for-byte.
 
-The expected hashes are the cross-blessed type-registry-vectors-v1 golden values
+The expected hashes are the cross-blessed type-registry-vectors golden values
 (the S8 drift target).  A divergence means a field shape (key set, optional flag,
 carrier, layout) drifted from the floor.
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 from entity_core.peer.typedefs import core_type_entities
 
 # Expected content_hash (the 32-byte sha256 digest hex, after the 0x00 format
-# byte) of each §9.5 floor type — the canonical type-registry-vectors-v1 golden.
+# byte) of each §9.5 floor type — the canonical type-registry-vectors golden.
 FLOOR_TYPE_HASHES = {
     "primitive/any": "a004560007aac36b04c7af4be3c2bccd25cedb8b0a5aa87546aad284915e4268",
     "primitive/bool": "1557fd1ac85235584214bfd9a38c41491ac7ff300098014f9ab94cf73a9b8701",

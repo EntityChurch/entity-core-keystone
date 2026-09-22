@@ -3,7 +3,7 @@
 # Builds the thin C seam (src/host/ec_seam.c) over libentitycore_codec + the SQLite
 # amalgamation, then runs the S2 GATE: the 71-vector ECF wire-conformance
 # byte-identity differential vs the delegated codec (protocol-generator/shared/
-# test-vectors/v0.8.0/), N1–N4 self-tests, an Ed25519 RFC-8032 KAT, and the
+# test-vectors/ecf-conformance/), N1–N4 self-tests, an Ed25519 RFC-8032 KAT, and the
 # crypto-callable-FROM-SQL KAT (sha256/content_hash/ed25519_verify as SQLite
 # application-defined functions — the tight-seam move). The build is fully offline:
 # libentitycore_codec + sqlite3.c are baked into the sqlite-toolchain image.

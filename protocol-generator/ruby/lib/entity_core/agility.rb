@@ -22,6 +22,10 @@ module EntityCore
   module Agility
     Result = Struct.new(:id, :status, :detail)
 
+    # ECFv1-SHA-256. The `system/peer` identity entity is authored at this floor
+    # unconditionally (§4.5a item 1a) — it is the one type with no home format.
+    PEER_IDENTITY_FLOOR_FORMAT = 0x00
+
     module_function
 
     def run(corpus_bytes)
@@ -154,15 +158,20 @@ module EntityCore
         "type" => "system/peer",
         "data" => { "key_type" => input["key_type"], "public_key" => pub }
       }
-      fmt = input["home_content_hash_format"] || 0
-      content_hash = Hash.content_hash(entity, fmt)
+      # `system/peer` is the ONE type with no home format: §4.5a item 1a pins the
+      # identity entity to the ECFv1-SHA-256 floor UNCONDITIONALLY — whatever the
+      # peer's home format, whatever the active format — because its data is
+      # wholly recoverable from the public peer-id, so an entity nobody fetches to
+      # learn its hash cannot be hold-and-fetch. Hashing it under
+      # `home_content_hash_format` yields a 49-byte `01…` form the protocol does
+      # not admit, and this peer did that until the superseded corpus that still
+      # expected the old form was removed.
+      content_hash = Hash.content_hash(entity, PEER_IDENTITY_FLOOR_FORMAT)
 
-      # The content-hash pin is named by the home format: M2 uses the plain
-      # `..._content_hash`; M3/M6 use a format-suffixed `..._content_hash_sha256`
-      # / `_sha384`. Resolve whichever the vector carries.
-      suffix = { 0 => "sha256", 1 => "sha384" }[fmt]
+      # Every identity reference therefore resolves floor-form, so the pin is the
+      # plain `..._content_hash` or its `_sha256` spelling — never `_sha384`.
       ch_want = vector["expected_peer_#{ab}_content_hash"] ||
-                vector["expected_peer_#{ab}_content_hash_#{suffix}"]
+                vector["expected_peer_#{ab}_content_hash_sha256"]
 
       [
         gate("#{prefix}.pubkey", pub, vector["expected_peer_#{ab}_pubkey"]),

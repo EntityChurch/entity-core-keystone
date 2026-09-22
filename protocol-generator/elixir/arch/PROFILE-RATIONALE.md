@@ -176,7 +176,7 @@ S11-pure, Ed448-capable toolchain. Verified at first build (S2).
 ## Spec version: read v7.72 snapshot, codec corpus v0.8.0, peer resync to v7.74 at S3
 
 Profile + codec derive from `spec-data/v7.72` (the latest available **snapshot**).
-The codec uses the `test-vectors/v0.8.0` corpus because `ENTITY-CBOR-ENCODING.md`
+The codec uses the `test-vectors/ecf-conformance` corpus because `ENTITY-CBOR-ENCODING.md`
 and `ENTITY-NATIVE-TYPE-SYSTEM.md` are byte-identical v7.71->v7.72 — no wire
 change. **Spec skew (A-ELX-001):** spec HEAD is v7.74 (folded), but snapshots stop
 at v7.72; peers #1-3 reached v7.74 conformance against folded *proposal text*. The

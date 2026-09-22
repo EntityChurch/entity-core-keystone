@@ -97,14 +97,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "encode vector array: %v\n", err)
 		os.Exit(1)
 	}
-	cborPath := filepath.Join(outDir, "type-registry-vectors-v1.cbor")
+	cborPath := filepath.Join(outDir, "type-registry-vectors.cbor")
 	if err := os.WriteFile(cborPath, cborBytes, 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "write cbor: %v\n", err)
 		os.Exit(1)
 	}
 
 	// .diag human source-of-truth (RFC 8949 §8 diagnostic notation).
-	diagPath := filepath.Join(outDir, "type-registry-vectors-v1.diag")
+	diagPath := filepath.Join(outDir, "type-registry-vectors.diag")
 	if err := os.WriteFile(diagPath, []byte(renderDiag(vecs)), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "write diag: %v\n", err)
 		os.Exit(1)
@@ -137,7 +137,7 @@ func renderDiag(vecs []vector) string {
 	b.WriteString("           types (== validate-peer runTypeSystem registry).\n")
 	b.WriteString("  Status:  NOT an arch-authored canonical corpus (S5). Regenerate from\n")
 	b.WriteString("           the Go oracle when entity-core-go moves. The sibling\n")
-	b.WriteString("           `type-registry-vectors-v1.cbor` is the canonical-ECF build\n")
+	b.WriteString("           `type-registry-vectors.cbor` is the canonical-ECF build\n")
 	b.WriteString("           artifact (array of {name, tree_path, content_hash, data}).\n")
 	b.WriteString("  Use:     a peer renders its own system/type/<name> entities natively\n")
 	b.WriteString("           and diffs each content_hash against this set (S8 golden-file).\n")

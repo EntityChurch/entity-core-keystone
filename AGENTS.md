@@ -1780,6 +1780,74 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   six variants **and cut the run from 149 s to 89 s**, because each dropped frame had been billing
   its caller a full timeout — the same "presents as slow, is actually wrong" signature as the ISA
   trio's op ladder.
+- **RATIFIED, and it is the STALE-INPUT class reaching VENDORED DATA: a second copy of a corpus is
+  a second authority, and the retired one answers.** 2026-09-02, closing the vector-layout migration.
+  `shared/test-vectors/` held both `v0.8.0/agility-vectors-v1.cbor` (`8e7c5232…`) and
+  `crypto-agility/agility-vectors.cbor` (`b5484e84…`); the peers' harnesses pointed at the first.
+  The job read as directory-naming hygiene — `GUIDE-CONFORMANCE.md` §5.1 forbids a version stamp in
+  a corpus directory or artifact name — and was actually a **supersession**: upstream had INVERTED
+  `hash-format-sha-384.2` (the re-hash it used to pin is now a construction that MUST be refused,
+  §4.5a item 1a floor-pins `system/peer`) and moved M3/M6 `expected_peer_a_content_hash` to
+  floor-form. **Nothing failed while both copies existed**, because every peer reading the old path
+  got the old bytes and agreed with them.
+  **Why this carrier is worse than the artifact ones already recorded here** (a `.wasm` older than
+  its source, a reverify overlay older than its census, a tracked report a pin behind): a stale build
+  artifact is *derived*, so a rebuild reconciles it. **A vendored corpus reconciles with nothing** —
+  it is authoritative by construction, so the duplicate is not stale data, it is a rival ground
+  truth. Enforcement: **one copy of a vendored corpus, ever**; retired digests go in
+  `shared/test-vectors/README.md` (keystone-owned — the corpora's own `CHANGELOG.md` are
+  byte-identical vendors and must not be edited), so a supersession shows up as a changed digest
+  rather than as two directories.
+  **A TRANSCRIBED PIN IS A COPY WITH NO GATE ON IT, AND IT MAKES THE HARNESS COMPARE THE PEER TO
+  ITSELF.** This is the half to carry. Four peers were affected and they split by *how* they consume
+  the corpus, not by language: `elixir` and `ruby` LOAD it and both FAILED the same two gates the
+  moment the duplicate went (`got 0166f421…, want 00af37ab…` — the peers were computing the
+  forbidden SHA-384 form). `ocaml` and `csharp` TRANSCRIBE the values into their own source and both
+  **PASSED** — `ocaml` at a confident `RESULT: PASS (25/25)` — while carrying the identical defect,
+  because the peer computed the SHA-384 form and the test expected the SHA-384 form. That is the
+  `oracle-bootstrap` HAVE/WANT shape in a new place, and the rule written then holds verbatim:
+  **name the authority side of a comparison, and distrust any equality test whose two operands
+  derive from the same source.** Enforcement: **when a corpus moves, re-run the peers that LOAD it
+  AND the peers that TRANSCRIBE it — the second group is the one that will not tell you**; and a
+  transcription site must name the corpus artifact it came from so the next reader can diff it.
+  *(Detail, including the one peer predicted-failing and unmeasurable and the negative half nobody
+  implements: `protocol-generator/shared/findings/superseded-corpus-duplicate-and-transcribed-pins.md`.)*
+- **A PATH SWEEP'S FALSE NEGATIVE IS THE DIRECTORY AS A SEPARATE STRING — VERIFY THAT PATHS RESOLVE,
+  NEVER THAT THE OLD STRING IS GONE.** Candidate, same session, and it is the third false-negative
+  grep in this file after the `dart`/`ruby` NUL byte (a grep that could not SEE the file) and F51 (a
+  grep in the wrong VOCABULARY). This one is a grep whose PATTERN cannot span the construction. After
+  rewriting `test-vectors/v0.8.0/<artifact>` cohort-wide, `git grep 'test-vectors/v0\.8\.0'` returned
+  one benign hit and read as done. **Eight harnesses were broken**, because they build the path from
+  parts — `File.join(…, "test-vectors", "v0.8.0", "conformance-vectors.cbor")`,
+  `Path.join(["..", "shared", "test-vectors", "v0.8.0", name])` — so the sweep rewrote the FILENAME
+  (a single token) and left the directory element untouched, and no pattern containing a slash could
+  ever match. `crystal` and `elixir` failed outright on the next run; `julia` would have.
+  **The check that works is not a better regex.** Resolve every referenced path against disk and
+  assert it exists — ~20 lines, runs in a second, and it is indifferent to how the string was
+  assembled. Generalize: **after a mechanical rename, verify the POSTCONDITION (the new thing
+  resolves), not the ABSENCE of the old token** — absence is a property of your pattern, existence is
+  a property of the tree.
+  **Two sub-lessons from the same sweep, both cheap and both mine:**
+  (a) **A repo-wide sweep must EXCLUDE `spec-data/` by construction, not by remembering.** Mine
+  rewrote two SHA-256-pinned boundary files; `make lint` caught it on the next run. This file already
+  says *"after any repo-wide mechanical commit … re-verify the SHA-256 spec-data pins"* — that rule
+  fired and worked, and this is its **second occurrence**, so the standard is now stricter: the
+  exclusion goes in the sweep script's own exclusion list beside `docs/status/` and `docs/archive/`,
+  and the pin check stays as the backstop rather than as the only control.
+  (b) **`cmd | tail` in a verification loop reports `tail`'s exit code, not the command's.** My first
+  agility sweep printed `rc=0` for five peers, two of which had failed outright (`ocaml`: target not
+  found; `csharp`: NuGet restore failed). Same family as the gate that examined zero things — the
+  loop was structurally incapable of reporting a failure. Use `${PIPESTATUS[0]}`, or do not pipe.
+- **A `run-*.sh` whose guard tests a CONTAINER path must be INVOKED in the container — and its
+  failure is indistinguishable from a missing dependency.** Candidate, and it is the standing
+  *"a guard that was never executed is not a guard"* entry met from the caller's side rather than
+  the author's. Running the S2 sweep on the host, `prolog` died with `swipl: command not found` and
+  `ocaml/run-agility.sh` with `missing /work/ffi-generator/…/libentitycore_codec.so — build the FFI
+  codec first` **while that file existed on disk**: `$SODIR` is `/work/…`, the repo's mount point,
+  which does not exist on the host. Both scripts are correct; both read as a broken toolchain or a
+  missing artifact, which is a diagnosis pointing at the tree instead of at the invocation. Each
+  script's header carries the `podman run` line it expects — **read it before believing the error**,
+  and prefer `rc=127`/`file missing` as a signal to re-check HOW you invoked it.
 - **MAINTENANCE TIERS ARE ACTIVE — do not run a 45-peer census for a re-pin.** (Turned on
   2026-08-17; the policy existed as prose since ~15 peers and was never honoured, because §4
   named 17 peers of a 46-peer cohort so "re-run Tier-1" was undefined for the other 29.) The

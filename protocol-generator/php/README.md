@@ -16,7 +16,7 @@ single-threaded loop — no locks, no data races by construction.
 **Conformance:** `validate-peer --profile core` — **PASS** · **665** total · 292 pass · 278 warn ·
 **0 fail** · 95 skip (machine-verified `summary.failed == 0`) @ the v7.77 cohort oracle **`e8524ed`**
 (go HEAD; `core_gate_sha256` `e09a865f…` matches the committed pin in `tools/oracle-pin.env`). Codec:
-**69/69** byte-identical to `conformance-vectors-v1`. §9.5 53-type registry 53/53 byte-identical.
+**69/69** byte-identical to `conformance-vectors`. §9.5 53-type registry 53/53 byte-identical.
 origination-core 3/3 over real two-peer TCP (incl. `dispatch_outbound_reentry`). multisig **11/11**
 genuine K-of-N (incl. `valid_2of3_peer_signed_accepted` — co-signed AS the peer, not env-skipped). S3
 loopback 12/12. See [`status/CONFORMANCE-REPORT.json`](status/CONFORMANCE-REPORT.json) and

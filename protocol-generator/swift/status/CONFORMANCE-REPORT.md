@@ -121,7 +121,7 @@ not by ingesting reference bytes. 53/53 on the first run.
 
 ## S2 — codec · ECF wire-conformance → **69/69 PASS, byte-identical**
 
-**Corpus:** `protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor`
+**Corpus:** `protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor`
 (SHA-256 `41d68d2d…c0c6a052`, the v1 corpus 3-way-locked by Go/Rust/Py; valid at
 v7.74 — ECF is byte-stable across the v7.71→v7.74 line). The harness verifies the
 corpus SHA-256 in-test before trusting it (decodes it with our own decoder per

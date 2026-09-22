@@ -17,7 +17,7 @@ import org.entitycore.protocol.crypto.PeerId;
 /**
  * ECF wire-conformance harness (the codec gate).
  *
- * <p>The normative fixture {@code conformance-vectors-v1.cbor} is itself a
+ * <p>The normative fixture {@code conformance-vectors.cbor} is itself a
  * canonical-ECF-encoded array of vector maps, each carrying its own cross-blessed
  * {@code canonical} bytes (the Go wire-conformance oracle's
  * {@code build-fixture}/{@code emit-canonical} output, 3-way Go × Rust × Python
@@ -49,7 +49,7 @@ public final class ConformanceHarness {
         if (env != null && !env.isEmpty()) {
             return Path.of(env);
         }
-        return Path.of("../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor");
+        return Path.of("../shared/test-vectors/ecf-conformance/conformance-vectors.cbor");
     }
 
     public static Result run(Path fixture) throws IOException, EntityCodecException {

@@ -184,5 +184,5 @@ libentitycore_codec = "entity-core-codec-ffi-c, C-ABI 1.1 (provenance via ec_imp
 
 [spec]
 v7_version_pinned = "v0.8.0 / V8"             # the single pinned spec snapshot (shared/spec-data/v0.8.0). Core wire byte-unchanged v7.75→v7.77→V8.
-codec_corpus      = "v0.8.0 / conformance-vectors-v1 (71 vectors, sha 9695b1f1…)"  # exercised through the FFI'd codec at Level 1
+codec_corpus      = "ecf-conformance / conformance-vectors (71 vectors, sha 9695b1f1…)"  # exercised through the FFI'd codec at Level 1
 oracle_pin        = "cc1970f (fingerprint 8261a033…) — tools/oracle-pin.env; validate-peer --profile core = 0-FAIL target (~292·0F like the recent cohort)"

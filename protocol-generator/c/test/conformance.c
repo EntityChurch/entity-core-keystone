@@ -3,7 +3,7 @@
  * self-tests + Ed25519 RFC-8032 KAT. Hand-rolled assert/count driver (no test
  * framework), built + run under ASan/LSan/UBSan so a memory bug is a test failure.
  *
- * The normative fixture conformance-vectors-v1.cbor is itself a canonical-ECF
+ * The normative fixture conformance-vectors.cbor is itself a canonical-ECF
  * array of vector maps, each carrying its own cross-blessed `canonical` bytes (the
  * Go wire-conformance oracle's build-fixture/emit-canonical output, 3-way Go ×
  * Rust × Python byte-locked, arch commit 23db2546). The harness decodes the
@@ -421,7 +421,7 @@ int main(int argc, char **argv)
     }
     const char *fixture = (argc > 1)
         ? argv[1]
-        : "../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor";
+        : "../shared/test-vectors/ecf-conformance/conformance-vectors.cbor";
 
     int rc = run_corpus(fixture);
     run_selftests();

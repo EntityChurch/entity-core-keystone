@@ -19,7 +19,7 @@ ledger live in `status/ARCHITECTURE-REVIEW.md`.
 |---|---|---|
 | S4 `--profile core` green | ✅ | **576 / 292P / 195W / 0F / 89skip** at the v7.75 cohort baseline oracle `b30a589`, machine-verified `summary.failed == 0` (`status/CONFORMANCE-REPORT.{md,json}`). `resource_bounds` ACTIVE in core (413/400/WARN); `concurrency` 5/5 (genuinely concurrent). |
 | origination-core (reentry) | ✅ | 3/3 over real two-peer TCP (`reference_connect` · `reference_ready` · `dispatch_outbound_reentry`). |
-| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors-v1`, first run, 0 codec fixes; + 37/37 Ed25519/SHAKE256 KAT self-tests. |
+| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors`, first run, 0 codec fixes; + 37/37 Ed25519/SHAKE256 KAT self-tests. |
 | §9.5 53-type floor byte-identical | ✅ | 53/53 (`type_system_match`, content_hash equality). |
 | S3 two-direction loopback smoke | ✅ | GREEN (Scenario A 5/5 Ada-dials-Go, Scenario B 2/2 Go-dials-Ada); peer_id `2KD6sD8JpEHJ3EaQu2mKCfiQZnkvcDmS8xtvstw9c4dHZm`. |
 | §4.8 store-safety | ✅ | Protected-object store — store-race **structurally unrepresentable** (the cleanest §4.8 story in the cohort; the C sibling's heap race A-C-009 cannot occur here by construction). |

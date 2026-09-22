@@ -7,7 +7,7 @@ module SpecHelper
   # The pinned v0.8.0 wire-conformance corpus, relative to this repo's crystal
   # working dir (spec/ -> ../ -> crystal/ -> ../shared/...).
   CORPUS_PATH = File.expand_path(
-    File.join(__DIR__, "..", "..", "shared", "test-vectors", "v0.8.0", "conformance-vectors-v1.cbor")
+    File.join(__DIR__, "..", "..", "shared", "test-vectors", "ecf-conformance", "conformance-vectors.cbor")
   )
 
   def corpus_bytes : Bytes

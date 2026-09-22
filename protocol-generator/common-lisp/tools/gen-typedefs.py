@@ -5,13 +5,13 @@
 # types as Common Lisp cbor-map builder forms. Mirrors the OCaml peer's
 # tools/gen-typedefs.py exactly (same 53-type core_order, same field-spec mapping)
 # so the rendered content_hash is byte-identical to the canonical
-# type-registry-vectors-v1 (diffed in test/type-registry.lisp).
+# type-registry-vectors (diffed in test/type-registry.lisp).
 #
 # Regenerate on a V7 bump:
 #   python3 protocol-generator/common-lisp/tools/gen-typedefs.py
 import json
 
-ROOT = "protocol-generator/shared/test-vectors/v0.8.0"
+ROOT = "protocol-generator/shared/test-vectors/type-registry"
 shapes = json.load(open(f"{ROOT}/type-registry-shapes.json"))
 
 # The 53-type §9.5 core floor, identical order to the OCaml peer's generator.
@@ -79,7 +79,7 @@ out.append(";;;; type-defs-data.lisp — GENERATED from the shared test-vectors"
 out.append(";;;; type-registry-shapes.json (the cross-impl Go-rendered type model).")
 out.append(";;;; The in-code core-type override table (render-from-model design).")
 out.append(";;;; 53 core types per V7 §9.5. Regenerate with tools/gen-typedefs.py on a")
-out.append(";;;; V7 bump; diffed byte-for-byte against type-registry-vectors-v1 in")
+out.append(";;;; V7 bump; diffed byte-for-byte against type-registry-vectors in")
 out.append(";;;; test/type-registry.lisp.")
 out.append("")
 out.append("(in-package #:entity-core/peer)")

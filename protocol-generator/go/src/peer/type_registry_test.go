@@ -6,7 +6,7 @@ import (
 )
 
 // type_registry_hashes_test.go — expected content_hash (sha256 digest hex) of
-// each V7 §9.5 floor type, from the canonical type-registry-vectors-v1 (the S8
+// each V7 §9.5 floor type, from the canonical type-registry-vectors (the S8
 // golden-file drift target; verbatim ECF of the cross-blessed render). The peer
 // renders each type from its OWN model and must reproduce these byte-for-byte.
 var floorTypeHashes = map[string]string{

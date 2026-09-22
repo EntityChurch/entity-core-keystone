@@ -1,8 +1,8 @@
 (* A-OC-006 — type-registry byte-diff. Renders all 53 core types (§9.5) from the
    in-code model and diffs each content_hash against the canonical
-   type-registry-vectors-v1 (.diag source-of-truth). The peer-side dual of the
+   type-registry-vectors (.diag source-of-truth). The peer-side dual of the
    S2 codec corpus: proves the render-from-model output is byte-identical to the
-   cross-impl Go-rendered registry. Argv: path to type-registry-vectors-v1.diag. *)
+   cross-impl Go-rendered registry. Argv: path to type-registry-vectors.diag. *)
 
 open Entitycore_codec
 

@@ -79,7 +79,7 @@ content, serving_mode, transport_family, session).
 
 **A-006 precursor (type-registry byte-diff):** `test/type-registry.test.ts` renders
 all 53 core types and diffs `content_hash` against the Go-rendered
-`type-registry-vectors-v1.cbor` → **53/53 byte-identical, first run.** Full
+`type-registry-vectors.cbor` → **53/53 byte-identical, first run.** Full
 `node:test` suite **55/55** (54 from S3 + A-006), no regression.
 
 **`origination` (A-009 finding):** auto-allowlisted as *outside* `--profile core`
@@ -98,7 +98,7 @@ Raw JSON: `status/CONFORMANCE-REPORT.json`.
 ## S2 — codec layer · `wire-conformance` → **PASS** (69/69)
 **Phase:** S2 (codec layer)
 **Strategy:** native — hand-rolled canonical CBOR (zero runtime deps) + `@noble/curves` 2.2.0 (Ed25519) + `@noble/hashes` 2.2.0 (SHA-256)
-**Corpus:** `protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor`
+**Corpus:** `protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor`
 (SHA `41d68d2d…`, the vendored arch-canonical fixture, ECF v1.5 / V7 7.72 — codec corpus byte-identical 7.71→7.72)
 **Result:** ✅ **69/69 PASS — byte-identical** (S7 lower bar met)
 

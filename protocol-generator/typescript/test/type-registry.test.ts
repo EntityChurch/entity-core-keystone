@@ -4,7 +4,7 @@
  * The peer renders its 53 core `system/type/<name>` entities natively
  * (CoreTypeRegistry, single source of truth in code) and this test diffs each
  * one's `content_hash` against the Go-rendered vector set
- * (`type-registry-vectors-v1.cbor`, the S8 drift target). The C# reference peer
+ * (`type-registry-vectors.cbor`, the S8 drift target). The C# reference peer
  * proved its 53 byte-identical; TS must too before the `type_system` validate-peer
  * category can be trusted. A byte-identical content_hash is a hard equality — it
  * means the TS render of the type's ECF data is byte-for-byte the Go render.
@@ -22,7 +22,7 @@ import { dirname, join } from "node:path";
 import { decode } from "../src/codec/canonical-cbor.js";
 import { ALL_CORE_TYPES } from "../src/types/index.js";
 
-const VECTOR_RELATIVE = "protocol-generator/shared/test-vectors/v0.8.0/type-registry-vectors-v1.cbor";
+const VECTOR_RELATIVE = "protocol-generator/shared/test-vectors/type-registry/type-registry-vectors.cbor";
 
 function locateVectors(): string {
   const fromEnv = process.env["TYPE_REGISTRY_VECTORS"];

@@ -1,6 +1,6 @@
 ## ECF wire-conformance harness — entity-core-protocol-nim (S2 gate).
 ##
-## Loads the normative fixture (conformance-vectors-v1.cbor) and runs every
+## Loads the normative fixture (conformance-vectors.cbor) and runs every
 ## vector through the hand-rolled Nim codec, checking byte-identity
 ## (`encode_equal`) or rejection (`decode_reject`) per Appendix E §E.3. The
 ## fixture carries its own cross-blessed `canonical` bytes (produced + 3-way
@@ -17,7 +17,7 @@
 ##     -w /work/protocol-generator/nim entity-core-keystone/nim-toolchain:latest \
 ##     nim c -r --mm:orc --overflowChecks:on -d:release --hints:off \
 ##       -o:/tmp/tconformance tests/tconformance.nim \
-##       /work/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+##       /work/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 ##
 ## SPDX-License-Identifier: Apache-2.0
 
@@ -133,7 +133,7 @@ proc headFormSelfTest(): bool =
 when isMainModule:
   let path =
     if paramCount() >= 1: paramStr(1)
-    else: "../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"
+    else: "../shared/test-vectors/ecf-conformance/conformance-vectors.cbor"
 
   let fixture = decode(readBytes(path))
   doAssert fixture.kind == ekArray, "fixture root must be an array"

@@ -16,7 +16,7 @@ This doc is the release-readiness record + the operator handoff. Twin of the OCa
 
 | Gate | State | Note |
 |---|---|---|
-| S2 codec byte-identical (S7 lower bar) | ✅ | 69/69 vs `conformance-vectors-v1`, first build, 0 codec fixes; full `cabal test conformance` **160 examples / 0 failures** re-run green in-container at S5 |
+| S2 codec byte-identical (S7 lower bar) | ✅ | 69/69 vs `conformance-vectors`, first build, 0 codec fixes; full `cabal test conformance` **160 examples / 0 failures** re-run green in-container at S5 |
 | S3 smoke (two-peer loopback) | ✅ | `cabal test smoke` **7/7 (10 assertions)** re-run green in-container at S5 |
 | S4 `--profile core` green (S7 higher bar) | ✅ | 573 / 289P / 195W / **0F** / 89skip, machine-verified `failed==0` (`status/CONFORMANCE-REPORT.{md,…}`); same fixed point as the cohort, reached spec-first, **0 peer-correctness fixes** |
 | §10.1 register + §10.2 origination + §7b gates | ✅ | 10/10 + 3/3 (incl. `dispatch_outbound_reentry` over real TCP) + 5/5 |

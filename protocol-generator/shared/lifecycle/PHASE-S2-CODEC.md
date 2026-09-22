@@ -43,7 +43,7 @@ Phase exits when `wire-conformance` runs green:
 . "$(cd "$(dirname "$0")/../.." && pwd)/tools/podman-caps.sh"
 podman run $PODMAN_RUN_CAPS --rm -v $PWD:/work entity-core-keystone/<lang-toolchain>:latest \
     wire-conformance run /work/protocol-generator/<lang>/src/ \
-    --vectors /work/protocol-generator/shared/test-vectors/v0.8.0/
+    --vectors /work/protocol-generator/shared/test-vectors/ecf-conformance/
 ```
 
 Output must report all vectors as `PASS` (encode + decode + hash). Any `FAIL` blocks phase exit.

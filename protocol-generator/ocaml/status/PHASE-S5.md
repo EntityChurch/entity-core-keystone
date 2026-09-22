@@ -11,7 +11,7 @@ S5 polishes the S4-conformant peer into a *ready-to-publish* opam artifact. `/en
 | Gate | State | Note |
 |---|---|---|
 | S4 `--profile core` green | ✅ | 558 / 274P / 195W / **0F** / 89skip, machine-verified `failed==0` (`status/CONFORMANCE-REPORT.{md,json}`) |
-| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors-v1`, first run |
+| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors`, first run |
 | S7 higher bar (validate-peer core) | ✅ | same fixed point as C#/TS |
 | LICENSE present (Apache-2.0, S9) | ✅ | `LICENSE` (peer-local copy) |
 | README + conformance badge | ✅ | `README.md` |

@@ -97,7 +97,7 @@ tests under any chosen path).
 **V7 section:** ENTITY-CBOR-ENCODING Appendix E (conformance fixture versioning)
 **Profile field:** `[spec].codec_corpus = "v7.75"`; PHASE-S2-CODEC §E.3 example
 names `v7.56`
-**Your guess:** Ran S2 against `shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor`
+**Your guess:** Ran S2 against `shared/test-vectors/ecf-conformance/conformance-vectors.cbor`
 — the latest vendored copy. This is **safe and non-ambiguous**: the v7.71 MANIFEST
 states the ECF codec corpus "did not change across the whole v7.56→v7.71 window"
 and the file is byte-identical (SHA `41d68d2d…`) in v7.56/v7.70/v7.71. There is no

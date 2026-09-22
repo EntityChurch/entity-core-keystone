@@ -15,7 +15,7 @@ the [`entity-core-keystone`](../../README.md) `/entity-rosetta` pipeline.
 **Conformance:** `validate-peer --profile core` — **PASS** · 665 total · 292 pass · 268 warn ·
 **0 fail** · 93 skip (machine-verified `summary.failed == 0` AND `total == 665`, oracle
 `entity-core-go @e8524ed`) — recorded as **665·0F @ e8524ed**. All 16 core categories 0-FAIL.
-Codec: **69/69** byte-identical to `conformance-vectors-v1`, first run, 0 codec fixes.
+Codec: **69/69** byte-identical to `conformance-vectors`, first run, 0 codec fixes.
 multisig **11/11** (incl. the `valid_2of3_peer_signed_accepted` ACCEPT path, 0 skip).
 §9.5 53-type registry **53/53** byte-identical. origination-core **3/3** (incl.
 `dispatch_outbound_reentry`). See [`status/CONFORMANCE-REPORT.md`](status/CONFORMANCE-REPORT.md).

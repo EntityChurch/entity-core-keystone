@@ -1,7 +1,7 @@
 """ECF wire-conformance harness — the S2 conformance gate for the Python peer.
 
 Loads the normative cross-blessed corpus
-(``protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor``)
+(``protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor``)
 through the peer's OWN ECF decoder (a decoder bug surfaces here first, per
 Appendix E §E.3 step 1), then for each vector branches on ``kind``:
 
@@ -54,8 +54,8 @@ DEFAULT_CORPUS = (
     / "protocol-generator"
     / "shared"
     / "test-vectors"
-    / "v0.8.0"
-    / "conformance-vectors-v1.cbor"
+    / "ecf-conformance"
+    / "conformance-vectors.cbor"
 )
 
 

@@ -10,7 +10,7 @@
 import json, os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-SHAPES = os.path.join(ROOT, "protocol-generator/shared/test-vectors/v0.8.0/type-registry-shapes.json")
+SHAPES = os.path.join(ROOT, "protocol-generator/shared/test-vectors/type-registry/type-registry-shapes.json")
 OUT = os.path.join(ROOT, "protocol-generator/elixir/lib/entity_core/type_defs_data.ex")
 
 shapes = json.load(open(SHAPES))
@@ -72,11 +72,11 @@ def type_to_ex(s):
 out = []
 out.append("defmodule EntityCore.TypeDefsData do")
 out.append("  @moduledoc \"\"\"")
-out.append("  GENERATED from test-vectors/v0.8.0/type-registry-shapes.json (the cross-impl")
+out.append("  GENERATED from test-vectors/type-registry/type-registry-shapes.json (the cross-impl")
 out.append("  Go-rendered type model) — the in-code core-type override table")
 out.append("  (render-from-model design). 53 core types per V7 §9.5. Regenerate with")
 out.append("  `tools/gen_typedefs.py` on a V7 bump; diffed byte-for-byte against")
-out.append("  type-registry-vectors-v1 in test/type_registry_test.exs.")
+out.append("  type-registry-vectors in test/type_registry_test.exs.")
 out.append("  \"\"\"")
 out.append("")
 out.append("  @doc \"The 53 core types as `{name, data}` tuples (data = model-form map).\"")

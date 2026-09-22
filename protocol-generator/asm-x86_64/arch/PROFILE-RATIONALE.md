@@ -107,7 +107,7 @@ cool-down applies.
 
 ## Spec pin
 
-`v0.8.0 / V8` snapshot (`shared/spec-data/v0.8.0`), corpus `conformance-vectors-v1`
+`v0.8.0 / V8` snapshot (`shared/spec-data/v0.8.0`), corpus `conformance-vectors`
 (71 vectors), oracle `cc1970f` (fingerprint `8261a033…`). Core wire byte-unchanged
 v7.75→v7.77→V8. Expected `--profile core` result: **0-FAIL** (~292·0F like the recent
 cohort), as corroboration.

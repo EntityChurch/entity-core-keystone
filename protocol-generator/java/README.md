@@ -9,7 +9,7 @@ exception error model, and JDK-21 virtual-thread concurrency.
 
 **Conformance:** `validate-peer --profile core` — **PASS** · 573 total · 289 pass · 195 warn ·
 **0 fail** · 89 skip (machine-verified `summary.failed == 0`). Codec: 69/69 byte-identical to
-`conformance-vectors-v1`, first run, 0 codec fixes. The 573 total is a **clean superset** of the
+`conformance-vectors`, first run, 0 codec fixes. The 573 total is a **clean superset** of the
 OCaml/CL fixed point (568) — the +5 is the §7b concurrency category, which at the current oracle
 HEAD runs and gates under `--profile core` (it was a §9.0 drift-list carve-out at the older
 oracle); all 5 PASS on Java's virtual-thread transport. See

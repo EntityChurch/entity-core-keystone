@@ -4,7 +4,7 @@
 ##
 ## Declared NATIVELY in code (single source of truth), rendered through this peer's
 ## own byte-green ECF codec, and diffed for content-hash equality against the
-## Go-rendered vector set (shared/test-vectors/v0.8.0/type-registry-vectors-v1.diag)
+## Go-rendered vector set (shared/test-vectors/type-registry/type-registry-vectors.diag)
 ## — the S8 drift target (AGENTS.md "render from the model, don't ingest bytes").
 ## Ported field-for-field from the cohort reference (TS core-type-registry.ts).
 ##

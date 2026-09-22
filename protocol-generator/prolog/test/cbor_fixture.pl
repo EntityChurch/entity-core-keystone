@@ -2,7 +2,7 @@
 %
 % SCOPE: this is NOT the peer's codec. The peer's codec is the C-ABI (ec_codec.pl).
 % This reader exists only to NAVIGATE the conformance fixture
-% (conformance-vectors-v1.cbor), which is itself a CBOR array of vector-maps. To
+% (conformance-vectors.cbor), which is itself a CBOR array of vector-maps. To
 % drive a vector through the C-ABI we must extract, per vector: the `id`/`kind`
 % text, the `canonical` byte-string, and the `input` sub-value — both as a
 % structured term (for content_hash/peer_id/signature field access) AND as its

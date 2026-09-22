@@ -44,7 +44,7 @@ podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm -v "$PWD
 podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm -v "$PWD":/work:Z entity-core-keystone/c-toolchain:latest \
   sh -c "cd /work/ffi-generator/c-abi/entity-core-codec-ffi-c/build && \
     ./regression_test && \
-    ./conformance_harness /work/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"
+    ./conformance_harness /work/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor"
 ```
 
 Artifacts land in `build/` (gitignored): `libentitycore_codec.so` (~2 MB; `ldd` shows only libc → self-contained, §7) + `libentitycore_codec.a` (libsodium objects bundled in via an `ar` MRI merge).

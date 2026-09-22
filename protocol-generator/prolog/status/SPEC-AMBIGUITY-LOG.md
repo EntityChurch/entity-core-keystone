@@ -219,7 +219,7 @@ With the fix: `t1_2_concurrent_reentry` PASS (8/8 concurrent reentries) and
 > Container BUILT (`entity-core-keystone/prolog-toolchain`, swipl 9.2.9 on
 > fedora:43, image-OpenSSL 3.5.4). Minimal `cbor.pl` spike under
 > `spike-s2/` exercised ONLY the two resistant vector classes against the
-> v7.71 ECF corpus (`conformance-vectors-v1.diag`; ECF corpus byte-identical
+> v7.71 ECF corpus (`conformance-vectors.diag`; ECF corpus byte-identical
 > v7.56→v7.71 per MANIFEST). Result: **20/20 byte-exact PASS** (14 float.* +
 > 6 map_keys.*). No vector doctored — map_keys.4 expected bytes are parsed
 > verbatim from the diag hex at runtime.
@@ -291,11 +291,11 @@ build assertions); A-PL-001 is the go/defer verdict (operator decision, not a bl
 > SWI foreign-predicate shim (`c/ec_codec_pl.c` → `ec_codec_pl.so`, loaded with
 > `use_foreign_library/1`; no external `ffi` pack). GATE: **69/69 wire-conformance
 > byte-identical + 10/10 crypto KAT**, in-container, swipl 9.2.9 / fedora:43 /
-> OpenSSL 3.5.4. Corpus pinned: v7.71 `conformance-vectors-v1.cbor` sha256
+> OpenSSL 3.5.4. Corpus pinned: v7.71 `conformance-vectors.cbor` sha256
 > `41d68d2d…a052` (matches MANIFEST).
 
 ### A-PL-009 — RESOLVED (corpus provenance confirmed)
-The vendored v7.71 `conformance-vectors-v1.cbor` sha256 is `41d68d2d717f84e195d46
+The vendored v7.71 `conformance-vectors.cbor` sha256 is `41d68d2d717f84e195d46
 ec002fce6b8729742026256e72dc7a3a8b6c0c6a052` — byte-identical to the v7.71 MANIFEST
 pin (ECF corpus unchanged v7.56→v7.71, as MANIFEST claims). No v7.74/v7.75
 test-vectors directory exists yet; v7.71 is the latest vendored corpus and the gate

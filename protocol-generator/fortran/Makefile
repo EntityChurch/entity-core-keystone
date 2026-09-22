@@ -15,7 +15,7 @@ BUILD       := build
 CODEC_SRC   := ../../ffi-generator/c-abi/entity-core-codec-ffi-c
 CODEC_BUILD := $(CODEC_SRC)/build
 CODEC_LIB   := $(CODEC_BUILD)/libentitycore_codec.so
-CORPUS      := ../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+CORPUS      := ../shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 
 # S2 codec module compile order (dependencies first).
 CODEC_MODS  := src/status.f90 src/varint.f90 src/entity_core_ffi.f90 src/cbor.f90 src/entity.f90

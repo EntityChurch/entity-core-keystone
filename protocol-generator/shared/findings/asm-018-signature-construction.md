@@ -59,5 +59,5 @@ empirical bisection we just did.
 - Local finding: `protocol-generator/asm-x86_64/status/SPEC-AMBIGUITY-LOG.md` → A-ASM-018.
 - Differential + symbol proof: `protocol-generator/asm-x86_64/status/PHASE-L2.md` (M2/M3),
   `make diff` (`signature.1/2/3` green on native sorted `ec_encode_ecf` + FFI `ec_ed25519_sign`).
-- Corpus: `protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.diag`,
+- Corpus: `protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.diag`,
   `signature.*` @ pinned SHA-256 in `MANIFEST.md`.

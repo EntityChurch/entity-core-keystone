@@ -26,7 +26,7 @@
 
 **Phase:** S2 (codec layer)
 **Strategy:** native (`System.Formats.Cbor` 9.0.0 + `NSec.Cryptography` 25.4.0 + in-box SHA-256)
-**Corpus:** `protocol-generator/shared/test-vectors/v7.56/conformance-vectors-v1.cbor`
+**Corpus:** `protocol-generator/shared/test-vectors/v7.56/conformance-vectors.cbor`
 (SHA `41d68d2d…`, the vendored arch-canonical fixture, ECF v1.5 / V7 7.56)
 **Result:** ✅ **69/69 PASS — byte-identical** (S7 lower bar met)
 

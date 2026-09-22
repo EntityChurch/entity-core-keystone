@@ -187,7 +187,7 @@ libentitycore_codec = "in-repo ffi-generator/c-abi/entity-core-codec-ffi-c (C-AB
 
 [spec]
 spec_version_pinned = "0.8.0"                 # protocol-generator/shared/spec-data/v0.8.0/ (V8)
-codec_corpus      = "v0.8.0"                  # shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+codec_corpus      = "ecf-conformance"                  # shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 oracle_commit     = "cc1970f"                 # validate-peer @ public HEAD; core-gate fingerprint 8261a033…; target --profile core = 0 FAIL
 # COHORT-SETTLED TRAPS pre-resolved (do NOT re-burn):
 #   peer_id = Base58(varint(0x01)||varint(0x00)||raw 32-byte pubkey) — §1.5 identity-

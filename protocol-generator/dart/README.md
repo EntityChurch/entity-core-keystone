@@ -14,7 +14,7 @@ matches another peer it is by independent arrival from the shared spec, not by i
 279 warned · 95 skipped (machine-verified `summary.failed == 0`), on the **v7.77** cohort oracle
 `e8524ed`, with **`core_gate_sha256` matched** to the committed pin
 (`e09a865ffea690ce207149eb68851f7afbc2fa3a9ba522a0ca9d9c72f9923308`) — proof the core surface ==
-the cohort-converged surface. Codec (S2): 69/69 byte-identical to `conformance-vectors-v1`. §9.5
+the cohort-converged surface. Codec (S2): 69/69 byte-identical to `conformance-vectors`. §9.5
 53-type registry 53/53 byte-identical. origination-core 3/3 over real two-peer TCP (incl
 `dispatch_outbound_reentry`), and genuine §3.6 K-of-N multisig 11/11 (`valid_2of3_peer_signed_accepted`
 genuinely runs, **0 skip**), concurrency 5/5, resource_bounds green. See

@@ -2,7 +2,7 @@ defmodule EntityCore.TypeRegistryTest do
   @moduledoc """
   A-OC-006 (peer #4 corroboration) — type-registry byte-diff. Renders all 53 core
   types (§9.5) from the in-code model (`EntityCore.TypeDefs`) and diffs each
-  content_hash against the canonical type-registry-vectors-v1 (.diag
+  content_hash against the canonical type-registry-vectors (.diag
   source-of-truth). The peer-side dual of the S2 codec corpus: proves
   render-from-model output is byte-identical to the cross-impl Go-rendered registry.
   """
@@ -11,7 +11,7 @@ defmodule EntityCore.TypeRegistryTest do
   alias EntityCore.TypeDefs
 
   @diag System.get_env("TYPE_REGISTRY_DIAG") ||
-          Path.join(["..", "shared", "test-vectors", "v0.8.0", "type-registry-vectors-v1.diag"])
+          Path.join(["..", "shared", "test-vectors", "type-registry", "type-registry-vectors.diag"])
 
   test "53 core types render byte-identical to the canonical registry vectors" do
     expected = parse_diag(File.read!(@diag))

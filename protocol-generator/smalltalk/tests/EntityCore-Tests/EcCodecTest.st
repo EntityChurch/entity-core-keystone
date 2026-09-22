@@ -15,7 +15,7 @@ cls := ((TestCase << #EcCodecTest) package: pkg; install).
 cls compile: 'corpusBytes
 	| path |
 	path := (Smalltalk os environment at: ''EC_CORPUS'' ifAbsent: [ nil ])
-		ifNil: [ ''../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor'' ].
+		ifNil: [ ''../shared/test-vectors/ecf-conformance/conformance-vectors.cbor'' ].
 	^ path asFileReference binaryReadStream upToEnd'.
 
 cls compile: 'corpusVectors

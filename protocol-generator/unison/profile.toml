@@ -258,7 +258,7 @@ base              = "optional / deferred-to-S2-first-pull"  # @unison/base is NO
 
 [spec]
 version_pinned    = "v0.8.0"                   # spec-data/v0.8.0 (V8) — the single current snapshot; profile + codec derive from it, spec-first
-codec_corpus      = "v0.8.0"                    # ECF corpus (currently 71 vectors after the F29/F30 re-vendor); wire-conformance is the S2 ground truth
+codec_corpus      = "ecf-conformance"                    # ECF corpus (currently 71 vectors after the F29/F30 re-vendor); wire-conformance is the S2 ground truth
 # CORE WIRE is byte-unchanged across the V7->V8 cutover (per spec-data/v0.8.0/MANIFEST.md) — the
 # folded increments were verdict-timestamp determinism + extension type-path renames + release-prep,
 # no core map-key/wire change. AGILITY (Ed448/SHA-384) corpus is OUT OF SCOPE for this peer's gate

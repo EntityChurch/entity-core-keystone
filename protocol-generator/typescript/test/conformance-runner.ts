@@ -6,7 +6,7 @@ import { EntityCodecError } from "../src/errors.js";
 
 /**
  * Drives the vendored, cross-blessed conformance fixture
- * (`conformance-vectors-v1.cbor`) through the native TS codec and diffs the
+ * (`conformance-vectors.cbor`) through the native TS codec and diffs the
  * output byte-for-byte against each vector's baked `canonical` bytes. Twin of the
  * C#/Rust/C `conformance_harness` (S8 convergence). Branches by category exactly
  * as the C# `ConformanceRunner`: Class B vectors (content_hash / peer_id /

@@ -203,7 +203,7 @@ oracle:
 **V7 section:** repo-wide (snapshot vs HEAD), not a single section.
 **Profile field:** `[spec].v7_version_pinned` / `codec_corpus`.
 **Your guess:** Derive the profile + codec from `spec-data/v7.72` (the latest
-snapshot) and the `test-vectors/v0.8.0` corpus (byte-identical encoding spec
+snapshot) and the `test-vectors/ecf-conformance` corpus (byte-identical encoding spec
 v7.71→v7.72, SHA-verified upstream). The v7.73 (nonce-echo §4.6) and v7.74
 (register/outbound/emit/owner-cap §6.13/§6.9a + §7a conformance handlers) folds are
 **peer-layer** (S3+), not codec — so S1/S2 are unaffected. Resync the peer layer to

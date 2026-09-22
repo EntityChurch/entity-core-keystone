@@ -1,5 +1,5 @@
 import json, sys
-shapes = json.load(open("protocol-generator/shared/test-vectors/v0.8.0/type-registry-shapes.json"))
+shapes = json.load(open("protocol-generator/shared/test-vectors/type-registry/type-registry-shapes.json"))
 core_order = """primitive/any primitive/bool primitive/bytes primitive/float primitive/int primitive/null primitive/string primitive/uint
 entity core/entity core/envelope system/envelope system/protocol/envelope
 system/hash system/peer system/peer-id system/signature
@@ -47,7 +47,7 @@ out = []
 out.append("(* GENERATED from test-vectors type-registry-shapes.json (the cross-impl Go-rendered")
 out.append("   type model) — the in-code core-type override table (render-from-model design).")
 out.append("   53 core types per V7 §9.5. Regenerate with tools/gen-typedefs.py on a V7 bump;")
-out.append("   diffed byte-for-byte against type-registry-vectors-v1 in test/type_registry.ml. *)")
+out.append("   diffed byte-for-byte against type-registry-vectors in test/type_registry.ml. *)")
 out.append("")
 out.append("let core_types : (string * Cbor.t) list = [")
 for name in core_order:

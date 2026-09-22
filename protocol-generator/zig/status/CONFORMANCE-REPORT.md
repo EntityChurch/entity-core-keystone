@@ -86,7 +86,7 @@ The S3 baseline run was **568 total · 94 fail**. The fixes:
    (`src/type_defs.zig`) — a native render-from-model FSpec/TypeDef builder
    (the cross-blessed C#/TS/OCaml design), seeded at `system/type/<name>`. A
    build-time byte-diff test (`A-ZIG-008`) renders all 53 and compares each
-   `content_hash` digest against the Go-rendered `type-registry-vectors-v1.cbor`
+   `content_hash` digest against the Go-rendered `type-registry-vectors.cbor`
    → **53/53 byte-identical, first run.** Resolves the A-ZIG-008 S4 carry-in.
 2. **handlers — operations_match (3→0):** populated the bootstrap interface
    `operations` maps (connect={hello,authenticate}, tree-core={get,put},
@@ -156,7 +156,7 @@ Raw JSON: `status/CONFORMANCE-REPORT.json` (`summary.failed == 0`).
 
 ## S2 — codec layer · `wire-conformance` → **PASS** (69/69)
 
-**Corpus:** `conformance-vectors-v1` (v7.71; sha256
+**Corpus:** `conformance-vectors` (v7.71; sha256
 `41d68d2d…6a052`) · **Result: 69 / 69 PASS, 0 FAIL** · **First run, 0 codec fixes.**
 
 Run in-container, sealed offline:
@@ -165,7 +165,7 @@ Run in-container, sealed offline:
 podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/zig \
   entity-core-keystone/zig-toolchain:latest \
   zig build conformance -- \
-    /work/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+    /work/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 ```
 
 ## Scoreboard (byte-identity vs the cross-blessed fixture)

@@ -84,7 +84,7 @@ honestly as the live `75c532e` value rather than forced to the stale 576 figure.
 
 | Gate | Result | How |
 |---|---|---|
-| **53-type §9.5 registry** | **53/53 byte-identical** | `TestCoreTypeRegistryByteIdentical` renders each type from the in-code model through the S2 codec and diffs `content_hash` against the canonical `type-registry-vectors-v1` (S8 golden-file). PASS on first run. |
+| **53-type §9.5 registry** | **53/53 byte-identical** | `TestCoreTypeRegistryByteIdentical` renders each type from the in-code model through the S2 codec and diffs `content_hash` against the canonical `type-registry-vectors` (S8 golden-file). PASS on first run. |
 | **origination-core** | **3/3 PASS** | `run-origination-core.sh`: Go target (A) :7778 + Go `entity-peer` reference (B) :7779, `--profile core -category origination`. `reference_connect` + `reference_ready` + `dispatch_outbound_reentry` (§6.11 reentry over real two-peer TCP) all PASS. |
 | **S2 codec regression** | **69/69 + units** | `go test ./...` unbroken. |
 | **S3 loopback smoke** | **11/11** | `go test ./peer/` unbroken. |

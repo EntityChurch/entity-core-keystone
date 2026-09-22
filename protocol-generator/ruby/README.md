@@ -10,7 +10,7 @@ thread-per-connection concurrency.
 
 **Conformance:** `validate-peer --profile core` — **PASS** · 653 total · 291 pass · 268 warn ·
 **0 fail** · 94 skip (machine-verified `summary.failed == 0`), oracle `entity-core-go @75c532e`.
-All 16 core-profile categories are 0-FAIL. Codec: 69/69 byte-identical to `conformance-vectors-v1`,
+All 16 core-profile categories are 0-FAIL. Codec: 69/69 byte-identical to `conformance-vectors`,
 first full run, 0 codec fixes. (The 653 total vs the v7.75 8-peer-rerun's 576 is purely later-oracle
 **extension** categories — `relay`/`discovery`/`registry`/`published_root` — that auto-skip under
 `--profile core`; the FAIL gate and every core category are unchanged. See

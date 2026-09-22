@@ -1,7 +1,7 @@
 //! Rust-side ECF conformance harness — the analogue of go's
 //! `wire-conformance emit-canonical` (GUIDE-CONFORMANCE §3.1).
 //!
-//! Reads the canonical-ECF corpus (`conformance-vectors-v1.cbor`, the build
+//! Reads the canonical-ECF corpus (`conformance-vectors.cbor`, the build
 //! artifact every impl loads), runs each vector through THIS crate's codec, and:
 //!
 //!   * `--out <path>`   writes the per-impl emission file (CBOR map with the

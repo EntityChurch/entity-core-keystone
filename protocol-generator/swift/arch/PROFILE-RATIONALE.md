@@ -215,7 +215,7 @@ for the toolchain pull + the one-time swift-crypto/swift-asn1 resolve.
 
 Profile + (future) peer derive from `spec-data/v7.74` (the freshly-stamped snapshot
 Swift was gated on — A-CL-001 — so it derives this surface independently). The codec
-uses the `test-vectors/v0.8.0` ECF corpus: `ENTITY-CBOR-ENCODING.md` is byte-stable
+uses the `test-vectors/ecf-conformance` ECF corpus: `ENTITY-CBOR-ENCODING.md` is byte-stable
 across the v7.71→v7.74 line except the v7.73 **E3** construct-vs-decode erratum
 paragraph (a decode-side clarification, **no wire change** — confirmed in the v7.74
 MANIFEST), so the v0.8.0 corpus is valid at v7.74 (the same finding the OCaml/Zig peers

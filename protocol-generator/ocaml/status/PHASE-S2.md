@@ -16,7 +16,7 @@ Tests: `test/conformance.ml` (loads the normative fixture, byte-checks all 69) +
 `test/selftest.ml` (uncovered-range probes).
 
 ## How conformance works here
-The `conformance-vectors-v1.cbor` fixture carries its own cross-blessed `canonical`
+The `conformance-vectors.cbor` fixture carries its own cross-blessed `canonical`
 bytes per vector, so S2 is self-contained — the harness decodes the fixture and
 compares byte-for-byte. The Go `wire-conformance` binary is the fixture
 producer/cross-blesser, not a runtime checker; no live oracle needed at S2.

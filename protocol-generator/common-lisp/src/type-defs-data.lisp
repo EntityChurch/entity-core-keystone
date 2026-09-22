@@ -2,7 +2,7 @@
 ;;;; type-registry-shapes.json (the cross-impl Go-rendered type model).
 ;;;; The in-code core-type override table (render-from-model design).
 ;;;; 53 core types per V7 §9.5. Regenerate with tools/gen-typedefs.py on a
-;;;; V7 bump; diffed byte-for-byte against type-registry-vectors-v1 in
+;;;; V7 bump; diffed byte-for-byte against type-registry-vectors in
 ;;;; test/type-registry.lisp.
 
 (in-package #:entity-core/peer)

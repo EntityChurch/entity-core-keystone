@@ -3,7 +3,7 @@
 require "../src/entity_core"
 
 corpus = File.open(
-  File.expand_path(File.join(__DIR__, "..", "..", "shared", "test-vectors", "v0.8.0", "conformance-vectors-v1.cbor")), "rb"
+  File.expand_path(File.join(__DIR__, "..", "..", "shared", "test-vectors", "ecf-conformance", "conformance-vectors.cbor")), "rb"
 ) do |f|
   s = Bytes.new(f.size)
   f.read_fully(s)

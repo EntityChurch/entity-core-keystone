@@ -169,7 +169,7 @@ generated_outputs = "Apache-2.0"               # S9 default. Mozart 2 itself is 
 # for crypto via the daemon.
 framework         = "hand-rolled (no living Oz test framework)"
 runner            = "run-s2.sh (wire corpus) / test/smoke.sh (S3) / run-s4.sh (oracle)"
-conformance_probe = "walk conformance-vectors-v1 (71 vectors); assert decode->reencode byte-identity + content-hash equality vs vector fields"
+conformance_probe = "walk conformance-vectors (71 vectors); assert decode->reencode byte-identity + content-hash equality vs vector fields"
 
 [container]
 base_image        = "entity-core-keystone/mozart-toolchain:latest"
@@ -198,7 +198,7 @@ libsodium         = "1.0.22 (image-provided, fedora:43)"  # statically+privately
 
 [spec]
 spec_version_pinned = "0.8.0"                  # spec-data snapshot protocol-generator/shared/spec-data/v0.8.0/ (V8). Confirm the SHA-256 pins in MANIFEST.md unchanged at S2.
-codec_corpus      = "v0.8.0"                    # ECF corpus protocol-generator/shared/test-vectors/v0.8.0/ (conformance-vectors-v1.cbor); core wire byte-unchanged across V7->V8.
+codec_corpus      = "ecf-conformance"                    # ECF corpus protocol-generator/shared/test-vectors/ecf-conformance/ (conformance-vectors.cbor); core wire byte-unchanged across V7->V8.
 oracle_commit     = "cc1970f"                   # go oracle for S4 (output/s4-oracles/, PROVENANCE fingerprint 8261a033… matches tools/oracle-pin.env; pre-verified 2026-07-15 — do NOT rebuild). Target --profile core = Result: PASS, 0 FAIL.
 # PEER_ID CONSTRUCTION (cohort-settled): derive the Ed25519 peer_id from the §1.5
 # CANONICAL-FORM TABLE — hash_type = 0x00 identity-multihash, digest = the RAW

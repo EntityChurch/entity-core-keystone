@@ -34,7 +34,7 @@ podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm -v "$PWD
 podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm -v "$PWD":/work:Z -v kc-cargo:/cargo entity-core-keystone/cargo:latest \
   sh -c "cd /work/ffi-generator/c-abi/entity-core-codec-ffi-rust && \
     ./target/release/conformance_harness \
-    /work/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"
+    /work/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor"
 ```
 
 Artifacts land in `target/release/` (gitignored): `libentitycore_codec.so` (608K, deps

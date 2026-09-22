@@ -3,7 +3,7 @@
  * entity-core-codec-ffi-c. Twin of the Rust impl's src/bin/conformance_harness.rs.
  *
  * Loads the vendored, cross-blessed fixture
- * (protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor),
+ * (protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor),
  * drives each vector through the matching codec surface, and diffs the output
  * against the fixture's baked `canonical` bytes (the 3-way Go/Rust/Py blessed
  * consensus). Agreement here == this C impl agrees byte-for-byte.
@@ -12,7 +12,7 @@
  * via dlopen. The impl-agnostic 5-way dlopen harness in
  * ffi-generator/c-abi/conformance/ is the next step (resolve F6 first).
  *
- * Usage: conformance_harness <path-to-conformance-vectors-v1.cbor>
+ * Usage: conformance_harness <path-to-conformance-vectors.cbor>
  */
 #include "codec_core.h"
 #include "ecf.h"
@@ -176,7 +176,7 @@ static struct cat *find_cat(struct cat *cats, int *n, const char *name) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: conformance_harness <conformance-vectors-v1.cbor>\n");
+        fprintf(stderr, "usage: conformance_harness <conformance-vectors.cbor>\n");
         return 2;
     }
     FILE *f = fopen(argv[1], "rb");

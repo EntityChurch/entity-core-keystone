@@ -9,7 +9,7 @@ make s2  (in mozart-toolchain, sealed --network=none)
 === conformance: 71 vectors — 71 pass / 0 fail ===
 ```
 
-Pinned corpus `protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor`
+Pinned corpus `protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor`
 (66 encode_equal + 5 decode_reject, the F29/F30 finalized 71). The corpus is decoded
 with our own decoder (bootstrapping); Class B (content_hash / signature) crosses the
 entity-codec-daemon live — so the green run co-proves the co-process seam:

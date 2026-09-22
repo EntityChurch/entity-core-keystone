@@ -5,7 +5,7 @@
 # (the ECF wire-conformance corpus gate, cohort baseline 69/69 byte-identical)
 # and the self-test runner (N1-N4 + uncovered-range + crypto KATs).
 #
-# The fixture under protocol-generator/shared/test-vectors/v0.8.0/ is reached by
+# The fixture under protocol-generator/shared/test-vectors/ecf-conformance/ is reached by
 # mounting the repo root. The core toolchain (gcc-gnat + gprbuild +
 # libsodium-devel) is dnf-installed at image BUILD time and there are NO Alire
 # crate deps, so this runs fully offline under --network=none.
@@ -20,7 +20,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$REPO_ROOT/tools/podman-caps.sh"
 IMAGE="entity-core-keystone/ada-toolchain:latest"
 WORKDIR="/work/protocol-generator/ada"
-VECTORS="/work/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"
+VECTORS="/work/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor"
 
 run() {
   podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WORKDIR" "$IMAGE" \

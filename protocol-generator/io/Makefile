@@ -55,8 +55,8 @@ smoke: install-addon
 # S2 gate: the pinned v0.8.0 corpus (71 vectors) byte-identical + the §9.5
 # type-floor render-from-model drift check (53/53 byte-identical to the oracle).
 s2: install-addon
-	io test/s2-corpus.io ../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
-	io test/typecheck.io ../shared/test-vectors/v0.8.0/type-registry-vectors-v1.cbor
+	io test/s2-corpus.io ../shared/test-vectors/ecf-conformance/conformance-vectors.cbor
+	io test/typecheck.io ../shared/test-vectors/type-registry/type-registry-vectors.cbor
 
 # genuine §3.6 K-of-N multisig ACCEPT-path unit test (the oracle-uncoverable
 # direction) + M3/M4/M6 negatives.

@@ -234,7 +234,7 @@ hspec             = "lts-23.27-pinned"          # test framework; exact version 
 
 [spec]
 v7_version_pinned = "7.74"                      # spec-data/v7.74 (the freshly-stamped snapshot; Haskell derives this surface independently, spec-first)
-codec_corpus      = "v0.8.0"                     # ECF corpus; ENTITY-CBOR-ENCODING.md is byte-stable across the v7.71->v7.74 line except the v7.73 E3
+codec_corpus      = "ecf-conformance"                     # ECF corpus; ENTITY-CBOR-ENCODING.md is byte-stable across the v7.71->v7.74 line except the v7.73 E3
                                                 #   decode-side construct-vs-decode erratum paragraph (no wire change), so the v0.8.0 corpus is valid at
                                                 #   v7.74 (the same finding the OCaml/Zig/Swift peers SHA-verified). Agility (Ed448/SHA-384) corpus is
                                                 #   IN SCOPE for this peer (Ed448 is NATIVE — no A-SW-001-style gate).

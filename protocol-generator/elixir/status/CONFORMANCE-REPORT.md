@@ -30,9 +30,9 @@
 
 | Corpus / suite | Vendored version | Result |
 |---|---|---|
-| **ECF codec** (`conformance-vectors-v1.cbor`) | v7.71 (byte-identical to v7.56/v7.70) | **69/69 PASS, byte-identical, first run, 0 fixes** |
-| **Crypto-agility** (`agility-vectors-v1.cbor`) | v7.71 (v7.67 corpus) | **35/35 byte-pins PASS** (0 deferred — the 4 S2-deferred gates picked up at S3) |
-| **Type registry** (`type-registry-vectors-v1`) | v7.71 | **53/53 core types byte-identical** (render-from-model, A-OC-006) |
+| **ECF codec** (`conformance-vectors.cbor`) | v7.71 (byte-identical to v7.56/v7.70) | **69/69 PASS, byte-identical, first run, 0 fixes** |
+| **Crypto-agility** (`agility-vectors.cbor`) | v7.71 (v7.67 corpus) | **35/35 byte-pins PASS** (0 deferred — the 4 S2-deferred gates picked up at S3) |
+| **Type registry** (`type-registry-vectors`) | v7.71 | **53/53 core types byte-identical** (render-from-model, A-OC-006) |
 | **Peer machinery** (`mix test`) | v7.73/v7.74 folded surface | **20/0** — F1/F3/§7a + live-wire smoke + §6.11 reentry |
 
 Run in-container, sealed-offline (`--network=none`), via `./run-s3.sh`

@@ -17,7 +17,7 @@ record + the operator handoff. Twin of the OCaml `PHASE-S5.md` (opam track).
 |---|---|---|
 | S4 `--profile core` green | ✅ | 568 / 284P / 195W / **0F** / 89skip, machine-verified `failed==0` (`status/CONFORMANCE-REPORT.{md,json}`) |
 | §10.1 register + §10.2 origination gates | ✅ | 10/10 + 3/3 (incl. `dispatch_outbound_reentry` over real TCP) |
-| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors-v1`, first run |
+| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors`, first run |
 | S7 higher bar (validate-peer core) | ✅ | same fixed point as C#/TS/OCaml |
 | Crypto-agility higher bar | ✅ | Ed448 + SHA-384 **native** (35/35 byte-pins) — no FFI, no opt-in sub-library (contrast OCaml A-OC-002) |
 | LICENSE present (Apache-2.0, S9) | ✅ | `LICENSE` (peer-local copy) |

@@ -19,7 +19,7 @@ is the release-readiness record + the operator handoff + the steward findings su
 | Gate | State | Note |
 |---|---|---|
 | S4 `--profile core` green | ✅ | **665·0F @ e8524ed** (292P / 268W / 0F / 93skip), machine-verified `summary.failed == 0` ([`CONFORMANCE-REPORT.{md,json}`](CONFORMANCE-REPORT.md)) |
-| Codec byte-identical (S2) | ✅ | **69/69** vs `conformance-vectors-v1`, re-run green at S5 (`wire-conformance`), 0 codec fixes |
+| Codec byte-identical (S2) | ✅ | **69/69** vs `conformance-vectors`, re-run green at S5 (`wire-conformance`), 0 codec fixes |
 | §9.5 53-type registry | ✅ | 53/53 byte-identical (render-from-model) |
 | multisig accept-path | ✅ | **11/11, 0 skip** — `valid_2of3_peer_signed_accepted` PASS (oracle co-signs AS the peer) |
 | origination-core | ✅ | 3/3 (`reference_connect`, `reference_ready`, `dispatch_outbound_reentry` over real TCP) |

@@ -1,5 +1,5 @@
 # Type-registry byte-check (S8 drift target): every core type's content_hash MUST match
-# the Go-rendered type-registry-vectors-v1.cbor set. Render-from-model, not byte-ingest.
+# the Go-rendered type-registry-vectors.cbor set. Render-from-model, not byte-ingest.
 # Run: julia --project=. test/typedefs_bytecheck.jl [path-to-vectors.cbor]
 include(joinpath(@__DIR__, "..", "src", "EntityCore.jl"))
 using .EntityCore
@@ -7,7 +7,7 @@ using .EntityCore: Cbor, TypeDefs
 using .EntityCore.Cbor: decode, CborMap
 
 vec_path = length(ARGS) >= 1 ? ARGS[1] :
-    joinpath(@__DIR__, "..", "..", "shared", "test-vectors", "v0.8.0", "type-registry-vectors-v1.cbor")
+    joinpath(@__DIR__, "..", "..", "shared", "test-vectors", "type-registry", "type-registry-vectors.cbor")
 
 bytes = read(vec_path)
 fixture = decode(bytes)   # array of {name, tree_path, content_hash, data}

@@ -7,7 +7,7 @@ import "core:strings"
 // `system/type/<name>` entities at `/{peer}/system/type/{name}`. Each type's
 // data is rendered NATIVELY from an in-code declaration (the single source of
 // truth) through the byte-green S2 codec; the resulting content_hash is
-// byte-identical to the Go-rendered `type-registry-vectors-v1` set (the drift
+// byte-identical to the Go-rendered `type-registry-vectors` set (the drift
 // target). Scope is core + operational + type-system bootstrap ONLY — the 53
 // floor types (matching the C#/TS/OCaml/Zig cross-blessed registry). Extension
 // vocabularies are NOT published by a core peer.

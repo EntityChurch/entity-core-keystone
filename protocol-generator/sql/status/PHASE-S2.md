@@ -32,7 +32,7 @@ corpus vector is byte-identical — the label lag is cosmetic, wire-confirmed.
 ```
 
 - **71/71** ECF wire-conformance vectors byte-identical against
-  `protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor`
+  `protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor`
   (66 `encode_equal` + 5 `decode_reject`). Corpus SHA-256
   `9695b1f1…f7c6dc` (MANIFEST-pinned).
 - **+8 self-tests** (79 total): N1–N4 targeted, an Ed25519 RFC-8032 KAT, and the

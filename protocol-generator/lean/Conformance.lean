@@ -102,7 +102,7 @@ def runVector (v : Vec) : Except String Unit :=
 -- ── main ─────────────────────────────────────────────────────────────────────
 
 def main (args : List String) : IO UInt32 := do
-  let path := args.headD "../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"
+  let path := args.headD "../shared/test-vectors/ecf-conformance/conformance-vectors.cbor"
   let raw ← IO.FS.readBinFile path
   IO.println s!"corpus       : {path} ({raw.size} bytes)"
   IO.println s!"corpus sha256: {hex (EntityCore.Crypto.sha256 raw)}"

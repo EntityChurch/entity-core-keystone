@@ -174,7 +174,7 @@ openssl           = "system (fedora:43, 3.x)"  # OTP crypto NIF backend; provide
 
 [spec]
 v7_version_pinned = "7.72"                     # latest spec-data SNAPSHOT available; profile + codec derive from it
-codec_corpus      = "v0.8.0"                    # ECF corpus; ENTITY-CBOR-ENCODING.md + ENTITY-NATIVE-TYPE-SYSTEM.md are byte-identical v7.71->v7.72 (SHA-verified upstream), so the v0.8.0 corpus is valid at v7.72.
+codec_corpus      = "ecf-conformance"                    # ECF corpus; ENTITY-CBOR-ENCODING.md + ENTITY-NATIVE-TYPE-SYSTEM.md are byte-identical v7.71->v7.72 (SHA-verified upstream), so the v0.8.0 corpus is valid at v7.72.
 # PEER-LAYER SPEC SKEW (A-ELX-001): spec HEAD is v7.74 (folded), but spec-data
 # snapshots stop at v7.72. Peers #1-3 reached v7.74 conformance against folded
 # PROPOSAL TEXT layered on the v7.72 snapshot. The v7.73 (nonce-echo §4.6) and

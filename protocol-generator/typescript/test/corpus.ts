@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
  * Locates the vendored conformance fixture relative to the build output (the
  * keystone repo layout). Twin of the C# `Corpus.Locate`. `ECF_VECTORS` overrides.
  */
-const RELATIVE_PATH = "protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor";
+const RELATIVE_PATH = "protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor";
 
 export function locateCorpus(): string {
   const fromEnv = process.env["ECF_VECTORS"];

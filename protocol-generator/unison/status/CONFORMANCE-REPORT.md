@@ -24,7 +24,7 @@ Two gates, both green:
 | Gate | Oracle | Verdict |
 |---|---|---|
 | **S4 live peer** (`validate-peer --profile core`) | `entity-core-go` **`cc1970f`** | **`682·0F @ cc1970f`** — `Result: PASS`, 0 FAIL |
-| **S2 codec** (ECF corpus, byte-identity) | `conformance-vectors-v1.cbor` (SHA-pinned) | `71·0F` — 71 PASS / 0 FAIL, unregressed |
+| **S2 codec** (ECF corpus, byte-identity) | `conformance-vectors.cbor` (SHA-pinned) | `71·0F` — 71 PASS / 0 FAIL, unregressed |
 
 ---
 
@@ -171,7 +171,7 @@ origination   3 pass  0 warn  0 fail  0 skip     Result: PASS
 
 # Part 2 — S2 codec conformance (preserved; unregressed)
 
-**Corpus:** `shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor` (SHA-256
+**Corpus:** `shared/test-vectors/ecf-conformance/conformance-vectors.cbor` (SHA-256
 `9695b1f1…f7c6dc`, MANIFEST-pinned; re-derived + checked in-harness).
 
 ```

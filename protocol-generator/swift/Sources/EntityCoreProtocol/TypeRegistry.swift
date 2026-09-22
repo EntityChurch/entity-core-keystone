@@ -392,7 +392,7 @@ public enum TypeRegistry {
     }
 
     /// Render the (name, 32-byte SHA-256 digest) for every core type — the byte-diff
-    /// surface against the Go `type-registry-vectors-v1.cbor` set (S8 drift target).
+    /// surface against the Go `type-registry-vectors.cbor` set (S8 drift target).
     static func renderedDigests() throws(CodecError) -> [(String, [UInt8])] {
         var out: [(String, [UInt8])] = []
         for td in allTypes {

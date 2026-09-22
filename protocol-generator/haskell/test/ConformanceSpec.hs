@@ -16,7 +16,7 @@ import Test.Hspec
 import Fixture (Vector (..), loadVectors, runVector, vectorCategory)
 
 corpusPath :: FilePath
-corpusPath = "../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"
+corpusPath = "../shared/test-vectors/ecf-conformance/conformance-vectors.cbor"
 
 -- The locked corpus sha256 (verify by decoding, do not assume).
 corpusSha :: String

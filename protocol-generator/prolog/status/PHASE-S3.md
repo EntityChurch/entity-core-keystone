@@ -17,7 +17,7 @@ table. S4 (Go-oracle conformance) and S5 (packaging) are NOT started — S3-only
 
 | Gate | Result | How verified |
 |---|---|---|
-| Type-registry (§9.5) | **53 / 53 byte-identical** | render all 53 core types from the in-code model, diff each content_hash digest against the cross-impl Go-rendered `type-registry-vectors-v1.diag`, in-container |
+| Type-registry (§9.5) | **53 / 53 byte-identical** | render all 53 core types from the in-code model, diff each content_hash digest against the cross-impl Go-rendered `type-registry-vectors.diag`, in-container |
 | Two-peer loopback smoke | **11 / 11** | boot a responder peer on a localhost port; an initiator peer drives §4.1 handshake + core ops over real TCP, `--network=none`, in-container |
 | S2 codec regression | **69/69 + 10/10 KAT** | `run-s2.sh` re-run after the shim gained `ec_ed25519_seed_to_pubkey` — unbroken |
 

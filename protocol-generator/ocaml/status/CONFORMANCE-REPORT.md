@@ -24,7 +24,7 @@
 
 # entity-core-protocol-ocaml — Conformance Report (S2 codec)
 
-**Corpus:** `conformance-vectors-v1` (v7.71;
+**Corpus:** `conformance-vectors` (v7.71;
 sha256 `41d68d2d…6a052`) · **Result: 69 / 69 PASS, 0 FAIL** · **First run, 0 fixes.**
 
 Run in-container, sealed offline:
@@ -34,7 +34,7 @@ podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/ocaml
   entity-core-keystone/ocaml-toolchain:latest sh -c \
   'eval $(opam env --switch=ec-ocaml) && dune build && \
    dune exec test/conformance.exe -- \
-     /work/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor'
+     /work/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor'
 ```
 
 ## Scoreboard (byte-identity vs the cross-blessed fixture)
@@ -79,7 +79,7 @@ podman run --rm --network=none -v $PWD:/work:Z -w /work/protocol-generator/ocaml
 - **Native codec, no FFI.** No `dlopen`/C-ABI boundary to exercise (the
   codec-review-heuristic's FFI caveat is N/A for a native peer).
 - **Ed448 not covered** — agility higher-bar only; native gap A-OC-002. The 69-vector
-  ECF floor (Ed25519) is complete. The agility corpus (`agility-vectors-v1`) is NOT
+  ECF floor (Ed25519) is complete. The agility corpus (`agility-vectors`) is NOT
   yet run; it requires Ed448 + SHA-384 matrix and is gated on A-OC-002's resolution.
 - **S7 lower bar: MET.** Codec byte-identical to the corpus → unblocks shared-data-
   library consumers. Higher bar (validate-peer) is S3/S4, next session.

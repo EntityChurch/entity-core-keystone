@@ -129,7 +129,7 @@ oracle over the full v1 ECF conformance corpus.
 | Field | Value |
 |---|---|
 | Impl | `core-rust` (`entity-core-protocol-rust` 0.1.0-pre) |
-| Corpus | `shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor` (v1, 69 vectors, LOCKED) |
+| Corpus | `shared/test-vectors/ecf-conformance/conformance-vectors.cbor` (v1, 69 vectors, LOCKED) |
 | Spec version | 1.5 (ENTITY-CBOR-ENCODING; spec-data v7.75) |
 | Encode vectors | 64 / 64 byte-identical |
 | Decode-reject vectors | 5 / 5 rejected (code `non_canonical_ecf`) |
@@ -144,7 +144,7 @@ oracle over the full v1 ECF conformance corpus.
 The go oracle's `wire-conformance` does not run a peer's source directly. The model
 (GUIDE-CONFORMANCE §3.1) is **comparable emission files**:
 
-1. `build-fixture --diag conformance-vectors-v1.diag --out conformance-vectors-v1.cbor`
+1. `build-fixture --diag conformance-vectors.diag --out conformance-vectors.cbor`
    produces the canonical-ECF corpus every impl loads (already shipped in the corpus dir;
    its `canonical` fields are the 3-way-locked golden bytes).
 2. Each impl's harness runs `emit-canonical`-equivalent over that corpus, producing an
@@ -243,7 +243,7 @@ demux of 8 concurrently-issued requests each correctly correlated to its reply.
 
 `type_defs::publish` renders the **53-type core floor** natively through the S2 codec.
 The conformance test diffs each type's content_hash digest against the v7.71 vector set
-(`shared/test-vectors/v0.8.0/type-registry-vectors-v1.cbor`, the cohort drift target — the
+(`shared/test-vectors/type-registry/type-registry-vectors.cbor`, the cohort drift target — the
 vector file carries 150 types; the 53 core types are matched as a subset). All 53 are
 byte-identical — the same render-from-model design the whole cohort follows.
 
@@ -267,7 +267,7 @@ regression, no peer source touched**:
 - `cargo fmt --check` — clean.
 - `cargo clippy --all-targets --offline -- -D warnings` — clean (0 warnings).
 - `cargo test --offline --lib` — **33/33 pass** (codec units + §9.5 byte-diff + round-trip).
-- `wire-conformance --input conformance-vectors-v1.cbor` (v7.71) — **69 / 69 PASS, 0 FAIL**
+- `wire-conformance --input conformance-vectors.cbor` (v7.71) — **69 / 69 PASS, 0 FAIL**
   byte-identical (codec unregressed).
 - `cargo package --locked --offline` — **succeeds**; verify-build compiles the packaged crate
   clean (29 files, src-only; `output/`/`status/`/`arch/`/`profile.toml`/`run-*.sh` excluded).

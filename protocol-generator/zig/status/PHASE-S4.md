@@ -29,7 +29,7 @@ JSON in `CONFORMANCE-REPORT.json`.
    builder (the cross-blessed C#/TS/OCaml design), publishing the 53 core types
    as `system/type/<name>` entities. A build-time byte-diff
    (`A-ZIG-008` test) renders all 53 and compares each `content_hash` digest
-   against the Go-rendered `type-registry-vectors-v1.cbor` → **53/53
+   against the Go-rendered `type-registry-vectors.cbor` → **53/53
    byte-identical on the first run** (the codec being byte-green at S2 meant the
    only risk was field-shape data, which the vector diff catches per-type). The
    non-§9.5-floor types the oracle also probes WARN (matched-if-present); a core

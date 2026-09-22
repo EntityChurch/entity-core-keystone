@@ -19,7 +19,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$REPO_ROOT/tools/podman-caps.sh"
 IMAGE="entity-core-keystone/cpp-toolchain:latest"
 WORKDIR="/work/protocol-generator/cpp"
-VEC="../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"
+VEC="../shared/test-vectors/ecf-conformance/conformance-vectors.cbor"
 
 run() {
   podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WORKDIR" "$IMAGE" \

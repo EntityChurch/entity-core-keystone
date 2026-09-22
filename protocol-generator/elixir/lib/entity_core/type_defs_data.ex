@@ -1,10 +1,10 @@
 defmodule EntityCore.TypeDefsData do
   @moduledoc """
-  GENERATED from test-vectors/v0.8.0/type-registry-shapes.json (the cross-impl
+  GENERATED from test-vectors/type-registry/type-registry-shapes.json (the cross-impl
   Go-rendered type model) — the in-code core-type override table
   (render-from-model design). 53 core types per V7 §9.5. Regenerate with
   `tools/gen_typedefs.py` on a V7 bump; diffed byte-for-byte against
-  type-registry-vectors-v1 in test/type_registry_test.exs.
+  type-registry-vectors in test/type_registry_test.exs.
   """
 
   @doc "The 53 core types as `{name, data}` tuples (data = model-form map)."

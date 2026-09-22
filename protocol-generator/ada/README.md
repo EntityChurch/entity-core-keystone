@@ -9,7 +9,7 @@ and **design-by-contract** (Pre/Post/Type_Invariant aspects).
 
 **Conformance:** `validate-peer --profile core` — **PASS** · 576 total · 292 pass · 195 warn ·
 **0 fail** · 89 skip at the v7.75 cohort baseline oracle `b30a589` (machine-verified
-`summary.failed == 0`). Codec: 69/69 byte-identical to `conformance-vectors-v1`, first run, 0
+`summary.failed == 0`). Codec: 69/69 byte-identical to `conformance-vectors`, first run, 0
 codec fixes. `concurrency` **5/5** (genuinely concurrent) · `resource_bounds` ACTIVE in core
 (413/400/WARN) · origination-core **3/3** over real two-peer TCP · §9.5 53-type floor **53/53**
 byte-identical. See [`status/CONFORMANCE-REPORT.md`](status/CONFORMANCE-REPORT.md).

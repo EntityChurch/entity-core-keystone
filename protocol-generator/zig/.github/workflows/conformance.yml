@@ -65,7 +65,7 @@ jobs:
           podman run --rm --network=none -v "$PWD":/work:Z \
             -w /work/protocol-generator/zig "$IMAGE" \
             zig build conformance -- \
-              /work/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+              /work/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 
       # Gate 3 — S4 live-peer validate-peer --profile core (must stay 0 FAIL). The peer +
       # the Go oracle ELF run together in the image over loopback, --network=none. run-s4.sh

@@ -3,7 +3,7 @@
  * Builds each core type's `data` map (the GENERATED core_typedefs table), materializes a
  * `system/type` entity (content_hash computed by our own S2-green codec), and prints
  * "name <hex32>" for the 32-byte SHA-256 digest (the entity hash minus its 0x00 format
- * prefix). The runner diffs this against the canonical type-registry-vectors-v1 hashes.
+ * prefix). The runner diffs this against the canonical type-registry-vectors hashes.
  *
  * SPDX-License-Identifier: Apache-2.0
  */

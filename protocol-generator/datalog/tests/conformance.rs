@@ -1,7 +1,7 @@
 //! conformance.rs — S2 wire-conformance gate for the Datalog peer.
 //!
 //! Drives EVERY vector of the pinned v0.8.0 ECF corpus
-//! (protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor) through
+//! (protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor) through
 //! the `codec_ffi` seam and asserts byte-identity (encode_equal) or rejection
 //! (decode_reject). The fixture carries its own cross-blessed `canonical` bytes
 //! (Go × Rust × Python 3-way lock), so this is self-contained — no running Go oracle
@@ -231,7 +231,7 @@ fn cbor_text_encode(s: &str) -> Vec<u8> {
 
 fn corpus_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor")
+        .join("../shared/test-vectors/ecf-conformance/conformance-vectors.cbor")
 }
 
 struct Outcome {

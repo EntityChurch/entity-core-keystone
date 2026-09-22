@@ -96,7 +96,7 @@ origination: 3 pass / 0 fail — reference_connect, reference_ready,
 
 ## Type registry drift (S8 target)
 
-`test/typedefs_bytecheck.jl` → **53/53 byte-identical** to `type-registry-vectors-v1.cbor`.
+`test/typedefs_bytecheck.jl` → **53/53 byte-identical** to `type-registry-vectors.cbor`.
 Render-from-model (Julia multiple-dispatch over the peer's own data model), not byte-ingest.
 
 ## Reproduce

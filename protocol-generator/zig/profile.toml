@@ -158,4 +158,4 @@ zig               = "0.15.1"                   # released 2025-08 (~10 months ol
 
 [spec]
 v7_version_pinned = "7.72"                    # spec read for profile + peer (latest available spec-data)
-codec_corpus      = "v0.8.0"                   # ECF corpus; ENTITY-CBOR-ENCODING.md + ENTITY-NATIVE-TYPE-SYSTEM.md are byte-identical v7.71->v7.72 (per the OCaml SHA-verified finding), so the v0.8.0 corpus is valid at v7.72. Agility (Ed448/SHA-384) gated on A-ZIG-002.
+codec_corpus      = "ecf-conformance"                   # ECF corpus; ENTITY-CBOR-ENCODING.md + ENTITY-NATIVE-TYPE-SYSTEM.md are byte-identical v7.71->v7.72 (per the OCaml SHA-verified finding), so the v0.8.0 corpus is valid at v7.72. Agility (Ed448/SHA-384) gated on A-ZIG-002.

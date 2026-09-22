@@ -286,7 +286,7 @@ These are hard requirements on *how* implementations are built, not just what th
 An implementation is conformant iff **all** hold:
 
 1. **Surface.** Exports every §4 symbol with §5/§6 semantics; `entitycore_codec.h` matches.
-2. **Byte-identical output.** For every vector in `protocol-generator/shared/test-vectors/v0.8.0/`, `ec_encode_ecf` / `ec_content_hash` produce **byte-identical output** to the Go, Rust, and Python reference encoders, and reject every non-canonical vector (§3.2/§3.3).
+2. **Byte-identical output.** For every vector in `protocol-generator/shared/test-vectors/ecf-conformance/`, `ec_encode_ecf` / `ec_content_hash` produce **byte-identical output** to the Go, Rust, and Python reference encoders, and reject every non-canonical vector (§3.2/§3.3).
 3. **Functional equivalence.** Decode (incl. N4 original bytes), peer-id round-trip, Ed25519, SHA-256, and envelope verification behave identically to the references on the vector corpus.
 4. **Invariants.** N1 (synthetic ≥`0x80` varint), N2 (`tag_reject`), N3 (`0xA0`), N4 (original-byte fidelity), §3.5 (float specials), §3.6 (`map_keys`) all pass.
 5. **Output requirements.** §7 artifacts build under §8 discipline.
@@ -321,7 +321,7 @@ This spec promotes and supersedes the architecture-authored `ffi-generator/c-abi
 - ECF / canonical CBOR: `protocol-generator/shared/spec-data/v0.8.0/ENTITY-CBOR-ENCODING.md`
 - Core protocol: `…/spec-data/v0.8.0/ENTITY-CORE-PROTOCOL.md`
 - Conformance invariants N1–N8: `research/diagnostics/conformance-invariants.md`
-- Test vectors: `protocol-generator/shared/test-vectors/v0.8.0/`
+- Test vectors: `protocol-generator/shared/test-vectors/ecf-conformance/`
 - Machine-readable face: `ffi-generator/c-abi/spec/entitycore_codec.h`
 - Snapshot manifest: `ffi-generator/c-abi/spec/MANIFEST.md`
 - Arch lineage: `ffi-generator/c-abi/arch/DESIGN-v1.md`

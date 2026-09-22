@@ -21,7 +21,7 @@ import org.junit.jupiter.api.Test;
  *
  * <p>Renders all 53 core types (§9.5) from the in-code model ({@link CoreTypeDefs} via
  * {@link CoreTypes#entities()}) and diffs each {@code content_hash} against the canonical
- * cross-impl {@code type-registry-vectors-v1.diag} (the Go-rendered registry). Our hash is
+ * cross-impl {@code type-registry-vectors.diag} (the Go-rendered registry). Our hash is
  * 33 bytes (format byte 0x00 ‖ 32-byte SHA-256 digest); the vectors carry
  * {@code ecf-sha256:<64hex>} — we compare the 32-byte digest hex. A green here is what the
  * live oracle's {@code type_system _match} checks confirm independently (53/53).
@@ -30,7 +30,7 @@ final class TypeRegistryTest {
 
     /** name → 64-hex content_hash digest, parsed from the .diag vectors. */
     private static Map<String, String> parseDiag() throws IOException {
-        Path diag = Path.of("../shared/test-vectors/v0.8.0/type-registry-vectors-v1.diag");
+        Path diag = Path.of("../shared/test-vectors/type-registry/type-registry-vectors.diag");
         List<String> lines = Files.readAllLines(diag);
         Pattern nameP = Pattern.compile("\"name\":\\s*\"([^\"]*)\"");
         Pattern hashP = Pattern.compile("\"content_hash\":\\s*\"ecf-sha256:([0-9a-fA-F]{64})\"");

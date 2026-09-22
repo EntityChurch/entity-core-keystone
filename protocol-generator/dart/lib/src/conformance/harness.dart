@@ -10,7 +10,7 @@ import '../errors.dart';
 
 /// ECF wire-conformance harness (the codec gate).
 ///
-/// The normative fixture `conformance-vectors-v1.cbor` is itself a canonical-ECF
+/// The normative fixture `conformance-vectors.cbor` is itself a canonical-ECF
 /// array of vector maps, each carrying its own cross-blessed `canonical` bytes
 /// (the Go `wire-conformance` oracle output, 3-way Go × Rust × Python
 /// byte-locked). The harness decodes the fixture with THIS peer's OWN decoder (a
@@ -30,7 +30,7 @@ class ConformanceHarness {
   static String defaultFixture() {
     final env = Platform.environment['ECF_FIXTURE'];
     if (env != null && env.isNotEmpty) return env;
-    return '../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor';
+    return '../shared/test-vectors/ecf-conformance/conformance-vectors.cbor';
   }
 
   /// Run the corpus at [fixturePath]. Returns a [ConformanceResult].

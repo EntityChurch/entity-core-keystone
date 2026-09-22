@@ -22,7 +22,7 @@ L1–L4 + foundation built on the S2 codec, idiomatic C++23:
   53-type core floor's `data` maps (generated from the shared `type-registry-shapes.json` by
   `tools/gen-typedefs.py` → `src/core_typedefs.cpp`) is materialized as a `system/type` entity whose
   content_hash, computed by our own S2-green codec, matches the canonical
-  `type-registry-vectors-v1.cbor` exactly (decoded with our own decoder — a free decoder cross-check).
+  `type-registry-vectors.cbor` exactly (decoded with our own decoder — a free decoder cross-check).
 - **Multi-sig accept-path 9/9** (`test/multisig_accept.cpp`) — **GENUINE §3.6 K-of-N built the first
   time** (see "Genuine multi-sig" below). 2-of-3 (incl. local) → ALLOW; M3/M4/M6 deny-flips
   (n<2, threshold>n, threshold<2, duplicate signers, has-a-parent, only-1-of-2-sigs, local-not-in-

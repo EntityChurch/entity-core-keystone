@@ -1515,7 +1515,7 @@ static void h_handlers(ec_peer *p, ec_conn *conn, const ec_envelope *env,
  * namespace, bound at /{peer}/system/type/{name}. The per-type `data` maps come from the
  * GENERATED core_typedefs table (rendered from the cross-impl Go type model in the shared
  * test-vectors); each entity's content_hash is computed by our own S2-green codec over
- * {type,data} (render-from-model, byte-diffed against type-registry-vectors-v1). This is
+ * {type,data} (render-from-model, byte-diffed against type-registry-vectors). This is
  * the surface the oracle's type_system category fetches at system/type/<name>.
  */
 static ec_status publish_core_types(ec_peer *p)

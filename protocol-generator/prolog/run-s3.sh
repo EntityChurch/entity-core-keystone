@@ -6,7 +6,7 @@
 # Steps:
 #   1. Build libentitycore_codec.so (C-ABI v1.1) + the SWI foreign shim (S2 floor).
 #   2. Type-registry gate: render all 53 core types (§9.5) + diff content_hash
-#      against the canonical type-registry-vectors-v1.diag (53/53 byte-identical).
+#      against the canonical type-registry-vectors.diag (53/53 byte-identical).
 #   3. Two-peer loopback smoke gate (11/11): boot a responder peer, drive the §4.1
 #      handshake + core ops over real loopback TCP from an initiator peer.
 #
@@ -19,7 +19,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # repo root (/work)
 PEER="$ROOT/protocol-generator/prolog"
 CABI="$ROOT/ffi-generator/c-abi/entity-core-codec-ffi-c"
-DIAG="$ROOT/protocol-generator/shared/test-vectors/v0.8.0/type-registry-vectors-v1.diag"
+DIAG="$ROOT/protocol-generator/shared/test-vectors/type-registry/type-registry-vectors.diag"
 BUILD="$PEER/build"
 
 echo "=============================================================="

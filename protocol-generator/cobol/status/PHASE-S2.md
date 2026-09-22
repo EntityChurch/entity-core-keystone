@@ -10,7 +10,7 @@
 - `test/cbor-unit.cob` — 8/8 transcoder unit tests (minimization + map sort that
   the canonical corpus can't exercise).
 - `test/codec-selftest.cob` + `test/fileio.c` — corpus harness: walks the pinned
-  `conformance-vectors-v1.cbor`, dispatches structural→transcoder, crypto→FFI,
+  `conformance-vectors.cbor`, dispatches structural→transcoder, crypto→FFI,
   reject→decoder. 68 pass / 0 fail / 1 honest skip vs **both** C and Rust C-ABI impls.
 
 ## Decisions / findings

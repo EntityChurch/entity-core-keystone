@@ -21,7 +21,7 @@ verified. This doc is the release-readiness record + the operator handoff.
 | §10.1 core-register gate | ✅ | 10/10 (incl `validate_echo_dispatch`; §3.4 invariant-pointer grant-sig at `system/signature/{grant_hash}` enforced; unregister symmetry). |
 | multisig genuine K-of-N | ✅ | 11/11, 0 skip — `valid_2of3_peer_signed_accepted` genuinely runs via the `--name` persistent-identity surface (not a vacuous skip). |
 | concurrency (§7b) + resource_bounds (§4.10) | ✅ | concurrency 5/5; resource_bounds r1 413 / r2 400 PASS, r3 WARN (SHOULD). |
-| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors-v1`, first run, **0 codec fixes**. |
+| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors`, first run, **0 codec fixes**. |
 | §9.5 53-type floor byte-identical | ✅ | 53/53 (peer-side dual + live oracle `type_system_match`). |
 | Ed25519 RFC-8032 KAT | ✅ | SunEC sign/verify byte-equal; pure-JDK raw-pubkey derivation KAT-verified to the cohort-canonical seed-`0x11` peer_id (A-KT-009). |
 | `gradle --offline --no-daemon test` clean | ✅ | codec 69/69 + Ed25519 KATs + 53/53 type-diff + two-peer loopback smoke, 0 failures. |

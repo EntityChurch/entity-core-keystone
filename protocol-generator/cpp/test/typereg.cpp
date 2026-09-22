@@ -1,7 +1,7 @@
 // typereg.cpp — render-from-model byte-diff harness for the §9.5 53-type core floor.
 // Builds each core type's `data` map (the GENERATED core_typedefs table), materializes a
 // `system/type` entity (content_hash computed by our own S2-green codec), and diffs the
-// 32-byte SHA-256 digest against the canonical type-registry-vectors-v1.cbor (decoded with
+// 32-byte SHA-256 digest against the canonical type-registry-vectors.cbor (decoded with
 // our own decoder — a free cross-check of the decoder too). Argv[1] = the .cbor vectors.
 //
 // SPDX-License-Identifier: Apache-2.0

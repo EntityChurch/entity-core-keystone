@@ -20,7 +20,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # repo root (/work)
 PEER="$ROOT/protocol-generator/prolog"
 CABI="$ROOT/ffi-generator/c-abi/entity-core-codec-ffi-c"
-CORPUS="$ROOT/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"
+CORPUS="$ROOT/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor"
 BUILD="$PEER/build"
 
 echo "=============================================================="

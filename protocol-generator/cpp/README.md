@@ -15,7 +15,7 @@ raw `malloc`/`free` and a return-code/out-param error model, the C++ peer exerci
 **Conformance:** `validate-peer --profile core` — **PASS** · **665** total · 292 pass · 278 warn ·
 **0 fail** · 95 skip (machine-verified `summary.failed == 0`) @ the v7.77 cohort oracle
 **`e8524ed`** (go HEAD; `core_gate_sha256` `e09a865f…` matches the committed pin in
-`tools/oracle-pin.env`). Codec: **69/69** byte-identical to `conformance-vectors-v1`. §9.5 53-type
+`tools/oracle-pin.env`). Codec: **69/69** byte-identical to `conformance-vectors`. §9.5 53-type
 registry 53/53 byte-identical. origination-core 3/3 over real two-peer TCP. multisig **11/11** genuine
 K-of-N (incl. `valid_2of3_peer_signed_accepted`). S3 loopback 11/11. **ASan / LSan / UBSan-clean on
 both g++ 15.2.1 and clang++ 21.1.8** (a leak, use-after-free, overflow, or UB is a *test failure* —

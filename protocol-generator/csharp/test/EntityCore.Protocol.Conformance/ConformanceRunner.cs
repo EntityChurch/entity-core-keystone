@@ -37,7 +37,7 @@ public sealed record ConformanceReport(IReadOnlyList<VectorResult> Results)
 
 /// <summary>
 /// Drives the vendored, cross-blessed conformance fixture
-/// (<c>conformance-vectors-v1.cbor</c>) through the native C# codec and diffs the
+/// (<c>conformance-vectors.cbor</c>) through the native C# codec and diffs the
 /// output, byte-for-byte, against each vector's baked <c>canonical</c> bytes.
 /// Twin of the Rust/C <c>conformance_harness</c>. Agreement here means this impl
 /// matches the Go/Rust/Py 3-way consensus.

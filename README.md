@@ -213,10 +213,17 @@ subdirectory, never an in-place edit.
 | Input | Path |
 |---|---|
 | **The spec** — 3 normative files | `protocol-generator/shared/spec-data/v0.8.2/` (current pin; `v0.8.0` retained as a point-in-time pin) |
-| **Conformance / diagnostic vectors** — ECF codec, crypto-agility, type-registry corpora | `protocol-generator/shared/test-vectors/v0.8.0/` (no `v0.8.2` vector set has been cut) |
+| **Conformance / diagnostic vectors** — ECF codec, crypto-agility, type-registry corpora | `protocol-generator/shared/test-vectors/{ecf-conformance,crypto-agility,type-registry}/` |
 
-Both are verbatim, byte-for-byte, SHA-256-pinned snapshots with provenance in their own `MANIFEST.md`.
-`make lint` verifies the pins.
+The spec snapshot is a verbatim, byte-for-byte, SHA-256-pinned copy with provenance in its own
+`MANIFEST.md`; `make lint` verifies the pins.
+
+**A vector corpus is identified by its NAME, never by a version stamp** — one directory per corpus,
+named for what it tests, artifacts with no `-v1` suffix, and a `CHANGELOG.md` in place of a version
+integer. A conformance citation names `(spec-version, corpus-name, artifact sha256)`. The first two
+corpora are byte-identical vendors of architecture's canonical fixtures; `type-registry/` is
+**derived** rather than vendored — it is harvested from the reference implementation as a drift
+target, not a normative pin, and says so in its own changelog.
 
 ## Conformance state, honestly
 

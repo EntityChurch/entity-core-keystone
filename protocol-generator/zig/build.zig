@@ -2,7 +2,7 @@
 //!   zig build            -> build the static codec library
 //!   zig build test       -> run all in-file unit tests (std.testing.allocator)
 //!   zig build conformance -- <fixture.cbor>  -> run the wire-conformance harness
-//! Conformance defaults to ../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor.
+//! Conformance defaults to ../shared/test-vectors/ecf-conformance/conformance-vectors.cbor.
 
 const std = @import("std");
 

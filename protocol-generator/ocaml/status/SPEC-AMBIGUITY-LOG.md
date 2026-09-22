@@ -154,7 +154,7 @@ to eio is localized to `transport.ml` (the `Peer.dispatch` brain is transport-ag
 **Resolution:** the 53 core types are an **in-code override table** (generated once from
 the cross-impl Go-rendered `type-registry-shapes.json` model, committed as
 `src/type_defs_data.ml`), rendered through the S2 codec and **diffed byte-for-byte**
-against `type-registry-vectors-v1` — **53/53 byte-identical, first run**
+against `type-registry-vectors` — **53/53 byte-identical, first run**
 (`test/type_registry.ml`). Render-from-model, not ingest-bytes: the peer owns its type
 definitions; the canonical vectors are the cross-check. No ambiguity surfaced — the
 spec-first field-shape derivation matched the cross-impl model exactly.

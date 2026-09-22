@@ -226,7 +226,7 @@ registry's field shapes, rendered through the byte-green C-ABI codec) and seed t
 `system/type/*` resource target (confirmed by the baseline 404-not-501 — the fetch is a
 tree get, so seeding the store suffices; no `system/type` GET handler is needed). This
 is the durable "render natively, don't ingest bytes" lesson applied — the Go-rendered
-`shared/test-vectors/v0.8.0/type-registry-shapes.json` is the drift target, NOT a byte
+`shared/test-vectors/type-registry/type-registry-shapes.json` is the drift target, NOT a byte
 source. **The finding:** the type registry is *published DATA*, orthogonal to the
 §5/§6.6 authority-decision interior — a clean example that "not everything a core peer
 serves is authority logic." Completing it (and every other S4 handler) added ZERO

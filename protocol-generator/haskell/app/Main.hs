@@ -18,7 +18,7 @@ main = do
   args <- getArgs
   let path = case args of
         (p : _) -> p
-        [] -> "../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"
+        [] -> "../shared/test-vectors/ecf-conformance/conformance-vectors.cbor"
   result <- loadVectors path
   case result of
     Left err -> putStrLn ("load failed: " ++ err) >> exitFailure

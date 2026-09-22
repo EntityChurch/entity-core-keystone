@@ -285,7 +285,7 @@ this claim be backed by source receipts or retracted. I ran a source audit of th
 
 ### What the audit found (receipts — this is the honest result)
 **The wire oracle is not self-referential.** The vector corpus is authored in the *spec* repo
-(`entity-core-protocol/specs/test-vectors/ecf-conformance/conformance-vectors-v1.diag`), hand-authored
+(`entity-core-protocol/specs/test-vectors/ecf-conformance/conformance-vectors.diag`), hand-authored
 against `ENTITY-CBOR-ENCODING.md Appendix E`, with canonical bytes filled in by *cross-impl byte-equality*,
 not Go's emission. The `conformance` category (`conformance.go:diffEncodeEqual` / `diffDecodeReject`) is an
 N-way diff requiring **all impls to agree**; a single-impl run returns `WarnCheck("cross-impl gate requires

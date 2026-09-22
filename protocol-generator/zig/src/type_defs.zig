@@ -4,7 +4,7 @@
 //! `/{peer}/system/type/{name}`. Each type's data is rendered NATIVELY from an
 //! in-code declaration (the single source of truth — the FSpec/TypeDef builder
 //! below) through the byte-green S2 codec; the resulting content_hash is
-//! byte-identical to the Go-rendered `type-registry-vectors-v1.cbor` set (the S8
+//! byte-identical to the Go-rendered `type-registry-vectors.cbor` set (the S8
 //! drift target). This is the render-from-model design every peer follows
 //! (memory: type-registry-render-design; mirrors C# CoreTypeRegistry / TS
 //! core-type-registry.ts / OCaml type_defs_data.ml).
@@ -439,7 +439,7 @@ test "A-ZIG-008: 53 core types render byte-identical to the Go vector set" {
     const gpa = testing.allocator;
 
     // Load the vector file: array of { name, content_hash, ... }.
-    const path = "../shared/test-vectors/v0.8.0/type-registry-vectors-v1.cbor";
+    const path = "../shared/test-vectors/type-registry/type-registry-vectors.cbor";
     const file = std.fs.cwd().openFile(path, .{}) catch |e| {
         std.debug.print("skip: cannot open {s}: {}\n", .{ path, e });
         return error.SkipZigTest;

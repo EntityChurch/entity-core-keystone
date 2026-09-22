@@ -166,7 +166,7 @@ the opt-in Ed448 agility sub-library, which the floor peer never loads.
   M6 REJECTED) — the keystone payoff on a rejection-heavy oracle category.
 - **Type registry:** the 53-type §9.5 floor rendered **natively** from the peer's own
   TypeDef/FSpec model through its own ECF codec (not byte-ingest), byte-identical to
-  `type-registry-vectors-v1.diag`.
+  `type-registry-vectors.diag`.
 - **Origination-core:** `run-origination-core.sh` vs the Go `entity-peer` reference →
   **3/3 PASS** incl. §6.11 `dispatch_outbound_reentry` (live from the asyncdispatch single-loop
   `io.pending` request_id demux + the `OutboundSender` closure).

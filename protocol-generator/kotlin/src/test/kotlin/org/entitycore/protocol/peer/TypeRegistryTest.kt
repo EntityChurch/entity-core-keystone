@@ -16,7 +16,7 @@ import kotlin.test.assertTrue
  *  - the render is DETERMINISTIC (a re-render yields the byte-identical hash) — the
  *    convergence the S4 type_system byte-diff against the canonical vectors depends on.
  *
- * The byte-for-byte diff against the canonical `type-registry-vectors-v1` is the S4
+ * The byte-for-byte diff against the canonical `type-registry-vectors` is the S4
  * `type_system` category; this S3 smoke proves the 53/53 floor renders + binds + is
  * stable, so the registry surface the oracle fetches exists.
  */

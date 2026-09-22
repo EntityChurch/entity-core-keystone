@@ -185,7 +185,7 @@ when nil) is byte-stable.
 **Profile field:** n/a
 **Your guess:** S3 publishes a small `system/type` seed (`CoreTypes::SEED`) so
 the type tree exists for resolution; the FULL 53-type §9.5 floor (render-from-
-model, byte-diffed against `type-registry-vectors-v1`) lands at S4 with the
+model, byte-diffed against `type-registry-vectors`) lands at S4 with the
 `type_system` oracle category. The smoke gate does not fetch types, so the
 minimal seed is sufficient for S3.
 **Rationale:** Mirrors the cohort (C#/TS/Java A-*-008): the 53-type registry is

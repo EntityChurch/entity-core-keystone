@@ -200,7 +200,7 @@ verdict_trichotomy = "401 (unauthenticated) / 403 (authenticated-but-unauthorize
 
 [spec]
 version_pinned    = "v0.8.0"                   # spec-data/v0.8.0/ (V8) — the current pinned snapshot; core wire byte-unchanged across V7→V8.
-codec_corpus      = "v0.8.0"                   # ECF corpus = the 71-vector wire-conformance set (conformance-vectors-v1); peer-id §1.5 canonical-form (hash_type=0x00 identity-multihash, digest = raw pubkey for <=32B keys).
+codec_corpus      = "ecf-conformance"                   # ECF corpus = the 71-vector wire-conformance set (conformance-vectors); peer-id §1.5 canonical-form (hash_type=0x00 identity-multihash, digest = raw pubkey for <=32B keys).
 # Odin derives S1/S2/S3 against the COMPLETE v0.8.0 snapshot — the register/
 # outbound/emit/owner-cap/§7a peer surface AND the §4.8/§4.9/§4.10 substrate floor
 # are all present as ratified spec text. No snapshot-lag caveat.

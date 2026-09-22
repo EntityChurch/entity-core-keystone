@@ -19,8 +19,8 @@
 
 ## S2 — codec (wire conformance)
 
-**Gate:** pinned v0.8.0 ECF corpus (`protocol-generator/shared/test-vectors/v0.8.0/
-conformance-vectors-v1.cbor`), **69 vectors — 69 pass / 0 fail / 0 skip.**
+**Gate:** pinned v0.8.0 ECF corpus (`protocol-generator/shared/test-vectors/ecf-conformance/
+conformance-vectors.cbor`), **69 vectors — 69 pass / 0 fail / 0 skip.**
 **Reproduce:** `./run-s2.sh` (container-bound, `--network=none`) → `make test`.
 **Container:** `entity-core-keystone/rexx-toolchain:latest` (Regina Rexx 3.9.6, fedora:43).
 **Crypto provenance (`Crypto_ImplInfo` → `ec_impl_info`):**

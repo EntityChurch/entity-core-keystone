@@ -15,7 +15,7 @@ default)."
 | corpusPath bytes top npass nfail nskip out toHex judge processVec |
 "Corpus path from the EC_CORPUS env var (the run scripts set it) or the pinned default."
 corpusPath := (Smalltalk os environment at: 'EC_CORPUS' ifAbsent: [ nil ])
-	ifNil: [ '../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor' ].
+	ifNil: [ '../shared/test-vectors/ecf-conformance/conformance-vectors.cbor' ].
 bytes := corpusPath asFileReference binaryReadStream upToEnd.
 top := EcCborDecoder decode: bytes.
 

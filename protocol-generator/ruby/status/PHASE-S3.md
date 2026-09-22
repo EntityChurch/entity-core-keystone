@@ -194,7 +194,7 @@ deps · container reproducible (`--network=none`). **S3 PASS.**
 - `validate-peer --profile core` conformance run against the Go oracle (the live
   superset of this smoke).
 - The full §9.5 53-type registry (render-from-model + byte-diff vs
-  `type-registry-vectors-v1`) for the `type_system` oracle category — S3 seeds a
+  `type-registry-vectors`) for the `type_system` oracle category — S3 seeds a
   minimal subset (A-RUBY-008).
 - The dispatch-outbound §7a handler's full wire exercise (the origination-core
   probe over real 2-peer TCP); the seam is built + bootstrapped under

@@ -34,7 +34,7 @@ each as a `system/type` entity through the byte-green S2 codec and binds it at
 
 **Byte-diff test** (`test/TypeRegistrySpec.hs`, wired into the conformance suite):
 renders all 53 and compares each entity's `content_hash` digest against the
-canonical Go-rendered `type-registry-vectors-v1.cbor` set → **53/53 byte-identical
+canonical Go-rendered `type-registry-vectors.cbor` set → **53/53 byte-identical
 on the first run**. The codec being byte-green at S2 meant the only residual risk
 was field-shape data; the per-type digest diff catches it, and it was correct
 first try (the omit-empty + canonical-key-sort semantics matched the Go encoder).

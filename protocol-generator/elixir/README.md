@@ -7,7 +7,7 @@ A native-Elixir **core protocol peer** for the Entity Core protocol (V7), genera
 **Conformance:** `validate-peer --profile core` — **PASS** · 568 total · 284 pass · 195 warn ·
 **0 fail** · 89 skip — first run, 0 fixes. §10.1 register gate 10/10; §10.2 origination-core
 3/3 (incl. `dispatch_outbound_reentry` over real two-peer TCP). Codec: 69/69 byte-identical to
-`conformance-vectors-v1`, first run. See [`status/CONFORMANCE-REPORT.md`](status/CONFORMANCE-REPORT.md).
+`conformance-vectors`, first run. See [`status/CONFORMANCE-REPORT.md`](status/CONFORMANCE-REPORT.md).
 
 **Status:** `0.1.0-pre` — publish-ready, **not yet published** (pending arch v0.1 sign-off).
 Tracks V7 **v7.74** (register / outbound-closure / emit / peer-owner-cap / §7a conformance

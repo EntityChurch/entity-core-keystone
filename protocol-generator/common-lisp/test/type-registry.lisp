@@ -1,7 +1,7 @@
 ;;;; type-registry.lisp — the §9.5 type-registry byte-diff (peer-side dual of the
 ;;;; S2 codec corpus). Renders all 53 core types (§9.5) from the in-code model
 ;;;; (+core-type-models+) and diffs each content_hash against the canonical
-;;;; type-registry-vectors-v1.diag (the cross-impl Go-rendered registry). Proves
+;;;; type-registry-vectors.diag (the cross-impl Go-rendered registry). Proves
 ;;;; render-from-model is byte-identical to the oracle's TypeDefinition entities.
 ;;;;
 ;;;; Each .diag line looks like:

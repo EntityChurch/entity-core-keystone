@@ -1,6 +1,6 @@
 % run_conformance.pl — S2-FFI wire-conformance harness for the Prolog peer.
 %
-% Loads the normative ECF corpus (conformance-vectors-v1.cbor — 69 vectors:
+% Loads the normative ECF corpus (conformance-vectors.cbor — 69 vectors:
 % 64 encode_equal + 5 decode_reject) and drives EVERY vector through the C-ABI
 % codec (ec_codec.pl over libentitycore_codec), checking byte-identity
 % (encode_equal) or rejection (decode_reject). The fixture carries its own
@@ -24,7 +24,7 @@
 :- use_module(library(lists)).
 :- use_module(library(apply)).
 
-default_corpus('../../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor').
+default_corpus('../../shared/test-vectors/ecf-conformance/conformance-vectors.cbor').
 
 main :- run_conformance_tests.
 

@@ -63,7 +63,7 @@ openssl-devel / FFI-agility `.a` in the core image (Ed448 deferred, S1 item 3 ho
 
 ## Conformance + cross-checks (the codec gate)
 
-1. **The vendored fixture IS the Go oracle output.** `conformance-vectors-v1.cbor` (v7.71, sha
+1. **The vendored fixture IS the Go oracle output.** `conformance-vectors.cbor` (v7.71, sha
    `41d68d2d…`) embeds the 3-way Go×Rust×Python byte-locked `canonical` field per vector. The
    harness decodes the fixture with THIS peer's OWN decoder (a decoder bug = a conformance failure
    per §E.3), runs each vector through the codec, and byte-compares. **69/69 byte-identical.**

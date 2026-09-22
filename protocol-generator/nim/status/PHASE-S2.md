@@ -3,7 +3,7 @@
 **Phase:** S2 (codec layer)
 **Date:** 2026-07-12
 **Spec surface:** v0.8.0 / V8 (`protocol-generator/shared/spec-data/v0.8.0/`)
-**Corpus:** `test-vectors/v0.8.0/conformance-vectors-v1.cbor` (71 vectors; sha256
+**Corpus:** `test-vectors/ecf-conformance/conformance-vectors.cbor` (71 vectors; sha256
 `9695b1f1…7c6dc`, the F29/F30 re-vendor)
 **Exit status:** ✅ S2 complete — **wire-conformance 71/71 PASS, 0 FAIL**, first
 compile-run, 0 codec fixes. Container built + sha-verified. No blocking ambiguity.

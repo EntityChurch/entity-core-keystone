@@ -1,6 +1,6 @@
 // ConformanceTests.swift — the S2 wire-conformance gate.
 //
-// Loads the normative ECF corpus (conformance-vectors-v1.cbor) via OUR decoder
+// Loads the normative ECF corpus (conformance-vectors.cbor) via OUR decoder
 // (per Appendix E §E.3: a decoder bug here is itself a conformance failure), then
 // for each vector:
 //   encode_equal — encode `input` canonically, assert byte-equal to `canonical`.
@@ -31,7 +31,7 @@ final class ConformanceTests: XCTestCase {
             .deletingLastPathComponent()  // swift
         return swiftDir
             .deletingLastPathComponent()  // protocol-generator
-            .appendingPathComponent("shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor")
+            .appendingPathComponent("shared/test-vectors/ecf-conformance/conformance-vectors.cbor")
             .path
     }()
 

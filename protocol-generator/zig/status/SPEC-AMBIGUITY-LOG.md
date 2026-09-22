@@ -252,7 +252,7 @@ materially richer contract at the peer surface than at the codec).
 `primitive/*`, `system/hash`, `system/capability/*`) as `system/type` entities at
 `/{peer}/system/type/{name}` — enough for the smoke's `system/type/system/peer` get to resolve and for
 `system/type/*` discovery-floor reads. The **full 53-type byte-conformant registry** (render-from-model,
-diffed byte-for-byte against `type-registry-vectors-v1.cbor` — the OCaml A-OC-006 / TS A-006 design) is
+diffed byte-for-byte against `type-registry-vectors.cbor` — the OCaml A-OC-006 / TS A-006 design) is
 **deferred to S4**, where the `validate-peer type_system` category exercises it. This mirrors every prior
 peer (the registry is an S4 conformance surface, not an S3 machinery surface). **Escalation:** operator —
 phase-scoping; S4 must land the full registry + the type-registry byte-diff test first in the type_system
@@ -262,7 +262,7 @@ bodies + entity-native dispatch land in S4 alongside the validator that drives t
 
 **S4 update (RESOLVED).** The full **§9.5 53-type registry** landed in `type_defs.zig` as a native
 render-from-model FSpec/TypeDef builder, seeded at `system/type/<name>`. The `A-ZIG-008` build-time test
-renders all 53 and diffs each `content_hash` digest against `type-registry-vectors-v1.cbor` →
+renders all 53 and diffs each `content_hash` digest against `type-registry-vectors.cbor` →
 **53/53 byte-identical on the first run** (the codec being byte-green at S2 reduced the risk to field-shape
 data, caught per-type by the vector diff). Live `type_system` went 21→**108 pass, 0 core fail** under
 `--profile core` (194 warn = non-§9.5-floor types, matched-if-present). The §7a `system/validate/*` handler

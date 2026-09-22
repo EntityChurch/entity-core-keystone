@@ -1,7 +1,7 @@
 // TypeRegistryTests.swift — A-SW-009 byte-diff gate.
 //
 // Every §9.5 core type's content_hash must be byte-identical to the Go-rendered
-// `type-registry-vectors-v1.cbor` set (the S8 drift target). This is the offline
+// `type-registry-vectors.cbor` set (the S8 drift target). This is the offline
 // gate that de-risks the live `type_system` conformance category: the codec is
 // byte-green at S2, so the only remaining risk is the field-shape DATA, which the
 // per-type digest diff catches exactly. Mirrors Zig A-ZIG-008 / TS type-registry.
@@ -20,7 +20,7 @@ final class TypeRegistryTests: XCTestCase {
             .deletingLastPathComponent()  // swift
         return swiftDir
             .deletingLastPathComponent()  // protocol-generator
-            .appendingPathComponent("shared/test-vectors/v0.8.0/type-registry-vectors-v1.cbor")
+            .appendingPathComponent("shared/test-vectors/type-registry/type-registry-vectors.cbor")
             .path
     }()
 

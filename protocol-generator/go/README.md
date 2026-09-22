@@ -17,7 +17,7 @@ A native-Go **core protocol peer** for the Entity Core protocol (V7), generated 
 
 **Conformance:** `validate-peer --profile core` — **PASS** · 653 total · 291 pass ·
 268 warn · **0 fail** · 94 skip (machine-verified `summary.failed == 0`, oracle
-`entity-core-go` `75c532e`). Codec: 69/69 byte-identical to `conformance-vectors-v1`,
+`entity-core-go` `75c532e`). Codec: 69/69 byte-identical to `conformance-vectors`,
 first run, 0 codec fixes. §9.5 53-type registry: 53/53 byte-identical. origination-core
 3/3. See [`status/CONFORMANCE-REPORT.md`](status/CONFORMANCE-REPORT.md). (The live total
 is 653 at `75c532e`, not the docs' 576; the delta is non-failing newer-category skips +

@@ -14,7 +14,7 @@ import org.entitycore.protocol.codec.EcfValue;
  * Go-rendered type model in the shared test-vectors); each entity's {@code content_hash} is
  * computed by our OWN S2-green codec over {@code {type, data}} (render-from-model, not
  * ingest-bytes), and is diffed byte-for-byte against the canonical
- * {@code type-registry-vectors-v1} in {@code TypeRegistryTest}. This is the surface the
+ * {@code type-registry-vectors} in {@code TypeRegistryTest}. This is the surface the
  * oracle's {@code type_system} category fetches at {@code system/type/<name>} (the §9.5
  * 53/53 floor; non-floor type vocabularies are extension-owned and intentionally absent —
  * WARN/matched-if-present under {@code --profile core}, never pre-published by a core peer).

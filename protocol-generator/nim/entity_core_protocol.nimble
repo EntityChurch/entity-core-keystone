@@ -21,7 +21,7 @@ requires "nim >= 2.0.0"
 task conformance, "Run the ECF wire-conformance harness (S2 gate)":
   exec "nim c -r --mm:orc --overflowChecks:on -d:release --hints:off " &
        "-o:tests/tconformance_bin tests/tconformance.nim " &
-       "../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"
+       "../shared/test-vectors/ecf-conformance/conformance-vectors.cbor"
 
 # S3 gate: the smoke scenario (handshake both directions, unknown-handler status,
 # request_id demux) over real loopback TCP between two Nim peers.

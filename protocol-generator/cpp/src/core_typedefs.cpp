@@ -4,7 +4,7 @@
 // is computed by our own S2-green codec over {type,data}. Generated from the
 // shared cross-impl test-vectors (type-registry-shapes.json) by
 // tools/gen-typedefs.py; the rendered hashes are diffed byte-for-byte against
-// type-registry-vectors-v1 by the type-registry test. Regenerate on a V7 bump.
+// type-registry-vectors by the type-registry test. Regenerate on a V7 bump.
 //
 // SPDX-License-Identifier: Apache-2.0
 #include "entity_core/core_typedefs.hpp"

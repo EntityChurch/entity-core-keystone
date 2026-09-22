@@ -9,7 +9,7 @@ CODEC_BUILD := $(CODEC_SRC)/build
 SPEC        := ../../ffi-generator/c-abi/spec
 HELPER      := src/ext/eccrypto
 NET         := src/ext/ecnet
-CORPUS      := ../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+CORPUS      := ../shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 # "Link" order: harness main (with EXIT) first, then the routine library files.
 LIB         := src/util.rex src/varint.rex src/base58.rex src/peerid.rex src/cbor.rex src/tv.rex src/crypto.rex
 # S3 peer machinery: the full routine library (codec + protocol + transport).

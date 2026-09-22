@@ -39,7 +39,7 @@ is error unions throughout (`cbor.Error`, `CodecError`-shaped), no exceptions.
 
 ## Conformance
 
-**69 / 69 byte-identical** against `conformance-vectors-v1.cbor` (v7.71,
+**69 / 69 byte-identical** against `conformance-vectors.cbor` (v7.71,
 sha256 `41d68d2d…6a052`), first run, **zero codec-logic fixes**. Same scoreboard
 as the C# (#1), TS (#2), and OCaml (#3) peers — converged spec-first.
 

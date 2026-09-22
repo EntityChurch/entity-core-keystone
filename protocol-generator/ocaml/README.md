@@ -5,7 +5,7 @@ A native-OCaml **core protocol peer** for the Entity Core protocol (V7), generat
 **spec-first** (no sibling-language source) to stress-test spec tightness.
 
 **Conformance:** `validate-peer --profile core` — **PASS** · 558 total · 274 pass · 195 warn ·
-**0 fail** · 89 skip. Codec: 69/69 byte-identical to `conformance-vectors-v1`, first run.
+**0 fail** · 89 skip. Codec: 69/69 byte-identical to `conformance-vectors`, first run.
 See [`status/CONFORMANCE-REPORT.md`](status/CONFORMANCE-REPORT.md).
 
 **Status:** `0.1.0-pre` — publish-ready, **not yet published** (pending arch v0.1 sign-off).
@@ -75,7 +75,7 @@ All build/test/conformance runs happen in the pinned `ocaml-toolchain` Podman im
 ```
 # S2 codec conformance (69/69, sealed offline)
 dune exec test/conformance.exe -- \
-  ../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+  ../shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 
 # S4 live-peer conformance (validate-peer --profile core)
 sh run-s4.sh

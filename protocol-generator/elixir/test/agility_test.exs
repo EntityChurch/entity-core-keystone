@@ -4,7 +4,7 @@ defmodule EntityCore.AgilityTest do
   alias EntityCore.Agility
 
   @corpus System.get_env("AGILITY_CORPUS") ||
-            Path.join(["..", "shared", "test-vectors", "v0.8.0", "agility-vectors-v1.cbor"])
+            Path.join(["..", "shared", "test-vectors", "crypto-agility", "agility-vectors.cbor"])
 
   test "crypto-agility corpus — Ed448 + SHA-384 byte pins, native (no FFI)" do
     bytes = File.read!(@corpus)

@@ -56,7 +56,7 @@ substrate with no types to reflect).
 1. Build `containers/tcl-toolchain:latest`; resolve A-TCL-004 (Tcl major) +
    A-TCL-005 (cffi binds `libentitycore_codec`).
 2. Hand-roll `src/cbor.tcl` (+ base58, varint). **First spike: the `float` and
-   `map_keys` test-vectors** (`protocol-generator/shared/test-vectors/v0.8.0/`) —
+   `map_keys` test-vectors** (`protocol-generator/shared/test-vectors/ecf-conformance/`) —
    the shortest-float ladder + length-then-lex ordering are the highest-risk legs.
 3. Drive the EIAS probes to ground: prove byte-vs-text (A-TCL-001) and int-vs-float
    (A-TCL-003) are spec-fixed for every core field, or file the finding.

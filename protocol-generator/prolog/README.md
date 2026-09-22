@@ -10,7 +10,7 @@ capability verification, §6 dispatch, the §3.9 store-as-clause-DB).
 
 **Conformance:** `validate-peer --profile core` — **PASS** · **653 total · 291 pass · 269 warn ·
 0 fail · 93 skip** (machine-verified `summary.failed == 0`), oracle **`entity-core-go @75c532e`**.
-Codec: **69/69** byte-identical to `conformance-vectors-v1` through the foreign codec; §9.5
+Codec: **69/69** byte-identical to `conformance-vectors` through the foreign codec; §9.5
 **53/53** type floor byte-identical. Plus origination-core **3/3** over real two-peer TCP
 (`reference_connect` · `reference_ready` · `dispatch_outbound_reentry`).
 See [`status/CONFORMANCE-REPORT.md`](status/CONFORMANCE-REPORT.md).

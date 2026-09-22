@@ -7,7 +7,7 @@
   landed). Verified `ENTITY-CBOR-ENCODING.md` + `ENTITY-NATIVE-TYPE-SYSTEM.md` are
   byte-identical v7.71→v7.72 (SHA-256 match) → the v7.71 codec corpus is valid at
   v7.72, and F12 is a peer-layer concern. Operator confirmed "specs are clean" for
-  the codec scope. Profile reads `spec-data/v7.72`; codec corpus `test-vectors/v0.8.0`.
+  the codec scope. Profile reads `spec-data/v7.72`; codec corpus `test-vectors/ecf-conformance`.
 - **No-peek discipline.** Derived from V7 + OCaml ecosystem only; did NOT open
   `protocol-generator/{csharp,typescript}/src/`. (Read `csharp/profile.toml` for the
   field *schema* only — explicitly endorsed by PHASE-S1; that is config structure,

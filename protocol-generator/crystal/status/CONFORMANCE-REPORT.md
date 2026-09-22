@@ -68,7 +68,7 @@ podman run $PODMAN_RUN_CAPS --rm --network=none -v "$PWD":/work:Z \
 | Peer | `entity-core-protocol-crystal` |
 | Phase | S2 (CODEC layer) |
 | Spec | v0.8.0 (V8) |
-| Corpus | `shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor` |
+| Corpus | `shared/test-vectors/ecf-conformance/conformance-vectors.cbor` |
 | Corpus SHA-256 | `9695b1f1d939cfdfdd4297f8ad32122d424b1ec180cfae74c92d509d88f7c6dc` (matches MANIFEST pin) |
 | Oracle commit | `be54baf` (arch `entity-core-protocol`, F29/F30 corpus) |
 | Vectors | 71 (66 `encode_equal` + 5 `decode_reject`) |

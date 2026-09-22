@@ -6,7 +6,7 @@ defmodule EntityCore.ConformanceTest do
   # Corpus path resolves from the project root (mix test CWD). Override with the
   # CORPUS env var to point at a different vendored version.
   @corpus System.get_env("CORPUS") ||
-            Path.join(["..", "shared", "test-vectors", "v0.8.0", "conformance-vectors-v1.cbor"])
+            Path.join(["..", "shared", "test-vectors", "ecf-conformance", "conformance-vectors.cbor"])
 
   test "ECF conformance corpus — byte-identical encode + decode-reject" do
     bytes = File.read!(@corpus)

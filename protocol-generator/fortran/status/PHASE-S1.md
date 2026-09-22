@@ -96,7 +96,7 @@ log written; container authored with substrate probes. No blocking-severity ambi
   verbatim (ec_* symbols). base58 rides `ec_peerid_{parse,format}` — do NOT hand-roll
   (no Fortran bignum, A-FTN-006). The socket net-shim (`src/ext/net_shim.c`) is S3, not S2.
 - Confirm the three spec-data SHA-256 pins in `spec-data/v0.8.0/MANIFEST.md` unchanged at
-  S2 entry. Codec corpus: `test-vectors/v0.8.0/conformance-vectors-v1.cbor`; target 69/69
+  S2 entry. Codec corpus: `test-vectors/ecf-conformance/conformance-vectors.cbor`; target 69/69
   byte-identical (or the FFI differential). Oracle commit `cc1970f` for S4.
 - **Next: S2** — the hand-rolled canonical CBOR codec + varint + the FFI interface module;
   target the full v0.8.0 corpus byte-identical.

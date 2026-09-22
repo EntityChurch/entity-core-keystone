@@ -11,15 +11,14 @@ module CorpusPaths
 
   module_function
 
-  def corpus_version
-    ENV.fetch("CORPUS_VERSION", "v0.8.0")
-  end
-
+  # Each corpus is identified by its NAME, never a version stamp
+  # (GUIDE-CONFORMANCE.md §5.1) — so the two live in separate directories and
+  # there is no single "corpus version" component to join.
   def conformance_corpus
-    ENV["CORPUS"] || File.join(VECTORS_DIR, corpus_version, "conformance-vectors-v1.cbor")
+    ENV["CORPUS"] || File.join(VECTORS_DIR, "ecf-conformance", "conformance-vectors.cbor")
   end
 
   def agility_corpus
-    ENV["AGILITY_CORPUS"] || File.join(VECTORS_DIR, corpus_version, "agility-vectors-v1.cbor")
+    ENV["AGILITY_CORPUS"] || File.join(VECTORS_DIR, "crypto-agility", "agility-vectors.cbor")
   end
 end

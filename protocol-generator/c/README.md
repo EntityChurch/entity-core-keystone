@@ -11,7 +11,7 @@ delegates object lifetime to a GC, an actor runtime, STM, or ARC — C owns ever
 
 **Conformance:** `validate-peer --profile core` — **PASS** · **576** total · 291 pass · 196 warn ·
 **0 fail** · 89 skip (machine-verified `summary.failed == 0`) @ the v7.75 cohort oracle
-**`b30a589`**. Codec: **69/69** byte-identical to `conformance-vectors-v1`. §9.5 53-type registry
+**`b30a589`**. Codec: **69/69** byte-identical to `conformance-vectors`. §9.5 53-type registry
 53/53 byte-identical. origination-core 3/3 over real two-peer TCP. S3 loopback 11/11.
 **ASan / LSan / UBSan-clean** (a leak, use-after-free, overflow, or UB is a *test failure* — the
 manual-memory peer's conformance bonus). See

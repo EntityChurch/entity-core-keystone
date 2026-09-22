@@ -3,7 +3,7 @@
 
 -- | Conformance-fixture loader + per-vector runner.
 --
--- Loads @conformance-vectors-v1.cbor@ (the canonical-ECF-encoded corpus the Go ×
+-- Loads @conformance-vectors.cbor@ (the canonical-ECF-encoded corpus the Go ×
 -- Rust × Python oracles cross-blessed) with OUR OWN decoder — the fixture is
 -- pure ECF (no tags), so a green load is itself a smoke test of the decoder.
 -- Each vector is a map @{id, description, kind, input?, canonical}@. For

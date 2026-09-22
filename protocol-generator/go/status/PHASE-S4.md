@@ -33,7 +33,7 @@ A-GO-007.)
   vocab (refined G4 / F17).
 - `src/peer/type_registry_test.go` — `TestCoreTypeRegistryByteIdentical`:
   renders all 53 and byte-diffs each `content_hash` against the canonical
-  `type-registry-vectors-v1` (S8 golden-file). **53/53 byte-identical, first run.**
+  `type-registry-vectors` (S8 golden-file). **53/53 byte-identical, first run.**
 - `run-s4.sh` — single-peer conformance harness (host @ :7778, `--validate`,
   sealed-offline container).
 - `run-origination-core.sh` — the reference-peer-gated origination probe

@@ -121,7 +121,7 @@ generated_outputs = "Apache-2.0"              # S9 default; COBOL ecosystem has 
 
 [testing]
 # Hand-rolled COBOL harness (test/codec-selftest.cob): decodes the normative
-# fixture (conformance-vectors-v1.cbor) with the COBOL CBOR reader, runs each
+# fixture (conformance-vectors.cbor) with the COBOL CBOR reader, runs each
 # vector through encode/decode/hash (FFI + value codec), checks byte-identity.
 # Decode-reject vectors confirm the COBOL decoder + FFI tag-scan reject. No COBOL
 # test framework exists; the harness is self-contained.
@@ -149,5 +149,5 @@ libentitycore_codec = { c_abi_version = "1.1", impls = ["rust", "c"], provenance
 
 [spec]
 v7_version_pinned = "7.75"                    # latest stamped spec-data (byte-stable core floor v7.75->v7.77)
-codec_corpus      = "v0.8.0"                   # ECF corpus; CBOR/type-system byte-identical v7.71->v7.75 (per prior peers)
+codec_corpus      = "ecf-conformance"                   # ECF corpus; CBOR/type-system byte-identical v7.71->v7.75 (per prior peers)
 oracle            = "entity-core-go @ e8524ed (v7.77); core floor byte-stable from v7.75"

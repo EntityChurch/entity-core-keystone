@@ -5,7 +5,7 @@
 //! bytes"): the 53 core type definitions are declared NATIVELY here (single source
 //! of truth in code), rendered through the byte-green C-ABI codec into `system/type`
 //! entities, and seeded into the tree at `system/type/<name>`. The Go-rendered
-//! vector set (`shared/test-vectors/v0.8.0/type-registry-shapes.json`) is the
+//! vector set (`shared/test-vectors/type-registry/type-registry-shapes.json`) is the
 //! byte-exact drift target — NOT a byte source we echo.
 //!
 //! Scope is core + operational + the type-system bootstrap ONLY. A core peer never

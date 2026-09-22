@@ -14,7 +14,7 @@ sockets** in-process over the Pharo VM's SocketPlugin.
 **Conformance badge:** `validate-peer --profile core` — **Result: PASS · 682 total · 0 FAIL**
 (291 pass / 295 warn / 96 skip; all 96 skips are §9.0 auto-allowlisted extension carve-outs,
 none fail-counting), oracle **`entity-core-go @cc1970f`** — **exact parity with the Rexx (#24)
-and Forth (#25) peers (`682·0F`)**. Codec: **69/69** byte-identical to `conformance-vectors-v1`;
+and Forth (#25) peers (`682·0F`)**. Codec: **69/69** byte-identical to `conformance-vectors`;
 §9.5 **53/53** type floor byte-identical; origination-core **3/3** over a real two-peer
 connection (`dispatch_outbound_reentry`); genuine 2-of-3 multisig accept-path
 (`valid_2of3_peer_signed_accepted`, plus a 4/4 in-image accept-path unit test). Full report:

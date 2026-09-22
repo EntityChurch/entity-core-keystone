@@ -91,7 +91,7 @@ Not a blocker for the COBOL build.
 
 ## A-CBL-003: the `tag_reject.1/2/3` corpus vectors contain NO major-type-6 bytes — they reject via trailing-data / structural malformation, not a tag  ⚑ RESEARCH (corpus-labeling observation)
 
-**V7 section:** ECF §3.2 tag-scanner (N2); test-vectors `conformance-vectors-v1`
+**V7 section:** ECF §3.2 tag-scanner (N2); test-vectors `conformance-vectors`
 `tag_reject.*`. **Profile field:** none (a corpus observation).
 
 **The finding (S2 codec bring-up).** Decoding the `tag_reject` vectors byte-by-byte

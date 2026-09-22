@@ -9,7 +9,7 @@ written sibling `entity-core-py`. **Branch:** `lang/python` (worktree).
 ## Exit criteria — met
 
 - [x] **Wire-conformance 69/69 PASS, 0 FAIL** against the cross-blessed v1 corpus
-      (`shared/test-vectors/v7.56/conformance-vectors-v1.cbor`). S7 lower bar met.
+      (`shared/test-vectors/v7.56/conformance-vectors.cbor`). S7 lower bar met.
 - [x] **Three-way byte-identity** Python == corpus == Go oracle (`entity-core-go`
       `wire-conformance` @ **`e8524ed`**), 0 mismatches. Oracle vendored into a temp
       dir OUTSIDE `entity-core-go`; go tree clean before+after.

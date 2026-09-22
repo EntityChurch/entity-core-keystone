@@ -55,7 +55,7 @@ universal_address_space 8/0/0/0 · peer_canonicalization 7/0/0/0 · format_agili
 
 - **type_system (292):** non-floor extension types a *core* peer correctly does not
   publish ("matched-if-present, not-a-FAIL-if-absent"). The 53 floor types render
-  byte-identical to the Go `type-registry-vectors-v1` set (unit-proven).
+  byte-identical to the Go `type-registry-vectors` set (unit-proven).
 - **resource_bounds r3_connection_flood (1):** 256 connections accepted without
   refusal, peer kept serving — §4.10(c) admission SHOULD w/ external-layer carve-out.
 - **tree_operations cleanup (1):** the validator's own cleanup step, non-critical.

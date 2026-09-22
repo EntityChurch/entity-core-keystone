@@ -2,7 +2,7 @@
 *> ===================================================================
 *> entity-core-protocol-cobol — S2 codec conformance self-test.
 *>
-*> Loads the pinned normative fixture (conformance-vectors-v1.cbor), walks it
+*> Loads the pinned normative fixture (conformance-vectors.cbor), walks it
 *> with the COBOL CBOR navigator (cbor.cob), and runs every vector:
 *>   structural encode_equal (float/int/length/primitive/map_keys/nested/
 *>     envelope)  -> canonicalizing transcoder, compare to `canonical`
@@ -88,7 +88,7 @@ procedure division.
     *> locate + load the fixture (path from arg or default)
     accept fixture-path from command-line
     if fixture-path = spaces
-        move "/work/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"
+        move "/work/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor"
           to fixture-path
     end-if
     *> null-terminate for the C reader (first trailing-space -> NUL ends the path)

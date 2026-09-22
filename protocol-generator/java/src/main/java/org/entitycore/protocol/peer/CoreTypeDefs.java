@@ -11,7 +11,7 @@ import org.entitycore.protocol.codec.EcfValue;
  * {@code system/type} entity. Generated from the shared cross-impl test-vectors
  * (type-registry-shapes.json, the Go-rendered type model) by
  * {@code tools/gen-typedefs.py}; diffed byte-for-byte against
- * type-registry-vectors-v1 in {@code TypeRegistryTest}. Regenerate on a V7 bump.
+ * type-registry-vectors in {@code TypeRegistryTest}. Regenerate on a V7 bump.
  */
 final class CoreTypeDefs {
     private CoreTypeDefs() { }

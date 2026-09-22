@@ -9,7 +9,7 @@ freshly-stamped v7.74 surface**.
 
 **Conformance:** `validate-peer --profile core` — **PASS** · 573 total · 288 pass · 196 warn ·
 **0 fail** · 89 skip (machine-verified `summary.failed == 0`). Codec: 69/69 byte-identical to
-`conformance-vectors-v1`, first run, **0 codec fixes**. §10.1 core-register gate **10/10**;
+`conformance-vectors`, first run, **0 codec fixes**. §10.1 core-register gate **10/10**;
 §10.2 origination-core **3/3** (incl. `dispatch_outbound_reentry` over real two-peer TCP); §7b
 concurrency gate **5/5**; type_system 53-type byte-diff **53/53 byte-identical**. See
 [`status/CONFORMANCE-REPORT.md`](status/CONFORMANCE-REPORT.md).

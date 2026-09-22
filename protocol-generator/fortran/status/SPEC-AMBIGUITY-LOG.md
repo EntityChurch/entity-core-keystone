@@ -179,7 +179,7 @@ peer (banked here so S3/S4 don't rediscover it); NOT a spec issue.
 ## A-FTN-012: corpus tag_reject.1/2/3/5 do not contain the tags their descriptions claim (FINDING)
 
 **V8 section:** ENTITY-CBOR-ENCODING §6.3 (tag rejection, N2); the ECF conformance corpus
-`conformance-vectors-v1.cbor` (v0.8.0, SHA-256 `41d68d2d…`, pin verified at S2 entry)
+`conformance-vectors.cbor` (v0.8.0, SHA-256 `41d68d2d…`, pin verified at S2 entry)
 **Profile field:** absent (test-vector coverage)
 **Your guess / finding:** The `.cbor` bytes for `tag_reject.1/2/3/5` do NOT contain a
 CBOR major-type-6 (tag) item anywhere — contrary to their `.diag` descriptions ("tag 0

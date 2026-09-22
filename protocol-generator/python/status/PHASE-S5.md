@@ -19,7 +19,7 @@ findings/escalation summary for the keystone steward (§6).
 | Gate | State | Note |
 |---|---|---|
 | S4 `--profile core` green | ✅ | **665 / 292P / 268W / 0F / 93S**, machine-verified `failed==0` AND `total==665` @ oracle `entity-core-go e8524ed` (`status/CONFORMANCE-REPORT.{md,json}`). All 16 core categories 0-FAIL. Recorded **665·0F @ e8524ed**. |
-| Codec byte-identical (S2) | ✅ | **69/69** vs `conformance-vectors-v1`, first run, 0 codec fixes. **Re-ran GREEN at S5** (stdlib zero-dep runner `tests/conformance/harness.py`, `--network=none`). |
+| Codec byte-identical (S2) | ✅ | **69/69** vs `conformance-vectors`, first run, 0 codec fixes. **Re-ran GREEN at S5** (stdlib zero-dep runner `tests/conformance/harness.py`, `--network=none`). |
 | multisig accept-path | ✅ | **11/11 · 0 skip**, incl. `valid_2of3_peer_signed_accepted` (genuine K-of-N ACCEPT; host `--name conformance`). |
 | origination-core (reentry) | ✅ | **3/3** over real two-peer TCP (`reference_connect` · `reference_ready` · `dispatch_outbound_reentry` — §6.11 reentry wire-proven vs a Go reference). |
 | §9.5 53-type registry | ✅ | **53/53** byte-identical (content_hash recomputed by the Python codec, asserted equal to the Go reference @e8524ed — not ingested). |

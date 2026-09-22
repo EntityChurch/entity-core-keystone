@@ -124,7 +124,7 @@ end-to-end against the real codec.
 - Sockets are native ⎕FIO (`[32/34/35/36/37/38/39/40]`) — no C net-shim (A-APL-006); confirm
   the `--safe` requirement + the TCP_NODELAY ⎕FIO sub-function code at S3.
 - Confirm the three spec-data SHA-256 pins in `spec-data/v0.8.0/MANIFEST.md` unchanged at S2
-  entry. Codec corpus: `test-vectors/v0.8.0/conformance-vectors-v1.cbor`. Oracle `cc1970f`
+  entry. Codec corpus: `test-vectors/ecf-conformance/conformance-vectors.cbor`. Oracle `cc1970f`
   for S4.
 - **Next: S2** — the hand-rolled canonical CBOR array codec + varint + the native-fn FFI
   shim; target the full v0.8.0 corpus byte-identical (or the FFI differential).

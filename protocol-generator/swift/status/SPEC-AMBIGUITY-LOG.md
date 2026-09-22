@@ -229,7 +229,7 @@ discoverability fix. Mirrors A-OC-007.
 
 **RESOLUTION:** The full 53-type render landed at S4 (`TypeRegistry.swift` — the FSpec/TypeDef
 render-from-model builder, the cross-blessed C#/TS/OCaml/Zig design). Byte-diffs **53/53
-byte-identical** to the Go reference vectors (`type-registry-vectors-v1.cbor`) — verified offline by
+byte-identical** to the Go reference vectors (`type-registry-vectors.cbor`) — verified offline by
 `TypeRegistryTests` (`swift test`) AND live by the `type_system` conformance category (108/108 PASS).
 First-run clean (the S2 byte-green codec meant the only risk was field-shape data, caught per-type by
 the digest diff). Swift 6 strict concurrency required `FSpec`/`TypeDef`/`FSpecBox` to be `Sendable`

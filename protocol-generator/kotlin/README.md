@@ -15,7 +15,7 @@ inheritance.
 passed · 278 warned · 95 skipped (machine-verified `summary.failed == 0`), on the **v7.77**
 oracle `e8524ed`, with **`core_gate_sha256` matched** to the committed pin
 (`e09a865f…`) — proof the core surface == the cohort-converged surface. Codec (S2): 69/69
-byte-identical to `conformance-vectors-v1`, first run, **0 codec fixes**. Plus §10.1 register
+byte-identical to `conformance-vectors`, first run, **0 codec fixes**. Plus §10.1 register
 10/10, origination-core 3/3 (incl `dispatch_outbound_reentry` over real two-peer TCP), and
 genuine §3.6 K-of-N multisig 11/11 (`valid_2of3_peer_signed_accepted` genuinely runs, not a
 vacuous skip). See [`status/CONFORMANCE-REPORT.md`](status/CONFORMANCE-REPORT.md).

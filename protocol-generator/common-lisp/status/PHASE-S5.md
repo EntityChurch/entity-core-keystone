@@ -19,7 +19,7 @@ The architecture review + the publishing-options decision surface live in
 |---|---|---|
 | S4 `--profile core` green | ✅ | 568 / 284P / 195W / **0F** / 89skip, machine-verified `failed==0`; **re-run GREEN in-container at S5** after the packaging changes (`status/CONFORMANCE-REPORT.{md,json}`) |
 | origination-core (reentry) | ✅ | 3/3 over real two-peer TCP (`reference_connect` · `reference_ready` · `dispatch_outbound_reentry`) |
-| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors-v1`, first full run, 0 codec fixes; **re-run GREEN at S5** |
+| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors`, first full run, 0 codec fixes; **re-run GREEN at S5** |
 | S3 two-peer loopback smoke | ✅ | 11/11 (handshake + dispatch + capability + 8-way request_id demux); **re-run GREEN at S5** |
 | Ed448 RFC-8032 KAT (agility primitive) | ✅ | pubkey + 114-B sig + §1.5 peer_id byte-equal (A-CL-005) |
 | ASDF systems load clean | ✅ | `entity-core`, `entity-core/peer`, `entity-core/test` all load warning-free in-container; `:version` `0.1.0` parses (A-CL-010 fix) |

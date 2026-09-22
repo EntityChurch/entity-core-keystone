@@ -113,7 +113,7 @@ request envelope (§5.8 chain inclusion).
 ## Deferred (logged, not silent) — see SPEC-AMBIGUITY-LOG
 
 - **A-006 (top S4 precursor):** the 53-type `CoreTypeRegistry` is rendered + seeded
-  but **not yet byte-diffed** against the Go-rendered `type-registry-vectors-v1.cbor`.
+  but **not yet byte-diffed** against the Go-rendered `type-registry-vectors.cbor`.
   The C# reference proved this byte-identical; TS must too before the `type_system`
   category. Quick win: add a registry byte-check test.
 - **A-007:** the handlers-handler (`system/handler` register/unregister, §6.9) and

@@ -1,7 +1,7 @@
 (* GENERATED from test-vectors type-registry-shapes.json (the cross-impl Go-rendered
    type model) — the in-code core-type override table (render-from-model design).
    53 core types per V7 §9.5. Regenerate with tools/gen-typedefs.py on a V7 bump;
-   diffed byte-for-byte against type-registry-vectors-v1 in test/type_registry.ml. *)
+   diffed byte-for-byte against type-registry-vectors in test/type_registry.ml. *)
 
 let core_types : (string * Cbor.t) list = [
   ("primitive/any", Cbor.Map [(Cbor.Text "name", Cbor.Text "primitive/any")]);

@@ -215,7 +215,7 @@ generated_outputs = "Apache-2.0"              # S9 default. gfortran runtime is 
 framework         = "test-drive"              # fortran-lang/test-drive, vendored testdrive.F90 (single file); the ecosystem standard
 framework_version = "0.6.1"                    # 2025-06-13 release; S11-clean (>30d at 2026-07-11); guards gfortran 15.1/GCC 15
 runner            = "test/conformance.f90 (corpus driver) + test-drive suites (make test)"
-conformance_probe = "load spec-data v0.8.0 fixtures (test-vectors/v0.8.0/conformance-vectors-v1.cbor); assert byte-identity vs hand-rolled codec + wire-conformance oracle"
+conformance_probe = "load spec-data v0.8.0 fixtures (test-vectors/ecf-conformance/conformance-vectors.cbor); assert byte-identity vs hand-rolled codec + wire-conformance oracle"
 
 [container]
 base_image        = "entity-core-keystone/fortran-toolchain:latest"
@@ -254,7 +254,7 @@ fpm               = "0.12.0 (2025-05-18) — idiomatic package manager; fpm.toml
 
 [spec]
 spec_version_pinned = "0.8.0"                 # spec-data snapshot protocol-generator/shared/spec-data/v0.8.0/ (V8). Confirm the three SHA-256 pins in MANIFEST.md unchanged at S2.
-codec_corpus      = "v0.8.0"                  # ECF corpus protocol-generator/shared/test-vectors/v0.8.0/ (conformance-vectors-v1.cbor); core wire byte-unchanged across V7->V8.
+codec_corpus      = "ecf-conformance"                  # ECF corpus protocol-generator/shared/test-vectors/ecf-conformance/ (conformance-vectors.cbor); core wire byte-unchanged across V7->V8.
 oracle_commit     = "cc1970f"                 # go oracle for S4 (public HEAD, re-normalized 2026-07-10). core-gate fingerprint 8261a033… ; target --profile core = 0 FAIL. Build via tools/oracle-bootstrap.sh.
 # PEER_ID CONSTRUCTION (corroborates the cohort): derive the Ed25519 peer_id from the
 # §1.5 CANONICAL-FORM TABLE — hash_type = 0x00 identity-multihash, digest = the RAW

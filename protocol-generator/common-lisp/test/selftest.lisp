@@ -179,7 +179,7 @@ M3/M4/M6 invariant flip MUST deny. Single-sig stays a strict superset."
 
 (defun run-ed448-kat ()
   "Ed448 RFC-8032 KAT byte-equality gate (A-CL-005). Pins from v7.71
-agility-SEEDS.md §1.1 (KEY-TYPE-ED448-1)."
+SEEDS.md §1.1 (KEY-TYPE-ED448-1)."
   (let* ((seed (make-array 57 :element-type '(unsigned-byte 8) :initial-element #x42))
          (msg-hex "76372e3637205068617365203120636f686f72742063726f73732d696d706c2045643434382066697874757265")
          (msg (hex->octets msg-hex))

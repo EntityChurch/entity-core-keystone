@@ -91,7 +91,7 @@ never reaches (the "conformance-green can be vacuous" guard).
 
 ## S2 codec (lower bar) — 71/71
 
-`make s2`: the pinned 71-vector ECF corpus (`conformance-vectors-v1.cbor`),
+`make s2`: the pinned 71-vector ECF corpus (`conformance-vectors.cbor`),
 decode→re-encode byte-identity + content-hash equality, all PASS. Class B
 (content_hash / signature) crosses the entity-codec-daemon live, so the S2 green
 co-proves the co-process seam.

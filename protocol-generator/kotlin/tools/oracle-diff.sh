@@ -20,7 +20,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"          # protocol-generator/kotlin
 WORKTREE="$(cd "$HERE/../.." && pwd)"                             # repo root (worktree)
 . "$WORKTREE/tools/podman-caps.sh"
-VEC="$WORKTREE/protocol-generator/shared/test-vectors/v0.8.0"
+VEC="$WORKTREE/protocol-generator/shared/test-vectors/ecf-conformance"
 GO_REPO="${GO_REPO:-$HOME/projects/[internal]/[internal]/entity-core-go}"
 GO_IMAGE="${GO_IMAGE:-localhost/entity-core-keystone/go:latest}"
 KT_IMAGE="${KT_IMAGE:-entity-core-keystone/kotlin-toolchain:latest}"
@@ -49,7 +49,7 @@ podman run $PODMAN_RUN_CAPS --rm \
 podman run $PODMAN_RUN_CAPS --rm \
   -v "$TMP":/src:Z -v "$VEC":/vec:ro \
   --security-opt label=disable "$GO_IMAGE" \
-  /src/wire-conformance emit-canonical --input /vec/conformance-vectors-v1.cbor \
+  /src/wire-conformance emit-canonical --input /vec/conformance-vectors.cbor \
     --out /src/emit-go.cbor --impl-version go-oracle
 cp "$TMP/emit-go.cbor" "$OUT/emit-go.cbor"
 
@@ -64,7 +64,7 @@ podman run $PODMAN_RUN_CAPS --rm --network=none \
   bash -c 'gradle --offline --no-daemon -q classes >/dev/null 2>&1; \
     kotlin -classpath build/classes/kotlin/main \
       org.entitycore.protocol.conformance.EmitCanonical \
-      /work/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor \
+      /work/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor \
       /work/protocol-generator/kotlin/build/emit-kotlin.cbor'
 cp "$WORKTREE/protocol-generator/kotlin/build/emit-kotlin.cbor" "$OUT/emit-kotlin.cbor"
 

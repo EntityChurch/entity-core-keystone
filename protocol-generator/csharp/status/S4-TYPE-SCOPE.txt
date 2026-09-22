@@ -2,7 +2,7 @@
 #
 # Source of demand: entity-core-go types.RegisterCoreTypes + connect/tree handler
 #   types == validate-peer runTypeSystem registry == compare-types generateLocalTypes.
-#   Rendered byte-exact to test-vectors/v0.8.0/type-registry-vectors-v1.{cbor,diag}
+#   Rendered byte-exact to test-vectors/type-registry/type-registry-vectors.{cbor,diag}
 #   (150 entries) by protocol-generator/shared/tools/dump-type-registry.
 #
 # Ruling basis (user): a CORE protocol peer publishes core + operational

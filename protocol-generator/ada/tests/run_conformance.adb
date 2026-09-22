@@ -1,7 +1,7 @@
 --  run_conformance — the ECF wire-conformance harness (S2 gate).
 --
 --  Mirrors the Java/Zig precedent: load the normative fixture
---  (conformance-vectors-v1.cbor), DECODE it with THIS peer's own decoder (a
+--  (conformance-vectors.cbor), DECODE it with THIS peer's own decoder (a
 --  decoder bug is itself a conformance failure per ENTITY-CBOR-ENCODING.md
 --  §E.3), run every vector through the codec, and byte-compare the produced
 --  bytes against the embedded cross-blessed `canonical`. Byte-identity to the
@@ -38,7 +38,7 @@ procedure Run_Conformance is
    use type Interfaces.Unsigned_8;
 
    Default_Path : constant String :=
-     "../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor";
+     "../shared/test-vectors/ecf-conformance/conformance-vectors.cbor";
 
    ---------------------------------------------------------------------------
    --  Read an entire file into a Byte_Array.

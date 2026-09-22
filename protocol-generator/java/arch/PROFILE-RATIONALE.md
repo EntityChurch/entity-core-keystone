@@ -243,7 +243,7 @@ override (explicit patent grant retained).
 ## Spec version: read v7.72, codec corpus v0.8.0
 
 Profile + (future) peer derive from `spec-data/v7.72` (latest snapshot). The codec
-uses the `test-vectors/v0.8.0` corpus because `ENTITY-CBOR-ENCODING.md` and
+uses the `test-vectors/ecf-conformance` corpus because `ENTITY-CBOR-ENCODING.md` and
 `ENTITY-NATIVE-TYPE-SYSTEM.md` are byte-identical v7.71→v7.72 (SHA-verified upstream
 per the cohort) — no wire-format change. The v7.73 nonce-echo (§4.6) and v7.74
 (register/outbound/emit/owner-cap/§7a) folds are peer-layer (S3+), not codec, and

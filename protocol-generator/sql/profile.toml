@@ -167,7 +167,7 @@ wire_corpus       = "71-vector wire corpus (S2 differential vs libentitycore_cod
 
 [spec]
 spec_version_pinned = "0.8.0"                    # spec-data snapshot protocol-generator/shared/spec-data/v0.8.0/ (V8). Confirm the three SHA-256 pins in MANIFEST.md unchanged at S2 (PROTOCOL ff8e7666.. / CBOR fc57a85c.. / TYPE de86fa7e..).
-codec_corpus      = "v0.8.0"                     # core wire byte-unchanged across V7->V8 (no CBOR change; --profile core unaffected by the 0.7.77 naming pass)
+codec_corpus      = "ecf-conformance"                     # core wire byte-unchanged across V7->V8 (no CBOR change; --profile core unaffected by the 0.7.77 naming pass)
 # COHORT-SETTLED TRAPS pre-noted (do NOT re-burn at S3/S4):
 #   - §5.10 verdict determinism: evaluation timestamp sampled ONCE per verdict, a Layer-1 input; the verdict is a pure function of (chain, t). ms-precision (A-PD-016) — second-truncation aliases same-scope same-second mints and 403-cascades the marathon.
 #   - open/debug seed needs the DUAL form resources = ["*", "/*/*"] — §5.5a bare-star is granter-local, never universal (A-PD-017).

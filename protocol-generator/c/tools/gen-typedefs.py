@@ -5,7 +5,7 @@
 # ec_value map-builder forms. Mirrors the Java / OCaml / Common Lisp peers'
 # tools/gen-typedefs.py exactly (same 53-type core_order, same field-spec mapping) so
 # the rendered content_hash is byte-identical to the canonical
-# type-registry-vectors-v1 (ECF Rule-2 canonical re-sort makes emit order immaterial
+# type-registry-vectors (ECF Rule-2 canonical re-sort makes emit order immaterial
 # to the hash).
 #
 # The data map is the `data` of a `system/type` entity; ec_entity_make computes its
@@ -15,7 +15,7 @@
 #   python3 protocol-generator/c/tools/gen-typedefs.py
 import json
 
-ROOT = "protocol-generator/shared/test-vectors/v0.8.0"
+ROOT = "protocol-generator/shared/test-vectors/type-registry"
 shapes = json.load(open(f"{ROOT}/type-registry-shapes.json"))
 
 # The 53-type §9.5 core floor — identical name+order to the Java/OCaml/CL peer
@@ -126,7 +126,7 @@ out.append(" * returns the `data` ec_value map of a `system/type` entity, whose 
 out.append(" * is computed by our own S2-green codec over {type,data}. Generated from the")
 out.append(" * shared cross-impl test-vectors (type-registry-shapes.json) by")
 out.append(" * tools/gen-typedefs.py; the rendered hashes are diffed byte-for-byte against")
-out.append(" * type-registry-vectors-v1 by the type-registry test. Regenerate on a V7 bump.")
+out.append(" * type-registry-vectors by the type-registry test. Regenerate on a V7 bump.")
 out.append(" *")
 out.append(" * SPDX-License-Identifier: Apache-2.0")
 out.append(" */")

@@ -14,7 +14,7 @@ deferred (the cohort convention); operator finalizes the shared-file updates + t
 |---|---|
 | Package version | **0.1.0-pre** |
 | Spec-data | **v0.8.0 (V8)** — core wire byte-unchanged across V7→V8 |
-| Codec corpus | v0.8.0 (`conformance-vectors-v1`, 71 vectors) |
+| Codec corpus | v0.8.0 (`conformance-vectors`, 71 vectors) |
 | Oracle pin | `entity-core-go @cc1970f` (core-gate fingerprint `8261a033…`) |
 
 Odin has no package manager and no version-grammar field — the `0.1.0-pre` marker lives in

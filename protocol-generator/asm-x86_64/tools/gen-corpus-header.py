@@ -12,7 +12,7 @@
 import re, sys, pathlib
 
 DIAG = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else pathlib.Path(
-    __file__).resolve().parents[3] / "shared/test-vectors/v0.8.0/conformance-vectors-v1.diag"
+    __file__).resolve().parents[3] / "shared/test-vectors/ecf-conformance/conformance-vectors.diag"
 OUT = pathlib.Path(sys.argv[2]) if len(sys.argv) > 2 else pathlib.Path(
     __file__).resolve().parent / "corpus_vectors.h"
 

@@ -51,7 +51,7 @@ which COBOL honest-skipped). No spec defect surfaced (A-TCL-001/003 = corroborat
    `libentitycore_codec.so` in-container.
 3. **Class B**: content_hash (format-code varint ‖ SHA-256 of canonical ECF),
    signature (Ed25519 sign of canonical entity bytes), envelope.
-4. **`test/conformance.tcl`** — walk the pinned `conformance-vectors-v1.cbor` (decode
+4. **`test/conformance.tcl`** — walk the pinned `conformance-vectors.cbor` (decode
    with our own decoder), assert every encode_equal byte-identical + every
    decode_reject throws. Target: full corpus green → S2 gate closed.
 

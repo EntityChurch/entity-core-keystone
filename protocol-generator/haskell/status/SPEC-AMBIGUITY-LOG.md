@@ -298,7 +298,7 @@ codec and binds it at `/{peer}/system/type/{name}`.
 
 A build-time byte-diff (`test/TypeRegistrySpec.hs`, in the conformance suite) renders all
 53 and compares each `content_hash` digest against the canonical Go-rendered
-`type-registry-vectors-v1.cbor` set → **53/53 byte-identical on the first run** (the codec
+`type-registry-vectors.cbor` set → **53/53 byte-identical on the first run** (the codec
 being byte-green at S2 left field-shape data as the only risk; the omit-empty + canonical
 key-sort matched the Go encoder first try). Live: `type_system` 108 PASS / 194 WARN / 0
 FAIL under `--profile core` (a core peer publishes only the §9.5 floor; non-floor probes

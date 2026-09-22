@@ -21,7 +21,7 @@ This doc is the release-readiness record + the operator handoff.
 | §10.1 core-register gate | ✅ | 10/10. |
 | multisig genuine K-of-N | ✅ | 11/11, 0 skip — `valid_2of3_peer_signed_accepted` genuinely runs via the `--name conformance` persistent-identity surface (not a vacuous skip). |
 | concurrency (§7b) + resource_bounds (§4.10) | ✅ | concurrency 5/5 (4 PASS + 1 informational WARN — single-threaded event loop, not a §6.11 violation); resource_bounds r1 413 / r2 400 PASS, r3 WARN (SHOULD). |
-| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors-v1`. |
+| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors`. |
 | §9.5 53-type floor byte-identical | ✅ | 53/53 (peer-side dual + live oracle `type_system_match`). |
 | Ed25519 RFC-8032 KAT | ✅ | `cryptography_plus` sign/verify byte-equal; §1.5 raw-pubkey → cohort-canonical seed-`0x11` peer_id `2KHoAk…` (byte-identical to Kotlin/Java/CL). |
 | `dart test` clean | ✅ | codec 69/69 + Ed25519 KATs + 53/53 type-diff + two-peer loopback smoke + dart2js web-truncation proof, 0 failures (carried from S2–S4). |

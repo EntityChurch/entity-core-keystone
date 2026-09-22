@@ -149,7 +149,7 @@ loads.
   keypair) + peer-side `test/multisig_accept.jl` **8/8** (ALLOW + M3/M4/M6 deny flips) — the
   keystone payoff on a rejection-heavy oracle category.
 - **Type registry:** `test/typedefs_bytecheck.jl` → **53/53 byte-identical** to
-  `type-registry-vectors-v1.cbor`, rendered from the peer's own data model via multiple
+  `type-registry-vectors.cbor`, rendered from the peer's own data model via multiple
   dispatch (not byte-ingest).
 - **Origination-core:** `run-origination-core.sh` vs the Go `entity-peer` reference →
   **3/3 PASS** incl. `dispatch_outbound_reentry` (§6.11 live from the coroutine idiom).

@@ -7,7 +7,7 @@ GFORTH      ?= gforth
 CODEC_SRC   := ../../ffi-generator/c-abi/entity-core-codec-ffi-c
 CODEC_BUILD := $(CODEC_SRC)/build
 SPEC        := ../../ffi-generator/c-abi/spec
-CORPUS      := ../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+CORPUS      := ../shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 
 # libcc needs the codec lib on LIBRARY_PATH (link the wrapper) + LD_LIBRARY_PATH (dlopen),
 # and the C-ABI header on the include path (the c-library \c #include "entitycore_codec.h").

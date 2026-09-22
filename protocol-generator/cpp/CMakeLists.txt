@@ -92,16 +92,18 @@ if(EC_SANITIZE)
   target_link_options(conformance PRIVATE -fsanitize=address,undefined)
 endif()
 
-# Vendored normative fixtures live under the repo's shared/ tree.
+# Vendored normative fixtures live under the repo's shared/ tree. Each corpus is
+# identified by its NAME and sits in its own directory (GUIDE-CONFORMANCE.md §5.1),
+# so this is the test-vectors ROOT and each corpus is named at its use site.
 set(EC_VECTORS_DIR
-    "${CMAKE_CURRENT_SOURCE_DIR}/../shared/test-vectors/v0.8.0"
-    CACHE PATH "Directory holding conformance-vectors-v1.cbor")
+    "${CMAKE_CURRENT_SOURCE_DIR}/../shared/test-vectors"
+    CACHE PATH "Root holding the ecf-conformance/ and type-registry/ corpora")
 
 enable_testing()
 add_test(NAME ecf_conformance
-         COMMAND conformance "${EC_VECTORS_DIR}/conformance-vectors-v1.cbor")
+         COMMAND conformance "${EC_VECTORS_DIR}/ecf-conformance/conformance-vectors.cbor")
 add_test(NAME ecf_spike
-         COMMAND conformance "${EC_VECTORS_DIR}/conformance-vectors-v1.cbor" --spike)
+         COMMAND conformance "${EC_VECTORS_DIR}/ecf-conformance/conformance-vectors.cbor" --spike)
 set_tests_properties(ecf_conformance ecf_spike PROPERTIES
     ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1;UBSAN_OPTIONS=halt_on_error=1")
 
@@ -135,7 +137,7 @@ target_link_libraries(host PRIVATE PkgConfig::SODIUM Threads::Threads)
 
 add_test(NAME smoke COMMAND smoke)
 add_test(NAME typereg
-         COMMAND typereg "${EC_VECTORS_DIR}/type-registry-vectors-v1.cbor")
+         COMMAND typereg "${EC_VECTORS_DIR}/type-registry/type-registry-vectors.cbor")
 add_test(NAME multisig_accept COMMAND multisig_accept)
 set_tests_properties(smoke typereg multisig_accept PROPERTIES
     ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1;UBSAN_OPTIONS=halt_on_error=1")

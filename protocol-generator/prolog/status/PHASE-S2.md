@@ -37,7 +37,7 @@ pins (Ed25519 / Ed448 / SHA-256 / SHA-384) all match the cohort ground truth. S3
 TOTAL: 69 passed, 0 failed (of 69; corpus carried 69 vectors)
 # RESULT: PASS (69/69)
 ```
-Corpus = `protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor`,
+Corpus = `protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor`,
 sha256 `41d68d2d717f84e195d46ec002fce6b8729742026256e72dc7a3a8b6c0c6a052`
 (byte-identical to the v7.71 MANIFEST pin; ECF corpus unchanged v7.56→v7.71). The
 69 runnable vectors = 64 `encode_equal` + 5 `decode_reject` (the same "69/69" gate
@@ -61,8 +61,8 @@ Ed448 agility (KEY-TYPE-ED448-1 pins):
   [PASS] Ed448 peer_id (key_type=0x02, hash_type=0x01)
 # RESULT: PASS (10/10)
 ```
-KAT pins are transcribed from `shared/test-vectors/v0.8.0/agility-vectors-v1.diag` +
-`agility-SEEDS.md` and the conformance `signature.1` vector (the same pins the OCaml
+KAT pins are transcribed from `shared/test-vectors/crypto-agility/agility-vectors.diag` +
+`SEEDS.md` and the conformance `signature.1` vector (the same pins the OCaml
 agility harness asserts). The Ed25519 `signature.1` KAT is the corpus signature
 vector re-derived independently here (deterministic RFC-8032 sign over
 ECF({type:test/v1, data:{x:1}}) under the all-zero seed). SHA-256/384 KATs are the
@@ -111,7 +111,7 @@ A clean from-scratch run reproduces GREEN.
   1.0.22 (+ hand-rolled sha384; ed448 via vendored openssl-3.3.2 curve448 +
   shake256)` — built from `ffi-generator/c-abi/entity-core-codec-ffi-c` (its own
   CMake). ABI version `1.1`.
-- **Conformance corpus:** v7.71 `conformance-vectors-v1.cbor`, sha256 `41d68d2d…a052`.
+- **Conformance corpus:** v7.71 `conformance-vectors.cbor`, sha256 `41d68d2d…a052`.
 
 ## 4. Determinism notes (A-PL-005)
 

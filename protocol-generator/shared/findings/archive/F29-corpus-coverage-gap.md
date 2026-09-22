@@ -14,7 +14,7 @@ SHA-pinned corpus (it's a boundary), so this is an ask, not a patch.
 ## The ask (one sentence)
 
 Add a covering vector to the pinned ECF corpus
-(`protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor`) that
+(`protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor`) that
 exercises **an array whose elements are maps carrying a text string ≥24 bytes** — so the
 CBOR head-form boundary *inside an array element* is tested at the S2 codec layer, closing
 the gap cohort-wide.
@@ -59,7 +59,7 @@ A vector of shape (CBOR diagnostic sketch):
   **≥256** (the 2-byte head-form boundary; minor 25, `0x79`) — same class of encoder bug,
   next boundary up.
 - Byte-locked cross-impl as usual (Go × Rust × Python), added to
-  `conformance-vectors-v1` with the SHA re-published in `MANIFEST.md` / ENTITY-CBOR-ENCODING
+  `conformance-vectors` with the SHA re-published in `MANIFEST.md` / ENTITY-CBOR-ENCODING
   Appendix E, exactly as the F7 `int.15/16/17` boundary vectors were folded (v1.5→v1.6).
 
 Any semantically equivalent vector that forces the inner-element head-length boundary is

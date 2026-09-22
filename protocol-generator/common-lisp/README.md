@@ -8,7 +8,7 @@ development, and **SBCL native threads** (`sb-thread`).
 
 **Conformance:** `validate-peer --profile core` — **PASS** · 568 total · 284 pass · 195 warn ·
 **0 fail** · 89 skip (machine-verified `summary.failed == 0`). Codec: 69/69 byte-identical to
-`conformance-vectors-v1`, first full run, 0 codec fixes. Plus origination-core **3/3** over real
+`conformance-vectors`, first full run, 0 codec fixes. Plus origination-core **3/3** over real
 two-peer TCP (`reference_connect` · `reference_ready` · `dispatch_outbound_reentry`).
 See [`status/CONFORMANCE-REPORT.md`](status/CONFORMANCE-REPORT.md).
 

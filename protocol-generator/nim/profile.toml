@@ -53,7 +53,7 @@ runtime           = "nim-toolchain"           # references containers/nim-toolch
 # fallback if the S2 spike fails — but it would forfeit the independent codec + the
 # metaprogramming probe, so it is a last resort, not the default.
 # Spike at S2 start (PHASE-S1 mandate): push the `map_keys` + `float` v0.8.0 test-vectors
-# (protocol-generator/shared/test-vectors/v0.8.0/) through the hand-rolled encoder BEFORE
+# (protocol-generator/shared/test-vectors/ecf-conformance/) through the hand-rolled encoder BEFORE
 # the full build — shortest-float f16 + length-then-lex ordering are the highest-bug-
 # density legs.
 strategy          = "native"
@@ -265,7 +265,7 @@ gcc               = "15.2.1-7.fc43"            # Nim's C backend compiler (nim c
 
 [spec]
 spec_version_pinned = "0.8.0"                 # spec-data snapshot protocol-generator/shared/spec-data/v0.8.0/ (V8). Confirm the three SHA-256 pins in MANIFEST.md unchanged at S2.
-codec_corpus      = "v0.8.0"                  # ECF corpus protocol-generator/shared/test-vectors/v0.8.0/ — the 71-vector wire-conformance corpus (F29/F30 re-vendor, 2026-07-12); core wire byte-unchanged across V7->V8.
+codec_corpus      = "ecf-conformance"                  # ECF corpus protocol-generator/shared/test-vectors/ecf-conformance/ — the 71-vector wire-conformance corpus (F29/F30 re-vendor, 2026-07-12); core wire byte-unchanged across V7->V8.
 oracle_commit     = "cc1970f"                 # entity-core-go public HEAD, re-normalized 2026-07-10. Core-gate fingerprint 8261a03… (16-category set + 53-type floor); target --profile core = 0 FAIL. Build the oracle binaries from go HEAD (rebuild, verify new vectors compiled) — do NOT trust a stale vendored binary.
 conformance_scaffolding = "guide-conformance-7a-7b"  # §7a validate handlers + §7b concurrency gate + §4.10 resource_bounds probe come from GUIDE-CONFORMANCE.md + the keystone generator menu at S3/S4 — NOT from the spec-data snapshot (MANIFEST flags this split). A spec-first peer reading only spec-data would miss them and fail S4.
 # COHORT-SETTLED TRAPS pre-resolved here (do NOT re-burn at S3/S4 — baked in proactively):

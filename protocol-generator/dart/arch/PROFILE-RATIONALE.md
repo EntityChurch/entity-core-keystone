@@ -273,7 +273,7 @@ override.
 ## Spec version: read v7.75 (snapshot), codec corpus v0.8.0
 
 Profile + (future) peer derive from `spec-data/v7.75` (the latest stamped snapshot). The codec uses
-the `test-vectors/v0.8.0` corpus because `ENTITY-CBOR-ENCODING.md` is byte-identical v7.71→v7.75
+the `test-vectors/ecf-conformance` corpus because `ENTITY-CBOR-ENCODING.md` is byte-identical v7.71→v7.75
 (label 1.5, SHA-verified upstream per the cohort) — no wire-format change. Live spec/oracle HEAD is
 **v7.77** with a **byte-unchanged core floor v7.75→v7.77** (the v7.77 delta is all
 extension/relay/network/encryption + the V8-naming kebab fold, which every peer already satisfies),

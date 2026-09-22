@@ -99,7 +99,7 @@ type-floor enumeration + §7a/§7b contract, never for protocol semantics). Full
 carrier set, omit-empty). `FSpec`/`TypeDef`/`FSpecBox` are `Sendable` (Swift 6 strict concurrency
 requires it for the static `allTypes` table; `FSpecBox` is a `final class Sendable` with an immutable
 `let value` for the value-type recursion). Each type renders through `Model.make` → the byte-green S2
-codec; the resulting 32-byte SHA-256 digest is diffed per-type against `type-registry-vectors-v1.cbor`
+codec; the resulting 32-byte SHA-256 digest is diffed per-type against `type-registry-vectors.cbor`
 in `TypeRegistryTests` (an offline `swift test` gate, run before the live type_system run de-risks it).
 Structural enumeration ported from the cross-blessed Zig/OCaml registry (a fixed language-agnostic
 floor); the rendered bytes verified independently. **53/53 byte-identical, first run.**

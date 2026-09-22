@@ -4,7 +4,7 @@ namespace EntityCore.Protocol.Conformance;
 public static class Corpus
 {
     private const string RelativePath =
-        "protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor";
+        "protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor";
 
     /// <summary>
     /// Walk up from the current directory to find the repo's vendored fixture.

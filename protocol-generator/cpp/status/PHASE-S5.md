@@ -27,7 +27,7 @@ is the release-readiness record + the operator handoff.
 | §10.1 core-register gate | ✅ | 10/10 (9 `core_register_*` + `validate_echo_dispatch`). |
 | origination-core (reentry) | ✅ | 3/3 over real two-peer TCP (`reference_connect` · `reference_ready` · `dispatch_outbound_reentry`). |
 | multisig (genuine K-of-N) | ✅ | 11/11, 0 skip — incl `valid_2of3_peer_signed_accepted` PASS (`--name conformance` persistent identity; validator co-signs as the peer → 200). |
-| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors-v1`, **ASan/LSan/UBSan-clean on g++ AND clang++**. |
+| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors`, **ASan/LSan/UBSan-clean on g++ AND clang++**. |
 | §9.5 53-type floor byte-identical | ✅ | 53/53 (`typereg` peer-side dual + live oracle `type_system_match`). |
 | S3 two-peer loopback smoke | ✅ | 11/11; peer_id byte-identical to the cohort (seed `0x11` → `2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg`). |
 | Ed25519 RFC-8032 KAT | ✅ | libsodium sign/verify; all-zero-seed → RFC-8032 TEST-1 pubkey KAT; sign→verify→tamper-reject. |

@@ -1,5 +1,5 @@
 (* ECF conformance harness — loads the normative fixture
-   (conformance-vectors-v1.cbor) and runs every vector through the codec,
+   (conformance-vectors.cbor) and runs every vector through the codec,
    checking byte-identity (encode_equal) or rejection (decode_reject) per
    Appendix E §E.3. The fixture carries its own cross-blessed `canonical` bytes,
    so this is self-contained — no running Go oracle needed at S2. *)
@@ -67,7 +67,7 @@ let run_vector vm =
 let () =
   let path =
     if Array.length Sys.argv > 1 then Sys.argv.(1)
-    else "../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"
+    else "../shared/test-vectors/ecf-conformance/conformance-vectors.cbor"
   in
   let vectors = match Cbor.decode (read_file path) with
     | Cbor.Array l -> l

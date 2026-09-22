@@ -23,7 +23,7 @@ publishing-options decision surface + consolidated findings ledger live in
 |---|---|---|
 | S4 `--profile core` green | ✅ | **576** / 291P / 196W / **0F** / 89skip, machine-verified `summary.failed == 0` @ the v7.75 cohort oracle `b30a589` (`status/CONFORMANCE-REPORT.{md,json}`). 0 FAIL also at the `62044c5` subset (574) and the `7e5ab04` superset (631) → conformance-safe. `resource_bounds` 2P+1W active; `concurrency` 5/5. |
 | origination-core (reentry) | ✅ | 3/3 over real two-peer TCP (`reference_connect` · `reference_ready` · `dispatch_outbound_reentry`). |
-| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors-v1`, first run, 0 codec fixes, **ASan/LSan/UBSan-clean**. |
+| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors`, first run, 0 codec fixes, **ASan/LSan/UBSan-clean**. |
 | §9.5 53-type floor byte-identical | ✅ | 53/53 (`make typereg` peer-side dual + live oracle `type_system_match`). |
 | S3 two-peer loopback smoke | ✅ | 11/11; peer_id byte-identical to the cohort (seed `0x11` → `2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg`). |
 | Ed25519 RFC-8032 KAT | ✅ | libsodium sign/verify; all-zero-seed → RFC-8032 TEST-1 pubkey KAT passes; sign→verify→tamper-reject passes. |

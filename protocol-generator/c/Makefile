@@ -105,7 +105,7 @@ entity-peer-c: $(SRC) src/host.c include/entity_core/protocol.h
 	    -o entity-peer-c $(SODIUM_LINK) $(PTHREAD)
 
 # §9.5 type-registry render-from-model byte-diff harness (sanitized): renders all 53
-# core types and prints their content_hash; the runner diffs vs type-registry-vectors-v1.
+# core types and prints their content_hash; the runner diffs vs type-registry-vectors.
 typereg-bin: $(CODEC_SRC) src/entity.c src/core_typedefs.c test/typereg.c
 	$(CC) $(STD) $(WARN) $(SAN) $(PEER_INC) $(CODEC_SRC) src/entity.c \
 	    src/core_typedefs.c test/typereg.c -o typereg-bin $(SODIUM_LINK) $(PTHREAD) -lm

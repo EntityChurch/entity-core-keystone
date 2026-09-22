@@ -19,7 +19,7 @@ language-neutral sibling profiles.
 `entity-core-go` `e8524ed`). All 16 core-profile categories 0-FAIL. multisig **11/11, 0 skip**
 (accept-path PASS — the oracle co-signs a genuine 2-of-3 quorum *as* the peer).
 origination-core **3/3** over real two-peer TCP (incl. `dispatch_outbound_reentry`, §6.11).
-Codec: **69/69 byte-identical** to `conformance-vectors-v1`, first run, 0 codec fixes.
+Codec: **69/69 byte-identical** to `conformance-vectors`, first run, 0 codec fixes.
 §9.5 53-type registry: 53/53. See [`status/CONFORMANCE-REPORT.md`](status/CONFORMANCE-REPORT.md).
 (The live total is oracle-version-specific — record as `N·0F @ <commit>`; the binary gate is
 `failed == 0`.)
@@ -96,7 +96,7 @@ podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm --networ
   -w /work/protocol-generator/rust entity-core-keystone/rust-toolchain:latest \
   sh -c 'cargo build --offline --release --bin wire-conformance && \
     ./target/release/wire-conformance \
-      --input /work/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor'
+      --input /work/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor'
 
 # S4 live-peer conformance (validate-peer --profile core). The Go oracle ELF and this peer
 # run together inside the rust-toolchain image, sharing one loopback, offline.

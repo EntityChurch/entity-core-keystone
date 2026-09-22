@@ -5,7 +5,7 @@
 # emits the 53 core types as Java EcfValue.Map builder forms. Mirrors the OCaml / Common
 # Lisp peers' tools/gen-typedefs.py exactly (same 53-type core_order, same field-spec
 # mapping) so the rendered content_hash is byte-identical to the canonical
-# type-registry-vectors-v1 (diffed in TypeRegistryTest).
+# type-registry-vectors (diffed in TypeRegistryTest).
 #
 # The data map is the `data` of a `system/type` entity; Entity.make computes its
 # content_hash via our own S2-green codec (canonical CBOR re-sorts keys per ECF Rule 2,
@@ -16,7 +16,7 @@
 #   python3 protocol-generator/java/tools/gen-typedefs.py
 import json
 
-ROOT = "protocol-generator/shared/test-vectors/v0.8.0"
+ROOT = "protocol-generator/shared/test-vectors/type-registry"
 shapes = json.load(open(f"{ROOT}/type-registry-shapes.json"))
 
 # The 53-type §9.5 core floor — identical name+order to the OCaml/CL peer generators
@@ -92,7 +92,7 @@ out.append(" * (render-from-model, V7 §9.5). 53 core types; each value is the `
 out.append(" * {@code system/type} entity. Generated from the shared cross-impl test-vectors")
 out.append(" * (type-registry-shapes.json, the Go-rendered type model) by")
 out.append(" * {@code tools/gen-typedefs.py}; diffed byte-for-byte against")
-out.append(" * type-registry-vectors-v1 in {@code TypeRegistryTest}. Regenerate on a V7 bump.")
+out.append(" * type-registry-vectors in {@code TypeRegistryTest}. Regenerate on a V7 bump.")
 out.append(" */")
 out.append("final class CoreTypeDefs {")
 out.append("    private CoreTypeDefs() { }")

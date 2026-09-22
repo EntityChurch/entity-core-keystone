@@ -39,7 +39,7 @@ semantics changed.
 
 ## 2. Crypto-agility corpus — native Ed448 + SHA-384 (the headline data point)
 
-`AgilitySpec` against `agility-vectors-v1.cbor` (v7.71). Codec-reachable
+`AgilitySpec` against `agility-vectors.cbor` (v7.71). Codec-reachable
 Phase-1 vectors, **7/7 PASS** — all native via crypton (no FFI, no defer):
 
 | Vector | Native primitive | Result |

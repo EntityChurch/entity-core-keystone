@@ -7,7 +7,7 @@ OZC         ?= ozc
 CODEC_SRC   := ../../ffi-generator/c-abi/entity-core-codec-ffi-c
 CODEC_BUILD := $(CODEC_SRC)/build
 SPEC        := ../../ffi-generator/c-abi/spec
-CORPUS      := ../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+CORPUS      := ../shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 DAEMON      := build/eccodecd
 
 # S2 codec modules; S3 adds the peer machinery. Order matters (ozc resolves

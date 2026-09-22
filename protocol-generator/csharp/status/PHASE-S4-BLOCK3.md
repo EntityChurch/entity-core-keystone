@@ -183,7 +183,7 @@ Committed: nonce-echo+401/403 (`f2ca03e`), multisig (`3ced506`).
    - **Design (cross-peer ruling, user):** render natively from the peer's own
      model (reflection + override table — single source of truth in code), NOT ingest
      bytes. Memory: `type-registry-render-design`, `type-registry-core-vs-extension`.
-   - **Verification corpus generated:** `test-vectors/v0.8.0/type-registry-vectors-v1.{cbor,diag}`
+   - **Verification corpus generated:** `test-vectors/type-registry/type-registry-vectors.{cbor,diag}`
      (all 150 rendered, byte-exact `content_hash` + ECF data) via
      `protocol-generator/shared/tools/dump-type-registry` (go container). The C# render
      diffs against this (S8 drift target).

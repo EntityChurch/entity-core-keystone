@@ -21,7 +21,7 @@ publishing-options decision surface live in `status/ARCHITECTURE-REVIEW.md`.
 |---|---|---|
 | S4 `--profile core` green | ✅ | 653 / 291P / 268W / **0F** / 94S, machine-verified `summary.failed == 0` (`status/CONFORMANCE-REPORT.{md,json}`), oracle `entity-core-go @75c532e`. All 16 core categories 0-FAIL. (653 vs the v7.75 8-peer-rerun's 576 = later-oracle extension categories that auto-skip under `--profile core`; FAIL gate + core categories unchanged.) |
 | origination-core (reentry) | ✅ | 3/3 over real two-peer TCP (`reference_connect` · `reference_ready` · `dispatch_outbound_reentry`). |
-| S2 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors-v1`, first full run, 0 codec fixes. **Re-ran GREEN at S5** after packaging (`rake test`). |
+| S2 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors`, first full run, 0 codec fixes. **Re-ran GREEN at S5** after packaging (`rake test`). |
 | §9.5 53-type floor byte-identical | ✅ | 53/53 (render-from-shapes; content_hash recomputed by the Ruby codec, asserted equal to the Go reference @75c532e — not ingested). |
 | S3 two-peer loopback smoke | ✅ | 11/11 (handshake + dispatch + capability + 8-way request_id demux). **Re-ran GREEN at S5.** |
 | Ed25519 + Ed448 native (agility primitives) | ✅ | stdlib openssl (OpenSSL 3.x), zero FFI; byte-verified vs the v7.67 pins (Ed448 seed→pubkey / peer_id / content_hash / 114-B sig) (A-RUBY-002/003). |

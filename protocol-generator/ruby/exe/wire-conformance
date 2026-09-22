@@ -9,8 +9,8 @@
 #
 # Both positional args are accepted-for-compat with the keystone gate command
 # (the Go oracle's CLI shape); the Ruby driver resolves its own lib from
-# <src-dir> and loads `conformance-vectors-v1.cbor` (+ optionally
-# `agility-vectors-v1.cbor`) from <vectors-dir>.
+# <src-dir> and loads `conformance-vectors.cbor` (+ optionally
+# `agility-vectors.cbor`) from <vectors-dir>.
 
 require "optparse"
 
@@ -22,7 +22,7 @@ args.shift if args.first == "run" # tolerate the `run` subcommand
 
 parser = OptionParser.new do |o|
   o.banner = "usage: wire-conformance run <src-dir> --vectors <vectors-dir>"
-  o.on("--vectors DIR", "directory holding conformance-vectors-v1.cbor") { |d| vectors_dir = d }
+  o.on("--vectors DIR", "directory holding conformance-vectors.cbor") { |d| vectors_dir = d }
 end
 remaining = parser.parse(args)
 src_dir ||= remaining.shift
@@ -45,8 +45,8 @@ abort "could not locate entity_core.rb (looked in: #{lib_candidates.join(', ')})
 
 require entry
 
-conformance_corpus = File.join(vectors_dir, "conformance-vectors-v1.cbor")
-agility_corpus = File.join(vectors_dir, "agility-vectors-v1.cbor")
+conformance_corpus = File.join(vectors_dir, "conformance-vectors.cbor")
+agility_corpus = File.join(vectors_dir, "agility-vectors.cbor")
 
 total_fail = 0
 

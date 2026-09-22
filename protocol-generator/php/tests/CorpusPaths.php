@@ -12,17 +12,12 @@ final class CorpusPaths
         return \dirname(__DIR__, 2) . '/shared/test-vectors';
     }
 
-    public static function corpusVersion(): string
-    {
-        return \getenv('CORPUS_VERSION') ?: 'v0.8.0';
-    }
-
     public static function conformanceCorpus(): string
     {
         $env = \getenv('CORPUS');
         if ($env !== false && $env !== '') {
             return $env;
         }
-        return self::vectorsDir() . '/' . self::corpusVersion() . '/conformance-vectors-v1.cbor';
+        return self::vectorsDir() . '/ecf-conformance/conformance-vectors.cbor';
     }
 }

@@ -10,7 +10,7 @@ concurrency model.
 **0 fail** · 89 skip — first oracle run, **zero peer-correctness fixes** (the cleanest S4 in the
 cohort). §10.1 register gate 10/10; §10.2 origination-core 3/3 (incl. `dispatch_outbound_reentry`
 over real two-peer TCP); §7b concurrency gate 5/5; `type_system` 53/53 byte-identical; agility
-**fully native** incl. Ed448. Codec: 69/69 byte-identical to `conformance-vectors-v1`, first build.
+**fully native** incl. Ed448. Codec: 69/69 byte-identical to `conformance-vectors`, first build.
 See [`status/CONFORMANCE-REPORT.md`](status/CONFORMANCE-REPORT.md).
 
 **Status:** `0.1.0-pre` — publish-ready, **not yet published** (pending arch v0.1 sign-off + an

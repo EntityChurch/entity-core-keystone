@@ -1,8 +1,8 @@
 % agility_kat.pl — crypto KAT pins for the Prolog FFI peer (S2).
 %
 % Pins the crypto floor + agility surface against the cohort's byte-blessed ground
-% truth (transcribed from protocol-generator/shared/test-vectors/v0.8.0/
-% agility-vectors-v1.diag + agility-SEEDS.md, the same pins the OCaml agility
+% truth (transcribed from protocol-generator/shared/test-vectors/crypto-agility/
+% agility-vectors.diag + SEEDS.md, the same pins the OCaml agility
 % harness asserts). Everything is sourced through the C-ABI (ec_codec.pl):
 %   - Ed25519: keygen round-trip + deterministic sign/verify (conformance corpus
 %     signature.1 KAT, all-zero seed → fixed 64-byte signature).

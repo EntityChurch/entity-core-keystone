@@ -23,7 +23,7 @@ CODEC_HDR  ?= ../../ffi-generator/c-abi/spec
 # SELinux hosts (the 1.4 MB sqlite3.o create is refused; /tmp is unaffected).
 # Override BUILD=build to keep artifacts in-tree where the mount permits it.
 BUILD   ?= /tmp/ec-sql-build
-VECTORS := ../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+VECTORS := ../shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 
 CC      ?= gcc
 CFLAGS  ?= -O2 -Wall -Wextra -std=c11

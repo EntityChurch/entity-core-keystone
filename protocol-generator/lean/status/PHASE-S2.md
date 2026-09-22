@@ -11,7 +11,7 @@ first; the proofs followed.
 ## Track A — the codec gate: 69/69, first harness run, byte-identical
 
 `./.lake/build/bin/conformance` → **69 pass · 0 fail** against the locked v7.71
-corpus (`shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor`, sha
+corpus (`shared/test-vectors/ecf-conformance/conformance-vectors.cbor`, sha
 `41d68d2d…` re-derived in-harness). All 11 categories green, including Class B:
 - `content_hash` — `varint(format_code) ‖ SHA-256(ECF{type,data})`, SHA-256 over
   the FFI boundary (`libentitycore_codec`, provenance `rust 0.1.0 / ecf-c-abi 1.1`).

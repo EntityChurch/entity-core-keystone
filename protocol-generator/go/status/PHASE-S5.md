@@ -19,7 +19,7 @@ live in [`status/ARCHITECTURE-REVIEW.md`](ARCHITECTURE-REVIEW.md).
 | Gate | State | Note |
 |---|---|---|
 | S4 `--profile core` green | ✅ | **653 / 291P / 268W / 0F / 94skip**, machine-verified `failed==0` @ oracle `75c532e` ([`CONFORMANCE-REPORT.{md,json}`](CONFORMANCE-REPORT.md)) |
-| Codec byte-identical (S2) | ✅ | 69/69 vs `conformance-vectors-v1`, first run, 0 codec fixes |
+| Codec byte-identical (S2) | ✅ | 69/69 vs `conformance-vectors`, first run, 0 codec fixes |
 | §9.5 53-type registry | ✅ | 53/53 byte-identical (render-from-model), first run (`TestCoreTypeRegistryByteIdentical`) |
 | origination-core | ✅ | 3/3 PASS (`reference_connect`, `reference_ready`, `dispatch_outbound_reentry`) |
 | `go test ./...` | ✅ | re-run green at S5: codec 69/69 + registry 53/53 + S3 11/11 loopback smoke |

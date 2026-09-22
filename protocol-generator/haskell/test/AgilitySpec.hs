@@ -33,7 +33,7 @@ import EntityCore.PeerId (PeerIdParts (..), derivePeerId, formatPeerId)
 import EntityCore.Signature (ed448PubkeyFromSeed, ed448Sign)
 
 corpusPath :: FilePath
-corpusPath = "../shared/test-vectors/v0.8.0/agility-vectors-v1.cbor"
+corpusPath = "../shared/test-vectors/crypto-agility/agility-vectors.cbor"
 
 spec :: Spec
 spec = describe "crypto-agility corpus (v0.8.0) — native Ed448 + SHA-384" $ do

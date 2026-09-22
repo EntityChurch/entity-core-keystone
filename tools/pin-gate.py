@@ -143,15 +143,24 @@ def pin_values():
 def manifest_values():
     """SHA-256 pins from the spec-data and test-vector snapshots.
 
-    Same dual harvest as pin_values(), and for the same reason: a MANIFEST records
-    superseded corpora in prose with the digest truncated — the test-vectors
-    MANIFEST's *"Supersedes the prior `41d68d2d…` 69-vector corpus"* is the whole
-    provenance of a value the matrix legitimately cites. 64-hex only would have
-    called that citation a typo.
+    Same dual harvest as pin_values(), and for the same reason: these files record
+    superseded corpora in prose with the digest truncated — the ECF corpus's
+    *"was `71015b72…`"* row is the whole provenance of a value the matrix
+    legitimately cites. 64-hex only would have called that citation a typo.
+
+    **A vector corpus's pins live in its `CHANGELOG.md`, not a `MANIFEST.md`.**
+    When the corpora were de-versioned (`GUIDE-CONFORMANCE.md` §5.1) the single
+    `test-vectors/v0.8.0/MANIFEST.md` was retired in favour of one changelog per
+    corpus. A glob left pointing at the old name would match nothing and harvest
+    zero anchors — silently, because an empty harvest looks exactly like a clean
+    one. Both names are globbed so neither a stale nor a future layout goes blind,
+    and `check_manifest_harvest()` asserts the harvest is non-empty.
     """
     vals = {}
     for pat in ("protocol-generator/shared/spec-data/*/MANIFEST.md",
-                "protocol-generator/shared/test-vectors/*/MANIFEST.md"):
+                "protocol-generator/shared/test-vectors/*/MANIFEST.md",
+                "protocol-generator/shared/test-vectors/*/CHANGELOG.md",
+                "protocol-generator/shared/test-vectors/README.md"):
         for m in sorted(REPO.glob(pat)):
             body = m.read_text()
             for tok in (re.findall(r"[0-9a-f]{64}", body)
@@ -191,8 +200,36 @@ def main():
     notes = []
 
     pins = pin_values()
-    known = dict(manifest_values())
+    manifests = manifest_values()
+    known = dict(manifests)
     known.update(pins)
+
+    # A gate that examined ZERO things prints the same word as one that examined
+    # forty-six. manifest_values() globs filenames, so a layout change silently
+    # empties it — and an empty anchor table makes check 3 pass every published
+    # digest by vacuously failing to contradict it... no: it makes check 3 FAIL
+    # everything, which at least shouts. The quiet direction is a PARTIAL harvest,
+    # so assert the population and print the count either way.
+    n_sources = (len(list(REPO.glob("protocol-generator/shared/spec-data/*/MANIFEST.md")))
+                 + len(list(REPO.glob("protocol-generator/shared/test-vectors/*/MANIFEST.md")))
+                 + len(list(REPO.glob("protocol-generator/shared/test-vectors/*/CHANGELOG.md"))))
+    n_corpora = len([p for p in (REPO / "protocol-generator/shared/test-vectors").iterdir()
+                     if p.is_dir()]) if (REPO / "protocol-generator/shared/test-vectors").is_dir() else 0
+    if n_sources == 0 or not manifests:
+        fails.append(
+            "pin-gate: harvested 0 digests from the pinned snapshots — the "
+            "spec-data/test-vectors glob matches nothing. Check the layout before "
+            "trusting any 'OK' from this gate."
+        )
+    elif n_corpora and n_sources < n_corpora:
+        fails.append(
+            f"pin-gate: {n_corpora} vector corpora on disk but only {n_sources} pin "
+            f"source(s) harvested — a corpus with no MANIFEST.md/CHANGELOG.md "
+            f"contributes no anchors, so its digests would read as mistyped."
+        )
+    else:
+        notes.append(f"pin sources: {n_sources} manifest/changelog files → "
+                     f"{len(manifests)} digests ({n_corpora} vector corpora)")
 
     text = MATRIX.read_text()
     lines = text.splitlines()

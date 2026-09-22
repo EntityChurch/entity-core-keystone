@@ -9,7 +9,7 @@
   are byte-identical v7.71→v7.72, so the v7.71 codec corpus is valid at v7.72 and
   S1/S2 are wire-unaffected. The v7.73 (nonce-echo) + v7.74 (register/outbound/emit/
   owner-cap + §7a) folds are **peer-layer** (S3+). Profile reads `spec-data/v7.72`;
-  codec corpus `test-vectors/v0.8.0`. Logged **A-ELX-001** (need a v7.73/v7.74 snapshot
+  codec corpus `test-vectors/ecf-conformance`. Logged **A-ELX-001** (need a v7.73/v7.74 snapshot
   for documented parity; peer layer resyncs to v7.74 at S3 against folded proposal
   text, as peers #1-3 did).
 - **No-peek discipline.** Derived from V7 + Elixir/BEAM ecosystem only; did **not**

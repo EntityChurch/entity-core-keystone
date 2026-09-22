@@ -271,7 +271,7 @@ gradle            = "8.10.2"                    # the build tool; Gradle 8.10.2 
 
 [spec]
 v7_version_pinned = "7.75"                     # latest spec-data SNAPSHOT available (protocol-generator/shared/spec-data/v7.75/); profile + codec derive from it. (Live spec/oracle HEAD is v7.77 with a byte-UNCHANGED core floor v7.75->v7.77 — the v7.77 delta is all extension + V8-naming; this peer derives the protocol surface from the v7.75 snapshot and re-runs against the current oracle, per the cohort convention.)
-codec_corpus      = "v0.8.0"                    # ECF corpus (test-vectors/v0.8.0 — the latest stamped vector set); ENTITY-CBOR-ENCODING.md is byte-identical v7.71->v7.75 (label 1.5, SHA-verified upstream per the cohort), so the v0.8.0 corpus is valid at v7.75.
+codec_corpus      = "ecf-conformance"                    # ECF corpus (test-vectors/ecf-conformance — the latest stamped vector set); ENTITY-CBOR-ENCODING.md is byte-identical v7.71->v7.75 (label 1.5, SHA-verified upstream per the cohort), so the v0.8.0 corpus is valid at v7.75.
 # PEER_ID CONSTRUCTION (A-KT-004, corroborates A-OC-007 / A-ZIG-001 / A-CL-002 /
 # A-JAVA-004 — now reconciled in the v7.73 body, but the profile still PINS the
 # correct form proactively): derive the Ed25519 peer_id from the §1.5 v7.65

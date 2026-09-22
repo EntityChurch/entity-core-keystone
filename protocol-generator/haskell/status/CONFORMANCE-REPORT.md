@@ -78,7 +78,7 @@ entities render **from the in-code model** (`src/EntityCore/TypeDefs.hs` — the
 render-from-model cross-peer ruling, NOT ingest-from-bytes) through the byte-green
 S2 codec. A build-time byte-diff (`test/TypeRegistrySpec.hs`, A-HS-009) renders all
 53 and compares each `content_hash` digest against the canonical Go-rendered
-`type-registry-vectors-v1.cbor` set → **53/53 byte-identical on the first run**.
+`type-registry-vectors.cbor` set → **53/53 byte-identical on the first run**.
 The non-floor types the oracle also probes (validate/constraint/compute/content/…)
 WARN (matched-if-present); a core peer publishes only the floor (refined G4 / F17).
 

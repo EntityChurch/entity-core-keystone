@@ -1,10 +1,10 @@
 /
-  Type-registry render vectors — v1 (DERIVED drift/diff target)
+  Type-registry render vectors (DERIVED drift/diff target)
   Source:  entity-core-go types.RegisterCoreTypes + connect/tree handler
            types (== validate-peer runTypeSystem registry).
   Status:  NOT an arch-authored canonical corpus (S5). Regenerate from
            the Go oracle when entity-core-go moves. The sibling
-           `type-registry-vectors-v1.cbor` is the canonical-ECF build
+           `type-registry-vectors.cbor` is the canonical-ECF build
            artifact (array of {name, tree_path, content_hash, data}).
   Use:     a peer renders its own system/type/<name> entities natively
            and diffs each content_hash against this set (S8 golden-file).

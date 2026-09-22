@@ -312,6 +312,6 @@ fedora            = "43"                        # base image OS; the toolchain c
 
 [spec]
 v7_version_pinned = "7.75"                     # spec-data/v7.75 (the latest snapshot; Ada derives this surface independently, spec-first). The current-state menu (peer_id §1.5 / hex-case / 401-403 / A-JAVA-010 / 400-chain-depth / resource_bounds / concurrency) verified directly in spec-data/v7.75 at S1.
-codec_corpus      = "v0.8.0"                     # ECF corpus; ENTITY-CBOR-ENCODING.md is byte-stable across v7.71->v7.75 (no wire-format change in the v7.72-75 folds; the cohort SHA-verified this), so the v0.8.0 corpus (latest test-vectors snapshot) is valid at v7.75.
+codec_corpus      = "ecf-conformance"                     # ECF corpus; ENTITY-CBOR-ENCODING.md is byte-stable across v7.71->v7.75 (no wire-format change in the v7.72-75 folds; the cohort SHA-verified this), so the v0.8.0 corpus (latest test-vectors snapshot) is valid at v7.75.
 conformance_gate  = "validate-peer --profile core = 576 · 0 FAIL · 89 skip"  # the canonical core gate at v7.75 (includes the concurrency + resource_bounds categories)
 conformance_scaffolding = "guide-conformance-7a-7b"  # §7a validate handlers + §7b concurrency/resilience gate come from GUIDE-CONFORMANCE.md + the generator menu (NOT spec-data); Ada picks them up at S3/S4.

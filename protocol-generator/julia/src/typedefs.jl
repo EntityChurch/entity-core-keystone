@@ -4,7 +4,7 @@
 # `/{peer}/system/type/{name}`. Each type's data is rendered NATIVELY from an in-code
 # declaration here (the single source of truth) through the byte-green S2 codec; the
 # resulting content_hash is byte-identical to the Go-rendered
-# `type-registry-vectors-v1.cbor` set (the S8 drift target, checked by
+# `type-registry-vectors.cbor` set (the S8 drift target, checked by
 # test/typedefs_bytecheck.jl). This is the render-from-model design every peer follows
 # (mirrors Zig type_defs.zig / C# CoreTypeRegistry / TS core-type-registry.ts) — the
 # profile's "render natively, don't ingest oracle bytes" durable lesson.

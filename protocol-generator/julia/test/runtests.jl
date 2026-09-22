@@ -102,8 +102,8 @@ hx(v) = bytes2hex(encode(v))
     end
 
     @testset "wire-conformance corpus (71/71 byte-identical)" begin
-        fixture = joinpath(@__DIR__, "..", "..", "shared", "test-vectors", "v0.8.0",
-                           "conformance-vectors-v1.cbor")
+        fixture = joinpath(@__DIR__, "..", "..", "shared", "test-vectors", "ecf-conformance",
+                           "conformance-vectors.cbor")
         include("harness.jl")
         pass, fail, _, _ = run_conformance(fixture; verbose = true)
         @test fail == 0

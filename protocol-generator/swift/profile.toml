@@ -213,7 +213,7 @@ swift_asn1        = "1.7.0"                    # released 2026-04-16 (~59 days o
 
 [spec]
 v7_version_pinned = "7.74"                     # spec-data/v7.74 (the freshly-stamped snapshot; Swift derives this surface independently)
-codec_corpus      = "v0.8.0"                    # ECF corpus; ENTITY-CBOR-ENCODING.md is byte-stable across the v7.71->v7.74 line except the
+codec_corpus      = "ecf-conformance"                    # ECF corpus; ENTITY-CBOR-ENCODING.md is byte-stable across the v7.71->v7.74 line except the
                                                #   v7.73 E3 decode-side construct-vs-decode erratum paragraph (no wire change), so the
                                                #   v0.8.0 corpus is valid at v7.74 (same finding the OCaml/Zig peers SHA-verified). Agility
                                                #   (Ed448/SHA-384) corpus gated on A-SW-001.

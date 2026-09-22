@@ -11,7 +11,7 @@ from the profile, not from the Ruby peer's templates.
 **Conformance badge:** `validate-peer --profile core` — **Result: PASS · 682 total · 0 FAIL**
 (292 pass / 294 warn / 96 skip; all 96 skips are §9.0 auto-allowlisted extension carve-outs,
 none fail-counting), oracle **`entity-core-go @cc1970f`** (core-gate fingerprint `8261a033…`).
-Codec: **71/71** byte-identical to `conformance-vectors-v1`; §9.5 **53/53** type floor;
+Codec: **71/71** byte-identical to `conformance-vectors`; §9.5 **53/53** type floor;
 genuine 2-of-3 multisig accept-path (the oracle's own `valid_2of3_peer_signed_accepted` runs
 live + PASSES, not skipped). Robustness: the S4 gate is **20/20 crash-free under repeated
 concurrent load** after the graceful-shutdown fix (see below). Full report:

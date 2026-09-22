@@ -64,7 +64,7 @@ sealed offline. The reentry transport + §7a conformance handlers were already b
 
 | Corpus | Vendored version | Result |
 |---|---|---|
-| ECF codec conformance (`conformance-vectors-v1.cbor`) | v7.71 (sha `41d68d2d…`) | **69/69 PASS, 0 FAIL** (64 encode_equal + 5 decode_reject; byte-identical) |
+| ECF codec conformance (`conformance-vectors.cbor`) | v7.71 (sha `41d68d2d…`) | **69/69 PASS, 0 FAIL** (64 encode_equal + 5 decode_reject; byte-identical) |
 | S2 spike (float + map_keys), run FIRST | v7.71 | **20/20 PASS** (14 float + 6 map_keys), first run |
 | Uncovered-range + crypto self-tests | n/a (in-repo) | **15/15 PASS** (u64/-2^64 range, float ladder, N1/N2, base58 RT, peer_id §1.5, Ed25519 RFC-8032) |
 | **Harness total** | | **84 PASS / 0 FAIL** |

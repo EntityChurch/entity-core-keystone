@@ -6,7 +6,7 @@
 - **Spec version.** Read `spec-data/v7.72` (latest available). Per the OCaml S1
   finding, `ENTITY-CBOR-ENCODING.md` + `ENTITY-NATIVE-TYPE-SYSTEM.md` are byte-identical
   v7.71→v7.72 (no wire-format change), so the v7.71 codec corpus is valid at v7.72.
-  Profile reads `spec-data/v7.72`; codec corpus `test-vectors/v0.8.0`.
+  Profile reads `spec-data/v7.72`; codec corpus `test-vectors/ecf-conformance`.
 - **No-peek discipline.** Derived from V7 + Zig ecosystem only; did NOT open prior
   peers' `src/`. Read `{csharp,ocaml}/profile.toml` + the OCaml rationale/status for
   the field *schema and exemplar shape* only (explicitly endorsed by PHASE-S1) — that

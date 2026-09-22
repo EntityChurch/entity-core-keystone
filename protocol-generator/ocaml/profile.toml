@@ -130,4 +130,4 @@ mirage_crypto_rng = "2.1.0"                   # 17 Mar 2026 (S3 keygen; determin
 
 [spec]
 v7_version_pinned = "7.72"                   # spec read for profile + peer
-codec_corpus      = "v0.8.0"                  # ECF corpus; ENTITY-CBOR-ENCODING.md + ENTITY-NATIVE-TYPE-SYSTEM.md are byte-identical v7.71->v7.72 (SHA-verified), so the v0.8.0 corpus is valid at v7.72. F12/v7.73 nonce-echo fold is a PEER (§4.6) concern, not codec — resync at S3.
+codec_corpus      = "ecf-conformance"                  # ECF corpus; ENTITY-CBOR-ENCODING.md + ENTITY-NATIVE-TYPE-SYSTEM.md are byte-identical v7.71->v7.72 (SHA-verified), so the v0.8.0 corpus is valid at v7.72. F12/v7.73 nonce-echo fold is a PEER (§4.6) concern, not codec — resync at S3.

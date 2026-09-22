@@ -39,7 +39,7 @@ over the same inbound connection) cross-impl wire-proven.
 
 Plus the **§9.5 53-type floor byte-identical: 53/53** — the live oracle's `type_system
 _match` checks (53/53, 0 FAIL) and the peer-side `TypeRegistryTest` (53/53 vs the canonical
-`type-registry-vectors-v1.diag`) both green.
+`type-registry-vectors.diag`) both green.
 
 ## What S4 built
 

@@ -124,7 +124,7 @@ final class SelfTest {
 
     /**
      * A-JAVA-002 GATE: native Ed448 RFC-8032 byte-equality KAT. Pins from v7.71
-     * agility-SEEDS.md §1.1 (KEY-TYPE-ED448-1, seed 0x42×57).
+     * SEEDS.md §1.1 (KEY-TYPE-ED448-1, seed 0x42×57).
      */
     @Test
     void ed448Kat() throws Exception {

@@ -6,7 +6,7 @@ coverage), **corroboration-only** on the spec-discovery axis (the JVM idiom was
 already exercised by the Java peer #7; the language-axis discovery well is dry here).
 **Spec surface:** `spec-data/v7.75` (latest stamped snapshot; core floor byte-stable
 v7.75→v7.77, so the live oracle `entity-core-go @ e8524ed` / v7.77 applies unchanged
-at the core floor). Codec corpus `test-vectors/v0.8.0` (ENTITY-CBOR-ENCODING
+at the core floor). Codec corpus `test-vectors/ecf-conformance` (ENTITY-CBOR-ENCODING
 byte-identical v7.71→v7.75).
 **Model peer:** `protocol-generator/java/` (the direct JVM analog) — studied closely,
 but Kotlin authored as an **independent reader**, not ported.

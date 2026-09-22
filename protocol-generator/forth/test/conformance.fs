@@ -94,7 +94,7 @@ variable npass  variable nfail  variable nskip
 
 : main
   next-arg dup 0= if
-    2drop s" ../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor"
+    2drop s" ../shared/test-vectors/ecf-conformance/conformance-vectors.cbor"
   then
   run-corpus ;
 main

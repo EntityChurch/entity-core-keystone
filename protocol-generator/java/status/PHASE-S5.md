@@ -20,7 +20,7 @@ live in `status/ARCHITECTURE-REVIEW.md`.
 |---|---|---|
 | S4 `--profile core` green | ✅ | 573 / 289P / 195W / **0F** / 89skip, machine-verified `summary.failed == 0` (`status/CONFORMANCE-REPORT.{md,json}`). A clean **superset** of the OCaml/CL 568 fixed point (the +5 is §7b, which gates core at the in-flight oracle HEAD — see §6 / A-JAVA-011). |
 | origination-core (reentry) | ✅ | 3/3 over real two-peer TCP (`reference_connect` · `reference_ready` · `dispatch_outbound_reentry`). |
-| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors-v1`, first run, 0 codec fixes. |
+| S7 lower bar (codec byte-identical) | ✅ | 69/69 vs `conformance-vectors`, first run, 0 codec fixes. |
 | §9.5 53-type floor byte-identical | ✅ | 53/53 (`TypeRegistryTest` peer-side dual + live oracle `type_system_match`). |
 | S3 two-peer loopback smoke | ✅ | 11/11; peer_id byte-identical to the CL peer (seed `0x11` → `2KHoAk7A5JmhygZJAdBua8iRD1CnBoJRfUBHgZeXNRTeFg`). |
 | Ed25519 + Ed448 RFC-8032 KAT | ✅ | SunEC sign/verify byte-equal pins; hand-rolled SHAKE256 + raw-pubkey derivation KAT-verified (A-JAVA-007); BouncyCastle cross-check byte-equal. |

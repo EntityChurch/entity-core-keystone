@@ -217,7 +217,7 @@ the long pole), the container was **built and proven NOW**, not just authored:
 ## Spec version: read v7.74, codec corpus v0.8.0
 
 Profile + (future) peer derive from `spec-data/v7.74` (read directly, spec-first). The codec uses
-the `test-vectors/v0.8.0` ECF corpus: `ENTITY-CBOR-ENCODING.md` is byte-stable across the
+the `test-vectors/ecf-conformance` ECF corpus: `ENTITY-CBOR-ENCODING.md` is byte-stable across the
 v7.71→v7.74 line except the v7.73 **E3** construct-vs-decode erratum paragraph (a decode-side
 clarification, no wire change — confirmed in the v7.74 MANIFEST), so the v0.8.0 corpus is valid at
 v7.74 (the same finding the OCaml/Zig/Swift peers SHA-verified). The **agility (Ed448/SHA-384)

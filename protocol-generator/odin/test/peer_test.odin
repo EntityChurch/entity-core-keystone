@@ -252,7 +252,7 @@ echo_round_trips_params :: proc(t: ^testing.T) {
 
 // The Go-rendered type-registry vector set (the S8 drift/diff target). Compiled
 // in for a hermetic, offline byte-diff of our render-from-model output.
-TYPE_VECTORS := #load("../../shared/test-vectors/v0.8.0/type-registry-vectors-v1.cbor")
+TYPE_VECTORS := #load("../../shared/test-vectors/type-registry/type-registry-vectors.cbor")
 
 // type_registry_byte_identical_to_go — every core type's content_hash digest
 // renders byte-identical to the Go reference vector set. This is the render-from-

@@ -30,7 +30,7 @@
 
 | Corpus | Vendored version | Result |
 |---|---|---|
-| **ECF codec** (`conformance-vectors-v1.cbor`) | v7.71 (byte-identical to v7.56/v7.70); sha256 `41d68d2d…6a052` | **69/69 PASS, byte-identical, first full run, 0 fixes** |
+| **ECF codec** (`conformance-vectors.cbor`) | v7.71 (byte-identical to v7.56/v7.70); sha256 `41d68d2d…6a052` | **69/69 PASS, byte-identical, first full run, 0 fixes** |
 | **Ed448 RFC-8032 KAT** (agility gate, A-CL-005) | v7.71 `KEY-TYPE-ED448-1` pins | **PASS — pubkey + 114-B signature + §1.5 peer_id all byte-equal** |
 
 Run in-container, sealed-offline (`--network=none`) via `./run-s2.sh` (full gate:
@@ -40,7 +40,7 @@ Image `entity-core-keystone/common-lisp-toolchain:latest` (SBCL 2.6.4 + ASDF 3.3
 
 ## How conformance works here
 
-The `conformance-vectors-v1.cbor` fixture carries its own cross-blessed `canonical`
+The `conformance-vectors.cbor` fixture carries its own cross-blessed `canonical`
 bytes per vector — it is the Go `wire-conformance` oracle's output
 (`build-fixture` / `emit-canonical`, 3-way Go × Rust × Python byte-lock).
 The hand-rolled harness (`test/conformance.lisp`) **decodes the
@@ -85,7 +85,7 @@ plus LEB128 varint, Base58, content-hash, peer-id, and Ed25519 signing (ironclad
 
 The S1 plan gated trusting pure-Lisp Ed448 on RFC-8032 byte-equality BEFORE using
 it for the agility corpus. **The gate passes** (`test/selftest.lisp`
-`run-ed448-kat`, pins from v7.71 `agility-SEEDS.md` §1.1):
+`run-ed448-kat`, pins from v7.71 `SEEDS.md` §1.1):
 
 - Ed448 seed `0x42×57` → **57-byte public key byte-equal** to the locked pin
   (`2601850d…3b0e00`).
@@ -206,7 +206,7 @@ Render-from-model (NOT ingest-bytes): the 53 core type *models* live in-code
 entity (content_hash via our own S2 codec) and publishes it at
 `/{peer}/system/type/{name}` at bootstrap. The peer-side dual of the S2 corpus
 (`test/type-registry.lisp`) diffs each content_hash against the canonical
-`type-registry-vectors-v1.diag` — **53/53 byte-identical on the first run, 0 fixes**.
+`type-registry-vectors.diag` — **53/53 byte-identical on the first run, 0 fixes**.
 Live `type_system` went 0 → 108 PASS, 0 core FAIL (the 194 WARN = non-floor extension
 vocabulary, matched-if-present — refined G4, the same WARN class the cohort carries).
 

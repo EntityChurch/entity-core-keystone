@@ -502,7 +502,7 @@ static int store_get(const char *path, char *type_out, size_t tcap, unsigned cha
 /* ── parse the shared type-registry vectors (array of {data,name,...}) and bind the CORE floor
  *    as system/type nodes at /{peer}/system/type/{name}. Called once by the parent. ── */
 static void seed_types(void) {
-    long n=0; char *buf=slurp("../shared/test-vectors/v0.8.0/type-registry-vectors-v1.cbor",&n);
+    long n=0; char *buf=slurp("../shared/test-vectors/type-registry/type-registry-vectors.cbor",&n);
     if (!buf) { fprintf(stderr,"WARN: type-registry vectors not found\n"); return; }
     cbor_rd r={ (unsigned char*)buf, (size_t)n, 0 }; int maj; uint64_t cnt;
     if (cbor_head(&r,&maj,&cnt)!=0 || maj!=4) { free(buf); return; }

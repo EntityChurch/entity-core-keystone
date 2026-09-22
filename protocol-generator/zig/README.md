@@ -7,7 +7,7 @@ language with **no GC, explicit allocators, error unions, and `comptime`**.
 
 **Conformance:** `validate-peer --profile core` — **PASS** · 568 total · 284 pass · 195 warn ·
 **0 fail** · 89 skip (machine-verified `summary.failed == 0`). Codec: 69/69 byte-identical to
-`conformance-vectors-v1`, first run, 0 codec fixes. The 568 total (vs the C#/TS-era 552) is the
+`conformance-vectors`, first run, 0 codec fixes. The 568 total (vs the C#/TS-era 552) is the
 v7.74 oracle's 16 extra checks (§10.1 core-register round-trip + §9.5a CORE-TREE vectors).
 See [`status/CONFORMANCE-REPORT.md`](status/CONFORMANCE-REPORT.md).
 
@@ -65,7 +65,7 @@ podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm --networ
 podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm --network=none -v "$PWD":/work:Z -w /work/protocol-generator/zig \
   entity-core-keystone/zig-toolchain:latest \
   zig build conformance -- \
-    /work/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+    /work/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 
 # S4 live-peer conformance (validate-peer --profile core). The Go oracle ELF and the
 # Zig peer run together inside the zig-toolchain image, sharing one loopback, offline.

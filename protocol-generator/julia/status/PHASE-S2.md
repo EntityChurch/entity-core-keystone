@@ -40,7 +40,7 @@ per profile `[error_model]`.
 
 ## Conformance
 
-**71 / 71 byte-identical** against `conformance-vectors-v1.cbor` (sha256 `9695b1f1…c6dc`,
+**71 / 71 byte-identical** against `conformance-vectors.cbor` (sha256 `9695b1f1…c6dc`,
 66 `encode_equal` + 5 `decode_reject`), **first run, zero codec-logic fixes.** Same converged
 scoreboard as the native cohort (C#/TS/OCaml/Zig …) — spec-first. Full tally +
 reproduction in `CONFORMANCE-REPORT.md` / `.json`.

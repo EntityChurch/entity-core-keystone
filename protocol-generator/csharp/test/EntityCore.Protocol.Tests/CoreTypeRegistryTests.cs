@@ -8,14 +8,14 @@ namespace EntityCore.Protocol.Tests;
 
 /// <summary>
 /// Diffs every natively-rendered core type definition against the Go-rendered
-/// vector set (<c>type-registry-vectors-v1.cbor</c>, the S8 drift target). A green
+/// vector set (<c>type-registry-vectors.cbor</c>, the S8 drift target). A green
 /// run proves the C# registry's <c>system/type/*</c> entities are byte-identical to
 /// the oracle's — the content-hash-first match the <c>type_system</c> category needs.
 /// </summary>
 public sealed class CoreTypeRegistryTests
 {
     private const string VectorsRelativePath =
-        "protocol-generator/shared/test-vectors/v0.8.0/type-registry-vectors-v1.cbor";
+        "protocol-generator/shared/test-vectors/type-registry/type-registry-vectors.cbor";
 
     [Fact]
     public void CoreTypesRenderByteIdenticalToVectorSet()

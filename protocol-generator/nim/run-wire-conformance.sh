@@ -16,7 +16,7 @@ set -eu
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$REPO_ROOT/tools/podman-caps.sh"
 
-CORPUS=/work/protocol-generator/shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor
+CORPUS=/work/protocol-generator/shared/test-vectors/ecf-conformance/conformance-vectors.cbor
 
 # shellcheck disable=SC2086
 podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z \

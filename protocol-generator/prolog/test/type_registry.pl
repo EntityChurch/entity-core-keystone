@@ -1,7 +1,7 @@
 % type_registry.pl — the §9.5 type-registry byte-diff (peer-side dual of the S2
 % codec corpus). Renders all 53 core types (§9.5) from the in-code model
 % (ec_types:core_type_model/2) via make_entity, and diffs each content_hash digest
-% against the canonical type-registry-vectors-v1.diag (cross-impl Go-rendered).
+% against the canonical type-registry-vectors.diag (cross-impl Go-rendered).
 % Proves render-from-model is byte-identical to the oracle's TypeDefinition
 % entities — the S3 GATE companion to the loopback (53/53).
 %
@@ -22,7 +22,7 @@
 % first script arg (after --).
 run_type_registry_main :-
     current_prolog_flag(argv, Argv),
-    ( Argv = [DiagPath|_] -> true ; DiagPath = 'protocol-generator/shared/test-vectors/v0.8.0/type-registry-vectors-v1.diag' ),
+    ( Argv = [DiagPath|_] -> true ; DiagPath = 'protocol-generator/shared/test-vectors/type-registry/type-registry-vectors.diag' ),
     ( run_type_registry(DiagPath) -> halt(0) ; halt(1) ).
 
 run_type_registry(DiagPath) :-

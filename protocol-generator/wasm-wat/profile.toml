@@ -193,5 +193,5 @@ codec_wasm        = "entity-core-codec-ffi-rust @ wasm32-wasip1 (provenance via 
 
 [spec]
 v7_version_pinned = "v0.8.0 / V8"             # the single pinned spec snapshot (shared/spec-data/v0.8.0). Core wire byte-unchanged.
-codec_corpus      = "v0.8.0 / conformance-vectors-v1 (71 vectors)"  # exercised through the merged codec in increment 3
+codec_corpus      = "ecf-conformance / conformance-vectors (71 vectors)"  # exercised through the merged codec in increment 3
 oracle_pin        = "cc1970f (fingerprint 8261a033…) — matches the cohort; validate-peer --profile core = 0-FAIL target"

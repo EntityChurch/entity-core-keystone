@@ -1,7 +1,7 @@
 ⍝ entity-core-protocol-apl — test/conformance.apl
 ⍝
 ⍝ S2 FULL codec conformance driver (THE GATE). Decodes the pinned v0.8.0 corpus
-⍝ (conformance-vectors-v1.cbor) with OUR OWN array decoder and asserts per vector:
+⍝ (conformance-vectors.cbor) with OUR OWN array decoder and asserts per vector:
 ⍝   encode_equal : our re-encode of `input` == `canonical` bytes, byte-identical
 ⍝   decode_reject: our decoder REJECTS `canonical` (N2 tag scan OR trailing bytes)
 ⍝ Class B (content_hash / peer_id / signature) is reconstructed through the codec
@@ -55,7 +55,7 @@
  st←HeadFormSelfTest
  →(0=1⊃st)/hfbad
  ⎕←'head-form self-test: ',⊃2⊃st
- buf←⎕FIO[26]'../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor'
+ buf←⎕FIO[26]'../shared/test-vectors/ecf-conformance/conformance-vectors.cbor'
  buf←⎕UCS buf
  dec←CborDecode buf
  →(EC_OK≠3⊃dec)/decbad

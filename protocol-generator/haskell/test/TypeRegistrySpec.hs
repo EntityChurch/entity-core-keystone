@@ -2,7 +2,7 @@
 
 -- | A-HS-009 byte-diff: render all 53 §9.5 core types from the in-code model and
 -- assert each entity's content_hash is byte-identical to the Go-rendered
--- @type-registry-vectors-v1.cbor@ set (the S8 drift target). The codec being
+-- @type-registry-vectors.cbor@ set (the S8 drift target). The codec being
 -- byte-green at S2 means the only residual risk is field-shape data, which this
 -- per-type digest diff catches. Mirrors the Zig A-ZIG-008 test / TS
 -- type-registry.test.ts.
@@ -23,7 +23,7 @@ import EntityCore.Model (Entity (..), makeEntity)
 import EntityCore.TypeDefs (TypeDef (..), allTypes, coreTypeCount, typeDefData)
 
 vectorsPath :: FilePath
-vectorsPath = "../shared/test-vectors/v0.8.0/type-registry-vectors-v1.cbor"
+vectorsPath = "../shared/test-vectors/type-registry/type-registry-vectors.cbor"
 
 spec :: Spec
 spec = describe "A-HS-009: §9.5 53-type registry render byte-diff" $ do

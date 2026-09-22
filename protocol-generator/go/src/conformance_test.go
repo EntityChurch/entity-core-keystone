@@ -13,11 +13,11 @@ import (
 
 // corpusPath locates the vendored wire-conformance corpus. The ECF corpus is
 // byte-stable (it did not change across the V7 line and is unchanged in V8 —
-// ECF 1.5); test-vectors/v0.8.0 is the single retained snapshot.
+// ECF 1.5); test-vectors/ecf-conformance is the single retained snapshot.
 func corpusPath(t *testing.T) string {
 	t.Helper()
 	candidates := []string{
-		"../../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor",
+		"../../shared/test-vectors/ecf-conformance/conformance-vectors.cbor",
 	}
 	for _, c := range candidates {
 		if _, err := os.Stat(c); err == nil {

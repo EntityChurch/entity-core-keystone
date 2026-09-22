@@ -1,7 +1,7 @@
 ! entity-core-protocol-fortran — test/conformance.f90
 !
 ! S2 FULL codec conformance driver (the gate). Walks the pinned v0.8.0 corpus
-! (conformance-vectors-v1.cbor) decoded with OUR OWN decoder, and asserts per vector:
+! (conformance-vectors.cbor) decoded with OUR OWN decoder, and asserts per vector:
 !   - encode_equal:   our re-encode of `input` == `canonical` bytes, byte-identical
 !   - decode_reject:  our decoder REJECTS `canonical` (the N2 tag scanner et al.)
 ! Class B (content_hash / peer_id / signature) is reconstructed through the codec +

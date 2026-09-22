@@ -9,9 +9,9 @@ import "core:testing"
 
 // The 71-vector wire-conformance corpus is compiled IN (offline, hermetic — no
 // runtime file IO, no network). Path is relative to THIS source file:
-// test/ → ../shared/test-vectors/v0.8.0/…
+// test/ → ../shared/test-vectors/ecf-conformance/…
 CORPUS := #load(
-	"../../shared/test-vectors/v0.8.0/conformance-vectors-v1.cbor",
+	"../../shared/test-vectors/ecf-conformance/conformance-vectors.cbor",
 )
 
 // ── the full 71-vector gate, leak-checked ────────────────────────────────────

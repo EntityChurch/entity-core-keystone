@@ -294,7 +294,7 @@ patent grant retained). No override.
 
 Profile + (future) peer derive from `spec-data/v7.75` (the latest snapshot — the
 current-state menu items were verified directly in it at S1, see PHASE-S1.md). The codec
-uses the `test-vectors/v0.8.0` corpus (the latest test-vectors snapshot) because
+uses the `test-vectors/ecf-conformance` corpus (the latest test-vectors snapshot) because
 `ENTITY-CBOR-ENCODING.md` is **byte-stable across v7.71→v7.75** (no wire-format change in
 the v7.72–v7.75 folds — resilience/resource-bounds are peer-layer, not codec; the cohort
 SHA-verified the byte-stability). So the v0.8.0 corpus is valid at v7.75. The canonical core
