@@ -303,6 +303,22 @@ Two conformance **oracles** are ground truth (built from `entity-core-go`, see B
   retract the standing advice to drive a starved category with `-category` instead of re-running the
   suite — it sharpens it: **read such a run for the specific check you are chasing, never for its
   Summary line**, and never compare its P/W/F/S to a `--profile core` row.
+- **TWO MEASUREMENTS AT ONCE IS ONE MEASUREMENT AND SOME WRECKAGE — AND ITS FAILURES LOOK LIKE
+  PEER DEFECTS.** Candidate (2026-09-07, self-inflicted). Running `pp.sh <peer>` (a probe census)
+  while a `--tier M3` census was in flight produced, in the tier run, `crystal` dying with
+  `Thread#execution_context cannot be nil`, `odin` with `permission denied` writing its own JSON,
+  and `datalog` with `Permission denied` on its cargo dep-info — three peers reported RED for
+  reasons entirely outside their source. Both runs write `output/scratch/`, both allocate ports,
+  and both are capped against the same host budget. Re-run serially: all three clean, **0 of 721
+  severities moved**. **Enforcement: one census at a time, and treat any run whose failures are
+  filesystem-permission or runtime-internal rather than protocol-shaped as contended until proven
+  otherwise.** The census's own STALE-JSON guard is what caught it — it refuses to report a JSON
+  the run did not write, which is the same discipline as the probe driver's mtime check.
+  *(Sub-lesson, cheap: **`pgrep -f <pattern>` in a watcher loop matches the WATCHER**, because the
+  pattern is in its own command line. `while pgrep -f run-cohort-census; do sleep 30; done` never
+  exits, and after two of them are running, `pgrep` stops answering the question you are asking.
+  Discriminate on something the watcher cannot contain — the log's completion marker, or a
+  podman-process count.)*
 - **`output/scratch/census/` is NOT scoped to the last run — stale per-peer JSONs from earlier
   censuses sit beside the fresh ones.** A `--tier M1` run leaves the other 40 peers' files untouched,
   so `grep -l budget_exhausted output/scratch/census/*.json` returns the `asm`/`riscv64` trio from a
@@ -942,6 +958,22 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   easy overclaim. Enforcement: `git grep -nE "accept\(\)? *(catch|orelse) *(break|return)"` plus a
   read of every `accept()` call site's error arm; the rest of the cohort (`cobol` `fortran` `rexx`
   `pd` `sql`) already skips a failed accept and keeps looping.
+- **THE PEER'S DYING WORDS MAY NOT BE ON STDERR — CHECK WHICH STREAM THE RUNTIME USES BEFORE
+  TRUSTING A CAPTURE THAT PRINTS NOTHING.** Candidate (`io`, 2026-09-07; the cohort-wide
+  keep-the-peer-stderr fix meeting a runtime it does not cover). Io writes an uncaught exception
+  AND its backtrace to **stdout**, so the harness's `cat build/s4-peer.err` guard — the one added
+  precisely so a mid-run abort is not reported as "connection refused" — printed nothing while the
+  peer died mid-put. The probe reported `no response header: EOF`, which is exactly the
+  no-crash-empty-stderr reading that rule exists to prevent. Fixed by also dumping the stdout log,
+  but **only when it contains an exception marker**: printing it every run would train people to
+  skip it, which is the failure mode this file records three times. **Enforcement: for each peer,
+  know which stream its runtime uses for an uncaught fault — and if the answer is stdout, the
+  stderr guard is not a guard for that peer.**
+  *(The bug it was hiding is worth its own line: in Io `==` binds TIGHTER than `&`, so
+  `b & 0x80 == 0` parses as `b & (0x80 == 0)` and raises. **On any substrate, write bit tests with
+  the explicit methods (`bitwiseAnd`, `shiftLeft`) rather than the operators, unless you have
+  checked that language's precedence table** — a varint loop is the place this bites, and a
+  single-threaded peer turns the raise into a dead process.)*
 - **A RAW CONTROL BYTE IN A SOURCE FILE MAKES IT INVISIBLE TO EVERY GREP-BASED AUDIT — and the
   audit reports "absent", not "could not look".** RATIFIED 2026-09-01, two peers, same session.
   `dart/lib/src/peer/peer.dart` and `ruby/lib/entity_core/peer.rb` each wrote `"\x00"` as a
@@ -1392,6 +1424,17 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   file records twice. What it must never do again is stay silent. **Generalize: any harness
   that publishes a count as evidence of equivalence must also publish the SURFACE that count
   ranges over** — otherwise the number grows while the coverage does not, and nobody can tell.
+- **A STALE-BUILD-ARTIFACT CARRIER YOU HAVE NOT MET YET IS THE ONE THAT WILL READ AS "THE FIX DID
+  NOT REACH THIS PEER".** Candidate (2026-09-07, `rust-wasm-wasmtime`; the standing rule in a new
+  shape). The three inheriting peers (`rust-wasm`, `rust-wasm-wasmtime`, `node-red`) take their
+  parent's fix by rebuilding rather than by editing, and two of the three did. The third runs
+  `out/peer.cwasm` — the **wasmtime AOT artifact** — and the census hardcodes `NOBUILD=1` for both
+  wasm rows, so rebuilding the `.wasm` left a `.cwasm` five days older beside it and the probe
+  reported the peer as completely unchanged. The Makefile's `out/peer.cwasm: out/peer.wasm`
+  prerequisite is correct; **nothing had ever run it**. **Enforcement: for an inheriting peer, list
+  EVERY derived artifact between the parent's source and the byte the peer executes** — here
+  source → `.wasm` → `.cwasm` — and rebuild the last one, not the first. A parent fix that "did not
+  propagate" is a claim about a build graph, not about the child.
 - **A LEAK PROBE MUST CROSS THE PUBLIC BOUNDARY ONLY — the shipped test binaries' leak output
   is the HARNESS's and reads exactly like the library's.** Candidate, same session. The first
   ASan run of `regression_test` + `conformance_harness` reported **12 and 67 leak records at
@@ -1847,10 +1890,32 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   probe's valid `put`, and "my slicing is wrong" and "these five peers are strict" predict the
   identical output. The self-check re-decodes every forwarded entry and re-hashes its `{type, data}`
   against the map key it is filed under (§3.1 requires them equal); it reports **0 of 4 bad on every
-  peer**, and *that* is what licenses reporting the five as a peer-side observation instead of a
-  probe bug. **Generalize: whenever a harness replays bytes it received, assert the invariant the
+  peer**. **Generalize: whenever a harness replays bytes it received, assert the invariant the
   sender was obliged to satisfy — the assertion costs ten lines and converts an unfalsifiable
   suspicion into a measurement.**
+  **RATIFIED AND CORRECTED 2026-09-07 — this entry used to end that sentence with *"and THAT is
+  what licenses reporting the five as a peer-side observation instead of a probe bug."* It licensed
+  no such thing, and the five were the probe.** `authedExecute` unions the probe's own peer entity
+  into the forwarded `included` map, which already contains it (the probe IS the grantee), and the
+  encoder sorted map keys **without deduplicating** — so every authenticated frame carried the same
+  byte-string key twice, which is not canonical ECF at all. `csharp` refused the whole frame in
+  strict CTAP2 mode on **every** case including the positive control; `typescript`/`node-red`
+  dropped it silently.
+  **AN INVARIANT CHECK LICENSES EXACTLY THE INVARIANT IT CHECKS.** The self-check verified that
+  each forwarded entry AGREES WITH its key and said nothing about the keys being UNIQUE — and the
+  fault was a duplicate key. Offering a narrow check as general assurance is how a probe fault gets
+  published as a cohort finding about five peers, in a document whose own section title was *"and
+  the probe is not the reason"*.
+  **The peer that caught it is the peer we published as broken, and its refusal named the wrong
+  cause** (`400 non_canonical_ecf — "CBOR tags are forbidden"`, one code and one message standing in
+  for several canonicalization branches), which is what made a fault of ours look like a defect of
+  theirs wearing their own error code. **When ONE peer of a cohort refuses what the others accept,
+  the prior belongs on the instrument, not on the peer** — the strict one is the one telling you
+  something. **Enforcement: the encoder deduplicates by construction (a map HAS unique keys) and
+  reports the dropped count per peer, so the dedup can never be silent; and a probe's diagnosis of a
+  refusing peer is not final until the peer's OWN error path has been read.** It took one
+  three-line stderr print in `csharp`'s decode-refusal catch to turn "these five peers are strict"
+  into `CborContentException: does not support duplicate keys`.
   **And the POSITIVE control caught two probe faults before either could become a cohort finding**,
   which is the p47 lesson paying out on its second instrument: a stray decode call left the
   forwarded material silently empty (`403 capability_denied`), and then a `system/peer` entity
@@ -1858,6 +1923,37 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   `peer_id` MUST NOT be in that basis; §4.6's own pseudocode still shows the pre-v7.65 three-field
   form**, and the probe had been written against the pseudocode. Both would have published as
   cohort-wide defects. **A wire probe's first two runs are about the probe.**
+- **AN ACCEPT-SIDE RULE IS NEW IMPLEMENTATION ON EVERY PEER, AND THE PEERS WHOSE `put` "WORKED"
+  WERE THE ONES AUTHORING THE SUBMITTER'S CONTENT.** RATIFIED 2026-09-07, §6.3's `0.8.2.11` put
+  admission ladder landed on all 46 peers (`shared/findings/put-admission-wire-census.md`). Arch's
+  instruction — *"do not size the work from the assumption that they are conformant and this is a
+  re-vendor"* — was right and the measurement was the maximum bad case: **0 of 46 implemented any
+  row**; **36 accepted a two-key `{type, data}` submission and STORED it**, holding an entity under
+  a hash nobody supplied; **10 bound a path to content that did not hash to the hash they were
+  given** (a §1.8 failure the code table does not touch). Final shape: **+4,201 / −128 across 56
+  files**, one ladder authored from the spec and propagated, 46 of 46 at 6 of 6.
+  **Three things generalize past this rule.**
+  - **The ladder had to REMOVE adjacent defects rather than sit beside them, and each was a
+    DEFAULT or a FALLBACK doing authoring work.** `sql` defaulted an absent `type` to
+    `"primitive/any"` — storing an entity under a type the submitter never sent, the same class as
+    authoring its hash, one field over. `ada` and `datalog` treated a present-but-MALFORMED entity
+    as the §6.3 REMOVAL case and **unbound the path**: a destructive reading of a value the spec
+    says to refuse. Enforcement: on any receipt path, grep for a default applied to a field the
+    submitter is required to supply, and check that the delete arm is `absent OR null` and not
+    `absent OR unparseable`.
+  - **A CONSTRUCTOR THAT COMPUTES IS THE DEFECT; NAME THE RECEIPT CONSTRUCTOR AND SAY WHERE IT MAY
+    BE CALLED FROM.** Peers whose entity type only had an authoring constructor gained one
+    (`Entity.admitted` / `ent-admitted` / `Ent_Admitted` / `admittedType:data:hash:`) whose doc
+    comment states it is reachable only from the ladder that just verified those bytes. Where an
+    existing `of_cbor`/`from_cbor` already recomputed and refused on a carried mismatch, step 2
+    routes through it — **verifying is the opposite of authoring, and reusing the verifier is
+    cheaper and safer than a second comparison.**
+  - **NAME THE CODES A PEER CAN VERIFY, NOT THE CODES ITS CONSTRUCTION PATH WILL SERIALISE.** Every
+    peer's `hashDigestLen` is its own: a fixed 33-byte hash field (`c` `cpp` `fortran` + the ISA
+    trio) or a SHA-256-only primitive means `0x00` alone. So the SAME input answers
+    `unsupported_content_hash_format` on different codes on different peers — which is the honest
+    answer, and copying one peer's table across the cohort would have been a claim none of them
+    could keep. This is §4.7's construction-vs-verification asymmetry as a per-peer fact.
 - **A GATE THAT EXAMINES ZERO THINGS PRINTS THE SAME WORD AS ONE THAT EXAMINES FORTY-SIX —
   always print the COUNT, and assert on it in the regression suite.** RATIFIED 2026-08-30
   (second occurrence of the vacuous-control class after `check-set-gate`'s `Path.stem`
@@ -2017,6 +2113,16 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   overlay, same file naming. **Enforcement, and it is the cheap one this repo already prescribes:
   when `tier-status.py` and `check-set-gate.py --tracked` disagree about which peers are green,
   suspect the INPUT before the peers.** They disagreed here, and the tracked gate was right.
+  **CURRENT STATE 2026-09-07 — §6.3's `0.8.2.11` PUT ADMISSION LADDER is CLOSED at 46 of 46, 6 of 6
+  on `tools/put-probe`, and it moved NO conformance check.** This is the first ACCEPT-side rule of
+  the whole `0.8.2.x` arc and it was new implementation on every peer, not a re-vendor: measured
+  first at **0 of 46 conformant**, with 36 peers accepting-and-storing a two-key `{type, data}`
+  submission. The pinned oracle (`f313028`, executed set `d30c3dd0…`) carries no vector on this
+  surface — its own `put` inputs all carry a well-formed `content_hash` — so **the ladder is
+  additive at this check set, verified per-check against every committed report rather than by
+  summary.** The oracle re-pin that WILL gate it is still deliberately open (`go` is 54+ commits
+  past the pin and was landing `fix(tree)` work on this surface); the vendor and the re-pin stay
+  decoupled. Detail: `shared/findings/put-admission-wire-census.md`.
   **CURRENT STATE 2026-09-01 — the `0.8.2.3` sweep is CLOSED at 46 of 46, `756 · 0F`, cohort-standard
   row `314P/336W/0F/106S`. The `755 · 0F` cohort row below is HISTORY.** Both anchors moved together
   (oracle `c1b0708 → f313028`, spec `v0.8.2 → v0.8.2.3`, executed set `95edd774… → d30c3dd0…`), two
@@ -2344,6 +2450,18 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   that they are *too* correct, held by a list with no other end. `ls /proc/<pid>/fd | wc -l` at idle,
   after one suite and after two is the whole diagnostic, and a leak is a CURVE where a high-water mark
   is a plateau.
+- **AN INLINE `{ type X }` IMPORT IS STILL A VALUE IMPORT OF THE MODULE, AND THE EMITTED NO-OP CAN
+  BLOCK A WHOLE BUILD TARGET.** Candidate (`typescript` → `turbowarp`, 2026-09-07).
+  `import { type Socket } from "node:net"` leaves the STATEMENT a value import, so `tsc` emits
+  `import {} from "node:net"` into `dist/` — harmless under Node, and fatal to an esbuild
+  **browser** bundle that cannot resolve a Node builtin. That single emitted line is the entire
+  content of `turbowarp`'s `ERROR: bundle build failed`, the reason **the one peer nobody could
+  measure** carried that status for weeks. `import type { … }` elides the statement completely.
+  **Bisected before being called pre-existing** — it reproduces with the parent's source restored
+  to before the arc — which is the standing rule about never labelling a failure "pre-existing"
+  without bisecting, and it is also what made the fix safe to make here rather than route.
+  Enforcement: `grep -rn "import { type " <peer>/src` on any peer whose output is bundled for a
+  non-Node platform.
 - **PROSE IN A COMMENT IS CODE, IN ANY FORMAT WHERE PUNCTUATION TERMINATES A RECORD — and the errors
   it produces are invisible if the peer logs to a file that dies with the container.** Candidate
   (first occurrence, but the enforcement point is exact). `pd` had been printing three errors on every

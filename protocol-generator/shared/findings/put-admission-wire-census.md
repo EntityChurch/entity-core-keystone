@@ -2,6 +2,14 @@
 
 **Date:** 2026-09-06 · **From:** `entity-core-keystone` · **Measured against:** `ENTITY-CORE-PROTOCOL.md` **0.8.2.11** (`protocol-generator/shared/spec-data/v0.8.2.11/`, `c97e1860…`) · **Instrument:** `tools/put-probe/`
 
+> **STATUS — the gap this measured is CLOSED, and §5 of this document was WRONG. See §7.**
+> The ladder is now authored on all 46 peers and all 46 measure **6 of 6 conformant**. Coverage
+> is **46 measured**, not the 40 / 5 / 1 split below: the five "unmeasurable" peers were a
+> **probe fault** — a duplicate key in the `included` map — and `turbowarp`'s bundle failure was
+> one emitted no-op import. The measurement in §4 stands as the state of the cohort *before* the
+> fix; §5's reasoning does not, and is corrected in place rather than deleted because the wrong
+> inference is the part worth keeping.
+
 **The headline, and it is not a code-spelling story.** Of the **40 peers this could be measured
 on, ZERO implement any row of the ladder**. **37 of 40 accept a submitted entity carrying no
 `content_hash` at all, and 36 of them STORE it** — the peer authors a hash the submitter never
@@ -71,8 +79,13 @@ forwarded verbatim.
   **INDETERMINATE** unless both single-fault arms refuse *and* refuse differently.
 - **Probe self-check.** Every forwarded `included` entry is re-decoded and re-hashed and must equal
   the map key it is filed under (§3.1). Without this, a byte-slicing bug in the probe and a peer
-  defect are the same observation. It reports **0 of 4 bad on every peer**, which is what licenses
-  §5's reading of the five unmeasurable peers.
+  defect are the same observation. It reports **0 of 4 bad on every peer**.
+  **CORRECTED — that sentence used to end "which is what licenses §5's reading of the five
+  unmeasurable peers." It licenses no such thing.** The check verifies that each forwarded entry
+  AGREES WITH its key; it says nothing about whether the keys are UNIQUE, and the fault in §5 was
+  a DUPLICATE key. **An invariant check licenses exactly the invariant it checks** — offering it as
+  general assurance is how a probe fault gets published as a cohort finding. The encoder now
+  deduplicates by construction and reports the count it dropped, so the dedup can never be silent.
 
 **B is followed by a GET on the same path**, because a peer that answers 200 and a peer that
 answers 200 having stored nothing are different findings — and the difference is exactly arch's
@@ -113,7 +126,40 @@ Three things are worth separating, because they are different severities:
 answers C with `200`, so there is no step-1 refusal for a step-2 refusal to be ordered against.
 The discriminator becomes measurable only after step 1 exists somewhere.
 
-## 5. Five peers could not be measured, and the probe is not the reason
+## 5. ~~Five peers could not be measured, and the probe is not the reason~~ — RETRACTED: it was the probe
+
+> **This section was wrong, and its title was the wrongest part of it. Kept in full, struck rather
+> than deleted, because the mechanism generalizes.**
+>
+> `authedExecute` unions the probe's own peer entity into the handshake's forwarded `included`
+> map — which already contains it, because the probe IS the grantee — and the map encoder sorted
+> keys without deduplicating. **Every authenticated frame therefore carried the same byte-string
+> key twice.** A CBOR map with a duplicate key is not canonical ECF at all, and a decoder is
+> entitled to refuse the whole frame.
+>
+> **`csharp` did, in strict CTAP2 mode, on every case including the positive control — and it was
+> the only peer of 46 strict enough to say so, which is exactly why it read as the outlier.** Its
+> refusal even named the wrong reason (below), which is what let a probe fault look like a peer
+> defect wearing a peer's own error code. `typescript` and `node-red` dropped the frame silently;
+> `forth` and `smalltalk` refused.
+>
+> **The one true finding in this section survives:** `csharp`'s single code and single message
+> standing in for several canonicalization branches is real, and it is what made the diagnosis take
+> a debug build instead of a read. The rest of the section is a description of our own bug.
+>
+> After the fix all five are measurable and trusted. **Coverage: 46 measured.**
+>
+> **And the dedup COUNT names the affected population, which is what closes this
+> retraction rather than merely asserting it.** The encoder reports how many duplicate
+> keys it discarded per peer: **7 peers report 7, the other 39 report 0** — and the 7
+> are `csharp`, `forth`, `node-red`, `smalltalk`, `typescript` (the five reported
+> unmeasurable), `turbowarp` (which inherits the `typescript` engine) and `nim`. Those
+> are exactly the peers whose `authenticate` response echoes the GRANTEE's own peer
+> entity in its `included` map, which is what made the probe's union duplicate a key at
+> all. `nim` is the informative outlier: same duplicate, decoder tolerated it. A silent
+> dedup would have fixed the symptom and left this unknowable.
+
+
 
 `csharp` · `forth` · `node-red` · `smalltalk` · `typescript` complete the handshake — grantee
 resolves, capability material forwards, **self-check clean (0 of 4 bad)** — and then refuse or drop
@@ -152,3 +198,58 @@ tools/run-cohort-census.sh --probe put-probe          # all 46
 ```
 
 Per-peer JSON: `output/scratch/put-probe/<peer>.json` (gitignored — re-run rather than cite a copy).
+
+## 7. Closed — 46 of 46 conformant (2026-09-07)
+
+The ladder is authored on every peer in the cohort and every peer measures **6 of 6**:
+
+| case | input | every peer now answers |
+|---|---|---|
+| A | valid put | `200` |
+| B | `{type, data}`, no `content_hash` | `400 invalid_request` |
+| C | empty `type`, hash correct for it | `400 invalid_request` |
+| D | well-formed but wrong hash | `400 hash_mismatch` |
+| E | **both** faults | `400 invalid_request` |
+| F | format code `0x40` | `400 unsupported_content_hash_format` |
+
+Measured across all 46 in one census run with the current probe: **46 of 46
+`6/6 conformant`, 46 of 46 `trusted: true`, and 46 of 46 reporting the ordering verdict
+`step 1 precedes step 2 (conformant)`.**
+
+**The ordering question is now ANSWERABLE and the answer is conformant.** §4 reported it
+INDETERMINATE cohort-wide because every peer accepted the step-1-only input, so there was no
+step-1 refusal for a step-2 refusal to be ordered against. With step 1 implemented, C and D refuse
+differently and E's `invalid_request` means what the spec says it should.
+
+**What the fix is not.** It is not a code-spelling sweep. Three defect classes closed:
+
+1. **36 peers authored the submitter's `content_hash` and stored the entity under it.** Every peer
+   now binds the CARRIED hash, and several gained an explicit receipt constructor (`Entity.admitted`,
+   `ent-admitted`, `Ent_Admitted`, `admittedType:data:hash:`) whose doc comment says it is reachable
+   only from the ladder that just verified those bytes. Where an existing `of_cbor`/`from_cbor`
+   already recomputed and refused on a carried mismatch, step 2 routes through it — verifying is the
+   opposite of authoring.
+2. **10 peers bound a path to content that did not hash to the hash they were given** — a §1.8
+   validate-before-trust failure independent of the code table.
+3. **Adjacent defects the ladder had to remove rather than sit beside.** `sql` defaulted an absent
+   `type` to `primitive/any`, storing an entity under a type the submitter never sent. `ada` and
+   `datalog` treated a present-but-MALFORMED entity as the §6.3 REMOVAL case and unbound the path —
+   a destructive reading of a value the spec says to refuse.
+
+**Per-peer honesty about the supported set.** Each peer's `hashDigestLen` names the codes it can
+actually VERIFY, not the codes its construction path will serialise. Peers whose entity carries a
+fixed 33-byte hash (`c`, `cpp`, `fortran`, the ISA trio) or whose hash primitive is the SHA-256
+floor (`lean`, `rust`, `unison`, `apl`, `wasm-wat`, `pd`, `sql`, `cobol`, `nim`) verify `0x00`
+alone; peers with a real SHA-384 path also verify `0x01`. **The same input therefore answers
+`unsupported_content_hash_format` on different codes on different peers, which is the honest answer
+rather than a uniform one.**
+
+**Conformance impact: none, measured.** The pinned oracle's own `put` vectors all carry a
+well-formed `content_hash`, so the ladder is additive at this check set — verified per-check rather
+than by summary, peer by peer, against each committed report.
+
+**Standing limit, unchanged.** 46 peers agreeing is **cohort-consistent, not independent
+convergence**: this is one ladder authored from one reading of §6.3 and propagated, and its
+uniformity is evidence of a shared generation lineage. What it is *not* is a re-vendor — it was
+**+4,201 / −128 lines across 56 files** in ~36 languages, and the three adjacent defects above were
+found only because something finally drove the surface.
