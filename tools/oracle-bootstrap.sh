@@ -62,8 +62,58 @@ die(){ echo "oracle-bootstrap: ERROR $*" >&2; exit 1; }
 # blind to (35 sites at go de8f807), which would have under-counted the check set
 # on any re-pin done before this fix. (Recorded as W1 in an internal session note,
 # 2026-08-13 — not published.)
+#
+# 2026-09-01: extended again, and this is the THIRD time this extraction has been
+# blind to a registration form (after .DeclareSelf( above and _test.go inclusion in
+# validate_sources below). A check whose name is a CONST is invisible to a literal-
+# only regex:
+#
+#     const name = "connect_prehello_authenticate"
+#     ...
+#     checks = append(checks, probePreHelloAuthenticate(ctx, addr))
+#
+# Measured at go HEAD: 10 declared names sat in that form, and FOUR are in
+# catConnectivity, a CORE category — connect_prehello_authenticate (the FM-1 check,
+# landing in this very re-pin), handshake_nonce_single_use, handshake_probe_baseline,
+# handshake_replay_cross_connection. The other six are catRelay* (extension).
+#
+# handshake_nonce_single_use is the sharp one: THIS FILE's own justification block
+# names it as one of the four af8a582 hard-FAIL vectors that proved
+# core_gate_fingerprint could not answer "what do these categories assert" — the
+# exact defect check_set_digest was built to catch. It was never visible to
+# check_set_digest either. The anchor was blind to its own motivating example.
+#
+# RESIDUAL BLIND SPOT, stated rather than papered over: a name COMPUTED at runtime
+# cannot be recovered by any static extraction — handlers.go:94 does
+# `name := "handler_" + expected.name + suffix`, so the whole handler_* family is
+# unreachable here, and the trailing-`+` exclusion below deliberately drops the
+# "handler_" fragment rather than recording a prefix as if it were a check name.
+# `core_executed_check_set_digest` (what a RUN emitted) is the anchor that covers
+# them, and it always did. Two anchors, different blind spots, on purpose.
+#
+# (Pattern (a) has always harvested the bare fragment `handler_` from handlers.go's
+# eight `.Declare("handler_" + …)` sites — a degenerate stand-in for eight computed
+# names. It is PRE-EXISTING, present in every digest ever recorded, and identical on
+# both sides of every comparison, so it moves no verdict. Left as-is deliberately:
+# removing it would be a second, benefit-free method change in the same commit and
+# would make this pin's delta harder to attribute.)
+#
+# CONSEQUENCE FOR COMPARISON: values from this method are NOT comparable to any
+# recorded before 2026-09-01. See the re-pin block in tools/oracle-pin.env for the
+# previous pin recomputed under this method.
 check_set_digest() {
-  grep -oE '\.Declare(Self)?\("[a-z0-9_]+"' | sed 's/.*("//; s/"//' | sort -u | sha256sum | cut -d' ' -f1
+  cs_tmp=$(mktemp)
+  cat > "$cs_tmp"
+  {
+    # (a) literal: .Declare("x" / .DeclareSelf("x"
+    grep -oE '\.Declare(Self)?\("[a-z0-9_]+"' "$cs_tmp" | sed 's/.*("//; s/"//'
+    # (b) const/var: `const name… = "x"` / `name… := "x"`, where the literal is the
+    #     WHOLE right-hand side. The end-anchor is what excludes a concatenation
+    #     fragment such as `name := "handler_" + expected.name + suffix`.
+    grep -oE '(const|var)?[[:space:]]*name[A-Za-z0-9_]*[[:space:]]*:?=[[:space:]]*"[a-z0-9_]+"[[:space:]]*$' "$cs_tmp" \
+      | sed 's/.*"\([a-z0-9_]*\)"[[:space:]]*$/\1/'
+  } | sort -u | sha256sum | cut -d' ' -f1
+  rm -f "$cs_tmp"
 }
 
 # validate_sources — the digest's INPUT, and the whole reason it is a function.

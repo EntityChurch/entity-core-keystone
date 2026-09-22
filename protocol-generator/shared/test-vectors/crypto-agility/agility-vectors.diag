@@ -1,0 +1,324 @@
+/
+  Crypto-Agility Conformance Vectors
+  Spec:       ENTITY-CORE-PROTOCOL.md §1.2 (content_hash_format seed table),
+              §1.5 (key_type seed table), §1.3 (ECF canonical encoding),
+              §4.5/§4.5a v7.69 (negotiated format), §1.2/§1.2a v7.70
+              (home vs active format).
+  Seeds:      SEEDS.md (single source of truth for every seed pin).
+  Guide:      GUIDE-CONFORMANCE.md (the cross-impl publication procedure)
+  Status:     Phase 1 LOCKED (byte-pinned cross-impl, Go × Rust ×
+              Python byte-equal; cohort confirmation in the cross-impl
+              pin report).
+              Phase 2 RATIFIED-SCHEME (seed convention pinned in SEEDS.md §2;
+              byte pins pending cohort round-trip per SEEDS.md §5 step 2).
+              Phase 3a/3b DEFERRED.
+
+  Format:     CBOR diagnostic notation, RFC 8949 §8. The sibling
+              agility-vectors.cbor is the canonical-ECF-encoded
+              build artifact produced from this file by any conformant
+              ECF encoder; the encoder MUST produce byte-identical output
+              and the lock-points are the inline canonical: h'...' values
+              below.
+
+  Categories: Phase 1 = single-axis allocation + machinery (KEY-TYPE-ED448-1,
+              HASH-FORMAT-SHA-384-1, VARINT-*, FORMAT-CODE-INTERPRETATION-1).
+              Phase 2 = cross-key/cross-hash matrix flow (MATRIX-M2/M3/M6).
+              See README.md §"Vector inventory" for the full register.
+
+  Comment markers in this file use the RFC 8949 §8 / comment / form.
+/
+
+[
+
+  / ─────────────────────────────────────────────────────────────────────── /
+  / PHASE 1 — single-axis allocation + machinery (LOCKED, byte-pinned)      /
+  / ─────────────────────────────────────────────────────────────────────── /
+
+  / KEY-TYPE-ED448-1 — Ed448 keypair from a fixed seed; canonical (0x02, 0x01)
+    SHA-256-form peer_id; sign/verify round-trip on a fixed message; system/peer
+    entity ECF-encoded and content-hashed under SHA-256. See SEEDS.md §1.1.
+    The four sub-vectors below pin: (a) the canonical pubkey from the seed,
+    (b) the wire peer_id, (c) the system/peer entity bytes + content_hash,
+    (d) the signature over the fixture message.                              /
+
+  {
+    "id": "key-type-ed448.1.pubkey",
+    "description": "Ed448 NewKeyFromSeed(0x42 × 57) → canonical 57-byte public_key",
+    "kind": "ed448_seed_to_pubkey",
+    "input": h'424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242',
+    "canonical": h'2601850dc77aaf141e065b2fe83ecfe08b6c15ba930886e9f111b6f0fd8f9f246b167e0398f957df61c9cead939cdf5bc9fe43c9432f3b0e00'
+  },
+
+  {
+    "id": "key-type-ed448.2.peer_id",
+    "description": "system/peer wire peer_id under canonical pair (key_type=0x02 Ed448, hash_type=0x01 SHA-256-form) per V7 §1.5 size-cutoff",
+    "kind": "peer_id_construct",
+    "input": {
+      "public_key": h'2601850dc77aaf141e065b2fe83ecfe08b6c15ba930886e9f111b6f0fd8f9f246b167e0398f957df61c9cead939cdf5bc9fe43c9432f3b0e00',
+      "key_type":   "ed448",
+      "hash_type":  1
+    },
+    "canonical_base58": "3dR1gAppfHXSGMvPRuAfYkkt4P2C1fvnFYpxPBSQP8RLs4"
+  },
+
+  {
+    "id": "key-type-ed448.3.system_peer_entity",
+    "description": "system/peer({public_key=ED448_PUBKEY, key_type='ed448'}) — ECF-canonical CBOR (data map field order: key_type then public_key per ENTITY-CBOR-ENCODING.md §3.2 lexicographic) — and SHA-256-form content_hash",
+    "kind": "peer_entity_construct",
+    "input": {
+      "type": "system/peer",
+      "data": {
+        "key_type":   "ed448",
+        "public_key": h'2601850dc77aaf141e065b2fe83ecfe08b6c15ba930886e9f111b6f0fd8f9f246b167e0398f957df61c9cead939cdf5bc9fe43c9432f3b0e00'
+      }
+    },
+    "canonical_data_cbor": h'a2686b65795f747970656565643434386a7075626c69635f6b657958392601850dc77aaf141e065b2fe83ecfe08b6c15ba930886e9f111b6f0fd8f9f246b167e0398f957df61c9cead939cdf5bc9fe43c9432f3b0e00',
+    "canonical_content_hash": h'002785b314436a82503829339cb2519b4efe795712406ea19ac185e31ae8c70748'
+  },
+
+  {
+    "id": "key-type-ed448.4.signature",
+    "description": "Ed448 signature over the 45-byte ASCII fixture message 'v7.67 Phase 1 cohort cross-impl Ed448 fixture' under the seed-0x42×57 keypair. RFC 8032 deterministic → byte-equal across any conformant library.",
+    "kind": "ed448_sign",
+    "input": {
+      "secret_seed":  h'424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242',
+      "message":      h'76372e3637205068617365203120636f686f72742063726f73732d696d706c2045643434382066697874757265'
+    },
+    "canonical": h'0aff7a36b2b5e7502f9a133bc9ed39316284f0be738e2485546b33fda60966b19ac0e3424ed549072af7ac5caa6d695c3e1e6412207cecaf8085444fbf062cb5271ea6d127c6c87327e1e20793f2b10341d04bd4bed32e220eca1b2255cc8aa4d2a0c8304d67e6f20e814b90411049b33400'
+  },
+
+  / HASH-FORMAT-SHA-384-1 — inherit v7.66 AGILITY-ENTITY-1 corpus fixture
+    (system/peer with 0xAA×64 pubkey, key_type='experimental-test' 0xFE).
+    .1 pins the fixture's floor-form content_hash; .2 asserts that authoring
+    that same fixture under content_hash_format=0x01 is REFUSED — V7 §4.5a
+    item 1a pins system/peer to the floor unconditionally. See SEEDS.md §1.2. /
+
+  {
+    "id": "hash-format-sha-384.1.inherited_sha256_pin",
+    "description": "v7.66 AGILITY-ENTITY-1 SHA-256-form content_hash for the (0xAA×64, 'experimental-test') fixture — the inherited cross-impl lock that anchors this vector",
+    "kind": "inherited_corpus_pin",
+    "input": {
+      "type": "system/peer",
+      "data": {
+        "key_type":   "experimental-test",
+        "public_key": h'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      },
+      "content_hash_format": 0
+    },
+    "canonical_content_hash": h'003d0c34b508c5bf9eca5f086f09aac10f44bd43fca1a091b6aa55a096ca8fcd45',
+    "source": "v7.66 §7.2 corpus pin; this vector inherits — no fresh seed"
+  },
+
+  {
+    "id": "hash-format-sha-384.2.rehash",
+    "description": "Authoring a system/peer under content_hash_format=0x01 (SHA-384) MUST be refused. V7 §4.5a item 1a (v7.77) pins the system/peer identity entity to the ECFv1-SHA-256 floor unconditionally — every connection, whatever the active format, whatever the peer's home format — because its data is wholly recoverable from the public peer-id and every consumer derives its hash rather than fetching it. A non-floor system/peer is therefore a construction that cannot exist, and this vector is the guard for the rule that retired it.",
+    "kind": "construct_reject",
+    "input": {
+      "type": "system/peer",
+      "data": {
+        "key_type":   "experimental-test",
+        "public_key": h'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      },
+      "content_hash_format": 1
+    },
+    "expected_behavior": "construction refused. Error class is deliberately unspecified: this is a local authoring invariant, not a cross-peer seam, so two conformant impls cannot diverge observably across a peer boundary here — impls MAY use a structural validation error, and it is pinned only as 'the entity does not construct'. Same shape as varint-reserved-ff.1.key_type.",
+    "verifier_requirement": "The refusal MUST be observed through the pinned peer-entity constructor. This vector previously asserted the OPPOSITE — that the rehash succeeds, pinning canonical_content_hash 012e64bbde3c494cf7cd… — and stayed green only because the verifier hand-built the entity instead of routing through the constructor that would have refused it. A fixture that exercises a forbidden construction and passes by bypassing the code that forbids it certifies the opposite of the rule (GUIDE-CONFORMANCE §2.4a failure shape).",
+    "floor_form": "see hash-format-sha-384.1.inherited_sha256_pin — 003d0c34b5… is the only content_hash this fixture has"
+  },
+
+  / VARINT-MULTIBYTE-1 — multi-byte LEB128 format-code decode path exists +
+    surfaces unsupported_content_hash_format for an unallocated integer.       /
+
+  {
+    "id": "varint-multibyte.1",
+    "description": "system/hash with format-code bytes 80 01 (LEB128 of integer 128); impl decodes the multi-byte varint AND surfaces unsupported_content_hash_format (128 not in §1.2 seed table). Pins multi-byte LEB128 decoder existence.",
+    "kind": "decode_reject",
+    "input_format_code_varint": h'8001',
+    "input_decoded_integer": 128,
+    "expected_error_code": "unsupported_content_hash_format",
+    "expected_status": 400
+  },
+
+  / VARINT-RESERVED-FF-1 — integer 255 reserved on both axes per §1.2 / §1.5. /
+
+  {
+    "id": "varint-reserved-ff.1.key_type",
+    "description": "system/peer mint with key_type integer 255 (varint FF 01); impl MUST refuse — 255 reserved per V7 §1.5",
+    "kind": "decode_reject",
+    "input_key_type_varint": h'ff01',
+    "input_decoded_integer": 255,
+    "expected_behavior": "mint refused; error class unspecified (impls MAY use unsupported_key_type or a structural validation error; pinned only as: 'the entity does not construct')"
+  },
+
+  {
+    "id": "varint-reserved-ff.2.hash_format",
+    "description": "system/hash with format-code integer 255 (varint FF 01); MUST surface unsupported_content_hash_format",
+    "kind": "decode_reject",
+    "input_format_code_varint": h'ff01',
+    "input_decoded_integer": 255,
+    "expected_error_code": "unsupported_content_hash_format",
+    "expected_status": 400
+  },
+
+  / FORMAT-CODE-INTERPRETATION-1 — unallocated single-byte format code →
+    interpretation error (not a dispatch/routing miss). Renamed from v7.66
+    PREFIX-DISPATCH-1 per the v7.68 §1.2 reframe.                              /
+
+  {
+    "id": "format-code-interpretation.1",
+    "description": "system/hash with single-byte format-code 0x42 (unallocated); impl MUST surface unsupported_content_hash_format. The error is an INTERPRETATION error per V7 §1.2 v7.68 reframe — format-code is intrinsic to the hash, not a routing prefix.",
+    "kind": "decode_reject",
+    "input_format_code_byte": h'42',
+    "expected_error_code": "unsupported_content_hash_format",
+    "expected_status": 400
+  },
+
+  / ─────────────────────────────────────────────────────────────────────── /
+  / PHASE 2 — cross-key/cross-hash matrix (LOCKED, byte-pinned)              /
+  / ─────────────────────────────────────────────────────────────────────── /
+  / The three matrix vectors share a structural shape: handshake → tree-get
+    → cap grant A→B → cap use B→A. Per SEEDS.md §2.2, all three negotiate
+    to active format SHA-256 (the standard-compliance fallback path).
+    Per SEEDS.md §2.4, identity references use each peer's HOME format;
+    cap-token content travels under the ACTIVE format. Per SEEDS.md §2.5,
+    A's signature is over the cap-token's wire content_hash (RFC 8032
+    deterministic).
+
+    Phase-2 byte pins LOCKED from 3-way cohort round-trip
+    (Go post-fix 3cfb353, Rust d38d1f8, Python a2463be — all byte-equal
+    on the 7 gates: pubkeys, peer_ids, home content_hashes, cap-data
+    CBOR, active cap content_hash, signature, .cbor sha256). Cohort
+    closeouts recorded in the per-impl validation docs.
+
+    Empty-scope dimension convention (arch ruling, see
+    reviews/RULING-EMPTY-SCOPE-INCLUDE.md): an unconstrained
+    scope dimension is present-with-empty-`include` `{include: []}`
+    (CBOR `0x80`), NOT absent and NOT `{include: null}` (`0xf6`). Bound
+    by ENTITY-CBOR-ENCODING §232 (fields MUST NOT be dropped) +
+    §3.6 list-of(pattern) typing (null is not a valid value of a
+    list field). The matrix `grants` entries below carry `handlers`
+    and `operations` keys explicitly per this ruling.                          /
+
+  {
+    "id": "matrix.M2",
+    "description": "Cross-key, same-hash: Peer A = Ed448/SHA-256, Peer B = Ed25519/SHA-256. Same active format (SHA-256). Exercises cap-pattern mixed-key_type peer references.",
+    "kind": "matrix_flow",
+    "input_peer_a": {
+      "key_type": "ed448",
+      "secret_seed": h'424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242',
+      "home_content_hash_format": 0,
+      "advertised_hash_formats":  [0],
+      "role": "initiator"
+    },
+    "input_peer_b": {
+      "key_type": "ed25519",
+      "secret_seed": h'4343434343434343434343434343434343434343434343434343434343434343',
+      "home_content_hash_format": 0,
+      "advertised_hash_formats":  [0]
+    },
+    "negotiated_active_format": 0,
+    "input_cap_token_payload": {
+      "grantee":    "content_hash(peer_b_system_peer) — see expected_peer_b_content_hash",
+      "granter":    { "type": "SingleSig", "hash": "content_hash(peer_a_system_peer) — see expected_peer_a_content_hash" },
+      "grants":     [ { "handlers": { "include": [] }, "operations": { "include": [] }, "resources": { "include": ["system/validate/matrix/*"] } } ],
+      "parent":     null,
+      "created_at": 0,
+      "expires_at": 0
+    },
+    "expected_peer_a_pubkey":         h'2601850dc77aaf141e065b2fe83ecfe08b6c15ba930886e9f111b6f0fd8f9f246b167e0398f957df61c9cead939cdf5bc9fe43c9432f3b0e00',
+    "expected_peer_a_peer_id_base58": "3dR1gAppfHXSGMvPRuAfYkkt4P2C1fvnFYpxPBSQP8RLs4",
+    "expected_peer_a_content_hash":   h'002785b314436a82503829339cb2519b4efe795712406ea19ac185e31ae8c70748',
+    "expected_peer_b_pubkey":         h'22fc297792f0b6ffc0bfcfdb7edb0c0aa14e025a365ec0e342e86e3829cb74b6',
+    "expected_peer_b_peer_id_base58": "2K68ekpdm3sTCUfTs39tpNxowivTsXpRsukodvtqwZmudX",
+    "expected_peer_b_content_hash":   h'00f4a5dd5bb2afe38e8c822847832b2ce83616ac5ed86a7f3c668d4d98753be86b',
+    "expected_root_cap_content_hash": h'0095852ce2ad1fa6ec97cf827413a328a1ca531a37984952a0f5f215c305b6e2ba',
+    "expected_root_cap_signature":    h'6104711f3ba43ade204001ca3146c154b825b0db45a6be6811735bcbbc75da4e2cf5c6a69efb9d3bae3503b21164fd75e5b74f635c74f14f007381e23af338cb98afc299d45406956a029fb1bbfd418eff85ef2908467a56e549f4dbc74d50ca344ff0c1142770df68f956eccc3a5e023200'
+  },
+
+  {
+    "id": "matrix.M3",
+    "description": "Cross-hash, same-key (Ed25519): Peer A home SHA-384, Peer B home SHA-256. Active negotiates to SHA-256 (B is SHA-256-only; A advertises [SHA-384, SHA-256] preference and the first match is SHA-256). Pins: system/peer identity entities are authored at the ECFv1-SHA-256 FLOOR regardless of either peer's home format (§4.5a item 1a, v7.77), so granter.hash and grantee are BOTH floor-form; cap-token content travels under ACTIVE format (SHA-256). The home-vs-active discipline still governs every other entity type — system/peer is the carve-out, because it has no author-chosen content.",
+    "kind": "matrix_flow",
+    "input_peer_a": {
+      "key_type": "ed25519",
+      "secret_seed": h'4444444444444444444444444444444444444444444444444444444444444444',
+      "home_content_hash_format": 1,
+      "advertised_hash_formats":  [1, 0],
+      "role": "initiator"
+    },
+    "input_peer_b": {
+      "key_type": "ed25519",
+      "secret_seed": h'4545454545454545454545454545454545454545454545454545454545454545',
+      "home_content_hash_format": 0,
+      "advertised_hash_formats":  [0]
+    },
+    "negotiated_active_format": 0,
+    "input_cap_token_payload": {
+      "grantee":    "content_hash(peer_b_system_peer) at the ECFv1-SHA-256 floor — see expected_peer_b_content_hash",
+      "granter":    { "type": "SingleSig", "hash": "content_hash(peer_a_system_peer) at the ECFv1-SHA-256 floor per §4.5a item 1a — see expected_peer_a_content_hash" },
+      "grants":     [ { "handlers": { "include": [] }, "operations": { "include": [] }, "resources": { "include": ["system/validate/matrix/*"] } } ],
+      "parent":     null,
+      "created_at": 0,
+      "expires_at": 0
+    },
+    "expected_peer_a_pubkey":         h'd759793bbc13a2819a827c76adb6fba8a49aee007f49f2d0992d99b825ad2c48',
+    "expected_peer_a_peer_id_base58": "2KJGifeh6LynPNnmyQqHrugjm7iW8YPQ4VpWSGgYvHp2VM",
+    "expected_peer_a_content_hash":   h'00af37ab940c4fd3f26d85d1e52343ca6a77b7698191553aee815650beaee92d41',
+    "expected_peer_b_pubkey":         h'6355691c178a8ff91007a7478afb955ef7352c63e7b25703984cf78b26e21a56',
+    "expected_peer_b_peer_id_base58": "2KATqnFJZboriNzCpVQ6nx7oCtc2qcTBToin4muxqo3ja5",
+    "expected_peer_b_content_hash":   h'00bbc4eb0be2c82159a0fcd8eaf22b420b0ac5f3da6f746e0cddadb9f935e71040',
+    "expected_root_cap_content_hash": h'009b78514a0c74a757e622daca3f8f64093d32911970135954136b65d7cb39986a',
+    "expected_root_cap_signature":    h'c31dcf78a26b40d83a19d4e15d90788e25193672e00a28ad68f26278afeac2b8c9e645dfb3ef0e83485360d703eb823b25c3f37da5430028c00b286aad123805'
+  },
+
+  {
+    "id": "matrix.M6",
+    "description": "Combined cross-key + cross-hash: Peer A = Ed448 home SHA-384, Peer B = Ed25519 home SHA-256. Active = SHA-256. Combines M2's key axis with M3's hash axis. Pins the v7.69/v7.70 home-vs-active discipline end-to-end under the most divergent case in the v1 corpus — with system/peer identity entities at the ECFv1-SHA-256 floor throughout (§4.5a item 1a, v7.77). The Ed448 key type is orthogonal: 1a pins the hash format, not the key type, so the Ed448 signature width (114 B) is unchanged and only the signed hash moved.",
+    "kind": "matrix_flow",
+    "input_peer_a": {
+      "key_type": "ed448",
+      "secret_seed": h'464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646',
+      "home_content_hash_format": 1,
+      "advertised_hash_formats":  [1, 0],
+      "role": "initiator"
+    },
+    "input_peer_b": {
+      "key_type": "ed25519",
+      "secret_seed": h'4747474747474747474747474747474747474747474747474747474747474747',
+      "home_content_hash_format": 0,
+      "advertised_hash_formats":  [0]
+    },
+    "negotiated_active_format": 0,
+    "input_cap_token_payload": {
+      "grantee":    "content_hash(peer_b_system_peer) at the ECFv1-SHA-256 floor — see expected_peer_b_content_hash",
+      "granter":    { "type": "SingleSig", "hash": "content_hash(peer_a_system_peer) at the ECFv1-SHA-256 floor per §4.5a item 1a — see expected_peer_a_content_hash" },
+      "grants":     [ { "handlers": { "include": [] }, "operations": { "include": [] }, "resources": { "include": ["system/validate/matrix/*"] } } ],
+      "parent":     null,
+      "created_at": 0,
+      "expires_at": 0
+    },
+    "expected_peer_a_pubkey":         h'ac3699dd5c3fb9461bf18ae2f943b129aa60d388ceb40be0b33cc1c37083faf2ed062cc7727376eae9afbdc66f433830abd5d93b64c0874780',
+    "expected_peer_a_peer_id_base58": "3dWKQXt2foyNFwZ7iyvXxiKLwnLHQZzdsdEpdzdYhP5aZD",
+    "expected_peer_a_content_hash":   h'00848e208deeb0b0523fe486f49da12b9e530c40d8d2795feb6ce663f5d517058e',
+    "expected_peer_b_pubkey":         h'e28a8970753332bd72fef413e6b0b2ef1b4aadda7aa2c141f233712a6876b351',
+    "expected_peer_b_peer_id_base58": "2KK2QYVGptXdChBXoNcXWhfaGRik85xSpefSeL4tPzkeye",
+    "expected_peer_b_content_hash":   h'0056d326c087087e04f4f5a62b1ef518b20541705c2760283b3f490882f133c335',
+    "expected_root_cap_content_hash": h'0096d69daadcf8663c1a21efc39fae9c12472018804dc659c6f55bdeafadc04f50',
+    "expected_root_cap_signature":    h'ea07a4a64dcb13078b75189034380ffcb94b88e25302cda22b62c07eb90a3632b20f5c9f4c13546bf23ffc14bf1ebe51d89cbc0818df65b980b511949b759f20e7e7f4d1750db840333a339b1bbffade9675e8fbe3935214173f33ecdd8c02e442c2970d33a2509db56e9d9ce42b7abd1200'
+  }
+
+  ,
+
+  / Build artifact: agility-vectors.cbor, 10874 B, sha256                      /
+  / b5484e84dd2cddfa7d3cc8a041deba92cb29615aedb2180e31d8b6910ac5b648           /
+  / produced from this .diag by any conformant canonical ECF encoder. The pin  /
+  / has one home — the build owner's corpus registry — and CHANGELOG.md in     /
+  / this directory records every change that moved it.                         /
+  /                                                                            /
+  / 8e7c5232f64bee83d628679f930c771e4e49f2f1e37d19e41e0d7838e31f982e (9236 B)  /
+  / is NOT a stale pin on this file: it is the output of the frozen legacy     /
+  / pair the encoder proof runs against, and it MUST NOT be re-pinned to this  /
+  / .diag as this .diag moves. A proof re-pointed at HEAD asserts only that    /
+  / today's source produces today's output.                                    /
+
+]

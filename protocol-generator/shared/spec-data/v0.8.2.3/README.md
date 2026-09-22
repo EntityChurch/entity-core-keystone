@@ -1,0 +1,16 @@
+# protocol-generator/shared/spec-data/v0.8.2.3/
+
+**Verbatim snapshot of the authoritative normative spec files** — byte-for-byte copies of `entity-core-protocol/specs/{ENTITY-CORE-PROTOCOL,ENTITY-CBOR-ENCODING,ENTITY-NATIVE-TYPE-SYSTEM}.md`, not paraphrased tables. The snapshot pins generation inputs to a spec version for reproducibility per `(spec-version, lang, profile)` (S8), so generators can be re-run + version-stamped as the spec moves.
+
+- **Authoring authority:** architecture only. Operators do NOT write spec-data. This snapshot was taken under explicit arch authorization (`ROUTING-2026-09-01-a` §1) and is a mechanical copy — no editorial content is ours.
+- **No paraphrase:** spec-data MUST literal-quote the spec wording; paraphrase is a bug.
+- **Immutable:** once stamped, a `<version>/` directory is never edited in place. Amendments get a new directory — which is what this one is.
+- **Integrity:** see `MANIFEST.md` for the SHA-256 of each file. **The digests are the only anchor here** — this snapshot is vendored from an *unreleased* line (`0.8.2.3` is not on published `master`, which is still `0.8.2`), so there is no released artifact to check a filename or a tag against. The source commit is recorded as an internal build coordinate and is not citable in anything published.
+- **Version:** Entity Core Protocol **0.8.2.3**. CBOR stays **1.5** and the type system stays **4.2.1** — both labels unmoved, though their bytes changed (19 / 2 lines).
+- **Directory is named `v0.8.2.3`, not `v0.8.3`** — the fourth component is an arch-managed in-flight signal that lets core text move without cutting a release; the operator strips it and names the number at the cut.
+- **What's new vs v0.8.2:** three amendments, **two of which reach a generated peer** — FM-1 (a pre-hello `authenticate` is `401 invalid_nonce`, not `400 connection_sequence_error`) and PD-1 (an inbound EXECUTE naming a foreign namespace is `400 invalid_request`, refused at canonicalization ahead of handler resolution — not `404 handler_not_found`, and never resolved locally and denied by the `peers` dimension). The third, Edit E's `resources` narrowing, was withdrawn the day it landed and no generated peer implements it. 50 / 19 / 2 changed lines respectively.
+- **Conformance scaffolding + generator defaults** (the §7a `system/validate/*` test-handlers, the §7b concurrency gate, the §4.10 `resource_bounds` probe, store concurrency-safety, the recommended bound defaults, TCP_NODELAY, no-blocking-syscall-on-cooperative-pool) are in `GUIDE-CONFORMANCE.md` + the generator menu — **not in this snapshot**. The guide is pinned by hash in `MANIFEST.md`; it is `Status: Draft`, **and it moved under the previous pin without being routed** — see the manifest for what changed and why it matters to this repo.
+
+**Targets:** all peers from here forward. Supersedes `v0.8.2` and `v0.8.0` for new work; both are kept in place as point-in-time pins.
+
+> **Being consumed now.** Unlike `v0.8.2`, which was pinned and never regenerated against, this snapshot is the target of an active cohort sweep — and it is the first time a snapshot delta has been wire-observable across all 46 peers, because both landed amendments are gated by conformance checks in the pinned oracle. See `MANIFEST.md` "Status in this repo" and `CONFORMANCE-MATRIX.md`.
