@@ -11,7 +11,7 @@ working-storage section.
 01 pub         pic x(32).
 01 peerid      pic x(128).
 01 peerid-len  pic 9(9) comp-5.
-01 pent        pic x(8192).
+01 pent        pic x(524288).
 01 pent-len    pic 9(9) comp-5.
 01 idhash      pic x(33).
 01 expected    pic x(46) value

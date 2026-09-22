@@ -41,7 +41,7 @@ working-storage section.
 01 ws-i         pic 9(4) comp-5.
 01 ws-nbytes    pic 9(2) comp-5.
 linkage section.
-01 lk-buf       pic x(65535).
+01 lk-buf       pic x(524288).
 01 lk-off       pic 9(9) comp-5.
 01 lk-major     pic 9(2) comp-5.
 01 lk-addl      pic 9(2) comp-5.
@@ -99,7 +99,7 @@ working-storage section.
    05 ws-ob-char pic x.
 01 ws-on redefines ws-ob pic 9(2) comp-x.
 linkage section.
-01 lk-out       pic x(65535).
+01 lk-out       pic x(524288).
 01 lk-out-len   pic 9(9) comp-5.
 01 lk-major     pic 9(2) comp-5.
 01 lk-value     pic 9(18) comp-5.
@@ -143,6 +143,73 @@ procedure division using lk-out lk-out-len lk-major lk-value.
     goback.
 end program emit-head.
 
+*> ---- cbor-skip-ck (RECURSIVE) --------------------------------------
+*> Advance LK-OFF past exactly one CBOR value, STRICTLY: anything cbor-canon
+*> itself would refuse — a reserved/indefinite head (addl 28-31) or a
+*> major-type-6 tag (N2) — sets LK-STATUS = 3 and stops. Contrast cbor-skip
+*> below, which is deliberately tolerant because it walks trusted fixtures.
+*>
+*> This exists because cbor-canon's map arm walks each pair TWICE: once to
+*> record where its value starts, once to canonicalize that value into the
+*> output in sorted-key order. The tolerant cbor-skip CANNOT be used for the
+*> first walk. It zeroes the status read-head raised and then treats the
+*> malformed item's argument as 0, which UNDER-ADVANCES the cursor and
+*> desynchronizes every later pair in the map. A desynchronized walk does not
+*> reliably fail: it can go on to parse the remaining bytes as some other
+*> well-formed value and emit clean canonical output for a frame that should
+*> have been refused. Strictness here is what keeps "reject non-canonical
+*> input" a property of the map arm rather than an accident of whatever the
+*> garbage happened to decode to.
+identification division.
+program-id. cbor-skip-ck recursive.
+data division.
+local-storage section.
+01 ws-major     pic 9(2) comp-5.
+01 ws-addl      pic 9(2) comp-5.
+01 ws-arg       pic 9(18) comp-5.
+01 ws-i         pic 9(9) comp-5.
+01 ws-n         pic 9(9) comp-5.
+linkage section.
+01 lk-buf       pic x(524288).
+01 lk-off       pic 9(9) comp-5.
+01 lk-status    pic s9(9) comp-5.
+procedure division using lk-buf lk-off lk-status.
+    call "cbor-read-head" using lk-buf lk-off ws-major ws-addl ws-arg lk-status
+    if lk-status not = 0
+        goback
+    end-if
+    evaluate ws-major
+        when 0
+            continue
+        when 1
+            continue
+        when 2
+            add ws-arg to lk-off
+        when 3
+            add ws-arg to lk-off
+        when 4
+            perform varying ws-i from 1 by 1 until ws-i > ws-arg
+                call "cbor-skip-ck" using lk-buf lk-off lk-status
+                if lk-status not = 0 then goback end-if
+            end-perform
+        when 5
+            compute ws-n = ws-arg * 2
+            perform varying ws-i from 1 by 1 until ws-i > ws-n
+                call "cbor-skip-ck" using lk-buf lk-off lk-status
+                if lk-status not = 0 then goback end-if
+            end-perform
+        when 7
+            *> simple/float argument bytes already consumed by read-head; the
+            *> simple-value forms cbor-canon refuses are caught there, and they
+            *> cannot desynchronize the cursor because the head was well-formed
+            continue
+        when other
+            *> major 6 = tag -> reject, exactly as cbor-canon does (N2)
+            move 3 to lk-status
+    end-evaluate
+    goback.
+end program cbor-skip-ck.
+
 *> ---- cbor-canon (RECURSIVE) ----------------------------------------
 *> Transcode one value at LK-IN(LK-IN-OFF:) to canonical form appended to
 *> LK-OUT (advancing LK-OUT-LEN + LK-IN-OFF). Doubles as the validator: a
@@ -170,27 +237,45 @@ local-storage section.
 01 ws-frem      pic 9(4) comp-5.
 01 ws-fbuf.
    05 ws-fbuf-byte pic x occurs 8.
-*> per-frame map pair table (canonical key sort happens here)
+*> Per-frame map pair table (the canonical key sort happens here).
+*>
+*> THE VALUES ARE NOT BUFFERED. Each pair records only its canonicalized KEY
+*> and the INPUT OFFSET its value starts at; the values are canonicalized
+*> straight into LK-OUT in sorted-key order by the emit loop below. That is
+*> what makes this table's cost independent of payload size, and the cost is
+*> the whole reason it is written this way:
+*>
+*>   was:  64 * (512 key + 32768 value) = 2.13 MB   PER CALL, PER LEVEL
+*>   now:  64 * (1024 key + 4 offset)   = 65.8 KB   PER CALL, PER LEVEL
+*>
+*> LOCAL-STORAGE is allocated AND initialized per invocation, and this program
+*> recurses once per nested value — so a 64-pair map costs 128 of those
+*> allocations at the next level down, most of them for scalars that never
+*> touch the table at all. Raising the old value slot to carry a large entity
+*> was measured at ~34 MB per call: sustained load dropped 7454 of 10000
+*> requests and the concurrency category went from 15.5 s to 9 m 50 s. The
+*> value slot is not raised here. It is gone, and with it the ceiling on how
+*> large a single map value this peer can canonicalize.
 01 ls-npairs    pic 9(9) comp-5.
 01 ls-pairs.
    05 ls-pair occurs 64.
-      10 ls-key      pic x(512).
+      10 ls-key      pic x(1024).
       10 ls-key-len  pic 9(9) comp-5.
-      10 ls-val      pic x(32768).
-      10 ls-val-len  pic 9(9) comp-5.
+      10 ls-voff     pic 9(9) comp-5.
 01 ls-order.
    05 ls-ord-idx occurs 64 pic 9(9) comp-5.
 01 ls-swap      pic 9(9) comp-5.
 01 ls-a         pic 9(9) comp-5.
 01 ls-b         pic 9(9) comp-5.
-01 ls-kbuf      pic x(512).
+01 ls-kbuf      pic x(1024).
 01 ls-kbuf-len  pic 9(9) comp-5.
-01 ls-vbuf      pic x(32768).
-01 ls-vbuf-len  pic 9(9) comp-5.
+01 ls-koff      pic 9(9) comp-5.
+01 ls-scan      pic 9(9) comp-5.
+01 ls-span      pic 9(9) comp-5.
 linkage section.
-01 lk-in        pic x(65535).
+01 lk-in        pic x(524288).
 01 lk-in-off    pic 9(9) comp-5.
-01 lk-out       pic x(65535).
+01 lk-out       pic x(524288).
 01 lk-out-len   pic 9(9) comp-5.
 01 lk-status    pic s9(9) comp-5.
 procedure division using lk-in lk-in-off lk-out lk-out-len lk-status.
@@ -225,13 +310,29 @@ procedure division using lk-in lk-in-off lk-out lk-out-len lk-status.
     end-evaluate
     goback.
 
-*> copy ws-arg raw bytes from input to output (bytes / text payload)
+*> Copy ws-arg raw bytes from input to output (bytes / text payload).
+*>
+*> ONE reference-modified MOVE, not a byte loop. The loop this replaces ran
+*> once per byte, which is invisible on a 40-byte peer id and is 264 109 COBOL
+*> statement executions for the entity concurrency/t1_3_no_head_of_line stages.
+*>
+*> The length is bounded BEFORE the copy, not after: ws-arg is a length read
+*> off the wire, so a head declaring 2^40 bytes would otherwise index far past
+*> both buffers. The old byte loop had the same hole and merely took longer to
+*> reach it. 524288 is the frame/payload capacity every buffer on this path is
+*> declared at (netshim.c EC_FRAMECAP); a value claiming more than one whole
+*> frame cannot be honest, so it is refused as a decode error rather than
+*> truncated.
 copy-payload.
-    perform varying ws-i from 1 by 1 until ws-i > ws-arg
-        add 1 to lk-out-len
-        move lk-in(lk-in-off:1) to lk-out(lk-out-len:1)
-        add 1 to lk-in-off
-    end-perform.
+    if ws-arg > 524288
+        move 3 to lk-status
+    else
+        if ws-arg > 0
+            move lk-in(lk-in-off:ws-arg) to lk-out(lk-out-len + 1:ws-arg)
+            add ws-arg to lk-out-len
+            add ws-arg to lk-in-off
+        end-if
+    end-if.
 
 *> major 7: simple values (re-emit head) + float (head byte + raw N BE bytes).
 *> Float bytes pass through verbatim (ws-arg holds the bit pattern read BE);
@@ -289,7 +390,21 @@ emit-float.
         move ws-fbuf-byte(ws-i) to lk-out(lk-out-len:1)
     end-perform.
 
-*> major 5: decode each pair into the local table, canonical-sort, emit
+*> major 5: index each pair (canonical key + where its value starts),
+*> canonical-sort the keys, then emit the values straight into LK-OUT.
+*>
+*> Pass 1 canonicalizes the KEY into the pair table and only NOTES where the
+*> value begins, stepping over it with the strict skip. Pass 2 emits the map
+*> head, then walks the sorted order re-entering cbor-canon at each recorded
+*> value offset with LK-OUT as its target — so a value is canonicalized once,
+*> directly into the output, and is never copied into a per-pair slot. Values
+*> are therefore bounded by the output buffer alone, and a large one costs
+*> this table nothing.
+*>
+*> Pass 1 must NOT disturb LK-IN-OFF's contract: it advances exactly once past
+*> the whole map, which is what the caller expects on return. Pass 2 therefore
+*> re-enters on LS-SCAN, a separate cursor, so re-reading a value cannot rewind
+*> the caller's position.
 do-map.
     move ws-arg to ls-npairs
     if ls-npairs > 64
@@ -297,20 +412,40 @@ do-map.
         goback
     end-if
     perform varying ws-i from 1 by 1 until ws-i > ls-npairs
-        *> key
-        move spaces to ls-kbuf
+        *> --- key: bound it BEFORE canonicalizing into the fixed slot ---
+        *> The canonical form of a value is never LARGER than its input form
+        *> (minimal heads shrink, payload bytes are copied verbatim, reordering
+        *> a map does not change its size), so the input span measured here is
+        *> a sound upper bound on what the canonicalize below will write. That
+        *> is the whole guard: the old code canonicalized the key into a
+        *> 512-byte slot whose capacity the callee could not see -- cbor-canon
+        *> declares its output as a full frame -- so a map key longer than 512
+        *> bytes, which any client could send, wrote past it into the rest of
+        *> this frame's LOCAL-STORAGE. Refuse it instead, before the write.
+        move lk-in-off to ls-koff
+        call "cbor-skip-ck" using lk-in lk-in-off lk-status
+        if lk-status not = 0 then goback end-if
+        compute ls-span = lk-in-off - ls-koff
+        if ls-span > 1024
+            move 3 to lk-status
+            goback
+        end-if
         move 0 to ls-kbuf-len
-        call "cbor-canon" using lk-in lk-in-off ls-kbuf ls-kbuf-len lk-status
+        move ls-koff to ls-scan
+        call "cbor-canon" using lk-in ls-scan ls-kbuf ls-kbuf-len lk-status
         if lk-status not = 0 then goback end-if
-        move ls-kbuf to ls-key(ws-i)
+        if ls-kbuf-len > 1024
+            move 3 to lk-status
+            goback
+        end-if
         move ls-kbuf-len to ls-key-len(ws-i)
-        *> value
-        move spaces to ls-vbuf
-        move 0 to ls-vbuf-len
-        call "cbor-canon" using lk-in lk-in-off ls-vbuf ls-vbuf-len lk-status
+        if ls-kbuf-len > 0
+            move ls-kbuf(1:ls-kbuf-len) to ls-key(ws-i)(1:ls-kbuf-len)
+        end-if
+        *> --- value: record where it starts, step over it strictly ---
+        move lk-in-off to ls-voff(ws-i)
+        call "cbor-skip-ck" using lk-in lk-in-off lk-status
         if lk-status not = 0 then goback end-if
-        move ls-vbuf to ls-val(ws-i)
-        move ls-vbuf-len to ls-val-len(ws-i)
         move ws-i to ls-ord-idx(ws-i)
     end-perform
     *> bubble sort ls-ord-idx by (key-len, key bytes) ascending
@@ -326,18 +461,22 @@ do-map.
             end-if
         end-perform
     end-perform
-    *> emit map head + sorted pairs
+    *> Emit the map head, then each pair in canonical key order: the key from
+    *> the table, the value canonicalized straight out of the input at the
+    *> offset pass 1 recorded. LS-SCAN is a scratch cursor -- re-entering
+    *> cbor-canon on LK-IN-OFF here would rewind the caller's position, which
+    *> pass 1 has already advanced past the end of this whole map.
     call "emit-head" using lk-out lk-out-len 5 ws-arg
     perform varying ws-i from 1 by 1 until ws-i > ls-npairs
         move ls-ord-idx(ws-i) to ls-a
-        perform varying ws-k from 1 by 1 until ws-k > ls-key-len(ls-a)
-            add 1 to lk-out-len
-            move ls-key(ls-a)(ws-k:1) to lk-out(lk-out-len:1)
-        end-perform
-        perform varying ws-k from 1 by 1 until ws-k > ls-val-len(ls-a)
-            add 1 to lk-out-len
-            move ls-val(ls-a)(ws-k:1) to lk-out(lk-out-len:1)
-        end-perform
+        if ls-key-len(ls-a) > 0
+            move ls-key(ls-a)(1:ls-key-len(ls-a))
+                 to lk-out(lk-out-len + 1:ls-key-len(ls-a))
+            add ls-key-len(ls-a) to lk-out-len
+        end-if
+        move ls-voff(ls-a) to ls-scan
+        call "cbor-canon" using lk-in ls-scan lk-out lk-out-len lk-status
+        if lk-status not = 0 then goback end-if
     end-perform.
 
 *> sets ws-cmp <0/0/>0 comparing pair ls-a vs ls-b by (len, lex)
@@ -374,7 +513,7 @@ local-storage section.
 01 ws-i         pic 9(9) comp-5.
 01 ws-n         pic 9(9) comp-5.
 linkage section.
-01 lk-buf       pic x(65535).
+01 lk-buf       pic x(524288).
 01 lk-off       pic 9(9) comp-5.
 01 lk-status    pic s9(9) comp-5.
 procedure division using lk-buf lk-off lk-status.
@@ -426,7 +565,7 @@ working-storage section.
 01 ws-koff      pic 9(9) comp-5.
 01 ws-st        pic s9(9) comp-5.
 linkage section.
-01 lk-buf       pic x(65535).
+01 lk-buf       pic x(524288).
 01 lk-map-off   pic 9(9) comp-5.
 01 lk-key       pic x(256).
 01 lk-key-len   pic 9(9) comp-5.
@@ -473,9 +612,9 @@ data division.
 working-storage section.
 01 ws-i  pic 9(9) comp-5.
 linkage section.
-01 lk-out      pic x(65535).
+01 lk-out      pic x(524288).
 01 lk-out-len  pic 9(9) comp-5.
-01 lk-src      pic x(65535).
+01 lk-src      pic x(524288).
 01 lk-src-off  pic 9(9) comp-5.
 01 lk-n        pic 9(9) comp-5.
 procedure division using lk-out lk-out-len lk-src lk-src-off lk-n.

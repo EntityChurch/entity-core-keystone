@@ -25,7 +25,7 @@ working-storage section.
 01 k-pub       pic x(10) value "public_key".
 01 k-kt        pic x(8)  value "key_type".
 01 v-ed        pic x(7)  value "ed25519".
-01 nd          pic x(32768).
+01 nd          pic x(524288).
 01 nd-len      pic 9(9) comp-5.
 01 one         pic 9(9) comp-5 value 1.
 01 n2          pic 9(18) comp-5 value 2.
@@ -36,7 +36,7 @@ working-storage section.
 01 st          pic s9(9) comp-5.
 linkage section.
 01 lk-pub      pic x(32).
-01 lk-pent     pic x(32768).
+01 lk-pent     pic x(524288).
 01 lk-pent-len pic 9(9) comp-5.
 01 lk-idhash   pic x(33).
 procedure division using lk-pub lk-pent lk-pent-len lk-idhash.
@@ -63,7 +63,7 @@ linkage section.
 01 lk-pub      pic x(32).
 01 lk-peerid   pic x(128).
 01 lk-peerid-len pic 9(9) comp-5.
-01 lk-pent     pic x(32768).
+01 lk-pent     pic x(524288).
 01 lk-pent-len pic 9(9) comp-5.
 01 lk-idhash   pic x(33).
 procedure division using lk-seed lk-pub lk-peerid lk-peerid-len
@@ -94,7 +94,7 @@ working-storage section.
 01 k-algo      pic x(9)  value "algorithm".
 01 k-sig       pic x(9)  value "signature".
 01 v-ed        pic x(7)  value "ed25519".
-01 nd          pic x(32768).
+01 nd          pic x(524288).
 01 nd-len      pic 9(9) comp-5.
 01 one         pic 9(9) comp-5 value 1.
 01 n4          pic 9(18) comp-5 value 4.
@@ -109,7 +109,7 @@ linkage section.
 01 lk-seed     pic x(32).
 01 lk-idhash   pic x(33).
 01 lk-target   pic x(33).
-01 lk-out      pic x(32768).
+01 lk-out      pic x(524288).
 01 lk-out-len  pic 9(9) comp-5.
 01 lk-sighash  pic x(33).
 procedure division using lk-seed lk-idhash lk-target lk-out lk-out-len lk-sighash.

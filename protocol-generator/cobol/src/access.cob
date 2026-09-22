@@ -29,7 +29,7 @@ working-storage section.
 01 fnd  pic 9(1).
 01 st   pic s9(9) comp-5.
 linkage section.
-01 lk-buf  pic x(65535).
+01 lk-buf  pic x(524288).
 01 lk-eoff pic 9(9) comp-5.
 01 lk-doff pic 9(9) comp-5.
 01 lk-status pic s9(9) comp-5.
@@ -49,7 +49,7 @@ working-storage section.
 01 doff pic 9(9) comp-5.
 01 st   pic s9(9) comp-5.
 linkage section.
-01 lk-buf  pic x(65535).
+01 lk-buf  pic x(524288).
 01 lk-eoff pic 9(9) comp-5.
 01 lk-key  pic x(256).
 01 lk-keylen pic 9(9) comp-5.
@@ -71,7 +71,7 @@ data division.
 working-storage section.
 01 st pic s9(9) comp-5.
 linkage section.
-01 lk-buf  pic x(65535).
+01 lk-buf  pic x(524288).
 01 lk-moff pic 9(9) comp-5.
 01 lk-key  pic x(256).
 01 lk-keylen pic 9(9) comp-5.
@@ -93,7 +93,7 @@ working-storage section.
 01 fnd  pic 9(1).
 01 st   pic s9(9) comp-5.
 linkage section.
-01 lk-buf  pic x(65535).
+01 lk-buf  pic x(524288).
 01 lk-eoff pic 9(9) comp-5.
 01 lk-str  pic x(256).
 01 lk-len  pic 9(9) comp-5.
@@ -117,7 +117,7 @@ working-storage section.
 01 st   pic s9(9) comp-5.
 01 blen pic 9(9) comp-5.
 linkage section.
-01 lk-buf  pic x(65535).
+01 lk-buf  pic x(524288).
 01 lk-eoff pic 9(9) comp-5.
 01 lk-hash pic x(33).
 procedure division using lk-buf lk-eoff lk-hash.
@@ -139,9 +139,9 @@ working-storage section.
 01 rarg pic 9(18) comp-5.
 01 st   pic s9(9) comp-5.
 linkage section.
-01 lk-buf pic x(65535).
+01 lk-buf pic x(524288).
 01 lk-voff pic 9(9) comp-5.
-01 lk-str pic x(65535).
+01 lk-str pic x(524288).
 01 lk-len pic 9(9) comp-5.
 procedure division using lk-buf lk-voff lk-str lk-len.
     move lk-voff to scan
@@ -162,9 +162,9 @@ working-storage section.
 01 rarg pic 9(18) comp-5.
 01 st   pic s9(9) comp-5.
 linkage section.
-01 lk-buf pic x(65535).
+01 lk-buf pic x(524288).
 01 lk-voff pic 9(9) comp-5.
-01 lk-out pic x(65535).
+01 lk-out pic x(524288).
 01 lk-len pic 9(9) comp-5.
 procedure division using lk-buf lk-voff lk-out lk-len.
     move lk-voff to scan
@@ -185,7 +185,7 @@ working-storage section.
 01 rarg pic 9(18) comp-5.
 01 st   pic s9(9) comp-5.
 linkage section.
-01 lk-buf pic x(65535).
+01 lk-buf pic x(524288).
 01 lk-voff pic 9(9) comp-5.
 01 lk-val pic 9(18) comp-5.
 procedure division using lk-buf lk-voff lk-val.
@@ -225,7 +225,7 @@ working-storage section.
 *> peer and MUST be refused rather than truncated.
 01 ws-safe   pic 9(18) comp-5 value 3906249999999999.
 linkage section.
-01 lk-buf pic x(65535).
+01 lk-buf pic x(524288).
 01 lk-voff pic 9(9) comp-5.
 01 lk-val pic 9(18) comp-5.
 01 lk-ok  pic 9(1).

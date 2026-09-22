@@ -23,6 +23,15 @@ LDFLAGS := --sysroot=$(SYSROOT) -no-pie
 # The codec C-ABI, cross-built for aarch64. Overridable; defaults relative to this peer dir.
 CODEC_SRC ?= $(abspath ../../ffi-generator/c-abi/entity-core-codec-ffi-c)
 CODEC_DIR ?= $(CODEC_SRC)/build-aarch64
+
+# Every file the codec compiles from -- DERIVED with `find`, never a hand-listed
+# set, because a second copy of a dependency list is a second thing that can
+# drift.  Without these prerequisites the rule below is a BARE file target, so
+# make runs it only when the .so is ABSENT and a codec source change never
+# reaches this peer: that is how two ISA peers shipped a 2026-07-15 codec.
+CODEC_DEPS := $(shell find $(CODEC_SRC)/src $(CODEC_SRC)/include \
+                          $(CODEC_SRC)/CMakeLists.txt -type f 2>/dev/null)
+
 INC_DIR   ?= $(abspath ../../ffi-generator/c-abi/spec)
 CODEC_LDFLAGS := -L$(CODEC_DIR) -lentitycore_codec -Wl,-rpath,$(CODEC_DIR)
 
@@ -40,7 +49,7 @@ $(OBJ)/%.o: $(SRC)/%.s | $(OBJ)
 # -- codec (cross-build the aarch64 .so) --------------------------------------
 .PHONY: codec
 codec: $(CODEC_DIR)/libentitycore_codec.so
-$(CODEC_DIR)/libentitycore_codec.so:
+$(CODEC_DIR)/libentitycore_codec.so: $(CODEC_DEPS)
 	cmake -S $(CODEC_SRC) -B $(CODEC_DIR) \
 	  -DCMAKE_TOOLCHAIN_FILE=$(CODEC_SRC)/aarch64-cross-toolchain.cmake \
 	  -DCMAKE_BUILD_TYPE=Release

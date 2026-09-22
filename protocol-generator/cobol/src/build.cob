@@ -24,7 +24,7 @@ data division.
 working-storage section.
 01 maj5 pic 9(2) comp-5 value 5.
 linkage section.
-01 lk-out pic x(65535).
+01 lk-out pic x(524288).
 01 lk-out-len pic 9(9) comp-5.
 01 lk-count pic 9(18) comp-5.
 procedure division using lk-out lk-out-len lk-count.
@@ -38,7 +38,7 @@ data division.
 working-storage section.
 01 maj4 pic 9(2) comp-5 value 4.
 linkage section.
-01 lk-out pic x(65535).
+01 lk-out pic x(524288).
 01 lk-out-len pic 9(9) comp-5.
 01 lk-count pic 9(18) comp-5.
 procedure division using lk-out lk-out-len lk-count.
@@ -54,9 +54,9 @@ working-storage section.
 01 one  pic 9(9) comp-5 value 1.
 01 nlen pic 9(18) comp-5.
 linkage section.
-01 lk-out pic x(65535).
+01 lk-out pic x(524288).
 01 lk-out-len pic 9(9) comp-5.
-01 lk-str pic x(65535).
+01 lk-str pic x(524288).
 01 lk-n   pic 9(9) comp-5.
 procedure division using lk-out lk-out-len lk-str lk-n.
     move lk-n to nlen
@@ -71,7 +71,7 @@ data division.
 working-storage section.
 01 maj0 pic 9(2) comp-5 value 0.
 linkage section.
-01 lk-out pic x(65535).
+01 lk-out pic x(524288).
 01 lk-out-len pic 9(9) comp-5.
 01 lk-value pic 9(18) comp-5.
 procedure division using lk-out lk-out-len lk-value.
@@ -86,9 +86,9 @@ working-storage section.
 01 maj2 pic 9(2) comp-5 value 2.
 01 nlen pic 9(18) comp-5.
 linkage section.
-01 lk-out pic x(65535).
+01 lk-out pic x(524288).
 01 lk-out-len pic 9(9) comp-5.
-01 lk-src pic x(65535).
+01 lk-src pic x(524288).
 01 lk-off pic 9(9) comp-5.
 01 lk-n   pic 9(9) comp-5.
 procedure division using lk-out lk-out-len lk-src lk-off lk-n.
@@ -104,9 +104,9 @@ data division.
 working-storage section.
 01 one pic 9(9) comp-5 value 1.
 linkage section.
-01 lk-out pic x(65535).
+01 lk-out pic x(524288).
 01 lk-out-len pic 9(9) comp-5.
-01 lk-src pic x(65535).
+01 lk-src pic x(524288).
 01 lk-off pic 9(9) comp-5.
 01 lk-n   pic 9(9) comp-5.
 procedure division using lk-out lk-out-len lk-src lk-off lk-n.
@@ -123,9 +123,9 @@ working-storage section.
 01 ws-inoff pic 9(9) comp-5.
 01 ws-st    pic s9(9) comp-5.
 linkage section.
-01 lk-in  pic x(65535).
+01 lk-in  pic x(524288).
 01 lk-in-len pic 9(9) comp-5.
-01 lk-out pic x(65535).
+01 lk-out pic x(524288).
 01 lk-out-len pic 9(9) comp-5.
 01 lk-status pic s9(9) comp-5.
 procedure division using lk-in lk-in-len lk-out lk-out-len lk-status.
@@ -143,7 +143,7 @@ identification division.
 program-id. b-entity.
 data division.
 working-storage section.
-01 ws-cdata   pic x(65535).
+01 ws-cdata   pic x(524288).
 01 ws-cdata-len pic 9(9) comp-5.
 01 ws-st      pic s9(9) comp-5.
 01 hash33     pic x(33).
@@ -151,9 +151,9 @@ working-storage section.
 linkage section.
 01 lk-type    pic x(128).
 01 lk-type-len pic 9(9) comp-5.
-01 lk-data    pic x(65535).
+01 lk-data    pic x(524288).
 01 lk-data-len pic 9(9) comp-5.
-01 lk-out     pic x(65535).
+01 lk-out     pic x(524288).
 01 lk-out-len pic 9(9) comp-5.
 01 lk-hash    pic x(33).
 01 lk-status  pic s9(9) comp-5.

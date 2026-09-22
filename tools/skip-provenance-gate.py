@@ -25,10 +25,14 @@ WHY THIS EXISTS
     the row and contradicted by the sentence above it. Provisioning the keypair took
     both to 313P/337W/0F/106S.
 
-    The seventh is `cobol`'s `concurrency/t1_3_no_head_of_line`, a disclosed and
-    spec-legal payload-capacity bound (CONFORMANCE-MATRIX.md §1, finding F53). It is
-    allowlisted BY NAME below, with its disclosure named, because that is the whole
-    difference between a disclosure and a defect.
+    The seventh WAS `cobol`'s `concurrency/t1_3_no_head_of_line`, a disclosed and
+    spec-legal payload-capacity bound (finding F53). It was allowlisted BY NAME here,
+    with its disclosure named, because that is the whole difference between a
+    disclosure and a defect. **The peer took the capacity on 2026-09-04 and the entry
+    is DELETED rather than left in place** — an allowlist entry outlives its reason
+    silently, and an exclusion that suppresses its own falsifier is permanent by
+    construction (the `apl` lesson). The allowlist is empty and the gate now proves
+    every skip in the cohort is a profile carve-out with nothing exempted.
 
 THE RULE
     A skip is acceptable only if it says why, in the oracle's own words, and the reason
@@ -64,10 +68,9 @@ CARVE_OUT_MARKERS = (
 # Allowlisted skips: an unexercised check that IS disclosed in published prose. The
 # value is where the disclosure lives — a bare "known issue" is not a disclosure.
 ALLOWLIST = {
-    ("cobol", "concurrency", "t1_3_no_head_of_line"):
-        "CONFORMANCE-MATRIX.md §1 + shared/findings/conformance-payload-capacity-floor.md "
-        "(F53): a 264109-byte probe against a spec-legal 65535-byte frame cap, refused "
-        "with a correlated 413.",
+    # Empty, and that is the interesting state: every skip in all 46 tracked reports is
+    # a declared --profile core carve-out. Adding an entry here is a commitment to the
+    # disclosure it cites, and REMOVING it is part of closing the gap it described.
 }
 
 

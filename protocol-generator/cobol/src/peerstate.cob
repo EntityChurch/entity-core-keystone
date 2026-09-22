@@ -16,7 +16,7 @@ working-storage section.
 01 ps-pub      pic x(32).
 01 ps-peerid   pic x(128).
 01 ps-peerid-len pic 9(9) comp-5.
-01 ps-pent     pic x(32768).
+01 ps-pent     pic x(524288).
 01 ps-pent-len pic 9(9) comp-5.
 01 ps-idhash   pic x(33).
 01 ps-open     pic 9(1) value 0.
@@ -29,7 +29,7 @@ linkage section.
 01 lk-out33    pic x(33).
 01 lk-str      pic x(128).
 01 lk-len      pic 9(9) comp-5.
-01 lk-ent      pic x(32768).
+01 lk-ent      pic x(524288).
 procedure division.
     goback.
 

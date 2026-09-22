@@ -1,6 +1,11 @@
 # entity-core-keystone — status
 
-_Updated: 2026-09-03 · oracle pin: the 758-check set `c34abcae…` · spec snapshot `v0.8.2.3`_
+_Updated: 2026-09-04 · oracle pin: the 758-check set `c34abcae…` · spec snapshot `v0.8.2.3`_
+
+> **For where this is going — the seats keystone sits between, the state of every verification
+> axis, the measured size of the queued work and what freeze looks like — see
+> [`docs/PROGRAM.md`](PROGRAM.md).** This file is the current-state note; that one is the
+> trajectory.
 
 > **`CONFORMANCE-MATRIX.md` is authoritative for every per-peer number.** This file is a
 > short orientation note, deliberately kept thin. When the two disagree, the matrix wins.
@@ -156,6 +161,32 @@ axis; the count is printed on every run so it cannot quietly become an exclusion
 standing `apl` lesson.
 
 ## What's next
+
+**Two live items, both measured. Everything below them is closed and kept for the record.**
+
+**A. The `0.8.2.7` catch-up — bounded, and it is not a regeneration.** Our snapshot is `v0.8.2.3`;
+the protocol is at `0.8.2.7` and arch has said regenerate on our own schedule, no flag day. Measured
+rather than guessed: **1 of 3** normative files moved (`+80/−12`); the go oracle grew **+15 checks,
+13 of them in `catConnectivity` — a core category**; `core_gate_fingerprint` is **unchanged**, so it
+will not warn us, for the fifth time in this exact shape; the executed set goes **758 → 772**.
+Probed on three peers of three lineages (`go`, `rust`, `python`) against an oracle built to scratch —
+a diagnostic, not a census — all three returned an **identical** `772 · 324P/336W/5F/107S`, with all
+five failures among the new connect-path checks and nothing else moving. **Five failures are three
+defects:** §4.5's `protocols` field is not enforced at all, the connect op ladder answers an unknown
+operation as a handler `501` where `0.8.2.4` pins `400 invalid_request`, and the second-hello state
+check misses mid-handshake (`409`). Separately, four peers (`asm-x86_64` `asm-arm64` `riscv64` `pd`)
+emit `not_implemented` at 501 where `0.8.2.7` rules the **slot** — remedy is one word. One authored
+fix propagated 46 times, the shape of the §5.6 sweep, then re-pin and re-census.
+
+**B. The keystone specification layer — unblocked and not started.** Three digest-pinned documents
+under `docs/spec/` covering obligations that bind *our* peers and nobody else's, which is why nobody
+upstream will write them. Arch has accepted the boundary. The cheapest real progress is the
+library-surface sweep: of four peers nominated as satisfying the host contract **from source reads**,
+three were wrong, each at a different packaging boundary, and `typescript` is the only verified host.
+
+*(Detail and sizing for both: [`docs/PROGRAM.md`](PROGRAM.md) §3.)*
+
+---
 
 1. ~~**`authz_peers_target_from_uri`**~~ ✅ **CLOSED 2026-09-01 — and we had the answer the whole
    time.** This item described a cohort split (40 WARN / 6 PASS) over whether a peer must resolve
@@ -444,6 +475,7 @@ behind by design — they owe the *fix*, not the paperwork.
 
 | Question | Doc |
 |---|---|
+| Where this is going, and how it ends | `docs/PROGRAM.md` |
 | Per-peer conformance, tiers, catch-up backlog | `CONFORMANCE-MATRIX.md` |
 | What the substrates taught us | `research/SUBSTRATE-TAKEAWAYS.md` |
 | What 46 implementations found wrong with the spec | `protocol-generator/shared/findings/` |

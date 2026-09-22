@@ -48,8 +48,24 @@ Podman/Containerfiles only — no host installs, nothing grabbed locally. Every 
 
 ## Status
 
-- ✅ `spec/` — canonical ABI spec + header + manifest landed (this pass)
-- ⏳ `entity-core-codec-ffi-rust/src/` — implementation
-- ⏳ `entity-core-codec-ffi-c/src/` — implementation
-- ⏳ `conformance/` — differential harness
-- ⏳ build matrix · conformance reports
+Both implementations are landed and both build. **`run-ffi-gate.sh` is the runner for this
+arm** — run it for current numbers rather than reading them here, and see `status/` for the
+standing gaps.
+
+- ✅ `spec/` — canonical ABI spec + header + manifest
+- ✅ `entity-core-codec-ffi-c/` — full v1.1, 27/27 symbols, corpus 71/71, regression 12/12
+- ✅ `entity-core-codec-ffi-rust/` — full v1.1, 26/27 symbols (the 27th is spec-OPTIONAL)
+- ✅ `conformance/` — `abi_differential.c` (101 probes, C↔Rust, + export parity) ·
+  `abi_leak_probe.c` (ASan over the exported ABI) · `ed448_kat.c`
+- ✅ `run-ffi-gate.sh` — the arm's gate: build both · regression · corpus · differential · leak
+
+**Two gaps are open and named rather than carried quietly:** the Rust impl has no independent
+corpus harness (it is verified only against its sibling, which is a mutual check), and it has
+no vendored crate closure (its build needs the network). Both are in `status/`.
+
+> **This arm had no cohort runner until 2026-09-04, and that is why it needs one.**
+> `tools/run-axis-sweep.sh` sweeps the four per-peer axes across `protocol-generator/*`;
+> `ffi-generator/` is not peer-scoped and so was in no sweep and no `make lint` gate — while
+> 34 peers link the artifact built here. The codec leak fixed that day had been on the
+> per-request path of every consumer for months and was found by accident while measuring an
+> unrelated peer. An arm with harnesses and no runner is one nobody is measuring.

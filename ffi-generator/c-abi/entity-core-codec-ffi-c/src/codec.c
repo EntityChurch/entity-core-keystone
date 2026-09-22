@@ -61,6 +61,7 @@ void cc_content_hash(const uint8_t *type, size_t type_len,
     uint8_t digest[32];
     cc_sha256(body.ptr, body.len, digest);
     ecbuf_free(&body);
+    ev_free(entity);   /* per-request path: the tree is ours and does not outlive it */
 
     leb128_encode(format_code, out);
     ecbuf_append(out, digest, 32);
@@ -101,6 +102,7 @@ int cc_content_hash_with_format(const uint8_t *type, size_t type_len,
         ecbuf_append(out, digest, EC_SHA384_DIGEST_LEN);
     }
     ecbuf_free(&body);
+    ev_free(entity);
     return 1;
 }
 
@@ -192,6 +194,7 @@ int32_t ec_encode_ecf(const uint8_t *type_ptr, size_t type_len,
     ecf_encode(entity, &out);
     int32_t rc = write_out(out.ptr, out.len, out_ptr, out_cap, out_len);
     ecbuf_free(&out);
+    ev_free(entity);
     return rc;
 }
 
@@ -429,22 +432,28 @@ static const ec_value *ev_map_get(const ec_value *m, const char *key) {
 
 /* Decode an envelope, recompute the root entity's content_hash from {type,data}
  * and compare to the declared root.content_hash (spec sec.4.4 / sec.5.3). The
- * declared hash's LEB128 prefix selects the digest. NOTE: ecf_decode builds a
- * value tree that this short-lived path does not free (the documented C decode
- * pragmatic; the deferred arena addresses the long-running peer). Twin of
- * api::envelope_verify_root_hash. */
+ * declared hash's LEB128 prefix selects the digest. Twin of
+ * api::envelope_verify_root_hash.
+ *
+ * This comment used to say the value tree "this short-lived path does not free
+ * (the documented C decode pragmatic; the deferred arena addresses the
+ * long-running peer)". The path is not short-lived -- a peer calls this per
+ * request -- and the deferred arena addresses nothing, because it is a stub.
+ * `env` is owned here and released on every exit, including the early ones:
+ * root/type/data/ch are all BORROWED from it, so the free goes last. */
 int32_t ec_envelope_verify_root_hash(const uint8_t *envelope_ptr, size_t envelope_len) {
     if (!envelope_ptr) return EC_INVALID_ARGUMENT;
     ec_value *env = ecf_decode(envelope_ptr, envelope_len);
-    if (!env || env->kind != EV_MAP) return EC_DECODE_ERROR;
+    if (!env || env->kind != EV_MAP) { ev_free(env); return EC_DECODE_ERROR; }
     const ec_value *root = ev_map_get(env, "root");
     const ec_value *type = ev_map_get(root, "type");
     const ec_value *data = ev_map_get(root, "data");
     const ec_value *ch = ev_map_get(root, "content_hash");
     if (!type || type->kind != EV_TEXT || !data || !ch || ch->kind != EV_BYTES)
-        return EC_DECODE_ERROR;
+        { ev_free(env); return EC_DECODE_ERROR; }
     uint64_t fmt;
-    if (leb128_decode(ch->u.bytes.ptr, ch->u.bytes.len, &fmt) == 0) return EC_DECODE_ERROR;
+    if (leb128_decode(ch->u.bytes.ptr, ch->u.bytes.len, &fmt) == 0)
+        { ev_free(env); return EC_DECODE_ERROR; }
     /* canonical input ⇒ re-encoding the decoded data field is identity. */
     ecbuf db;
     ecbuf_init(&db);
@@ -454,9 +463,10 @@ int32_t ec_envelope_verify_root_hash(const uint8_t *envelope_ptr, size_t envelop
     int ok = cc_content_hash_with_format(type->u.bytes.ptr, type->u.bytes.len,
                                          db.ptr, db.len, fmt, &got);
     ecbuf_free(&db);
-    if (!ok) { ecbuf_free(&got); return EC_DECODE_ERROR; }
+    if (!ok) { ecbuf_free(&got); ev_free(env); return EC_DECODE_ERROR; }
     int match = (got.len == ch->u.bytes.len && memcmp(got.ptr, ch->u.bytes.ptr, got.len) == 0);
     ecbuf_free(&got);
+    ev_free(env);   /* ch was read by the memcmp above; nothing borrows env past here */
     return match ? EC_OK : EC_HASH_MISMATCH;
 }
 
@@ -471,18 +481,25 @@ int32_t ec_envelope_find_signature_for(const uint8_t *envelope_ptr, size_t envel
     size_t nin;
     if (!ecf_envelope_spans(envelope_ptr, envelope_len, &root, ikeys, ients, &nin, EC_MAX_INCLUDED))
         return EC_DECODE_ERROR;
+    /* One decoded tree PER INCLUDED ENTITY, and both `continue`s used to skip
+     * the release -- so an envelope carrying N included entities leaked N trees
+     * per call, on the per-request signature-lookup path. The returned span is
+     * borrowed from the CALLER's envelope buffer (eb = envelope_ptr + off), not
+     * from the tree, so `e` can be released before returning it. */
     for (size_t i = 0; i < nin; i++) {
         const uint8_t *eb = envelope_ptr + ients[i].off;
         ec_value *e = ecf_decode(eb, ients[i].len);
         const ec_value *t = ev_map_get(e, "type");
         if (!t || t->kind != EV_TEXT || t->u.bytes.len < 16 ||
             memcmp(t->u.bytes.ptr, "system/signature", 16) != 0)
-            continue;
+            { ev_free(e); continue; }
         const ec_value *d = ev_map_get(e, "data");
         const ec_value *tgt = ev_map_get(d, "target");
-        if (!tgt || tgt->kind != EV_BYTES) continue;
-        if (tgt->u.bytes.len == target_hash_len &&
-            memcmp(tgt->u.bytes.ptr, target_hash_ptr, target_hash_len) == 0) {
+        if (!tgt || tgt->kind != EV_BYTES) { ev_free(e); continue; }
+        int hit = (tgt->u.bytes.len == target_hash_len &&
+                   memcmp(tgt->u.bytes.ptr, target_hash_ptr, target_hash_len) == 0);
+        ev_free(e);
+        if (hit) {
             if (out_sig_entity_ptr) *out_sig_entity_ptr = eb;
             if (out_len) *out_len = ients[i].len;
             return EC_OK;
@@ -515,6 +532,7 @@ int32_t ec_encode_bare_value(const uint8_t *in_ptr, size_t in_len,
     ecf_encode(v, &out);
     int32_t rc = write_out(out.ptr, out.len, out_ptr, out_cap, out_len);
     ecbuf_free(&out);
+    ev_free(v);
     return rc;
 }
 

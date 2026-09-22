@@ -26,6 +26,19 @@
  *   - Output buffers are caller-allocated; EC_OUT_OF_SPACE writes the required
  *     size to the *_out_len pointer so the caller can grow and retry.
  *   - Decoded entity bodies live in a caller-owned ec_arena_t.
+ *   - NO CALL RETAINS HEAP ACROSS ITS OWN RETURN. Every entry point releases
+ *     whatever it allocated internally, on every exit path including the error
+ *     ones, so a caller may invoke any of these in an unbounded loop for the
+ *     life of a process. This is a term of the ABI and it is stated here, in
+ *     the header a consumer reads, because a library's lifetime assumption is
+ *     invisible from the outside: until 2026-09-04 entity-core-codec-ffi-c
+ *     leaked a whole value tree per call on the encode and envelope paths, on
+ *     an assumption recorded only in an implementation comment ("the harness +
+ *     ABI calls are short-lived ... process exits") that was false of every
+ *     peer linking it. Measured at ~1 KB per request and 23.3 MB per
+ *     conformance suite on a peer serving a socket. An implementation that
+ *     cannot honour this for some entry point must say so against that entry
+ *     point here, not in its own source.
  */
 
 #ifndef ENTITYCORE_CODEC_H
@@ -137,6 +150,10 @@ int32_t ec_ed25519_sign(const uint8_t *priv_ptr /* 32 */,
 int32_t ec_ed25519_verify(const uint8_t *pub_ptr /* 32 */,
                          const uint8_t *msg_ptr, size_t msg_len,
                          const uint8_t *sig_ptr /* 64 */);
+/* Ed25519 seed -> 32-byte public key (RFC 8032). Mirrors ec_ed448_seed_to_pubkey
+ * for the Ed25519 family so an FFI-sourced-crypto peer can derive its identity
+ * public key from a persistent on-disk seed (the --name keypair convention). */
+int32_t ec_ed25519_seed_to_pubkey(const uint8_t *seed_ptr /* 32 */, uint8_t *out_pub /* 32 */);
 int32_t ec_sha256(const uint8_t *data_ptr, size_t data_len, uint8_t *out_ptr /* 32 */);
 
 /* === Crypto agility (spec §4.3a, C-ABI v1.1) ===

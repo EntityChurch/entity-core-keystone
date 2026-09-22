@@ -15,6 +15,15 @@ BUILD       := build
 EXTERNAL    := $(BUILD)/ecodec.pd_linux
 CODEC_SO    := $(BUILD)/libentitycore_codec.so
 
+# Every file the codec compiles from -- DERIVED with `find`, never a hand-listed
+# set, because a second copy of a dependency list is a second thing that can
+# drift.  Without these prerequisites the rule below is a BARE file target, so
+# make runs it only when the .so is ABSENT and a codec source change never
+# reaches this peer: that is how two ISA peers shipped a 2026-07-15 codec.
+CODEC_DEPS := $(shell find $(CODEC_SRC)/src $(CODEC_SRC)/include \
+                          $(CODEC_SRC)/CMakeLists.txt -type f 2>/dev/null)
+
+
 .PHONY: all external patchlint codec smoke frametest decodetest responsetest treewalktest hellotest authkat authzkat authzdenykat authzpeerskat treegetkat clean
 all: external
 
@@ -46,7 +55,7 @@ patchlint:
 # lib — NOT the static .a: the distro libsodium.a is non-PIC and won't link into
 # a shared .pd_linux (A-PD-005). Offline: libsodium is in the toolchain image.
 codec: $(CODEC_SO)
-$(CODEC_SO):
+$(CODEC_SO): $(CODEC_DEPS)
 	cd $(CODEC_SRC) && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release >/dev/null \
 	    && cmake --build build --target entitycore_codec >/dev/null
 	mkdir -p $(BUILD)

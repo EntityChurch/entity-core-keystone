@@ -147,7 +147,26 @@ int ec_fd_close(int fd) { return close(fd); }
  * and serving the follow-up probe rather than falling over); excess beyond the
  * cap is refused via the listen-fd gating below. */
 #define EC_MAXCONN 320
-#define EC_FRAMECAP 65535
+/* §4.10(a) configured maximum inbound frame. MUST be finite; the section sets
+ * no floor, and the core protocol "places no restriction on entity size" while
+ * SHOULDing a reasonable transport default (16 MiB is its example).
+ *
+ * 512 KiB, and the reason it is not 64 KiB any more is measurement rather than
+ * taste: concurrency/t1_3_no_head_of_line stages a tree.put whose frame is
+ * 264 109 bytes on the wire (instrumented on this peer's own oversize branch,
+ * not taken from the vector's "256 KiB" prose). At the old cap the peer refused
+ * it with a correlated 413 — conformant, and unmeasurable, because the oracle
+ * scores the resulting SKIP as a FAIL. Raising the cap is what lets the check
+ * run; it is not a correctness fix, and the finding that a conformant peer can
+ * be marked failing for honouring a spec-legal bound stands either way
+ * (shared/findings/conformance-payload-capacity-floor.md).
+ *
+ * The cost is EC_MAXCONN slots deep, so it is the single largest allocation in
+ * the peer: 320 * 512 KiB = 168 MB of static slot buffer against a 4 GB
+ * container cap. That is affordable only because this host is one process with
+ * one poll loop — on a fork-per-connection peer the same constant would be
+ * multiplied by live children instead of by slots. */
+#define EC_FRAMECAP 524288
 
 struct ec_slot {
     int fd;
@@ -283,8 +302,11 @@ int ec_serve(int listen_fd)
     static struct ec_slot slots[EC_MAXCONN];
     struct pollfd pfds[EC_MAXCONN + 1];
     int nslots = 0;
-    unsigned char out[EC_FRAMECAP];
-    unsigned char framebuf[EC_FRAMECAP];
+    /* static, not automatic: at a 512 KiB frame cap these two are 1 MB of stack
+     * in a function that never returns, and the COBOL dispatch below is called
+     * with them by reference against LINKAGE declared at the same capacity. */
+    static unsigned char out[EC_FRAMECAP];
+    static unsigned char framebuf[EC_FRAMECAP];
     unsigned char outhdr[4];
 
     for (;;) {
@@ -302,7 +324,15 @@ int ec_serve(int listen_fd)
         if (pfds[0].revents & POLLIN) {
             int cfd = ec_tcp_accept(listen_fd);
             if (cfd >= 0 && nslots < EC_MAXCONN) {
-                memset(&slots[nslots], 0, sizeof(struct ec_slot));
+                /* Clear the STATE, not the buffer. `in` is write-before-read by
+                 * construction — nothing reads past s->have, and s->have starts
+                 * at 0 — so zeroing it is pure cost, and at a 512 KiB frame cap
+                 * it is 512 KiB of memset on every accept. Under the churn probe
+                 * (100 open/serve/close cycles) and the 256-connection flood that
+                 * is real work on the one thread that also has to serve. */
+                memset(slots[nslots].conn, 0, sizeof slots[nslots].conn);
+                slots[nslots].have = 0;
+                slots[nslots].drain = 0;
                 slots[nslots].fd = cfd;
                 /* A freshly-accepted fd was NOT part of this poll() — its pollfd
                  * slot holds stale revents from a prior iteration. Clear it so the

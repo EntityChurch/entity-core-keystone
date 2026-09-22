@@ -23,7 +23,7 @@ working-storage section.
 01 st  pic s9(9) comp-5.
 01 moff pic 9(9) comp-5 value 1.
 linkage section.
-01 lk-buf pic x(65535).
+01 lk-buf pic x(524288).
 01 lk-off pic 9(9) comp-5.
 01 lk-found pic 9(1).
 procedure division using lk-buf lk-off lk-found.
@@ -41,7 +41,7 @@ working-storage section.
 01 st  pic s9(9) comp-5.
 01 moff pic 9(9) comp-5 value 1.
 linkage section.
-01 lk-buf pic x(65535).
+01 lk-buf pic x(524288).
 01 lk-off pic 9(9) comp-5.
 01 lk-found pic 9(1).
 procedure division using lk-buf lk-off lk-found.
@@ -63,7 +63,7 @@ working-storage section.
 01 t-exec    pic x(23) value "system/protocol/execute".
 01 t-resp    pic x(32) value "system/protocol/execute/response".
 linkage section.
-01 lk-buf  pic x(65535).
+01 lk-buf  pic x(524288).
 01 lk-len  pic 9(9) comp-5.
 01 lk-kind pic 9(9) comp-5.
 procedure division using lk-buf lk-len lk-kind.
@@ -93,15 +93,15 @@ working-storage section.
 01 n2     pic 9(18) comp-5 value 2.
 01 n4     pic 9(9) comp-5 value 4.
 01 n8     pic 9(9) comp-5 value 8.
-01 nbuf   pic x(65535).
+01 nbuf   pic x(524288).
 01 nlen   pic 9(9) comp-5.
 01 st     pic s9(9) comp-5.
 linkage section.
-01 lk-root pic x(65535).
+01 lk-root pic x(524288).
 01 lk-root-len pic 9(9) comp-5.
-01 lk-inc pic x(65535).
+01 lk-inc pic x(524288).
 01 lk-inc-len pic 9(9) comp-5.
-01 lk-out pic x(65535).
+01 lk-out pic x(524288).
 01 lk-out-len pic 9(9) comp-5.
 procedure division using lk-root lk-root-len lk-inc lk-inc-len lk-out lk-out-len.
     move 0 to nlen
@@ -135,14 +135,14 @@ data division.
 working-storage section.
 01 errc     pic x(17) value "payload_too_large".
 01 errcl    pic 9(9) comp-5 value 17.
-01 res-ent  pic x(60000). 01 res-len  pic 9(9) comp-5. 01 res-hash  pic x(33).
-01 resp-ent pic x(65535). 01 resp-len pic 9(9) comp-5. 01 resp-hash pic x(33).
-01 incmap   pic x(16384). 01 incmap-len pic 9(9) comp-5.
+01 res-ent  pic x(524288). 01 res-len  pic 9(9) comp-5. 01 res-hash  pic x(33).
+01 resp-ent pic x(524288). 01 resp-len pic 9(9) comp-5. 01 resp-hash pic x(33).
+01 incmap   pic x(524288). 01 incmap-len pic 9(9) comp-5.
 01 rid      pic x(128).   01 rid-len  pic 9(9) comp-5 value 0.
 01 rstatus  pic 9(9) comp-5 value 413.
 01 n0       pic 9(18) comp-5 value 0.
 linkage section.
-01 lk-out     pic x(65535).
+01 lk-out     pic x(524288).
 01 lk-out-len pic 9(9) comp-5.
 procedure division using lk-out lk-out-len.
     move spaces to rid
@@ -200,7 +200,7 @@ working-storage section.
 01 hfound    pic 9(1).
 01 caph      pic x(33).
 01 cl        pic 9(9) comp-5.
-01 capbuf    pic x(32768).
+01 capbuf    pic x(524288).
 01 caplen    pic 9(9) comp-5.
 01 capfnd    pic 9(1).
 01 granter   pic x(128).
@@ -212,20 +212,20 @@ working-storage section.
 01 rstatus    pic 9(9) comp-5.
 01 errcode      pic x(64).
 01 errcode-len  pic 9(9) comp-5.
-01 res-ent   pic x(60000).
+01 res-ent   pic x(524288).
 01 res-len   pic 9(9) comp-5.
 01 res-hash  pic x(33).
-01 resp-ent  pic x(65535).
+01 resp-ent  pic x(524288).
 01 resp-len  pic 9(9) comp-5.
 01 resp-hash pic x(33).
-01 incmap    pic x(16384).
+01 incmap    pic x(524288).
 01 incmap-len pic 9(9) comp-5.
 01 n0        pic 9(18) comp-5 value 0.
 linkage section.
 01 lk-conn   pic x(256).
-01 lk-env    pic x(65535).
+01 lk-env    pic x(524288).
 01 lk-env-len pic 9(9) comp-5.
-01 lk-out    pic x(65535).
+01 lk-out    pic x(524288).
 01 lk-out-len pic 9(9) comp-5.
 01 lk-hasresp pic 9(1).
 procedure division using lk-conn lk-env lk-env-len lk-out lk-out-len lk-hasresp.

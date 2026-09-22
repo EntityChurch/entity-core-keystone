@@ -15,7 +15,7 @@ working-storage section.
 01 cli-pub   pic x(32).
 01 cli-peerid pic x(128).
 01 cli-peerid-len pic 9(9) comp-5.
-01 cli-pent  pic x(8192).
+01 cli-pent  pic x(524288).
 01 cli-pent-len pic 9(9) comp-5.
 01 cli-idhash pic x(33).
 01 one       pic 9(9) comp-5 value 1.
@@ -49,21 +49,21 @@ working-storage section.
 01 t-exec    pic x(23) value "system/protocol/execute".
 01 t-exec-len pic 9(9) comp-5 value 23.
 *> buffers
-01 pent-buf  pic x(8192).
+01 pent-buf  pic x(524288).
 01 pent-len  pic 9(9) comp-5.
 01 phash     pic x(33).
-01 exec-ent  pic x(8192).
+01 exec-ent  pic x(524288).
 01 exec-len  pic 9(9) comp-5.
 01 exec-hash pic x(33).
-01 nd        pic x(8192).
+01 nd        pic x(524288).
 01 nd-len    pic 9(9) comp-5.
-01 incmap-c  pic x(16384).
+01 incmap-c  pic x(524288).
 01 incmap-c-len pic 9(9) comp-5.
-01 env       pic x(65535).
+01 env       pic x(524288).
 01 env-len   pic 9(9) comp-5.
 01 conn      pic x(256).
 01 conn2     pic x(256).
-01 resp      pic x(65535).
+01 resp      pic x(524288).
 01 resp-len  pic 9(9) comp-5.
 01 hasresp   pic 9(1).
 01 rroot     pic 9(9) comp-5.
@@ -76,10 +76,10 @@ working-storage section.
 01 rtype-len pic 9(9) comp-5.
 01 nonce     pic x(32).
 01 nonce-len pic 9(9) comp-5.
-01 auth-ent  pic x(8192).
+01 auth-ent  pic x(524288).
 01 auth-len  pic 9(9) comp-5.
 01 auth-hash pic x(33).
-01 sig-ent   pic x(8192).
+01 sig-ent   pic x(524288).
 01 sig-len   pic 9(9) comp-5.
 01 sig-hash  pic x(33).
 01 toff      pic 9(9) comp-5.

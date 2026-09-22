@@ -116,6 +116,82 @@ static int load(lib *L, const char *path) {
     return 1;
 }
 
+/* ── export parity + coverage ────────────────────────────────────────────────
+ *
+ * The probe count below ("71/71") is a count of PROBES, not of symbols, and for
+ * a long time nothing said which symbols it reached.  The spec declares 27;
+ * load() above requires 19.  So a symbol the two impls disagree about is
+ * invisible to a green run unless it happens to be one of the 19 -- and one
+ * was: ec_entity_original_bytes is exported by the C impl and not by the Rust
+ * impl, which is CONFORMANT (spec 4.1 says MAY / OPTIONAL) and still a footgun,
+ * because the two ship the same soname and artifact name and are advertised as
+ * drop-in interchangeable.  A consumer that links one and swaps the other gets
+ * an unresolved symbol.
+ *
+ * So: enumerate every spec-declared symbol, dlsym it on BOTH libraries, and
+ * print the asymmetry.  This REPORTS rather than fails -- an optional symbol
+ * present on one side is not a conformance defect, and hard-failing on it would
+ * hold the differential permanently red, which teaches people to skip it.  What
+ * it must never do again is stay silent.
+ * ─────────────────────────────────────────────────────────────────────────── */
+static const struct { const char *name; int driven; } SPEC_SYMBOLS[] = {
+    /* driven=1 means this differential actually exercises it below. */
+    { "ec_abi_version",                 1 },
+    { "ec_impl_info",                   1 },
+    { "ec_sha256",                      1 },
+    { "ec_sha384",                      1 },
+    { "ec_hash_format_code_encode",     1 },
+    { "ec_hash_format_code_decode",     1 },
+    { "ec_encode_ecf",                  1 },
+    { "ec_encode_bare_value",           1 },
+    { "ec_content_hash",                1 },
+    { "ec_content_hash_with_format",    1 },
+    { "ec_decode_entity",               1 },
+    { "ec_peerid_format",               1 },
+    { "ec_peerid_parse",                1 },
+    { "ec_ed25519_sign",                1 },
+    { "ec_ed25519_verify",              1 },
+    { "ec_ed448_seed_to_pubkey",        1 },
+    { "ec_ed448_sign",                  1 },
+    { "ec_ed448_verify",                1 },
+    { "ec_envelope_verify_root_hash",   1 },
+    /* Declared by the spec, NOT driven here. Keygen is excluded by design
+     * (random output is not diffable); the rest are simply uncovered, and
+     * saying so is the point of this table. */
+    { "ec_ed25519_keygen",              0 },
+    { "ec_ed448_keygen",                0 },
+    { "ec_ed25519_seed_to_pubkey",      0 },
+    { "ec_entity_original_bytes",       0 },
+    { "ec_envelope_find_signature_for", 0 },
+    { "ec_arena_new",                   0 },
+    { "ec_arena_reset",                 0 },
+    { "ec_arena_free",                  0 },
+};
+#define N_SPEC_SYMBOLS (sizeof SPEC_SYMBOLS / sizeof SPEC_SYMBOLS[0])
+
+static void export_parity(const lib *A, const lib *B) {
+    int nA = 0, nB = 0, ndriven = 0, nasym = 0;
+    printf("\n## export parity (%zu spec-declared symbols)\n", N_SPEC_SYMBOLS);
+    for (size_t i = 0; i < N_SPEC_SYMBOLS; i++) {
+        void *a = dlsym(A->h, SPEC_SYMBOLS[i].name);
+        void *b = dlsym(B->h, SPEC_SYMBOLS[i].name);
+        nA += !!a; nB += !!b; ndriven += SPEC_SYMBOLS[i].driven;
+        if (!!a != !!b) {
+            nasym++;
+            printf("  ASYMMETRY  %-32s A=%s B=%s  (spec 4.1: OPTIONAL -- reported, not failed)\n",
+                   SPEC_SYMBOLS[i].name, a ? "present" : "ABSENT", b ? "present" : "ABSENT");
+        } else if (!a) {
+            printf("  absent both %-31s (neither impl exports it)\n", SPEC_SYMBOLS[i].name);
+        }
+    }
+    printf("  A(%s): %d/%zu exported\n", A->path, nA, N_SPEC_SYMBOLS);
+    printf("  B(%s): %d/%zu exported\n", B->path, nB, N_SPEC_SYMBOLS);
+    printf("  DRIVEN BY THIS DIFFERENTIAL: %d/%zu symbols — the probe count below is a "
+           "count of PROBES over these %d, not a statement about the other %zu.\n",
+           ndriven, N_SPEC_SYMBOLS, ndriven, N_SPEC_SYMBOLS - (size_t)ndriven);
+    printf("  export asymmetries: %d\n", nasym);
+}
+
 static int g_pass = 0, g_fail = 0;
 static void ok(const char *what) { g_pass++; printf("  ok   %s\n", what); }
 static void bad(const char *what, const char *detail) {
@@ -148,6 +224,7 @@ int main(int argc, char **argv) {
     if (!load(&A, argv[1]) || !load(&B, argv[2])) return 2;
 
     printf("# ABI differential (dlopen, real boundary)\n");
+    export_parity(&A, &B);
     printf("#  A: %s  [%s]\n", A.path, A.impl_info());
     printf("#  B: %s  [%s]\n\n", B.path, B.impl_info());
 

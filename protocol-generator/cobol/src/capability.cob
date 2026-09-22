@@ -203,7 +203,7 @@ working-storage section.
 01 cpatlen pic 9(9) comp-5.
 01 m     pic 9(1).
 linkage section.
-01 lk-buf    pic x(65535).
+01 lk-buf    pic x(524288).
 01 lk-arroff pic 9(9) comp-5.
 01 lk-cv     pic x(900).
 01 lk-cvlen  pic 9(9) comp-5.
@@ -249,7 +249,7 @@ working-storage section.
 01 pat   pic x(900).
 01 m     pic 9(1).
 linkage section.
-01 lk-buf    pic x(65535).
+01 lk-buf    pic x(524288).
 01 lk-arroff pic 9(9) comp-5.
 01 lk-cv     pic x(900).
 01 lk-cvlen  pic 9(9) comp-5.
@@ -301,7 +301,7 @@ working-storage section.
 01 k-excl pic x(7) value "exclude".
 01 k-excl-len pic 9(9) comp-5 value 7.
 linkage section.
-01 lk-buf    pic x(65535).
+01 lk-buf    pic x(524288).
 01 lk-scopeoff pic 9(9) comp-5.
 01 lk-val    pic x(900).
 01 lk-vallen pic 9(9) comp-5.
@@ -336,7 +336,7 @@ working-storage section.
 01 koff  pic 9(9) comp-5.
 01 st    pic s9(9) comp-5.
 linkage section.
-01 lk-buf    pic x(65535).
+01 lk-buf    pic x(524288).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-hash   pic x(33).
 01 lk-entoff pic 9(9) comp-5.
@@ -368,16 +368,16 @@ program-id. cap-resolve.
 data division.
 working-storage section.
 01 eoff  pic 9(9) comp-5.
-01 cap-entmax pic 9(9) comp-5 value 32768.
+01 cap-entmax pic 9(9) comp-5 value 524288.
 01 endo  pic 9(9) comp-5.
 01 f     pic 9(1).
 01 st    pic s9(9) comp-5.
 linkage section.
-01 lk-env    pic x(65535).
+01 lk-env    pic x(524288).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
 01 lk-hash   pic x(33).
-01 lk-out    pic x(32768).
+01 lk-out    pic x(524288).
 01 lk-outlen pic 9(9) comp-5.
 01 lk-found  pic 9(1).
 procedure division using lk-env lk-incoff lk-incfnd lk-hash
@@ -390,7 +390,7 @@ procedure division using lk-env lk-incoff lk-incfnd lk-hash
             call "cbor-skip" using lk-env endo st
             compute lk-outlen = endo - eoff
             *> Same unchecked-copy shape as tree-handler's do-put, on the capability
-            *> path: `lk-out` is a fixed 8192-byte field and the included entity comes
+            *> path: `lk-out` is a fixed-extent field and the included entity comes
             *> straight off the wire. Over capacity is answered as NOT RESOLVED (fail
             *> closed) rather than copied — a capability whose token cannot be read is
             *> not a capability that has been verified.
@@ -428,9 +428,9 @@ working-storage section.
 01 k-pk  pic x(10) value "public_key".
 01 k-pk-len pic 9(9) comp-5 value 10.
 linkage section.
-01 lk-sbuf pic x(65535).
+01 lk-sbuf pic x(524288).
 01 lk-soff pic 9(9) comp-5.
-01 lk-pbuf pic x(32768).
+01 lk-pbuf pic x(524288).
 01 lk-poff pic 9(9) comp-5.
 01 lk-res  pic 9(1).
 procedure division using lk-sbuf lk-soff lk-pbuf lk-poff lk-res.
@@ -487,9 +487,9 @@ working-storage section.
 01 k-incl pic x(7) value "include".
 01 k-incl-len pic 9(9) comp-5 value 7.
 linkage section.
-01 lk-env   pic x(65535).
+01 lk-env   pic x(524288).
 01 lk-resoff pic 9(9) comp-5.
-01 lk-tbuf  pic x(32768).
+01 lk-tbuf  pic x(524288).
 01 lk-gmapoff pic 9(9) comp-5.
 01 lk-local pic x(128).
 01 lk-locallen pic 9(9) comp-5.
@@ -596,9 +596,9 @@ working-storage section.
 01 k-peers-len pic 9(9) comp-5 value 5.
 01 one    pic 9(9) comp-5 value 1.
 linkage section.
-01 lk-env    pic x(65535).
+01 lk-env    pic x(524288).
 01 lk-rootoff pic 9(9) comp-5.
-01 lk-tbuf   pic x(32768).
+01 lk-tbuf   pic x(524288).
 01 lk-hpat   pic x(900).
 01 lk-hlen   pic 9(9) comp-5.
 01 lk-granter pic x(128).
@@ -680,7 +680,7 @@ working-storage section.
 01 st   pic s9(9) comp-5.
 01 gh   pic x(33).
 01 gl   pic 9(9) comp-5.
-01 gp   pic x(32768).
+01 gp   pic x(524288).
 01 gplen pic 9(9) comp-5.
 01 found pic 9(1).
 01 pub  pic x(32).
@@ -692,10 +692,10 @@ working-storage section.
 01 k-pk-len pic 9(9) comp-5 value 10.
 01 one  pic 9(9) comp-5 value 1.
 linkage section.
-01 lk-env    pic x(65535).
+01 lk-env    pic x(524288).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
-01 lk-cap    pic x(32768).
+01 lk-cap    pic x(524288).
 01 lk-out    pic x(128).
 01 lk-outlen pic 9(9) comp-5.
 procedure division using lk-env lk-incoff lk-incfnd lk-cap lk-out lk-outlen.
@@ -727,13 +727,13 @@ program-id. cap-chain-depth.
 data division.
 working-storage section.
 01 depth pic 9(9) comp-5.
-01 cur   pic x(32768).
+01 cur   pic x(524288).
 01 curlen pic 9(9) comp-5.
 01 voff  pic 9(9) comp-5.
 01 f     pic 9(1).
 01 phash    pic x(33).
 01 pl    pic 9(9) comp-5.
-01 nxt   pic x(32768).
+01 nxt   pic x(524288).
 01 nxtlen pic 9(9) comp-5.
 01 found pic 9(1).
 01 done  pic 9(1).
@@ -741,10 +741,10 @@ working-storage section.
 01 k-parent pic x(6) value "parent".
 01 k-parent-len pic 9(9) comp-5 value 6.
 linkage section.
-01 lk-env    pic x(65535).
+01 lk-env    pic x(524288).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
-01 lk-cap    pic x(32768).
+01 lk-cap    pic x(524288).
 01 lk-caplen pic 9(9) comp-5.
 01 lk-exceeds pic 9(1).
 procedure division using lk-env lk-incoff lk-incfnd lk-cap lk-caplen lk-exceeds.
@@ -790,7 +790,7 @@ working-storage section.
    05 ws-ce occurs 64.
       10 ws-ce-buf pic x(32768).
       10 ws-ce-len pic 9(9) comp-5.
-01 cur    pic x(32768).
+01 cur    pic x(524288).
 01 curlen pic 9(9) comp-5.
 01 voff   pic 9(9) comp-5.
 01 f      pic 9(1).
@@ -799,7 +799,7 @@ working-storage section.
 01 arg    pic 9(18) comp-5.
 01 phash     pic x(33).
 01 pl     pic 9(9) comp-5.
-01 tmp    pic x(32768).
+01 tmp    pic x(524288).
 01 tmplen pic 9(9) comp-5.
 01 found  pic 9(1).
 01 done   pic 9(1).
@@ -811,7 +811,7 @@ working-storage section.
 01 sf     pic 9(1).
 01 signer pic x(33).
 01 snl    pic 9(9) comp-5.
-01 gp     pic x(32768).
+01 gp     pic x(524288).
 01 gplen  pic 9(9) comp-5.
 01 vres   pic 9(1).
 01 msrok  pic 9(1).
@@ -857,10 +857,10 @@ working-storage section.
 01 ca     pic 9(18) comp-5.
 01 tok-ck pic 9(1).
 linkage section.
-01 lk-env    pic x(65535).
+01 lk-env    pic x(524288).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
-01 lk-cap    pic x(32768).
+01 lk-cap    pic x(524288).
 01 lk-caplen pic 9(9) comp-5.
 01 lk-verdict pic 9(1).
 01 lk-unres  pic 9(1).
@@ -1008,13 +1008,13 @@ program-id. cap-is-revoked.
 data division.
 working-storage section.
 01 caphash pic x(33).
-01 cur     pic x(32768).
+01 cur     pic x(524288).
 01 curlen  pic 9(9) comp-5.
 01 voff    pic 9(9) comp-5.
 01 f       pic 9(1).
 01 phash   pic x(33).
 01 pl      pic 9(9) comp-5.
-01 nxt     pic x(32768).
+01 nxt     pic x(524288).
 01 nxtlen  pic 9(9) comp-5.
 01 found   pic 9(1).
 01 done    pic 9(1).
@@ -1027,17 +1027,17 @@ working-storage section.
 01 rellen  pic 9(9) comp-5.
 01 path    pic x(700).
 01 pathlen pic 9(9) comp-5.
-01 ent     pic x(32768).
+01 ent     pic x(524288).
 01 entlen  pic 9(9) comp-5.
 01 efound  pic 9(1).
 01 s-revs  pic x(30) value "system/capability/revocations/".
 01 k-parent pic x(6) value "parent".
 01 k-parent-len pic 9(9) comp-5 value 6.
 linkage section.
-01 lk-env    pic x(65535).
+01 lk-env    pic x(524288).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
-01 lk-cap    pic x(32768).
+01 lk-cap    pic x(524288).
 01 lk-caplen pic 9(9) comp-5.
 01 lk-res    pic 9(1).
 procedure division using lk-env lk-incoff lk-incfnd lk-cap lk-caplen lk-res.
@@ -1092,13 +1092,13 @@ working-storage section.
 01 sf      pic 9(1).
 01 signer  pic x(33).
 01 snl     pic 9(9) comp-5.
-01 abuf    pic x(32768).
+01 abuf    pic x(524288).
 01 ablen   pic 9(9) comp-5.
 01 found   pic 9(1).
 01 vres    pic 9(1).
 01 caph    pic x(33).
 01 cl      pic 9(9) comp-5.
-01 capbuf  pic x(32768).
+01 capbuf  pic x(524288).
 01 caplen  pic 9(9) comp-5.
 01 exceeds pic 9(1).
 01 cverdict pic 9(1).
@@ -1118,7 +1118,7 @@ working-storage section.
 01 k-gre   pic x(7) value "grantee".
 01 k-gre-len pic 9(9) comp-5 value 7.
 linkage section.
-01 lk-env    pic x(65535).
+01 lk-env    pic x(524288).
 01 lk-rootoff pic 9(9) comp-5.
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
@@ -1182,7 +1182,7 @@ working-storage section.
 01 curlen pic 9(9) comp-5.
 01 j      pic 9(9) comp-5.
 01 pos    pic 9(9) comp-5.
-01 ent    pic x(32768).
+01 ent    pic x(524288).
 01 elen   pic 9(9) comp-5.
 01 ef     pic 9(1).
 01 etype  pic x(64).
@@ -1244,7 +1244,7 @@ data division.
 working-storage section.
 01 dummy pic 9(1).
 linkage section.
-01 lk-env    pic x(65535).
+01 lk-env    pic x(524288).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
 procedure division using lk-env lk-incoff lk-incfnd.
@@ -1263,11 +1263,11 @@ working-storage section.
 01 f    pic 9(1).
 01 st   pic s9(9) comp-5.
 linkage section.
-01 lk-env    pic x(65535).
+01 lk-env    pic x(524288).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
 01 lk-hash   pic x(33).
-01 lk-out    pic x(32768).
+01 lk-out    pic x(524288).
 01 lk-outlen pic 9(9) comp-5.
 01 lk-found  pic 9(1).
 procedure division using lk-env lk-incoff lk-incfnd lk-hash
@@ -1375,7 +1375,7 @@ working-storage section.
 01 k-signer-len pic 9(9) comp-5 value 6.
 01 t-sig  pic x(16) value "system/signature".
 linkage section.
-01 lk-env    pic x(65535).
+01 lk-env    pic x(524288).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-target pic x(33).
 01 lk-sigr   pic x(33).
@@ -1445,7 +1445,7 @@ working-storage section.
    05 sg occurs 16.
       10 sg-hash pic x(33).
 01 roothash pic x(33).
-01 gp      pic x(32768).
+01 gp      pic x(524288).
 01 gplen   pic 9(9) comp-5.
 01 found   pic 9(1).
 01 pub     pic x(32).
@@ -1481,13 +1481,13 @@ working-storage section.
 01 k-ex-len pic 9(9) comp-5 value 10.
 01 gee     pic x(33).
 01 gel     pic 9(9) comp-5.
-01 tmp     pic x(32768).
+01 tmp     pic x(524288).
 01 tmplen  pic 9(9) comp-5.
 linkage section.
-01 lk-env     pic x(65535).
+01 lk-env     pic x(524288).
 01 lk-incoff  pic 9(9) comp-5.
 01 lk-incfnd  pic 9(1).
-01 lk-rootbuf pic x(32768).
+01 lk-rootbuf pic x(524288).
 01 lk-groff   pic 9(9) comp-5.
 01 lk-ok      pic 9(1).
 procedure division using lk-env lk-incoff lk-incfnd lk-rootbuf lk-groff lk-ok.
@@ -1594,12 +1594,12 @@ working-storage section.
 01 cpatlen pic 9(9) comp-5.
 01 cov   pic 9(1).
 linkage section.
-01 lk-cbuf   pic x(65535).
+01 lk-cbuf   pic x(524288).
 01 lk-coff   pic 9(9) comp-5.
 01 lk-cf     pic 9(1).
 01 lk-cframe pic x(128).
 01 lk-cframelen pic 9(9) comp-5.
-01 lk-pbuf   pic x(65535).
+01 lk-pbuf   pic x(524288).
 01 lk-poff   pic 9(9) comp-5.
 01 lk-pf     pic 9(1).
 01 lk-pframe pic x(128).
@@ -1652,12 +1652,12 @@ working-storage section.
 01 k-excl pic x(7) value "exclude".
 01 k-excl-len pic 9(9) comp-5 value 7.
 linkage section.
-01 lk-cbuf   pic x(65535).
+01 lk-cbuf   pic x(524288).
 01 lk-csc    pic 9(9) comp-5.
 01 lk-cscp   pic 9(1).
 01 lk-cframe pic x(128).
 01 lk-cframelen pic 9(9) comp-5.
-01 lk-pbuf   pic x(65535).
+01 lk-pbuf   pic x(524288).
 01 lk-psc    pic 9(9) comp-5.
 01 lk-pscp   pic 9(1).
 01 lk-pframe pic x(128).
@@ -1718,11 +1718,11 @@ working-storage section.
 01 k-peers pic x(5) value "peers".
 01 k-peers-len pic 9(9) comp-5 value 5.
 linkage section.
-01 lk-cbuf   pic x(65535).
+01 lk-cbuf   pic x(524288).
 01 lk-gc     pic 9(9) comp-5.
 01 lk-cframe pic x(128).
 01 lk-cframelen pic 9(9) comp-5.
-01 lk-pbuf   pic x(65535).
+01 lk-pbuf   pic x(524288).
 01 lk-gp     pic 9(9) comp-5.
 01 lk-pframe pic x(128).
 01 lk-pframelen pic 9(9) comp-5.
@@ -1774,7 +1774,7 @@ working-storage section.
 01 st   pic s9(9) comp-5.
 01 gh   pic x(33).
 01 gl   pic 9(9) comp-5.
-01 gp   pic x(32768).
+01 gp   pic x(524288).
 01 gplen pic 9(9) comp-5.
 01 found pic 9(1).
 01 pub  pic x(32).
@@ -1786,10 +1786,10 @@ working-storage section.
 01 k-pk pic x(10) value "public_key".
 01 k-pk-len pic 9(9) comp-5 value 10.
 linkage section.
-01 lk-env    pic x(65535).
+01 lk-env    pic x(524288).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
-01 lk-cap    pic x(32768).
+01 lk-cap    pic x(524288).
 01 lk-out    pic x(128).
 01 lk-outlen pic 9(9) comp-5.
 01 lk-ok     pic 9(1).
@@ -1856,11 +1856,11 @@ working-storage section.
 01 k-ex  pic x(10) value "expires_at".
 01 k-ex-len pic 9(9) comp-5 value 10.
 linkage section.
-01 lk-env    pic x(65535).
-01 lk-cbuf   pic x(32768).
+01 lk-env    pic x(524288).
+01 lk-cbuf   pic x(524288).
 01 lk-cframe pic x(128).
 01 lk-cframelen pic 9(9) comp-5.
-01 lk-pbuf   pic x(32768).
+01 lk-pbuf   pic x(524288).
 01 lk-pframe pic x(128).
 01 lk-pframelen pic 9(9) comp-5.
 01 lk-res    pic 9(1).

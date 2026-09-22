@@ -1139,6 +1139,47 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   the version script alone control exports, verify with `nm -D`). A same-soname differential
   needs `dlmopen(LM_ID_NEWLM, …)`, not `dlopen` (glibc dedups by soname → silently compares a
   lib against itself).
+- **A SHARED LIBRARY'S LIFETIME ASSUMPTION IS PART OF ITS ABI, AND "the process exits" IS AN
+  ASSUMPTION ABOUT THE CALLER THAT NO CALLER IS TOLD ABOUT.** Candidate (first occurrence, found
+  2026-09-04 while measuring `cobol`'s capacity work; the enforcement point is exact and the blast
+  radius is the whole hybrid-FFI tier). `libentitycore_codec` leaks an entire `ec_value` tree on
+  **every** `ec_encode_ecf` and `cc_content_hash` — both on the per-request path — and the reason is
+  written in its own source: *"the harness + ABI calls are short-lived; we malloc value nodes and
+  never free the tree (process exits)"*. That is true of the conformance harness it was developed
+  against and **false of every long-running peer that links it**, which is what the library exists
+  for. Measured on `cobol`: **~1 KB per dispatched request, 23.3 MB per `--profile core` suite**,
+  tracking requests rather than connections (a connection-heavy category costs 80 kB per run; a
+  request-heavy one 419 kB over ~449 requests). Unbounded and remotely triggerable.
+  **Three things generalize, and the third is why it survived.** (a) **Bisect before attributing** —
+  this was found while raising `cobol`'s buffers 8×, which is exactly the change you would blame;
+  measuring `HEAD` gave **23.3 MB/suite before against 22.3 MB after**, so it is neither new nor
+  worsened, and saying so is the finding. (b) **`grep -c 'free('` on an allocating module is a
+  one-line audit** — four hits in `ecf.c`, none of them a value node. (c) **The comment even names
+  the fix — *"a v2 arena (`ec_arena_*`) replaces this for the long-running peer decode path"* — and
+  `ec_arena_new()` is `malloc(1)`.** The arena is honestly documented as unnecessary *for decode*
+  (which borrows spans); nobody noticed that made the sentence's promise about *encode* vacuous. So
+  this is the standing **"a deferral comment is a conformance claim with no gate on it"** rule
+  landing in SHARED code, where the deferral was resolved on one path and quietly inherited on the
+  other. **Enforcement: for any FFI entry point that constructs an owned tree, the same function
+  must free it — and a library whose correctness depends on the caller being short-lived must say so
+  in its HEADER, where a consumer reads it, not in an implementation comment.**
+  **FIXED the same day, and the verification is the part worth copying, because a wrong `free` in a
+  library seven peers link is strictly worse than the leak it removes.** A recursive `ev_free`, a
+  release at every entry point that builds a tree **on every exit path including the error ones**,
+  and child arrays switched to a ZEROING allocator so a partially built tree is walkable — the
+  decoder fills them element by element and can fail partway, which is the difference between "free
+  on the error path" and a wild pointer. Two leaks were worse than the encode one and neither was in
+  the original hypothesis: `ec_envelope_find_signature_for` leaked one tree **per included entity**,
+  both its `continue`s skipping the release, and the decoder leaked its partial tree on **every
+  malformed input** — remotely triggerable by bad bytes alone, with no valid request needed.
+  **Verified at four levels, in this order:** the codec's own regression suite and the 71-vector ECF
+  corpus; `cobol` three times, byte-identical to its committed report; the **full 46-peer census** —
+  46/46 conforming, all comparable, **exactly 2 of 34 868 severities different** from the tracked
+  reports and both the documented `t1_1_concurrent_demux` timing flake; and the leak itself, which
+  goes from +22.7 MB per suite to **flat from the first suite onward**.
+  **And the 13 agility-corpus failures the harness reports are IDENTICAL at HEAD** — that harness
+  does not implement those vector kinds — which is only knowable by running it at HEAD. A red you
+  did not cause looks exactly like one you did.
 - **A blanket `**/bin/` gitignore rule with a per-peer allowlist silently swallows a new
   peer's entrypoint if nobody adds its exception.** Found 2026-08-17 (W-REGISTER-GUARD
   remediation): `.gitignore` un-ignores `bin/` for ocaml/rust/cobol/apl/smalltalk/fortran/
@@ -1155,6 +1196,133 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   `.gitignore`, or `git ls-files protocol-generator/<lang>/bin/` returns empty while the file
   sits untracked on disk — check that grep whenever a peer's own gate can't reproduce a status
   doc's claimed green from a clean clone/worktree.
+- **RATIFIED — A NEGATIVE CLAIM ABOUT A SIBLING'S CORPUS IS THE SAME UNFALSIFIABLE SHAPE AS "THE SPEC
+  DOES NOT SAY", AND WE SHIPPED TWO OF THEM IN ONE PACKET.** 2026-09-04. The F51 rule already covers
+  *"the spec is silent"*; this is its second surface — *"we do not find this anywhere in your ledger or
+  your proposal"* — and it is worse in one respect: a spec is one corpus you can enumerate, while a
+  sibling's ledger, proposals, guides and routing packets are four, and nobody re-reads a claim that
+  something is ABSENT. `HANDOFF-TO-ARCH-2026-09-04` §2 opened with exactly that sentence about the
+  `EXTENSION-COMPUTE` builtins/D1 interaction. **It is in the proposal** — `PROPOSAL-EXTENSION-HOST-
+  INSTALL-SEAM.md` §7's homes table rules it explicitly (*"no edit needed, it is scoped to
+  bootstrap-registered builtins and stays true under D1"*). §3b asked whether the frozen compute
+  corpus is owed publication; **`GUIDE-CONFORMANCE` §7c answers it in the section we were quoting**,
+  and more sharply than we asked (*"built, cross-blessed, and homeless"*). Both withdrawn at sign-off,
+  struck in place rather than deleted.
+  **The mechanism is F51's exactly and it is worth naming twice: we searched the vocabulary of the
+  QUESTION, not of the DOCUMENT that owns the answer** — and in §3b we did not read to the end of the
+  section we were citing. **Enforcement, and it is the F51 rule with its scope widened: a finding that
+  asserts an absence in ANY corpus — the spec, a sibling's ledger, a sibling's proposals — must record
+  which documents it searched, by name.** One `grep -rn builtins docs/proposals/active/` would have
+  stopped this leaving the tree. Corollary for outbound packets specifically: **the exculpatory and
+  the accusatory halves fail differently — an "already handled, nothing owed" is checked by the
+  recipient, a "you have never addressed this" lands as a correction to them and is checked by nobody.**
+  *(The re-resolution that caught both is the standing rule paying out for the third time —* record the
+  sibling HEAD an audit was taken against and re-resolve it at SIGN-OFF, not at audit time. *Drafted
+  against arch `06904ab`, signed off against `7792f61`, twenty commits later, and the delta withdrew
+  two of the packet's four asks. Budget the re-resolution; it is not optional and it is minutes.)*
+- **RATIFIED, FIFTH OCCURRENCE — PLAN AROUND IT: `core_gate_fingerprint` DOES NOT MOVE WHEN THE CORE
+  GATE GAINS CHECKS, AND "the spec delta is minor" IS A JUDGEMENT ABOUT TEXT WHEN THE QUESTION IS
+  ABOUT THE WIRE.** Measured 2026-09-04 for `0.8.2.3 → 0.8.2.7`. **One of three** normative files
+  moved, `+80/−12` — which reads as trivial and is not. The go oracle grew **+15 declared checks, 0
+  removed**, and **13 are `catConnectivity`, a CORE category**; `profile.go` did not move, so the
+  fingerprint stayed byte-identical at `8261a033…` for the fifth time in this exact shape. The
+  executed core set goes **758 → 772**.
+  **Two method notes, both of which cost time here.** (a) **A `.Declare("…")` grep is the wrong
+  vocabulary** — `connectivity_conn_errors.go` is 774 new lines registering checks as `const name =
+  "…"`, so a Declare-only scan reported **+4** where the truth was **+15**. Our own
+  `oracle-bootstrap.sh check_set_digest` already handles both forms; **use the repo's canonical
+  extractor rather than authoring a third one**, and if you must grep, prove the pattern sees a check
+  you know exists. (b) **A three-lineage probe is a strong prior and is not a cohort claim.** Building
+  the HEAD oracle to scratch and running `go`, `rust` and `python` returned an **identical**
+  `772 · 324P/336W/5F/107S` — same five failures, nothing else moving — which is good enough to
+  scope the work as *one authored fix propagated 46 times* and NOT good enough to publish. Say which
+  you have. **Build the candidate oracle to a scratch path and leave the pinned one alone**: a probe
+  that clobbers `output/s4-oracles/` has destroyed the measurement state it was trying to inform.
+- **RATIFIED — AN ARM WITH HARNESSES AND NO COHORT RUNNER IS ONE NOBODY IS MEASURING, AND
+  "IT ISN'T PEER-SCOPED" IS WHY IT ESCAPED, NOT A REASON IT SHOULD HAVE.** 2026-09-04, and it
+  is the standing *"a second axis with no cohort gate is an exclusion nobody declared"* rule
+  one level up: that rule was about an AXIS inside `protocol-generator/`, this is a whole
+  **arm** outside it. `tools/run-axis-sweep.sh` sweeps `protocol-generator/*`; `ffi-generator/`
+  is not peer-scoped, so it sat in **no sweep and no `make lint` gate** — while **34 peers link
+  the artifact it builds**. The codec leak closed the same day had been on the per-request path
+  of every one of them for months and was found **by accident**, while measuring an unrelated
+  peer's capacity work. Every harness that would have caught it already existed
+  (`regression_test`, `conformance_harness`, `abi_differential`); nothing ran them on a
+  schedule. **Enforcement: `ffi-generator/c-abi/run-ffi-gate.sh`, and the arm is listed in
+  `run-axis-sweep.sh --list` even though its runner is separate** — S4's precedent, for the
+  same reason. **The inventory is the control, not the sweep engine**: a thing absent from the
+  list is an exclusion nobody declared, and the fix for "it doesn't fit the table's shape" is a
+  row saying where its runner lives.
+  **THE FIX DID NOT REACH THREE OF ITS CONSUMERS, BY THE BUILD-ONLY-IF-MISSING SHAPE THIS FILE
+  ALREADY RECORDS TWICE** (`node-red`'s `dist/`, `turbowarp`'s installs). Nine peers declared
+  the codec `.so` as a **bare make file target** — a file target with no prerequisites runs its
+  recipe only when the file is ABSENT — so once built it was `Nothing to be done` forever, no
+  matter what happened to the codec's source. Measured: `asm-arm64` and `riscv64` were linking
+  cross-builds dated **2026-07-15** and `io` a peer-local copy dated **2026-07-27**, confirmed
+  **by symbol** (`nm`: no `ev_free`) rather than by mtime alone. **Three of the nine said `if
+  absent` in the comment above the rule** — the defect was written down and never read as one,
+  which is the deferral-comment class in a Makefile.
+  **The fix is DERIVED prerequisites, never a hand-listed set** (`$(shell find $(CODEC_SRC)/src
+  $(CODEC_SRC)/include ...)`): a literal file list is a second copy of the dependency graph and
+  a second copy drifts — the dart/csharp lockfile rule, in make. cmake still does the
+  incremental work; make only decides whether to call it. **Both directions must be exercised
+  or the fix is unmeasured**: touch a source → all nine rebuild; leave it current → all nine
+  say `Nothing to be done`. Without the second control you have not fixed staleness, you have
+  replaced it with an unconditional rebuild, which passes the first check identically.
+  **Enforcement: `git grep -n 'libentitycore_codec.so:$'` — a `.so` target whose line ends at
+  the colon has no prerequisites and cannot see a source change.**
+  **And re-measure the peers the artifact moved under**: all three reproduced their committed
+  row at the pinned check set (`asm-arm64`/`riscv64` **0 of 758** severities different, `io`
+  **1 of 758** — the documented `t1_1_concurrent_demux` flake, WARN→PASS, so the tracked report
+  was **left alone** under the standing "a single sample is not a rate" rule).
+- **A PROBE COUNT IS NOT A SYMBOL COUNT, AND A DIFFERENTIAL IS SILENT ABOUT EXACTLY THE SURFACE
+  IT DOES NOT DRIVE.** Candidate (first occurrence, enforcement exact). `abi_differential.c`
+  published **"71/71"** — since grown to 101 — as evidence that the two C-ABI codec impls are
+  "interchangeable". It `dlsym`s **19** symbols; the spec declares **27**. So a symbol the two
+  impls disagree about is invisible to a green run unless it happens to be one of the 19 — and
+  one was: `ec_entity_original_bytes` is exported by the C impl and **has never been implemented
+  in Rust** (no commit ever added it). **Say the conformance verdict precisely, because the
+  flattering framing and the alarming one are both wrong:** spec §4.1 declares that symbol
+  **OPTIONAL** ("MAY be provided"), so Rust is **conformant** — and it is still a footgun,
+  because both impls ship the same soname and artifact name and are advertised as drop-in
+  interchangeable, so a consumer that links one and swaps the other gets an unresolved symbol.
+  **Enforcement: the differential now enumerates every spec-declared symbol, `dlsym`s it on
+  BOTH libraries, and prints the asymmetry plus how many symbols it actually drives (19/27).**
+  It **reports** rather than fails — an optional symbol present on one side is not a defect and
+  hard-failing would hold the gate permanently red, the "teaches people to skip it" mode this
+  file records twice. What it must never do again is stay silent. **Generalize: any harness
+  that publishes a count as evidence of equivalence must also publish the SURFACE that count
+  ranges over** — otherwise the number grows while the coverage does not, and nobody can tell.
+- **A LEAK PROBE MUST CROSS THE PUBLIC BOUNDARY ONLY — the shipped test binaries' leak output
+  is the HARNESS's and reads exactly like the library's.** Candidate, same session. The first
+  ASan run of `regression_test` + `conformance_harness` reported **12 and 67 leak records at
+  HEAD**, after the leak was fixed and verified — every one of them a tree the *harness* built
+  directly, or the corpus it holds for the life of the process. A peer never does that: it only
+  ever crosses the exported `ec_*` surface. A probe restricted to that surface reports **0**,
+  and the pre-fix tree reports **141** on the same probe. **The stacks look identical** —
+  `xmalloc → ev_new → …` in both cases — so the distinction is not visible in the output and
+  has to be built into the driver. **Enforcement: `conformance/abi_leak_probe.c` calls only
+  exported symbols, and drives MALFORMED input as well as valid** (two of the three fixed leaks
+  were on decoder error paths, reachable by anyone who can send bytes and by no valid request).
+  **And validate the instrument against a control before believing its result**: both the ASan
+  probe and the RSS probe were run against the pre-fix tree first (141 records · 5 552
+  bytes/pass) and only then against HEAD (0 · 0.00). A detector that has never fired has
+  measured nothing — and the RSS instrument needed its OWN control, because the ASan control
+  validates ASan and says nothing about RSS sensitivity.
+- **A REPRODUCE RECIPE THAT NAMES A BINARY THE REPO HAS NEVER CONTAINED IS A PUBLISHED NUMBER
+  WITH NO EVIDENCE UNDER IT.** Candidate, same session, and it is the `forth bin/peer.fs` shape
+  with the *harness* untracked instead of the entrypoint. `entity-core-codec-ffi-rust/README.md`
+  documented `./target/release/conformance_harness <corpus>` and **"69/69 byte-identical to the
+  vendored cross-blessed fixture"**; `conformance/README.md` cited the same harness by path;
+  `MANIFEST.md` carried its number. The crate declares no `[[bin]]`, `src/bin` **has never
+  existed in git history** (`git log --all -- 'src/bin*'` is empty — not deleted, never added),
+  and the documented command exits `No such file or directory`. **The consequence is bigger than
+  the wrong number:** it means the Rust impl has **no independent corpus harness at all**, so
+  its only verification is the cross-impl differential — a **mutual** check that a defect both
+  impls shared would pass. Withdrawn rather than restated. **Enforcement: run the reproduce
+  recipe.** It is one command and it is the only thing that distinguishes a stale number from a
+  fabricated one — and note the four documents agreed with each other, so cross-reading them
+  corroborates the claim instead of testing it.
 - **Conformance-green can be vacuous.** A rejection-only oracle category lets a fail-closed
   peer pass without implementing the primitive — and a non-core category never gates. The
   keystone payoff is the *finding* (an untested, inconsistently-implemented core primitive)
@@ -2180,6 +2348,26 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   asserted, not `sed`). For any control that crosses a container boundary, forward the variable
   explicitly and prove it arrived. This is the examined-zero-things class pointed at the regression
   suite instead of at the gate — and a regression suite is exactly where nobody looks for it.
+  **THIRD OCCURRENCE 2026-09-04, and it inverts the second: FORWARDING A VARIABLE EXPLICITLY IS NOT
+  NEUTRAL — an explicit `-e VAR=<default>` OVERRIDES the callee's own default, so a wrapper that
+  "just passes things through" silently decides them.** The rule above says to forward a variable
+  explicitly and prove it arrived. `cobol`'s `run-s4-host.sh` — the capped, documented, human-facing
+  launcher, and the only `run-s4-host.sh` in the cohort — did forward it, as
+  `-e "VALIDATE=${VALIDATE:-0}"`, against `run-s4.sh`'s own `${VALIDATE:-1}`. It arrived. It was
+  wrong. **Measured: the documented by-hand entry point reports `312P/337W/0F/109S` and
+  `Result: FAIL (un-allowlisted skips)` while the census reports the committed `315P/337W/0F/106S`**
+  — the three are `t1_2_concurrent_reentry`, `handlers/validate_echo_dispatch` and
+  `origination/dispatch_outbound_reentry`, each SKIPping with *"target peer not run with
+  --validate"*. Nothing was wrong with the peer and nothing was wrong with the census. **The two
+  entry points disagreed, and the one that was wrong is the one no cohort runner exercises** — the
+  standing "an axis's per-peer gates rot exactly where no cohort runner reaches" rule, reaching a
+  *wrapper* rather than a gate. It cost the first hour of the session: the baseline looked like a
+  three-check regression against the committed report, which is the most alarming thing a baseline
+  can do. **Enforcement: a wrapper that forwards `VAR=${VAR:-X}` must use the same `X` the callee
+  does, or it is setting policy rather than forwarding.** `grep -n '\-e "[A-Z_]*=\${' ` over any
+  launcher and diff each default against the script it invokes; and if a peer has a second entry
+  point, run BOTH before trusting either — a baseline that disagrees with the committed report is
+  more often the invocation than the peer.
 - **A DOCUMENTED CHECK THAT NOTHING INVOKES IS THE 2d ROT PATTERN, AND ITS EXIT CODE IS USUALLY NOT
   THE CHECK EITHER.** RATIFIED 2026-09-03 (`lean`). `lake build EntityCoreProofs` was called *"the
   proof check"* in three of this repo's own documents and **no Makefile, script or harness built that
@@ -2391,11 +2579,40 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
     text: *"not a §6.11 violation — informational … for runtimes that do not physically
     parallelize"*), but it still moves a published column, and reporting only the gain would be the
     overclaim. **Verified per-check: exactly 2 of 756 severities moved.**
-  **What is NOT done, named rather than disguised:** `t1_3`'s 264 KB needs `cbor-canon` rebuilt
-  around a depth-indexed arena instead of per-level fixed buffers — a redesign of the one routine
-  every entity hash depends on. The store geometry is already the cheap half: peak occupancy across
-  a full run is **116–119 content entries against 8192 slots**, so slot count was ~70x
-  over-provisioned and bought the per-entity size at constant footprint (8192 → 1024 slots).
+  **CLOSED 2026-09-04, and the closing move RETRACTS the middle bullet's conclusion while confirming
+  its measurement — which is the durable half: A CAPACITY THAT IS UNAFFORDABLE IN ONE DATA STRUCTURE
+  IS NOT AN EXPENSIVE CAPACITY, IT IS THE WRONG DATA STRUCTURE, AND THE COST FIGURE CANNOT TELL YOU
+  WHICH.** "512 KiB costs ~34 MB per call per level" was correct, reproducible, and led to the wrong
+  conclusion, because the ~34 MB was a property of a table that **buffered every map value into a
+  fixed per-pair slot** — so the measured price of capacity was really the price of that design at
+  that capacity, and it read as a substrate limit. `cbor-canon` now records each pair's canonicalized
+  KEY plus the INPUT OFFSET its value starts at, and canonicalizes values straight into the output in
+  sorted-key order on a second pass; values are bounded by the output buffer alone. Per call, per
+  level: **2.13 MB → 65.8 KB**, i.e. 33× *below* where it started, and the per-value ceiling is gone
+  rather than raised. With that, the frame cap is 512 KiB, `t1_3` is PASS, and **the suite is faster
+  than it ever was at 64 KiB: 47.9 s → 13–15.7 s over 7 of 7 runs.** The store took the same move for
+  the same reason (1024 fixed slots → one arena addressed by offset), which decouples the ONE-entity
+  ceiling from the ALL-entities footprint that was multiplying it. **Rule: when a measurement says a
+  capacity is unaffordable, ask what is multiplying it before believing the substrate — a per-call ×
+  per-level × per-pair fixed slot is three multipliers, and removing any one of them changes the
+  answer by orders of magnitude.**
+  **The third bullet's trade REVERSED, and that is worth as much as the trade was.** `t1_1_concurrent_
+  demux` went WARN → **PASS**, undoing the loss recorded above: the peer got fast enough that the
+  oracle's sequential baseline falls under its 50 ms floor and the speedup signal is suppressed.
+  Verified the same way it was recorded — **exactly 2 of 758 severities moved, 7 of 7 runs identical,
+  no `budget_exhausted`, executed digest equal to the pin.** A published trade is not permanent, and
+  re-measuring the losing side after a redesign is part of the redesign.
+  **A SECOND SIZE FAMILY EXISTS THAT IS NOT A DECLARATION AT ALL — the NAMED CONSTANT that tells a
+  callee how big the buffer it was handed is.** The first bullet says to enumerate the size literals;
+  it is not enough, because a mechanical sweep over `pic x(N)` leaves `01 entmax … value 32768`,
+  `01 cap-entmax … value 32768`, `01 maxlen … value 20000` and `01 cap65 … value 65535` behind —
+  four guards and capacity arguments that were CORRECT at the old sizes and become a silent
+  truncation or a false 413 at the new one. `grep -n '<old size>' src/*.cob | grep -v 'pic x('` finds
+  them in one line and finding them by test would have meant a `413` on a payload the transport had
+  already accepted. **After raising a declaration family, grep for the same number as a VALUE.**
+  **And the store geometry was the cheap half, exactly as recorded:** peak occupancy across a full
+  run is **116–119 content entries against 1024 slots**, so the arena carries a 264 KB entity at a
+  *smaller* total footprint than the 1024 × 32 KiB slot table it replaced (33.6 MB → 8 MiB + offsets).
   **The gate is `tools/harness-gate.py` — teardown AND args, one file, because both are
   invariants of the same interface.** It counts its ANCHORS, not just its failures: `46 wait ·
   46 forward · 11 hand argv across a container boundary`, and that 11 is asserted non-zero and
@@ -2697,6 +2914,23 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   only `rm -rf _build` did. **The direction that matters is the opposite one — the same mechanism
   yields a false GREEN after a fix.** When a result contradicts a change you just made, suspect the
   cache before the code, and `stat -c %Y` both sides.
+  **RATIFIED 2026-09-04, second occurrence, and the new shape is that the STALE THING IS THE SOURCE:
+  `cp -a` PRESERVES mtimes, so restoring a saved tree after building something else in between hands
+  the build system a source file OLDER than the objects compiled from a DIFFERENT version of it.**
+  The bisect pattern this file prescribes everywhere — save the work, `git checkout --` to HEAD,
+  build, measure, restore — is what creates it: save at 07:11, build HEAD at 07:13 (objects now
+  07:13), `cp -a` the work back (source is 07:11 again), rebuild → **cmake reports success and
+  recompiles nothing**, and the binary under test is HEAD's. Measured: the codec leak fix appeared to
+  change the leak rate not at all (22.7 MB/suite before and after), which is exactly the reading that
+  says "your hypothesis was wrong, abandon it". `touch`ing the sources and rebuilding took it to
+  **flat — zero growth after the first suite**. **The fix was correct and the measurement said
+  otherwise for a reason that had nothing to do with either.**
+  **Two rules, and the second is the one that scales.** (a) **After restoring a saved tree, `touch`
+  it** — or copy with `cp` rather than `cp -a`, since only the metadata preservation is harmful here.
+  (b) **A build step that reports success is not evidence it BUILT anything** — this is the
+  examined-zero-things class in a compiler: `cmake --build` prints the same `Built target` whether it
+  compiled four files or none. Grep its output for the compile lines you expect (`Building C object
+  .../ecf.c.o`) and treat their absence as a failed rebuild, exactly as a gate must print its count.
 - **THE §2.4a NEGATIVE HALF NEEDS A CONSTRUCTOR, NOT AN ASSERTION — a refusal observed through the raw
   primitive is the bypass the rule exists to forbid.** RATIFIED 2026-09-02 across five peers.
   `hash-format-sha-384.2` was **inverted upstream**: it used to assert that re-hashing the fixture

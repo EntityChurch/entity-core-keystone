@@ -18,27 +18,54 @@ data division.
 working-storage section.
 01 ws-cn       pic 9(9) comp-5 value 0.       *> content entry count
 01 ws-tn       pic 9(9) comp-5 value 0.       *> tree entry count
+*> Content entries carry an OFFSET into one shared arena, not a fixed slot.
+*>
+*> The slot form multiplies: 1024 entries x a per-entity ceiling is the whole
+*> table's size whether or not anything that large is ever stored, so the
+*> ceiling and the footprint could not be varied independently. At the 32768
+*> slot this table was 33.6 MB to hold a measured peak of 116-119 entries whose
+*> real content is a few tens of KB; raising the slot to the frame capacity
+*> would have made it 537 MB.
+*>
+*> With an arena the two are separate: the ceiling on ONE entity is ws-entmax
+*> (the frame capacity — an entity that arrived in a frame can always be
+*> stored), and the ceiling on ALL of them is the arena, sized for the
+*> workload rather than for the worst case times the slot count.
+*>
+*> Allocation is bump-only: the content store is immutable and dedups by hash
+*> (§1.7), so an entry is written once and never resized or released, and a
+*> free list would have nothing to reclaim. store-init resets the bump.
 01 ws-content.
    05 ws-c occurs 1024.
       10 ws-c-hash  pic x(33).
       10 ws-c-len   pic 9(9) comp-5.
-      10 ws-c-bytes pic x(32768).
+      10 ws-c-off   pic 9(9) comp-5.
+01 ws-arena    pic x(8388608).
+01 ws-arenamax pic 9(9) comp-5 value 8388608.
+01 ws-arenause pic 9(9) comp-5 value 0.
 01 ws-tree.
    05 ws-t occurs 8192.
       10 ws-t-plen  pic 9(9) comp-5.
       10 ws-t-path  pic x(700).
       10 ws-t-hash  pic x(33).
 01 ws-cmax     pic 9(9) comp-5 value 1024.
-*> Per-entity capacity of ws-c-bytes, in bytes. Every caller of store-put /
-*> store-bind / store-get-* passes an 8192-byte buffer, so this is the one
-*> number that has to agree across the whole store surface — and it is checked
-*> BEFORE each copy rather than assumed. An entity larger than this used to be
-*> memcpy'd into the 4096-byte slot regardless: glibc's _FORTIFY_SOURCE caught
-*> it and killed the process, so ONE oversized (but under-frame-cap) tree.put
-*> from any caller terminated the peer. Callers reject over-capacity entities
-*> at the handler, where a status can be returned; this guard is the backstop
-*> that makes the buffer size stop being load-bearing for memory safety.
-01 ws-entmax   pic 9(9) comp-5 value 32768.
+*> Per-entity capacity, in bytes: the size of the largest single entity the
+*> store will accept. Every caller of store-put / store-bind / store-get-*
+*> passes a frame-capacity buffer, so this is the one number that has to agree
+*> across the whole store surface — and it is checked BEFORE each copy rather
+*> than assumed. An entity larger than this used to be memcpy'd into the slot
+*> regardless: glibc's _FORTIFY_SOURCE caught it and killed the process, so ONE
+*> oversized (but under-frame-cap) tree.put from any caller terminated the peer.
+*> Callers reject over-capacity entities at the handler, where a status can be
+*> returned; this guard is the backstop that makes the buffer size stop being
+*> load-bearing for memory safety.
+*>
+*> It now equals the frame capacity (netshim.c EC_FRAMECAP), which is the only
+*> value that makes the guard invisible in practice: an entity small enough to
+*> have ARRIVED is small enough to store. While it was smaller, a frame the
+*> transport had accepted could still be refused here, which is a capacity
+*> boundary in the middle of the peer rather than at its edge.
+01 ws-entmax   pic 9(9) comp-5 value 524288.
 01 ws-tmax     pic 9(9) comp-5 value 8192.
 01 ws-i        pic 9(9) comp-5.
 01 ws-idx      pic 9(9) comp-5.
@@ -64,7 +91,7 @@ working-storage section.
       10 ws-l-child   pic 9(1).
 linkage section.
 01 lk-hash     pic x(33).
-01 lk-ent      pic x(32768).
+01 lk-ent      pic x(524288).
 01 lk-len      pic 9(9) comp-5.
 01 lk-path     pic x(700).
 01 lk-plen     pic 9(9) comp-5.
@@ -80,12 +107,14 @@ procedure division.
 *> default entry: initialize
     move 0 to ws-cn
     move 0 to ws-tn
+    move 0 to ws-arenause
     goback.
 
 *> ---- store-init ----------------------------------------------------
 entry "store-init".
     move 0 to ws-cn
     move 0 to ws-tn
+    move 0 to ws-arenause
     goback.
 
 *> ---- store-put : content store, dedup by hash ----------------------
@@ -94,11 +123,8 @@ entry "store-init".
 entry "store-put" using lk-ent lk-len lk-hash.
     if lk-len > ws-entmax then goback end-if
     perform find-content
-    if ws-found = 0 and ws-cn < ws-cmax
-        add 1 to ws-cn
-        move lk-hash to ws-c-hash(ws-cn)
-        move lk-len  to ws-c-len(ws-cn)
-        move lk-ent(1:lk-len) to ws-c-bytes(ws-cn)(1:lk-len)
+    if ws-found = 0
+        perform arena-admit
     end-if
     goback.
 
@@ -106,11 +132,8 @@ entry "store-put" using lk-ent lk-len lk-hash.
 entry "store-bind" using lk-path lk-plen lk-ent lk-len lk-hash.
     if lk-len > ws-entmax then goback end-if
     perform find-content
-    if ws-found = 0 and ws-cn < ws-cmax
-        add 1 to ws-cn
-        move lk-hash to ws-c-hash(ws-cn)
-        move lk-len  to ws-c-len(ws-cn)
-        move lk-ent(1:lk-len) to ws-c-bytes(ws-cn)(1:lk-len)
+    if ws-found = 0
+        perform arena-admit
     end-if
     perform find-tree
     if ws-found = 1
@@ -146,7 +169,7 @@ entry "store-get-by-hash" using lk-hash lk-ent lk-len lk-found.
     move ws-found to lk-found
     if ws-found = 1
         move ws-c-len(ws-idx) to lk-len
-        move ws-c-bytes(ws-idx)(1:lk-len) to lk-ent(1:lk-len)
+        move ws-arena(ws-c-off(ws-idx):lk-len) to lk-ent(1:lk-len)
     end-if
     goback.
 
@@ -160,7 +183,7 @@ entry "store-get-at" using lk-path lk-plen lk-ent lk-len lk-found.
     move ws-found to lk-found
     if ws-found = 1
         move ws-c-len(ws-idx) to lk-len
-        move ws-c-bytes(ws-idx)(1:lk-len) to lk-ent(1:lk-len)
+        move ws-arena(ws-c-off(ws-idx):lk-len) to lk-ent(1:lk-len)
     end-if
     goback.
 
@@ -240,6 +263,27 @@ merge-child.
     perform find-seg
     if ws-mfound = 0 then perform add-seg end-if
     if ws-mi > 0 then move 1 to ws-l-child(ws-mi) end-if.
+
+*> Admit LK-ENT(1:LK-LEN) as a new content entry: bump-allocate arena space,
+*> record (hash, len, offset), copy once. Callers have already established that
+*> the hash is not present (dedup) and that LK-LEN is within ws-entmax.
+*>
+*> BOTH bounds are tested BEFORE the copy and a failure is a silent no-admit,
+*> which is the behaviour the fixed-slot form had at its table cap: the entity
+*> is simply not resolvable afterwards. It is not a new failure mode, and the
+*> alternative — writing past the arena — is the _FORTIFY_SOURCE abort this
+*> module's per-entity guard exists to have already prevented once.
+arena-admit.
+    if ws-cn < ws-cmax and ws-arenause + lk-len <= ws-arenamax
+        add 1 to ws-cn
+        move lk-hash to ws-c-hash(ws-cn)
+        move lk-len  to ws-c-len(ws-cn)
+        compute ws-c-off(ws-cn) = ws-arenause + 1
+        if lk-len > 0
+            move lk-ent(1:lk-len) to ws-arena(ws-c-off(ws-cn):lk-len)
+        end-if
+        add lk-len to ws-arenause
+    end-if.
 
 find-content.
     move 0 to ws-found

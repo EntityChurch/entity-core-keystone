@@ -17,15 +17,15 @@ identification division.
 program-id. publish-types.
 data division.
 working-storage section.
-01 fbuf     pic x(20000).
+01 fbuf     pic x(524288).
 01 flen     pic 9(9) comp-5.
-01 maxlen   pic 9(9) comp-5 value 20000.
+01 maxlen   pic 9(9) comp-5 value 524288.
 01 pos      pic 9(9) comp-5.
 01 namelen  pic 9(9) comp-5.
 01 tname    pic x(128).
 01 datalen  pic 9(9) comp-5.
-01 tdata    pic x(32768).
-01 ent      pic x(32768).
+01 tdata    pic x(524288).
+01 ent      pic x(524288).
 01 entlen   pic 9(9) comp-5.
 01 hash     pic x(33).
 01 rel      pic x(700).

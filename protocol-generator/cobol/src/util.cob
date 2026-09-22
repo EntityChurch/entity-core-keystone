@@ -26,7 +26,7 @@ working-storage section.
    05 ws-ob-char pic x.
 01 ws-on redefines ws-ob pic 9(2) comp-x.
 linkage section.
-01 lk-out       pic x(65535).
+01 lk-out       pic x(524288).
 01 lk-out-len   pic 9(9) comp-5.
 01 lk-value     pic 9(18) comp-5.
 procedure division using lk-out lk-out-len lk-value.
@@ -67,7 +67,7 @@ working-storage section.
 01 ws-digits.
    05 ws-dig occurs 128 pic 9(4) comp-5.
 linkage section.
-01 lk-in        pic x(65535).
+01 lk-in        pic x(524288).
 01 lk-in-len    pic 9(9) comp-5.
 01 lk-str       pic x(128).
 01 lk-str-len   pic 9(9) comp-5.

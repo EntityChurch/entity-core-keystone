@@ -21,7 +21,7 @@ working-storage section.
 01 rc       pic s9(18) comp-5.
 linkage section.
 01 lk-fd       pic s9(9) comp-5.
-01 lk-payload  pic x(65535).
+01 lk-payload  pic x(524288).
 01 lk-len      pic 9(9) comp-5.
 01 lk-status   pic s9(9) comp-5.
 procedure division using lk-fd lk-payload lk-len lk-status.
@@ -58,7 +58,7 @@ working-storage section.
 01 rc       pic s9(18) comp-5.
 linkage section.
 01 lk-fd       pic s9(9) comp-5.
-01 lk-buf      pic x(65535).
+01 lk-buf      pic x(524288).
 01 lk-max      pic 9(9) comp-5.
 01 lk-out-len  pic 9(9) comp-5.
 01 lk-status   pic s9(9) comp-5.

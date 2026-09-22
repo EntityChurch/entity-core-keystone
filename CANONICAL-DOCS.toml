@@ -125,6 +125,18 @@ title = "Status — where the keystone stands"
 blurb = "The rolling orientation note: cohort state at the current pin, what is publishable, and what is next. Deliberately thin — CONFORMANCE-MATRIX.md is authoritative for every per-peer number and wins when the two disagree."
 group = "Overview"
 
+# The program-level view: which seats this repo sits between, what is measured, what is
+# queued and what "finished" looks like. Declared because it is the only answer to an
+# outsider's "where is this going", and because `docs/STATUS.md` and `README.md` both cite
+# it -- a published file naming a path the release strips is exactly what `link-gate` check 2
+# exists to catch. It carries no per-peer numbers of its own: CONFORMANCE-MATRIX.md is
+# authoritative and this file says so at the top.
+[[doc]]
+path  = "docs/PROGRAM.md"
+title = "The program — where keystone sits, what it owes, and how it ends"
+blurb = "Keystone's position and trajectory: the four seats it sits between, the state of every verification axis, the measured size of the queued work, and what freeze looks like when the core protocol stops moving."
+group = "Overview"
+
 # Declared because the alternative is worse, and because of what it says. `docs/STATUS.md`
 # (published) cites it, and a published file naming a path the release strips is the exact
 # defect `link-gate` check 2 exists to catch. On the merits: this repo is the conformance

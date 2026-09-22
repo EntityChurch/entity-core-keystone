@@ -106,6 +106,10 @@ int ecf_envelope_spans(const uint8_t *bytes, size_t len, ec_span *root,
 
 /* ---- value constructors (used by codec.c / the harness) ---- */
 ec_value *ev_new(ev_kind kind);
+/* Release a value tree, including partially built ones (unfilled child slots
+ * read NULL). Every entry point that BUILDS a tree owns it and must free it:
+ * these callers are long-running peers, not a harness that exits. */
+void ev_free(ec_value *v);
 ec_value *ev_int_u64(uint64_t v);
 ec_value *ev_text(const char *s, size_t len);
 ec_value *ev_bytes(const uint8_t *p, size_t len);

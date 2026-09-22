@@ -28,19 +28,19 @@ working-storage section.
 01 n7       pic 9(9) comp-5 value 7.
 01 n9       pic 9(9) comp-5 value 9.
 01 n10      pic 9(9) comp-5 value 10.
-01 nd       pic x(8192).
+01 nd       pic x(524288).
 01 nd-len   pic 9(9) comp-5.
-01 exec-ent pic x(8192).
+01 exec-ent pic x(524288).
 01 exec-len pic 9(9) comp-5.
 01 exec-hash pic x(33).
 01 inc0     pic x(8).
 01 inc0-len pic 9(9) comp-5.
-01 env      pic x(65535).
+01 env      pic x(524288).
 01 env-len  pic 9(9) comp-5.
 01 n0       pic 9(18) comp-5 value 0.
 01 st       pic s9(9) comp-5.
 01 conn     pic x(256).
-01 resp     pic x(65535).
+01 resp     pic x(524288).
 01 resp-len pic 9(9) comp-5.
 01 hasresp  pic 9(1).
 01 root-off pic 9(9) comp-5.

@@ -82,6 +82,18 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # (`run-cohort-census.sh`) plus three gates on the numbers it produces, because
 # an S4 result is a published measurement and needs comparability enforcement
 # this script does not do. Every OTHER axis belongs here.
+#
+# THE ffi-generator ARM IS ALSO ABSENT, AND UNTIL 2026-09-04 THAT *WAS* AN
+# OVERSIGHT. This table sweeps `protocol-generator/*`; the FFI arm is not
+# peer-scoped, so it fell outside every sweep and every `make lint` gate while
+# 34 peers linked the artifact it builds. The codec leak fixed that day had been
+# on the per-request path of every consumer for months and was found by accident,
+# while measuring an unrelated peer. It now has its own runner --
+# `ffi-generator/c-abi/run-ffi-gate.sh` -- for the same reason S4 does: it is not
+# per-peer. It is listed by `--list` so the inventory stays complete, which is the
+# whole point of this table. AN ARM THAT IS IN NO INVENTORY IS AN EXCLUSION NOBODY
+# DECLARED, and "it isn't peer-scoped" is a reason to give it a runner, not a
+# reason to leave it out of the list.
 # ---------------------------------------------------------------------------
 axis_script() {
   case "$1" in
@@ -133,6 +145,8 @@ while [ "$#" -gt 0 ]; do
       done
       printf '%-14s %-46s %s\n' 's4' 'protocol-generator/*/run-s4.sh' 'conformance — has its own runner: tools/run-cohort-census.sh'
       printf '%-14s %-46s authority: %s\n' '' '' 'entity-core-go ORACLE — validate-peer --profile core, pinned by content digest'
+      printf '%-14s %-46s %s\n' 'ffi' 'ffi-generator/c-abi/run-ffi-gate.sh' 'codec C-ABI arm (not peer-scoped) — has its own runner'
+      printf '%-14s %-46s authority: %s\n' '' '' 'ARCHITECTURE for the ECF corpus (C impl only); OURS for the C-ABI spec, the cross-impl differential and the leak gate'
       exit 0 ;;
     --tier) TIER_SEL="$2"; shift 2 ;;
     --tier=*) TIER_SEL="${1#*=}"; shift ;;

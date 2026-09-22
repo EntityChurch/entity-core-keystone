@@ -18,7 +18,7 @@ configuration section.
 data division.
 working-storage section.
 01 fixture-path  pic x(256).
-01 fixbuf        pic x(16384).
+01 fixbuf        pic x(524288).
 01 fixlen        pic 9(18) comp-5.
 01 rc            pic s9(9) comp-5.
 
@@ -47,7 +47,7 @@ working-storage section.
 01 canon-len     pic 9(9) comp-5.
 01 input-off     pic 9(9) comp-5.
 
-01 out-buf       pic x(8192).
+01 out-buf       pic x(524288).
 01 out-len       pic 9(9) comp-5.
 01 reject-end    pic 9(9) comp-5.
 01 pk            pic 9(9) comp-5.
@@ -73,7 +73,7 @@ working-storage section.
 01 seed-off      pic 9(9) comp-5.
 01 seed-len      pic 9(9) comp-5.
 01 ent-off       pic 9(9) comp-5.
-01 ecf-out       pic x(4096).
+01 ecf-out       pic x(524288).
 01 ecf-len       pic 9(18) comp-5.
 01 sig-out       pic x(64).
 

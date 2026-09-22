@@ -129,6 +129,7 @@ static int run_vector(const char *kind, const char *category,
         /* the canonical output is the CBOR text encoding of the peer-id string */
         ec_value *t = ev_text((const char *)id.ptr, id.len);
         ecf_encode(t, &got);
+        ev_free(t);
         ecbuf_free(&id);
     } else if (strcmp(category, "signature") == 0) {
         const uint8_t *seed; size_t seed_len;

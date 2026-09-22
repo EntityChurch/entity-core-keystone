@@ -11,14 +11,70 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── allocation: the harness + ABI calls are short-lived; we malloc value nodes
- * and never free the tree (process exits). Buffers (ecbuf) ARE freed by their
- * owners. This mirrors the first-pass Rust harness pragmatics; a v2 arena
- * (ec_arena_*) replaces this for the long-running peer decode path. ── */
+/* ── allocation ──────────────────────────────────────────────────────────────
+ *
+ * This comment used to read: "the harness + ABI calls are short-lived; we malloc
+ * value nodes and never free the tree (process exits) ... a v2 arena (ec_arena_*)
+ * replaces this for the long-running peer decode path."
+ *
+ * EVERY CLAUSE OF THAT WAS TRUE OF THE HARNESS IT WAS WRITTEN AGAINST AND FALSE
+ * OF THE THING THIS LIBRARY IS FOR. The callers are PEERS -- entity-core-protocol-
+ * {cobol,ocaml,swift,zig} and the three ISA peers -- and they are long-running TCP
+ * servers that call ec_encode_ecf and ec_content_hash on EVERY REQUEST. A process
+ * that does not exit does not get its memory back. Measured on cobol 2026-09-04:
+ * ~1 KB of address space per dispatched request, 23.3 MB per --profile core suite,
+ * growing linearly and with no bound but the machine's. Remotely triggerable by
+ * anyone who can send a request.
+ *
+ * The "v2 arena" sentence is what let it survive: ec_arena_* was implemented as a
+ * stub and honestly documented as unnecessary because DECODE borrows spans
+ * (codec.c, N4 option a). That resolved the decode half and left the sentence
+ * still appearing to cover the ENCODE half, which it never did.
+ *
+ * A library whose correctness depends on its caller being short-lived has made
+ * that a term of its ABI, and it must say so in the HEADER a consumer reads --
+ * not in an implementation comment. So instead: value nodes are OWNED, ev_free
+ * releases a tree, and every entry point that builds one frees it. Buffers
+ * (ecbuf) are freed by their owners, as before.
+ * ─────────────────────────────────────────────────────────────────────────── */
 static void *xmalloc(size_t n) {
     void *p = malloc(n ? n : 1);
     if (!p) abort(); /* OOM: nothing useful to do in a codec primitive */
     return p;
+}
+
+/* Zeroing variant for the child arrays of an EV_ARRAY / EV_MAP. The decoder
+ * fills these element by element and can fail partway, so ev_free has to be able
+ * to walk a PARTIALLY BUILT tree -- which it can only do if the unfilled slots
+ * read as NULL rather than as whatever was on the heap. This is the difference
+ * between "we can free on the error path" and a wild pointer. */
+static void *xcalloc(size_t n, size_t sz) {
+    void *p = calloc(n ? n : 1, sz);
+    if (!p) abort();
+    return p;
+}
+
+void ev_free(ec_value *v) {
+    if (!v) return;
+    switch (v->kind) {
+    case EV_BYTES: case EV_TEXT: case EV_PREENCODED:
+        free(v->u.bytes.ptr);
+        break;
+    case EV_ARRAY:
+        for (size_t i = 0; i < v->u.arr.len; i++) ev_free(v->u.arr.items[i]);
+        free(v->u.arr.items);
+        break;
+    case EV_MAP:
+        for (size_t i = 0; i < v->u.map.len; i++) {
+            ev_free(v->u.map.pairs[i].key);
+            ev_free(v->u.map.pairs[i].val);
+        }
+        free(v->u.map.pairs);
+        break;
+    default:
+        break;  /* EV_INT / EV_FLOAT / EV_BOOL / EV_NULL own nothing */
+    }
+    free(v);
 }
 
 /* ───────────────────────────── byte buffer ───────────────────────────── */
@@ -401,11 +457,14 @@ static ec_value *rd_value(reader *r) {
         if (!rd_argument(r, ai, &arg)) return NULL;
         size_t n = (size_t)arg;
         ec_value *v = ev_new(EV_ARRAY);
-        v->u.arr.items = (ec_value **)xmalloc(n * sizeof(ec_value *) + 1);
+        v->u.arr.items = (ec_value **)xcalloc(n + 1, sizeof(ec_value *));
         v->u.arr.len = n;
         for (size_t i = 0; i < n; i++) {
             ec_value *it = rd_value(r);
-            if (!it) return NULL;
+            /* Release what we built. Without this a malformed frame leaks the
+             * partial tree on the ERROR path -- the same defect as the success
+             * path, reachable by anyone who can send bad bytes. */
+            if (!it) { ev_free(v); return NULL; }
             v->u.arr.items[i] = it;
         }
         return v;
@@ -414,13 +473,16 @@ static ec_value *rd_value(reader *r) {
         if (!rd_argument(r, ai, &arg)) return NULL;
         size_t n = (size_t)arg;
         ec_value *v = ev_new(EV_MAP);
-        v->u.map.pairs = (ec_pair *)xmalloc(n * sizeof(ec_pair) + 1);
+        v->u.map.pairs = (ec_pair *)xcalloc(n + 1, sizeof(ec_pair));
         v->u.map.len = n;
         for (size_t i = 0; i < n; i++) {
             ec_value *k = rd_value(r);
-            if (!k) return NULL;
+            if (!k) { ev_free(v); return NULL; }
             ec_value *val = rd_value(r);
-            if (!val) return NULL;
+            /* k is not yet reachable from v, so it has to go separately or it
+             * is lost -- ev_free(v) alone would leak exactly one key per
+             * malformed map. */
+            if (!val) { ev_free(k); ev_free(v); return NULL; }
             v->u.map.pairs[i].key = k;
             v->u.map.pairs[i].val = val;
         }
@@ -468,12 +530,15 @@ ec_value *ecf_decode(const uint8_t *bytes, size_t len) {
     reader r = { bytes, len, 0 };
     ec_value *v = rd_value(&r);
     if (!v) return NULL;
-    if (r.pos != len) return NULL; /* trailing bytes */
+    if (r.pos != len) { ev_free(v); return NULL; } /* trailing bytes */
     return v;
 }
 
 int ecf_validate_no_tags(const uint8_t *bytes, size_t len) {
-    return ecf_decode(bytes, len) != NULL;
+    ec_value *v = ecf_decode(bytes, len);
+    int ok = (v != NULL);
+    ev_free(v);
+    return ok;
 }
 
 /* ──────────────────────── span walkers (N4 + envelope) ────────────────────── */

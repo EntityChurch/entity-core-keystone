@@ -39,7 +39,7 @@ working-storage section.
 01 tlen    pic 9(9) comp-5.
 01 t-sig   pic x(16) value "system/signature".
 linkage section.
-01 lk-buf    pic x(65535).
+01 lk-buf    pic x(524288).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-target pic x(33).
 01 lk-sigoff pic 9(9) comp-5.
@@ -102,7 +102,7 @@ working-storage section.
 01 v-ed     pic x(7) value "ed25519".
 01 my-peerid pic x(128).
 01 my-peerid-len pic 9(9) comp-5.
-01 nd       pic x(32768).
+01 nd       pic x(524288).
 01 nd-len   pic 9(9) comp-5.
 01 one      pic 9(9) comp-5 value 1.
 01 n0map    pic 9(18) comp-5 value 0.
@@ -142,21 +142,21 @@ working-storage section.
 01 verok    pic 9(1).
 01 derived  pic x(128).
 01 derivedlen pic 9(9) comp-5.
-01 rpent    pic x(32768).
+01 rpent    pic x(524288).
 01 rpent-len pic 9(9) comp-5.
 01 ridhash  pic x(33).
-01 grants   pic x(32768).
+01 grants   pic x(524288).
 01 grants-len pic 9(9) comp-5.
 01 openf    pic 9(1).
 01 conff    pic 9(1).
-01 token    pic x(32768).
+01 token    pic x(524288).
 01 token-len pic 9(9) comp-5.
 01 token-hash pic x(33).
-01 csig     pic x(32768).
+01 csig     pic x(524288).
 01 csig-len pic 9(9) comp-5.
 01 csig-hash pic x(33).
 01 myidhash pic x(33).
-01 mypent   pic x(32768).
+01 mypent   pic x(524288).
 01 mypent-len pic 9(9) comp-5.
 01 k-token  pic x(5) value "token".
 01 t-grant  pic x(23) value "system/capability/grant".
@@ -181,15 +181,15 @@ linkage section.
    05 c-nonce     pic x(32).
    05 c-hpid-len  pic 9(9) comp-5.
    05 c-hpid      pic x(64).
-01 lk-buf     pic x(65535).
+01 lk-buf     pic x(524288).
 01 lk-rootoff pic 9(9) comp-5.
 01 lk-incoff  pic 9(9) comp-5.
 01 lk-incfnd  pic 9(1).
 01 lk-rstatus pic 9(9) comp-5.
-01 lk-res     pic x(32768).
+01 lk-res     pic x(524288).
 01 lk-res-len pic 9(9) comp-5.
 01 lk-res-hash pic x(33).
-01 lk-incmap  pic x(16384).
+01 lk-incmap  pic x(524288).
 01 lk-incmap-len pic 9(9) comp-5.
 procedure division using lk-conn lk-buf lk-rootoff lk-incoff lk-incfnd
                         lk-rstatus lk-res lk-res-len lk-res-hash
@@ -421,7 +421,7 @@ working-storage section.
 01 elen pic 9(9) comp-5.
 01 st   pic s9(9) comp-5.
 linkage section.
-01 lk-buf    pic x(65535).
+01 lk-buf    pic x(524288).
 01 lk-poff   pic 9(9) comp-5.
 01 lk-key    pic x(32).
 01 lk-keylen pic 9(9) comp-5.

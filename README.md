@@ -32,6 +32,7 @@ Then, depending on what you came for:
 
 | You want to… | Go to |
 |---|---|
+| Know where this is going, and how it ends | [`docs/PROGRAM.md`](docs/PROGRAM.md) |
 | Run the thing, generate a peer | [Quick start](#quick-start) ↓ |
 | Understand what 46 substrates taught us | [`research/SUBSTRATE-TAKEAWAYS.md`](research/SUBSTRATE-TAKEAWAYS.md) |
 | Read the cross-language cryptography survey | [`research/CRYPTO-LANDSCAPE.md`](research/CRYPTO-LANDSCAPE.md) |

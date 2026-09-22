@@ -34,11 +34,11 @@ working-storage section.
 01 n33         pic 9(18) comp-5 value 33.
 01 tlen        pic 9(18) comp-5.
 linkage section.
-01 lk-type     pic x(65535).
+01 lk-type     pic x(524288).
 01 lk-type-len pic 9(9) comp-5.
-01 lk-data     pic x(65535).
+01 lk-data     pic x(524288).
 01 lk-data-len pic 9(9) comp-5.
-01 lk-out      pic x(65535).
+01 lk-out      pic x(524288).
 01 lk-out-len  pic 9(9) comp-5.
 01 lk-status   pic s9(9) comp-5.
 procedure division using lk-type lk-type-len lk-data lk-data-len
@@ -96,7 +96,7 @@ working-storage section.
 01 chash-len   pic 9(9) comp-5.
 01 rc          pic s9(9) comp-5.
 linkage section.
-01 lk-in       pic x(65535).
+01 lk-in       pic x(524288).
 01 lk-off      pic 9(9) comp-5.
 01 lk-type-off pic 9(9) comp-5.
 01 lk-type-len pic 9(9) comp-5.
@@ -165,11 +165,11 @@ working-storage section.
 01 n4          pic 9(18) comp-5 value 4.
 01 n8          pic 9(18) comp-5 value 8.
 linkage section.
-01 lk-root     pic x(65535).
+01 lk-root     pic x(524288).
 01 lk-root-len pic 9(9) comp-5.
-01 lk-inc      pic x(65535).
+01 lk-inc      pic x(524288).
 01 lk-inc-len  pic 9(9) comp-5.
-01 lk-out      pic x(65535).
+01 lk-out      pic x(524288).
 01 lk-out-len  pic 9(9) comp-5.
 procedure division using lk-root lk-root-len lk-inc lk-inc-len lk-out lk-out-len.
     call "emit-head" using lk-out lk-out-len maj5 n2

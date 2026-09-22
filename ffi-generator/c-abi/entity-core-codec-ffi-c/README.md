@@ -64,7 +64,14 @@ podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm -v "$PWD
 
 ## Status — first pass GREEN
 
-**`conformance_harness`: 69/69 byte-identical** to the vendored cross-blessed fixture (all categories: float·int·length·map_keys·primitive·nested·envelope · content_hash incl. F5 empty-entity hash · peer_id incl. N1 `key_type=128` · signature deterministic Ed25519 · tag_reject N2). **`regression_test`: 12/12.** **`abi_differential` vs the Rust `.so`: 48/48** through the real `dlopen` boundary — the 4th/5th validation (Go·Rust·Py blessed the fixture; rust-ffi + c-ffi each 69/69; now C↔Rust agree across the ABI itself).
+**Measured 2026-09-04 by `../run-ffi-gate.sh`, which is the runner for this arm — see it for what each number covers.**
+
+- **`conformance_harness`: 71/71** against the vendored cross-blessed ECF corpus (float·int·length·map_keys·primitive·nested·envelope · content_hash incl. the F5 empty-entity hash · peer_id incl. N1 `key_type=128` · signature deterministic Ed25519 · tag_reject N2).
+- **`regression_test`: 12/12.**
+- **`abi_differential` vs the Rust `.so`: 101/101 probes** through the real `dlopen` boundary. That is a count of probes over the **19 of 27** spec-declared symbols the differential drives; it now prints both, and reports that this impl exports **27/27** against Rust's 26/27.
+- **No leak on the per-request path**: ASan/LSan over the exported ABI, valid and malformed input, **0 records**; 0 bytes/pass over 18 000 measured passes against a control measuring 5 552 bytes/pass.
+
+An earlier revision of this line read `abi_differential … 48/48` and cited "rust-ffi + c-ffi each 69/69". The differential has grown since; and the rust-ffi 69/69 was produced by a harness that is not in this repository, so it has been withdrawn there rather than restated here.
 
 `.so` exports exactly the 19 ABI symbols (`nm -D`), libsodium localized, self-contained.
 

@@ -26,6 +26,19 @@
  *   - Output buffers are caller-allocated; EC_OUT_OF_SPACE writes the required
  *     size to the *_out_len pointer so the caller can grow and retry.
  *   - Decoded entity bodies live in a caller-owned ec_arena_t.
+ *   - NO CALL RETAINS HEAP ACROSS ITS OWN RETURN. Every entry point releases
+ *     whatever it allocated internally, on every exit path including the error
+ *     ones, so a caller may invoke any of these in an unbounded loop for the
+ *     life of a process. This is a term of the ABI and it is stated here, in
+ *     the header a consumer reads, because a library's lifetime assumption is
+ *     invisible from the outside: until 2026-09-04 entity-core-codec-ffi-c
+ *     leaked a whole value tree per call on the encode and envelope paths, on
+ *     an assumption recorded only in an implementation comment ("the harness +
+ *     ABI calls are short-lived ... process exits") that was false of every
+ *     peer linking it. Measured at ~1 KB per request and 23.3 MB per
+ *     conformance suite on a peer serving a socket. An implementation that
+ *     cannot honour this for some entry point must say so against that entry
+ *     point here, not in its own source.
  */
 
 #ifndef ENTITYCORE_CODEC_H
