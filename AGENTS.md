@@ -1994,6 +1994,123 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
     the packet is a process artifact, the finding is the research output, and only the second one
     publishes. **Enforcement: `grep -n 'research/stewardship/HANDOFF' research/stewardship/SPEC-FINDINGS-LOG.md`
     must return nothing.**
+- **A GAP IN THE SPEC DOES NOT PRODUCE A GAP IN THE CODE — IT PRODUCES WHATEVER THE EXISTING BRANCH
+  ALREADY DID, AND THAT BRANCH WAS WRITTEN FOR A DIFFERENT FRAME.** RATIFIED 2026-09-10, and it is
+  **A1 missed on a security clause by the seat that keeps quoting A1.** Our F66 sub-item said a
+  K-of-N-rooted credential *"cannot be classified as presented authority and falls back to the
+  ambient arm — under-acceptance, not a hole."* It was a **live over-acceptance in `entity-core-go`,
+  `entity-core-rust` and `entity-core-py`**, found by `go` building it. §5.5's root-granter check has
+  a multi-signature branch — correct for its original purpose, a peer verifying its **own** group
+  root, where the frame is the **local** peer — and `0.8.2.18` repurposed that frame to the
+  **target**. Neither rule is wrong alone; **they composed into a hole.**
+  **We reasoned from what the text UNDERDETERMINES to what an implementation would therefore do, and
+  never opened a `verifyRootGranter`.** That inference is always unsound: an undefined case does not
+  reach a well-marked "undefined" branch, it reaches whatever branch already matches, and the
+  question is only ever *which existing code claims this input*. **Enforcement: a finding that says
+  a spec gap is benign must cite the implementation line that makes it benign** — file and symbol,
+  in at least one artifact. A claim about behaviour with no `file:line` under it is a claim about
+  the text, and those two are different findings with different severities.
+  **The generalizable half is arch's and it is worth carrying verbatim: changing what a shared
+  parameter MEANS re-scopes every check that reads it, and those readers are listed nowhere.**
+  Before repurposing a frame, a peer id, a "local" argument — enumerate its readers. Every prior
+  instance in this arc was one rule with a home nobody found; this is **two correct rules whose
+  composition nobody enumerated**, which is a new shape and the harder one to grep for.
+  *(Two sub-lessons from answering it. **A mechanism sentence in a "transferable lesson" paragraph is
+  what other implementers self-check against, so its precision is load-bearing** — arch's said the
+  branch accepts a root when the frame peer is *"merely among the signers"*; `go` also requires a
+  verified signature, so the real tell is a **co-signed** root, and someone testing
+  listed-but-unsigned finds it correctly refused and wrongly concludes they are clean. And
+  **a correction can land in the rule and miss its own restatement**: `05b7f74` fixed §1.4 in three
+  lines and left §9.1's conformance floor — the section a new implementation builds from — still
+  publishing the withdrawn conditional. Check the floor, the summary and the index whenever a rule
+  moves; that is this file's own harden-one-anchor rule, and it caught arch the day after it caught us.)*
+- **AN OPEN QUESTION IS AN UNFALSIFIABLE NEGATIVE WEARING A POLITE FACE — AND WE PUBLISHED ONE
+  THAT THE SECTION OWNING THE *TYPE* HAD ANSWERED SINCE 0.8.1.** RATIFIED 2026-09-10, and it is the
+  F51 class in its third shape. F51 was *"the spec does not say"*; the `HANDOFF-TO-ARCH-2026-09-04`
+  pair was *"we do not find this in your corpus"*; this one is **"does rule X reach surface Y?"** —
+  which reads as diligence, routes as an ask, and is the same claim about our own search.
+  **F50** asked whether F40's id-scope pin reached `scope_subset`, reasoning *"F40 names
+  `matches_scope` only; `scope_subset` is pattern-vs-pattern, not value-vs-pattern."* §3.6's
+  id-scope grammar paragraph — **in our own pinned snapshot, four lines above the table we were
+  quoting** — ends *"An implementation on the canonicalizing reading is **non-conformant** and MUST
+  adopt the literal matcher."* It binds the **scope type**, not a function. There was never a
+  question.
+  **The mechanism is F51's exactly, one level up: we searched the vocabulary of the FUNCTION a
+  prior finding named, instead of the section that owns the TYPE.** F40 said `matches_scope`, so we
+  looked at call sites of `matches_scope`; the obligation is written about *id-scope patterns*, and
+  a grep for the function cannot see it. **Enforcement, and it is the F51 rule with its scope
+  widened again: a finding that asks whether a rule REACHES a surface must record which sections it
+  read, by number — and must read the section that owns the TYPE of the thing being matched, not
+  only the one that owns the function doing the matching.**
+  **Two consequences worth holding separately.** (a) **The cost was mis-stated in the flattering
+  direction**: we recorded the eventual fold as *creating* cohort work, when the truth is our 46
+  peers were **non-conformant against the spec we are pinned to**, at `778 · 0F`, for as long as
+  the grammar has existed. *"Behind a ruling"* and *"non-conformant at your own pin"* have different
+  owners and different urgency, and the first is what an open question turns the second into.
+  (b) **`entity-core-formalization` found it independently, graded it correctly, and got there by
+  checking our PIN first** — their own finding was weaker until they confirmed the rule was in text
+  we had already adopted. Recorded as corroboration with the same weight as a catch; **checking the
+  receiving seat's pin before grading a divergence is a rule worth taking from them.**
+- **A BOUND ON A DEFECT'S REACH CAN BE ENFORCED BY A FUNCTION'S CALLER, NOT BY THE FUNCTION — so a
+  sweep over the matcher cannot find it, and a refutation built from that sweep is refuting the
+  wrong input space.** Candidate (first occurrence, 2026-09-10, enforcement exact). Refuting a
+  routed refutation: a sibling withdrew a published bound (*"both divergences need a leading `/`"*)
+  on the witness `operations: ["*/apply"]` admitting `["compute/apply"]` — ordinary namespaced
+  operation names, no leading slash, and it looks decisive. **§5.4 `canonicalize` rejects `*/`
+  outright** — *"Reject bare peer wildcard — ambiguous without leading /"* — so the pattern never
+  reaches a matcher under EITHER reading, and §5.4's `matches_pattern` has no interior segment
+  wildcard to match it with anyway. The witness fails twice before the defect is reachable.
+  **The withdrawn bound was not only correct, it was STRUCTURAL and neither side had said so:**
+  `canonicalize` refuses `*/`-leading patterns by construction, so `/*/rest` is the only
+  peer-wildcard form that can ever reach a matcher, and it carries the leading `/`. That is a
+  theorem about the canonicalizer, not a generalization from the two rows that happened to diverge
+  — which is what both the original claim and its retraction were.
+  **Enforcement: when probing the reach of a defect in function `F`, enumerate what `F`'s CALLERS
+  reject before `F` runs. The input space of `F` is not the input space of the system**, and a
+  `#eval`-style sweep over `F` alone will manufacture witnesses that cannot occur. **And measure a
+  refutation the same way you would measure a claim** — this one took lifting the peer's own
+  `canonicalize`/`matches_pattern`/`scope_subset` and running five cases, three of them controls;
+  the controls are what proved the instrument rather than the conclusion.
+- **AUDITING OUR OWN RULING FOUND A COHORT-WIDE BYPASS IN ALL THREE GROUND-UP IMPLEMENTATIONS.**
+  Recorded 2026-09-10 as the payout of the standing *"the exculpation most likely to be wrong is
+  the one WE wrote"* rule, extended to rulings. We proposed γ (PD-2 gate 1a) and it was folded at
+  `0.8.2.17`; auditing it three days later found that it **relocated** the handler-grant ceiling
+  rather than keeping it, and that in the shape it was written for the credential is
+  **caller-supplied**. Arch folded the correction as `0.8.2.19` and `entity-core-go` reports the
+  bypass was *"cohort-wide — rust and py carry the identical bypass."* **A ruling you authored and
+  a sibling adopted is not evidence it is right; it is three seats sharing one unexamined argument.**
+  The tell to look for is a defense that bounds the wrong party — γ's was *"a caller can steer the
+  handler only toward peers that have already granted this peer something,"* which bounds the
+  TARGET's exposure and says nothing about the HANDLER's authority.
+- **A MARKDOWN TABLE WHOSE HEADER DECLARES FEWER COLUMNS THAN ITS ROWS CARRY DROPS THE EXTRA
+  COLUMNS AT RENDER — SILENTLY, IN THE CANONICAL REGISTER, FOR SIX FINDINGS AT ONCE.** RATIFIED
+  2026-09-10, found while appending F63–F67 rather than by any gate. `SPEC-FINDINGS-LOG.md` —
+  the file `AGENTS.md` names as canonical for every finding, and which **publishes** — carried a
+  **three-column** header (`| ID | Kind | Disposition |`) over rows carrying **six** cells. Under
+  GFM everything past column three is discarded, so **F54, F58, F59, F60, F61 and F62 rendered
+  with their Cites, Owner and Disposition columns invisible** — the `Open — surfaced`, the asks,
+  and the routing state, i.e. the entire reason a reader opens the register. This is the standing
+  *"the index shipped and the evidence did not"* class reached through a **column count** instead
+  of a keep-list, and it is worse in one respect: the source file is complete and correct, so
+  reading it in a diff, a grep or an editor shows nothing wrong. **Only the render is lossy.**
+  `F59` was separately mangled by a `` `\|| true` `` in its prose — the first pipe escaped, the
+  second not — which split its last cell into three.
+  **Enforcement: count UNESCAPED pipes per row and require every row to equal its header.** One
+  line, and it is the whole check: `re.split(r'(?<!\\)\|', line)`.
+  **Sub-lesson, and it is the examined-zero-things rule catching the instrument again: my first
+  counter used `line.count('|')`, which counts ESCAPED pipes too** — so it reported F59 at 8 cells
+  *after* the escaping had correctly fixed it, and I nearly "fixed" a correct line twice. A
+  counter over a syntax with an escape character must model the escape. **Validate it against two
+  controls before believing either direction** — `| a | b | c |` must read 3 and `| a \| b |` must
+  read 1; both were run, and the second is the one that would have failed.
+  *(Third thing the same session taught, and it is the false-negative class in its **flattering**
+  direction at cohort scale — seventh occurrence. Surveying `scope_subset` typing by asking "does
+  this peer's capability file mention `id-scope`?" returned **40 typed / 6 untyped**. False:
+  the file mentions id-scope for `matches_scope`, which landed with F40, while `scope_subset`
+  beside it is untyped. Truth is **0 of 20**. **The discriminator is the function SIGNATURE, not
+  the file's vocabulary** — a `scope_subset` with no scope-type parameter cannot dispatch on one
+  whatever its neighbours say. The H4 packaging entry records the first member that *understated*
+  a capability; this one **overstates conformance**, which is the direction nobody re-checks.)*
   - **A section headed "Current state" was anchored to a pin retired three flips earlier**
     (`CONFORMANCE-MATRIX.md` §4, `2026-08-30 @ the 755-check pin`, while §1 published `778`).
     `coherence-gate` is scoped to §1's rows and the 46 per-peer banners, so §2–§4 prose can go
@@ -2517,6 +2634,46 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   overlay, same file naming. **Enforcement, and it is the cheap one this repo already prescribes:
   when `tier-status.py` and `check-set-gate.py --tracked` disagree about which peers are green,
   suspect the INPUT before the peers.** They disagreed here, and the tracked gate was right.
+- **A MEASUREMENT'S PRECONDITION CAN BE A LAUNCH FLAG THE WHOLE COHORT HARDCODES — and under it the
+  probe reports the guard holding, on every peer, for a reason that has nothing to do with the guard.**
+  RATIFIED 2026-09-10 (`tools/f68-probe`, answering arch's F68 ask). **Every `run-s4.sh` in the cohort
+  launches its peer with `--debug-open-grants`** — the degenerate `default -> *` seed policy — under
+  which nothing is outside the caller's grant, so an AUTHORIZATION-BYPASS probe has nothing to bypass
+  and every peer answers "refused" correctly and vacuously. This is the examined-zero-things class
+  reaching the SUBJECT rather than the instrument: the probe is fine, the gate is fine, the *world the
+  peer was started in* cannot contain the phenomenon. **Enforcement, and it is the antecedent control
+  generalized: for any probe that measures whether a guard holds, the same request WITHOUT the bypass
+  must be REFUSED in the same run, asserted per peer.** If it is not refused, the run is `VOID` rather
+  than green — a deny-only probe on an authorization surface measures nothing, which is the objection
+  this seat filed against another repo's check the day before and would have repeated here. The fix is
+  to drive the peer's OWN harness with exactly the one flag removed (`tools/f68-probe/run.sh`), never a
+  hand-rolled launch — the standing "compare against the harness the number actually came from" rule.
+  **AND TWO PEERS REFUSING DOES NOT MEAN THE DEFECT IS ABSENT — ASK WHICH RUNG REFUSED.** Measured: all
+  five backends skip a caller-excluded target identically, and `csharp`/`typescript` are saved by a
+  **second, independent authorization site** in the tree handler that re-authorizes the path it is about
+  to act on. The *messages* are what separate them (`Dispatcher.cs:164` "does not grant the operation"
+  vs `TreeHandler.cs:96` "does not cover path"); the statuses are identical. This is the standing TWO
+  SITES FOR ONE REFUSAL rule moved from the FIX side to the CENSUS side — there a repair went to the
+  unreachable site, here a census would have recorded two peers as not having a defect they all have.
+  **A green row on a bypass probe is a claim about a rung, so name the rung.**
+  **And the discriminator was a DEAD GUARD**: `python` has that same function, unit-tested, and calls it
+  **from nowhere** — the H5 dead-map shape, and the single reason `python` reproduces and `typescript`
+  does not. `git grep` the call sites of any function a peer's safety rests on; a definition plus a test
+  is not a dispatch path.
+- **A RULE STATED AS ARITHMETIC GETS IMPLEMENTED AS ARITHMETIC — and a count that is a correct
+  CONSEQUENCE can be a hole as a PRIMITIVE, including one that removes a protection already in place.**
+  Candidate (first occurrence, 2026-09-10, enforcement exact). Arch's F68 ruling has two halves: a
+  general rule (*a handler MUST NOT act on a target the authorization check SKIPPED*) and an arithmetic
+  (*count the EFFECTIVE set; 0 -> `path_required`, >1 -> `ambiguous_resource`, 1 -> proceed*). Measured:
+  `targets:[P,Q] exclude:[P]` with `Q` in-grant has effective set `{Q}`, size 1, so the arithmetic says
+  **proceed** — and all three vulnerable peers **return `P`**, because the handler selects raw
+  `targets[0]`. The count is fully satisfied and the bypass is untouched. Worse, the two peers that are
+  currently SAFE on that arm are safe because of a **raw** arity check (`Count != 1 -> 400`), which the
+  ruling replaces with an effective count of 1 — so implementing the arithmetic literally **opens** an
+  arm that is refused today. **Rule: when a rule has a set-shaped half and a number-shaped half, state
+  the SELECTION and let the count follow — implementers code the primitive, because it is three branches
+  and a pseudocode block can express it.** The tell to look for: a ruling whose two halves would be
+  implemented by different people in different files, where only one of them is load-bearing.
 - **A CONTROL MUST ASSERT THE PRECONDITION THE MEASUREMENT RESTS ON, NOT MERELY THAT THE STEP
   COMPLETED — and the cohort, not the peer, is what separates "your instrument is wrong" from "this
   peer is."** RATIFIED 2026-09-09, building `tools/host-seam-probe` for the H1 dispatch census
