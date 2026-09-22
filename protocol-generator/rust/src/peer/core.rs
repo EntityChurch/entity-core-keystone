@@ -751,7 +751,17 @@ impl Peer {
             &iface_e,
         );
 
-        let minted = mint_token(&self.identity, &self.identity.identity_hash, None, vec![]);
+        // §6.8: the grant MUST exist at `system/capability/grants/{pattern}` and a
+        // handler with no valid grant does not run — so this bind is the ceiling row 1
+        // intersects against, not bookkeeping. An empty grants list is the right
+        // default for a handler that never dispatches onward and the WRONG one for a
+        // handler that does.
+        let minted = mint_token(
+            &self.identity,
+            &self.identity.identity_hash,
+            None,
+            own_grants_for(bh.pattern),
+        );
         self.store.bind(
             &format!(
                 "/{}/system/capability/grants/{}",
@@ -892,17 +902,24 @@ impl Peer {
             // §6.3's `check_path_permission` needs the caller's capability and the OWNING
             // handler's pattern, and the dispatch-level check above already computed both.
             // They are CARRIED rather than recomputed: recomputing invites the two to
-            // drift, and §6.8 is explicit that the authority is selected by who named the
-            // path. `pattern` here is the owner's (§6.3, 0.8.2.23) — for the tree handler
+            // drift. `pattern` here is the owner's (§6.3, 0.8.2.23) — for the tree handler
             // owner and runner coincide, so the distinction is not observable, but the
             // argument means the owner.
+            //
+            // This used to read "§6.8 is explicit that the authority is selected by who
+            // named the path" — the discriminator §6.8 CORRECTED at 0.8.2.22 and which
+            // §9.1's conformance floor kept publishing until 0.8.2.31. The rule §6.8
+            // states now is the COMPOSE: an access in service of a caller's request
+            // needs the caller's verified capability AND the executing handler's own
+            // grant, and both must pass. Carrying the pair is still right; the reason
+            // written beside it was a superseded one.
             "system/tree" => self.tree_handler(exec, caller_cap, &stripped),
             "system/capability" => self.capability_handler(exec, caller_cap),
             "system/handler" => self.handlers_handler(exec),
             "system/type" => err_out(501, "unsupported_operation", exec.text_field("operation")),
             _ => {
                 if self.conformance && stripped.starts_with("system/validate/") {
-                    return self.conformance_handler(conn, exec, &stripped);
+                    return self.conformance_handler(conn, env, exec, &stripped);
                 }
                 let handler_entity = match self.store.get_at(&pattern) {
                     Some(e) if e.typ == "system/handler" => e,
@@ -1992,10 +2009,21 @@ impl Peer {
 
     // ── §7a conformance handlers ────────────────────────────────────────────────
 
-    fn conformance_handler(&self, conn: &mut Conn, exec: &Entity, stripped: &str) -> Outcome {
+    fn conformance_handler(
+        &self,
+        conn: &mut Conn,
+        env: &Envelope,
+        exec: &Entity,
+        stripped: &str,
+    ) -> Outcome {
         match stripped {
             "system/validate/echo" => self.echo_handler(exec),
-            "system/validate/dispatch-outbound" => self.dispatch_outbound_handler(conn, exec),
+            // §1.4 PD-2 needs the OWNING handler's peer-relative pattern (Dimension 1
+            // is matched peer-relative) and the parent envelope (the §7a.2a bundle
+            // base). Both are already in hand here, so they are CARRIED.
+            "system/validate/dispatch-outbound" => {
+                self.dispatch_outbound_handler(conn, env, exec, stripped)
+            }
             _ => err_out(501, "no_handler_body", Some(stripped)),
         }
     }
@@ -2012,7 +2040,13 @@ impl Peer {
     /// seam (`conn.outbound`) back to the caller, invoking `operation` on `target`
     /// with `value`, and return the downstream response. The reentry direction is
     /// authorized by the caller, which carries the minted authority in-band.
-    fn dispatch_outbound_handler(&self, conn: &mut Conn, exec: &Entity) -> Outcome {
+    fn dispatch_outbound_handler(
+        &self,
+        conn: &mut Conn,
+        env: &Envelope,
+        exec: &Entity,
+        handler_pattern: &str,
+    ) -> Outcome {
         let out_fn = match &conn.outbound {
             Some(f) => f.clone(),
             None => {
@@ -2046,35 +2080,153 @@ impl Peer {
             Some(v) => v.clone(),
             None => return err_out(400, "unexpected_params", Some("missing value")),
         };
-        let cap_e = match params.entity_field("reentry_capability") {
-            Some(e) => e,
-            None => return err_out(400, "unexpected_params", Some("missing reentry_capability")),
-        };
-        let granter_e = match params.entity_field("reentry_granter") {
-            Some(e) => e,
-            None => return err_out(400, "unexpected_params", Some("missing reentry_granter")),
-        };
-        let capsig_e = match params.entity_field("reentry_cap_signature") {
-            Some(e) => e,
-            None => {
-                return err_out(
-                    400,
-                    "unexpected_params",
-                    Some("missing reentry_cap_signature"),
-                )
+        // GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the
+        // single-granter case is an array of ONE. They were singular, which made §1.4's
+        // multi-signature-root rule ungateable on the wire: driving it needs two
+        // granter identities and two signatures, and a single-credential carrier
+        // cannot express that input.
+        //
+        // TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one,
+        // because THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle is
+        // what all 46 tracked reports are measured against and it sends the SINGULAR
+        // names; a plural-only peer reads the triple as absent there, takes the ambient
+        // arm and refuses — measured on the `go` vanguard as 2 of 778 severities moving
+        // PASS -> FAIL. Accepting both keeps the cohort 0-FAIL at BOTH check sets.
+        // REMOVE THIS FALLBACK AT THE ORACLE RE-PIN, and not before: the exit condition
+        // is that `tools/oracle-pin.env`'s `ref` names an oracle whose dispatch-outbound
+        // probe sends the plural carriers.
+        let entity_list = |key: &str| -> Option<Vec<Entity>> {
+            match params.field(key) {
+                // An array whose members do not all decode is a MALFORMED carrier and
+                // is None, never a silently shorter list — the all-or-none test below
+                // would otherwise read a partial credential as a complete one.
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|v| model::entity_of_cbor(v).ok())
+                    .collect::<Option<Vec<Entity>>>(),
+                _ => None,
             }
         };
+        let cap_e = params.entity_field("reentry_capability");
+        let granters = entity_list("reentry_granters")
+            .or_else(|| params.entity_field("reentry_granter").map(|g| vec![g]));
+        let cap_sigs = entity_list("reentry_cap_signatures")
+            .or_else(|| params.entity_field("reentry_cap_signature").map(|c| vec![c]));
+        // The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED
+        // arm, all three absent selects the AMBIENT arm, and a PARTIAL set is 400
+        // invalid_params — a partial credential is malformed, not ambient. An empty
+        // array is partial, not present: it carries no credential.
+        let n_present = [
+            cap_e.is_some(),
+            granters.as_ref().is_some_and(|v| !v.is_empty()),
+            cap_sigs.as_ref().is_some_and(|v| !v.is_empty()),
+        ]
+        .iter()
+        .filter(|b| **b)
+        .count();
+        if n_present != 0 && n_present != 3 {
+            return err_out(
+                400,
+                "invalid_params",
+                Some("dispatch-outbound reentry authority is all-or-none"),
+            );
+        }
+        let has_cred = n_present == 3;
+        let cred = if has_cred { cap_e } else { None };
+        let granters = if has_cred { granters.unwrap_or_default() } else { vec![] };
+        let cap_sigs = if has_cred { cap_sigs.unwrap_or_default() } else { vec![] };
 
         // §7a.1: the `value` field IS the outbound params entity data — pass it
         // through (re-wrapping double-wraps and breaks echo's result.value).
         let inner = Entity::make("primitive/any", value);
 
-        conn.out_counter += 1;
-        let rid = format!("ro-{}", conn.out_counter);
+        // `target` arrives as any of §1.4's three spellings and the validator sends the
+        // SCHEMED ABSOLUTE form. Both the handler-pattern dimension and the resource
+        // target want the PEER-RELATIVE path — §1.4's PD-2 block says so for Dimension
+        // 1, and a resource target carrying a scheme is not a path at all.
+        let rel_target = cap::peer_relative_of(&target);
         let resource = Value::Map(vec![(
             Key::Text("targets".into()),
-            Value::Array(vec![model::text(&format!("system/handler/{target}"))]),
+            Value::Array(vec![model::text(&format!("system/handler/{rel_target}"))]),
         )]);
+
+        // §7a.2a: the presented arm verifies against a BUNDLE MERGED FROM THE PARENT
+        // ENVELOPE'S `included`. The credential, its granters and its signatures arrive
+        // NESTED IN PARAMS (ratified shape (a), in-band), so they are not in `env` and
+        // a verifier handed that alone cannot resolve a single link — every credential
+        // then reads as invalid and the legitimate reentry is refused.
+        // `included` is a BTreeMap keyed by content-hash BYTES, so the merge is an
+        // insert per entity — and the key MUST be the entity's own hash, or the entry
+        // is invisible to the resolver and the credential reads as unresolvable.
+        let mut bundle_included = env.included.clone();
+        if has_cred {
+            for e in cred
+                .iter()
+                .cloned()
+                .chain(granters.iter().cloned())
+                .chain(cap_sigs.iter().cloned())
+            {
+                bundle_included.insert(e.hash.clone(), e);
+            }
+        }
+        let bundle = Envelope {
+            root: env.root.clone(),
+            included: bundle_included,
+        };
+
+        // §1.4: target_peer = extract_peer(uri, local_peer_id). The validator sends the
+        // absolute form, so the URI names the target. Where the uri is PEER-RELATIVE
+        // there is no peer in it and the §6.11 seam's destination is the connection's
+        // remote, so that is the fallback — without it Dimension 4 passes vacuously.
+        let uri_peer = cap::extract_peer(&self.local_peer, &target).to_string();
+        let target_peer = if uri_peer == self.local_peer {
+            conn.hello_peer_id.clone().unwrap_or(uri_peer)
+        } else {
+            uri_peer
+        };
+
+        // §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer, all
+        // four dimensions, on THIS handler's own grant — with a target-minted credential
+        // relaxing Dimension 4 and nothing else. Consulting only the presented
+        // credential here is the §6.8 confused-deputy bypass.
+        let own_grant = match self
+            .store
+            .get_at(&cap::grant_path_for(&self.local_peer, handler_pattern))
+        {
+            Some(g) => g,
+            // §6.8: a handler with no valid grant does not run. Fail closed rather than
+            // falling back to the credential, which is the substitution §6.8 forbids.
+            None => return err_out(403, "capability_denied", Some("no handler grant")),
+        };
+        if !cap::check_outbound_sub_dispatch(
+            &bundle,
+            &self.store,
+            &self.local_peer,
+            &target_peer,
+            &rel_target,
+            &operation,
+            &own_grant,
+            &resource,
+            cred.as_ref(),
+        ) {
+            // §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic
+            // transport- or gateway-class code would launder an authorization verdict
+            // into a route fault, and the ambient and presented branches would then
+            // disagree about what the same gate decided.
+            return err_out(
+                403,
+                "capability_denied",
+                Some("outbound sub-dispatch not authorized by the handler grant"),
+            );
+        }
+
+        conn.out_counter += 1;
+        let rid = format!("ro-{}", conn.out_counter);
+        // The AMBIENT arm carries no credential, so the EXECUTE carries no `capability`
+        // field. An empty hash would NOT do — that is a present field resolving to
+        // nothing, which §5.2 reads as an unresolvable capability rather than as its
+        // absence.
+        let cap_hash = cred.as_ref().map(|c| c.hash.clone());
         let req_exec = wire::make_execute(wire::ExecuteFields {
             request_id: &rid,
             uri: &target,
@@ -2082,10 +2234,21 @@ impl Peer {
             params: inner,
             resource: Some(resource),
             author: Some(&self.identity.identity_hash),
-            capability: Some(&cap_e.hash),
+            capability: cap_hash.as_deref(),
         });
         let exec_sig = self.identity.sign_entity(&req_exec);
-        let req_env = Envelope::with_included(req_exec, vec![cap_e, granter_e, capsig_e, exec_sig]);
+        // Every granter and every signature goes into `included` because §5.5's chain
+        // walk resolves them BY HASH out of that map — a granter left out is a link the
+        // verifier cannot reach, which fails closed and reads as the peer refusing the
+        // credential form rather than as a carrier we truncated.
+        let mut carried: Vec<Entity> = Vec::new();
+        if let Some(c) = cred {
+            carried.push(c);
+            carried.extend(granters);
+            carried.extend(cap_sigs);
+        }
+        carried.push(exec_sig);
+        let req_env = Envelope::with_included(req_exec, carried);
         let resp = match out_fn(req_env) {
             Some(r) => r,
             None => return err_out(504, "outbound_timeout", Some("downstream did not reply")),
@@ -2137,6 +2300,30 @@ const BOOTSTRAP_HANDLERS: &[BootHandler] = &[
         operations: &["hello", "authenticate"],
     },
 ];
+
+/// A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward,
+/// as distinct from any capability a caller presents. §6.8 row 1: an access in service
+/// of a caller's request needs the caller's verified capability AND this grant, and
+/// BOTH must pass.
+///
+/// NARROW BY DESIGN for `dispatch-outbound`, and the narrowness is what makes the
+/// intersection MEASURABLE. GUIDE-CONFORMANCE §7a.1 makes it a scaffold-contract
+/// requirement: with a wide grant, consulting it and skipping it give the same answer
+/// on every input, so the confused-deputy discriminator cannot fire and a bypass reads
+/// as conformant. Every other bootstrap handler keeps the empty list.
+pub(crate) fn own_grants_for(pattern: &str) -> Vec<Value> {
+    if pattern != "system/validate/dispatch-outbound" {
+        return vec![];
+    }
+    let scope = |v: &str| {
+        model::map(vec![("include", Value::Array(vec![model::text(v)]))])
+    };
+    vec![model::map(vec![
+        ("handlers", scope("system/validate/echo")),
+        ("operations", scope("echo")),
+        ("resources", scope("system/handler/system/validate/echo")),
+    ])]
+}
 
 const CONFORMANCE_HANDLERS: &[BootHandler] = &[
     BootHandler {

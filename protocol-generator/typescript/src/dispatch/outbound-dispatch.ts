@@ -21,7 +21,7 @@ export class OutboundDispatchImpl implements OutboundDispatch {
     operation: string,
     paramsEntity: Entity,
     resource: ResourceTarget | null,
-    authority: OutboundAuthority,
+    authority: OutboundAuthority | null,
     timeoutMs: number,
   ): Promise<ExecuteResponse> {
     const execute = Execute.build({
@@ -30,17 +30,24 @@ export class OutboundDispatchImpl implements OutboundDispatch {
       operation,
       params: paramsEntity,
       author: this.local.identityHash,
-      capability: authority.capability.contentHash,
+      // §1.4 PD-2 AMBIENT arm: no credential, so no `capability` field at all.
+      capability: authority === null ? null : authority.capability.contentHash,
       resource,
     });
 
     const executeSignature = signEntity(execute.entity, this.local);
 
     const included = [
-      authority.capability.entity,
-      authority.granterPeer, // capability granter (the target peer's identity)
+      ...(authority === null
+        ? []
+        : [
+            authority.capability.entity,
+            // Every granter and every signature: §5.5's chain walk resolves them BY
+            // HASH out of this map.
+            ...authority.granterPeers, // capability granters (the target peer's identity)
+            ...authority.capabilitySignatures,
+          ]),
       this.local.peerEntity, // grantee + author (this peer's identity)
-      authority.capabilitySignature,
       executeSignature,
     ];
 

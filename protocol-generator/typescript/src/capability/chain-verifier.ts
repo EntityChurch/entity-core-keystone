@@ -106,22 +106,42 @@ export function verifyCapabilityChain(
   envelope: Envelope,
   localPeerId: string,
   nowMs: bigint,
+  /**
+   * The peer the chain ROOT must derive. Defaults to `localPeerId`.
+   *
+   * §1.4's PD-2 presented-authority arm needs this: the credential it evaluates is
+   * minted by the TARGET peer, so root-trust is relaxed away from the local peer — and
+   * every other clause (per-link signatures, grantee resolution, temporal validity,
+   * attenuation, caveats) is unchanged. Parameterized rather than forked because a
+   * second copy of a chain walk is a second copy that drifts.
+   *
+   * A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY (§1.4, 0.8.2.19). When
+   * `rootPeerId !== localPeerId` the quorum arm is REFUSED outright rather than
+   * verified: *minted by the target* means the target SOLELY minted it, and a K-of-N
+   * root is a GROUP's authority — its co-signers authorized it too. Verifying the
+   * quorum here and accepting it would let any one signer's target confer the whole
+   * group's grant, which is E3/F66's over-acceptance. §5.5's M6 also requires the LOCAL
+   * peer in the signer set, so the quorum arm has no meaning in a foreign frame even on
+   * its own terms.
+   */
+  rootPeerId: string = localPeerId,
 ): boolean {
   const chain = collectAuthorityChain(capability, envelope);
   if (chain === null) {
     return false; // ChainUnreachable / ChainTooDeep — fail closed
   }
 
-  // Root authority: a single-sig root must root at the local peer; a multi-sig
-  // root (§3.6 M3, root-only) must pass k-of-n quorum validation.
+  // Root authority: a single-sig root must root at `rootPeerId`; a multi-sig root
+  // (§3.6 M3, root-only) must pass k-of-n quorum validation, and only in the LOCAL
+  // frame.
   const root = chain[chain.length - 1]!;
   if (root.isMultiSig) {
-    if (!verifyMultiSigRoot(root, envelope, localPeerId, nowMs)) {
+    if (rootPeerId !== localPeerId || !verifyMultiSigRoot(root, envelope, localPeerId, nowMs)) {
       return false;
     }
   } else {
     const rootGranter = envelope.find(root.granter!);
-    if (rootGranter === undefined || peerEntityId(rootGranter) !== localPeerId) {
+    if (rootGranter === undefined || peerEntityId(rootGranter) !== rootPeerId) {
       return false;
     }
   }

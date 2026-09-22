@@ -38,6 +38,12 @@ module EntityCore.Capability
   , isMultiSig
   , verifyMultiSigRoot
   , verifyCapabilityChain
+  , verifyCapabilityChainRootedAt
+    -- * §1.4 PD-2 outbound sub-dispatch gate
+  , peerRelativeOf
+  , grantPathFor
+  , targetMintedPeersRelaxation
+  , checkOutboundSubDispatch
     -- * path / pattern helpers (shared with the peer)
   , normalizeUri
   , canonicalize
@@ -704,8 +710,34 @@ chainExceedsDepth resolve = go (0 :: Int)
 
 -- | §5.5 single-sig chain verification. Returns Allow/Deny, with the §5.5
 -- unresolvable-grantee carve-out signalled by the 'Bool' (True = 401 carve-out).
+--
+-- The root must be LOCALLY rooted: a single-signature root whose @granter@
+-- resolves to this peer, or a §3.6 quorum root this peer is a validated member of.
 verifyCapabilityChain :: Text -> Word64 -> Resolver -> [(ByteString, Entity)] -> Entity -> (Verdict, Bool)
-verifyCapabilityChain localPeer nowMs resolve included capability =
+verifyCapabilityChain localPeer =
+  verifyCapabilityChainRootedAt localPeer localPeer
+
+-- | 'verifyCapabilityChain' with the expected ROOT granter named separately from
+-- the verifying peer.
+--
+-- §1.4's PD-2 presented-authority arm needs this: the credential it evaluates is
+-- minted by the TARGET peer, so root-trust is relaxed away from the local peer —
+-- and every other clause (per-link signatures, grantee resolution, temporal
+-- validity, attenuation, caveats) is unchanged. Parameterized rather than forked
+-- because a second copy of a chain walk is a second copy that drifts, and the
+-- clauses below are where the authority decision actually lives.
+--
+-- A MULTI-SIGNATURE ROOT IS ONLY EVER VALID LOCALLY (§1.4, 0.8.2.19). When
+-- @rootPeer /= localPeer@ the quorum arm is REFUSED outright rather than verified:
+-- /minted by the target/ means the target SOLELY minted it, and a K-of-N root is a
+-- GROUP's authority — its co-signers authorized it too. Verifying the quorum here
+-- and accepting it would let any one signer's target confer the whole group's
+-- grant, which is E3/F66's over-acceptance. §5.5's M6 also requires the LOCAL peer
+-- in the signer set, so the quorum arm has no meaning in a foreign frame even on
+-- its own terms.
+verifyCapabilityChainRootedAt ::
+  Text -> Text -> Word64 -> Resolver -> [(ByteString, Entity)] -> Entity -> (Verdict, Bool)
+verifyCapabilityChainRootedAt localPeer rootPeer nowMs resolve included capability =
   case collectChain resolve capability of
     Left _ -> (Deny, False)
     Right chain ->
@@ -713,11 +745,16 @@ verifyCapabilityChain localPeer nowMs resolve included capability =
           -- Root authority: a §3.6 M3 multi-sig root (root-only) must pass k-of-n
           -- quorum validation; a single-sig root must root at the local peer.
           rootOk = case multiGranterOfEntity root of
-            Just mg -> verifyMultiSigRoot localPeer nowMs resolve included root mg
+            -- §1.4 (0.8.2.19): a multi-signature root NEVER relaxes Dimension 4, so
+            -- it is only ever valid in the LOCAL frame. Refuse outright rather than
+            -- verify.
+            Just mg
+              | rootPeer /= localPeer -> False
+              | otherwise -> verifyMultiSigRoot localPeer nowMs resolve included root mg
             Nothing -> case bytesField root "granter" of
               Just gh -> case resolve gh of
                 Just g -> case bytesField g "public_key" of
-                  Just pk -> peerIdOfPubkey pk == localPeer
+                  Just pk -> peerIdOfPubkey pk == rootPeer
                   Nothing -> False
                 Nothing -> False
               Nothing -> False
@@ -823,3 +860,146 @@ verifyRequest localPeer nowMs revoked resolve env =
                                  in if not granteeOk
                                       then ReqAuthzDeny
                                       else if isRevoked revoked resolve capability then ReqAuthzDeny else ReqAllow
+
+-- ── §1.4 PD-2: outbound sub-dispatch authorization ────────────────────────────
+
+-- | Strip the §1.4 scheme and leading peer segment, answering the PEER-RELATIVE
+-- path.
+--
+-- §1.4 admits three spellings of one address — @system/tree@,
+-- @\/{peer}\/system\/tree@ and @entity:\/\/{peer}\/system\/tree@ — and §1.4's PD-2
+-- block requires Dimension 1's handler pattern to be the target uri's
+-- peer-relative path, because a grant names HANDLERS and a handler pattern never
+-- carries a peer segment. Matching a grant against the absolute or schemed form
+-- matches nothing, silently, which reads at the wire as an authority refusal.
+--
+-- The first segment is dropped ONLY when it is a peer_id. A peer-relative
+-- @system\/protocol\/connect@ must not lose @system@ — the standing defect on
+-- @smalltalk@ and @forth@, where an unconditional strip made every self-minted
+-- grant unusable while the handshake stayed green.
+peerRelativeOf :: Text -> Text
+peerRelativeOf uri =
+  let p = normalizeUri uri
+   in if not ("/" `T.isPrefixOf` p)
+        then p
+        else case T.splitOn "/" p of
+          ("" : s : rest) | isPeerId s -> T.intercalate "/" rest
+          ("" : rest) -> T.intercalate "/" rest
+          _ -> p
+
+-- | Store key of a handler's OWN grant (§6.8:
+-- @system\/capability\/grants\/{pattern}@), tolerant of the pattern arriving
+-- absolute or peer-relative.
+--
+-- §6.6's tree walk answers an ABSOLUTE pattern because store keys are absolute,
+-- while the grant path is built from the PEER-RELATIVE one. The two are one
+-- segment apart and concatenating the wrong one yields a doubled peer segment
+-- whose lookup misses — which fails closed as \"no handler grant\" and is
+-- indistinguishable, at the wire, from a genuine authority refusal.
+grantPathFor :: Text -> Text -> Text
+grantPathFor localPeer pattern =
+  let prefix = "/" <> localPeer <> "/"
+      rel = if prefix `T.isPrefixOf` pattern then T.drop (T.length prefix) pattern else pattern
+   in "/" <> localPeer <> "/system/capability/grants/" <> rel
+
+-- | Verify a presented reentry credential against §1.4's clauses and, where they
+-- all hold, answer the @peers@ scope Dimension 4 relaxes to. 'Nothing' relaxes
+-- nothing.
+--
+-- Every clause is required and failing any relaxes nothing:
+--
+--   * the chain ROOT @granter@ resolves to the TARGET peer, and is NOT a
+--     multi-signature root — a K-of-N root is a GROUP's authority and never
+--     relaxes Dimension 4 ('verifyCapabilityChainRootedAt' refuses the quorum arm
+--     in a foreign frame, which is where that rule lands);
+--   * the LEAF @grantee@ is the local peer;
+--   * valid (per-link signatures, temporal, attenuation, caveats) and not revoked.
+targetMintedPeersRelaxation ::
+  Text -> Text -> Word64 -> (ByteString -> Bool) -> Resolver -> [(ByteString, Entity)] -> Entity -> Maybe Scope
+targetMintedPeersRelaxation localPeer targetPeer nowMs revoked resolve included cred
+  -- Nothing to relax — the default already covers this peer. Treating a
+  -- self-targeted credential as a relaxation would make the exemption reachable
+  -- with no foreign mint at all.
+  | targetPeer == localPeer = Nothing
+  | otherwise =
+      case verifyCapabilityChainRootedAt localPeer targetPeer nowMs resolve included cred of
+        (Allow, False)
+          | not (isRevoked revoked resolve cred)
+          , granteeIsLocal ->
+              -- The credential's own `peers` scope is what Dimension 4 relaxes TO.
+              -- Absent means the granter — the target peer — which is the ordinary
+              -- reentry shape: "you may dispatch back to me."
+              case grantsOfToken cred of
+                (g : _) -> Just (fromMaybe (Scope [targetPeer] []) (grPeers g))
+                [] -> Nothing
+        _ -> Nothing
+  where
+    granteeIsLocal = case bytesField cred "grantee" of
+      Just gh -> case resolve gh of
+        Just ge -> case bytesField ge "public_key" of
+          Just pk -> peerIdOfPubkey pk == localPeer
+          Nothing -> False
+        Nothing -> False
+      Nothing -> False
+
+-- | §1.4's PD-2 gate: @check_permission@ run before a locally-originated
+-- sub-dispatch LEAVES the peer, with all four dimensions applied.
+--
+-- ONE GATE AND ONE EXEMPTION, in §1.4's own words:
+--
+--   * the EXECUTING HANDLER'S GRANT decides all four dimensions (§6.8), evaluated
+--     in the LOCAL frame, with Dimension 1's pattern the target uri's
+--     PEER-RELATIVE path;
+--   * a valid capability MINTED BY THE TARGET PEER naming this peer as @grantee@
+--     relaxes Dimension 4 (@peers@) AND ONLY DIMENSION 4, to the peers that
+--     capability covers, evaluated in the TARGET's frame.
+--
+-- /"The target answers WHERE; the handler's grant answers WHAT."/ A credential is
+-- NOT a grant: with no handler grant there is nothing to supply Dimensions 1-3, so
+-- the sub-dispatch is refused however good the credential is. That is the COMPOSE,
+-- and the BYPASS it is distinguished from is a peer that treats the credential as
+-- a standalone authorizer and steers past its own grant — §6.8's confused-deputy
+-- substitution. Both obvious vectors agree under either reading (sources agree ->
+-- allow, no source -> refuse), so the only input that separates them is a VALID
+-- credential presented to a handler whose own grant does NOT cover the request,
+-- which MUST refuse.
+--
+-- A credential failing any verification clause relaxes NOTHING and the handler
+-- grant gates unrelaxed — it does not turn the verdict into an error.
+--
+-- @targetPeer@ is supplied by the caller rather than derived here: on the §6.11
+-- reentry seam the uri may be PEER-RELATIVE and the destination is the
+-- connection's remote, so @extractPeer uri local@ would answer the LOCAL peer and
+-- Dimension 4 would pass vacuously on the default @{include: [local]}@ — the
+-- exemption would then never be exercised and a bypass would read as a compose.
+--
+-- @Nothing@ for the credential is the ambient arm: Dimension 4 is decided by the
+-- handler's grant alone.
+checkOutboundSubDispatch ::
+  Text ->             -- local peer
+  Text ->             -- target peer
+  Text ->             -- handler pattern (PEER-RELATIVE)
+  Text ->             -- operation
+  Word64 ->           -- now_ms
+  (ByteString -> Bool) -> -- revocation membership
+  Resolver ->
+  [(ByteString, Entity)] -> -- merged bundle (§7a.2a)
+  Entity ->           -- the handler's OWN grant
+  Value ->            -- resource
+  Maybe Entity ->     -- presented reentry credential, or Nothing for the ambient arm
+  Bool
+checkOutboundSubDispatch localPeer targetPeer handlerPattern operation nowMs revoked resolve included handlerGrant resource mcred =
+  any grantOk (grantsOfToken handlerGrant)
+  where
+    -- Computed FIRST and consulted LAST, so no credential can stand in for 1-3.
+    relaxTo = mcred >>= targetMintedPeersRelaxation localPeer targetPeer nowMs revoked resolve included
+    grantOk g =
+      matchesScope localPeer handlerPattern (grHandlers g) PathScope
+        && matchesScope localPeer operation (grOperations g) IdScope
+        && checkResourceScope localPeer localPeer resource (grResources g)
+        -- Dimension 4. §5.2's default for an absent `peers` scope is
+        -- {include: [local_peer_id]}, so a foreign target fails unless this grant
+        -- names it or a target-minted credential relaxes it.
+        && ( matchesScope localPeer targetPeer (fromMaybe (Scope [localPeer] []) (grPeers g)) IdScope
+               || maybe False (\s -> matchesScope localPeer targetPeer s IdScope) relaxTo
+           )

@@ -476,3 +476,207 @@ fn effective_targets_narrows_and_keeps_the_two_empties_apart() {
     assert!(present);
     assert_eq!(eff, vec!["app/b".to_string()], "the survivor is SELECTED, never targets[0]");
 }
+
+// ── §1.4 PD-2, and THE ONE RULE THE WIRE CANNOT MEASURE ─────────────────────
+//
+// The oracle's `dispatch_outbound_multisig_root_refused` check is GREEN on a peer
+// that has never implemented §1.4's multi-signature clause. Measured by planting the
+// guard out on both vanguards: the oracle's K-of-2 root is co-signed by the target and
+// a third party and NOT by the local peer, so §5.5's M6 (the local peer MUST be a
+// validated quorum member) refuses it first, for a reason that has nothing to do with
+// §1.4. The discriminating input is a quorum THE LOCAL PEER IS A MEMBER OF, minted at
+// the target, and nothing on the wire drives it.
+//
+// So the green row is not evidence for that rule and these tests are. The ANTECEDENT
+// assertion is load-bearing: it pins that the very same quorum DOES verify in the local
+// frame, so a refusal in the foreign frame is attributable to §1.4 and not to a fixture
+// M6 was rejecting anyway. Without it the control is INERT — which is how the first
+// `go` version shipped, and only planting caught it.
+
+/// A single-signature token.
+fn mk_cap(granter_hash: &[u8], grantee_hash: &[u8], grants: Vec<Value>) -> Entity {
+    Entity::make(
+        "system/capability/token",
+        Value::Map(vec![
+            (
+                Key::Text("granter".into()),
+                Value::Bytes(granter_hash.to_vec()),
+            ),
+            (
+                Key::Text("grantee".into()),
+                Value::Bytes(grantee_hash.to_vec()),
+            ),
+            (Key::Text("grants".into()), Value::Array(grants)),
+        ]),
+    )
+}
+
+fn env_of(cap: &Entity, extra: &[Entity]) -> Envelope {
+    let mut included = vec![cap.clone()];
+    included.extend_from_slice(extra);
+    Envelope::with_included(cap.clone(), included)
+}
+
+#[test]
+fn pd2_multisig_root_never_relaxes_dimension_four() {
+    let local = Identity::of_seed([1u8; 32]);
+    let target = Identity::of_seed([2u8; 32]);
+    let local_peer = local.peer_id.clone();
+    let target_peer = target.peer_id.clone();
+    let st = Store::new();
+
+    // A quorum the LOCAL peer IS a member of, with a NON-EMPTY grants list. An empty
+    // list makes the relaxation answer None BEFORE it reaches the §1.4 clause, so the
+    // third assertion would hold for an adjacent reason and a plant removing the §1.4
+    // refusal would leave it green.
+    let signers = vec![
+        local.identity_hash.clone(),
+        target.identity_hash.clone(),
+    ];
+    let cap = Entity::make(
+        "system/capability/token",
+        Value::Map(vec![
+            (
+                Key::Text("granter".into()),
+                multi_granter_value(&signers, 2),
+            ),
+            (
+                Key::Text("grantee".into()),
+                Value::Bytes(local.identity_hash.clone()),
+            ),
+            (
+                Key::Text("grants".into()),
+                Value::Array(vec![Value::Map(vec![])]),
+            ),
+        ]),
+    );
+    let extra = vec![
+        local.peer_entity.clone(),
+        target.peer_entity.clone(),
+        local.sign_entity(&cap),
+        target.sign_entity(&cap),
+    ];
+    let env = env_of(&cap, &extra);
+
+    // ANTECEDENT. If this ever fails the refusal below proves nothing: M6 would be
+    // rejecting the fixture and the §1.4 clause would never be reached.
+    assert_eq!(
+        verify_capability_chain_rooted_at(&env, &st, &local_peer, &local_peer, &cap),
+        Ok(Verdict::Allow),
+        "ANTECEDENT: the quorum must verify in the LOCAL frame"
+    );
+    // THE RULE (E3/F66).
+    assert_eq!(
+        verify_capability_chain_rooted_at(&env, &st, &local_peer, &target_peer, &cap),
+        Ok(Verdict::Deny),
+        "a multi-signature root is only ever valid LOCALLY"
+    );
+    assert!(
+        target_minted_peers_relaxation(&env, &st, &local_peer, &target_peer, &cap).is_none(),
+        "and so it relaxes nothing"
+    );
+}
+
+#[test]
+fn pd2_single_sig_target_minted_credential_does_relax() {
+    // CONTRAST: the granter FORM is the only variable against the test above, which is
+    // what says the refusal is about the quorum and not about foreign rooting.
+    let local = Identity::of_seed([1u8; 32]);
+    let target = Identity::of_seed([2u8; 32]);
+    let st = Store::new();
+    let cap = mk_cap(
+        &target.identity_hash,
+        &local.identity_hash,
+        vec![Value::Map(vec![])],
+    );
+    let extra = vec![
+        local.peer_entity.clone(),
+        target.peer_entity.clone(),
+        target.sign_entity(&cap),
+    ];
+    let env = env_of(&cap, &extra);
+    let relax =
+        target_minted_peers_relaxation(&env, &st, &local.peer_id, &target.peer_id, &cap).unwrap();
+    assert_eq!(relax.incl, vec![target.peer_id.clone()]);
+}
+
+#[test]
+fn pd2_one_gate_and_one_exemption() {
+    let local = Identity::of_seed([1u8; 32]);
+    let target = Identity::of_seed([2u8; 32]);
+    let st = Store::new();
+    let cap = mk_cap(
+        &target.identity_hash,
+        &local.identity_hash,
+        vec![Value::Map(vec![])],
+    );
+    let extra = vec![
+        local.peer_entity.clone(),
+        target.peer_entity.clone(),
+        target.sign_entity(&cap),
+    ];
+    let env = env_of(&cap, &extra);
+    // The narrow scaffold grant GUIDE-CONFORMANCE §7a.1 requires of
+    // `dispatch-outbound`: the NARROWNESS is what lets the discriminator fire at all.
+    let handler_grant = mk_cap(
+        &local.identity_hash,
+        &local.identity_hash,
+        crate::peer::core::own_grants_for("system/validate/dispatch-outbound"),
+    );
+    let resource = Value::Map(vec![(
+        Key::Text("targets".into()),
+        Value::Array(vec![Value::Text(
+            "system/handler/system/validate/echo".into(),
+        )]),
+    )]);
+    let gate = |op: &str, cred: Option<&Entity>| {
+        check_outbound_sub_dispatch(
+            &env,
+            &st,
+            &local.peer_id,
+            &target.peer_id,
+            "system/validate/echo",
+            op,
+            &handler_grant,
+            &resource,
+            cred,
+        )
+    };
+    assert!(gate("echo", Some(&cap)), "COMPOSE: the grant covers it");
+    // The ONLY input that separates the two readings: both obvious vectors agree under
+    // either one (sources agree -> allow, no source -> refuse).
+    assert!(
+        !gate("put", Some(&cap)),
+        "BYPASS: a credential is not a grant — it may not supply Dimensions 1-3"
+    );
+    assert!(
+        !gate("echo", None),
+        "AMBIENT: §5.2's default peers scope is {{include: [local]}}"
+    );
+}
+
+#[test]
+fn pd2_peer_relative_of_and_grant_path() {
+    let local = Identity::of_seed([1u8; 32]);
+    let p = &local.peer_id;
+    assert_eq!(peer_relative_of("system/validate/echo"), "system/validate/echo");
+    assert_eq!(
+        peer_relative_of(&format!("/{p}/system/validate/echo")),
+        "system/validate/echo"
+    );
+    assert_eq!(
+        peer_relative_of(&format!("entity://{p}/system/validate/echo")),
+        "system/validate/echo"
+    );
+    // The standing smalltalk/forth defect: an unconditional strip turns
+    // system/protocol/connect into protocol/connect and every self-minted grant becomes
+    // unusable while the handshake stays green.
+    assert_eq!(
+        peer_relative_of("/system/protocol/connect"),
+        "system/protocol/connect"
+    );
+    assert_eq!(
+        grant_path_for(p, &format!("/{p}/system/validate/echo")),
+        grant_path_for(p, "system/validate/echo")
+    );
+}

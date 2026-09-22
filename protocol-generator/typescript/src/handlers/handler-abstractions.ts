@@ -65,8 +65,16 @@ export interface PeerServices {
  */
 export interface OutboundAuthority {
   readonly capability: CapabilityToken;
-  readonly granterPeer: Entity;
-  readonly capabilitySignature: Entity;
+  /**
+   * PLURAL (GUIDE-CONFORMANCE §7a.1, 0.8.2.19) so a K-of-N root can present every
+   * granter identity and every link signature; the ordinary single-granter case is a
+   * list of one. Every member goes into `included` because §5.5's chain walk resolves
+   * granters and signers BY HASH out of that map — a granter left out is a link the
+   * verifier cannot reach, which fails closed and reads as the peer refusing the
+   * credential form rather than as a carrier we truncated.
+   */
+  readonly granterPeers: readonly Entity[];
+  readonly capabilitySignatures: readonly Entity[];
 }
 
 /**
@@ -85,7 +93,14 @@ export interface OutboundDispatch {
     operation: string,
     paramsEntity: Entity,
     resource: ResourceTarget | null,
-    authority: OutboundAuthority,
+    /**
+     * `null` is §1.4's PD-2 AMBIENT arm: the sub-dispatch is authorized by the
+     * executing handler's own grant and carries no credential at all. The EXECUTE then
+     * carries no `capability` field — an empty hash would NOT do, since that is a
+     * present field resolving to nothing, which §5.2 reads as an unresolvable
+     * capability rather than as its absence.
+     */
+    authority: OutboundAuthority | null,
     timeoutMs: number,
   ): Promise<ExecuteResponse>;
 }

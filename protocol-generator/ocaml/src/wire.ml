@@ -156,16 +156,21 @@ let make_response ~(request_id : string) ~(status : int) ~(result : Model.entity
 
 (* ── EXECUTE builder (§3.2) — used by the §6.13(b) handler outbound seam ──── *)
 
+(* [capability] is OPTIONAL because §1.4's PD-2 AMBIENT arm carries no credential at
+   all: the sub-dispatch is authorized by the executing handler's own grant and there
+   is nothing to name. An empty string would NOT do — that is a present field holding
+   a hash that resolves to nothing, which §5.2 reads as an unresolvable capability
+   rather than as its absence. *)
 let make_execute ~(request_id : string) ~(uri : string) ~(operation : string)
-    ~(params : Model.entity) ?(resource : Cbor.t option) ~(author : string) ~(capability : string) () : Model.entity =
+    ~(params : Model.entity) ?(resource : Cbor.t option) ~(author : string) ?(capability : string option) () : Model.entity =
   Model.make ~typ:"system/protocol/execute"
     (Cbor.Map
        ([ (Cbor.Text "request_id", Cbor.Text request_id);
           (Cbor.Text "uri", Cbor.Text uri);
           (Cbor.Text "operation", Cbor.Text operation);
           (Cbor.Text "params", Model.to_cbor params);
-          (Cbor.Text "author", Cbor.Bytes author);
-          (Cbor.Text "capability", Cbor.Bytes capability) ]
+          (Cbor.Text "author", Cbor.Bytes author) ]
+        @ (match capability with Some c -> [ (Cbor.Text "capability", Cbor.Bytes c) ] | None -> [])
         @ (match resource with Some r -> [ (Cbor.Text "resource", r) ] | None -> [])))
 
 (* system/protocol/error result entity (§3.3). *)

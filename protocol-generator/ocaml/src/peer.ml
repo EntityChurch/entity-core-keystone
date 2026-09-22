@@ -145,9 +145,21 @@ let mint_token (t : t) ~grantee_hash ?parent ?created_at ?expires_at
    though no core handler originates — a handler registered at runtime (§6.13(a))
    may. The handler dispatches under its own authority (§6.8): it supplies the
    capability the target accepts plus the §5.8 chain bundle. *)
+(* [granter_peers] and [capability_signatures] are PLURAL (GUIDE-CONFORMANCE §7a.1,
+   0.8.2.19) so a K-of-N root can present every granter identity and every link
+   signature; the ordinary single-granter case is a list of one. Every member goes
+   into [included] because §5.5's chain walk resolves granters and signers BY HASH out
+   of that map -- a granter left out is a link the verifier cannot reach, which fails
+   closed and reads as the peer refusing the credential form rather than as a carrier
+   we truncated.
+
+   The AMBIENT arm carries no credential ([capability = None] selects it), so the
+   EXECUTE carries no [capability] field and the bundle carries no cap, granter or
+   cap-signature. It still authenticates as this peer -- §5.2a's auth class is a
+   separate question from whether any capability covers the request. *)
 let outbound_dispatch (t : t) (conn : conn) ~(uri : string) ~(operation : string)
-    ~(params : Model.entity) ?(resource : Cbor.t option) ~(capability : Model.entity)
-    ~(granter_peer : Model.entity) ~(capability_signature : Model.entity) () : Model.envelope option =
+    ~(params : Model.entity) ?(resource : Cbor.t option) ~(capability : Model.entity option)
+    ~(granter_peers : Model.entity list) ~(capability_signatures : Model.entity list) () : Model.envelope option =
   match conn.outbound with
   | None -> None   (* no reentrant connection → seam unavailable *)
   | Some send ->
@@ -155,15 +167,22 @@ let outbound_dispatch (t : t) (conn : conn) ~(uri : string) ~(operation : string
       let request_id = "out-" ^ string_of_int conn.out_counter in
       let exec =
         Wire.make_execute ~request_id ~uri ~operation ~params ?resource
-          ~author:t.identity.identity_hash ~capability:capability.hash ()
+          ~author:t.identity.identity_hash
+          ?capability:(Option.map (fun (c : Model.entity) -> c.Model.hash) capability) ()
       in
       let exec_sig = Identity.sign_entity t.identity exec in
+      let cred_carried =
+        match capability with
+        | None -> []
+        | Some cap ->
+            (cap.Model.hash, cap)
+            :: List.map (fun (e : Model.entity) -> (e.Model.hash, e))
+                 (granter_peers @ capability_signatures)
+      in
       let included =
-        [ (capability.hash, capability);
-          (granter_peer.hash, granter_peer);      (* capability granter (the target peer) *)
-          (t.identity.identity_hash, t.identity.peer_entity);   (* grantee + author (us) *)
-          (capability_signature.hash, capability_signature);
-          (exec_sig.hash, exec_sig) ]
+        cred_carried
+        @ [ (t.identity.identity_hash, t.identity.peer_entity);   (* grantee + author (us) *)
+            (exec_sig.hash, exec_sig) ]
       in
       send { Model.root = exec; included }
 
@@ -1012,39 +1031,137 @@ let echo_handler (_t : t) (exec : Model.entity) : outcome =
    §6.11 reentry seam back to the caller (target/operation/value in params), return the
    downstream response. The reentry direction can only be authorized by the caller, so
    the caller carries the cap it minted for this peer in-band (three nested entities). *)
-let dispatch_outbound_handler (t : t) (conn : conn) (exec : Model.entity) : outcome =
+let dispatch_outbound_handler (t : t) (conn : conn) (exec : Model.entity)
+    ~(handler_pattern : string) ~(included : (string * Model.entity) list) : outcome =
   match entity_field exec "params" with
   | None -> err 400 "invalid_params" ~message:"dispatch-outbound requires a params entity"
   | Some p -> (
       let target = Option.value ~default:"" (Model.text_field p "target") in
       let operation = Option.value ~default:"" (Model.text_field p "operation") in
-      match
-        ( Model.field p "value",
-          entity_field p "reentry_capability",
-          entity_field p "reentry_granter",
-          entity_field p "reentry_cap_signature" )
-      with
-      | Some value, Some capability, Some granter_peer, Some capability_signature -> (
+      (* GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the
+         single-granter case is an array of ONE. They were singular, which made §1.4's
+         multi-signature-root rule ungateable on the wire: driving it needs two granter
+         identities and two signatures, and a single-credential carrier cannot express
+         that input.
+
+         TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one,
+         because THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle is
+         what all 46 tracked reports are measured against and it sends the SINGULAR
+         names; a plural-only peer reads the triple as absent there, takes the ambient
+         arm and refuses -- measured on the [go] vanguard as 2 of 778 severities moving
+         PASS -> FAIL. Accepting both keeps the cohort 0-FAIL at BOTH check sets.
+         REMOVE THIS FALLBACK AT THE ORACLE RE-PIN, and not before: the exit condition
+         is that tools/oracle-pin.env's [ref] names an oracle whose dispatch-outbound
+         probe sends the plural carriers. *)
+      let entity_list key =
+        match Model.field p key with
+        | Some (Cbor.Array l) -> (
+            (* An array whose members do not all decode is a MALFORMED carrier and is
+               [None], never a silently shorter list -- the all-or-none test below
+               would otherwise read a partial credential as a complete one. *)
+            try Some (List.map Model.of_cbor l) with _ -> None)
+        | _ -> None
+      in
+      let capability = entity_field p "reentry_capability" in
+      let granter_peers =
+        match entity_list "reentry_granters" with
+        | Some gs -> Some gs
+        | None -> Option.map (fun g -> [ g ]) (entity_field p "reentry_granter")
+      in
+      let cap_signatures =
+        match entity_list "reentry_cap_signatures" with
+        | Some ss -> Some ss
+        | None -> Option.map (fun s -> [ s ]) (entity_field p "reentry_cap_signature")
+      in
+      (* The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED arm,
+         all three absent selects the AMBIENT arm, and a PARTIAL set is 400
+         invalid_params -- a partial credential is malformed, not ambient. An empty
+         array is partial, not present: it carries no credential. *)
+      let non_empty = function Some (_ :: _) -> true | _ -> false in
+      let n_present =
+        List.length (List.filter (fun b -> b)
+          [ capability <> None; non_empty granter_peers; non_empty cap_signatures ])
+      in
+      match Model.field p "value" with
+      | None -> err 400 "invalid_params" ~message:"dispatch-outbound requires value"
+      | Some value when n_present <> 0 && n_present <> 3 ->
+          ignore value;
+          err 400 "invalid_params" ~message:"dispatch-outbound reentry authority is all-or-none"
+      | Some value -> (
+          let has_cred = n_present = 3 in
+          let granter_peers = if has_cred then Option.value ~default:[] granter_peers else [] in
+          let cap_signatures = if has_cred then Option.value ~default:[] cap_signatures else [] in
+          let cred = if has_cred then capability else None in
           (* §7a.1: the [value] field IS the outbound params entity data — pass it
              through (the reference uses it directly). Re-wrapping as {value: value}
              double-wraps, so the echo's result.value returns a map (keystone §7b t1_2). *)
           let inner = Model.make ~typ:"primitive/any" value in
+          (* [target] arrives as any of §1.4's three spellings and the validator sends
+             the SCHEMED ABSOLUTE form. Both the handler-pattern dimension and the
+             resource target want the PEER-RELATIVE path — §1.4's PD-2 block says so
+             for Dimension 1, and a resource target carrying a scheme is not a path at
+             all. Latent while nothing consulted it. *)
+          let rel_target = Capability.peer_relative_of target in
           let resource =
-            Cbor.Map [ (Cbor.Text "targets", Cbor.Array [ Cbor.Text ("system/handler/" ^ target) ]) ]
+            Cbor.Map [ (Cbor.Text "targets", Cbor.Array [ Cbor.Text ("system/handler/" ^ rel_target) ]) ]
           in
-          match
-            outbound_dispatch t conn ~uri:target ~operation ~params:inner ~resource ~capability
-              ~granter_peer ~capability_signature ()
-          with
-          (* ASCII-only wire message (AGENTS.md) — see the forbidden_pattern arm. *)
-          | None -> err 503 "no_outbound_seam" ~message:"no live section 6.11 reentry connection"
-          | Some env ->
-              let status = Option.value ~default:0L (Model.uint_field env.Model.root "status") in
-              let result_cbor = Option.value ~default:(Cbor.Map []) (Model.field env.Model.root "result") in
-              ok
-                (Model.make ~typ:"primitive/any"
-                   (Cbor.Map [ (Cbor.Text "status", Cbor.Uint status); (Cbor.Text "result", result_cbor) ])))
-      | _ -> err 400 "invalid_params" ~message:"dispatch-outbound requires value + reentry authority")
+          (* §7a.2a: the presented arm verifies against a BUNDLE MERGED FROM THE PARENT
+             ENVELOPE'S [included]. The credential, its granters and its signatures
+             arrive NESTED IN PARAMS (ratified shape (a), in-band), so they are not in
+             the parent's included and a verifier handed that alone cannot resolve a
+             single link — every credential then reads as invalid and the legitimate
+             reentry is refused. *)
+          let bundle =
+            (if has_cred then
+               List.map (fun (e : Model.entity) -> (e.Model.hash, e))
+                 (Option.to_list capability @ granter_peers @ cap_signatures)
+             else [])
+            @ included
+          in
+          (* §1.4: target_peer = extract_peer(uri, local_peer_id). The validator sends
+             the absolute form, so the URI names the target. Where the uri is
+             PEER-RELATIVE there is no peer in it and the §6.11 seam's destination is
+             the connection's remote, so that is the fallback — without it Dimension 4
+             passes vacuously. *)
+          let uri_peer = Capability.extract_peer ~local_peer:t.local_peer target in
+          let target_peer =
+            if String.equal uri_peer t.local_peer then
+              Option.value ~default:uri_peer conn.hello_peer_id
+            else uri_peer
+          in
+          (* §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer,
+             all four dimensions, on THIS handler's own grant — with a target-minted
+             credential relaxing Dimension 4 and nothing else. Consulting only the
+             presented credential here is the §6.8 confused-deputy bypass. *)
+          match Store.get_at t.store ~path:(Capability.grant_path_for ~local_peer:t.local_peer handler_pattern) with
+          (* §6.8: a handler with no valid grant does not run. Fail closed rather than
+             falling back to the credential, which is the substitution §6.8 forbids. *)
+          | None -> err 403 "capability_denied" ~message:("no handler grant for " ^ handler_pattern)
+          | Some own_grant ->
+              if not (Capability.check_outbound_sub_dispatch ~local_peer:t.local_peer ~target_peer
+                        ~handler_pattern:rel_target ~operation ~store:t.store ~handler_grant:own_grant
+                        ~resource ~cred bundle)
+              then
+                (* §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A
+                   generic transport- or gateway-class code would launder an
+                   authorization verdict into a route fault, and the ambient and
+                   presented branches would then disagree about what the same gate
+                   decided. *)
+                err 403 "capability_denied"
+                  ~message:"outbound sub-dispatch not authorized by the handler grant"
+              else
+                match
+                  outbound_dispatch t conn ~uri:target ~operation ~params:inner ~resource
+                    ~capability:cred ~granter_peers ~capability_signatures:cap_signatures ()
+                with
+                (* ASCII-only wire message (AGENTS.md) — see the forbidden_pattern arm. *)
+                | None -> err 503 "no_outbound_seam" ~message:"no live section 6.11 reentry connection"
+                | Some env ->
+                    let status = Option.value ~default:0L (Model.uint_field env.Model.root "status") in
+                    let result_cbor = Option.value ~default:(Cbor.Map []) (Model.field env.Model.root "result") in
+                    ok
+                      (Model.make ~typ:"primitive/any"
+                         (Cbor.Map [ (Cbor.Text "status", Cbor.Uint status); (Cbor.Text "result", result_cbor) ]))))
 
 (* ── dispatch chain (§6.5) ────────────────────────────────────────────────── *)
 
@@ -1059,6 +1176,18 @@ let internal_error_response (env : Model.envelope) : Model.envelope option =
 (* [dispatch] runs the §6.5 dispatch chain. The [option] is kept for the caller's
    write decision and is now always [Some]: every inbound root reaching here is
    ANSWERED. *)
+(* A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward,
+   as distinct from any capability a caller presents. §6.8 row 1: an access in service
+   of a caller's request needs the caller's verified capability AND this grant, and
+   BOTH must pass. Narrow for dispatch-outbound; empty for everything else. *)
+let own_grants_for (pattern : string) : Cbor.t list =
+  if String.equal pattern "system/validate/dispatch-outbound" then
+    [ Cbor.Map
+        [ (Cbor.Text "handlers", Cbor.Map [ (Cbor.Text "include", Cbor.Array [ Cbor.Text "system/validate/echo" ]) ]);
+          (Cbor.Text "operations", Cbor.Map [ (Cbor.Text "include", Cbor.Array [ Cbor.Text "echo" ]) ]);
+          (Cbor.Text "resources", Cbor.Map [ (Cbor.Text "include", Cbor.Array [ Cbor.Text "system/handler/system/validate/echo" ]) ]) ] ]
+  else []
+
 let dispatch (t : t) (conn : conn) (env : Model.envelope) : Model.envelope option =
   let exec = env.root in
   if not (String.equal exec.typ "system/protocol/execute") then begin
@@ -1160,7 +1289,13 @@ let dispatch (t : t) (conn : conn) (env : Model.envelope) : Model.envelope optio
                           (* §7a conformance handlers — only resolvable when bootstrapped
                              under --validate (off by default → resolve_handler 404s). *)
                           | "system/validate/echo" -> echo_handler t exec
-                          | "system/validate/dispatch-outbound" -> dispatch_outbound_handler t conn exec
+                          (* §1.4 PD-2 needs the OWNING handler's peer-relative pattern
+                             (Dimension 1 is matched peer-relative) and the parent
+                             [included] (the §7a.2a bundle base). Both were computed
+                             above, so they are CARRIED rather than recomputed. *)
+                          | "system/validate/dispatch-outbound" ->
+                              dispatch_outbound_handler t conn exec
+                                ~handler_pattern:(strip_local t pattern) ~included:env.Model.included
                           (* A dynamically-registered handler (§6.13(a)): no in-process
                              body — dispatch its entity-native body at [pattern]. *)
                           | _ -> entity_native_dispatch t pattern))))
@@ -1260,7 +1395,16 @@ let create ~(seed : string) ~(open_grants : bool) ?(conformance = false) () : t 
                  (Cbor.Text "operations", operations) ])
         in
         Store.bind store ~path:("/" ^ local_peer ^ "/system/handler/" ^ pattern) interface_e;
-        let token, _ = mint_token t ~grantee_hash:identity.identity_hash ~grants:[] () in
+        (* §6.8: the grant MUST exist at system/capability/grants/{pattern} and a
+           handler with no valid grant does not run — so this bind is the ceiling row 1
+           intersects against, not bookkeeping. An empty grants list is the right
+           default for a handler that never dispatches onward and the WRONG one for a
+           handler that does, which is why dispatch-outbound gets a NARROW one: with a
+           wide grant, consulting it and skipping it give the same answer on every
+           input, so the confused-deputy discriminator cannot fire and a bypass reads as
+           conformant (GUIDE-CONFORMANCE §7a.1 makes the narrowness a scaffold-contract
+           requirement). *)
+        let token, _ = mint_token t ~grantee_hash:identity.identity_hash ~grants:(own_grants_for pattern) () in
         Store.bind store ~path:("/" ^ local_peer ^ "/system/capability/grants/" ^ pattern) token)
       [ ("system/validate/echo", "validate-echo", [ ("echo", (None, None)) ]);
         ("system/validate/dispatch-outbound", "validate-dispatch-outbound", [ ("dispatch", (None, None)) ]) ];

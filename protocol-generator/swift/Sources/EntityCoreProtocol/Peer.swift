@@ -144,11 +144,34 @@ public actor Peer {
         ])
         await store.bind(path: "/" + p + "/system/handler/" + pattern, iface.entity)
         // 3. handler grant (self-issued: granter = grantee = local identity).
-        let grant = try selfGrant(grants: [])
+        //
+        // §6.8: the grant MUST exist at `system/capability/grants/{pattern}` and a
+        // handler with no valid grant does not run — so this bind is the ceiling row 1
+        // intersects against, not bookkeeping. An empty grants list is the right
+        // default for a handler that never dispatches onward and the WRONG one for a
+        // handler that does, which is why `dispatch-outbound` gets a NARROW one: with a
+        // wide grant, consulting it and skipping it give the same answer on every
+        // input, so the confused-deputy discriminator cannot fire and a bypass reads as
+        // conformant (GUIDE-CONFORMANCE §7a.1 makes the narrowness a scaffold-contract
+        // requirement).
+        let grant = try selfGrant(grants: Peer.ownGrants(for: pattern))
         await store.bind(path: "/" + p + "/system/capability/grants/" + pattern, grant.entity)
         // 4. grant-signature at system/signature/{grant_hash} (§3.5 / §6.2 convergence).
         let sig = try identity.signatureEntity(target: grant.hash)
         await store.bind(path: "/" + p + "/system/signature/" + Hex.encode(grant.hash), sig.entity)
+    }
+
+    /// A handler's OWN grant (§6.8) — the authority it spends when it dispatches
+    /// onward, as distinct from any capability a caller presents. §6.8 row 1: an access
+    /// in service of a caller's request needs the caller's verified capability AND this
+    /// grant, and BOTH must pass. Narrow for `dispatch-outbound`; empty otherwise.
+    static func ownGrants(for pattern: String) -> [CBORValue] {
+        guard pattern == "system/validate/dispatch-outbound" else { return [] }
+        return [.textMap([
+            ("handlers", .textMap([("include", .array([.text("system/validate/echo")]))])),
+            ("operations", .textMap([("include", .array([.text("echo")]))])),
+            ("resources", .textMap([("include", .array([.text("system/handler/system/validate/echo")]))])),
+        ])]
     }
 
     /// A self-issued cap token (granter = grantee = local identity). §6.8 grant

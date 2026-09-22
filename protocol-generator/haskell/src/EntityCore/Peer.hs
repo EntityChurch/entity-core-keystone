@@ -49,6 +49,11 @@ import EntityCore.Capability
   , normalizeUri
   , resolveGranterPeerId
   , verifyRequest
+    -- §1.4 PD-2 outbound sub-dispatch gate
+  , Resolver
+  , checkOutboundSubDispatch
+  , grantPathFor
+  , peerRelativeOf
   )
 import qualified EntityCore.Capability as Cap
 import EntityCore.Codec.Value (Value (..))
@@ -227,6 +232,20 @@ mintTokenAt p createdAt granteeHash parent expiresAt grants =
 -- §6.11 reentry seam on the serving connection (@connOutbound@), returning the
 -- correlated EXECUTE_RESPONSE envelope. Present on every peer even though no core
 -- handler originates — a runtime-registered handler (§6.13a) may.
+-- | Send an outbound EXECUTE through the §6.11 reentry seam.
+--
+-- @granterPeers@ and @capSignatures@ are PLURAL (GUIDE-CONFORMANCE §7a.1,
+-- 0.8.2.19) so a K-of-N root can present every granter identity and every link
+-- signature; the ordinary single-granter case is a list of one. Every member goes
+-- into @included@ because §5.5's chain walk resolves granters and signers BY HASH
+-- out of that map — a granter left out is a link the verifier cannot reach, which
+-- fails closed and reads as the peer refusing the credential form rather than as a
+-- carrier we truncated.
+--
+-- The AMBIENT arm carries no credential ('Nothing' selects it), so the EXECUTE
+-- carries no @capability@ field and the bundle carries no cap, granter or
+-- cap-signature. It still authenticates as this peer — §5.2a's auth class is a
+-- separate question from whether any capability covers the request.
 outboundDispatch ::
   Peer ->
   Conn ->
@@ -234,11 +253,11 @@ outboundDispatch ::
   Text -> -- operation
   Entity -> -- params
   Maybe Value -> -- resource
-  Entity -> -- capability
-  Entity -> -- granter peer
-  Entity -> -- capability signature
+  Maybe Entity -> -- capability (Nothing = the §1.4 PD-2 ambient arm)
+  [Entity] -> -- granter peers
+  [Entity] -> -- capability signatures
   IO (Maybe Envelope)
-outboundDispatch p conn uri operation params resource capability granterPeer capabilitySignature = do
+outboundDispatch p conn uri operation params resource mcapability granterPeers capSignatures = do
   mSend <- readIORef (connOutbound conn)
   case mSend of
     Nothing -> pure Nothing -- no reentrant connection → seam unavailable
@@ -246,15 +265,18 @@ outboundDispatch p conn uri operation params resource capability granterPeer cap
       modifyIORef' (connOutCounter conn) (+ 1)
       n <- readIORef (connOutCounter conn)
       let requestId = "out-" <> T.pack (show n)
-          exec = makeExecute requestId uri operation params resource (idIdentityHash (peerIdentity p)) (entHash capability)
+          exec = makeExecute requestId uri operation params resource (idIdentityHash (peerIdentity p)) (entHash <$> mcapability)
           execSig = signEntity (peerIdentity p) exec
+          credCarried = case mcapability of
+            Nothing -> []
+            Just capability ->
+              (entHash capability, capability)
+                : [(entHash e, e) | e <- granterPeers ++ capSignatures]
           included =
-            [ (entHash capability, capability)
-            , (entHash granterPeer, granterPeer)
-            , (idIdentityHash (peerIdentity p), idPeerEntity (peerIdentity p))
-            , (entHash capabilitySignature, capabilitySignature)
-            , (entHash execSig, execSig)
-            ]
+            credCarried
+              ++ [ (idIdentityHash (peerIdentity p), idPeerEntity (peerIdentity p))
+                 , (entHash execSig, execSig)
+                 ]
       send (Envelope exec included)
 
 -- ── connect handler (§4.1, §4.6) ──────────────────────────────────────────────
@@ -1008,27 +1030,124 @@ echoHandler _ exec = case entityField exec "params" of
 
 -- | dispatch-outbound — originate exactly one outbound EXECUTE via §6.11 reentry
 -- back to the caller, return the downstream response verbatim (generic relay).
-dispatchOutboundHandler :: Peer -> Conn -> Entity -> IO Outcome
-dispatchOutboundHandler p conn exec = case entityField exec "params" of
+dispatchOutboundHandler ::
+  Peer -> Conn -> Entity ->
+  Text ->                   -- this handler's PEER-RELATIVE pattern (§6.6 resolved it)
+  Word64 ->                 -- now_ms
+  Resolver ->
+  (ByteString -> Bool) ->   -- revocation membership
+  [(ByteString, Entity)] -> -- the parent envelope's `included`
+  IO Outcome
+dispatchOutboundHandler p conn exec relPattern t resolve revoked baseIncluded = case entityField exec "params" of
   Nothing -> pure (errMsg 400 "invalid_params" "dispatch-outbound requires a params entity")
   Just prm ->
     let target = fromMaybe "" (textField prm "target")
         operation = fromMaybe "" (textField prm "operation")
-     in case (field prm "value", entityField prm "reentry_capability", entityField prm "reentry_granter", entityField prm "reentry_cap_signature") of
-          (Just value, Just capability, Just granterPeer, Just capabilitySignature) -> do
-            -- §7a.1: [value] IS the outbound params data — pass through, do NOT re-wrap.
-            let inner = makeEntity "primitive/any" value
-                resource = VMap [(VText "targets", VArray [VText ("system/handler/" <> target)])]
-            menv <- outboundDispatch p conn target operation inner (Just resource) capability granterPeer capabilitySignature
-            case menv of
-              -- ASCII-ONLY WIRE STRING (see the forbidden_pattern note above): the
-              -- `§6.11` this message used to carry is encoded and sent.
-              Nothing -> pure (errMsg 503 "no_outbound_seam" "no live section 6.11 reentry connection")
-              Just env ->
-                let status = fromMaybe 0 (uintField (envRoot env) "status")
-                    resultCbor = fromMaybe (VMap []) (field (envRoot env) "result")
-                 in pure (ok (makeEntity "primitive/any" (VMap [(VText "status", VUInt status), (VText "result", resultCbor)])))
-          _ -> pure (errMsg 400 "invalid_params" "dispatch-outbound requires value + reentry authority")
+        mvalue = field prm "value"
+        mcapability = entityField prm "reentry_capability"
+        -- GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the
+        -- single-granter case is an array of ONE. They were singular, which made
+        -- §1.4's multi-signature-root rule ungateable on the wire: driving it needs
+        -- two granter identities and two signatures, and a single-credential carrier
+        -- cannot express that input.
+        --
+        -- TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one,
+        -- because THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle
+        -- is what all 46 tracked reports are measured against and it sends the
+        -- SINGULAR names; a plural-only peer reads the triple as absent there, takes
+        -- the ambient arm and refuses -- measured on the `go` vanguard as 2 of 778
+        -- severities moving PASS -> FAIL. Accepting both keeps the cohort 0-FAIL at
+        -- BOTH check sets.
+        -- REMOVE THIS FALLBACK AT THE ORACLE RE-PIN, and not before: the exit
+        -- condition is that `tools/oracle-pin.env`'s `ref` names an oracle whose
+        -- dispatch-outbound probe sends the plural carriers.
+        mgranters = case entityListField prm "reentry_granters" of
+          Just gs -> Just gs
+          Nothing -> (: []) <$> entityField prm "reentry_granter"
+        mcapSigs = case entityListField prm "reentry_cap_signatures" of
+          Just ss -> Just ss
+          Nothing -> (: []) <$> entityField prm "reentry_cap_signature"
+        -- The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED
+        -- arm, all three absent selects the AMBIENT arm, and a PARTIAL set is
+        -- 400 invalid_params -- a partial credential is malformed, not ambient. An
+        -- empty array is partial, not present: it carries no credential.
+        nonEmpty :: Maybe [a] -> Bool
+        nonEmpty = maybe False (not . null)
+        nPresent = length (filter id [maybe False (const True) mcapability, nonEmpty mgranters, nonEmpty mcapSigs])
+     in case mvalue of
+          Nothing -> pure (errMsg 400 "invalid_params" "dispatch-outbound requires value")
+          Just value
+            | nPresent /= 0 && nPresent /= 3 ->
+                pure (errMsg 400 "invalid_params" "dispatch-outbound reentry authority is all-or-none")
+            | otherwise -> do
+                let hasCred = nPresent == 3
+                    granterPeers = if hasCred then fromMaybe [] mgranters else []
+                    capSignatures = if hasCred then fromMaybe [] mcapSigs else []
+                    mcred = if hasCred then mcapability else Nothing
+                    -- §7a.1: [value] IS the outbound params data — pass through, do NOT re-wrap.
+                    inner = makeEntity "primitive/any" value
+                    -- `target` arrives as any of §1.4's three spellings and the
+                    -- validator sends the SCHEMED ABSOLUTE form. Both the
+                    -- handler-pattern dimension and the resource target want the
+                    -- PEER-RELATIVE path — §1.4's PD-2 block says so for Dimension 1,
+                    -- and a resource target carrying a scheme is not a path at all.
+                    -- Latent while nothing consulted it.
+                    relTarget = peerRelativeOf target
+                    resource = VMap [(VText "targets", VArray [VText ("system/handler/" <> relTarget)])]
+                    -- §7a.2a: the presented arm verifies against a BUNDLE MERGED FROM
+                    -- THE PARENT ENVELOPE'S `included`. The credential, its granters
+                    -- and its signatures arrive NESTED IN PARAMS (ratified shape (a),
+                    -- in-band), so they are not in the parent's included and a verifier
+                    -- handed that alone cannot resolve a single link — every credential
+                    -- then reads as invalid and the legitimate reentry is refused.
+                    -- BOTH halves must be extended: the assoc list (findSignature walks
+                    -- it) AND the resolver (granter/grantee resolution goes by hash).
+                    -- Extending only one leaves the credential half-resolvable, which
+                    -- fails closed and reads at the wire as an authority refusal.
+                    credEntities =
+                      if hasCred
+                        then maybe [] (: []) mcapability ++ granterPeers ++ capSignatures
+                        else []
+                    bundle = [(entHash e, e) | e <- credEntities] ++ baseIncluded
+                    resolve' h = case lookup h bundle of Just e -> Just e; Nothing -> resolve h
+                    -- §1.4: target_peer = extract_peer(uri, local_peer_id). The
+                    -- validator sends the absolute form, so the URI names the target.
+                    -- Where the uri is PEER-RELATIVE there is no peer in it and the
+                    -- §6.11 seam's destination is the connection's remote, so that is
+                    -- the fallback — without it Dimension 4 passes vacuously.
+                    uriPeer = extractPeer (peerLocal p) target
+                mHello <- readIORef (connHelloPeerId conn)
+                let targetPeer =
+                      if uriPeer == peerLocal p then fromMaybe uriPeer mHello else uriPeer
+                -- §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the
+                -- peer, all four dimensions, on THIS handler's own grant — with a
+                -- target-minted credential relaxing Dimension 4 and nothing else.
+                -- Consulting only the presented credential here is the §6.8
+                -- confused-deputy bypass.
+                mOwnGrant <- Store.getAt (peerStore p) (grantPathFor (peerLocal p) relPattern)
+                case mOwnGrant of
+                  -- §6.8: a handler with no valid grant does not run. Fail closed
+                  -- rather than falling back to the credential, which is the
+                  -- substitution §6.8 forbids.
+                  Nothing -> pure (errMsg 403 "capability_denied" ("no handler grant for " <> relPattern))
+                  Just ownGrant
+                    | not (checkOutboundSubDispatch (peerLocal p) targetPeer relTarget operation t revoked resolve' bundle ownGrant resource mcred) ->
+                        -- §7a.1a: the surfaced code is the AUTHORIZATION domain's code.
+                        -- A generic transport- or gateway-class code would launder an
+                        -- authorization verdict into a route fault, and the ambient and
+                        -- presented branches would then disagree about what the same
+                        -- gate decided.
+                        pure (errMsg 403 "capability_denied" "outbound sub-dispatch not authorized by the handler grant")
+                    | otherwise -> do
+                        menv <- outboundDispatch p conn target operation inner (Just resource) mcred granterPeers capSignatures
+                        case menv of
+                          -- ASCII-ONLY WIRE STRING (see the forbidden_pattern note above): the
+                          -- `§6.11` this message used to carry is encoded and sent.
+                          Nothing -> pure (errMsg 503 "no_outbound_seam" "no live section 6.11 reentry connection")
+                          Just env ->
+                            let status = fromMaybe 0 (uintField (envRoot env) "status")
+                                resultCbor = fromMaybe (VMap []) (field (envRoot env) "result")
+                             in pure (ok (makeEntity "primitive/any" (VMap [(VText "status", VUInt status), (VText "result", resultCbor)])))
 
 -- ── dispatcher-level signature ingestion (§6.5) ───────────────────────────────
 
@@ -1175,7 +1294,13 @@ dispatch p conn env = do
                                 "system/handler" -> handlersHandler p exec
                                 "system/type" -> typesHandler p exec
                                 "system/validate/echo" -> echoHandler p exec
-                                "system/validate/dispatch-outbound" -> dispatchOutboundHandler p conn exec
+                                -- §1.4 PD-2 needs the OWNING handler's pattern (Dimension 1
+                                -- is matched peer-relative), the resolver + revocation
+                                -- predicate (to verify a presented credential) and the
+                                -- parent `included` (the §7a.2a bundle base). All four were
+                                -- computed above, so they are CARRIED rather than recomputed.
+                                "system/validate/dispatch-outbound" ->
+                                  dispatchOutboundHandler p conn exec (stripLocal p pattern) t resolve revoked (envIncluded env)
                                 _ -> entityNativeDispatch p pattern
       let response = makeResponse requestId (ocStatus outcome) (ocResult outcome)
       pure (Just (Envelope response (ocIncluded outcome)))
@@ -1213,8 +1338,32 @@ bootstrapHandlers =
   , ("system/protocol/connect", "Connect", [("hello", (Nothing, Nothing)), ("authenticate", (Nothing, Nothing))])
   ]
 
+-- | A handler's OWN grant (§6.8) — the authority it spends when it dispatches
+-- onward, as distinct from any capability a caller presents. §6.8 row 1: an access
+-- in service of a caller's request needs the caller's verified capability AND this
+-- grant, and BOTH must pass.
+--
+-- NARROW BY DESIGN for @dispatch-outbound@, and the narrowness is what makes the
+-- intersection MEASURABLE. GUIDE-CONFORMANCE §7a.1 makes it a scaffold-contract
+-- requirement: with a wide grant, consulting it and skipping it give the same
+-- answer on every input, so the confused-deputy discriminator cannot fire and a
+-- bypass reads as conformant.
+--
+-- Every other bootstrap handler keeps the empty list, which is the right default
+-- for a handler that never dispatches onward and the WRONG one for a handler that
+-- does.
+ownGrantsFor :: Text -> [Value]
+ownGrantsFor "system/validate/dispatch-outbound" =
+  [ VMap
+      [ (VText "handlers", VMap [(VText "include", VArray [VText "system/validate/echo"])])
+      , (VText "operations", VMap [(VText "include", VArray [VText "echo"])])
+      , (VText "resources", VMap [(VText "include", VArray [VText "system/handler/system/validate/echo"])])
+      ]
+  ]
+ownGrantsFor _ = []
+
 -- | Install a handler's three bootstrap entities (manifest at pattern, interface
--- index, empty grant).
+-- index, own grant).
 installBootstrapHandler :: Peer -> (Text, Text, [(Text, (Maybe Text, Maybe Text))]) -> IO ()
 installBootstrapHandler p (pattern, name, ops) = do
   let operations = VMap (map (\(o, (i, ou)) -> (VText o, opSpec i ou)) ops)
@@ -1225,7 +1374,10 @@ installBootstrapHandler p (pattern, name, ops) = do
           "system/handler/interface"
           (VMap [(VText "pattern", VText pattern), (VText "name", VText name), (VText "operations", operations)])
   Store.bind (peerStore p) ("/" <> peerLocal p <> "/system/handler/" <> pattern) interfaceE
-  (token, _) <- mintToken p (idIdentityHash (peerIdentity p)) Nothing []
+  -- §6.8: the grant MUST exist at `system/capability/grants/{pattern}` and a
+  -- handler with no valid grant does not run — so this bind is the ceiling row 1
+  -- intersects against, not bookkeeping.
+  (token, _) <- mintToken p (idIdentityHash (peerIdentity p)) Nothing (ownGrantsFor pattern)
   Store.bind (peerStore p) ("/" <> peerLocal p <> "/system/capability/grants/" <> pattern) token
 
 -- | Build a peer from a 32-byte seed + seed policy. Materializes the §6.9 core

@@ -151,7 +151,9 @@ test("F2: outbound dispatch builds a signed reentrant EXECUTE", async () => {
   const local = PeerIdentity.generate();
   const target = PeerIdentity.generate();
   const { token: cap, signature: capSig } = CapabilityToken.createRoot(target, local.identityHash, SeedPolicy.openGrants(), 1000n);
-  const authority: OutboundAuthority = { capability: cap, granterPeer: target.peerEntity, capabilitySignature: capSig };
+  // PLURAL carriers (GUIDE-CONFORMANCE §7a.1, 0.8.2.19): the single-granter case is
+  // an array of one.
+  const authority: OutboundAuthority = { capability: cap, granterPeers: [target.peerEntity], capabilitySignatures: [capSig] };
 
   let sent: Envelope | null = null;
   let counter = 0;

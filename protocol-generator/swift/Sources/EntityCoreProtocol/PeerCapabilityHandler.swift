@@ -257,25 +257,95 @@ extension Peer {
         // the outbound params entity data — pass it THROUGH unchanged (re-wrapping as
         // `{value: value}` double-wraps → the echo's result.value returns a map; the
         // §7b t1_2 pin).
-        guard let value = p.mapValue("value"),
-              let capEnt = decodeEntity(p.mapValue("reentry_capability")),
-              let granterEnt = decodeEntity(p.mapValue("reentry_granter")),
-              let capSigEnt = decodeEntity(p.mapValue("reentry_cap_signature")),
-              let capHash = capEnt.contentHash else {
+        // GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the
+        // single-granter case is an array of ONE. They were singular, which made
+        // §1.4's multi-signature-root rule ungateable on the wire: driving it needs
+        // two granter identities and two signatures, and a single-credential carrier
+        // cannot express that input.
+        //
+        // TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one,
+        // because THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle
+        // is what all 46 tracked reports are measured against and it sends the
+        // SINGULAR names; a plural-only peer reads the triple as absent there, takes
+        // the ambient arm and refuses — measured on the `go` vanguard as 2 of 778
+        // severities moving PASS -> FAIL. Accepting both keeps the cohort 0-FAIL at
+        // BOTH check sets. REMOVE THIS FALLBACK AT THE ORACLE RE-PIN, and not before:
+        // the exit condition is that `tools/oracle-pin.env`'s `ref` names an oracle
+        // whose dispatch-outbound probe sends the plural carriers.
+        func entityList(_ key: String) -> [Entity]? {
+            guard let arr = p.arrayAt(key) else { return nil }
+            // An array whose members do not all decode is a MALFORMED carrier and is
+            // nil, never a silently shorter list — the all-or-none test below would
+            // otherwise read a partial credential as a complete one.
+            var out: [Entity] = []
+            for v in arr {
+                guard let e = decodeEntity(v) else { return nil }
+                out.append(e)
+            }
+            return out
+        }
+        let capEnt = decodeEntity(p.mapValue("reentry_capability"))
+        let granterEnts = entityList("reentry_granters")
+            ?? decodeEntity(p.mapValue("reentry_granter")).map { [$0] }
+        let capSigEnts = entityList("reentry_cap_signatures")
+            ?? decodeEntity(p.mapValue("reentry_cap_signature")).map { [$0] }
+        guard let value = p.mapValue("value") else {
             return try errorResponse(requestID: requestID, status: 400, code: "invalid_params")
         }
+        // The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED
+        // arm, all three absent selects the AMBIENT arm, and a PARTIAL set is 400
+        // invalid_params — a partial credential is malformed, not ambient. An empty
+        // array is partial, not present: it carries no credential.
+        let nPresent = [capEnt != nil, !(granterEnts ?? []).isEmpty, !(capSigEnts ?? []).isEmpty]
+            .filter { $0 }.count
+        guard nPresent == 0 || nPresent == 3 else {
+            return try errorResponse(requestID: requestID, status: 400, code: "invalid_params")
+        }
+        let hasCred = nPresent == 3
+        let cred = hasCred ? capEnt : nil
+        let granters = hasCred ? (granterEnts ?? []) : []
+        let capSigs = hasCred ? (capSigEnts ?? []) : []
         let outParams = try Model.primitiveAny(value)
 
+        // §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer,
+        // all four dimensions, on THIS handler's own grant — with a target-minted
+        // credential relaxing Dimension 4 and nothing else. Consulting only the
+        // presented credential here is the §6.8 confused-deputy bypass.
+        guard try await authorizeOutboundSubDispatch(target: target, operation: op,
+                                                     cred: cred, granters: granters,
+                                                     capSigs: capSigs, ctx: ctx) else {
+            // §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic
+            // transport- or gateway-class code would launder an authorization verdict
+            // into a route fault, and the ambient and presented branches would then
+            // disagree about what the same gate decided.
+            return try errorResponse(requestID: requestID, status: 403, code: "capability_denied")
+        }
+
         // We AUTHOR the reentry EXECUTE with our own key (author = us == grantee), sign
-        // it, and bundle the reentry cap + its granter peer + our author identity + the
-        // cap signature + our exec signature into `included` (self-contained chain).
+        // it, and bundle the reentry cap + its granter peers + our author identity + the
+        // cap signatures + our exec signature into `included` (self-contained chain).
+        //
+        // The AMBIENT arm carries no credential, so the EXECUTE carries no `capability`
+        // field and the bundle carries no cap, granter or cap-signature. An empty hash
+        // would NOT do — that is a present field resolving to nothing, which §5.2 reads
+        // as an unresolvable capability rather than as its absence.
         let outExec = try Wire.buildExecute(
             requestID: requestID + "-reentry", uri: target, operation: op, params: outParams,
-            author: identity.identityHash, capability: capHash, resourceTargets: nil)
+            author: identity.identityHash, capability: hasCred ? capEnt?.contentHash : nil,
+            resourceTargets: nil)
         let execSig = try identity.signatureEntity(target: outExec.hash)
-        let execIncluded: [BuiltEntity] = [
-            rebuild(capEnt), rebuild(granterEnt), identity.peerEntity, rebuild(capSigEnt), execSig,
-        ]
+        var execIncluded: [BuiltEntity] = []
+        if hasCred, let c = capEnt {
+            // Every granter and every signature goes into `included` because §5.5's
+            // chain walk resolves them BY HASH out of that map — a granter left out is
+            // a link the verifier cannot reach, which fails closed and reads as the
+            // peer refusing the credential form rather than as a carrier we truncated.
+            execIncluded.append(rebuild(c))
+            execIncluded.append(contentsOf: granters.map { rebuild($0) })
+            execIncluded.append(contentsOf: capSigs.map { rebuild($0) })
+        }
+        execIncluded.append(identity.peerEntity)
+        execIncluded.append(execSig)
 
         // Originate over the inbound connection (§6.11 reentry). The transport
         // demuxes the EXECUTE_RESPONSE back to us by request_id.
@@ -289,6 +359,84 @@ extension Peer {
             ("result", downResult),
         ]))
         return try okResponse(requestID: requestID, result: relay)
+    }
+
+    /// §1.4's PD-2 gate, wired to this peer's store: resolve the executing handler's
+    /// OWN grant, assemble the §7a.2a bundle, and run `checkOutboundSubDispatch`.
+    ///
+    /// The credential, its granters and its signatures arrive NESTED IN PARAMS
+    /// (ratified shape (a), in-band), so they are NOT in `ctx.included` and a verifier
+    /// handed that alone cannot resolve a single link — every credential then reads as
+    /// invalid and the legitimate reentry is refused. The bundle merges them in, plus
+    /// whatever the store already holds for the chain.
+    func authorizeOutboundSubDispatch(
+        target: String, operation: String, cred: Entity?, granters: [Entity],
+        capSigs: [Entity], ctx: HandlerContext
+    ) async throws -> Bool {
+        let localPeerID = identity.peerID
+        // §6.8: a handler with no valid grant does not run. Fail closed rather than
+        // falling back to the credential, which is the substitution §6.8 forbids.
+        // `ctx.pattern` is already PEER-RELATIVE (the dispatcher resolved it), and
+        // `grantPath` tolerates either spelling regardless.
+        guard let ownGrant = await store.getAt(
+            path: Capability.grantPath(localPeerID: localPeerID, pattern: ctx.pattern)) else { return false }
+
+        // §1.4: target_peer = extract_peer(uri, local_peer_id). The validator sends the
+        // absolute form, so the URI names the target. Where the uri is PEER-RELATIVE
+        // there is no peer in it and the §6.11 seam's destination is the CALLER — the
+        // peer on the other end of the connection we reenter — so that is the fallback.
+        // Without it Dimension 4 passes vacuously on the default {include: [local]} and
+        // the exemption is never exercised.
+        var targetPeerID = Capability.extractPeer(target, localPeerID: localPeerID)
+        if targetPeerID == localPeerID, let callerHash = ctx.callerIdentityHash {
+            // `??` is an autoclosure, which cannot carry an `await` — resolve the two
+            // sources in sequence instead.
+            var callerPeer = ctx.included[HashKey(callerHash)]
+            if callerPeer == nil { callerPeer = await store.getByHash(callerHash) }
+            if let cp = callerPeer, let pid = Capability.peerIDOf(cp) { targetPeerID = pid }
+        }
+
+        var bundle = ctx.included
+        for e in ([cred].compactMap { $0 } + granters + capSigs) {
+            if let h = e.contentHash { bundle[HashKey(h)] = e }
+        }
+        // Pull the chain's parents/granters/grantees out of the store too — the
+        // credential may delegate from a token only the store holds.
+        var frontier: [[UInt8]] = []
+        if let c = cred { for k in ["parent", "granter", "grantee"] {
+            if let h = c.data.bytesAt(k) { frontier.append(h) } } }
+        var guardCount = 0
+        while let h = frontier.popLast(), guardCount < 256 {
+            guardCount += 1
+            let key = HashKey(h)
+            if bundle[key] == nil, let stored = await store.getByHash(h) {
+                bundle[key] = stored
+                for k in ["parent", "granter", "grantee"] {
+                    if let nh = stored.data.bytesAt(k) { frontier.append(nh) }
+                }
+            }
+        }
+        let snapshot = bundle
+        let resolver: Capability.Resolver = { h in snapshot[HashKey(h)] }
+        // `target` arrives as any of §1.4's three spellings and the validator sends the
+        // SCHEMED ABSOLUTE form. Both the handler-pattern dimension and the resource
+        // target want the PEER-RELATIVE path — §1.4's PD-2 block says so for Dimension
+        // 1, and a resource target carrying a scheme is not a path at all.
+        let relTarget = Capability.peerRelativeOf(target)
+        let resource = Capability.ResourceTarget(
+            targets: ["system/handler/" + relTarget], exclude: [])
+        // Revocation is an async store read and the gate is sync, so it is resolved
+        // HERE and handed in as an already-decided fact.
+        var credRevoked = false
+        if let c = cred, let ch = c.contentHash {
+            credRevoked = await isRevoked(cap: c, capHash: ch, snapshot: snapshot)
+        }
+        return Capability.checkOutboundSubDispatch(
+            localPeerID: localPeerID, targetPeerID: targetPeerID, handlerPattern: relTarget,
+            operation: operation, handlerGrant: ownGrant, resource: resource, cred: cred,
+            included: snapshot, now: nowMillis(), resolve: resolver,
+            granterPeerID: { [self] c in granterPeerIDFrom(c, snapshot: snapshot) },
+            isRevoked: { _ in credRevoked })
     }
 
     /// Rebuild a `BuiltEntity` (with wire bytes + content_hash) from an `Entity`

@@ -26,6 +26,7 @@ module EntityCore.Model
   , bytesField
   , uintField
   , entityField
+  , entityListField
     -- * Wire form
   , entityToCbor
   , entityOfCbor
@@ -94,6 +95,19 @@ entityField :: Entity -> Text -> Maybe Entity
 entityField e key = case field e key of
   Just v -> either (const Nothing) Just (entityOfCbor v)
   Nothing -> Nothing
+
+-- | Decode an ARRAY of nested entities at @key@.
+--
+-- GUIDE-CONFORMANCE §7a.1's @reentry_granters@ / @reentry_cap_signatures@ are
+-- plural carriers [0.8.2.19] — arrays, with the single-granter case an array of
+-- one. 'Nothing' means the key is absent or is not a list; an array whose members
+-- do not all decode is a MALFORMED carrier and is also 'Nothing', never a silently
+-- shorter list, because the caller's all-or-none test would then read a partial
+-- credential as a complete one.
+entityListField :: Entity -> Text -> Maybe [Entity]
+entityListField e key = case field e key of
+  Just (VArray l) -> traverse (either (const Nothing) Just . entityOfCbor) l
+  _ -> Nothing
 
 -- ── wire form: entity carries its content_hash ───────────────────────────────
 

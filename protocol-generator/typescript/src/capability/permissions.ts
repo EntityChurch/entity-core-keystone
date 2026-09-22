@@ -269,3 +269,98 @@ function isCoveredBy(pathOrPattern: string, patternSet: readonly string[], local
   }
   return false;
 }
+
+// ── §1.4 PD-2: outbound sub-dispatch authorization ──────────────────────────
+
+/**
+ * Strip the §1.4 scheme and leading peer segment, answering the PEER-RELATIVE path.
+ *
+ * §1.4 admits three spellings of one address — `system/tree`, `/{peer}/system/tree` and
+ * `entity://{peer}/system/tree` — and §1.4's PD-2 block requires Dimension 1's handler
+ * pattern to be the target uri's peer-relative path, because a grant names HANDLERS and
+ * a handler pattern never carries a peer segment. Matching a grant against the absolute
+ * or schemed form matches nothing, silently, which reads at the wire as an authority
+ * refusal.
+ *
+ * The first segment is dropped ONLY when it is a peer_id. A peer-relative
+ * `system/protocol/connect` must not lose `system` — the standing defect on `smalltalk`
+ * and `forth`, where an unconditional strip made every self-minted grant unusable while
+ * the handshake stayed green.
+ */
+export function peerRelativeOf(uri: string): string {
+  const p = uri.startsWith("entity://") ? "/" + uri.slice("entity://".length) : uri;
+  if (!p.startsWith("/")) return p;
+  const segs = p.slice(1).split("/");
+  if (segs.length > 0 && Paths.isPeerId(segs[0]!)) return segs.slice(1).join("/");
+  return segs.join("/");
+}
+
+/**
+ * Store key of a handler's OWN grant (§6.8: `system/capability/grants/{pattern}`),
+ * tolerant of the pattern arriving absolute or peer-relative.
+ *
+ * §6.6's tree walk answers an ABSOLUTE pattern because store keys are absolute, while
+ * the grant path is built from the PEER-RELATIVE one. The two are one segment apart and
+ * concatenating the wrong one yields a doubled peer segment whose lookup misses — which
+ * fails closed as "no handler grant" and is indistinguishable, at the wire, from a
+ * genuine authority refusal.
+ */
+export function grantPathFor(localPeerId: string, pattern: string): string {
+  const prefix = "/" + localPeerId + "/";
+  const rel = pattern.startsWith(prefix) ? pattern.slice(prefix.length) : pattern;
+  return "/" + localPeerId + "/system/capability/grants/" + rel;
+}
+
+/**
+ * §1.4's PD-2 gate: `check_permission` run before a locally-originated sub-dispatch
+ * LEAVES the peer, with all four dimensions applied.
+ *
+ * ONE GATE AND ONE EXEMPTION, in §1.4's own words:
+ *
+ * - the EXECUTING HANDLER'S GRANT decides all four dimensions (§6.8), evaluated in the
+ *   LOCAL frame, with Dimension 1's pattern the target uri's PEER-RELATIVE path;
+ * - a valid capability MINTED BY THE TARGET PEER naming this peer as `grantee` relaxes
+ *   Dimension 4 (`peers`) AND ONLY DIMENSION 4, to the peers that capability covers,
+ *   evaluated in the TARGET's frame.
+ *
+ * *"The target answers WHERE; the handler's grant answers WHAT."* A credential is NOT a
+ * grant: with no handler grant there is nothing to supply Dimensions 1-3, so the
+ * sub-dispatch is refused however good the credential is. That is the COMPOSE, and the
+ * BYPASS it is distinguished from is a peer that treats the credential as a standalone
+ * authorizer and steers past its own grant — §6.8's confused-deputy substitution. Both
+ * obvious vectors agree under either reading (sources agree -> allow, no source ->
+ * refuse), so the only input that separates them is a VALID credential presented to a
+ * handler whose own grant does NOT cover the request, which MUST refuse.
+ *
+ * `relaxTo` is the peers scope the credential earned, decided by the caller (which owns
+ * resolution, the clock and the revocation read); `null` is BOTH the ambient arm and a
+ * credential that failed a clause. A credential failing verification relaxes NOTHING and
+ * the handler grant gates unrelaxed — it does not turn the verdict into an error.
+ *
+ * `targetPeerId` is supplied by the caller rather than derived here: on the §6.11 reentry
+ * seam the uri may be PEER-RELATIVE and the destination is the connection's remote, so
+ * `extractPeer(uri, local)` would answer the LOCAL peer and Dimension 4 would pass
+ * vacuously on the default `{include: [local]}` — the exemption would then never be
+ * exercised and a bypass would read as a compose.
+ */
+export function checkOutboundSubDispatch(
+  handlerGrant: CapabilityToken,
+  localPeerId: string,
+  targetPeerId: string,
+  handlerPattern: string,
+  operation: string,
+  resource: ResourceTarget,
+  relaxTo: Scope | null,
+): boolean {
+  for (const grant of handlerGrant.grants) {
+    if (!grant.handlers.matches(handlerPattern, localPeerId, "path")) continue;
+    if (!grant.operations.matches(operation, localPeerId, "id")) continue;
+    if (!checkResourceScope(resource, grant.resources, localPeerId, localPeerId)) continue;
+    // Dimension 4. §5.2's default for an absent `peers` scope is
+    // {include: [local_peer_id]}, so a foreign target fails unless this grant names it
+    // or a target-minted credential relaxes it.
+    if (grant.effectivePeers(localPeerId).matches(targetPeerId, localPeerId, "id")) return true;
+    if (relaxTo !== null && relaxTo.matches(targetPeerId, localPeerId, "id")) return true;
+  }
+  return false;
+}

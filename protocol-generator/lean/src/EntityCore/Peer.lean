@@ -220,8 +220,15 @@ def resolveLink (peer : Peer) (env : Envelope) (cap : Entity) : IO EntityCore.Ca
 resolves the granter identity → its peer_id == localPeer (single-sig); a §3.6
 multi-granter root parses {signers, threshold} + resolves each signer's peer_id
 (M6 local-in-quorum) and counts valid signatures over the cap content hash (M4),
-with M3 structure carried as fields for the pure `multiSigRootOk` gate. -/
-def rootAuthorityOf (peer : Peer) (env : Envelope) (root : Entity) : IO EntityCore.Capability.RootAuthority := do
+with M3 structure carried as fields for the pure `multiSigRootOk` gate.
+
+`rootPeer` is the peer the ROOT granter must derive. It defaults to the local peer;
+§1.4's PD-2 presented-authority arm passes the TARGET, because the credential it
+evaluates was minted there. The quorum arm is UNCHANGED and still resolves M6
+against the LOCAL peer — §1.4 refuses a multi-signature root in a foreign frame
+outright, and `Capability.verifyChainRootedAt` is where that lands. -/
+def rootAuthorityOf (peer : Peer) (env : Envelope) (root : Entity)
+    (rootPeer : String := peer.localPeer) : IO EntityCore.Capability.RootAuthority := do
   match field root "granter" with
   | some (.map _) => do
       -- §3.6 multi-granter: parse signers + threshold, resolve each signer.
@@ -254,7 +261,7 @@ def rootAuthorityOf (peer : Peer) (env : Envelope) (root : Entity) : IO EntityCo
         match bytesField root "granter" with
         | some gh => match ← resolveHash peer env gh with
                      | some g => match bytesField g "public_key" with
-                                 | some pk => pure (EntityCore.Identity.peerIdOfPubkey pk == peer.localPeer)
+                                 | some pk => pure (EntityCore.Identity.peerIdOfPubkey pk == rootPeer)
                                  | none => pure false
                      | none => pure false
         | none => pure false)
@@ -319,8 +326,22 @@ def verifyRequest (peer : Peer) (env : Envelope) : IO ReqVerdict := do
 
 -- ── §6.13(b) handler-facing outbound dispatch ─────────────────────────────────
 
+/-- Send an outbound EXECUTE through the §6.11 reentry seam.
+
+`granterPeers` and `capabilitySignatures` are PLURAL (GUIDE-CONFORMANCE §7a.1,
+0.8.2.19) so a K-of-N root can present every granter identity and every link
+signature; the ordinary single-granter case is a list of one. Every member goes into
+`included` because §5.5's chain walk resolves granters and signers BY HASH out of that
+map — a granter left out is a link the verifier cannot reach, which fails closed and
+reads as the peer refusing the credential form rather than as a carrier we truncated.
+
+The AMBIENT arm carries no credential (`capability = none` selects it), so the EXECUTE
+carries no `capability` field and the bundle carries no cap, granter or cap-signature.
+It still authenticates as this peer — §5.2a's auth class is a separate question from
+whether any capability covers the request. -/
 def outboundDispatch (peer : Peer) (conn : Conn) (uri operation : String) (params : Entity)
-    (resource : Option Value) (capability granterPeer capabilitySignature : Entity) :
+    (resource : Option Value) (capability : Option Entity)
+    (granterPeers capabilitySignatures : List Entity) :
     IO (Option Envelope) := do
   match ← conn.outbound.get with
   | none => pure none
@@ -328,12 +349,14 @@ def outboundDispatch (peer : Peer) (conn : Conn) (uri operation : String) (param
     conn.outCounter.modify (· + 1)
     let requestId := s!"out-{← conn.outCounter.get}"
     let exec := EntityCore.Wire.makeExecute requestId uri operation params
-                  peer.identity.identityHash capability.hash resource
+                  peer.identity.identityHash (capability.map (·.hash)) resource
     let execSig := EntityCore.Identity.signEntity peer.identity exec
-    let included := [ (capability.hash, capability),
-                      (granterPeer.hash, granterPeer),
-                      (peer.identity.identityHash, peer.identity.peerEntity),
-                      (capabilitySignature.hash, capabilitySignature),
+    let credCarried : List (ByteArray × Entity) :=
+      match capability with
+      | none => []
+      | some cap => (cap.hash, cap) :: (granterPeers ++ capabilitySignatures).map (fun e => (e.hash, e))
+    let included := credCarried ++
+                    [ (peer.identity.identityHash, peer.identity.peerEntity),
                       (execSig.hash, execSig) ]
     send { root := exec, included }
 
@@ -1019,28 +1042,160 @@ def echoHandler (_peer : Peer) (exec : Entity) : IO Outcome := do
   | some p => pure (ok p)
   | none => pure (err 400 "invalid_params" (some "echo requires a params entity"))
 
-def dispatchOutboundHandler (peer : Peer) (conn : Conn) (exec : Entity) : IO Outcome := do
+/-- §1.4's PD-2 presented-authority arm: verify the reentry credential the caller
+nested in params and answer the `peers` scope Dimension 4 relaxes to.
+
+Every clause is required and failing any relaxes NOTHING:
+* the chain ROOT `granter` resolves to the TARGET peer, and is NOT a multi-signature
+  root — a K-of-N root is a GROUP's authority and never relaxes Dimension 4
+  (`verifyChainRootedAt` refuses the quorum arm in a foreign frame);
+* the LEAF `grantee` is the local peer;
+* valid (per-link signatures, temporal, attenuation, caveats) and not revoked. -/
+def targetMintedPeersRelaxation (peer : Peer) (env : Envelope) (targetPeer : String)
+    (cred : Entity) : IO (Option EntityCore.Capability.Scope) := do
+  -- Nothing to relax — the default already covers this peer. Treating a
+  -- self-targeted credential as a relaxation would make the exemption reachable with
+  -- no foreign mint at all.
+  if targetPeer == peer.localPeer then pure none
+  else match ← collectChain peer env cred with
+  | .error _ => pure none
+  | .ok chain => do
+      let links ← chain.mapM (resolveLink peer env)
+      let auth ← match chain.getLast? with
+        | some root => rootAuthorityOf peer env root targetPeer
+        | none => pure (.single false)
+      let now ← EntityCore.Net.nowMs ()
+      match EntityCore.Capability.verifyChainRootedAt { links, rootAuthority := auth }
+              peer.localPeer now (frameIsLocal := false) with
+      | .allow =>
+          if ← isRevoked peer env cred then pure none
+          else
+            -- The LEAF grantee must be this peer.
+            let granteeLocal ← match bytesField cred "grantee" with
+              | some gh => match ← resolveHash peer env gh with
+                           | some ge => match bytesField ge "public_key" with
+                                        | some pk => pure (EntityCore.Identity.peerIdOfPubkey pk == peer.localPeer)
+                                        | none => pure false
+                           | none => pure false
+              | none => pure false
+            if !granteeLocal then pure none
+            else
+              -- The credential's own `peers` scope is what Dimension 4 relaxes TO.
+              -- Absent means the granter -- the target peer -- which is the ordinary
+              -- reentry shape: "you may dispatch back to me".
+              match EntityCore.Capability.grantsOfToken cred with
+              | g :: _ => pure (some (g.peers.getD { incl := [targetPeer], excl := [] }))
+              | []     => pure none
+      | _ => pure none
+
+def dispatchOutboundHandler (peer : Peer) (conn : Conn) (exec : Entity)
+    (handlerPattern : String) (env : Envelope) : IO Outcome := do
   match entityField exec "params" with
   | none => pure (err 400 "invalid_params" (some "dispatch-outbound requires a params entity"))
   | some p =>
     let target := (textField p "target").getD ""
     let operation := (textField p "operation").getD ""
-    match field p "value", entityField p "reentry_capability",
-          entityField p "reentry_granter", entityField p "reentry_cap_signature" with
-    | some value, some capability, some granterPeer, some capabilitySignature => do
+    -- GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the
+    -- single-granter case is an array of ONE. They were singular, which made §1.4's
+    -- multi-signature-root rule ungateable on the wire: driving it needs two granter
+    -- identities and two signatures, and a single-credential carrier cannot express
+    -- that input.
+    --
+    -- TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one,
+    -- because THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle is
+    -- what all 46 tracked reports are measured against and it sends the SINGULAR
+    -- names; a plural-only peer reads the triple as absent there, takes the ambient
+    -- arm and refuses -- measured on the `go` vanguard as 2 of 778 severities moving
+    -- PASS -> FAIL. Accepting both keeps the cohort 0-FAIL at BOTH check sets.
+    -- REMOVE THIS FALLBACK AT THE ORACLE RE-PIN, and not before: the exit condition
+    -- is that `tools/oracle-pin.env`'s `ref` names an oracle whose dispatch-outbound
+    -- probe sends the plural carriers.
+    let entityList (key : String) : Option (List Entity) :=
+      match field p key with
+      | some (.array xs) =>
+          -- An array whose members do not all decode is a MALFORMED carrier and is
+          -- `none`, never a silently shorter list -- the all-or-none test below would
+          -- otherwise read a partial credential as a complete one.
+          xs.foldr (fun x acc => match acc, ofCbor x with
+                                 | some rest, some e => some (e :: rest)
+                                 | _, _ => none) (some [])
+      | _ => none
+    let capability := entityField p "reentry_capability"
+    let granterPeers := (entityList "reentry_granters").orElse (fun _ =>
+      (entityField p "reentry_granter").map (fun g => [g]))
+    let capSignatures := (entityList "reentry_cap_signatures").orElse (fun _ =>
+      (entityField p "reentry_cap_signature").map (fun c => [c]))
+    -- The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED arm,
+    -- all three absent selects the AMBIENT arm, and a PARTIAL set is 400
+    -- invalid_params -- a partial credential is malformed, not ambient. An empty array
+    -- is partial, not present: it carries no credential.
+    let nonEmpty (o : Option (List Entity)) : Bool :=
+      match o with | some (_ :: _) => true | _ => false
+    let nPresent := ([capability.isSome, nonEmpty granterPeers, nonEmpty capSignatures].filter id).length
+    match field p "value" with
+    | none => pure (err 400 "invalid_params" (some "dispatch-outbound requires value"))
+    | some value =>
+      if nPresent != 0 && nPresent != 3 then
+        pure (err 400 "invalid_params" (some "dispatch-outbound reentry authority is all-or-none"))
+      else do
+        let hasCred := nPresent == 3
+        let cred := if hasCred then capability else none
+        let granters := if hasCred then granterPeers.getD [] else []
+        let capSigs := if hasCred then capSignatures.getD [] else []
         let inner := make "primitive/any" value
-        let resource : Value := .map [(.text "targets", .array [.text ("system/handler/" ++ target)])]
-        match ← outboundDispatch peer conn target operation inner (some resource)
-                 capability granterPeer capabilitySignature with
-        -- ASCII-ONLY WIRE STRING (see the forbidden_pattern note above): the
-        -- `§6.11` this message used to carry is encoded and sent.
-        | none => pure (err 503 "no_outbound_seam" (some "no live section 6.11 reentry connection"))
-        | some env =>
-            let status := (uintField env.root "status").getD 0
-            let resultCbor := (field env.root "result").getD (.map [])
-            pure (ok (make "primitive/any"
-              (.map [(.text "status", .uint status), (.text "result", resultCbor)])))
-    | _, _, _, _ => pure (err 400 "invalid_params" (some "dispatch-outbound requires value + reentry authority"))
+        -- `target` arrives as any of §1.4's three spellings and the validator sends
+        -- the SCHEMED ABSOLUTE form. Both the handler-pattern dimension and the
+        -- resource target want the PEER-RELATIVE path -- §1.4's PD-2 block says so for
+        -- Dimension 1, and a resource target carrying a scheme is not a path at all.
+        let relTarget := EntityCore.Capability.peerRelativeOf target
+        let resource : Value := .map [(.text "targets", .array [.text ("system/handler/" ++ relTarget)])]
+        -- §7a.2a: the credential, its granters and its signatures arrive NESTED IN
+        -- PARAMS (ratified shape (a), in-band), so they are not in the parent
+        -- envelope's `included` and a verifier handed that alone cannot resolve a
+        -- single link. The bundle merges them in.
+        let credEntities := (match cred with | some c => [c] | none => []) ++ granters ++ capSigs
+        let bundle : Envelope :=
+          { root := env.root, included := credEntities.map (fun e => (e.hash, e)) ++ env.included }
+        -- §1.4: target_peer = extract_peer(uri, local_peer_id). The validator sends the
+        -- absolute form, so the URI names the target. Where the uri is PEER-RELATIVE
+        -- there is no peer in it and the §6.11 seam's destination is the connection's
+        -- remote, so that is the fallback -- without it Dimension 4 passes vacuously.
+        let uriPeer := EntityCore.Capability.extractPeer peer.localPeer target
+        let targetPeer ← if uriPeer == peer.localPeer then
+                            pure ((← conn.helloPeerId.get).getD uriPeer)
+                          else pure uriPeer
+        -- §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer,
+        -- all four dimensions, on THIS handler's own grant -- with a target-minted
+        -- credential relaxing Dimension 4 and nothing else. Consulting only the
+        -- presented credential here is the §6.8 confused-deputy bypass.
+        let relaxTo ← match cred with
+          | some c => targetMintedPeersRelaxation peer bundle targetPeer c
+          | none => pure none
+        match ← EntityCore.Store.getAt peer.store
+                 (EntityCore.Capability.grantPathFor peer.localPeer handlerPattern) with
+        -- §6.8: a handler with no valid grant does not run. Fail closed rather than
+        -- falling back to the credential, which is the substitution §6.8 forbids.
+        | none => pure (err 403 "capability_denied" (some ("no handler grant for " ++ handlerPattern)))
+        | some ownGrant =>
+          if !EntityCore.Capability.checkOutboundSubDispatch peer.localPeer targetPeer
+               relTarget operation ownGrant resource relaxTo then
+            -- §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic
+            -- transport- or gateway-class code would launder an authorization verdict
+            -- into a route fault, and the ambient and presented branches would then
+            -- disagree about what the same gate decided.
+            pure (err 403 "capability_denied"
+                   (some "outbound sub-dispatch not authorized by the handler grant"))
+          else
+            match ← outboundDispatch peer conn target operation inner (some resource)
+                     cred granters capSigs with
+            -- ASCII-ONLY WIRE STRING (see the forbidden_pattern note above): the
+            -- `§6.11` this message used to carry is encoded and sent.
+            | none => pure (err 503 "no_outbound_seam" (some "no live section 6.11 reentry connection"))
+            | some renv =>
+                let status := (uintField renv.root "status").getD 0
+                let resultCbor := (field renv.root "result").getD (.map [])
+                pure (ok (make "primitive/any"
+                  (.map [(.text "status", .uint status), (.text "result", resultCbor)])))
 
 -- ── dispatch chain (§6.5) ─────────────────────────────────────────────────────
 
@@ -1122,7 +1277,11 @@ def dispatch (peer : Peer) (conn : Conn) (env : Envelope) : IO (Option Envelope)
                 | "system/handler" => handlersHandler peer exec
                 | "system/type" => typesHandler peer exec
                 | "system/validate/echo" => echoHandler peer exec
-                | "system/validate/dispatch-outbound" => dispatchOutboundHandler peer conn exec
+                -- §1.4 PD-2 needs the OWNING handler's peer-relative pattern (Dimension
+                -- 1 is matched peer-relative) and the parent envelope (the §7a.2a
+                -- bundle base). Both were computed above, so they are CARRIED.
+                | "system/validate/dispatch-outbound" =>
+                    dispatchOutboundHandler peer conn exec (stripLocal peer pattern) env
                 | _ => entityNativeDispatch peer pattern
     let response := EntityCore.Wire.makeResponse requestId outcome.status outcome.result
     pure (some { root := response, included := outcome.included })
@@ -1148,8 +1307,26 @@ def bootstrapHandlers : List (String × String × List (String × Option String 
       ("delegate", some "system/capability/delegate-request", some "system/capability/grant")]),
     ("system/protocol/connect", "Connect", [("hello", none, none), ("authenticate", none, none)]) ]
 
+/-- A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward,
+as distinct from any capability a caller presents. §6.8 row 1: an access in service of
+a caller's request needs the caller's verified capability AND this grant, and BOTH must
+pass.
+
+NARROW BY DESIGN for `dispatch-outbound`, and the narrowness is what makes the
+intersection MEASURABLE. GUIDE-CONFORMANCE §7a.1 makes it a scaffold-contract
+requirement: with a wide grant, consulting it and skipping it give the same answer on
+every input, so the confused-deputy discriminator cannot fire and a bypass reads as
+conformant. Every other handler keeps the empty list, which is the right default for a
+handler that never dispatches onward. -/
+def ownGrantsFor (pattern : String) : List Value :=
+  if pattern == "system/validate/dispatch-outbound" then
+    [ .map [ (.text "handlers", .map [(.text "include", .array [.text "system/validate/echo"])]),
+             (.text "operations", .map [(.text "include", .array [.text "echo"])]),
+             (.text "resources", .map [(.text "include", .array [.text "system/handler/system/validate/echo"])]) ] ]
+  else []
+
 /-- Bootstrap one handler's tree entities (manifest at pattern, interface at index,
-empty grant) — shared by the core handlers and the §7a conformance handlers. -/
+own grant) — shared by the core handlers and the §7a conformance handlers. -/
 def bootstrapHandler (peer : Peer)
     (entry : String × String × List (String × Option String × Option String)) : IO Unit := do
   let (pattern, name, ops) := entry
@@ -1159,7 +1336,7 @@ def bootstrapHandler (peer : Peer)
   let interfaceE := make "system/handler/interface"
     (.map [(.text "pattern", .text pattern), (.text "name", .text name), (.text "operations", operations)])
   EntityCore.Store.bind peer.store ("/" ++ peer.localPeer ++ "/system/handler/" ++ pattern) interfaceE
-  let (token, _) ← mintToken peer peer.identity.identityHash none []
+  let (token, _) ← mintToken peer peer.identity.identityHash none (ownGrantsFor pattern)
   EntityCore.Store.bind peer.store ("/" ++ peer.localPeer ++ "/system/capability/grants/" ++ pattern) token
 
 def create (openGrants : Bool) (conformance : Bool) (seed : Option ByteArray := none) : IO Peer := do

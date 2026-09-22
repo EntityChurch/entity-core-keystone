@@ -154,7 +154,12 @@ makeResponse requestId status result =
 
 -- ── EXECUTE builder (§3.2) — used by the §6.13(b) handler outbound seam ───────
 
-makeExecute :: Text -> Text -> Text -> Entity -> Maybe Value -> ByteString -> ByteString -> Entity
+-- The @capability@ hash is 'Maybe' because §1.4's PD-2 AMBIENT arm carries no
+-- credential at all: the sub-dispatch is authorized by the executing handler's own
+-- grant and there is nothing to name. An empty 'ByteString' would NOT do — that is
+-- a present field holding a hash that resolves to nothing, which §5.2 reads as an
+-- unresolvable capability rather than as its absence.
+makeExecute :: Text -> Text -> Text -> Entity -> Maybe Value -> ByteString -> Maybe ByteString -> Entity
 makeExecute requestId uri operation params resource author capability =
   makeEntity
     "system/protocol/execute"
@@ -164,8 +169,8 @@ makeExecute requestId uri operation params resource author capability =
           , (VText "operation", VText operation)
           , (VText "params", entityToCbor params)
           , (VText "author", VBytes author)
-          , (VText "capability", VBytes capability)
           ]
+            ++ maybe [] (\c -> [(VText "capability", VBytes c)]) capability
             ++ maybe [] (\r -> [(VText "resource", r)]) resource
         )
     )

@@ -90,6 +90,22 @@ def sA : ResolvedSigner := { key := "a", isLocal := true,  signed := true  }
 def sB : ResolvedSigner := { key := "b", isLocal := false, signed := true  }
 def sC : ResolvedSigner := { key := "c", isLocal := false, signed := false }
 
+-- ── §1.4 PD-2 fixtures ───────────────────────────────────────────────────────
+-- A real 46-char Base58 peer_id, so `isPeerId` answers true and peerRelativeOf's
+-- strip arm is actually exercised. A short name would make every case pass through
+-- the NON-peer-id arm and the discrimination would never be tested.
+def pd2Peer : String := String.mk (List.replicate 46 'z')
+
+/-- The narrow scaffold grant GUIDE-CONFORMANCE §7a.1 requires of
+`dispatch-outbound`: it is the NARROWNESS that lets the confused-deputy
+discriminator fire at all. -/
+def pd2HandlerGrant : Entity :=
+  make "system/capability/token"
+    (.map [(.text "grants", .array (EntityCore.Peer.ownGrantsFor "system/validate/dispatch-outbound"))])
+
+def pd2Resource : Value :=
+  .map [(.text "targets", .array [.text "system/handler/system/validate/echo"])]
+
 def msCases : List (String × Bool × Bool) := [
   -- valid 2-of-3 (local in quorum, 2 signed) → Allow
   ("multisig 2-of-3 valid quorum → Allow",
@@ -122,7 +138,60 @@ def msCases : List (String × Bool × Bool) := [
   ("single-sig root (.single true) → Allow",
     verifyChain { links := [ssRootLink], rootAuthority := .single true } "alice" 0 == .allow, true),
   ("single-sig foreign root (.single false) → Deny",
-    verifyChain { links := [ssRootLink], rootAuthority := .single false } "alice" 0 == .allow, false)
+    verifyChain { links := [ssRootLink], rootAuthority := .single false } "alice" 0 == .allow, false),
+
+  -- ── §1.4 PD-2: a MULTI-SIGNATURE root never relaxes Dimension 4 ────────────
+  -- THE ONE RULE THE WIRE CANNOT MEASURE. The oracle's
+  -- dispatch_outbound_multisig_root_refused check is GREEN on a peer that has never
+  -- implemented this clause: its K-of-2 root is co-signed by the target and a third
+  -- party and NOT by the local peer, so §5.5's M6 refuses it FIRST, for a reason
+  -- that has nothing to do with §1.4. The discriminating input is a quorum the LOCAL
+  -- PEER IS A MEMBER OF, minted at the target, and nothing on the wire drives it.
+  --
+  -- The ANTECEDENT is the load-bearing case: it pins that the very same quorum DOES
+  -- verify in the local frame, so the refusal below is attributable to §1.4 and not
+  -- to a fixture M6 was rejecting anyway. Without it the control is INERT -- which is
+  -- how the first `go` version shipped, and only planting caught it.
+  ("PD-2 ANTECEDENT: the quorum verifies in the LOCAL frame",
+    verifyChainRootedAt (msChain (.multi [sA, sB, sC] 2 true)) "alice" 0 (frameIsLocal := true) == .allow, true),
+  ("PD-2 the same quorum in a FOREIGN frame is REFUSED (E3/F66)",
+    verifyChainRootedAt (msChain (.multi [sA, sB, sC] 2 true)) "alice" 0 (frameIsLocal := false) == .allow, false),
+  -- CONTRAST: a SINGLE-signature root is unaffected by the frame flag -- the shell
+  -- expresses foreign rooting by resolving `.single` against the ROOT peer. The
+  -- granter FORM is the only variable against the case above, which is what says the
+  -- refusal is about the quorum and not about foreign rooting generally.
+  ("PD-2 CONTRAST: a single-sig root in a foreign frame is NOT refused by this guard",
+    verifyChainRootedAt { links := [ssRootLink], rootAuthority := .single true } "alice" 0
+      (frameIsLocal := false) == .allow, true),
+
+  -- ── §1.4 PD-2: one gate and one exemption (§6.8 confused-deputy) ───────────
+  ("PD-2 COMPOSE: credential + a handler grant that covers -> allow",
+    checkOutboundSubDispatch "alice" "bob" "system/validate/echo" "echo"
+      pd2HandlerGrant pd2Resource (some { incl := ["bob"], excl := [] }), true),
+  -- The ONLY input that separates the two readings: both obvious vectors agree under
+  -- either one (sources agree -> allow, no source -> refuse).
+  ("PD-2 BYPASS: the SAME relaxation, an op the grant does NOT cover -> refuse",
+    checkOutboundSubDispatch "alice" "bob" "system/validate/echo" "put"
+      pd2HandlerGrant pd2Resource (some { incl := ["bob"], excl := [] }), false),
+  ("PD-2 AMBIENT: no relaxation, foreign target, grant names no peers -> refuse",
+    checkOutboundSubDispatch "alice" "bob" "system/validate/echo" "echo"
+      pd2HandlerGrant pd2Resource none, false),
+
+  -- §1.4's three spellings onto the one form a grant can match.
+  ("PD-2 peerRelativeOf: peer-relative passes through",
+    peerRelativeOf "system/validate/echo" == "system/validate/echo", true),
+  ("PD-2 peerRelativeOf: absolute loses the peer segment",
+    peerRelativeOf ("/" ++ pd2Peer ++ "/system/validate/echo") == "system/validate/echo", true),
+  ("PD-2 peerRelativeOf: schemed loses scheme and peer segment",
+    peerRelativeOf ("entity://" ++ pd2Peer ++ "/system/validate/echo") == "system/validate/echo", true),
+  -- The standing smalltalk/forth defect: an unconditional strip turns
+  -- system/protocol/connect into protocol/connect and every self-minted grant becomes
+  -- unusable while the handshake stays green.
+  ("PD-2 peerRelativeOf: a NON-peer-id first segment is NOT stripped",
+    peerRelativeOf "/system/protocol/connect" == "system/protocol/connect", true),
+  ("PD-2 grantPathFor tolerates an ABSOLUTE pattern without doubling the peer",
+    grantPathFor pd2Peer ("/" ++ pd2Peer ++ "/system/validate/echo")
+      == grantPathFor pd2Peer "system/validate/echo", true)
 ]
 
 -- ── §5 scope algebra + §4.11 pre-admission (0.8.2.24 / 0.8.2.25) ─────────────

@@ -101,7 +101,7 @@ sendAuthed cl uri operation params resource = do
   mgranter <- readIORef (clGranter cl)
   let ident = clIdent cl
       capHash = maybe BS.empty entHash mcap
-      exec = makeExecute rid uri operation params resource (idIdentityHash ident) capHash
+      exec = makeExecute rid uri operation params resource (idIdentityHash ident) (Just capHash)
       execSig = signEntity ident exec
       included =
         [ (idIdentityHash ident, idPeerEntity ident)
@@ -130,7 +130,7 @@ handshake cl = do
         , (VText "key_types",    VArray [VText "ed25519"])
         , (VText "protocols",    VArray [VText "entity-core/1.0"])
         , (VText "hash_formats", VArray [VText "ecfv1-sha256"]) ])
-      helloExec = makeExecute ridH "system/protocol/connect" "hello" helloParams Nothing (idIdentityHash ident) BS.empty
+      helloExec = makeExecute ridH "system/protocol/connect" "hello" helloParams Nothing (idIdentityHash ident) (Just BS.empty)
   helloResp <- sendOver (clHandle cl) (Envelope helloExec [(idIdentityHash ident, idPeerEntity ident)])
   okHello <- assertEq "handshake: hello → 200" 200 (statusOf helloResp)
   let nonce = case helloResp >>= resultEntityOf >>= (`bytesField` "nonce") of
@@ -151,7 +151,7 @@ handshake cl = do
               ]
           )
       authSig = signEntity ident authEntity
-      authExec = makeExecute ridA "system/protocol/connect" "authenticate" authEntity Nothing (idIdentityHash ident) BS.empty
+      authExec = makeExecute ridA "system/protocol/connect" "authenticate" authEntity Nothing (idIdentityHash ident) (Just BS.empty)
       authIncluded =
         [ (idIdentityHash ident, idPeerEntity ident)
         , (entHash authSig, authSig)

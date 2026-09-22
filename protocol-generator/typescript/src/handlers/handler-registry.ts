@@ -1,6 +1,6 @@
 import { type EcfValue } from "../codec/ecf-value.js";
 import { Entity, Ecf, TypeNames } from "../model/index.js";
-import { CapabilityToken } from "../capability/index.js";
+import { CapabilityToken, GrantEntry, Scope } from "../capability/index.js";
 import {
   type Handler,
   type HandlerOperations,
@@ -65,13 +65,19 @@ export class HandlerRegistry {
 
     const handlerEntity = Entity.create(TypeNames.Handler, Ecf.map(["interface", Ecf.text(interfaceRelPath)]));
 
-    // Self-issued, signed, empty-scope grant (§6.8: empty grants are valid for
-    // pure-functional handlers; bootstrap handlers authorize caller-specified tree
-    // writes via the caller capability, not their own grant).
+    // Self-issued, signed grant (§6.8: empty grants are valid for pure-functional
+    // handlers; bootstrap handlers authorize caller-specified tree writes via the caller
+    // capability, not their own grant).
+    //
+    // NOT empty for `dispatch-outbound`, which DOES dispatch onward: §6.8 row 1 makes
+    // this grant the ceiling its sub-dispatch intersects against, and GUIDE-CONFORMANCE
+    // §7a.1 requires it to be NARROW — with a wide grant, consulting it and skipping it
+    // give the same answer on every input, so the confused-deputy discriminator cannot
+    // fire and a bypass reads as conformant.
     const { token: grant, signature: grantSig } = CapabilityToken.createRoot(
       this.#peer.localIdentity,
       this.#peer.localIdentity.identityHash,
-      [],
+      ownGrantsFor(handler.pattern),
       this.#peer.nowMs,
     );
 
@@ -234,4 +240,24 @@ function operationsMap(operations: HandlerOperations): EcfValue {
       return [op, Ecf.map(...fields)] as [string, EcfValue];
     }),
   );
+}
+
+/**
+ * A handler's OWN grant (§6.8) — the authority it spends when it dispatches onward, as
+ * distinct from any capability a caller presents. §6.8 row 1: an access in service of a
+ * caller's request needs the caller's verified capability AND this grant, and BOTH must
+ * pass. Narrow for `dispatch-outbound`; empty for everything else.
+ */
+function ownGrantsFor(pattern: string): GrantEntry[] {
+  if (pattern !== "system/validate/dispatch-outbound") return [];
+  return [
+    new GrantEntry(
+      new Scope(["system/validate/echo"], null),
+      new Scope(["system/handler/system/validate/echo"], null),
+      new Scope(["echo"], null),
+      null,
+      null,
+      null,
+    ),
+  ];
 }

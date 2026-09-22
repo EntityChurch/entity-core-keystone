@@ -132,16 +132,22 @@ def makeResponse (requestId : String) (status : Nat) (result : Entity) : Entity 
            (.text "status", .uint (UInt64.ofNat status)),
            (.text "result", toCbor result)])
 
-/-- EXECUTE builder (§3.2) — the §6.13(b) handler outbound seam. -/
+/-- EXECUTE builder (§3.2) — the §6.13(b) handler outbound seam.
+
+`capability` is OPTIONAL because §1.4's PD-2 AMBIENT arm carries no credential at all:
+the sub-dispatch is authorized by the executing handler's own grant and there is
+nothing to name. An empty `ByteArray` would NOT do — that is a present field holding a
+hash that resolves to nothing, which §5.2 reads as an unresolvable capability rather
+than as its absence. -/
 def makeExecute (requestId uri operation : String) (params : Entity)
-    (author capability : ByteArray) (resource : Option Value := none) : Entity :=
+    (author : ByteArray) (capability : Option ByteArray) (resource : Option Value := none) : Entity :=
   make "system/protocol/execute"
     (.map ([(.text "request_id", .text requestId),
             (.text "uri", .text uri),
             (.text "operation", .text operation),
             (.text "params", toCbor params),
-            (.text "author", .bytes author),
-            (.text "capability", .bytes capability)]
+            (.text "author", .bytes author)]
+           ++ (match capability with | some c => [(.text "capability", .bytes c)] | none => [])
            ++ (match resource with | some r => [(.text "resource", r)] | none => [])))
 
 end EntityCore.Wire

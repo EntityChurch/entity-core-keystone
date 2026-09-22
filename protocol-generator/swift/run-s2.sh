@@ -32,7 +32,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # (Tests/EntityCoreProtocolTests/ScopeAlgebraTests.swift, 34 cases). A floor left at
 # the old number would pass a tree that silently dropped the whole new file, which is
 # the one thing this line exists to catch.
-FLOOR="${SWIFT_TEST_FLOOR:-69}"
+FLOOR="${SWIFT_TEST_FLOOR:-76}"
 
 # No pipe: `cmd | tee` reports the EXIT STATUS OF TEE, which is how a failing gate
 # reads as green (written down twice in AGENTS.md, re-created twice anyway).

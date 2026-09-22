@@ -230,7 +230,10 @@ let () =
     Model.make ~typ:"system/protocol/execute"
       (Cbor.Map [ (Cbor.Text "operation", Cbor.Text "dispatch"); (Cbor.Text "params", Model.to_cbor do_params) ])
   in
-  let dout = Peer.dispatch_outbound_handler cpeer conn do_exec in
+  let dout =
+    Peer.dispatch_outbound_handler cpeer conn do_exec
+      ~handler_pattern:"system/validate/dispatch-outbound" ~included:[]
+  in
   (* The round-tripped entity's DATA *is* the value — not a {value: …} map.
      §7a.1 passes the `value` field through as the outbound params entity data
      (Peer.dispatch_outbound_handler, `let inner = Model.make ~typ:"primitive/any"
@@ -280,6 +283,16 @@ let () =
     in
     Model.make ~typ:"system/capability/token" (Cbor.Map fields)
   in
+  let mk_cap_grants ~signers ~threshold =
+    Model.make ~typ:"system/capability/token"
+      (Cbor.Map
+         [ (Cbor.Text "granter",
+            Cbor.Map
+              [ (Cbor.Text "signers", Cbor.Array (List.map (fun s -> Cbor.Bytes s) signers));
+                (Cbor.Text "threshold", Cbor.Uint threshold) ]);
+           (Cbor.Text "grantee", Cbor.Bytes id1.Identity.identity_hash);
+           (Cbor.Text "grants", Cbor.Array [ Cbor.Map [] ]) ])
+  in
   let peer_inc id = (id.Identity.identity_hash, id.Identity.peer_entity) in
   let sig_inc s = (s.Model.hash, s) in
   let allows local cap inc =
@@ -316,6 +329,96 @@ let () =
   let ss_sig = Identity.sign_entity id1 ss_cap in
   check "single-sig root still verifies (strict superset)"
     (allows local ss_cap ([ peer_inc id1; sig_inc ss_sig ]));
+
+  (* ── §1.4 PD-2 outbound sub-dispatch gate, and the ONE RULE THE WIRE CANNOT SEE ──
+     The oracle's dispatch_outbound_multisig_root_refused check is GREEN on a peer that
+     has never implemented §1.4's multi-signature clause. Measured by planting the guard
+     out on both vanguards: the oracle's K-of-2 root is co-signed by the target and a
+     third party and NOT by the local peer, so §5.5's M6 refuses it first, for a reason
+     that has nothing to do with §1.4. The discriminating input is a quorum THE LOCAL
+     PEER IS A MEMBER OF, minted at the target, and nothing on the wire drives it.
+
+     So the green row is not evidence for that rule and these assertions are. The
+     ANTECEDENT is load-bearing: it pins that the very same quorum DOES verify in the
+     local frame, so a refusal in the foreign frame is attributable to §1.4 and not to a
+     fixture M6 was rejecting anyway. Without it the control is INERT — which is how the
+     first `go` version shipped, and only planting caught it. *)
+  let target_peer = id2.Identity.peer_id in
+  (* The 2-of-3 quorum again, but carrying a NON-EMPTY grants list. [cap] above has
+     `grants: []`, and target_minted_peers_relaxation answers None for an empty list
+     BEFORE it ever reaches §1.4 -- so the "relaxes nothing" assertion below would have
+     passed for a reason unrelated to the rule, and a plant that removes the §1.4
+     refusal would leave it green. Measured: with [cap] it reddened one case; with this
+     one it reddens both. [local] IS a signer, which is the input the oracle cannot
+     build. *)
+  let msg_cap = mk_cap_grants ~signers ~threshold:2L in
+  let g1 = Identity.sign_entity id1 msg_cap and g2 = Identity.sign_entity id2 msg_cap in
+  let ms_inc = inc3 @ [ sig_inc g1; sig_inc g2 ] in
+  let cap = msg_cap in
+  check "PD-2 ANTECEDENT: the quorum DOES verify in the LOCAL frame"
+    (Capability.verify_capability_chain ~local_peer:local ~store:ms_store cap ms_inc = Capability.Allow);
+  check "PD-2 the same quorum rooted at the TARGET is REFUSED (E3/F66)"
+    (Capability.verify_capability_chain ~root_peer:target_peer ~local_peer:local ~store:ms_store cap ms_inc
+     = Capability.Deny);
+  check "PD-2 a multi-signature root therefore relaxes NOTHING"
+    (Capability.target_minted_peers_relaxation ~local_peer:local ~target_peer ~store:ms_store cap ms_inc
+     = None);
+  (* CONTRAST: a SINGLE-signature root minted by the target DOES relax. The granter
+     form is the only variable against the case above, which is what says the refusal
+     is about the quorum and not about foreign rooting generally. *)
+  let tcap =
+    Model.make ~typ:"system/capability/token"
+      (Cbor.Map
+         [ (Cbor.Text "granter", Cbor.Bytes id2.Identity.identity_hash);
+           (Cbor.Text "grantee", Cbor.Bytes id1.Identity.identity_hash);
+           (Cbor.Text "grants", Cbor.Array [ Cbor.Map [] ]) ])
+  in
+  let tsig = Identity.sign_entity id2 tcap in
+  let tinc = [ peer_inc id1; peer_inc id2; sig_inc tsig ] in
+  check "PD-2 CONTRAST: a single-sig target-minted credential DOES relax Dimension 4"
+    (match Capability.target_minted_peers_relaxation ~local_peer:local ~target_peer ~store:ms_store tcap tinc with
+     | Some sc -> sc.Capability.incl = [ target_peer ]
+     | None -> false);
+  (* One gate and one exemption (§6.8 confused-deputy). The BYPASS case is the only
+     input that separates the two readings: both obvious vectors agree under either one
+     (sources agree -> allow, no source -> refuse). *)
+  let narrow_grant =
+    Model.make ~typ:"system/capability/token"
+      (Cbor.Map
+         [ (Cbor.Text "granter", Cbor.Bytes id1.Identity.identity_hash);
+           (Cbor.Text "grantee", Cbor.Bytes id1.Identity.identity_hash);
+           (Cbor.Text "grants", Cbor.Array (Peer.own_grants_for "system/validate/dispatch-outbound")) ])
+  in
+  let pd2_resource =
+    Cbor.Map [ (Cbor.Text "targets", Cbor.Array [ Cbor.Text "system/handler/system/validate/echo" ]) ]
+  in
+  let gate cred op =
+    Capability.check_outbound_sub_dispatch ~local_peer:local ~target_peer
+      ~handler_pattern:"system/validate/echo" ~operation:op ~store:ms_store
+      ~handler_grant:narrow_grant ~resource:pd2_resource ~cred tinc
+  in
+  check "PD-2 COMPOSE: credential + a handler grant that covers -> allow"
+    (gate (Some tcap) "echo");
+  check "PD-2 BYPASS: the SAME valid credential, an op the grant does NOT cover -> refuse"
+    (not (gate (Some tcap) "put"));
+  check "PD-2 AMBIENT: no credential, foreign target, grant names no peers -> refuse"
+    (not (gate None "echo"));
+  (* peer_relative_of — §1.4's three spellings onto the one form a grant can match. *)
+  check "PD-2 peer_relative_of: peer-relative passes through"
+    (String.equal (Capability.peer_relative_of "system/validate/echo") "system/validate/echo");
+  check "PD-2 peer_relative_of: absolute loses the peer segment"
+    (String.equal (Capability.peer_relative_of ("/" ^ local ^ "/system/validate/echo")) "system/validate/echo");
+  check "PD-2 peer_relative_of: schemed loses scheme and peer segment"
+    (String.equal (Capability.peer_relative_of ("entity://" ^ local ^ "/system/validate/echo")) "system/validate/echo");
+  (* The standing smalltalk/forth defect: an unconditional strip turns
+     system/protocol/connect into protocol/connect and every self-minted grant becomes
+     unusable while the handshake stays green. *)
+  check "PD-2 peer_relative_of: a NON-peer-id first segment is NOT stripped"
+    (String.equal (Capability.peer_relative_of "/system/protocol/connect") "system/protocol/connect");
+  check "PD-2 grant_path_for tolerates an ABSOLUTE pattern without doubling the peer"
+    (String.equal
+       (Capability.grant_path_for ~local_peer:local ("/" ^ local ^ "/system/validate/echo"))
+       (Capability.grant_path_for ~local_peer:local "system/validate/echo"));
 
   (* ── 0.8.2.20/.21/.24 — §5.2 effective targets, §6.3 check_path_permission,
         the path-scope sentinel, and F50's typing of scope_subset ────────────── *)
