@@ -268,7 +268,8 @@ lint:
 	@python3 tools/coherence-gate.py --self-test >/dev/null 2>&1
 	@python3 tools/kind-c-gate.py --self-test >/dev/null 2>&1
 	@python3 tools/skip-provenance-gate.py --self-test >/dev/null 2>&1
-	@echo "lint: 4 gate self-tests OK (harness, coherence, kind-c, skip-provenance)"
+	@python3 tools/keystone-spec-gate.py --self-test >/dev/null 2>&1
+	@echo "lint: 5 gate self-tests OK (harness, coherence, kind-c, skip-provenance, keystone-spec)"
 	@echo "lint: gating the Kind C publication boundary (read-only)…"
 	@# The tenth gate, and the newest kind of thing in the tree. Kind C is a check
 	@# THIS repo authors, from the spec, at the same normative target as the oracle
@@ -286,6 +287,31 @@ lint:
 	@# empty tools/kind-c/ says "vacuous pass" rather than OK.
 	@# Regression suite: `python3 tools/kind-c-gate.py --self-test`.
 	@python3 tools/kind-c-gate.py --quiet
+	@echo "lint: gating the keystone specification layer (read-only)…"
+	@# The eleventh gate. docs/spec/SPEC-KEYSTONE-PEER.md is the host contract — the
+	@# obligations that bind OUR peers and nobody else's, which a peer can fail while
+	@# being fully core-protocol conformant. entity-system-generator builds probes
+	@# against it and cites `H1…H9 @ <digest>`, so it has the same failure mode as the
+	@# oracle pin and is not covered by pin-gate (which is scoped to §1's column and
+	@# oracle-pin.env): a normative body that moves without its digest moving is a
+	@# consumer measuring against text nobody published. H-numbers are append-only and
+	@# a measured requirement is never edited in place, so drift is a re-pin, not an
+	@# edit. Also asserts every declared requirement has a section, a normative
+	@# statement and an enforcement row — a requirement with no enforcement point is
+	@# theater, and that applies hardest to the document that makes the rules.
+	@# Regression suite: `python3 tools/keystone-spec-gate.py --self-test`.
+	@python3 tools/keystone-spec-gate.py --quiet
+	@echo "lint: gating the H5 [extension_host] blocks (read-only)…"
+	@# The thirteenth gate. H5 requires every peer profile to DECLARE its host bindings,
+	@# and `declined` is a value while silence is not — a peer with no block reads
+	@# `unknown` to the generator's loader, which is the state this closes. The block is
+	@# regenerated from (a) the EXECUTED host-seam probe reports, never a source read,
+	@# and (b) each peer's own [publishing] declaration; --check fails on a missing or
+	@# stale block. It asserts `dispatch_read_site` specifically, because that is the
+	@# field H5 exists for and because a check scoped to the H1 keys alone once passed a
+	@# regeneration that had STRIPPED dispatch_read_site from 44 peers.
+	@# Regression: plant a removed field, a corrupted verdict, or a deleted block.
+	@python3 tools/author-extension-host.py --check
 
 # fmt = autoformat (writes). Intentionally a no-op: generated source is formatted
 # by its own toolchain, and spec-data/<version>/ is a SHA-256-pinned immutable

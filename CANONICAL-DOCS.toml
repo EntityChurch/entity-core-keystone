@@ -162,6 +162,12 @@ group = "Overview"
 
 # ── Conformance ─────────────────────────────────────────────────────────────
 [[doc]]
+path  = "docs/spec/SPEC-KEYSTONE-PEER.md"
+title = "SPEC-KEYSTONE-PEER — the host contract"
+blurb = "The obligations a keystone peer carries BEYOND core-protocol conformance, so an extension can be installed into one: H1-H9, each with a normative statement, its observation, and its enforcement point. A plain core-protocol peer owes none of it. Cited by content digest (tools/keystone-spec-pin.env), never by commit."
+group = "Conformance"
+
+[[doc]]
 path  = "CONFORMANCE-MATRIX.md"
 title = "Conformance & Status Matrix"
 blurb = "The adopter transparency contract: every generated peer's spec version, oracle commit, --profile core result, codec strategy, crypto floor, and known gaps."

@@ -5,8 +5,8 @@ WHY THIS IS A PROBE AND NOT A GATE — the measurement is the point, and it is w
 disqualified the gate. `tools/link-gate.py` check 1 resolves markdown `[](...)` links;
 check 2 catches a published file naming a path the release STRIPS. Neither can see a
 backticked inline path that resolves to nothing, which is how a citation to a file that
-NEVER EXISTED sat in a published file for months (`HANDOFF-FROM-ARCH-v1.md`, cited from
-`shared/lifecycle/PROMPT-CONSTANTS.md`, named as a known defect in [ADR-0021]'s follow-up
+NEVER EXISTED sat in a published file for months (a HANDOFF-FROM-ARCH doc, cited from
+the shared lifecycle prompt constants, named as a known defect in [ADR-0021]'s follow-up
 list, `git log --all` empty).
 
 The obvious gate does not survive contact with the tree. Measured 2026-09-09:
@@ -17,8 +17,8 @@ The obvious gate does not survive contact with the tree. Measured 2026-09-09:
 The 318 are overwhelmingly ROOT-RELATIVE SHORTHAND — `status/PHASE-S2.md` means "this
 peer's", `arch/PROFILE-RATIONALE.md` likewise — which is correct prose and unresolvable
 by construction. Even the scoped 38 carry an irreducible ambiguity: `docs/` is a top-level
-directory HERE and in every sibling repo, so `docs/spec/SPEC-KEYSTONE-PEER.md` (the
-generator's) is indistinguishable from one of ours by path alone.
+directory HERE and in every sibling repo, so a sibling's `docs/status/WORK-STATUS.md` or
+`docs/validation/…` is indistinguishable from one of ours by path alone.
 
 A check that cannot separate its signal from its noise is not a weak check, it is a broken
 one -- scope it or drop it, and say which. This one is scoped to a probe and said so.
@@ -51,13 +51,17 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parents[3]
 
 # Immutable-snapshot tiers plus the injected ecosystem ADRs: deliberately left pointing at
-# old names, and not ours to edit. `FINDINGS-MOVED.md` is the old->new map itself, so every
-# left-hand path in it is dead ON PURPOSE.
+# old names, and not ours to edit.
 SKIP_PREFIXES = ("docs/adr/ecosystem/", "docs/status/", "docs/archive/")
-SKIP_FILES = {
-    "research/stewardship/FINDINGS-MOVED.md",
-    "protocol-generator/shared/diagnostics/backticked-path-resolution-probe.py",
-}
+
+# Skipped BY BASENAME, not by path, and that is deliberate rather than sloppy: this file
+# publishes, and naming a full path that the release strips is exactly the defect the probe
+# exists to find -- link-gate check 2 catches it, and caught this one. A bare basename cannot
+# collide with a stripped path because that check matches full paths.
+#   * the findings forwarding map is the old->new table itself, so every left-hand path in
+#     it is dead ON PURPOSE
+#   * this file quotes dead paths in its own triage
+SKIP_BASENAMES = {"FINDINGS-MOVED.md", "backticked-path-resolution-probe.py"}
 
 # A backticked path ending .md. Requires a leading alnum so `../x.md` and glob forms fall out.
 PATH = re.compile(r"`([A-Za-z0-9._][A-Za-z0-9._/-]*\.md)`")
@@ -74,7 +78,7 @@ def tracked_markdown():
         ["git", "ls-files", "-z", "*.md"], cwd=REPO, capture_output=True, text=True, check=True
     ).stdout
     for rel in out.split("\0"):
-        if rel and not rel.startswith(SKIP_PREFIXES) and rel not in SKIP_FILES:
+        if rel and not rel.startswith(SKIP_PREFIXES) and rel.rsplit("/", 1)[-1] not in SKIP_BASENAMES:
             yield rel
 
 

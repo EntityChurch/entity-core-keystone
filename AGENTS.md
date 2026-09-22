@@ -374,6 +374,14 @@ Two conformance **oracles** are ground truth (built from `entity-core-go`, see B
     **declared once, written once, never read** — dispatch resolves through the store instead. This
     is the dangerous shape, because it reads as satisfied from every artifact a reviewer would open:
     an exported symbol, a typed container, and a doc comment naming it the seam.
+    **FIXED 2026-09-08 — `julia` IS a live host now and this bullet is kept for the LESSON, not as a
+    current fact about the peer.** `peer.jl` reads the dict at `_dispatch` (`get(p.handlers, stripped,
+    nothing)`), the §11.6.1 entities are bound, and the H7 ordering — built-ins answer FIRST, the
+    installed map takes the fallback arm — is asserted in the source at the read site. Measured
+    independently on the wire 2026-09-09: `julia` verdicts `EVALUATES`. **The reason to leave the
+    text standing is that the dead-map shape is what H5's `dispatch_read_site` field exists to catch,
+    and it is the only recorded instance — deleting the example would delete the argument for the
+    field.** Say which peer it was and that it was repaired; do not cite it as a live defect.
   **Two rules, and the second is the general one.** (a) **The entry point is not the seam; the seam
   is the line that READS the container.** A census that reads the registration site and stops cannot
   distinguish a working host from a dead map. (b) **"Is the member public" is the wrong question —
@@ -2288,6 +2296,75 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   overlay, same file naming. **Enforcement, and it is the cheap one this repo already prescribes:
   when `tier-status.py` and `check-set-gate.py --tracked` disagree about which peers are green,
   suspect the INPUT before the peers.** They disagreed here, and the tracked gate was right.
+- **A CONTROL MUST ASSERT THE PRECONDITION THE MEASUREMENT RESTS ON, NOT MERELY THAT THE STEP
+  COMPLETED — and the cohort, not the peer, is what separates "your instrument is wrong" from "this
+  peer is."** RATIFIED 2026-09-09, building `tools/host-seam-probe` for the H1 dispatch census
+  (`shared/findings/host-seam-dispatch-wire-census.md`). Its first run reported `go` —
+  which demonstrably HAS an entity-native evaluator — as having none. The probe had encoded the
+  register-request's `manifest` as a full **entity** (`{type, data, content_hash}`) where the oracle's
+  own `RegisterRequestData` carries it as a **bare map**; `MapField(manifest, "expression_path")`
+  therefore read the entity's top level, found nothing, and the peer **bound a handler with no body
+  reference while still answering 200**. Left unfixed the roster run would have published **all 46
+  peers as non-hosts** — a cohort-wide finding, entirely ours.
+  **The LANDED control existed and passed.** It asserted *"was something bound"* (200 at the pattern)
+  when the measurement depended on *"does what was bound carry `expression_path`"*. Widening that one
+  control named the fault in a single run. **Rule: for each step a measurement depends on, the control
+  asserts the FIELD, not the status.** This is the standing examined-zero-things class one level in: a
+  control can execute, pass, and check the wrong proposition.
+  **Second half, and it is a rule about VERDICT DESIGN: where a single peer cannot distinguish "this
+  peer is broken" from "our request was", the verdict must say so and defer to the cohort.** Ten peers
+  bound a handler with no `expression_path`; from any one of them that is indistinguishable from the
+  bug above. It is resolved by 26 peers having persisted the *identical* request — so the verdict is
+  `REGISTER-DROPPED-EXPRESSION-PATH` with its resolution rule in the text, never `CONTROL-FAILED`
+  (which blames us for a peer property) and never a flat defect claim (which overclaims from one
+  observation). **And order the arms by which control is more fundamental**: `wasm-wat` both drops the
+  path AND fails the differential, and reporting only the first implies its row becomes readable once
+  the drop is fixed. It does not.
+  **Calibration, recorded with the same weight as a catch:** a source trace of all 46 dispatch sites,
+  made BEFORE the probe existed, predicted the binary question — does this peer evaluate an installed
+  body — **correctly for 46 of 46**, sets identical peer for peer. The read was not wrong and the
+  measurement was still necessary: only the wire produced the **three-way split** among the 20
+  (reference dropped at register · bound but unresolvable · bound with no evaluator), which are three
+  different repairs and are invisible in a read of the dispatch site. **A source read is not worthless
+  because it is not a claim — it is a hypothesis worth stating precisely so a probe can confirm or
+  refute it.**
+- **AN IDEMPOTENT GENERATOR MUST RECORD WHAT IT OWNS, NEVER INFER IT FROM THE STATE IT JUST
+  CREATED — the second run is where that bites, and the first run looks perfect.** Candidate (first
+  occurrence, 2026-09-09, `tools/author-extension-host.py`; enforcement exact). The script decided
+  whether a peer's `[extension_host]` block was hand-authored by asking *"does an `[extension_host]`
+  section exist"*. On run 1 that was correct. **On run 2 the section existed because run 1 had made
+  it**, so all 44 generated blocks were reclassified as hand-authored and regeneration **stripped
+  `dispatch_read_site` from every one of them** — the load-bearing field, the entire reason H5 has
+  that field. Fix: two markers (`FULL` = the script owns the whole block, `MEASURED` = a hand-authored
+  block owns the prose and only the measured fields are injected), read from the file rather than
+  inferred. **Enforcement: run any generator TWICE in its own test and require the second run to
+  report zero writes.** A single run cannot detect this class at all.
+  **AND THE CHECK PASSED THE STRIPPED TREE — SECOND OCCURRENCE IN ONE SESSION OF A CONTROL ASSERTING
+  THE WRONG PROPOSITION.** `--check` verified the H1 keys were present and said *"46 examined, 0
+  problems"* over 44 blocks whose `dispatch_read_site` had just been deleted. It printed the count,
+  which this file already requires — **the count was right and the predicate was wrong**, so the
+  examined-zero-things rule is necessary and not sufficient. **A gate must assert the field the
+  artifact EXISTS FOR**, and for a generated block that is whichever field a human traced by hand.
+  *(Two cheaper sub-lessons from the same tool, both caught by its own postcondition rather than by
+  reading: **a fragment of `key = value` lines appended to a TOML file lands in whatever table the
+  file ENDS in** — `[spec]` on all 46 — which is valid TOML and silently wrong, so emit the section
+  header and then PARSE the result; and **interpolating traced source text into a TOML string needs a
+  real escaper**, because the values quote code containing quotes and seven profiles stopped parsing.
+  Both are the postcondition rule: verify the property, never that the edit was written.)*
+  **CURRENT STATE 2026-09-09 — H1 IS MEASURED COHORT-WIDE: 26 of 46 peers can dispatch a
+  third-party-installed body; 20 cannot, and nothing in the 778-check set says so.** Verified rather
+  than assumed: `core_register_body_binding` asserts only that the §11.6.1 entities were BOUND,
+  `unsupported_operation_on_registered_handler`'s `registeredURI` is **`system/tree`** (a BOOTSTRAP
+  handler — "registered" means present), and `validate_echo_dispatch` drives the built-in
+  `system/validate/echo`, the oracle's own declaration recording that the dispatch half was
+  deliberately *"moved off compute/literal"*. **So a peer binds all four writes, scores `778 · 0F`,
+  and has nowhere for a body to run.** None of it is a conformance failure — §6.13(a) is an extension
+  surface — but two of the three failure shapes report SUCCESS for a registration that can never be
+  dispatched, which is a promise the peer cannot keep. Two spec questions fell out and are recorded as
+  questions, not assertions: **`no_handler_body` appears nowhere in `v0.8.2.11`** (it is `go`'s
+  spelling, copied by 8 peers, and the cohort spells that failure four ways), and `pd` answers
+  `501 not_implemented`, one of the four spellings §3.3 retired at 0.8.2.7 — though 0.8.2.8's
+  carve-out for *"a domain code defined for a different failure"* may reach it.
   **CURRENT STATE 2026-09-07 — §6.3's `0.8.2.11` PUT ADMISSION LADDER is CLOSED at 46 of 46, 6 of 6
   on `tools/put-probe`, and it moved NO conformance check.** This is the first ACCEPT-side rule of
   the whole `0.8.2.x` arc and it was new implementation on every peer, not a re-vendor: measured

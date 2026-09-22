@@ -27,7 +27,7 @@ mkdir -p "$OUT"
 
 probes=("$@")
 if [ ${#probes[@]} -eq 0 ]; then
-  probes=(p47-probe put-probe)
+  probes=(p47-probe put-probe host-seam-probe)
 fi
 
 for p in "${probes[@]}"; do
@@ -41,5 +41,5 @@ done
 
 # Print what was produced, and its size — a build step that reports nothing
 # cannot be told from one that built nothing.
-ls -l "$OUT"/{p47-probe,put-probe} 2>/dev/null || true
+ls -l "$OUT"/{p47-probe,put-probe,host-seam-probe} 2>/dev/null || true
 echo "build-probes: ${#probes[@]} probe(s) built into $OUT/"
