@@ -2191,12 +2191,91 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   reverse.** All eight now use the `bash -c SCRIPT bash "$@"` form the other four re-exec peers
   (`sql` `io` `pd` `datalog`) already had, where the interpreter word is argv[0] and the caller
   args arrive as `$1..` with quoting intact.
+  **A THIRD SELF-AUTHORED EXCULPATION, AND THIS ONE WAS HALF TRUE, WHICH IS WHY IT SURVIVED.**
+  `CONFORMANCE-MATRIX.md` §1 disclosed `cobol`'s two extra skips as *"payloads (256 KiB, 16 KiB)
+  that its 65535-byte frame cap and 8192-byte per-entity ceiling cannot accept, and it now
+  refuses them with `413` rather than crashing."* The 16 KiB one does: it exceeds the per-entity
+  ceiling and `handlers.cob` answers a **correlated** 413. **The 256 KiB one exceeds the FRAME
+  cap, never reaches any COBOL code, and was answered with NOTHING** — `netshim.c` drained the
+  body and kept serving, which is the half of §4.10(a) about the connection, with a comment
+  explaining why closing would break the caller's pooled connection, and no trace of the half
+  that is a MUST (*"MUST reject … with `413 payload_too_large`"*). **A §4.9(c) drop bills the
+  CALLER, so it reads as the peer being slow**: the check reported `i/o timeout` and was filed as
+  a capacity skip. Fixed 2026-09-02 (`oversize-result` emits the section's *best-effort coded
+  frame*; the `request_id` is unavailable **by construction**, because refusing before decoding
+  is the point of the rule, so it goes out empty rather than guessed). `t1_3` now reports
+  `tree put status 413`. **The counts did not move** — 756 · 312P/336W/0F/108S before and after —
+  which is the whole reason it was safe to believe the row for three days. **A disclosure that is
+  true of one of two cases reads exactly like a disclosure that is true.**
+  **AND THE CEILING ITSELF IS SPEC-LEGAL, so say what is a defect and what is a bound.** §4.10(a)
+  requires only that the maximum be FINITE; the protocol places *"no restriction on entity size"*
+  and the 16 MiB frame figure is a SHOULD. The missing 413 was the defect. The capacity is a
+  trade: the store is a fixed `8192 × 8192`-byte array and every caller of `store-put`/`store-get`
+  passes a matching fixed buffer, so the ceiling is **one number that has to agree across ~89
+  sites in ten files**, in a language where one missed site is a remotely-triggerable process
+  kill — the defect this peer has already shipped once.
   **The gate is `tools/harness-gate.py` — teardown AND args, one file, because both are
   invariants of the same interface.** It counts its ANCHORS, not just its failures: `46 wait ·
   46 forward · 11 hand argv across a container boundary`, and that 11 is asserted non-zero and
   independently corroborated by `inner-container-script-check.sh` finding the same 11. Six planted
   defects, and the two arg plants are on DIFFERENT victims (`go` plain, `java` re-exec) because
   the two shapes fail through different mechanisms.
+- **THE ONE PEER WHOSE RUN WAS NOT SEALED OFFLINE, AND ITS OWN HARNESS SAID SO IN A COMMENT.**
+  RATIFIED 2026-09-02 (`csharp`; third occurrence of the vendored-closure class after
+  `dart-toolchain` and `ghc`/`python-toolchain`, and the first where the closure was not vendored
+  AT ALL). `run-cohort-census.sh` gave `csharp` a network namespace while all 45 siblings ran
+  `--network=none`, plus a host-local podman volume named `kc-nuget`: `dotnet restore` reaches
+  nuget.org for the service index **even when every package is already cached**, so
+  `--network=none` failed at restore rather than at download. On a machine that had not already
+  populated that volume the peer produced `NU1301` and **no report at all**. The discipline that
+  made this findable rather than invisible is worth copying: `run-s2.sh` carried the gap in prose
+  — *"that is a real gap and it is named here rather than papered over with a comment claiming
+  offline operation"* — so finding it was a `grep`, not an investigation.
+  Closed the ratified way: the image seeds `/opt/nuget` at BUILD time from the peer's own
+  `packages.lock.json` with `--locked-mode`, then **re-restores against an empty source list to
+  prove the closure is complete**. Only the `.csproj` + lock files are copied in, never sources,
+  so an ordinary peer edit does not invalidate the layer; an added project fails the restore,
+  which is the fail-closed direction.
+  **I NEARLY PUBLISHED A FALSE GREEN OFF IT, BY THE STANDING MECHANISM.** The first offline S4
+  passed — while `obj/` and `bin/` were still on disk from an earlier network-enabled restore, so
+  `dotnet` found `project.assets.json` and never re-resolved. **A vendoring fix must be verified
+  with the local build state DELETED**, exactly as the `haskell` fix was verified with
+  `.cabal-home` and `dist-newstyle` moved aside. Re-measured from clean: S2 24/24, S4
+  `756 · 315P/335W/0F/106S`, equal to the committed report.
+  **That clean re-run is also what exposed the second defect, and it is a rule about WHERE a build
+  requirement lives.** `Microsoft.NETCore.App.Host.<rid>` is published for neither the SDK
+  library-packs nor nuget.org, and only the `Host` csproj carried `<UseAppHost>false</UseAppHost>`
+  — `Conformance`, `Agility` and `Smoke` relied on **every caller passing `-p:UseAppHost=false`**.
+  `run-s2.sh` did. The two `dotnet test` / `dotnet run` commands **published in
+  `status/CONFORMANCE-REPORT.md` as the reproduce recipe** did not, and failed offline. The
+  property was right and its LOCATION was wrong. **A build requirement that every caller must
+  remember is not a requirement, it is a trap** — treat a flag that appears at every invocation as
+  evidence it belongs in the manifest. (Both published commands now run offline: 34/34 xUnit,
+  71/71 corpus. The published xUnit count said 24.)
+- **FIFTH AND SIXTH OCCURRENCE OF THE EXAMINED-ZERO-THINGS CLASS, AND THE FIFTH IS THE WORST FORM:
+  AN INCREMENTAL BUILD TOOL DOES NOT RUN THE SUITE AT ALL.** RATIFIED 2026-09-02. `kotlin`'s S2
+  gate was `gradle test --offline` and nothing else. Gradle's entire design is to skip work it
+  believes current, so on **every invocation after the first**, sources unchanged, it prints
+  `> Task :test UP-TO-DATE` / `BUILD SUCCESSFUL` and exits 0 having executed **zero** tests.
+  Measured by running it twice. That is a step below `swift`/`smalltalk`, which at least invoked a
+  runner that reported nothing. **Two changes and both are needed:** `--rerun` (task-scoped, so
+  compilation still caches) forces execution, and a COUNT parsed from the JUnit XML is asserted
+  against a floor — `--rerun` alone still passes a suite that silently lost its test classes, and
+  the results directory is deleted first so a stale XML cannot satisfy the floor.
+  **`java` is the sibling and needed the same floor for a different reason:** `mvn -o clean test`
+  recompiles every time so there is no UP-TO-DATE hazard, but surefire PRINTS `Tests run: 16` and
+  nothing asserts it, and **Maven exits 0 when it finds no tests at all**. So the scoping rule is
+  not *"does the gate compare a number"* — it is ***which gates delegate to a tool that can
+  succeed having run nothing***. Four found so far (Gradle, Maven, `swift test`, SUnit); all four
+  are closed.
+  **THE PLANTED FLOOR CAUGHT THE COUNTER ITSELF BEING VACUOUS, WHICH IS THE ARGUMENT FOR PLANTING
+  IN ONE LINE.** `java`'s first cut ran `podman run … python3 - "$FLOOR"` with the script on a
+  heredoc, and **`podman run` does not forward stdin without `-i`** — python read an empty script,
+  printed nothing, exited 0. The counter written to prevent a vacuous gate WAS one, it looked
+  correct on the page, and only a floor set above reality showed it. *(Sub-lesson for the survey
+  side: my heuristic for "which of the other 44 gates assert a count" **mis-binned `smalltalk`**,
+  whose assertion lives in the peer's `Makefile`, not in `run-s2.sh`. A survey that reads one
+  conventional file cannot see a gate that delegates — do not publish a count from it.)*
 - **A SECOND AXIS WITH NO COHORT GATE IS AN EXCLUSION NOBODY DECLARED — and it will be defended by
   the fact that the FIRST axis is green.** RATIFIED 2026-09-02, and it is the `apl` exclusion lesson
   moved up one level: there, the one peer nobody could measure was the one peer the census refused to
