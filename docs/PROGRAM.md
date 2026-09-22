@@ -155,6 +155,9 @@ peer have an extension seam." Decomposing the host contract against conformance 
 | Reserved-pattern refusal | `core_register_reserved_refused` · `_publishes_nothing` | **46 / 46 PASS** |
 | A handler body resolves and dispatches | `validate_echo_dispatch` | **46 / 46 PASS** |
 | **A third party in a separate compilation unit, depending only on the published package, constructs a peer and installs a language-native body** | one host program per language | **1 / 46** |
+| The frame budget in force for the request is readable by a handler body | host-seam probe, across the packaging boundary | **1 / 46** |
+| Entity-native dispatch is delegable to an installed evaluator | same probe, with a decline/throw/fast-path control set | **1 / 46** |
+| Emit consumers fire in **registration order** (`SYSTEM-COMPOSITION` §2.2) | same probe — **no oracle category tests this anywhere** | **1 / 46** |
 
 The oracle's own source says why the last row is different: *"the default body-binding seam is
 entity-native compute"* — the wire path installs a **declarative** body, never a language-native
@@ -163,9 +166,31 @@ callable. **So the open question is the packaging boundary and the native body, 
 **And it is the question source reading is worst at.** Of four peers nominated as satisfying the
 contract from source reads, **three were wrong**, each at a different boundary — class scope in C++,
 assembly scope in C#, and in `julia` a live exported entry point onto a container **nothing reads**.
-`typescript` is the only verified host; 42 peers are `unknown` and stay that way until a harness
-executes. **26 of 46 ship a packaging unit at all**; the other 20 structurally *decline* H4 today,
-which is a legitimate profile value rather than a failure.
+`typescript` is the only verified host; 45 peers are `unknown` and stay that way until a harness
+executes.
+
+**Two of the seven requirements are now closed on that peer, by execution.** The frame budget in
+force for a request is readable by a handler body — it was private to the transport, which made a
+`CONTENT` MUST unimplementable — and entity-native dispatch is delegable to an installed evaluator,
+which was hardcoded, making *"ship your own compute semantics"* unreachable. Both carry
+planted-defect controls, and **`--profile core` did not move**: exactly 1 of 758 severities differs
+from the committed report and it is the documented `t1_1_concurrent_demux` timing flake. Consumer
+**invocation order** — normative in `SYSTEM-COMPOSITION` §2.2 and tested by no oracle category
+anywhere — is measured in the same pass.
+
+**The packaging survey behind H4 was re-derived, and 11 of its 46 rows were wrong**, every one of
+them understating the cohort: **25 peers publish to a real registry, 13 are source-vendored** (a
+genuine consumption mode — no registry exists for those substrates), **8 declare no distribution
+target**. Five registry-publishing peers had been filed as declining, including `lean`, an M1 peer.
+The cause is a survey keyed on a list of manifest filenames, which cannot see a language whose
+packaging system was not on the list and reports *absent* rather than *could not look*. Detail:
+`protocol-generator/shared/evaluations/extension-host-packaging-boundaries.md`.
+
+**And H4 as written conflates two independent axes** — is there an in-process construction surface,
+and is there a distribution unit. Peers answer them opposite ways: `c` has no registry and is the
+most library-shaped artifact in the tree; `node-red` and `turbowarp` ship a `package.json` and are
+applications. Declining stays a legitimate profile value; a single `host | declined` field is what
+cannot express it.
 
 ### 3c. Standing, lower priority
 

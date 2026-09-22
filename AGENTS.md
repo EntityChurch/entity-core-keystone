@@ -1044,6 +1044,67 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   unresolved, and the sequence-distinguished dimension above, which needs each peer's behaviour on
   *two* inputs. **Prefer measuring what a source read cannot see over re-deriving what it already
   got right.**
+- **RATIFIED, FIFTH OCCURRENCE OF THE FALSE-NEGATIVE CLASS AND THE FIRST THAT UNDERSTATES A
+  CAPABILITY: A SURVEY KEYED ON A LIST YOU AUTHORED CANNOT SEE WHAT YOU DID NOT THINK OF, AND IT
+  REPORTS "ABSENT" RATHER THAN "COULD NOT LOOK."** 2026-09-04, re-deriving the host contract's H4
+  packaging survey. The four earlier members all *hid* something (`dart`/`ruby`'s NUL byte — a grep
+  that could not SEE the file; F51 — the wrong VOCABULARY; the de-versioning sweep — a pattern that
+  could not SPAN the construction; the `host.err` sweep — the right token in the WRONG BRANCH).
+  **This one manufactures a false "nothing owed here"**, which is the direction nobody re-checks.
+  The survey in circulation split the cohort **26 with a packaging unit / 20 that structurally
+  decline**. Measured from each peer's own `[publishing]` block: **25 registry-published · 13
+  source-vendored · 8 undeclared**, and **11 of 46 rows disagree**. Five peers that publish to a
+  real registry were filed as declining — `fortran` (fpm), **`lean` (Reservoir via Lake, and it is
+  an M1 peer)**, `prolog` (SWI-Prolog pack), `smalltalk` (Metacello), `unison` (unison-share).
+  **The mechanism reproduced three times in one sitting, on me, while writing the correction**: a
+  scan for `package.json Cargo.toml pyproject.toml …` missed `ada`'s `alire.toml`, then `lean`'s
+  `lakefile.lean`, then `prolog`'s `pack.pl` — and `prolog`'s sources live in `prolog/prolog/`, so a
+  source grep scoped to `src/` returns nothing for it either. Every miss printed a confident row.
+  **Enforcement: derive a cohort survey from the tree's OWN declarations — `profile.toml`, the
+  roster, a manifest the peer authored — never from an inventory of names you wrote down.** A peer
+  with no declaration is then a *reviewable gap*; under a filename list, "declines" and "the
+  surveyor had not heard of this package manager" are the same output. Corollary, and it is the
+  cheap tell: **a survey whose misses all fall on the unfamiliar members is not noisy, it is
+  measuring your familiarity.**
+  **Sub-lesson, and it is a design rule rather than a grep: A REQUIREMENT CAN CONFLATE TWO
+  INDEPENDENT AXES, AND THE COHORT IS WHERE YOU FIND OUT.** H4 reads *"usable as a library and not
+  only as a standalone binary"* — which is really *(a) is there an in-process construction surface*
+  and *(b) is there a distribution unit*, and peers answer them **opposite** ways: `c` has no
+  registry and is the most library-shaped artifact in the tree (`.a` + `.so` + `make install` + a
+  `.pc`, pkg-config being C's actual distribution convention), while `node-red`/`turbowarp` ship a
+  `package.json` and are **applications**. A single `host | declined` field gets both wrong, in
+  opposite directions. Detail: `protocol-generator/shared/evaluations/extension-host-packaging-boundaries.md`.
+- **A NEW SEAM MUST BE ORDERED BEHIND THE BEHAVIOUR A CHECK ALREADY DRIVES, OR IT CAN MOVE A
+  CONFORMANCE NUMBER.** Candidate (first occurrence, `typescript` H7, 2026-09-04; the enforcement
+  point is exact). Adding an installable evaluator to the §6.13(a) entity-native path is only safe
+  because the built-in `compute/literal` branch answers **first** and is unaffected by anything
+  installed — that branch is what `core_register_body_binding` drives on all 46 peers. Consulted
+  *before* it, an installed evaluator silently owns a check the peer is measured on; consulted
+  *after*, a peer with no evaluator is byte-identical to the peer before the seam existed.
+  **Measured both ways**: unmutated → `758 · 317P/336W/0F/105S`, exactly 1 of 758 severities
+  different from the committed report and that one the documented `t1_1_concurrent_demux` flake, so
+  zero checks moved; the plant that preempts the literal path reddens exactly the fast-path test.
+  **Rule: when adding a seam to a path a conformance check already exercises, the built-in floor
+  goes first and the seam gets the fallback arm — and assert that with its own test, because the
+  ordering is invisible in any run where the seam is uninstalled.**
+- **A GATE MUST NOT REWRITE A COMMITTED ARTIFACT — and on 36 of 46 peers a bare `./run-s4.sh`
+  DOES.** Found 2026-09-04 while diagnosing an unrelated change: `run-s4.sh` with no arguments
+  defaults `-json-out` to `status/CONFORMANCE-REPORT.json`, **the tracked, signed-off record**. A
+  human diagnostic run therefore silently republishes that peer's number, and mine banked a
+  `t1_1_concurrent_demux` flake over a committed PASS before I noticed the `elapsed_ms` in the
+  tracked file matched my run exactly. The census is unaffected — `run-cohort-census.sh` always
+  passes an explicit destination — so this fires **only** on the invocation where overwriting is
+  most wrong. This is the `python`/`ruby`/`prolog` hardcoded-args entry in a second shape: there
+  the harness *ignored* the caller's args, here it *defaults* to the published path. **Enforcement:
+  `grep -l 'json-out.*status/CONFORMANCE-REPORT.json' protocol-generator/*/run-s4.sh` should return
+  nothing** — the default belongs in scratch, and writing the tracked report should require saying
+  so (`JSON_OUT=`, or `run-cohort-census.sh --to-status`). Owed; 36 peers, mechanical, gateable in
+  `harness-gate.py` as a third invariant of the same interface.
+  *(Sub-lesson, and it cost me the whole edit set once: **commit before planting.** A
+  plant/measure/restore loop that ends in `git checkout -- <dir>` restores to HEAD, which discards
+  the uncommitted work the plants are testing — so plants 2 and 3 ran against a tree with none of
+  the feature in it and reported a wall of compile errors that read like the plants failing. Commit
+  first and `git checkout` becomes exactly the restore you meant.)*
 - **A sibling clearing the bar with a costlier seam disproves a "substrate can't" ceiling.** Io's
   "single-threaded throughput ceiling" verdict was contradicted by Oz passing the same checks with
   *slower* co-process crypto → forced re-measurement → two fixable bugs, ceiling retracted. Cross-peer
