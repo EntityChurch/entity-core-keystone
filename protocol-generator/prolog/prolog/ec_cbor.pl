@@ -31,7 +31,8 @@
           [ cbor_encode/2,          % +Value, -Codes        (list 0..255)
             cbor_encode_bytes/2,    % +Value, -ByteString   (SWI latin-1 string)
             cbor_decode/2,          % +Codes, -Value
-            cbor_decode_bytes/2     % +ByteString, -Value
+            cbor_decode_bytes/2,    % +ByteString, -Value
+            cbor_decode_salvage_bytes/2 % +ByteString, -Value  (§6.3 reporting ONLY)
           ]).
 
 :- use_module(library(lists)).
@@ -46,6 +47,32 @@ cbor_encode_bytes(Value, ByteString) :-
 
 cbor_decode(Codes, Value) :-
     once(dec(Codes, 0, _, Value)).
+
+:- thread_local ec_keep_tags/0.
+
+% Decode ByteString for the sole purpose of REPORTING a rejection, not of accepting
+% one. Identical to cbor_decode_bytes/2 except that a major-type-6 tag yields the item
+% it wrapped instead of throwing.
+%
+% Why this exists (§6.3, a conformance requirement rather than a convenience): the tag
+% rule is "Implementations MUST reject any received protocol frame containing a CBOR
+% tag on a data field. Rejection returns 400 non_canonical_ecf." Rejecting by dropping
+% the frame on the floor satisfies the first sentence and violates the second -- the
+% peer owes the sender a status, and §4.9(c) deliver-or-signal says the same from the
+% other direction. But the status must ride a response correlated by request_id, and
+% the strict decoder cannot reach the request_id in a frame it refuses to parse. This
+% recovers exactly that much and nothing more.
+%
+% This is NOT a weakening of the tag reject. The frame stays rejected: the value this
+% returns is never converted to an entity, never stored, never forwarded and never
+% interpreted, so §6.3's MUST NOT silently strip / MUST NOT preserve / MUST NOT attempt
+% to interpret all still hold. The strict cbor_decode_bytes/2 path that every real
+% ingestion route uses is unchanged, which is what keeps the tag_reject
+% wire-conformance vectors meaningful.
+cbor_decode_salvage_bytes(ByteString, Value) :-
+    setup_call_cleanup(assertz(ec_keep_tags),
+                       cbor_decode_bytes(ByteString, Value),
+                       retractall(ec_keep_tags)).
 
 cbor_decode_bytes(ByteString, Value) :-
     string_codes(ByteString, Codes),
@@ -139,6 +166,16 @@ dec_major(4, Info, O, I, Next, L) :-
     dec_arg(Info, O, I, Ni, Len), dec_array(Len, O, Ni, Next, L).
 dec_major(5, Info, O, I, Next, map(Ps)) :-
     dec_arg(Info, O, I, Ni, Len), dec_map(Len, O, Ni, Next, Ps).
+% N2: any CBOR tag (major type 6), at any depth, is rejected.
+%
+% The salvage path (cbor_decode_salvage_bytes) is the ONE exception: it consumes the
+% tag head and yields the item the tag wrapped, so a §6.3 rejection can be REPORTED.
+% The flag is thread_local, so it is scoped to the one reader thread that set it and
+% cannot leak into a concurrent strict decode on another connection.
+dec_major(6, Info, O, I, Next, V) :-
+    ec_keep_tags, !,
+    dec_arg(Info, O, I, Ni, _Tag),
+    dec(O, Ni, Next, V).
 dec_major(6, _, _, _, _, _) :- throw(error(ec_cbor(tag_rejected_major6), _)).   % N2
 dec_major(7, Info, O, I, Next, V) :- dec_simple(Info, O, I, Next, V).
 

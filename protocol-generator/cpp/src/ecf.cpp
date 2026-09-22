@@ -259,6 +259,10 @@ namespace {
 struct Cursor {
     std::span<const std::byte> in;
     std::size_t i = 0;
+    // keep_tags makes dec_value yield the tag's INNER item instead of returning
+    // TagRejected. It exists for ONE caller -- decode_salvage -- and is never set on
+    // the strict path. See decode_salvage for why this is not a weakening of §6.3.
+    bool keep_tags = false;
 
     std::size_t remaining() const noexcept { return in.size() - i; }
     std::uint8_t byte_at(std::size_t k) const noexcept {
@@ -445,9 +449,17 @@ Result<EcfValue> dec_value(Cursor& c, int depth) {
             }
             return EcfValue::map(std::move(map));
         }
-        case 6:
+        case 6: {
             // N2: major-type-6 tag rejected anywhere, any depth.
-            return std::unexpected(EcfError::TagRejected);
+            if (!c.keep_tags) return std::unexpected(EcfError::TagRejected);
+            // Salvage path only (decode_salvage): consume the tag head and yield the
+            // item it wrapped, so the caller can locate the request_id and SIGNAL the
+            // rejection. The frame is still rejected -- the tag is never interpreted
+            // and the value never reaches an entity.
+            auto tag_num = dec_arg(c, info);
+            if (!tag_num) return std::unexpected(tag_num.error());
+            return dec_value(c, depth + 1);
+        }
         case 7:
             return dec_simple(c, info);
         default:
@@ -462,6 +474,33 @@ Result<EcfValue> decode(std::span<const std::byte> in) {
     auto v = dec_value(c, 0);
     if (!v) return v;
     if (c.i < in.size()) return std::unexpected(EcfError::NonCanonicalEcf);  // trailing bytes
+    return v;
+}
+
+// Parse `in` for the sole purpose of REPORTING a rejection, not of accepting one.
+// Identical to decode() except that a major-type-6 tag yields the item it wrapped
+// instead of EcfError::TagRejected.
+//
+// Why this exists (§6.3, a conformance requirement rather than a convenience): the tag
+// rule is "Implementations MUST reject any received protocol frame containing a CBOR
+// tag on a data field. Rejection returns 400 non_canonical_ecf." Rejecting by dropping
+// the frame on the floor satisfies the first sentence and violates the second -- the
+// peer owes the sender a status, and §4.9(c) deliver-or-signal says the same from the
+// other direction. But the status must ride a response correlated by request_id, and
+// the strict decoder cannot reach the request_id in a frame it refuses to parse. This
+// recovers exactly that much and nothing more.
+//
+// This is NOT a weakening of the tag reject. The frame stays rejected: the value this
+// returns is never converted to an Entity, never stored, never forwarded and never
+// interpreted, so §6.3's MUST NOT silently strip / MUST NOT preserve / MUST NOT attempt
+// to interpret all still hold. The strict decode() path that every real ingestion route
+// uses is byte-for-byte unchanged, which is what keeps the tag_reject wire-conformance
+// vectors meaningful.
+Result<EcfValue> decode_salvage(std::span<const std::byte> in) {
+    Cursor c{in, 0, true};
+    auto v = dec_value(c, 0);
+    if (!v) return v;
+    if (c.i < in.size()) return std::unexpected(EcfError::NonCanonicalEcf);
     return v;
 }
 

@@ -75,20 +75,66 @@ module EntityCore
       [self.class.grant(["*"], ["*"], ["*"], [@local_peer])]
     end
 
+    # ── §5.6 temporal ceiling (CAP-5 / CAP-6) ─────────────────────────────────
+
+    # Convert a DURATION term to an absolute timestamp, reporting whether it
+    # contributes a ceiling at all (nil = no term).
+    #
+    # §5.6 rule 3: a term whose conversion created_at+ttl is not representable is
+    # treated as ABSENT, exactly as a null term is. It MUST NOT wrap and MUST NOT
+    # saturate to a representable maximum — saturation encodes differently from
+    # absence and manufactures expires_at == 2**64-1, a finite bound no reader can
+    # distinguish from a deliberate one. Ruby integers are arbitrary-precision, so
+    # this is a DELIBERATE range check rather than an overflow trap: without it the
+    # arithmetic simply never overflows and the term silently saturates past the
+    # wire's uint64 domain.
+    #
+    # ttl == 0 is NOT a special case here and deliberately so: §5.6 rule 2 makes 0
+    # a DEFINED value yielding created_at (expire immediately). The absent field is
+    # the only "no bound" spelling, and falling out of the arithmetic is what keeps
+    # the two from ever collapsing into each other.
+    UINT64_MAX = (1 << 64) - 1
+
+    def self.add_ttl(created_at, ttl)
+      return nil unless ttl.is_a?(::Integer) && ttl >= 0
+
+      sum = created_at + ttl
+      sum <= UINT64_MAX ? sum : nil
+    end
+
     # ── token mint (§4.4 / §6.9a) ─────────────────────────────────────────────
 
     Minted = Data.define(:token, :signature)
 
-    def mint_token(grantee_hash, grants, parent = nil)
+    # Mint at a caller-supplied instant, carrying §5.6's MIN_DEFINED ceiling.
+    #
+    # +expires_at+ nil means no term was defined and the token genuinely has no
+    # expiry (the ONLY "no bound" spelling). A non-nil value is emitted verbatim —
+    # including one equal to +created_at+, which §5.6 rule 2 requires for
+    # ttl_ms == 0 and which means "already expired at every observable instant",
+    # not "unbounded".
+    #
+    # +created_at+ is supplied rather than sampled here so a computed expiry is
+    # guaranteed to be relative to the SAME instant that lands in the token;
+    # sampling the clock twice skews the two.
+    def mint_token_at(created_at, grantee_hash, grants, parent = nil, expires_at = nil)
       data = {
         "granter" => @identity.identity_hash,
         "grantee" => grantee_hash,
         "grants" => grants,
-        "created_at" => Capability.now_ms
+        "created_at" => created_at
       }
+      data["expires_at"] = expires_at if expires_at
       data["parent"] = parent if parent
       token = Entity.make("system/capability/token", data)
       Minted.new(token: token, signature: @identity.sign(token))
+    end
+
+    # mint_token_at at the current instant with no §5.6 ceiling. Used by the paths
+    # that mint a self-issued grant from local authority (bootstrap, handler
+    # registration, the §4.4 handshake), where no MIN_DEFINED term is in play.
+    def mint_token(grantee_hash, grants, parent = nil)
+      mint_token_at(Capability.now_ms, grantee_hash, grants, parent)
     end
 
     def cap_included(minted)
@@ -314,7 +360,7 @@ module EntityCore
         author = exec.bytes("author")
         return Outcome.err(403, "capability_denied") if author.nil?
 
-        mint_bounded(ctx.caller_cap, Peer.req_grants(params), author, nil)
+        mint_bounded(ctx.env, ctx.caller_cap, params, Peer.req_grants(params), author, nil)
       end
 
       def op_delegate(ctx)
@@ -328,7 +374,7 @@ module EntityCore
           return Outcome.err(501, "unsupported_operation", "delegate: same-peer-only in v1")
         end
 
-        mint_bounded(ctx.caller_cap, Peer.req_grants(params), author, ph)
+        mint_bounded(ctx.env, ctx.caller_cap, params, Peer.req_grants(params), author, ph)
       end
 
       def op_revoke(ctx)
@@ -359,7 +405,7 @@ module EntityCore
         Outcome.ok(Wire.empty_params)
       end
 
-      def mint_bounded(caller_cap, req_grants, grantee_hash, parent)
+      def mint_bounded(env, caller_cap, params, req_grants, grantee_hash, parent)
         bounded = false
         if caller_cap
           parent_grants = Capability.grants_of_token(caller_cap)
@@ -376,7 +422,28 @@ module EntityCore
         end
         return Outcome.err(403, "scope_exceeds_authority") unless bounded
 
-        minted = @peer.mint_token(grantee_hash, req_grants, parent)
+        # §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE
+        # and convert the duration term against that same instant.
+        #
+        # Note what this is NOT: an authorization decision. An over-long ttl_ms
+        # from a bounded caller MINTS a clamped token and returns 200 — "rejecting
+        # it is non-conformant" (§5.6). The bound exists because `request` mints a
+        # ROOT token (parent: null), so §5.6's parent-child attenuation never
+        # reaches it; without this clamp, temporal attenuation is the one dimension
+        # a requester could escape, and policy withdrawal would have no bounded
+        # latency.
+        created_at = Capability.now_ms
+        terms = []
+        if parent
+          pt = env&.included_get(parent) || @store.get_by_hash(parent)
+          terms << pt.uint("expires_at") if pt                       # absolute
+        end
+        terms << caller_cap.uint("expires_at") if caller_cap          # absolute
+        ttl = params&.uint("ttl_ms")
+        terms << Peer.add_ttl(created_at, ttl) if ttl                 # duration
+        ceiling = terms.compact.min
+
+        minted = @peer.mint_token_at(created_at, grantee_hash, req_grants, parent, ceiling)
         Outcome.ok(
           Entity.make("system/capability/grant", { "token" => minted.token.content_hash }),
           @peer.cap_included(minted)

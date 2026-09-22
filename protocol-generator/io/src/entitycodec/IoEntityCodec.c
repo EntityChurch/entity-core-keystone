@@ -338,6 +338,10 @@ static int enc_value(Ctx *cx, Buf *o, IoObject *v, int depth) {
 typedef struct {
     const unsigned char *b;
     size_t len, pos;
+    /* keep_tags makes dec_value yield the tag's INNER item instead of erroring. It
+     * exists for ONE caller -- decodeSalvage -- and is never set on the strict path.
+     * See IoEntityCodec_decodeSalvage for why this is not a weakening of §6.3. */
+    int keep_tags;
 } Cur;
 
 static IoObject *makeWrapper(Ctx *cx, const char *protoSlot) {
@@ -474,7 +478,13 @@ static IoObject *dec_value(Ctx *cx, Cur *c, int depth) {
         return list;
     }
     case 5: return dec_map(cx, c, val, depth);
-    case 6: ctx_err(cx, "tag_rejected", "major-type-6 tag in data (N2)"); return NULL;
+    case 6:
+        if (!c->keep_tags) { ctx_err(cx, "tag_rejected", "major-type-6 tag in data (N2)"); return NULL; }
+        /* Salvage path only (decodeSalvage): the tag argument was already consumed into
+         * `val` by the head read, so yield the item it wrapped. The frame is still
+         * rejected -- the tag is never interpreted and never reaches an Entity. */
+        (void)val;
+        return dec_value(cx, c, depth + 1);
     case 7:
         switch (ai) {
         case 20: return st->ioFalse;
@@ -559,7 +569,7 @@ static IoObject *IoEntityCodec_encode(IoObject *self, IoObject *locals, IoMessag
 static IoObject *IoEntityCodec_decode(IoObject *self, IoObject *locals, IoMessage *m) {
     Ctx cx = { IOSTATE, self, NULL, "" };
     IoSeq *s = IoMessage_locals_seqArgAt_(m, locals, 0);
-    Cur c = { IoSeq_rawBytes(s), IoSeq_rawSizeInBytes(s), 0 };
+    Cur c = { IoSeq_rawBytes(s), IoSeq_rawSizeInBytes(s), 0, 0 };
     /* Explicit retain-pool management (THE A-IO leak fix): the iovm allocators
      * (IoList_new, IoSeq_newWithData_length_, IOCLONE) auto-stackRetain each new
      * object onto the current coroutine's retain stack. A deeply-recursive
@@ -595,7 +605,36 @@ static IoObject *IoEntityCodec_decode(IoObject *self, IoObject *locals, IoMessag
 static IoObject *IoEntityCodec_tryDecode(IoObject *self, IoObject *locals, IoMessage *m) {
     Ctx cx = { IOSTATE, self, NULL, "" };
     IoSeq *s = IoMessage_locals_seqArgAt_(m, locals, 0);
-    Cur c = { IoSeq_rawBytes(s), IoSeq_rawSizeInBytes(s), 0 };
+    Cur c = { IoSeq_rawBytes(s), IoSeq_rawSizeInBytes(s), 0, 0 };
+    IoObject *v = dec_value(&cx, &c, 0);
+    if (!cx.err && c.pos != c.len) ctx_err(&cx, "non_canonical_ecf", "trailing bytes after value");
+    if (cx.err) return IONIL(self);
+    return v;
+}
+
+/* Decode for the sole purpose of REPORTING a rejection, not of accepting one. Identical
+ * to tryDecode except that a major-type-6 tag yields the item it wrapped instead of
+ * erroring.
+ *
+ * Why this exists (§6.3, a conformance requirement rather than a convenience): the tag
+ * rule is "Implementations MUST reject any received protocol frame containing a CBOR tag
+ * on a data field. Rejection returns 400 non_canonical_ecf." Rejecting by dropping the
+ * frame on the floor satisfies the first sentence and violates the second -- the peer
+ * owes the sender a status, and §4.9(c) deliver-or-signal says the same from the other
+ * direction. But the status must ride a response correlated by request_id, and the strict
+ * decoder cannot reach the request_id in a frame it refuses to parse. This recovers
+ * exactly that much and nothing more.
+ *
+ * This is NOT a weakening of the tag reject. The frame stays rejected: the value this
+ * returns is never converted to an Entity, never stored, never forwarded and never
+ * interpreted, so §6.3's MUST NOT silently strip / MUST NOT preserve / MUST NOT attempt
+ * to interpret all still hold. The strict decode/tryDecode paths that every real
+ * ingestion route uses are byte-unchanged, which is what keeps the tag_reject
+ * wire-conformance vectors meaningful. */
+static IoObject *IoEntityCodec_decodeSalvage(IoObject *self, IoObject *locals, IoMessage *m) {
+    Ctx cx = { IOSTATE, self, NULL, "" };
+    IoSeq *s = IoMessage_locals_seqArgAt_(m, locals, 0);
+    Cur c = { IoSeq_rawBytes(s), IoSeq_rawSizeInBytes(s), 0, 1 };
     IoObject *v = dec_value(&cx, &c, 0);
     if (!cx.err && c.pos != c.len) ctx_err(&cx, "non_canonical_ecf", "trailing bytes after value");
     if (cx.err) return IONIL(self);
@@ -873,6 +912,7 @@ IoObject *IoEntityCodec_proto(void *state) {
         {"encode", IoEntityCodec_encode},
         {"decode", IoEntityCodec_decode},
         {"tryDecode", IoEntityCodec_tryDecode},
+        {"decodeSalvage", IoEntityCodec_decodeSalvage},
         {"contentHash", IoEntityCodec_contentHash},
         {"contentHashWithFormat", IoEntityCodec_contentHashWithFormat},
         {"sha256", IoEntityCodec_sha256},

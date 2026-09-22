@@ -70,6 +70,25 @@ module EntityCore
       Cbor.encode(envelope.to_cbor)
     end
 
+    # §6.3 rejection reporting: recover ONLY the request_id from a frame the strict
+    # decoder rejected, so the rejection can be delivered as a correlated
+    # `400 non_canonical_ecf` response instead of silence. The frame stays
+    # rejected — nothing else is read out of it. Returns nil when even the
+    # request_id is unrecoverable (an unattributable frame, where silence is the
+    # only option left). See Cbor.decode_salvage.
+    #
+    # The envelope and entity-wrapper shapes are fixed maps with no legal tag
+    # position (§6.3), so a frame whose ONLY defect is a tag inside some entity's
+    # +data+ still has a structurally sound root — which is exactly the case this
+    # recovers.
+    def salvage_request_id(payload)
+      v = Cbor.decode_salvage(payload)
+      rid = v.dig("root", "data", "request_id") if v.is_a?(::Hash)
+      rid if rid.is_a?(::String)
+    rescue StandardError
+      nil
+    end
+
     # ── EXECUTE builder (§3.2) ──────────────────────────────────────────────────
 
     # Build an EXECUTE entity. +author+ / +capability+ are 33-byte hashes;

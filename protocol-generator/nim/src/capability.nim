@@ -153,6 +153,27 @@ type CapabilityToken* = object
   maxDelegationTtl*: uint64
   hasMaxDelegationTtl*: bool
 
+proc temporalFieldsRepresentable*(e: Entity): bool =
+  ## §6.2 CAP-6a: true when every temporal field on a RECEIVED token is either absent
+  ## (legal) or representable as a uint64.
+  ##
+  ## This is the reader-side half of CAP-6 and it is where a peer fails OPEN.
+  ## `uintField` answers `none` BOTH when a field is ABSENT and when it is PRESENT but
+  ## not `ekUint` -- a negative integer (`ekNint`) or a bignum -- so parseToken left
+  ## `hasExpiresAt = false` for a token carrying `expires_at: -1`, the expiry check was
+  ## silently skipped, and the token was honored with 200. §6.2 CAP-6a is explicit:
+  ## such a token "is malformed. A verifier MUST refuse it and MUST NOT treat the
+  ## unrepresentable field as absent." An absent expires_at stays legal and is NOT
+  ## rejected here.
+  ##
+  ## Refusal must be the §5.2 capability_denied disposition (a status-bearing
+  ## response), never a decode-layer silent drop or a transport close.
+  for key in ["expires_at", "not_before", "created_at"]:
+    let v = e.field(key)
+    if v == nil: continue            # absent is legal
+    if v.kind != ekUint: return false  # present but not a uint64 => malformed
+  true
+
 proc parseToken*(e: Entity): CapabilityToken =
   ## Total parse of a system/capability/token entity (§3.6). `valid = false` on
   ## the wrong type or a missing required field — never raises.
@@ -388,6 +409,9 @@ proc verifyMultiSigRoot(cap: CapabilityToken; env: Envelope; localPeerId: string
       let pid = peerEntityId(p.get)
       if pid.isSome and pid.get == localPeerId: localIn = true; break
   if not localIn: return false
+  # CAP-6a FIRST: the range checks below cannot tell "absent" from "present but not a
+  # uint64", so on their own they would skip and honor the token (fail-open).
+  if not temporalFieldsRepresentable(cap.entity): return false
   if cap.hasNotBefore and nowMs < cap.notBefore: return false
   if cap.hasExpiresAt and cap.expiresAt < nowMs: return false
   if env.includedGet(cap.grantee).isNone: return false
@@ -429,6 +453,10 @@ proc verifyCapabilityChain*(cap: CapabilityToken; env: Envelope; localPeerId: st
     if signatureSigner(sig.get) != current.granter: return false
     if not verifySignatureEntity(sig.get, granter.get): return false
     if env.includedGet(current.grantee).isNone: return false   # §5.5 PR-3
+    # CAP-6a FIRST -- see temporalFieldsRepresentable. Must precede the two range
+    # checks below, because those are the ones the absent/unrepresentable ambiguity
+    # defeats.
+    if not temporalFieldsRepresentable(current.entity): return false
     if current.hasNotBefore and nowMs < current.notBefore: return false
     if current.hasExpiresAt and current.expiresAt < nowMs: return false
     if i < chain.len - 1:

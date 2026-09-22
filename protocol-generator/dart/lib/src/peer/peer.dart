@@ -79,14 +79,28 @@ final class Peer {
 
   // ── token mint (§4.4 / §6.9a) ───────────────────────────────────────────────────
 
-  Future<_Minted> _mintToken(
-      Uint8List granteeHash, List<EcfMap> grants, Uint8List? parent) async {
+  /// Mint at a caller-supplied instant, carrying §5.6's MIN_DEFINED ceiling.
+  ///
+  /// [expiresAt] null means no term was defined and the token genuinely has no
+  /// expiry (the ONLY "no bound" spelling). A non-null value is emitted verbatim —
+  /// including one equal to [createdAt], which §5.6 rule 2 requires for
+  /// ttl_ms == 0 and which means "already expired at every observable instant",
+  /// not "unbounded".
+  ///
+  /// [createdAt] is supplied rather than sampled here so a computed expiry is
+  /// guaranteed to be relative to the SAME instant that lands in the token;
+  /// sampling the clock twice skews the two.
+  Future<_Minted> _mintTokenAt(int createdAt, Uint8List granteeHash,
+      List<EcfMap> grants, Uint8List? parent, BigInt? expiresAt) async {
     final pairs = <EcfEntry>[
       EcfEntry(const EcfText('granter'), EcfBytes(identity.identityHash())),
       EcfEntry(const EcfText('grantee'), EcfBytes(granteeHash)),
       EcfEntry(const EcfText('grants'), _grantsArray(grants)),
-      EcfEntry(const EcfText('created_at'), EcfInt.of(cap.nowMs())),
+      EcfEntry(const EcfText('created_at'), EcfInt.of(createdAt)),
     ];
+    if (expiresAt != null) {
+      pairs.add(EcfEntry(const EcfText('expires_at'), EcfInt(expiresAt)));
+    }
     if (parent != null) {
       pairs.add(EcfEntry(const EcfText('parent'), EcfBytes(parent)));
     }
@@ -94,6 +108,13 @@ final class Peer {
     final signature = await identity.sign(token);
     return _Minted(token, signature);
   }
+
+  /// _mintTokenAt at the current instant with no §5.6 ceiling. Used by the paths
+  /// that mint a self-issued grant from local authority (bootstrap, handler
+  /// registration, the §4.4 handshake), where no MIN_DEFINED term is in play.
+  Future<_Minted> _mintToken(
+          Uint8List granteeHash, List<EcfMap> grants, Uint8List? parent) =>
+      _mintTokenAt(cap.nowMs(), granteeHash, grants, parent, null);
 
   List<Included> _capIncluded(_Minted m) => [
         Included(m.token.hash(), m.token),
@@ -388,7 +409,7 @@ final class Peer {
     final params = ctx.exec.entityField('params');
     final author = ctx.exec.bytes('author');
     if (author == null) return Outcome.err(403, 'capability_denied');
-    return _mintBounded(ctx.callerCap, _reqGrants(params), author, null);
+    return _mintBounded(ctx.env, ctx.callerCap, params, _reqGrants(params), author, null);
   }
 
   Future<Outcome> _capDelegate(HandlerContext ctx) async {
@@ -404,7 +425,7 @@ final class Peer {
     if (!(author != null && octetsEqual(author, identity.identityHash()))) {
       return Outcome.err(501, 'unsupported_operation', 'delegate: same-peer-only in v1');
     }
-    return _mintBounded(ctx.callerCap, _reqGrants(params), author, ph);
+    return _mintBounded(ctx.env, ctx.callerCap, params, _reqGrants(params), author, ph);
   }
 
   Future<Outcome> _capRevoke(HandlerContext ctx) async {
@@ -440,8 +461,8 @@ final class Peer {
     return Outcome.ok(wire.emptyParams());
   }
 
-  Future<Outcome> _mintBounded(Entity? callerCap, List<EcfMap> reqGrants,
-      Uint8List granteeHash, Uint8List? parent) async {
+  Future<Outcome> _mintBounded(Envelope env, Entity? callerCap, Entity? params,
+      List<EcfMap> reqGrants, Uint8List granteeHash, Uint8List? parent) async {
     var bounded = false;
     if (callerCap != null) {
       final parentGrants = cap.grantsOfToken(callerCap);
@@ -457,7 +478,32 @@ final class Peer {
       }
     }
     if (!bounded) return Outcome.err(403, 'scope_exceeds_authority');
-    final m = await _mintToken(granteeHash, reqGrants, parent);
+
+    // §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE and
+    // convert the duration term against that same instant.
+    //
+    // Note what this is NOT: an authorization decision. An over-long ttl_ms from a
+    // bounded caller MINTS a clamped token and returns 200 — "rejecting it is
+    // non-conformant" (§5.6). The bound exists because `request` mints a ROOT token
+    // (parent: null), so §5.6's parent-child attenuation never reaches it; without
+    // this clamp, temporal attenuation is the one dimension a requester could
+    // escape, and policy withdrawal would have no bounded latency.
+    final createdAt = cap.nowMs();
+    BigInt? ceiling;
+    void fold(BigInt? term) {
+      if (term != null && (ceiling == null || term < ceiling!)) ceiling = term;
+    }
+
+    if (parent != null) {
+      final pt = env.includedGet(parent) ?? store.getByHash(parent);
+      if (pt != null) fold(pt.uint('expires_at')); // absolute
+    }
+    if (callerCap != null) fold(callerCap.uint('expires_at')); // absolute
+    final ttl = params?.uint('ttl_ms');
+    if (ttl != null) fold(cap.addTtl(createdAt, ttl)); // duration
+
+    final m =
+        await _mintTokenAt(createdAt, granteeHash, reqGrants, parent, ceiling);
     return Outcome.ok(
       Entity.make('system/capability/grant',
           cmap(['token', cbytes(m.token.hash())])),

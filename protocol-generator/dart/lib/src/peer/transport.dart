@@ -160,7 +160,28 @@ final class _Io {
       try {
         env = wire.envelopeOfFrame(payload);
       } catch (_) {
-        continue; // §4.9: skip a malformed frame, keep serving
+        // §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is
+        // owed a STATUS, not silence. This used to be a bare `continue`, which
+        // rejected the frame (correct) and then dropped it on the floor (wrong):
+        // the sender saw no response at all and blocked until its own timeout,
+        // violating §6.3's second sentence and §4.9(c) deliver-or-signal. It also
+        // made a refusal indistinguishable from a dead peer, and on a
+        // single-connection oracle run it poisons every later request on the same
+        // connection.
+        //
+        // The frame is still REJECTED — only enough is salvaged to correlate the
+        // response. If even the request_id is unrecoverable the frame is
+        // unattributable and silence is the only option left.
+        final rid = wire.salvageRequestId(payload);
+        if (rid != null) {
+          try {
+            writeFramed(Envelope(wire.makeResponse(
+                rid, 400, wire.errorResult('non_canonical_ecf', null))));
+          } catch (_) {
+            // write failure ends this exchange; the reader keeps going
+          }
+        }
+        continue; // §4.9: keep serving
       }
       if (env.root.type == 'system/protocol/execute/response') {
         _routeResponse(env);

@@ -210,21 +210,46 @@ contains
     allocate(b(0))
   end function null_hash
 
+  ! mint_token_at at the current instant with no §5.6 ceiling. Used by the paths that
+  ! mint a self-issued grant from local authority (bootstrap, handler registration, the
+  ! §4.4 handshake), where no MIN_DEFINED term is in play.
   function mint_token(grantee_hash, grants, parent) result(m)
     integer(int8),     intent(in) :: grantee_hash(:)
     type(ecf_value_t), intent(in) :: grants
     integer(int8),     intent(in) :: parent(:)
+    type(minted_t) :: m
+    m = mint_token_at(cap_now_ms(), grantee_hash, grants, parent, 0_int64, .false.)
+  end function mint_token
+
+  ! Mint at a caller-supplied instant, carrying §5.6's MIN_DEFINED ceiling.
+  !
+  ! has_expires=.false. means no term was defined and the token genuinely has no expiry
+  ! (the ONLY "no bound" spelling). A supplied expires_at is emitted verbatim -- including
+  ! a value equal to created_at, which §5.6 rule 2 requires for ttl_ms == 0 and which
+  ! means "already expired at every observable instant", not "unbounded".
+  !
+  ! created_at is supplied rather than sampled here so a computed expiry is guaranteed to
+  ! be relative to the SAME instant that lands in the token; sampling the clock twice
+  ! skews the two.
+  function mint_token_at(created_at, grantee_hash, grants, parent, expires_at, has_expires) result(m)
+    integer(int64),    intent(in) :: created_at
+    integer(int8),     intent(in) :: grantee_hash(:)
+    type(ecf_value_t), intent(in) :: grants
+    integer(int8),     intent(in) :: parent(:)
+    integer(int64),    intent(in) :: expires_at
+    logical,           intent(in) :: has_expires
     type(minted_t) :: m
     type(ecf_value_t) :: tm
     tm = v_map_empty()
     tm = v_map_put(tm, 'granter', v_bytes(g_ident%id_hash))
     tm = v_map_put(tm, 'grantee', v_bytes(grantee_hash))
     tm = v_map_put(tm, 'grants', grants)
-    tm = v_map_put(tm, 'created_at', v_uint(cap_now_ms()))
+    tm = v_map_put(tm, 'created_at', v_uint(created_at))
+    if (has_expires) tm = v_map_put(tm, 'expires_at', v_uint(expires_at))
     if (size(parent) > 0) tm = v_map_put(tm, 'parent', v_bytes(parent))
     m%token = ent_make('system/capability/token', tm)
     m%sig   = id_sign(g_ident, m%token)
-  end function mint_token
+  end function mint_token_at
 
   function cap_included(m) result(inc)
     type(minted_t), intent(in) :: m
@@ -895,7 +920,7 @@ contains
     params = ent_entity_field(env%root, 'params')
     author = ent_bytes(env%root, 'author')
     if (size(author) == 0) then; oc = out_err(403, 'capability_denied', ''); return; end if
-    oc = cap_mint_bounded(caller_cap, req_grants(params), author, null_hash())
+    oc = cap_mint_bounded(env%inc, g_store, caller_cap, params, req_grants(params), author, null_hash())
   end function cap_request
 
   function cap_delegate(env, caller_cap) result(oc)
@@ -913,16 +938,31 @@ contains
     if (.not. (size(author) > 0 .and. hash_eq(g_ident%id_hash, author))) then
       oc = out_err(501, 'unsupported_operation', 'delegate: same-peer-only in v1'); return
     end if
-    oc = cap_mint_bounded(caller_cap, req_grants(params), author, ph)
+    oc = cap_mint_bounded(env%inc, g_store, caller_cap, params, req_grants(params), author, ph)
   end function cap_delegate
 
-  function cap_mint_bounded(caller_cap, rg, grantee_hash, parent) result(oc)
-    type(entity_t),    intent(in) :: caller_cap
+  ! fold one DEFINED term into the running §5.6 MIN_DEFINED ceiling.
+  subroutine fold_min(defined, term, acc, have)
+    logical,        intent(in)    :: defined
+    integer(int64), intent(in)    :: term
+    integer(int64), intent(inout) :: acc
+    logical,        intent(inout) :: have
+    if (.not. defined) return
+    if ((.not. have) .or. term < acc) then; acc = term; have = .true.; end if
+  end subroutine fold_min
+
+  function cap_mint_bounded(inc, store, caller_cap, params, rg, grantee_hash, parent) result(oc)
+    type(entity_t),    intent(in) :: inc(:)
+    type(store_t),     intent(in) :: store
+    type(entity_t),    intent(in) :: caller_cap, params
     type(ecf_value_t), intent(in) :: rg
     integer(int8),     intent(in) :: grantee_hash(:), parent(:)
     type(outcome_t) :: oc
     type(ecf_value_t) :: parent_grants, c, pj, gm
     type(minted_t) :: m
+    type(entity_t) :: pt
+    integer(int64) :: created_at, ceiling, term, ttl
+    logical :: have_ceiling, pterm, pttl
     integer :: i, j
     logical :: bounded, covered
     bounded = .false.
@@ -940,7 +980,38 @@ contains
       end do
     end if
     if (.not. bounded) then; oc = out_err(403, 'scope_exceeds_authority', ''); return; end if
-    m = mint_token(grantee_hash, rg, parent)
+
+    ! §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE and
+    ! convert the duration term against that same instant.
+    !
+    ! Note what this is NOT: an authorization decision. An over-long ttl_ms from a bounded
+    ! caller MINTS a clamped token and returns 200 -- "rejecting it is non-conformant"
+    ! (§5.6). The bound exists because `request` mints a ROOT token (parent: null), so
+    ! §5.6's parent-child attenuation never reaches it; without this clamp, temporal
+    ! attenuation is the one dimension a requester could escape, and policy withdrawal
+    ! would have no bounded latency.
+    created_at = cap_now_ms()
+    have_ceiling = .false.; ceiling = 0_int64
+    if (size(parent) > 0) then                                   ! absolute
+      pt = cap_resolve(inc, store, parent)
+      if (pt%present) then
+        call ent_uint(pt, 'expires_at', term, pterm)
+        call fold_min(pterm, term, ceiling, have_ceiling)
+      end if
+    end if
+    if (caller_cap%present) then                                 ! absolute
+      call ent_uint(caller_cap, 'expires_at', term, pterm)
+      call fold_min(pterm, term, ceiling, have_ceiling)
+    end if
+    if (params%present) then                                     ! duration
+      call ent_uint(params, 'ttl_ms', ttl, pttl)
+      if (pttl) then
+        call cap_add_ttl(created_at, ttl, term, pterm)
+        call fold_min(pterm, term, ceiling, have_ceiling)
+      end if
+    end if
+
+    m = mint_token_at(created_at, grantee_hash, rg, parent, ceiling, have_ceiling)
     gm = v_map_put(v_map_empty(), 'token', v_bytes(ent_hash(m%token)))
     oc = out_ok(ent_make('system/capability/grant', gm), cap_included(m))
   end function cap_mint_bounded

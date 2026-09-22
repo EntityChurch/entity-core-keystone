@@ -217,15 +217,39 @@ module EntityCore
     # on any non-canonical input: a CBOR tag (major 6, invariant N2/§6.3),
     # indefinite length, non-minimal argument, reserved additional-info,
     # duplicate map key, over-depth, or trailing bytes.
-    def decode(bin)
+    def decode(bin, keep_tags: false)
       bytes = bin.b
       cursor = Cursor.new(bytes)
-      value = decode_value(cursor, 0)
+      value = decode_value(cursor, 0, keep_tags)
       unless cursor.eof?
         raise NonCanonicalError, "trailing bytes after value: #{cursor.remaining} byte(s)"
       end
 
       value
+    end
+
+    # Decode +bin+ for the sole purpose of REPORTING a rejection, not of accepting
+    # one. Identical to #decode except that a major-type-6 tag yields the item it
+    # wrapped instead of raising NonCanonicalError.
+    #
+    # Why this exists (§6.3, a conformance requirement rather than a convenience):
+    # the tag rule is "Implementations MUST reject any received protocol frame
+    # containing a CBOR tag on a data field. Rejection returns 400
+    # non_canonical_ecf." Rejecting by dropping the frame on the floor satisfies
+    # the first sentence and violates the second — the peer owes the sender a
+    # status, and §4.9(c) deliver-or-signal says the same from the other direction.
+    # But the status must ride a response correlated by request_id, and the strict
+    # decoder cannot reach the request_id in a frame it refuses to parse. This
+    # recovers exactly that much and nothing more.
+    #
+    # This is NOT a weakening of the tag reject. The frame stays rejected: the
+    # value this returns is never converted to an Entity, never stored, never
+    # forwarded and never interpreted, so §6.3's MUST NOT silently strip / MUST NOT
+    # preserve / MUST NOT attempt to interpret all still hold. The strict #decode
+    # path that every real ingestion route uses is unchanged, which is what keeps
+    # the tag_reject wire-conformance vectors meaningful.
+    def decode_salvage(bin)
+      decode(bin, keep_tags: true)
     end
 
     # Internal byte cursor over an ASCII-8BIT String (blocks_for_iteration idiom
@@ -263,7 +287,7 @@ module EntityCore
     end
     private_constant :Cursor
 
-    def decode_value(cur, depth)
+    def decode_value(cur, depth, keep_tags = false)
       raise NonCanonicalError, "nesting deeper than #{MAX_DEPTH}" if depth > MAX_DEPTH
 
       ib = cur.read_byte
@@ -284,12 +308,21 @@ module EntityCore
         s
       when 4
         len = read_argument(info, cur)
-        Array.new(len) { decode_value(cur, depth + 1) }
+        Array.new(len) { decode_value(cur, depth + 1, keep_tags) }
       when 5
-        read_map(info, cur, depth + 1)
+        read_map(info, cur, depth + 1, keep_tags)
       when 6
         # Invariant N2 / ECF §6.3 — tags MUST be rejected anywhere in the input.
-        raise NonCanonicalError, "CBOR tag (major type 6) is not permitted in ECF"
+        unless keep_tags
+          raise NonCanonicalError, "CBOR tag (major type 6) is not permitted in ECF"
+        end
+
+        # Salvage path only (#decode_salvage): consume the tag head and yield the
+        # item it wrapped, so the caller can locate the request_id and SIGNAL the
+        # rejection. The frame is still rejected — the tag is never interpreted and
+        # the value never reaches an Entity.
+        read_argument(info, cur)
+        decode_value(cur, depth + 1, true)
       when 7
         read_simple(info, cur)
       end
@@ -330,12 +363,12 @@ module EntityCore
     end
     private_class_method :read_argument
 
-    def read_map(info, cur, depth)
+    def read_map(info, cur, depth, keep_tags = false)
       len = read_argument(info, cur)
       map = {}
       len.times do
-        k = decode_value(cur, depth)
-        v = decode_value(cur, depth)
+        k = decode_value(cur, depth, keep_tags)
+        v = decode_value(cur, depth, keep_tags)
         raise NonCanonicalError, "duplicate map key" if map.key?(k)
 
         map[k] = v

@@ -246,6 +246,10 @@ fits_f32 :: proc(f: f64) -> (u32, bool) {
 Cursor :: struct {
 	data: []u8,
 	pos:  int,
+	// keep_tags makes decode_value yield the tag's INNER item instead of returning
+	// .Tag_Rejected. It exists for ONE caller -- cbor_decode_salvage -- and is never
+	// set on the strict path. See that proc for why this is not a weakening of §6.3.
+	keep_tags: bool,
 }
 
 // cbor_decode decodes canonical ECF bytes to an owned Ec_Value tree. Rejects any
@@ -253,7 +257,7 @@ Cursor :: struct {
 // non-minimal argument, reserved additional-info, duplicate map key, over-depth,
 // invalid UTF-8, or trailing bytes.
 cbor_decode :: proc(data: []u8, allocator := context.allocator) -> (Ec_Value, Codec_Error) {
-	cur := Cursor{data, 0}
+	cur := Cursor{data, 0, false}
 	value, err := decode_value(&cur, 0, allocator)
 	if err != .None {
 		return nil, err
@@ -261,6 +265,38 @@ cbor_decode :: proc(data: []u8, allocator := context.allocator) -> (Ec_Value, Co
 	if cur.pos != len(cur.data) {
 		value_destroy(value, allocator)
 		return nil, .Non_Canonical_Ecf // trailing bytes
+	}
+	return value, .None
+}
+
+// cbor_decode_salvage decodes `data` for the sole purpose of REPORTING a rejection,
+// not of accepting one. Identical to cbor_decode except that a major-type-6 tag
+// yields the item it wrapped rather than .Tag_Rejected.
+//
+// Why this exists (§6.3, a conformance requirement rather than a convenience): the tag
+// rule is "Implementations MUST reject any received protocol frame containing a CBOR
+// tag on a data field. Rejection returns 400 non_canonical_ecf." Rejecting by dropping
+// the frame on the floor satisfies the first sentence and violates the second -- the
+// peer owes the sender a status, and §4.9(c) deliver-or-signal says the same from the
+// other direction. But the status must ride a response correlated by request_id, and
+// the strict decoder cannot reach the request_id in a frame it refuses to parse. This
+// recovers exactly that much and nothing more.
+//
+// This is NOT a weakening of the tag reject. The frame stays rejected: the value this
+// returns is never converted to an Entity, never stored, never forwarded and never
+// interpreted, so §6.3's MUST NOT silently strip / MUST NOT preserve / MUST NOT
+// attempt to interpret all still hold. The strict cbor_decode path that every real
+// ingestion route uses is unchanged, which is what keeps the tag_reject
+// wire-conformance vectors meaningful.
+cbor_decode_salvage :: proc(data: []u8, allocator := context.allocator) -> (Ec_Value, Codec_Error) {
+	cur := Cursor{data, 0, true}
+	value, err := decode_value(&cur, 0, allocator)
+	if err != .None {
+		return nil, err
+	}
+	if cur.pos != len(cur.data) {
+		value_destroy(value, allocator)
+		return nil, .Non_Canonical_Ecf
 	}
 	return value, .None
 }
@@ -325,7 +361,15 @@ decode_value :: proc(
 		return decode_map(cur, int(length), depth + 1, allocator)
 	case 6:
 		// Invariant N2 / §6.3 — tags MUST be rejected anywhere in the input.
-		return nil, .Tag_Rejected
+		if !cur.keep_tags {
+			return nil, .Tag_Rejected
+		}
+		// Salvage path only (cbor_decode_salvage): consume the tag head and yield the
+		// item it wrapped, so the caller can locate the request_id and SIGNAL the
+		// rejection. The frame is still rejected -- the tag is never interpreted and
+		// the value never reaches an Entity.
+		read_argument(info, cur) or_return
+		return decode_value(cur, depth + 1, allocator)
 	case 7:
 		return decode_simple(info, cur)
 	}

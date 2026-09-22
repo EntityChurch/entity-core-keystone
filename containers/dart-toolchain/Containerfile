@@ -112,13 +112,26 @@ ENV PUB_CACHE=/opt/pub-cache
 # NOTE (S2 sentinel resolution): the profile pinned cryptography_plus 2.7.0, but that
 # version does NOT exist on pub.dev — the 2.x line publishes 2.7.1 (2024-10-24, ~602d,
 # clears >=30d). Re-pinned to 2.7.1 and logged (A-DART-002 / A-DART-012).
-COPY containers/dart-toolchain/prefetch /tmp/prefetch
+#
+# THE PREFETCH SEEDS FROM THE PEER'S OWN pubspec.lock, NOT FROM A SECOND COPY OF THE
+# PINS. Fixed 2026-08-28, and the failure is the Koji dependency-closure lesson in a
+# different package manager: this layer used to carry its own throwaway pubspec.yaml
+# pinning the three DIRECT deps exactly and letting every TRANSITIVE float. That is
+# reproducible right up until the image is rebuilt — the 2026-08-27 cold-build pass
+# re-resolved source_maps 0.10.13 -> 0.10.14 and vm_service 15.2.0 -> 15.3.0, the
+# committed pubspec.lock still named the old two, and `dart pub get --offline
+# --enforce-lockfile` in run-s4.sh correctly refused: "Unable to satisfy pubspec.yaml
+# using pubspec.lock". The peer was unrunnable and nothing said so until it was run.
+#
+# An exact pin on the direct deps is NOT a pin on what lands in the cache. Seeding
+# from the lockfile makes the cache the lockfile's closure by construction, so the two
+# cannot drift: --enforce-lockfile here fails the IMAGE BUILD if the lockfile is
+# unsatisfiable, which is the right place to find out.
+COPY protocol-generator/dart/pubspec.yaml protocol-generator/dart/pubspec.lock /tmp/prefetch/
 RUN set -eux; \
     cd /tmp/prefetch; \
-    dart pub get \
-        || { echo "FATAL: prefetch pub get failed — the pinned deps did not resolve"; exit 1; }; \
-    # also resolve dev_dependencies so package:test's transitive providers are cached
-    dart pub get --no-precompile || true; \
+    dart pub get --enforce-lockfile \
+        || { echo "FATAL: prefetch pub get failed — the committed pubspec.lock did not resolve"; exit 1; }; \
     rm -rf /tmp/prefetch/.dart_tool
 
 WORKDIR /work

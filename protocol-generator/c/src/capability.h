@@ -38,6 +38,11 @@ ec_verdict ec_cap_check_permission(const char *local_peer, const char *granter_p
                                    const ec_entity *exec, const ec_entity *token,
                                    const char *handler_pattern);
 
+/* §5.6: the parent token's ABSOLUTE expires_at term for MIN_DEFINED, resolved from
+ * the frame's included set or the store. False = the parent contributes no term. */
+bool ec_cap_parent_expiry(const ec_envelope *env, ec_store *store,
+                          const uint8_t *parent_hash, uint64_t *out);
+
 /* §PR-8: the granter peer_id for canonicalizing a cap's resource patterns. *out
  * malloc'd or NULL (caller falls back to local). EC_OK even when *out==NULL. */
 ec_status ec_cap_resolve_granter_peer(const ec_envelope *env, ec_store *store,

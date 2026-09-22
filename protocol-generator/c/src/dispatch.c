@@ -246,10 +246,21 @@ static ec_value *owner_grants(ec_peer *p)
 
 /* ── token mint (§4.4 / §6.9a) ───────────────────────────────────────────────── */
 
-/* Mint a token + its signature. `grants` is an owned array value (CONSUMED). On EC_OK
- * *token and *sig are +1 refs the caller unrefs. */
-static ec_status mint_token(ec_peer *p, const uint8_t grantee[33], ec_value *grants,
-                            const uint8_t *parent, ec_entity **token, ec_entity **sig)
+/* Mint a token + its signature at a caller-supplied instant. `grants` is an owned
+ * array value (CONSUMED). On EC_OK *token and *sig are +1 refs the caller unrefs.
+ *
+ * expires_at carries §5.6's MIN_DEFINED ceiling: NULL means no term was defined and
+ * the token genuinely has no expiry (the ONLY "no bound" spelling), while a non-NULL
+ * value is emitted verbatim — including a value equal to created_at, which §5.6
+ * rule 2 requires for ttl_ms == 0 and which means "already expired at every
+ * observable instant", not "unbounded".
+ *
+ * created_at is supplied rather than sampled here so a computed expires_at is
+ * guaranteed to be relative to the SAME instant that lands in the token; sampling
+ * the clock twice skews the two. */
+static ec_status mint_token_at(ec_peer *p, uint64_t created_at, const uint8_t grantee[33],
+                               ec_value *grants, const uint8_t *parent,
+                               const uint64_t *expires_at, ec_entity **token, ec_entity **sig)
 {
     ec_status st = EC_ERR_OOM;
     ec_value *m = ec_map();
@@ -273,8 +284,14 @@ static ec_status mint_token(ec_peer *p, const uint8_t grantee[33], ec_value *gra
     }
     grants = NULL;
     k = ec_text("created_at");
-    if (!k || ec_map_put(m, k, ec_int_u(ec_now_ms())) != EC_OK) {
+    if (!k || ec_map_put(m, k, ec_int_u(created_at)) != EC_OK) {
         ec_value_free(k); goto cleanup;
+    }
+    if (expires_at) {
+        k = ec_text("expires_at");
+        if (!k || ec_map_put(m, k, ec_int_u(*expires_at)) != EC_OK) {
+            ec_value_free(k); goto cleanup;
+        }
     }
     if (parent) {
         k = ec_text("parent");
@@ -301,6 +318,55 @@ cleanup:
     ec_value_free(grants);
     ec_value_free(m);
     return st;
+}
+
+/* mint_token_at at the current instant, with no §5.6 ceiling. Used by the paths that
+ * mint a self-issued grant from local authority (bootstrap, handler registration,
+ * §4.4 handshake), where no MIN_DEFINED term is in play. */
+static ec_status mint_token(ec_peer *p, const uint8_t grantee[33], ec_value *grants,
+                            const uint8_t *parent, ec_entity **token, ec_entity **sig)
+{
+    return mint_token_at(p, ec_now_ms(), grantee, grants, parent, NULL, token, sig);
+}
+
+/* ── §5.6 temporal ceiling (CAP-5 / CAP-6) ───────────────────────────────────── */
+
+/* Convert a DURATION term to an absolute timestamp, reporting whether it
+ * contributes a ceiling at all.
+ *
+ * §5.6 rule 3: a term whose conversion created_at+ttl is not representable is
+ * treated as ABSENT, exactly as a null term is. It MUST NOT wrap and MUST NOT
+ * saturate to a representable maximum — saturation encodes differently from absence
+ * and manufactures expires_at == 2^64-1, a finite bound no reader can distinguish
+ * from a deliberate one.
+ *
+ * ttl == 0 is NOT a special case here and deliberately so: §5.6 rule 2 makes 0 a
+ * DEFINED value yielding created_at (expire immediately). The absent field is the
+ * only "no bound" spelling. Falling out of the arithmetic naturally is what keeps
+ * the two from ever collapsing into each other. */
+static bool add_ttl(uint64_t created_at, uint64_t ttl, uint64_t *out)
+{
+    uint64_t sum = created_at + ttl;
+    if (sum < created_at) {          /* uint64 wrap => not representable => drop */
+        return false;
+    }
+    *out = sum;
+    return true;
+}
+
+/* Fold one term into the running MIN_DEFINED (§5.6): the minimum over the DEFINED
+ * terms only, with no expiry at all if no term is defined. Callers pass each term
+ * already shaped — absolute timestamps (parent.expires_at,
+ * caller_capability.expires_at) enter directly; durations (ttl_ms) MUST be
+ * converted with add_ttl first. Mixing a duration in unconverted yields a timestamp
+ * near the epoch and silently clamps every token to already-expired, the failure
+ * mode §5.6 calls out by name. */
+static void min_defined(uint64_t v, uint64_t *acc, bool *have)
+{
+    if (!*have || v < *acc) {
+        *acc = v;
+        *have = true;
+    }
 }
 
 /* Attach the cap {token, peer-identity, signature} to an outcome's included (§5.8). */
@@ -1022,8 +1088,10 @@ static const ec_value *req_grants(const ec_entity *params)
     return (g && g->kind == EC_ARRAY) ? g : NULL;
 }
 
-/* mint a bounded token: requested grants ⊆ caller's cap grants (self-issued frame). */
-static void mint_bounded(ec_peer *p, const ec_entity *caller_cap, const ec_value *requested,
+/* mint a bounded token: requested grants ⊆ caller's cap grants (self-issued frame),
+ * with the §5.6 MIN_DEFINED temporal ceiling applied to the minted token. */
+static void mint_bounded(ec_peer *p, const ec_envelope *env, const ec_entity *caller_cap,
+                         const ec_entity *params, const ec_value *requested,
                          const uint8_t grantee[33], const uint8_t *parent, ec_outcome *out)
 {
     bool bounded = false;
@@ -1062,8 +1130,33 @@ static void mint_bounded(ec_peer *p, const ec_entity *caller_cap, const ec_value
             if (c) { ec_array_push(grants, c); }
         }
     }
+    /* §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE and
+     * convert the duration terms against that same instant.
+     *
+     * Note what this is NOT: an authorization decision. An over-long ttl_ms from a
+     * bounded caller MINTS a clamped token and returns 200 — "rejecting it is
+     * non-conformant" (§5.6). The bound exists because `request` mints a ROOT token
+     * (parent: null), so §5.6's parent-child attenuation never reaches it; without
+     * this clamp, temporal attenuation is the one dimension a requester could
+     * escape, and policy withdrawal would have no bounded latency. */
+    uint64_t created_at = ec_now_ms();
+    uint64_t ceiling = 0;
+    bool have_ceiling = false;
+    uint64_t parent_exp = 0, caller_exp = 0, ttl = 0, ttl_abs = 0;
+    if (ec_cap_parent_expiry(env, p->store, parent, &parent_exp)) {          /* absolute */
+        min_defined(parent_exp, &ceiling, &have_ceiling);
+    }
+    if (caller_cap && ec_ent_uint(caller_cap, "expires_at", &caller_exp)) {  /* absolute */
+        min_defined(caller_exp, &ceiling, &have_ceiling);
+    }
+    if (params && ec_ent_uint(params, "ttl_ms", &ttl)                       /* duration */
+        && add_ttl(created_at, ttl, &ttl_abs)) {
+        min_defined(ttl_abs, &ceiling, &have_ceiling);
+    }
+
     ec_entity *token = NULL, *sig = NULL;
-    if (mint_token(p, grantee, grants, parent, &token, &sig) != EC_OK) {
+    if (mint_token_at(p, created_at, grantee, grants, parent,
+                      have_ceiling ? &ceiling : NULL, &token, &sig) != EC_OK) {
         outcome_err(out, 500, "internal_error", NULL);
         return;
     }
@@ -1086,7 +1179,7 @@ static void h_capability(ec_peer *p, ec_conn *conn, const ec_envelope *env,
                          const ec_entity *exec, const ec_entity *caller_cap,
                          const char *op, ec_outcome *out)
 {
-    (void)conn; (void)env;
+    (void)conn;
     ec_entity *params = ec_ent_entity_field(exec, "params");
     if (strcmp(op, "request") == 0) {
         size_t al = 0;
@@ -1096,7 +1189,7 @@ static void h_capability(ec_peer *p, ec_conn *conn, const ec_envelope *env,
             outcome_err(out, 403, "capability_denied", NULL);
             return;
         }
-        mint_bounded(p, caller_cap, req_grants(params), author, NULL, out);
+        mint_bounded(p, env, caller_cap, params, req_grants(params), author, NULL, out);
         ec_entity_unref(params);
         return;
     }
@@ -1122,7 +1215,7 @@ static void h_capability(ec_peer *p, ec_conn *conn, const ec_envelope *env,
             outcome_err(out, 400, "unexpected_params", "delegate: zero parent");
             return;
         }
-        mint_bounded(p, caller_cap, req_grants(params), author, ph, out);
+        mint_bounded(p, env, caller_cap, params, req_grants(params), author, ph, out);
         ec_entity_unref(params);
         return;
     }

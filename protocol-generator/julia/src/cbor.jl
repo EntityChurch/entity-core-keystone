@@ -16,7 +16,7 @@
 # branches.
 module Cbor
 
-export CborMap, encode, decode, NonCanonicalECF, TruncatedInput, TagRejected
+export CborMap, encode, decode, decode_salvage, NonCanonicalECF, TruncatedInput, TagRejected
 
 # ── error model (profile [error_model] = exceptions; custom <: Exception leaves) ──────────
 abstract type EntityCoreError <: Exception end
@@ -168,7 +168,12 @@ end
 mutable struct Decoder
     s::Vector{UInt8}
     pos::Int          # 1-based
+    # keep_tags makes decode_item yield the tag's INNER item instead of throwing
+    # TagRejected. It exists for ONE caller — decode_salvage — and is never set on
+    # the strict path. See decode_salvage for why this is not a weakening of §6.3.
+    keep_tags::Bool
 end
+Decoder(s::Vector{UInt8}, pos::Int) = Decoder(s, pos, false)
 
 @inline function need(d::Decoder, k::Int)
     d.pos + k - 1 > length(d.s) && throw(TruncatedInput("need $k byte(s) at pos $(d.pos)"))
@@ -227,7 +232,13 @@ function decode_item(d::Decoder)
         end
         return CborMap(ps)
     elseif major == 0x06
-        throw(TagRejected())                                        # N2: any tag, any depth
+        d.keep_tags || throw(TagRejected())                         # N2: any tag, any depth
+        # Salvage path only (decode_salvage): consume the tag head and yield the item
+        # it wrapped, so the caller can locate the request_id and SIGNAL the rejection.
+        # The frame is still rejected — the tag is never interpreted and the value
+        # never reaches an entity.
+        read_arg(d, ai)
+        return decode_item(d)
     else # major == 0x07
         if ai == 0x14
             return false
@@ -249,7 +260,35 @@ end
 
 """Decode a single top-level ECF item; rejects trailing bytes."""
 function decode(s::AbstractVector{UInt8})
-    d = Decoder(Vector{UInt8}(s), 1)
+    d = Decoder(Vector{UInt8}(s), 1, false)
+    v = decode_item(d)
+    d.pos != length(d.s) + 1 && throw(NonCanonicalECF("trailing bytes after top-level item"))
+    return v
+end
+
+"""
+Decode `s` for the sole purpose of REPORTING a rejection, not of accepting one.
+Identical to `decode` except that a major-type-6 tag yields the item it wrapped
+instead of throwing `TagRejected`.
+
+Why this exists (§6.3, a conformance requirement rather than a convenience): the tag
+rule is *"Implementations MUST reject any received protocol frame containing a CBOR
+tag on a data field. Rejection returns `400 non_canonical_ecf`."* Rejecting by
+dropping the frame on the floor satisfies the first sentence and violates the second
+— the peer owes the sender a status, and §4.9(c) deliver-or-signal says the same from
+the other direction. But the status must ride a response correlated by `request_id`,
+and the strict decoder cannot reach the request_id in a frame it refuses to parse.
+This recovers exactly that much and nothing more.
+
+This is NOT a weakening of the tag reject. The frame stays rejected: the value this
+returns is never converted to an Entity, never stored, never forwarded and never
+interpreted, so §6.3's MUST NOT silently strip / MUST NOT preserve / MUST NOT attempt
+to interpret all still hold. The strict `decode` path that every real ingestion route
+uses is unchanged, which is what keeps the `tag_reject` wire-conformance vectors
+meaningful.
+"""
+function decode_salvage(s::AbstractVector{UInt8})
+    d = Decoder(Vector{UInt8}(s), 1, true)
     v = decode_item(d)
     d.pos != length(d.s) + 1 && throw(NonCanonicalECF("trailing bytes after top-level item"))
     return v

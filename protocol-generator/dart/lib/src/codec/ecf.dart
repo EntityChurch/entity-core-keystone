@@ -296,6 +296,40 @@ class Ecf {
     }
   }
 
+  /// Decode [octets] for the sole purpose of REPORTING a rejection, not of
+  /// accepting one. Identical to [decode] except that a major-type-6 tag yields
+  /// the item it wrapped instead of TagRejected.
+  ///
+  /// Why this exists (§6.3, a conformance requirement rather than a
+  /// convenience): the tag rule is "Implementations MUST reject any received
+  /// protocol frame containing a CBOR tag on a data field. Rejection returns 400
+  /// non_canonical_ecf." Rejecting by dropping the frame on the floor satisfies
+  /// the first sentence and violates the second — the peer owes the sender a
+  /// status, and §4.9(c) deliver-or-signal says the same from the other
+  /// direction. But the status must ride a response correlated by request_id,
+  /// and the strict decoder cannot reach the request_id in a frame it refuses to
+  /// parse. This recovers exactly that much and nothing more.
+  ///
+  /// This is NOT a weakening of the tag reject. The frame stays rejected: the
+  /// value this returns is never converted to an Entity, never stored, never
+  /// forwarded and never interpreted, so §6.3's MUST NOT silently strip / MUST
+  /// NOT preserve / MUST NOT attempt to interpret all still hold. The strict
+  /// [decode] path that every real ingestion route uses is unchanged, which is
+  /// what keeps the tag_reject wire-conformance vectors meaningful.
+  static EcfResult<EcfValue> decodeSalvage(Uint8List octets) {
+    try {
+      final c = _Cursor(octets, keepTags: true);
+      final v = _dec(c, 0);
+      if (c.i < octets.length) {
+        throw EcfException(
+            NonCanonicalEcf('trailing bytes: ${octets.length - c.i}'));
+      }
+      return Ok(v);
+    } on EcfException catch (e) {
+      return Err(e.error);
+    }
+  }
+
   static EcfValue _dec(_Cursor c, int depth) {
     if (depth > maxDepth) {
       throw const EcfException(NonCanonicalEcf('max depth exceeded'));
@@ -346,7 +380,16 @@ class Ecf {
         }
         return EcfMap(entries);
       case 6:
-        throw EcfException(TagRejected('major-type-6 tag rejected at ${c.i - 1}'));
+        if (!c.keepTags) {
+          throw EcfException(
+              TagRejected('major-type-6 tag rejected at ${c.i - 1}'));
+        }
+        // Salvage path only ([decodeSalvage]): consume the tag head and yield the
+        // item it wrapped, so the caller can locate the request_id and SIGNAL the
+        // rejection. The frame is still rejected — the tag is never interpreted
+        // and the value never reaches an Entity.
+        _decArg(c, info);
+        return _dec(c, depth + 1);
       case 7:
         return _decSimple(c, info);
       default:
@@ -510,9 +553,15 @@ class Ecf {
 }
 
 class _Cursor {
-  _Cursor(this.o);
+  _Cursor(this.o, {this.keepTags = false});
   final Uint8List o;
   int i = 0;
+
+  /// Makes [Ecf._dec] yield the tag's INNER item instead of throwing
+  /// TagRejected. It exists for ONE caller — [Ecf.decodeSalvage] — and is never
+  /// set on the strict path. See that method for why this is not a weakening of
+  /// the §6.3 tag reject.
+  final bool keepTags;
 }
 
 class _EncodedEntry {

@@ -53,6 +53,22 @@ Verdict check_permission(const std::string& local_peer, const std::string& grant
                          const Entity& exec, const Entity& token,
                          const std::string& handler_pattern);
 
+// §5.6 rule 1: convert a DURATION term (ttl_ms) to an absolute timestamp relative to
+// created_at. Rule 3: a conversion that is not representable is treated as ABSENT
+// (nullopt) exactly as a null term is -- it MUST NOT wrap and MUST NOT saturate to a
+// representable maximum, since saturation manufactures expires_at == 2^64-1, a finite
+// bound no reader can distinguish from a deliberate one.
+//
+// ttl == 0 is NOT a special case and deliberately so: rule 2 makes 0 a DEFINED value
+// yielding created_at (expire immediately). The absent field is the only "no bound"
+// spelling, and falling out of the arithmetic is what keeps the two from collapsing.
+std::optional<std::uint64_t> add_ttl(std::uint64_t created_at, std::uint64_t ttl);
+
+// §5.6: the parent token's ABSOLUTE expires_at term for MIN_DEFINED, resolved from the
+// frame's included set or the store. nullopt = the parent contributes no term.
+std::optional<std::uint64_t> parent_expiry(const Envelope& env, const Store& store,
+                                           std::span<const std::byte> parent_hash);
+
 // §PR-8: the granter peer_id for canonicalizing a cap's resource patterns (nullopt →
 // caller falls back to local).
 std::optional<std::string> resolve_granter_peer(const Envelope& env, const Store& store,

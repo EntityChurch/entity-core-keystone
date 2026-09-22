@@ -165,13 +165,44 @@ mint_token :: proc(
 	grants: []Ec_Value,
 	allocator := context.temp_allocator,
 ) -> (Minted, Codec_Error) {
+	// No §5.6 ceiling: the self-issued paths (bootstrap, handler registration, the
+	// §4.4 handshake) mint from local authority, where no MIN_DEFINED term applies.
+	return mint_token_at(p, now_ms(), grantee_hash, parent, has_parent, grants, 0, false, allocator)
+}
+
+// mint_token_at mints at a caller-supplied instant, carrying §5.6's MIN_DEFINED
+// ceiling.
+//
+// has_expires false means no term was defined and the token genuinely has no expiry
+// (the ONLY "no bound" spelling). A supplied expires_at is emitted verbatim --
+// including a value equal to created_at, which §5.6 rule 2 requires for ttl_ms == 0
+// and which means "already expired at every observable instant", not "unbounded".
+//
+// created_at is supplied rather than sampled here so a computed expiry is guaranteed
+// to be relative to the SAME instant that lands in the token; sampling the clock twice
+// skews the two.
+@(private = "file")
+mint_token_at :: proc(
+	p: ^Peer,
+	created_at: u64,
+	grantee_hash: []u8,
+	parent: []u8,
+	has_parent: bool,
+	grants: []Ec_Value,
+	expires_at: u64,
+	has_expires: bool,
+	allocator := context.temp_allocator,
+) -> (Minted, Codec_Error) {
 	list := make([dynamic]Ec_Pair, allocator)
 	append(&list, Ec_Pair{text_val("granter", allocator), bytes_val(p.identity.identity_hash, allocator)})
 	append(&list, Ec_Pair{text_val("grantee", allocator), bytes_val(grantee_hash, allocator)})
 	grants_copy := make([]Ec_Value, len(grants), allocator)
 	copy(grants_copy, grants)
 	append(&list, Ec_Pair{text_val("grants", allocator), Ec_Array(grants_copy)})
-	append(&list, Ec_Pair{text_val("created_at", allocator), Ec_Uint(now_ms())})
+	append(&list, Ec_Pair{text_val("created_at", allocator), Ec_Uint(created_at)})
+	if has_expires {
+		append(&list, Ec_Pair{text_val("expires_at", allocator), Ec_Uint(expires_at)})
+	}
 	if has_parent {
 		append(&list, Ec_Pair{text_val("parent", allocator), bytes_val(parent, allocator)})
 	}
@@ -590,8 +621,11 @@ req_grants :: proc(params: Entity, has_params: bool, allocator := context.temp_a
 @(private = "file")
 mint_bounded :: proc(
 	p: ^Peer,
+	env: Envelope,
 	caller_cap: Entity,
 	has_caller_cap: bool,
+	params: Entity,
+	has_params: bool,
 	rg: []Ec_Value,
 	grantee_hash: []u8,
 	parent: []u8,
@@ -620,7 +654,42 @@ mint_bounded :: proc(
 	if !bounded {
 		return err_out(403, "scope_exceeds_authority", "")
 	}
-	minted, merr := mint_token(p, grantee_hash, parent, has_parent, rg, a)
+	// §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE and
+	// convert the duration term against that same instant.
+	//
+	// Note what this is NOT: an authorization decision. An over-long ttl_ms from a
+	// bounded caller MINTS a clamped token and returns 200 -- "rejecting it is
+	// non-conformant" (§5.6). The bound exists because `request` mints a ROOT token
+	// (parent: null), so §5.6's parent-child attenuation never reaches it; without this
+	// clamp, temporal attenuation is the one dimension a requester could escape, and
+	// policy withdrawal would have no bounded latency.
+	created_at := now_ms()
+	ceiling: u64 = 0
+	has_ceiling := false
+	fold :: proc(term: u64, ok: bool, acc: ^u64, have: ^bool) {
+		if ok && (!have^ || term < acc^) {
+			acc^ = term
+			have^ = true
+		}
+	}
+	if has_parent {                                                    // absolute
+		if pt, pok := resolve(env, &p.store, parent); pok {
+			pe, has_pe := entity_uint(pt, "expires_at")
+			fold(pe, has_pe, &ceiling, &has_ceiling)
+		}
+	}
+	if has_caller_cap {                                                // absolute
+		ce, has_ce := entity_uint(caller_cap, "expires_at")
+		fold(ce, has_ce, &ceiling, &has_ceiling)
+	}
+	if has_params {                                                    // duration
+		if ttl, tok := entity_uint(params, "ttl_ms"); tok {
+			abs, aok := add_ttl(created_at, ttl)
+			fold(abs, aok, &ceiling, &has_ceiling)
+		}
+	}
+
+	minted, merr := mint_token_at(p, created_at, grantee_hash, parent, has_parent, rg, ceiling, has_ceiling, a)
 	if merr != .None {
 		return err_out(500, "internal_error", "")
 	}
@@ -635,7 +704,7 @@ mint_bounded :: proc(
 }
 
 @(private = "file")
-capability_handler :: proc(p: ^Peer, exec: Entity, caller_cap: Entity, has_caller_cap: bool) -> Outcome {
+capability_handler :: proc(p: ^Peer, env: Envelope, exec: Entity, caller_cap: Entity, has_caller_cap: bool) -> Outcome {
 	a := context.temp_allocator
 	op, _ := entity_text(exec, "operation")
 	params, has_params, _ := entity_field_entity(exec, "params", a)
@@ -645,7 +714,7 @@ capability_handler :: proc(p: ^Peer, exec: Entity, caller_cap: Entity, has_calle
 		if !has_author {
 			return err_out(403, "capability_denied", "")
 		}
-		return mint_bounded(p, caller_cap, has_caller_cap, rg, author, nil, false)
+		return mint_bounded(p, env, caller_cap, has_caller_cap, params, has_params, rg, author, nil, false)
 	} else if op == "delegate" {
 		parent: []u8 = nil
 		has_parent := false
@@ -665,7 +734,7 @@ capability_handler :: proc(p: ^Peer, exec: Entity, caller_cap: Entity, has_calle
 		if !has_author || !slice.equal(author, p.identity.identity_hash) {
 			return err_out(501, "unsupported_operation", "delegate: same-peer-only in v1")
 		}
-		return mint_bounded(p, caller_cap, has_caller_cap, rg, author, parent, true)
+		return mint_bounded(p, env, caller_cap, has_caller_cap, params, has_params, rg, author, parent, true)
 	} else if op == "revoke" {
 		token_h: []u8 = nil
 		has_token := false
@@ -1177,7 +1246,7 @@ dispatch_outcome :: proc(p: ^Peer, conn: ^Conn, env: Envelope) -> Outcome {
 	case stripped == "system/tree":
 		return tree_handler(p, exec)
 	case stripped == "system/capability":
-		return capability_handler(p, exec, caller_cap, has_caller_cap)
+		return capability_handler(p, env, exec, caller_cap, has_caller_cap)
 	case stripped == "system/handler":
 		return handlers_handler(p, exec)
 	case stripped == "system/type":

@@ -197,20 +197,35 @@ std::string Peer::abs_path(std::string_view rel) const {
     return "/" + local_ + "/" + std::string(rel);
 }
 
-Result<std::pair<EntityPtr, EntityPtr>> Peer::mint_token(
-    std::span<const std::byte> grantee, EcfValue grants,
-    std::optional<std::span<const std::byte>> parent) {
+Result<std::pair<EntityPtr, EntityPtr>> Peer::mint_token_at(
+    std::uint64_t created_at, std::span<const std::byte> grantee, EcfValue grants,
+    std::optional<std::span<const std::byte>> parent,
+    std::optional<std::uint64_t> expires_at) {
     auto m = EcfValue::map();
     m.put(EcfValue::text("granter"), value::bytes_value(identity_.identity_hash()));
     m.put(EcfValue::text("grantee"), EcfValue::bytes(grantee));
     m.put(EcfValue::text("grants"), std::move(grants));
-    m.put(EcfValue::text("created_at"), EcfValue::uint(cap::now_ms()));
+    m.put(EcfValue::text("created_at"), EcfValue::uint(created_at));
+    // §5.6: nullopt means no term was defined and the token genuinely has no expiry
+    // (the ONLY "no bound" spelling). A present value is emitted verbatim -- including
+    // one equal to created_at, which rule 2 requires for ttl_ms == 0 and which means
+    // "already expired at every observable instant", not "unbounded".
+    if (expires_at) m.put(EcfValue::text("expires_at"), EcfValue::uint(*expires_at));
     if (parent) m.put(EcfValue::text("parent"), EcfValue::bytes(*parent));
     auto tok = Entity::make("system/capability/token", std::move(m));
     if (!tok) return std::unexpected(tok.error());
     auto sig = identity_.sign(**tok);
     if (!sig) return std::unexpected(sig.error());
     return std::make_pair(*tok, *sig);
+}
+
+// mint_token_at at the current instant with no §5.6 ceiling. Used by the paths that
+// mint a self-issued grant from local authority (bootstrap, handler registration, the
+// §4.4 handshake), where no MIN_DEFINED term is in play.
+Result<std::pair<EntityPtr, EntityPtr>> Peer::mint_token(
+    std::span<const std::byte> grantee, EcfValue grants,
+    std::optional<std::span<const std::byte>> parent) {
+    return mint_token_at(cap::now_ms(), grantee, std::move(grants), parent, std::nullopt);
 }
 
 void Peer::attach_cap(Outcome& o, const EntityPtr& token, const EntityPtr& sig) {
@@ -491,8 +506,8 @@ void Peer::h_tree(const Envelope& /*env*/, const Entity& exec, const std::string
 }
 
 // ── capability handler (§6.2) ───────────────────────────────────────────────────────
-void Peer::mint_bounded(const Entity* caller_cap, const EcfValue* requested,
-                        std::span<const std::byte> grantee,
+void Peer::mint_bounded(const Envelope& env, const Entity* caller_cap, const Entity* params,
+                        const EcfValue* requested, std::span<const std::byte> grantee,
                         std::optional<std::span<const std::byte>> parent, Outcome& o) {
     bool bounded = false;
     if (caller_cap) {
@@ -515,8 +530,29 @@ void Peer::mint_bounded(const Entity* caller_cap, const EcfValue* requested,
         }
     }
     if (!bounded) { err(o, 403, "scope_exceeds_authority"); return; }
+
+    // §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE and
+    // convert the duration terms against that same instant.
+    //
+    // Note what this is NOT: an authorization decision. An over-long ttl_ms from a
+    // bounded caller MINTS a clamped token and returns 200 -- "rejecting it is
+    // non-conformant" (§5.6). The bound exists because `request` mints a ROOT token
+    // (parent: null), so §5.6's parent-child attenuation never reaches it; without this
+    // clamp, temporal attenuation is the one dimension a requester could escape, and
+    // policy withdrawal would have no bounded latency.
+    const std::uint64_t created_at = cap::now_ms();
+    std::optional<std::uint64_t> ceiling;
+    auto fold = [&ceiling](std::optional<std::uint64_t> term) {
+        if (term && (!ceiling || *term < *ceiling)) ceiling = term;
+    };
+    if (parent) fold(cap::parent_expiry(env, store_, *parent));     // absolute
+    if (caller_cap) fold(caller_cap->uint("expires_at"));           // absolute
+    if (params) {                                                   // duration
+        if (auto ttl = params->uint("ttl_ms")) fold(cap::add_ttl(created_at, *ttl));
+    }
+
     auto grants = clone_grants_array(requested);
-    auto minted = mint_token(grantee, std::move(grants), parent);
+    auto minted = mint_token_at(created_at, grantee, std::move(grants), parent, ceiling);
     if (!minted) { err(o, 500, "internal_error"); return; }
     auto [token, sig] = *minted;
     auto gm = EcfValue::map();
@@ -530,15 +566,15 @@ void Peer::mint_bounded(const Entity* caller_cap, const EcfValue* requested,
     }
 }
 
-void Peer::h_capability(const Entity& exec, const Entity* caller_cap, const std::string& op,
-                        Outcome& o) {
+void Peer::h_capability(const Envelope& env, const Entity& exec, const Entity* caller_cap,
+                        const std::string& op, Outcome& o) {
     auto params = exec.entity_field("params");
     if (op == "request") {
         auto author = exec.bytes("author");
         if (!author || author->size() != kHashLen) { err(o, 403, "capability_denied"); return; }
         const EcfValue* req = params ? params->field("grants") : nullptr;
         if (req && !req->is<ecf::Array>()) req = nullptr;
-        mint_bounded(caller_cap, req, *author, std::nullopt, o);
+        mint_bounded(env, caller_cap, params.get(), req, *author, std::nullopt, o);
         return;
     }
     if (op == "delegate") {
@@ -555,7 +591,8 @@ void Peer::h_capability(const Entity& exec, const Entity* caller_cap, const std:
         if (is_zero_hash(*ph)) { err(o, 400, "unexpected_params", "delegate: zero parent"); return; }
         const EcfValue* req = params ? params->field("grants") : nullptr;
         if (req && !req->is<ecf::Array>()) req = nullptr;
-        mint_bounded(caller_cap, req, *author, std::span<const std::byte>(*ph), o);
+        mint_bounded(env, caller_cap, params.get(), req, *author,
+                     std::span<const std::byte>(*ph), o);
         return;
     }
     if (op == "revoke") {
@@ -1002,8 +1039,8 @@ Result<void> Peer::init(bool open_grants, bool conformance) {
         [](Peer& p, Connection&, const Envelope&, const Entity& x, const Entity*,
            const std::string& op, Outcome& o) { p.h_handlers(x, op, o); });
     register_handler("system/capability",
-        [](Peer& p, Connection&, const Envelope&, const Entity& x, const Entity* cc,
-           const std::string& op, Outcome& o) { p.h_capability(x, cc, op, o); });
+        [](Peer& p, Connection&, const Envelope& e, const Entity& x, const Entity* cc,
+           const std::string& op, Outcome& o) { p.h_capability(e, x, cc, op, o); });
     register_handler("system/protocol/connect",
         [](Peer& p, Connection& c, const Envelope& e, const Entity& x, const Entity* cc,
            const std::string& op, Outcome& o) { p.h_connect(c, e, x, cc, op, o); });

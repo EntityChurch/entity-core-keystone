@@ -189,11 +189,35 @@ struct Minted {
     token: Entity,
     signature: Entity,
 }
+/// `mint_token_at` at the current instant with no §5.6 ceiling. Used by the paths that
+/// mint a self-issued grant from local authority (bootstrap, handler registration, the
+/// §4.4 handshake), where no MIN_DEFINED term is in play.
 fn mint_token(
     id: &Identity,
     grantee_hash: &[u8],
     parent: Option<&[u8]>,
     grants: Vec<Value>,
+) -> Minted {
+    mint_token_at(id, now_ms(), grantee_hash, parent, grants, None)
+}
+
+/// Mint at a caller-supplied instant, carrying §5.6's MIN_DEFINED ceiling.
+///
+/// `expires_at = None` means no term was defined and the token genuinely has no expiry
+/// (the ONLY "no bound" spelling). A present value is emitted verbatim — including one
+/// equal to `created_at`, which §5.6 rule 2 requires for `ttl_ms == 0` and which means
+/// "already expired at every observable instant", not "unbounded".
+///
+/// `created_at` is supplied rather than sampled here so a computed expiry is guaranteed to
+/// be relative to the SAME instant that lands in the token; sampling the clock twice skews
+/// the two.
+fn mint_token_at(
+    id: &Identity,
+    created_at: u64,
+    grantee_hash: &[u8],
+    parent: Option<&[u8]>,
+    grants: Vec<Value>,
+    expires_at: Option<u64>,
 ) -> Minted {
     let mut pairs = vec![
         (
@@ -202,14 +226,53 @@ fn mint_token(
         ),
         (Key::Text("grantee".into()), cbor_host::bytes(grantee_hash)),
         (Key::Text("grants".into()), Value::Array(grants)),
-        (Key::Text("created_at".into()), Value::UInt(now_ms())),
+        (Key::Text("created_at".into()), Value::UInt(created_at)),
     ];
+    if let Some(ex) = expires_at {
+        pairs.push((Key::Text("expires_at".into()), Value::UInt(ex)));
+    }
     if let Some(ph) = parent {
         pairs.push((Key::Text("parent".into()), cbor_host::bytes(ph)));
     }
     let token = Entity::make("system/capability/token", Value::Map(pairs));
     let signature = id.sign_entity(&token);
     Minted { token, signature }
+}
+
+/// §5.6 rule 1: convert a DURATION term (ttl_ms) to an absolute timestamp relative to
+/// `created_at`. Rule 3: a conversion that is not representable is treated as ABSENT
+/// (`None`) exactly as a null term is — it MUST NOT wrap and MUST NOT saturate to a
+/// representable maximum, since saturation manufactures expires_at == 2^64-1, a finite
+/// bound no reader can distinguish from a deliberate one.
+///
+/// `ttl == 0` is NOT a special case and deliberately so: rule 2 makes 0 a DEFINED value
+/// yielding `created_at` (expire immediately). The absent field is the only "no bound"
+/// spelling, and falling out of the arithmetic is what keeps the two from collapsing.
+fn add_ttl(created_at: u64, ttl: u64) -> Option<u64> {
+    created_at.checked_add(ttl)
+}
+
+/// §6.2 CAP-6a: every temporal field on a RECEIVED token is either absent (legal) or
+/// representable as a `u64`.
+///
+/// This is the reader-side half of CAP-6 and it is where a peer fails OPEN. `uint_field`
+/// answers `None` BOTH when a field is ABSENT and when it is PRESENT but not a `Value::UInt`
+/// — a negative integer or a bignum — so a token carrying `expires_at: -1` silently skipped
+/// the expiry check and was honored with 200. §6.2 CAP-6a is explicit: such a token "is
+/// malformed. A verifier MUST refuse it and MUST NOT treat the unrepresentable field as
+/// absent." An absent expires_at stays legal and is NOT rejected here.
+///
+/// The guard reads `field` (which distinguishes absent from present) rather than
+/// `uint_field` (which does not) — that disagreement IS the check. `u64` is the wire's
+/// domain, so a `Value::UInt` is representable by construction and needs no range test.
+fn temporal_fields_representable(tok: &Entity) -> bool {
+    ["expires_at", "not_before", "created_at"]
+        .iter()
+        .all(|k| match tok.field(k) {
+            None => true,
+            Some(Value::UInt(_)) => true,
+            Some(_) => false,
+        })
 }
 
 struct BootHandler {
@@ -644,8 +707,17 @@ impl Peer {
                                 None => break,
                             };
                             // §5.6 attenuation + §5.7 caveats (host structural check).
-                            let atten = is_attenuated(&self.local_peer, &current, &parent)
-                                && check_caveats(&parent, &current);
+                            // §5.5a surface 2: each side canonicalizes against THAT
+                            // LINK'S OWN granter, not the verifier's.
+                            let child_frame = self.granter_frame(&current);
+                            let parent_frame = self.granter_frame(&parent);
+                            let atten = is_attenuated(
+                                &self.local_peer,
+                                &child_frame,
+                                &parent_frame,
+                                &current,
+                                &parent,
+                            ) && check_caveats(&parent, &current);
                             let link_grantee_ok =
                                 parent.bytes_field("grantee") == current.bytes_field("granter");
                             if sig_ok && temporal_ok && atten && link_grantee_ok {
@@ -1061,7 +1133,28 @@ impl Peer {
                 if !within {
                     return err_out(403, "scope_exceeds_authority");
                 }
-                let minted = mint_token(&self.identity, &grantee, None, req);
+                // §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at
+                // ONCE and convert the duration term against that same instant.
+                //
+                // Note what this is NOT: an authorization decision. An over-long ttl_ms
+                // from a bounded caller MINTS a clamped token and returns 200 —
+                // "rejecting it is non-conformant" (§5.6). The bound exists because
+                // `request` mints a ROOT token (parent: null), so §5.6's parent-child
+                // attenuation never reaches it; without this clamp, temporal attenuation
+                // is the one dimension a requester could escape.
+                let created_at = now_ms();
+                let ceiling = [
+                    caller_cap.and_then(|cc| cc.uint_field("expires_at")), // absolute
+                    params
+                        .as_ref()
+                        .and_then(|p| p.uint_field("ttl_ms"))
+                        .and_then(|t| add_ttl(created_at, t)), // duration
+                ]
+                .into_iter()
+                .flatten()
+                .min();
+                let minted =
+                    mint_token_at(&self.identity, created_at, &grantee, None, req, ceiling);
                 let grant = Entity::make(
                     "system/capability/grant",
                     cbor_host::map(vec![("token", cbor_host::bytes(&minted.token.hash))]),
@@ -1089,9 +1182,13 @@ impl Peer {
                 if !valid_policy_pattern(&peer_pattern) {
                     return err_out(400, "invalid_params");
                 }
-                // §4: a policy entry MUST carry at least one grant.
+                // CAP-2 (§6.2): `grants: []` is the WITHDRAWAL form and MUST be accepted
+                // -- it writes a present policy entry carrying an empty grants array,
+                // which is how an operator revokes a seed policy without deleting the
+                // entry. The `!a.is_empty()` guard conflated "no grants" with
+                // "malformed"; the ABSENT field is malformed, the EMPTY array deliberate.
                 match entry.field("grants") {
-                    Some(Value::Array(a)) if !a.is_empty() => {}
+                    Some(Value::Array(_)) => {}
                     _ => return err_out(400, "invalid_params"),
                 }
                 self.store.bind(
@@ -1456,6 +1553,11 @@ fn has_dupes(signers: &[Vec<u8>]) -> bool {
 }
 
 fn temporal_valid(cap: &Entity, now: u64) -> bool {
+    // CAP-6a FIRST: the two range checks below use uint_field, which cannot tell "absent"
+    // from "present but not a u64" — so on their own they skip and honor the token.
+    if !temporal_fields_representable(cap) {
+        return false;
+    }
     if let Some(nb) = cap.uint_field("not_before") {
         if now < nb {
             return false;
@@ -1513,13 +1615,28 @@ fn extract_peer<'a>(local_peer: &'a str, uri: &'a str) -> &'a str {
         local_peer
     }
 }
+/// The handler-relative path of a request URI: the peer segment removed, if present.
+///
+/// The `entity://` form has NO leading slash after the scheme -- `entity://{peer}/rest`
+/// -- so `strip_prefix('/')` fails on it and the peer segment was never removed. The
+/// resulting "handler pattern" was `{peer}/system/capability`, which canonicalizes to
+/// `/{local}/{peer}/system/capability` and cannot be covered by a concrete handlers scope
+/// naming `system/capability`.
+///
+/// A bare `*` covers it, which is why this stayed invisible: every self-issued and
+/// open-grants capability carries `handlers: ["*"]`, and 753 of 755 checks pass on those.
+/// It surfaces only for a cap whose handlers scope is CONCRETE -- exactly the bounded cap
+/// the CAP-5 probe presents -- and the failure then reads as a mint bug ("over-long ttl_ms
+/// rejected instead of clamping") rather than as URI parsing.
 fn strip_peer(uri: &str) -> String {
     let body = uri.strip_prefix("entity://").unwrap_or(uri);
-    if let Some(rest) = body.strip_prefix('/') {
-        if let Some(i) = rest.find('/') {
-            if is_peer_id(&rest[..i]) {
-                return rest[i + 1..].to_string();
-            }
+    // Both spellings reach here: `/peer/rest` (absolute path) and `peer/rest` (what the
+    // entity:// scheme leaves behind). Strip the leading slash if there is one, then test
+    // the first segment.
+    let rest = body.strip_prefix('/').unwrap_or(body);
+    if let Some(i) = rest.find('/') {
+        if is_peer_id(&rest[..i]) {
+            return rest[i + 1..].to_string();
         }
     }
     body.to_string()
@@ -1651,7 +1768,24 @@ fn scope_subset(child_peer: &str, parent_peer: &str, child: &Scope, parent: &Sco
     }
     true
 }
-fn grant_subset(local: &str, child: &Value, parent: &Value) -> bool {
+/// Child ⊆ parent on every dimension, with the RESOURCES comparison canonicalized on the
+/// two sides' own §5.5a frames.
+///
+/// `child_frame` / `parent_frame` are the granter peer_ids of the two links. They reach
+/// only the RESOURCES comparison: §5.5a names its three surfaces and all three are
+/// resource-pattern surfaces. handlers and operations stay on the LOCAL frame — passing
+/// the granter frames to them is the swift over-scoping bug (ded3e07), which is invisible
+/// until a delegated cap arrives and then refuses every one of them.
+///
+/// For the §6.2 MINT-time subset the caller passes `local` for both frames, because that
+/// mint is self-issued and the granter is this peer on both sides.
+fn grant_subset(
+    local: &str,
+    child_frame: &str,
+    parent_frame: &str,
+    child: &Value,
+    parent: &Value,
+) -> bool {
     let cs = |v: &Value, k: &str| scope_of(cbor_host::map_get(v, k));
     scope_subset(
         local,
@@ -1664,17 +1798,39 @@ fn grant_subset(local: &str, child: &Value, parent: &Value) -> bool {
         &cs(child, "operations"),
         &cs(parent, "operations"),
     ) && scope_subset(
-        local,
-        local,
+        child_frame,
+        parent_frame,
         &cs(child, "resources"),
         &cs(parent, "resources"),
     )
 }
-fn is_attenuated(local: &str, child: &Entity, parent: &Entity) -> bool {
+
+/// §5.5 / §5.5a SURFACE 2 — per-link attenuation with FRAME ISOLATION.
+///
+/// This used to pass `local` as both frames. On every same-granter chain that is
+/// byte-identical to the correct answer, which is why it survived: a foreign-granted bare
+/// `*` canonicalized to the VERIFIER's `/{local}/*` instead of the granter's
+/// `/{granter}/*`, and so falsely covered a leaf naming the verifier's namespace. §5.5a
+/// calls that out by name as "canon-against-wrong-frame" and pins three vectors at it
+/// (AUTHZ-ATTENUATION-FOREIGN-GRANTER-1 / -DEEP / -WILDCARD-LEAF).
+///
+/// All three were reported as PASSING before 2026-08-28, and not because this was right:
+/// `strip_peer` mishandled the `entity://` form, so the handlers dimension never matched a
+/// concrete scope and the requests were denied one rung earlier for an unrelated reason.
+/// Fixing that exposed these. A wrong denial had been standing in for a missing check.
+fn is_attenuated(
+    local: &str,
+    child_frame: &str,
+    parent_frame: &str,
+    child: &Entity,
+    parent: &Entity,
+) -> bool {
     let cg = grants_of(child);
     let pg = grants_of(parent);
-    cg.iter()
-        .all(|c| pg.iter().any(|p| grant_subset(local, c, p)))
+    cg.iter().all(|c| {
+        pg.iter()
+            .any(|p| grant_subset(local, child_frame, parent_frame, c, p))
+    })
 }
 fn check_caveats(parent: &Entity, _child: &Entity) -> bool {
     match parent.field("delegation_caveats") {
@@ -1686,10 +1842,13 @@ fn check_caveats(parent: &Entity, _child: &Entity) -> bool {
     }
 }
 
+/// §6.2 mint-bound. BOTH frames are LOCAL: the mint is self-issued, so the granter is this
+/// peer on both sides. Passing the caller's granter frame here is the swift bug at the mint
+/// site rather than the dispatch site, in the direction that refuses legitimate requests.
 fn requested_grants_within(local: &str, req: &[Value], caller_cap: &Entity) -> bool {
     let pg = grants_of(caller_cap);
     req.iter()
-        .all(|c| pg.iter().any(|p| grant_subset(local, c, p)))
+        .all(|c| pg.iter().any(|p| grant_subset(local, local, local, c, p)))
 }
 fn req_grants(params: Option<&Entity>) -> Vec<Value> {
     match params.and_then(|p| p.field("grants")) {

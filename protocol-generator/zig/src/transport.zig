@@ -164,6 +164,23 @@ fn dispatchExecuteThread(ctx: *DispatchCtx) void {
 }
 
 
+/// §6.3: answer a rejected frame with `400 non_canonical_ecf`, correlated by the
+/// request_id salvaged from it. Best-effort — a failure here degrades to the silence
+/// this exists to remove, which is no worse than the old behaviour.
+fn rejectFrame(io: *Io, payload: []const u8) void {
+    const gpa = io.gpa;
+    const rid = model.salvageRequestId(gpa, payload) orelse return;
+    defer gpa.free(rid);
+    // makeResponse CONSUMES `result` — no deinit here, or it is a double free.
+    const result = wire.errorResult(gpa, "non_canonical_ecf", null) catch return;
+    const root = wire.makeResponse(gpa, rid, 400, result) catch return;
+    defer root.deinit(gpa);
+    const included = gpa.alloc(model.Included, 0) catch return;
+    const env = Envelope{ .root = root, .included = included };
+    defer gpa.free(included);
+    io.writeFramed(env) catch {};
+}
+
 /// The reader loop: EXECUTE_RESPONSE → route; EXECUTE → dispatch on its own thread.
 /// Runs until the connection closes / a frame ends it.
 pub fn readLoop(peer: *Peer, conn: *Conn, io: *Io) void {
@@ -171,7 +188,21 @@ pub fn readLoop(peer: *Peer, conn: *Conn, io: *Io) void {
     while (true) {
         const payload = wire.readFrame(gpa, io.stream) catch break;
         defer gpa.free(payload);
-        const env = model.envelopeOfFrame(gpa, payload) catch continue; // malformed → drop, keep reading
+        const env = model.envelopeOfFrame(gpa, payload) catch {
+            // §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is
+            // owed a STATUS, not silence. This used to `continue`, which rejected the
+            // frame (correct) and then dropped it on the floor (wrong): the sender saw
+            // no response at all and blocked until its own timeout, violating §6.3's
+            // second sentence and §4.9(c) deliver-or-signal. It also made a refusal
+            // indistinguishable from a dead peer, and on a single-connection oracle run
+            // it poisons every later request on the same connection.
+            //
+            // The frame is still REJECTED — only enough is salvaged to correlate the
+            // response. If even the request_id is unrecoverable the frame is
+            // unattributable and silence is the only option left.
+            rejectFrame(io, payload);
+            continue; // keep reading
+        };
         if (std.mem.eql(u8, env.root.typ, "system/protocol/execute/response")) {
             io.routeResponse(env); // takes ownership
         } else {

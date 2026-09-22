@@ -598,17 +598,34 @@ create cap-abs-buf 1024 allot
   sa cap-abs-buf c + su move  c su + to c
   cap-abs-buf c ;
 
-\ mint-grant-token ( grantee-h-a grantee-h-u grants-atv -- token-eaddr token-eu )  build a
-\ single-sig token {grantee, granter=us, grants:[...], created_at} with the given grants array.
-: mint-grant-token { gaddr gu gatv -- teaddr teu }
+\ add-ttl ( created ttl -- abs present? )  §5.6 rule 1: convert a DURATION term to an
+\ absolute timestamp. Rule 3: a conversion that is not representable is treated as ABSENT,
+\ exactly as a null term is -- it MUST NOT wrap and MUST NOT saturate to a representable
+\ maximum, since saturation manufactures a finite bound no reader can distinguish from a
+\ deliberate one. Cells are 64-bit here, so the guard is the unsigned ordering test.
+\
+\ ttl == 0 is NOT a special case and deliberately so: rule 2 makes 0 a DEFINED value
+\ yielding `created` (expire immediately). The absent field is the only "no bound" spelling.
+: add-ttl { created ttl -- abs present }
+  created ttl + { sum }
+  sum created u< if 0 false exit then
+  sum true ;
+
+\ mint-grant-token ( grantee-h-a grantee-h-u grants-atv -- token-eaddr token-eu )  as
+\ mint-grant-token-at at the current instant with no §5.6 ceiling.
+: mint-grant-token-at { gaddr gu gatv created exp have-exp -- teaddr teu }
   am-mark { tmk }
-  [char] m b,  4 4 >be
+  [char] m b,  have-exp if 5 else 4 then 4 >be
   s" grantee"    tv-text 2drop  gaddr gu tv-bytes 2drop
   s" granter"    tv-text 2drop  id-idhash tv-bytes 2drop
   s" grants"     tv-text 2drop  gatv gatv tv-node-len bytes,
-  s" created_at" tv-text 2drop  hnd-now-ms tv-uint 2drop
+  s" created_at" tv-text 2drop  created tv-uint 2drop
+  have-exp if  s" expires_at" tv-text 2drop  exp tv-uint 2drop  then
   tmk am-span
   s" system/capability/token" 2swap ent-make ;
+
+: mint-grant-token { gaddr gu gatv -- teaddr teu }
+  gaddr gu gatv hnd-now-ms 0 false mint-grant-token-at ;
 
 \ req-grants-bounded? ( exec arr lens nvar grants-atv -- flag )  §6.2: a `request`/`delegate`
 \ handler MUST NOT mint a grant exceeding the caller's presented authority. Returns true iff
@@ -630,7 +647,32 @@ defer req-grants-bounded?
   gatv tv-count 0= if 400 s" invalid_params" 0 0 error-result exit then
   exec arr lens nvar gatv req-grants-bounded? 0= if
     403 s" scope_exceeds_authority" 0 0 error-result exit then
-  aa au gatv mint-grant-token { teu } { teaddr }
+  \ §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE and convert
+  \ the duration term against that same instant.
+  \
+  \ Note what this is NOT: an authorization decision. An over-long ttl_ms from a bounded
+  \ caller MINTS a clamped token and returns 200 -- "rejecting it is non-conformant" (§5.6).
+  \ The bound exists because `request` mints a ROOT token (parent: null), so §5.6's
+  \ parent-child attenuation never reaches it; without this clamp, temporal attenuation is
+  \ the one dimension a requester could escape.
+  hnd-now-ms { created }
+  0 { ceiling } false { have-ceiling }
+  exec s" capability" ent-field dup 0<> if                      \ caller cap ABSOLUTE term
+    tv-payload { ccu } { cca }
+    arr lens nvar cca ccu inc-get dup 0<> if
+      s" expires_at" ent-uint if { ce }
+        have-ceiling 0= if ce to ceiling true to have-ceiling
+        else ce ceiling u< if ce to ceiling then then
+      else drop then
+    else drop then
+  else drop then
+  p s" ttl_ms" ent-uint if { ttl }                               \ request DURATION term
+    created ttl add-ttl if { tabs }
+      have-ceiling 0= if tabs to ceiling true to have-ceiling
+      else tabs ceiling u< if tabs to ceiling then then
+    else drop then
+  else drop then
+  aa au gatv created ceiling have-ceiling mint-grant-token-at { teu } { teaddr }
   teaddr ent-hash id-sign { su } { saddr }
   resp-inc-reset  teaddr teu resp-inc-add  id-peer resp-inc-add  saddr su resp-inc-add
   am-mark { mk }  [char] m b, 1 4 >be
@@ -670,9 +712,12 @@ create cap-abs2-buf 1024 allot
   exec params-of dup 0= if drop 400 s" invalid_params" 0 0 error-result exit then { p }
   p s" peer_pattern" ent-text dup 0= if 2drop 400 s" invalid_params" 0 0 error-result exit then { ppa ppu }
   ppa ppu valid-peer-pattern? 0= if 400 s" invalid_params" 0 0 error-result exit then
+  \ CAP-2 (§6.2): `grants: []` is the WITHDRAWAL form and MUST be accepted -- it writes a
+  \ present policy entry carrying an empty grants array, which is how an operator revokes a
+  \ seed policy without deleting the entry. The `tv-count 0=` reject conflated "no grants"
+  \ with "malformed"; the ABSENT field is malformed, the EMPTY array is deliberate.
   p s" grants" ent-field dup 0= if drop 400 s" invalid_params" 0 0 error-result exit then
-    dup c@ [char] a <> if drop 400 s" invalid_params" 0 0 error-result exit then
-    tv-count 0= if 400 s" invalid_params" 0 0 error-result exit then
+    c@ [char] a <> if 400 s" invalid_params" 0 0 error-result exit then
   s" policy/" ppa ppu cap-abs2  p p ent-len store-bind
   200 p p ent-len ;
 

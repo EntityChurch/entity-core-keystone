@@ -17,7 +17,7 @@
 module entity_core_capability
   use, intrinsic :: iso_fortran_env, only : int8, int64
   use entity_core_status
-  use entity_core_cbor, only : ecf_value_t, EV_MAP, EV_ARRAY, EV_ABSENT, EV_BYTES
+  use entity_core_cbor, only : ecf_value_t, EV_MAP, EV_ARRAY, EV_ABSENT, EV_BYTES, EV_UINT
   use entity_core_val
   use entity_core_ent
   use entity_core_store
@@ -36,6 +36,7 @@ module entity_core_capability
   public :: cap_now_ms, cap_grant, cap_canonicalize, cap_normalize_uri
   public :: cap_matches_pattern, cap_matches_id_pattern, cap_matches_scope, cap_is_peer_id, cap_extract_peer
   public :: cap_check_permission, cap_resolve, cap_find_signature
+  public :: cap_temporal_fields_representable, cap_add_ttl
   public :: cap_resolve_granter_peer_id, cap_grants_of_token, cap_grant_subset_local
   public :: cap_chain_exceeds_depth, cap_verify_chain, cap_is_revoked, cap_verify_request
 
@@ -700,6 +701,12 @@ contains
       else
         unresolvable = .true.; return
       end if
+      ! CAP-6a FIRST (§6.2): a present-but-unrepresentable expires_at / not_before /
+      ! created_at is MALFORMED and must be refused outright. This has to run BEFORE the
+      ! two range checks below, because those use ent_uint, which cannot tell "absent"
+      ! from "present but not EV_UINT" -- so on its own it would skip the check and honor
+      ! the token (fail-open).
+      if (.not. cap_temporal_fields_representable(current)) good = .false.
       now = cap_now_ms()
       call ent_uint(current, 'not_before', nb, pnb); if (pnb .and. now < nb) good = .false.
       call ent_uint(current, 'expires_at', ex, pex); if (pex .and. ex < now) good = .false.
@@ -785,5 +792,57 @@ contains
     if (cap_is_revoked(local, store, cap, env%inc)) then; cap_verify_request = CV_AUTHZ_DENY; return; end if
     cap_verify_request = CV_ALLOW
   end function cap_verify_request
+
+
+  ! §6.2 CAP-6a: .true. iff every temporal field on a RECEIVED token is either absent
+  ! (legal) or representable as a uint64.
+  !
+  ! This is the reader-side half of CAP-6 and it is where a peer fails OPEN. ent_uint
+  ! reports present=.false. BOTH when a field is ABSENT and when it is PRESENT but not
+  ! EV_UINT -- a negative integer or a bignum -- so a token carrying expires_at:-1
+  ! silently skipped the expiry check and was honored with 200. §6.2 CAP-6a is explicit:
+  ! such a token "is malformed. A verifier MUST refuse it and MUST NOT treat the
+  ! unrepresentable field as absent." An absent expires_at stays legal and is NOT
+  ! rejected here.
+  !
+  ! Refusal must be the §5.2 capability_denied disposition (a status-bearing response),
+  ! never a decode-layer silent drop or a transport close.
+  logical function cap_temporal_fields_representable(tok) result(ok)
+    type(entity_t), intent(in) :: tok
+    type(ecf_value_t) :: v
+    integer :: k
+    character(len=10), parameter :: keys(3) = &
+      [character(len=10) :: 'expires_at', 'not_before', 'created_at']
+    ok = .true.
+    do k = 1, 3
+      v = ent_field(tok, trim(keys(k)))
+      if (v%vkind == EV_ABSENT) cycle          ! absent is legal
+      if (v%vkind /= EV_UINT) then; ok = .false.; return; end if
+    end do
+  end function cap_temporal_fields_representable
+
+  ! §5.6 rule 1: convert a DURATION term (ttl_ms) to an absolute timestamp relative to
+  ! created_at. Rule 3: a conversion that is not representable is treated as ABSENT
+  ! (ok=.false.) exactly as a null term is -- it MUST NOT wrap and MUST NOT saturate to a
+  ! representable maximum, since saturation manufactures expires_at == 2^64-1, a finite
+  ! bound no reader can distinguish from a deliberate one.
+  !
+  ! FORTRAN-SPECIFIC: integer(int64) is SIGNED, and this peer's whole discovery axis is
+  ! the fixed-width signed-only number model. A wrap here shows up as a NEGATIVE sum, not
+  ! as a small positive one, so the guard tests the sign as well as the ordering.
+  !
+  ! ttl == 0 is NOT a special case and deliberately so: rule 2 makes 0 a DEFINED value
+  ! yielding created_at (expire immediately). The absent field is the only "no bound"
+  ! spelling, and falling out of the arithmetic is what keeps the two from collapsing.
+  subroutine cap_add_ttl(created_at, ttl, val, ok)
+    integer(int64), intent(in)  :: created_at, ttl
+    integer(int64), intent(out) :: val
+    logical,        intent(out) :: ok
+    val = 0_int64; ok = .false.
+    if (ttl < 0_int64) return
+    val = created_at + ttl
+    if (val < created_at) then; val = 0_int64; return; end if
+    ok = .true.
+  end subroutine cap_add_ttl
 
 end module entity_core_capability

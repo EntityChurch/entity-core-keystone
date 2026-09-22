@@ -385,8 +385,47 @@ notExpiredOk nowMs cap = match natField cap "expires_at" with
   Some ex -> ex >= nowMs
   None -> true
 
+-- §6.2 CAP-6a: true iff every temporal field on a RECEIVED token is either absent (legal)
+-- or representable as a uint64.
+--
+-- This is the reader-side half of CAP-6 and it is where a peer fails OPEN. `natField`
+-- answers None BOTH when a field is ABSENT and when it is PRESENT but not a `VUInt` — a
+-- VNInt (negative) or any other value — so a token carrying expires_at:-1 silently skipped
+-- the expiry check and was honored with 200. §6.2 CAP-6a is explicit: such a token "is
+-- malformed. A verifier MUST refuse it and MUST NOT treat the unrepresentable field as
+-- absent." An absent expires_at stays legal and is NOT rejected here.
+--
+-- The guard reads `field` (which distinguishes absent from present) rather than `natField`
+-- (which does not) — that disagreement IS the check. Nat is 64-bit unsigned, so a VUInt is
+-- representable by construction and no range test is needed on this substrate.
+temporalFieldsRepresentable : Entity -> Boolean
+temporalFieldsRepresentable cap =
+  ok = k -> match field cap k with
+    None -> true              -- absent is legal
+    Some (VUInt _) -> true
+    Some _ -> false           -- present but not a uint64 => malformed
+  (ok "expires_at") && (ok "not_before") && (ok "created_at")
+
+-- §5.6 rule 1: convert a DURATION term (ttl_ms) to an absolute timestamp relative to
+-- createdAt. Rule 3: a conversion that is not representable is treated as ABSENT (None)
+-- exactly as a null term is — it MUST NOT wrap and MUST NOT saturate to a representable
+-- maximum, since saturation manufactures expires_at == 2^64-1, a finite bound no reader
+-- can distinguish from a deliberate one. Nat addition wraps at 2^64, so the guard is the
+-- ordering test.
+--
+-- ttl == 0 is NOT a special case and deliberately so: rule 2 makes 0 a DEFINED value
+-- yielding createdAt (expire immediately). The absent field is the only "no bound"
+-- spelling, and falling out of the arithmetic is what keeps the two from collapsing.
+addTtl : Nat -> Nat -> Optional Nat
+addTtl createdAt ttl =
+  sum = createdAt + ttl
+  if sum < createdAt then None else Some sum
+
+-- CAP-6a is conjoined AHEAD of the range checks: those use natField, which cannot tell
+-- "absent" from "present but not a uint64", so on their own they skip and honor the token.
 temporalOk : Nat -> Entity -> Boolean
-temporalOk nowMs cap = (notBeforeOk nowMs cap) && (notExpiredOk nowMs cap)
+temporalOk nowMs cap =
+  (temporalFieldsRepresentable cap) && (notBeforeOk nowMs cap) && (notExpiredOk nowMs cap)
 
 -- Verify a single-sig chain. Returns (verdict, unresolvableCarveout). The §5.5
 -- unresolvable-grantee carve-out (True) maps to 401, taking precedence over Deny.

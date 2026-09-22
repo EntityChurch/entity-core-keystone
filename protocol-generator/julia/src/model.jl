@@ -12,12 +12,12 @@
 # that disagrees is a hard reject (§5.2), so a forwarded entity is canonical by construction.
 module Model
 
-using ..Cbor: CborMap, encode, decode
+using ..Cbor: CborMap, encode, decode, decode_salvage
 using ..ContentHash: content_hash
 
 export Entity, Envelope
 export make_entity, entity_tocbor, entity_ofcbor
-export envelope_tocbor, envelope_ofcbor, frame_ofenvelope, envelope_offrame
+export envelope_tocbor, envelope_ofcbor, frame_ofenvelope, envelope_offrame, salvage_request_id
 export efield, textfield, bytesfield, uintfield, entityfield, included_get, mapget
 
 struct BadEntity <: Exception; msg::String; end
@@ -121,5 +121,28 @@ end
 frame_ofenvelope(env::Envelope)::Vector{UInt8} = encode(envelope_tocbor(env))
 
 envelope_offrame(payload::AbstractVector{UInt8})::Envelope = envelope_ofcbor(decode(payload))
+
+"""
+§6.3 rejection reporting: recover ONLY the request_id from a frame the strict decoder
+rejected, so the rejection can be delivered as a correlated `400 non_canonical_ecf`
+response instead of silence. The frame stays rejected — nothing else is read out of
+it. Returns `nothing` when even the request_id is unrecoverable (an unattributable
+frame, where silence is the only option left).
+
+The envelope and entity-wrapper shapes are fixed maps with no legal tag position
+(§6.3), so a frame whose ONLY defect is a tag inside some entity's `data` still has a
+structurally sound root — which is exactly the case this recovers.
+"""
+function salvage_request_id(payload::AbstractVector{UInt8})
+    v = try
+        decode_salvage(payload)
+    catch
+        return nothing
+    end
+    root = mapget(v, "root");            root isa CborMap || return nothing
+    data = mapget(root, "data");         data isa CborMap || return nothing
+    rid  = mapget(data, "request_id")
+    return rid isa AbstractString ? String(rid) : nothing
+end
 
 end # module Model

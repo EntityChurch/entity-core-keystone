@@ -189,6 +189,29 @@ dispatch_execute_thread :: proc(ctx: rawptr) {
 	io_write_framed(io, resp)
 }
 
+// reject_frame answers a rejected frame with `400 non_canonical_ecf` (§6.3),
+// correlated by the request_id salvaged from it. Best-effort -- a failure here
+// degrades to the silence this exists to remove, which is no worse than the old
+// behaviour.
+@(private = "file")
+reject_frame :: proc(io: ^Io, payload: []u8) {
+	rid, ok := salvage_request_id(payload, io.allocator)
+	if !ok {
+		return
+	}
+	defer delete(rid, io.allocator)
+	errv, eerr := error_result("non_canonical_ecf", "", io.allocator)
+	if eerr != .None {
+		return
+	}
+	root, rerr := make_response(rid, 400, errv, io.allocator)
+	if rerr != .None {
+		return
+	}
+	env := Envelope{root = root, included = nil}
+	io_write_framed(io, env)
+}
+
 // read_loop: EXECUTE_RESPONSE → route; EXECUTE → dispatch on its own thread.
 // Runs until the connection closes / a frame ends it. Uses `context.allocator`
 // (the caller sets it) for the read buffer + envelope; a malformed frame is
@@ -200,10 +223,23 @@ read_loop :: proc(peer: ^Peer, conn: ^Conn, io: ^Io) {
 			break
 		}
 		env, eerr := envelope_of_frame(payload, io.allocator)
-		delete(payload, io.allocator)
 		if eerr != .None {
-			continue // malformed → drop, keep reading (§4.9)
+			// §6.3: "Rejection returns 400 non_canonical_ecf" -- a rejected frame is
+			// owed a STATUS, not silence. This used to `continue`, which rejected the
+			// frame (correct) and then dropped it on the floor (wrong): the sender saw
+			// no response at all and blocked until its own timeout, violating §6.3's
+			// second sentence and §4.9(c) deliver-or-signal. It also made a refusal
+			// indistinguishable from a dead peer, and on a single-connection oracle run
+			// it poisons every later request on the same connection.
+			//
+			// The frame is still REJECTED -- only enough is salvaged to correlate the
+			// response. If even the request_id is unrecoverable the frame is
+			// unattributable and silence is the only option left.
+			reject_frame(io, payload)
+			delete(payload, io.allocator)
+			continue // keep reading (§4.9)
 		}
+		delete(payload, io.allocator)
 		if env.root.typ == "system/protocol/execute/response" {
 			route_response(io, env) // takes ownership
 		} else {

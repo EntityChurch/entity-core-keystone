@@ -164,6 +164,30 @@ proc envelopeOfValue*(v: EcValue): Envelope =
 proc envelopeOfFrame*(payload: openArray[byte]): Envelope =
   envelopeOfValue(decode(payload))
 
+proc salvageRequestId*(payload: openArray[byte]): Option[string] =
+  ## §6.3 rejection reporting: recover ONLY the request_id from a frame the strict
+  ## decoder rejected, so the rejection can be delivered as a correlated
+  ## `400 non_canonical_ecf` response instead of silence. The frame stays rejected --
+  ## nothing else is read out of it. `none` when even the request_id is unrecoverable
+  ## (an unattributable frame, where silence is the only option left).
+  ##
+  ## The envelope and entity-wrapper shapes are fixed maps with no legal tag position
+  ## (§6.3), so a frame whose ONLY defect is a tag inside some entity's `data` still
+  ## has a structurally sound root -- which is exactly the case this recovers.
+  var v: EcValue
+  try:
+    v = decodeSalvage(payload)
+  except CatchableError:
+    return none(string)
+  if v == nil or v.kind != ekMap: return none(string)
+  let root = mapGet(v, "root")
+  if root == nil or root.kind != ekMap: return none(string)
+  let data = mapGet(root, "data")
+  if data == nil or data.kind != ekMap: return none(string)
+  let rid = mapGet(data, "request_id")
+  if rid == nil or rid.kind != ekText: return none(string)
+  some(rid.t)
+
 # ── hex (lowercase, for §3.4/§3.5 tree-path hash segments) ─────────────────────
 
 const HexDigits = "0123456789abcdef"

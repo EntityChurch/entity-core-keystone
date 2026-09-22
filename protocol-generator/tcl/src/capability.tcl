@@ -36,6 +36,50 @@ namespace eval ::entity::core::capability {
         grant_subset parse_grant is_peer_id normalize_uri canonicalize extract_peer
 }
 
+# §6.2 CAP-6a: 1 iff every temporal field on a RECEIVED token is either absent (legal)
+# or representable as a uint64.
+#
+# This is the reader-side half of CAP-6 and it is where a peer fails OPEN. Tcl's
+# fail-open is the ARITHMETIC one, not the null-collapse one, and the distinction matters
+# because the grep that catches the other misses this: `ecf::uint` returns the value of
+# ANY `int`-tagged item, negative included. The expiry check therefore did NOT skip — it
+# RAN and returned the wrong answer. For a negative not_before, `$now < $nb` is simply
+# false and the capability passed. No empty string, no skip, nothing an Option-shaped
+# audit would find.
+#
+# Tcl integers are arbitrary-precision, so the >2^64 half is likewise a DELIBERATE range
+# check rather than an overflow trap.
+#
+# An absent field stays legal and is NOT rejected here. Refusal must be the §5.2
+# capability_denied disposition, never a decode-layer drop or a transport close.
+proc ::entity::core::capability::temporal_fields_representable {tok} {
+    foreach key {expires_at not_before created_at} {
+        set v [::entity::core::entity::field $tok $key]
+        if {$v eq ""} { continue }
+        if {[lindex $v 0] ne "int"} { return 0 }
+        set n [lindex $v 1]
+        if {$n < 0 || $n >= 18446744073709551616} { return 0 }
+    }
+    return 1
+}
+
+# §5.6 rule 1: convert a DURATION term (ttl_ms) to an absolute timestamp relative to
+# $created_at. Rule 3: a conversion that is not representable is treated as ABSENT (the
+# empty string) exactly as a null term is — it MUST NOT wrap and MUST NOT saturate to a
+# representable maximum, since saturation manufactures expires_at == 2^64-1, a finite
+# bound no reader can distinguish from a deliberate one. Tcl does not wrap, so this is a
+# deliberate range check.
+#
+# ttl == 0 is NOT a special case and deliberately so: rule 2 makes 0 a DEFINED value
+# yielding $created_at (expire immediately). The absent field is the only "no bound"
+# spelling, and falling out of the arithmetic is what keeps the two from collapsing.
+proc ::entity::core::capability::add_ttl {created_at ttl} {
+    if {$ttl < 0} { return "" }
+    set sum [expr {$created_at + $ttl}]
+    if {$sum >= 18446744073709551616} { return "" }
+    return $sum
+}
+
 proc ::entity::core::capability::now_ms {} { return [clock milliseconds] }
 
 # ── small string helpers ──
@@ -499,6 +543,13 @@ proc ::entity::core::capability::verify_capability_chain {local_peer store_h cap
             throw {ENTITY_CORE UNRESOLVABLE_GRANTEE grantee} "capability grantee absent"
         }
         # temporal validity.
+        #
+        # CAP-6a FIRST: a present-but-unrepresentable expires_at / not_before /
+        # created_at is MALFORMED and must be refused outright. This has to run BEFORE
+        # the two range checks below, because those are what the ambiguity defeats — see
+        # temporal_fields_representable for the mechanism, which in Tcl is the ARITHMETIC
+        # form rather than the null-collapse one.
+        if {![temporal_fields_representable $current]} { set good 0 }
         set now [now_ms]
         set nb [::entity::core::entity::uint $current not_before]
         if {$nb ne "" && $now < $nb} { set good 0 }

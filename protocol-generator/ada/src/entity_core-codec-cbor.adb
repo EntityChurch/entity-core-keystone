@@ -388,7 +388,7 @@ package body Entity_Core.Codec.Cbor is
    --  The decoder is a set of nested subprograms over the input slice S, with a
    --  mutable cursor Pos (next 1-based byte index). Nesting closes over S/Pos so
    --  no access-to-local is needed (which the accessibility rules would reject).
-   function Decode (S : Byte_Array) return Ecf_Value is
+   function Decode_Impl (S : Byte_Array; Keep_Tags : Boolean) return Ecf_Value is
       Pos : Positive := S'First;
 
       procedure Need (K : Natural) is
@@ -504,7 +504,20 @@ package body Entity_Core.Codec.Cbor is
 
             when 6 =>
                --  N2: any CBOR tag (major type 6), at any nesting depth, rejected.
-               raise Entity_Core.Errors.Tag_Rejected with "CBOR tag rejected (N2)";
+               if not Keep_Tags then
+                  raise Entity_Core.Errors.Tag_Rejected with "CBOR tag rejected (N2)";
+               end if;
+               --  Salvage path only (Decode_Salvage): consume the tag head and
+               --  yield the item it wrapped, so the caller can locate the
+               --  request_id and SIGNAL the rejection. The frame is still
+               --  rejected -- the tag is never interpreted and the value never
+               --  reaches an entity.
+               declare
+                  Ignored : constant U64 := Read_Arg (AI);
+               begin
+                  pragma Unreferenced (Ignored);
+                  return Read_Item;
+               end;
 
             when 7 =>
                case AI is
@@ -533,6 +546,12 @@ package body Entity_Core.Codec.Cbor is
             raise Entity_Core.Errors.Trailing_Bytes with "trailing bytes";
          end if;
       end return;
-   end Decode;
+   end Decode_Impl;
+
+   function Decode (S : Byte_Array) return Ecf_Value is
+     (Decode_Impl (S, Keep_Tags => False));
+
+   function Decode_Salvage (S : Byte_Array) return Ecf_Value is
+     (Decode_Impl (S, Keep_Tags => True));
 
 end Entity_Core.Codec.Cbor;

@@ -207,6 +207,8 @@ Result<std::vector<std::byte>> encode(const EcfValue& v);
 // (non-canonical), tags (N2), indefinite lengths, non-minimal int/length args,
 // duplicate map keys, non-text/byte map keys, and over-deep nesting.
 Result<EcfValue> decode(std::span<const std::byte> in);
+// Tag-tolerant decode. STRICTLY for §6.3 rejection reporting -- see ecf.cpp.
+Result<EcfValue> decode_salvage(std::span<const std::byte> in);
 
 }  // namespace entity_core::ecf
 

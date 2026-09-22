@@ -21,6 +21,26 @@ Wire := Object clone do(
         Envelope fromWire(m)
     )
 
+    // §6.3 rejection reporting: recover ONLY the request_id from a frame the strict
+    // decoder rejected, so the rejection can be delivered as a correlated
+    // `400 non_canonical_ecf` response instead of silence. The frame stays rejected —
+    // nothing else is read out of it. Returns nil when even the request_id is
+    // unrecoverable (an unattributable frame, where silence is the only option left).
+    //
+    // The envelope and entity-wrapper shapes are fixed maps with no legal tag position
+    // (§6.3), so a frame whose ONLY defect is a tag inside some entity's `data` still has
+    // a structurally sound root — which is exactly the case this recovers.
+    salvageRequestId := method(payload,
+        m := EntityCodec decodeSalvage(payload)
+        if(m == nil, return nil)
+        root := m at("root")
+        if(root == nil, return nil)
+        data := root at("data")
+        if(data == nil, return nil)
+        rid := data at("request_id")
+        if(rid isKindOf(Sequence), rid asString, nil)
+    )
+
     // ── EXECUTE builder (§3.2). author/capability are raw hash Sequences (nil
     // to omit); resource is an EcMap (nil to omit); params is an Entity. ──
     makeExecute := method(requestId, uri, operation, params, author, capability, resource,

@@ -337,6 +337,53 @@ check_permission :: proc(
 
 // ── §5.5 / §5.6 chain verification + attenuation ──────────────────────────────
 
+// temporal_fields_representable reports whether every CAP-6a temporal field on a
+// RECEIVED token is either absent (legal) or representable as a u64.
+//
+// This is the reader-side half of CAP-6 and it is where a peer fails OPEN.
+// entity_uint returns (0, false) BOTH when a field is ABSENT and when it is PRESENT
+// but not an Ec_Uint -- a negative integer or a bignum -- so a token carrying
+// expires_at:-1 silently skipped the expiry check and was honored with 200. §6.2
+// CAP-6a is explicit: such a token "is malformed. A verifier MUST refuse it and MUST
+// NOT treat the unrepresentable field as absent." An absent expires_at stays legal
+// and is deliberately NOT rejected here.
+//
+// Refusal must be the §5.2 capability_denied disposition (a status-bearing response),
+// never a decode-layer silent drop or a transport close.
+temporal_fields_representable :: proc(tok: Entity) -> bool {
+	for key in ([]string{"expires_at", "not_before", "created_at"}) {
+		v, present := map_get(tok.data, key)
+		if !present {
+			continue // absent is legal
+		}
+		if _, is_uint := v.(Ec_Uint); !is_uint {
+			return false // present but not a u64 => malformed
+		}
+	}
+	return true
+}
+
+// add_ttl converts a DURATION term to an absolute timestamp, reporting whether it
+// contributes a ceiling at all.
+//
+// §5.6 rule 3: a term whose conversion created_at+ttl is not representable is treated
+// as ABSENT, exactly as a null term is. It MUST NOT wrap and MUST NOT saturate to a
+// representable maximum -- saturation encodes differently from absence and
+// manufactures expires_at == 2^64-1, a finite bound no reader can distinguish from a
+// deliberate one.
+//
+// ttl == 0 is NOT a special case here and deliberately so: §5.6 rule 2 makes 0 a
+// DEFINED value yielding created_at (expire immediately). The absent field is the only
+// "no bound" spelling, and falling out of the arithmetic is what keeps the two from
+// ever collapsing into each other.
+add_ttl :: proc(created_at, ttl: u64) -> (u64, bool) {
+	sum := created_at + ttl
+	if sum < created_at {
+		return 0, false // u64 wrap => not representable => drop the term
+	}
+	return sum, true
+}
+
 resolve :: proc(env: Envelope, st: ^Store, h: []u8) -> (Entity, bool) {
 	if e, ok := envelope_get(env, h); ok {
 		return e, true
@@ -772,7 +819,16 @@ verify_capability_chain :: proc(
 		if _, ok := resolve(env, st, grantee); !ok {
 			return .Unresolvable_Grantee
 		}
-		// temporal validity
+		// temporal validity.
+		//
+		// CAP-6a FIRST: a present-but-unrepresentable expires_at / not_before /
+		// created_at is MALFORMED and must be refused outright. This has to run
+		// BEFORE the two range checks below, because those use entity_uint, which
+		// cannot tell "absent" from "present but not an Ec_Uint" -- so on its own it
+		// would skip the check and honor the token (fail-open).
+		if !temporal_fields_representable(current) {
+			return .Authz_Deny
+		}
 		if nb, ok := entity_uint(current, "not_before"); ok && t < nb {
 			return .Authz_Deny
 		}

@@ -26,6 +26,26 @@ envelopeOfFrame payload = match decode payload with
   Left e -> Left e
   Right v -> envelopeOfCbor v
 
+-- §6.3 rejection reporting: recover ONLY the request_id from a frame the strict decoder
+-- rejected, so the rejection can be delivered as a correlated `400 non_canonical_ecf`
+-- response instead of silence. The frame stays rejected — nothing else is read out of it.
+-- None when even the request_id is unrecoverable (an unattributable frame, where silence
+-- is the only option left).
+--
+-- The envelope and entity-wrapper shapes are fixed maps with no legal tag position (§6.3),
+-- so a frame whose ONLY defect is a tag inside some entity's `data` still has a
+-- structurally sound root — which is exactly the case this recovers.
+salvageRequestId : Bytes -> Optional Text
+salvageRequestId payload = match decodeSalvage payload with
+  Left _ -> None
+  Right v -> match mapField v "root" with
+    Some rootV -> match mapField rootV "data" with
+      Some dataV -> match mapField dataV "request_id" with
+        Some (VText rid) -> Some rid
+        _ -> None
+      _ -> None
+    _ -> None
+
 frameOfEnvelope : Envelope -> Bytes
 frameOfEnvelope env =
   payload = encode (envelopeToCbor env)

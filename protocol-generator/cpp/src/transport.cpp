@@ -157,6 +157,38 @@ private:
 
 namespace {
 
+// §6.3: recover ONLY the request_id from a frame the strict decoder rejected, so the
+// rejection can be delivered as a correlated `400 non_canonical_ecf` response instead of
+// silence. The frame stays rejected -- nothing else is read out of it.
+//
+// The envelope and entity-wrapper shapes are fixed maps with no legal tag position
+// (§6.3), so a frame whose ONLY defect is a tag inside some entity's `data` still has a
+// structurally sound root -- which is exactly the case this recovers.
+std::optional<std::string> salvage_request_id(std::span<const std::byte> payload) {
+    auto v = ecf::decode_salvage(payload);
+    if (!v) return std::nullopt;
+    const auto* root = v->find("root");
+    if (!root) return std::nullopt;
+    const auto* data = root->find("data");
+    if (!data) return std::nullopt;
+    const auto* rid = data->find("request_id");
+    if (!rid) return std::nullopt;
+    const auto* t = rid->get_if<ecf::Text>();
+    if (!t) return std::nullopt;
+    return std::string(reinterpret_cast<const char*>(t->data()), t->size());
+}
+
+// §6.3: answer a rejected frame with `400 non_canonical_ecf`, correlated by the salvaged
+// request_id. Best-effort -- a failure here degrades to the silence this exists to
+// remove, which is no worse than the old behaviour.
+void reject_frame(Io& io, const std::string& request_id) {
+    auto e = wire::error_result("non_canonical_ecf", std::nullopt);
+    if (!e) return;
+    auto resp = wire::make_response(request_id, 400, **e);
+    if (!resp) return;
+    io.write_envelope(Envelope(*resp));
+}
+
 // The per-connection reader loop (§6.11 demux + §4.8 inbound dispatch). Each inbound EXECUTE
 // is dispatched on its OWN detached thread so the reader keeps reading + a handler-originated
 // outbound (§6.13(b)) does not block it.
@@ -166,7 +198,21 @@ void reader_loop(Peer* peer, std::shared_ptr<Connection> conn, std::shared_ptr<I
         auto st = io->read_frame(payload);
         if (st != Io::FrameStatus::Ok) break;  // EOF / over-limit / truncated ends the conn
         auto env = Envelope::from_wire(payload);
-        if (!env) continue;  // skip a malformed frame (keep reading, N6/§4.9)
+        if (!env) {
+            // §6.3: "Rejection returns 400 non_canonical_ecf" -- a rejected frame is
+            // owed a STATUS, not silence. This used to `continue`, which rejected the
+            // frame (correct) and then dropped it on the floor (wrong): the sender saw
+            // no response at all and blocked until its own timeout, violating §6.3's
+            // second sentence and §4.9(c) deliver-or-signal. It also made a refusal
+            // indistinguishable from a dead peer, and on a single-connection oracle run
+            // it poisons every later request on the same connection.
+            //
+            // The frame is still REJECTED -- only enough is salvaged to correlate the
+            // response. If even the request_id is unrecoverable the frame is
+            // unattributable and silence is the only option left.
+            if (auto rid = salvage_request_id(payload)) reject_frame(*io, *rid);
+            continue;  // keep reading (N6/§4.9)
+        }
         if (env->root()->type() == "system/protocol/execute/response") {
             io->route(std::move(*env));
         } else {

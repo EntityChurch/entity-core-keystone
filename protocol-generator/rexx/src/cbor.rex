@@ -152,8 +152,45 @@ Cbor_Decode: procedure expose EC.
   parse arg bytes
   numeric digits 200
   EC.!OK = 1
+  EC.!KEEPTAGS = 0
   EC.!DBYTES = bytes; EC.!DPOS = 1
   tv = _dec_node()
+  if \EC.!OK then return ''
+  if EC.!DPOS \= length(bytes) + 1 then do; call Reject 'TRUNCATED_INPUT', 'trailing data'; return ''; end
+  return tv
+
+/* Decode `bytes` for the sole purpose of REPORTING a rejection, not of accepting one.
+ * Identical to Cbor_Decode except that a major-type-6 tag yields the item it wrapped
+ * instead of rejecting.
+ *
+ * Why this exists (§6.3, a conformance requirement rather than a convenience): the tag
+ * rule is "Implementations MUST reject any received protocol frame containing a CBOR tag
+ * on a data field. Rejection returns 400 non_canonical_ecf." Rejecting by dropping the
+ * frame on the floor satisfies the first sentence and violates the second -- the peer
+ * owes the sender a status, and §4.9(c) deliver-or-signal says the same from the other
+ * direction. But the status must ride a response correlated by request_id, and the strict
+ * decoder cannot reach the request_id in a frame it refuses to parse. This recovers
+ * exactly that much and nothing more.
+ *
+ * This is NOT a weakening of the tag reject. The frame stays rejected: the value this
+ * returns is never converted to an entity, never stored, never forwarded and never
+ * interpreted, so §6.3's MUST NOT silently strip / MUST NOT preserve / MUST NOT attempt
+ * to interpret all still hold. The strict Cbor_Decode path that every real ingestion
+ * route uses is unchanged, which is what keeps the tag_reject wire-conformance vectors
+ * meaningful.
+ *
+ * EC.!KEEPTAGS is a global rather than a threaded parameter, which is safe here and
+ * would not be on a threaded peer: this is a single-threaded select-pump (§7b), so one
+ * frame is fully decoded before the next is read. Both entry points set it, so a strict
+ * decode can never inherit a stale 1. */
+Cbor_DecodeSalvage: procedure expose EC.
+  parse arg bytes
+  numeric digits 200
+  EC.!OK = 1
+  EC.!KEEPTAGS = 1
+  EC.!DBYTES = bytes; EC.!DPOS = 1
+  tv = _dec_node()
+  EC.!KEEPTAGS = 0
   if \EC.!OK then return ''
   if EC.!DPOS \= length(bytes) + 1 then do; call Reject 'TRUNCATED_INPUT', 'trailing data'; return ''; end
   return tv
@@ -206,7 +243,16 @@ _dec_node: procedure expose EC.
   if EC.!DPOS > length(EC.!DBYTES) then do; call Reject 'TRUNCATED_INPUT', 'read past end'; return ''; end
   ib0 = c2d(substr(EC.!DBYTES, EC.!DPOS, 1))
   major0 = ib0 % 32
-  if major0 == 6 then do; call Reject 'TAG_REJECTED', 'major-type-6 tag not permitted in ECF'; return ''; end
+  if major0 == 6 then do
+    if \EC.!KEEPTAGS then do; call Reject 'TAG_REJECTED', 'major-type-6 tag not permitted in ECF'; return ''; end
+    /* Salvage path only (Cbor_DecodeSalvage): consume the tag head and yield the item it
+     * wrapped, so the caller can locate the request_id and SIGNAL the rejection. The
+     * frame is still rejected -- the tag is never interpreted and never reaches an
+     * entity. */
+    call _dhead
+    if \EC.!OK then return ''
+    return _dec_node()
+  end
   if major0 == 7 then return _dec_simple()
   parse value _dhead() with major arg
   if \EC.!OK then return ''

@@ -269,7 +269,36 @@ varintDecode bs off =
 -- ── decode (total Either; canonical-enforcing; recursive tag rejection N2) ────
 
 decode : Bytes -> Either CodecError Value
-decode bs = match decodeItem bs 0 with
+decode bs = match decodeItemK false bs 0 with
+  Left e -> Left e
+  Right (v, off) ->
+    if off == Bytes.size bs then Right v
+    else Left (NonCanonicalEcf "trailing bytes after top-level item")
+
+-- Decode `bs` for the sole purpose of REPORTING a rejection, not of accepting one.
+-- Identical to `decode` except that a major-type-6 tag yields the item it wrapped
+-- instead of TagRejected.
+--
+-- Why this exists (§6.3, a conformance requirement rather than a convenience): the tag
+-- rule is "Implementations MUST reject any received protocol frame containing a CBOR tag
+-- on a data field. Rejection returns `400 non_canonical_ecf`." Rejecting by dropping the
+-- frame on the floor satisfies the first sentence and violates the second — the peer owes
+-- the sender a status, and §4.9(c) deliver-or-signal says the same from the other
+-- direction. But the status must ride a response correlated by `request_id`, and the
+-- strict decoder cannot reach the request_id in a frame it refuses to parse. This
+-- recovers exactly that much and nothing more.
+--
+-- This is NOT a weakening of the tag reject. The frame stays rejected: the value this
+-- returns is never converted to an Entity, never stored, never forwarded and never
+-- interpreted, so §6.3's MUST NOT silently strip / MUST NOT preserve / MUST NOT attempt to
+-- interpret all still hold. The strict `decode` path that every real ingestion route uses
+-- is unchanged, which is what keeps the `tag_reject` wire-conformance vectors meaningful.
+--
+-- The flag is a plain parameter threaded through decodeItemK. Unison has no mutable
+-- module state to abuse here, which is the right answer anyway: the peer forks a green
+-- thread per connection, so a shared flag would race.
+decodeSalvage : Bytes -> Either CodecError Value
+decodeSalvage bs = match decodeItemK true bs 0 with
   Left e -> Left e
   Right (v, off) ->
     if off == Bytes.size bs then Right v
@@ -310,7 +339,10 @@ readArg bs off ai =
   else Left (NonCanonicalEcf "reserved additional-info")
 
 decodeItem : Bytes -> Nat -> Either CodecError (Value, Nat)
-decodeItem bs off =
+decodeItem bs off = decodeItemK false bs off
+
+decodeItemK : Boolean -> Bytes -> Nat -> Either CodecError (Value, Nat)
+decodeItemK keepTags bs off =
   match Bytes.at off bs with
     None -> Left (Truncated "decode: eof")
     Some ib ->
@@ -334,12 +366,20 @@ decodeItem bs off =
       else if major == 4 then
         match readArg bs off1 ai with
           Left e -> Left e
-          Right (len, o) -> decodeArray bs o len
+          Right (len, o) -> decodeArrayK keepTags bs o len
       else if major == 5 then
         match readArg bs off1 ai with
           Left e -> Left e
-          Right (len, o) -> decodeMap bs o len
-      else if major == 6 then Left (TagRejected "CBOR major-type-6 tag on the wire (ECF §6.3)")
+          Right (len, o) -> decodeMapK keepTags bs o len
+      else if major == 6 then
+        -- N2: any major-type-6 tag, at any depth. The salvage path is the ONE exception:
+        -- consume the tag head and yield the item it wrapped. The frame is still
+        -- rejected — the tag is never interpreted and never reaches an Entity.
+        if keepTags then
+          match readArg bs off1 ai with
+            Left e -> Left e
+            Right (_, o) -> decodeItemK keepTags bs o
+        else Left (TagRejected "CBOR major-type-6 tag on the wire (ECF section 6.3)")
       else decodeSimpleOrFloat bs off1 ai
 
 takeBytes : Bytes -> Nat -> Nat -> Either CodecError (Value, Nat)
@@ -349,11 +389,14 @@ takeBytes bs off len =
   else Right (VBytes (Bytes.take len avail), off + len)
 
 decodeArray : Bytes -> Nat -> Nat -> Either CodecError (Value, Nat)
-decodeArray bs off count =
+decodeArray bs off count = decodeArrayK false bs off count
+
+decodeArrayK : Boolean -> Bytes -> Nat -> Nat -> Either CodecError (Value, Nat)
+decodeArrayK keepTags bs off count =
   go : [Value] -> Nat -> Nat -> Either CodecError (Value, Nat)
   go acc k o =
     if k == 0 then Right (VArray acc, o)
-    else match decodeItem bs o with
+    else match decodeItemK keepTags bs o with
       Left e -> Left e
       Right (v, o2) -> go (acc :+ v) (Nat.drop k 1) o2
   go [] count off
@@ -361,13 +404,16 @@ decodeArray bs off count =
 -- decode a map of `count` entries, enforcing canonical key order
 -- (length-then-lex over encoded key bytes) AND duplicate-key rejection.
 decodeMap : Bytes -> Nat -> Nat -> Either CodecError (Value, Nat)
-decodeMap bs off count =
+decodeMap bs off count = decodeMapK false bs off count
+
+decodeMapK : Boolean -> Bytes -> Nat -> Nat -> Either CodecError (Value, Nat)
+decodeMapK keepTags bs off count =
   go : [(Value, Value)] -> Optional Bytes -> Nat -> Nat -> Either CodecError (Value, Nat)
   go acc prev k o =
     if k == 0 then Right (VMap acc, o)
-    else match decodeItem bs o with
+    else match decodeItemK keepTags bs o with
       Left e -> Left e
-      Right (key, o1) -> match decodeItem bs o1 with
+      Right (key, o1) -> match decodeItemK keepTags bs o1 with
         Left e -> Left e
         Right (val, o2) ->
           kb = encode key

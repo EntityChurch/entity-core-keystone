@@ -263,6 +263,10 @@ const Decoder = struct {
     s: []const u8,
     pos: usize = 0,
     gpa: std.mem.Allocator,
+    /// Makes `item` yield the tag's INNER value instead of returning TagRejected. It
+    /// exists for ONE caller — `decodeSalvage` — and is never set on the strict path.
+    /// See `decodeSalvage` for why this is not a weakening of the §6.3 tag reject.
+    keep_tags: bool = false,
 
     fn need(self: *Decoder, k: usize) Error!void {
         if (self.pos + k > self.s.len) return error.Truncated;
@@ -348,7 +352,16 @@ const Decoder = struct {
                 }
                 return .{ .map = pairs };
             },
-            6 => return error.TagRejected, // N2: any CBOR tag, at any depth
+            6 => {
+                // N2: any CBOR tag, at any depth.
+                if (!self.keep_tags) return error.TagRejected;
+                // Salvage path only (decodeSalvage): consume the tag head and yield the
+                // value it wrapped, so the caller can locate the request_id and SIGNAL
+                // the rejection. The frame is still rejected — the tag is never
+                // interpreted and the value never reaches an entity.
+                _ = try self.readArg(ai);
+                return try self.item();
+            },
             7 => return switch (ai) {
                 20 => .{ .boolean = false },
                 21 => .{ .boolean = true },
@@ -366,6 +379,33 @@ const Decoder = struct {
 /// tree — free with `Value.deinit(gpa)`.
 pub fn decode(gpa: std.mem.Allocator, s: []const u8) Error!Value {
     var d = Decoder{ .s = s, .gpa = gpa };
+    const v = try d.item();
+    errdefer v.deinit(gpa);
+    if (d.pos != s.len) return error.TrailingBytes;
+    return v;
+}
+
+/// Parse `s` for the sole purpose of REPORTING a rejection, not of accepting one.
+/// Identical to `decode` except that a major-type-6 tag yields the value it wrapped
+/// instead of `error.TagRejected`.
+///
+/// Why this exists (§6.3, a conformance requirement rather than a convenience): the tag
+/// rule is "Implementations MUST reject any received protocol frame containing a CBOR
+/// tag on a data field. Rejection returns 400 non_canonical_ecf." Rejecting by dropping
+/// the frame on the floor satisfies the first sentence and violates the second — the
+/// peer owes the sender a status, and §4.9(c) deliver-or-signal says the same from the
+/// other direction. But the status must ride a response correlated by request_id, and
+/// the strict decoder cannot reach the request_id in a frame it refuses to parse. This
+/// recovers exactly that much and nothing more.
+///
+/// This is NOT a weakening of the tag reject. The frame stays rejected: the value this
+/// returns is never converted to an Entity, never stored, never forwarded and never
+/// interpreted, so §6.3's MUST NOT silently strip / MUST NOT preserve / MUST NOT
+/// attempt to interpret all still hold. The strict `decode` path that every real
+/// ingestion route uses is byte-for-byte unchanged, which is what keeps the tag_reject
+/// wire-conformance vectors meaningful.
+pub fn decodeSalvage(gpa: std.mem.Allocator, s: []const u8) Error!Value {
+    var d = Decoder{ .s = s, .gpa = gpa, .keep_tags = true };
     const v = try d.item();
     errdefer v.deinit(gpa);
     if (d.pos != s.len) return error.TrailingBytes;

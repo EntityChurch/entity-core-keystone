@@ -100,7 +100,7 @@ private:
                    const std::string&, Outcome&);
     void h_tree(const Envelope&, const Entity&, const std::string&, Outcome&);
     void h_handlers(const Entity&, const std::string&, Outcome&);
-    void h_capability(const Entity&, const Entity*, const std::string&, Outcome&);
+    void h_capability(const Envelope&, const Entity&, const Entity*, const std::string&, Outcome&);
     void h_type(const Entity&, const std::string&, Outcome&);
     void h_validate_echo(const Entity&, const std::string&, Outcome&);
     void h_validate_dispatch_outbound(Connection&, const Entity&, const std::string&, Outcome&);
@@ -110,13 +110,20 @@ private:
     Result<std::pair<EntityPtr, EntityPtr>> mint_token(
         std::span<const std::byte> grantee, EcfValue grants,
         std::optional<std::span<const std::byte>> parent);
+    // mint_token with the created_at instant supplied by the caller and the §5.6
+    // MIN_DEFINED ceiling applied, so the emitted created_at and the expiry computed
+    // from it cannot skew. expires_at == nullopt is the ONLY "no bound" spelling.
+    Result<std::pair<EntityPtr, EntityPtr>> mint_token_at(
+        std::uint64_t created_at, std::span<const std::byte> grantee, EcfValue grants,
+        std::optional<std::span<const std::byte>> parent,
+        std::optional<std::uint64_t> expires_at);
     void attach_cap(Outcome&, const EntityPtr& token, const EntityPtr& sig);
     EcfValue derive_seed_grants(const Entity& remote_peer, const std::string& remote_peer_id);
     void ingest_signatures(const Envelope& env);
     std::optional<std::string> resolve_handler_path(const std::string& path) const;
     void build_listing(const std::string& path, Outcome&);
-    void mint_bounded(const Entity* caller_cap, const EcfValue* requested,
-                      std::span<const std::byte> grantee,
+    void mint_bounded(const Envelope& env, const Entity* caller_cap, const Entity* params,
+                      const EcfValue* requested, std::span<const std::byte> grantee,
                       std::optional<std::span<const std::byte>> parent, Outcome&);
 };
 

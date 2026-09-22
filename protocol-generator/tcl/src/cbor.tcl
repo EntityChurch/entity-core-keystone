@@ -257,8 +257,13 @@ proc ::entity::core::cbor::_f32bits_to_f64bits {bits} {
 }
 
 # ═════════════════════════ DECODE ═════════════════════════
+
+# §6.3 salvage flag — see decode_salvage.
+set ::entity::core::cbor::KeepTags 0
 # decode bytes -> taggedValue ; rejects non-canonical + trailing data.
 proc ::entity::core::cbor::decode {bytes} {
+    variable KeepTags
+    set KeepTags 0
     set b [binary format a* $bytes]
     set pos 0
     set val [_dec $b pos]
@@ -266,6 +271,46 @@ proc ::entity::core::cbor::decode {bytes} {
         _reject TRUNCATED_INPUT "trailing data after top-level value ($pos of [string length $b])"
     }
     return $val
+}
+
+# Decode $bytes for the sole purpose of REPORTING a rejection, not of accepting one.
+# Identical to `decode` except that a major-type-6 tag yields the item it wrapped instead
+# of raising TAG_REJECTED.
+#
+# Why this exists (§6.3, a conformance requirement rather than a convenience): the tag
+# rule is "Implementations MUST reject any received protocol frame containing a CBOR tag
+# on a data field. Rejection returns 400 non_canonical_ecf." Rejecting by dropping the
+# frame on the floor satisfies the first sentence and violates the second — the peer owes
+# the sender a status, and §4.9(c) deliver-or-signal says the same from the other
+# direction. But the status must ride a response correlated by request_id, and the strict
+# decoder cannot reach the request_id in a frame it refuses to parse. This recovers
+# exactly that much and nothing more.
+#
+# This is NOT a weakening of the tag reject. The frame stays rejected: the value this
+# returns is never converted to an entity, never stored, never forwarded and never
+# interpreted, so §6.3's MUST NOT silently strip / MUST NOT preserve / MUST NOT attempt
+# to interpret all still hold. The strict `decode` path that every real ingestion route
+# uses is unchanged, which is what keeps the tag_reject wire-conformance vectors
+# meaningful.
+#
+# The flag is a namespace variable rather than a threaded parameter because this peer is
+# a SINGLE-THREADED event loop (§7b) — one frame is fully decoded before the next is
+# read, so there is no interleaving for it to leak across. Both entry points set it, so
+# a strict decode can never inherit a stale 1.
+proc ::entity::core::cbor::decode_salvage {bytes} {
+    variable KeepTags
+    set KeepTags 1
+    set b [binary format a* $bytes]
+    set pos 0
+    set rc [catch {
+        set val [_dec $b pos]
+        if {$pos != [string length $b]} {
+            _reject TRUNCATED_INPUT "trailing data after top-level value"
+        }
+        set val
+    } res opts]
+    set KeepTags 0
+    return -options $opts $res
 }
 
 proc ::entity::core::cbor::_byte {b posVar} {
@@ -320,7 +365,16 @@ proc ::entity::core::cbor::_dec {b posVar} {
     binary scan [string index $b $pos] cu ib0
     set major0 [expr {$ib0 >> 5}]
     if {$major0 == 6} {
-        _reject TAG_REJECTED "major-type-6 tag not permitted in ECF (§6.3)"
+        variable KeepTags
+        if {!$KeepTags} {
+            _reject TAG_REJECTED "major-type-6 tag not permitted in ECF (§6.3)"
+        }
+        # Salvage path only (decode_salvage): consume the tag head and yield the item it
+        # wrapped, so the caller can locate the request_id and SIGNAL the rejection. The
+        # frame is still rejected — the tag is never interpreted and the value never
+        # reaches an entity.
+        _head $b pos
+        return [_dec $b pos]
     }
     if {$major0 == 7} {
         return [_dec_simple $b pos]

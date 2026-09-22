@@ -127,7 +127,28 @@ module EntityCore
           begin
             Wire.envelope_of_frame(payload)
           rescue CodecError | ProtocolError
-            next # skip a malformed frame
+            # §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is
+            # owed a STATUS, not silence. This used to be a bare `next`, which
+            # rejected the frame (correct) and then dropped it on the floor (wrong):
+            # the sender saw no response at all and blocked until its own timeout,
+            # violating §6.3's second sentence and §4.9(c) deliver-or-signal. It also
+            # made a refusal indistinguishable from a dead peer, and on a
+            # single-connection oracle run it poisons every later request on the same
+            # connection.
+            #
+            # The frame is still REJECTED — only enough is salvaged to correlate the
+            # response. If even the request_id is unrecoverable the frame is
+            # unattributable and silence is the only option left.
+            if rid = Wire.salvage_request_id(payload)
+              begin
+                io.write_framed(
+                  Envelope.of(Wire.make_response(rid, 400, Wire.error_result("non_canonical_ecf")))
+                )
+              rescue TransportError
+                # write failure ends this exchange; reader keeps going
+              end
+            end
+            next # keep reading
           end
 
         if env.root.type == "system/protocol/execute/response"

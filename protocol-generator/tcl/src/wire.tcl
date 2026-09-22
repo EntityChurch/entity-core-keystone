@@ -26,6 +26,26 @@ proc ::entity::core::wire::now_ms {} { return [clock milliseconds] }
 proc ::entity::core::wire::frame_of_envelope {env} {
     return [::entity::core::cbor::encode [::entity::core::envelope::to_cbor $env]]
 }
+# §6.3 rejection reporting: recover ONLY the request_id from a frame the strict decoder
+# rejected, so the rejection can be delivered as a correlated `400 non_canonical_ecf`
+# response instead of silence. The frame stays rejected — nothing else is read out of it.
+# Returns "" when even the request_id is unrecoverable (an unattributable frame, where
+# silence is the only option left).
+#
+# The envelope and entity-wrapper shapes are fixed maps with no legal tag position (§6.3),
+# so a frame whose ONLY defect is a tag inside some entity's `data` still has a
+# structurally sound root — which is exactly the case this recovers.
+proc ::entity::core::wire::salvage_request_id {payload} {
+    if {[catch {::entity::core::cbor::decode_salvage $payload} v]} { return "" }
+    set root [::entity::core::ecf::get $v root]
+    if {$root eq ""} { return "" }
+    set data [::entity::core::ecf::get $root data]
+    if {$data eq ""} { return "" }
+    set rid [::entity::core::ecf::get $data request_id]
+    if {[lindex $rid 0] ne "text"} { return "" }
+    return [lindex $rid 1]
+}
+
 proc ::entity::core::wire::envelope_of_frame {payload} {
     set v [::entity::core::cbor::decode $payload]
     if {[lindex $v 0] ne "map"} { throw {ENTITY_CORE WIRE not_a_map} "frame: not a map" }

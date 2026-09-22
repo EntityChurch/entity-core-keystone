@@ -274,6 +274,41 @@ envelope_of_frame :: proc(payload: []u8, allocator := context.allocator) -> (Env
 	return envelope_of_cbor(v, allocator)
 }
 
+// salvage_request_id recovers ONLY the request_id from a frame the strict decoder
+// rejected, so the rejection can be delivered as a correlated `400 non_canonical_ecf`
+// response (§6.3) instead of silence. The frame stays rejected -- nothing else is read
+// out of it. Returns ("", false) when even the request_id is unrecoverable (an
+// unattributable frame, where silence is the only option left).
+//
+// The envelope and entity-wrapper shapes are fixed maps with no legal tag position
+// (§6.3), so a frame whose ONLY defect is a tag inside some entity's `data` still has a
+// structurally sound root -- which is exactly the case this recovers. The returned
+// string is cloned into `allocator`, since the decoded tree is destroyed here.
+salvage_request_id :: proc(payload: []u8, allocator := context.allocator) -> (string, bool) {
+	v, err := cbor_decode_salvage(payload, allocator)
+	if err != .None {
+		return "", false
+	}
+	defer value_destroy(v, allocator)
+	root, rok := map_get(v, "root")
+	if !rok {
+		return "", false
+	}
+	data, dok := map_get(root, "data")
+	if !dok {
+		return "", false
+	}
+	rid, iok := map_get(data, "request_id")
+	if !iok {
+		return "", false
+	}
+	t, is_text := rid.(Ec_Text)
+	if !is_text {
+		return "", false
+	}
+	return strings.clone(string(t), allocator), true
+}
+
 // ── small Ec_Value helpers (owned allocations) ───────────────────────────────
 
 text_val :: proc(s: string, allocator := context.allocator) -> Ec_Value {

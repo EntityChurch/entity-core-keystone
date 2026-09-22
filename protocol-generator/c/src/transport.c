@@ -316,6 +316,26 @@ typedef struct reader_args {
     ec_io *io;
 } reader_args;
 
+/* §6.3: answer a rejected frame with `400 non_canonical_ecf`, correlated by the
+ * request_id salvaged from it. Best-effort — an OOM here degrades to the silence
+ * this function exists to remove, which is no worse than the old behaviour. */
+static void reject_frame(ec_io *io, const char *request_id)
+{
+    ec_entity *err = NULL, *root = NULL;
+    ec_envelope *env = NULL;
+    if (ec_error_result("non_canonical_ecf", NULL, &err) != EC_OK) {
+        return;
+    }
+    if (ec_make_response(request_id, 400, err, &root) == EC_OK) {
+        if (ec_env_new(root, &env) == EC_OK) {
+            write_envelope(io, env);
+            ec_env_free(env);
+        }
+        ec_entity_unref(root);
+    }
+    ec_entity_unref(err);
+}
+
 static void *reader_loop(void *arg)
 {
     reader_args *ra = arg;
@@ -331,10 +351,28 @@ static void *reader_loop(void *arg)
         }
         ec_envelope *env = NULL;
         st = ec_env_of_wire(payload, plen, &env);
-        free(payload);
         if (st != EC_OK) {
-            continue;            /* skip a malformed frame (keep reading, N6/§4.9) */
+            /* §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is
+             * owed a STATUS, not silence. This used to `continue`, which rejected
+             * the frame (correct) and then dropped it on the floor (wrong): the
+             * sender saw no response at all and blocked until its own timeout,
+             * violating §6.3's second sentence and §4.9(c) deliver-or-signal. It
+             * also made a refusal indistinguishable from a dead peer, and on a
+             * single-connection oracle run it poisons every later request on the
+             * same connection.
+             *
+             * The frame is still REJECTED — we salvage only enough to correlate the
+             * response. If even the request_id is unrecoverable the frame is
+             * unattributable and silence is the only option left. */
+            char *rid = ec_salvage_request_id(payload, plen);
+            free(payload);
+            if (rid) {
+                reject_frame(ra->io, rid);
+                free(rid);
+            }
+            continue;            /* keep reading (N6/§4.9) */
         }
+        free(payload);
         if (strcmp(env->root->type, "system/protocol/execute/response") == 0) {
             demux_route(ra->io, env);   /* takes ownership */
         } else {

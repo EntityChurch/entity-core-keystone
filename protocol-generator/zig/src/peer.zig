@@ -147,20 +147,69 @@ fn ownerGrants(a: std.mem.Allocator, local_peer: []const u8) Error![]Value {
 
 const Minted = struct { token: Entity, signature: Entity };
 
-/// Mint a capability token granted by us to `grantee_hash`; sign it. Both entities
-/// are allocated from `a`.
-fn mintToken(p: *Peer, a: std.mem.Allocator, grantee_hash: []const u8, parent: ?[]const u8, grants: []Value) Error!Minted {
+/// Mint a capability token granted by us to `grantee_hash` at a caller-supplied
+/// instant; sign it. Both entities are allocated from `a`.
+///
+/// `expires_at` carries §5.6's MIN_DEFINED ceiling: null means no term was defined and
+/// the token genuinely has no expiry (the ONLY "no bound" spelling), while a non-null
+/// value is emitted verbatim — including one equal to `created_at`, which §5.6 rule 2
+/// requires for ttl_ms == 0 and which means "already expired at every observable
+/// instant", not "unbounded".
+///
+/// `created_at` is supplied rather than sampled here so a computed expiry is guaranteed
+/// to be relative to the SAME instant that lands in the token; sampling the clock twice
+/// skews the two.
+fn mintTokenAt(p: *Peer, a: std.mem.Allocator, created_at: u64, grantee_hash: []const u8, parent: ?[]const u8, expires_at: ?u64, grants: []Value) Error!Minted {
     var list: std.ArrayList(Value.Pair) = .empty;
     try list.append(a, .{ .key = try model.textVal(a, "granter"), .value = try model.bytesVal(a, p.identity.identity_hash) });
     try list.append(a, .{ .key = try model.textVal(a, "grantee"), .value = try model.bytesVal(a, grantee_hash) });
     const grants_copy = try a.alloc(Value, grants.len);
     @memcpy(grants_copy, grants);
     try list.append(a, .{ .key = try model.textVal(a, "grants"), .value = .{ .array = grants_copy } });
-    try list.append(a, .{ .key = try model.textVal(a, "created_at"), .value = .{ .uint = nowMs() } });
+    try list.append(a, .{ .key = try model.textVal(a, "created_at"), .value = .{ .uint = created_at } });
+    if (expires_at) |ex| try list.append(a, .{ .key = try model.textVal(a, "expires_at"), .value = .{ .uint = ex } });
     if (parent) |ph| try list.append(a, .{ .key = try model.textVal(a, "parent"), .value = try model.bytesVal(a, ph) });
     const token = try Entity.make(a, "system/capability/token", .{ .map = try list.toOwnedSlice(a) });
     const signature = try identity_mod.signEntity(a, p.identity, token);
     return .{ .token = token, .signature = signature };
+}
+
+/// `mintTokenAt` at the current instant with no §5.6 ceiling. Used by the paths that
+/// mint a self-issued grant from local authority (bootstrap, handler registration, the
+/// §4.4 handshake), where no MIN_DEFINED term is in play.
+fn mintToken(p: *Peer, a: std.mem.Allocator, grantee_hash: []const u8, parent: ?[]const u8, grants: []Value) Error!Minted {
+    return mintTokenAt(p, a, nowMs(), grantee_hash, parent, null, grants);
+}
+
+// ── §5.6 temporal ceiling (CAP-5 / CAP-6) ────────────────────────────────────
+
+/// Convert a DURATION term to an absolute timestamp, reporting whether it contributes
+/// a ceiling at all.
+///
+/// §5.6 rule 3: a term whose conversion created_at+ttl is not representable is treated
+/// as ABSENT, exactly as a null term is. It MUST NOT wrap and MUST NOT saturate to a
+/// representable maximum — saturation encodes differently from absence and manufactures
+/// expires_at == 2^64-1, a finite bound no reader can distinguish from a deliberate one.
+///
+/// ttl == 0 is NOT a special case here and deliberately so: §5.6 rule 2 makes 0 a
+/// DEFINED value yielding created_at (expire immediately). The absent field is the only
+/// "no bound" spelling, and falling out of the arithmetic is what keeps the two from
+/// ever collapsing into each other.
+fn addTtl(created_at: u64, ttl: u64) ?u64 {
+    const sum = @addWithOverflow(created_at, ttl);
+    if (sum[1] != 0) return null; // u64 wrap => not representable => drop the term
+    return sum[0];
+}
+
+/// Fold one DEFINED term into the running MIN_DEFINED (§5.6). Callers pass each term
+/// already shaped: absolute timestamps (parent.expires_at, caller_capability.
+/// expires_at) enter directly; durations MUST be converted with `addTtl` first. Mixing
+/// a duration in unconverted yields a timestamp near the epoch and silently clamps
+/// every token to already-expired — the failure mode §5.6 calls out by name.
+fn minDefined(acc: ?u64, term: ?u64) ?u64 {
+    const t = term orelse return acc;
+    const a = acc orelse return t;
+    return @min(a, t);
 }
 
 // ── §6.9a seed-policy derivation ─────────────────────────────────────────────
@@ -445,7 +494,7 @@ fn reqGrants(a: std.mem.Allocator, params: ?Entity) Error![]Value {
 
 /// Mint a token for `grantee_hash`, bounded as a subset of the caller's cap
 /// (§6.2 subset-validation).
-fn mintBounded(p: *Peer, a: std.mem.Allocator, caller_cap: ?Entity, req_grants: []Value, grantee_hash: []const u8, parent: ?[]const u8) Error!Outcome {
+fn mintBounded(p: *Peer, a: std.mem.Allocator, env: model.Envelope, caller_cap: ?Entity, params: ?Entity, req_grants: []Value, grantee_hash: []const u8, parent: ?[]const u8) Error!Outcome {
     const bounded = blk: {
         const cc = caller_cap orelse break :blk false;
         // §6.2 mint-time subset check on the local frame (child=parent=local).
@@ -464,7 +513,27 @@ fn mintBounded(p: *Peer, a: std.mem.Allocator, caller_cap: ?Entity, req_grants: 
         break :blk true;
     };
     if (!bounded) return errOut(a, 403, "scope_exceeds_authority", null);
-    const minted = try mintToken(p, a, grantee_hash, parent, req_grants);
+
+    // §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE and
+    // convert the duration terms against that same instant.
+    //
+    // Note what this is NOT: an authorization decision. An over-long ttl_ms from a
+    // bounded caller MINTS a clamped token and returns 200 — "rejecting it is
+    // non-conformant" (§5.6). The bound exists because `request` mints a ROOT token
+    // (parent: null), so §5.6's parent-child attenuation never reaches it; without this
+    // clamp, temporal attenuation is the one dimension a requester could escape, and
+    // policy withdrawal would have no bounded latency.
+    const created_at = nowMs();
+    var ceiling: ?u64 = null;
+    if (parent) |ph| { // absolute
+        if (cap.resolve(env, &p.store, ph)) |pt| ceiling = minDefined(ceiling, pt.uintField("expires_at"));
+    }
+    if (caller_cap) |cc| ceiling = minDefined(ceiling, cc.uintField("expires_at")); // absolute
+    if (params) |pe| { // duration
+        if (pe.uintField("ttl_ms")) |ttl| ceiling = minDefined(ceiling, addTtl(created_at, ttl));
+    }
+
+    const minted = try mintTokenAt(p, a, created_at, grantee_hash, parent, ceiling, req_grants);
     var gpairs = try a.alloc(Value.Pair, 1);
     gpairs[0] = .{ .key = try model.textVal(a, "token"), .value = try model.bytesVal(a, minted.token.hash) };
     const grant_result = try Entity.make(a, "system/capability/grant", .{ .map = gpairs });
@@ -475,13 +544,13 @@ fn mintBounded(p: *Peer, a: std.mem.Allocator, caller_cap: ?Entity, req_grants: 
     return okInc(grant_result, inc);
 }
 
-fn capabilityHandler(p: *Peer, a: std.mem.Allocator, exec: Entity, caller_cap: ?Entity) Error!Outcome {
+fn capabilityHandler(p: *Peer, a: std.mem.Allocator, env: model.Envelope, exec: Entity, caller_cap: ?Entity) Error!Outcome {
     const op = exec.textField("operation") orelse "";
     const params = try exec.entityField(a, "params");
     const author = exec.bytesField("author");
     if (std.mem.eql(u8, op, "request")) {
         const grantee = author orelse return errOut(a, 403, "capability_denied", null);
-        return mintBounded(p, a, caller_cap, try reqGrants(a, params), grantee, null);
+        return mintBounded(p, a, env, caller_cap, params, try reqGrants(a, params), grantee, null);
     } else if (std.mem.eql(u8, op, "delegate")) {
         const parent = if (params) |pe| pe.bytesField("parent") else null;
         if (parent == null) return errOut(a, 400, "unexpected_params", "delegate: parent required");
@@ -489,7 +558,7 @@ fn capabilityHandler(p: *Peer, a: std.mem.Allocator, exec: Entity, caller_cap: ?
         // delegate is same-peer-only in v1
         if (author == null or !std.mem.eql(u8, author.?, p.identity.identity_hash))
             return errOut(a, 501, "unsupported_operation", "delegate: same-peer-only in v1");
-        return mintBounded(p, a, caller_cap, try reqGrants(a, params), author.?, parent.?);
+        return mintBounded(p, a, env, caller_cap, params, try reqGrants(a, params), author.?, parent.?);
     } else if (std.mem.eql(u8, op, "revoke")) {
         const token_h = if (params) |pe| pe.bytesField("token") else null;
         if (token_h == null) return errOut(a, 400, "unexpected_params", "revoke: missing token");
@@ -881,7 +950,7 @@ fn dispatchOutcome(p: *Peer, a: std.mem.Allocator, conn: *Conn, env: Envelope) E
 
     const stripped = stripLocal(p, pattern);
     if (std.mem.eql(u8, stripped, "system/tree")) return treeHandler(p, a, exec);
-    if (std.mem.eql(u8, stripped, "system/capability")) return capabilityHandler(p, a, exec, caller_cap);
+    if (std.mem.eql(u8, stripped, "system/capability")) return capabilityHandler(p, a, env, exec, caller_cap);
     if (std.mem.eql(u8, stripped, "system/handler")) return handlersHandler(p, a, exec);
     if (std.mem.eql(u8, stripped, "system/type")) return typesHandler(a, exec);
     // §7a conformance handlers (only bootstrapped when conformance=true)

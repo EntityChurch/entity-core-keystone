@@ -359,8 +359,35 @@ variable seen-n
   arr lens nvar gha ghu inc-get dup 0= if drop false exit then { granter }
   granter s" public_key" ent-field dup 0= if drop false exit then tv-payload { gpku } { gpka }
   sig gpka gpku id-verify-sig ;
+\ temporal-representable? ( eaddr -- flag )  §6.2 CAP-6a: true iff every temporal field on
+\ a RECEIVED token is either absent (legal) or representable as a uint64.
+\
+\ This is the reader-side half of CAP-6 and it is where a peer fails OPEN. `ent-uint`
+\ answers ( 0 false ) for an ABSENT field, and for a PRESENT one it hands back
+\ `tv-int-value` -- which applies the TV's SIGN byte and therefore returns a NEGATIVE cell
+\ quite happily. So the range tests below did not skip; they RAN and answered wrong: for a
+\ negative not_before, `not_before > now` is false and the capability passed. §6.2 CAP-6a:
+\ such a token "is malformed. A verifier MUST refuse it and MUST NOT treat the
+\ unrepresentable field as absent." An absent field stays legal and is NOT rejected here.
+\
+\ The check reads the TV directly rather than through ent-uint, because the sign byte is
+\ exactly the bit ent-uint discards. A >2^64 magnitude cannot reach here at all: the TV int
+\ carries an 8-byte argument, and a bignum arrives as a major-type-6 tag, rejected at decode.
+: temporal-field-ok? { eaddr kaddr ku -- flag }
+  eaddr kaddr ku ent-field dup 0= if drop true exit then   \ absent is legal
+  dup c@ [char] i <> if drop false exit then               \ present but not an int
+  1+ c@ 0= ;                                                \ sign byte 0 => non-negative
+: temporal-representable? { eaddr -- flag }
+  eaddr s" expires_at" temporal-field-ok? 0= if false exit then
+  eaddr s" not_before" temporal-field-ok? 0= if false exit then
+  eaddr s" created_at" temporal-field-ok? 0= if false exit then
+  true ;
+
 \ link-validity-ok ( cur -- flag )  §5.6 not_before/expires_at window.
 : link-validity-ok { cur -- flag }
+  \ CAP-6a FIRST: the two range tests below cannot tell absent from unrepresentable, so on
+  \ their own they skip the check and honor the token (fail-open).
+  cur temporal-representable? 0= if false exit then
   cur s" not_before" ent-uint if now-ms > if false exit then else drop then   \ not_before > now -> not yet valid
   cur s" expires_at" ent-uint if now-ms < if false exit then else drop then   \ expires_at < now -> expired
   true ;

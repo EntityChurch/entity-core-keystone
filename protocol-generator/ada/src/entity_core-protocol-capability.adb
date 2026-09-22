@@ -15,6 +15,15 @@ package body Entity_Core.Protocol.Capability is
    Base58_Alphabet : constant String :=
      "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
+   --  §6.2 CAP-6a: the temporal fields whose representability is checked on a
+   --  RECEIVED token, before any range comparison.
+   type Key_Access is access constant String;
+   Key_Expires_At : aliased constant String := "expires_at";
+   Key_Not_Before : aliased constant String := "not_before";
+   Key_Created_At : aliased constant String := "created_at";
+   Temporal_Keys : constant array (1 .. 3) of Key_Access :=
+     (Key_Expires_At'Access, Key_Not_Before'Access, Key_Created_At'Access);
+
    --  Which §5.2 matcher a grant dimension uses (0.8.1, F40). Id_Scope is
    --  Operations/Peers (system/capability/id-scope); Path_Scope is
    --  Handlers/Resources (system/capability/path-scope).
@@ -381,6 +390,38 @@ package body Entity_Core.Protocol.Capability is
       when others =>
          return 0;
    end Now_Ms;
+
+   ---------------------------------------------------------------------------
+   --  §6.2 CAP-6a: unrepresentable temporal fields on INGEST.
+   --
+   --  True when every CAP-6a temporal field on a RECEIVED token is either absent
+   --  (legal) or representable as Unsigned_64.
+   --
+   --  This is the reader-side half of CAP-6 and it is where a peer fails OPEN.
+   --  Uint_Field reports Found => False BOTH when a field is ABSENT and when it
+   --  is PRESENT but not K_Uint -- a negative integer (K_Nint) or a bignum -- so
+   --  a token carrying expires_at:-1 silently skipped the expiry check and was
+   --  honored with 200. §6.2 CAP-6a is explicit: such a token "is malformed. A
+   --  verifier MUST refuse it and MUST NOT treat the unrepresentable field as
+   --  absent." An absent expires_at stays legal and is NOT rejected here.
+   --
+   --  Refusal must be the §5.2 capability_denied disposition (a status-bearing
+   --  response), never a decode-layer silent drop or a transport close.
+   ---------------------------------------------------------------------------
+   function Temporal_Fields_Representable (Tok : Materialized_Entity)
+                                           return Boolean is
+      D : constant Ecf_Value := Data (Tok);
+      Got : Boolean;
+      Result : Ecf_Value;
+   begin
+      for Key of Temporal_Keys loop
+         Map_Get (D, Key.all, Got, Result);
+         if Got and then Kind (Result) /= K_Uint then
+            return False;  --  present but not a Unsigned_64 => malformed
+         end if;
+      end loop;
+      return True;
+   end Temporal_Fields_Representable;
 
    ---------------------------------------------------------------------------
    --  Chain collection + per-link verification (§5.5 / §5.6).
@@ -888,6 +929,15 @@ package body Entity_Core.Protocol.Capability is
                Ex : constant Interfaces.Unsigned_64 :=
                  Uint_Field (Data (Cur), "expires_at", Ex_Found);
             begin
+               --  CAP-6a FIRST: a present-but-unrepresentable expires_at /
+               --  not_before / created_at is MALFORMED and must be refused
+               --  outright. This has to run BEFORE the two range checks below,
+               --  because those use Uint_Field, which cannot tell "absent" from
+               --  "present but not K_Uint" -- so on its own it would skip the
+               --  check and honor the token (fail-open).
+               if not Temporal_Fields_Representable (Cur) then
+                  Good := False;
+               end if;
                if Nb_Found and then T_Now < Nb then
                   Good := False;
                end if;

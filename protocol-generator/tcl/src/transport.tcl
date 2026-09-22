@@ -77,7 +77,28 @@ proc ::entity::core::transport::_drain {io} {
 proc ::entity::core::transport::_dispatch_frame {io payload} {
     variable IO
     variable DONE
-    if {[catch {::entity::core::wire::envelope_of_frame $payload} env]} { return }
+    if {[catch {::entity::core::wire::envelope_of_frame $payload} env]} {
+        # §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is owed a
+        # STATUS, not silence. This used to be a bare `return`, which rejected the frame
+        # (correct) and then dropped it on the floor (wrong): the sender saw no response
+        # at all and blocked until its own timeout, violating §6.3's second sentence and
+        # §4.9(c) deliver-or-signal. It also made a refusal indistinguishable from a dead
+        # peer, and on a single-connection oracle run it poisons every later request on
+        # the same connection.
+        #
+        # The frame is still REJECTED — only enough is salvaged to correlate the
+        # response. If even the request_id is unrecoverable the frame is unattributable
+        # and silence is the only option left.
+        set rid [::entity::core::wire::salvage_request_id $payload]
+        if {$rid ne ""} {
+            catch {
+                _write_framed $io [::entity::core::envelope::make \
+                    [::entity::core::wire::make_response $rid 400 \
+                        [::entity::core::wire::error_result non_canonical_ecf]]]
+            }
+        }
+        return
+    }
     set root [::entity::core::envelope::root $env]
     if {[::entity::core::entity::type $root] eq "system/protocol/execute/response"} {
         set rid [::entity::core::entity::text $root request_id]

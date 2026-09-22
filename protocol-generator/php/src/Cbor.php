@@ -406,7 +406,39 @@ final class Cbor
         return $value;
     }
 
-    private static function decodeValue(Cursor $cur, int $depth): mixed
+    /**
+     * Decode $bin for the sole purpose of REPORTING a rejection, not of accepting
+     * one. Identical to {@see decode} except that a major-type-6 tag yields the item
+     * it wrapped instead of throwing TagRejectedException.
+     *
+     * Why this exists (§6.3, a conformance requirement rather than a convenience):
+     * the tag rule is "Implementations MUST reject any received protocol frame
+     * containing a CBOR tag on a data field. Rejection returns 400
+     * non_canonical_ecf." Rejecting by dropping the frame on the floor satisfies the
+     * first sentence and violates the second -- the peer owes the sender a status,
+     * and §4.9(c) deliver-or-signal says the same from the other direction. But the
+     * status must ride a response correlated by request_id, and the strict decoder
+     * cannot reach the request_id in a frame it refuses to parse. This recovers
+     * exactly that much and nothing more.
+     *
+     * This is NOT a weakening of the tag reject. The frame stays rejected: the value
+     * this returns is never converted to an Entity, never stored, never forwarded and
+     * never interpreted, so §6.3's MUST NOT silently strip / MUST NOT preserve / MUST
+     * NOT attempt to interpret all still hold. The strict {@see decode} path that
+     * every real ingestion route uses is unchanged, which is what keeps the
+     * tag_reject wire-conformance vectors meaningful.
+     */
+    public static function decodeSalvage(string $bin): mixed
+    {
+        $cur = new Cursor($bin);
+        $value = self::decodeValue($cur, 0, true);
+        if (!$cur->eof()) {
+            throw new NonCanonicalEcfException('trailing bytes after value: ' . $cur->remaining() . ' byte(s)');
+        }
+        return $value;
+    }
+
+    private static function decodeValue(Cursor $cur, int $depth, bool $keepTags = false): mixed
     {
         if ($depth > self::MAX_DEPTH) {
             throw new NonCanonicalEcfException('nesting deeper than ' . self::MAX_DEPTH);
@@ -437,14 +469,22 @@ final class Cbor
                 $len = self::readLength($info, $cur);
                 $list = [];
                 for ($i = 0; $i < $len; $i++) {
-                    $list[] = self::decodeValue($cur, $depth + 1);
+                    $list[] = self::decodeValue($cur, $depth + 1, $keepTags);
                 }
                 return $list;
             case 5:
-                return self::readMap($info, $cur, $depth + 1);
+                return self::readMap($info, $cur, $depth + 1, $keepTags);
             case 6:
                 // Invariant N2 / ECF §6.3 — tags MUST be rejected at any depth.
-                throw new TagRejectedException('CBOR tag (major type 6) is not permitted in ECF');
+                if (!$keepTags) {
+                    throw new TagRejectedException('CBOR tag (major type 6) is not permitted in ECF');
+                }
+                // Salvage path only ({@see decodeSalvage}): consume the tag head and
+                // yield the item it wrapped, so the caller can locate the request_id
+                // and SIGNAL the rejection. The frame is still rejected -- the tag is
+                // never interpreted and the value never reaches an Entity.
+                self::readArgument($info, $cur);
+                return self::decodeValue($cur, $depth + 1, true);
             case 7:
                 return self::readSimple($info, $cur);
             default:
@@ -527,7 +567,7 @@ final class Cbor
      * then bytewise), which also rejects duplicates (a re-encode by THIS codec
      * then reproduces the input byte-identically).
      */
-    private static function readMap(int $info, Cursor $cur, int $depth): EcfMap
+    private static function readMap(int $info, Cursor $cur, int $depth, bool $keepTags = false): EcfMap
     {
         $len = self::readLength($info, $cur);
         $map = new EcfMap();
@@ -535,7 +575,7 @@ final class Cbor
         for ($i = 0; $i < $len; $i++) {
             // Capture the raw encoded key bytes for canonical-order checking.
             $keyStart = $cur->pos();
-            $key = self::decodeValue($cur, $depth);
+            $key = self::decodeValue($cur, $depth, $keepTags);
             $keyBytes = $cur->slice($keyStart, $cur->pos() - $keyStart);
 
             if ($prevKeyBytes !== null && self::keyCmp($prevKeyBytes, $keyBytes) >= 0) {
@@ -543,7 +583,7 @@ final class Cbor
             }
             $prevKeyBytes = $keyBytes;
 
-            $val = self::decodeValue($cur, $depth);
+            $val = self::decodeValue($cur, $depth, $keepTags);
             $map->put($key, $val);
         }
         return $map;

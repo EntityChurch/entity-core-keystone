@@ -16,6 +16,51 @@ Capability := Object clone do(
     maxChainDepth := 64
     base58 := "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
+    // §6.2 CAP-6a: true iff every temporal field on a RECEIVED token is either absent
+    // (legal) or representable as a uint64.
+    //
+    // This is the reader-side half of CAP-6 and it is where a peer fails OPEN. Io's
+    // fail-open is the ARITHMETIC one, not the null-collapse one, and the distinction
+    // matters because the grep that catches the other misses this: Entity uint is
+    // `if(v != nil and(v isKindOf(Number)), v, nil)`, so it returns ANY Number, negative
+    // included. The expiry check therefore did NOT skip — it RAN and returned the wrong
+    // answer. For a negative not_before, `now < nb` is simply false and the capability
+    // passed. No nil, no skip, nothing an Option-shaped audit would find.
+    //
+    // Io Numbers are IEEE doubles, so the >2^64 half is a range check against the wire's
+    // uint64 domain rather than an overflow trap. A non-integral Number is likewise
+    // unrepresentable and refused.
+    //
+    // An absent field stays legal and is NOT rejected here. Refusal must be the §5.2
+    // capability_denied disposition, never a decode-layer drop or a transport close.
+    temporalFieldsRepresentable := method(tok,
+        list("expires_at", "not_before", "created_at") foreach(k,
+            v := tok field(k)
+            if(v == nil, continue)
+            if(v isKindOf(Number) not, return false)
+            if(v < 0, return false)
+            if(v != (v floor), return false)
+            if(v >= 18446744073709551616, return false))
+        true
+    )
+
+    // §5.6 rule 1: convert a DURATION term (ttl_ms) to an absolute timestamp relative to
+    // createdAt. Rule 3: a conversion that is not representable is treated as ABSENT
+    // (nil) exactly as a null term is — it MUST NOT wrap and MUST NOT saturate to a
+    // representable maximum, since saturation manufactures expires_at == 2^64-1, a
+    // finite bound no reader can distinguish from a deliberate one.
+    //
+    // ttl == 0 is NOT a special case and deliberately so: rule 2 makes 0 a DEFINED value
+    // yielding createdAt (expire immediately). The absent field is the only "no bound"
+    // spelling, and falling out of the arithmetic is what keeps the two from collapsing.
+    addTtl := method(createdAt, ttl,
+        if(ttl isKindOf(Number) not, return nil)
+        if(ttl < 0, return nil)
+        sum := createdAt + ttl
+        if(sum >= 18446744073709551616, return nil)
+        sum
+    )
+
     nowMs := method(EntityCodec nowMs floor)
 
     // ── §5.4 canonicalization + pattern matching ──
@@ -443,7 +488,14 @@ Capability := Object clone do(
             geh := current bytes("grantee")
             if(geh == nil or(capResolve(included, storeObj, geh) == nil),
                 return "UNRESOLVABLE")
-            // temporal validity
+            // temporal validity.
+            //
+            // CAP-6a FIRST: a present-but-unrepresentable expires_at / not_before /
+            // created_at is MALFORMED and must be refused outright. This has to run
+            // BEFORE the two range checks below, because those are what the ambiguity
+            // defeats — see temporalFieldsRepresentable for the mechanism, which in Io
+            // is the ARITHMETIC form rather than the null-collapse one.
+            if(temporalFieldsRepresentable(current) not, good = false)
             now := nowMs
             nb := current uint("not_before")
             if(nb != nil and(now < nb), good = false)

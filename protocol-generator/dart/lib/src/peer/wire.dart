@@ -94,6 +94,29 @@ Entity makeResponse(String requestId, int status, Entity result) => Entity.make(
 
 // ── error result + empty params + resource target ─────────────────────────────
 
+/// §6.3 rejection reporting: recover ONLY the request_id from a frame the strict
+/// decoder rejected, so the rejection can be delivered as a correlated
+/// `400 non_canonical_ecf` response instead of silence. The frame stays rejected —
+/// nothing else is read out of it. Returns null when even the request_id is
+/// unrecoverable (an unattributable frame, where silence is the only option left).
+/// See [Ecf.decodeSalvage].
+///
+/// The envelope and entity-wrapper shapes are fixed maps with no legal tag position
+/// (§6.3), so a frame whose ONLY defect is a tag inside some entity's `data` still
+/// has a structurally sound root — which is exactly the case this recovers.
+String? salvageRequestId(Uint8List payload) {
+  final r = Ecf.decodeSalvage(payload);
+  if (r case Ok(:final value) when value is EcfMap) {
+    final root = value['root'];
+    if (root is! EcfMap) return null;
+    final data = root['data'];
+    if (data is! EcfMap) return null;
+    final rid = data['request_id'];
+    return rid is EcfText ? rid.value : null;
+  }
+  return null;
+}
+
 Entity errorResult(String code, String? message) {
   final data = message != null
       ? EcfMap.of({'code': EcfText(code), 'message': EcfText(message)})

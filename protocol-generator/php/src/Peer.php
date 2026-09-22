@@ -110,11 +110,35 @@ final class Peer
      */
     public function mintToken(string $granteeHash, array $grants, ?string $parent): array
     {
+        return $this->mintTokenAt(Capability::nowMs(), $granteeHash, $grants, $parent, null);
+    }
+
+    /**
+     * Mint at a caller-supplied instant, carrying §5.6's MIN_DEFINED ceiling.
+     *
+     * $expiresAt null means no term was defined and the token genuinely has no
+     * expiry (the ONLY "no bound" spelling). A non-null value is emitted verbatim --
+     * including one equal to $createdAt, which §5.6 rule 2 requires for ttl_ms == 0
+     * and which means "already expired at every observable instant", not
+     * "unbounded".
+     *
+     * $createdAt is supplied rather than sampled here so a computed expiry is
+     * guaranteed to be relative to the SAME instant that lands in the token;
+     * sampling the clock twice skews the two.
+     *
+     * @param list<EcfMap> $grants
+     * @return array{token:Entity,signature:Entity}
+     */
+    public function mintTokenAt(\GMP $createdAt, string $granteeHash, array $grants, ?string $parent, ?\GMP $expiresAt): array
+    {
         $m = new EcfMap();
         $m->put('granter', new ByteString($this->identity->identityHash()));
         $m->put('grantee', new ByteString($granteeHash));
         $m->put('grants', \array_values($grants));
-        $m->put('created_at', Capability::nowMs());
+        $m->put('created_at', $createdAt);
+        if ($expiresAt !== null) {
+            $m->put('expires_at', $expiresAt);
+        }
         if ($parent !== null) {
             $m->put('parent', new ByteString($parent));
         }

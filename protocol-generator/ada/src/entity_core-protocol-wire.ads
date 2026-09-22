@@ -50,6 +50,14 @@ package Entity_Core.Protocol.Wire is
    function Frame_Of_Envelope (E : Entity_Core.Protocol.Envelope.Protocol_Envelope)
                                return Byte_Array;
 
+   --  §6.3 rejection reporting: recover ONLY the request_id from a frame the
+   --  strict decoder rejected, so the rejection can be delivered as a correlated
+   --  `400 non_canonical_ecf` response instead of silence. The frame stays
+   --  rejected -- nothing else is read out of it. Returns "" when even the
+   --  request_id is unrecoverable (an unattributable frame, where silence is the
+   --  only option left). See Codec.Cbor.Decode_Salvage.
+   function Salvage_Request_Id (Payload : Byte_Array) return String;
+
    ---------------------------------------------------------------------------
    --  EXECUTE builder (§3.2).
    ---------------------------------------------------------------------------

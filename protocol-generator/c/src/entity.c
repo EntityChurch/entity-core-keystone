@@ -476,3 +476,24 @@ cleanup:
     ec_value_free(m);
     return st;
 }
+
+char *ec_salvage_request_id(const uint8_t *in, size_t in_len)
+{
+    ec_value *m = NULL;
+    if (ec_ecf_decode_salvage(in, in_len, &m) != EC_OK) {
+        return NULL;
+    }
+    char *rid = NULL;
+    /* The envelope and entity-wrapper shapes are fixed maps with no legal tag
+     * position (§6.3), so a frame whose ONLY defect is a tag inside some entity's
+     * `data` still has a structurally sound root — which is exactly the case this
+     * recovers. Anything deeper is left unread. */
+    const ec_value *root = (m && m->kind == EC_MAP) ? ec_map_get(m, "root") : NULL;
+    const ec_value *data = (root && root->kind == EC_MAP) ? ec_map_get(root, "data") : NULL;
+    const ec_value *rv = (data && data->kind == EC_MAP) ? ec_map_get(data, "request_id") : NULL;
+    if (rv && rv->kind == EC_TEXT) {
+        rid = strdup((const char *)rv->as.bytes.p);
+    }
+    ec_value_free(m);
+    return rid;
+}

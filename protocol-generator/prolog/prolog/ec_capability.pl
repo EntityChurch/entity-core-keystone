@@ -42,7 +42,8 @@
             matches_pattern/2,          % +Path, +Pattern (semidet)
             grant_subset/5,             % +LocalPeer,+ChildPeer,+ParentPeer,+ChildGrant,+ParentGrant
             extract_peer/3,             % +LocalPeer, +Uri, -TargetPeer
-            is_peer_id/1                % +Seg (semidet: looks like a peer_id)
+            is_peer_id/1,               % +Seg (semidet: looks like a peer_id)
+            cap_resolve/4               % +Envelope, +StoreId, +Hash, -Entity (semidet)
           ]).
 
 :- use_module(ec_codec).
@@ -192,9 +193,35 @@ grantee_resolves(ctx(Env, StoreId), Cap) :-
 % into the §5.5 chain-walk failure → 403), the same channel as any other link
 % inconsistency. Absent fields = no constraint (a non-expiring cap stays valid).
 temporal_ok(Cap) :-
+    % CAP-6a FIRST (§6.2): a present-but-unrepresentable expires_at / not_before /
+    % created_at is MALFORMED and must be refused outright. This has to run BEFORE
+    % the two range checks below, because those are what the ambiguity defeats.
+    %
+    % Prolog's fail-open is the ARITHMETIC one, not the null-collapse one, and the
+    % distinction matters because the grep that catches the other misses this:
+    % `ent_uint(E, Key, I) :- ent_field(E, Key, int(I)), integer(I)` succeeds for
+    % ANY integer, negative included. So the guard did not SKIP -- it RAN and
+    % answered wrong: for a negative not_before, `Now >= NB` is trivially true and
+    % the capability passed. No absent/present distinction anywhere in sight.
+    %
+    % Prolog integers are arbitrary-precision, so the >2^64 half is likewise a
+    % DELIBERATE range check rather than an overflow trap.
+    %
+    % An absent field stays legal and is NOT rejected here. Refusal is the §5.2
+    % capability_denied disposition (this failure folds into the §5.5 chain-walk
+    % failure -> 403), never a decode-layer drop or a transport close.
+    temporal_fields_representable(Cap),
     cap_now_ms(Now),
     ( ent_uint(Cap, "not_before", NB) -> Now >= NB ; true ),
     ( ent_uint(Cap, "expires_at", EX) -> Now < EX ; true ).
+
+% §6.2 CAP-6a: every temporal field on a RECEIVED token is either absent (legal) or
+% representable as a uint64. Present-but-anything-else => malformed.
+temporal_fields_representable(Cap) :-
+    forall(member(Key, ["expires_at", "not_before", "created_at"]),
+           ( ent_field(Cap, Key, V)
+           -> ( V = int(I), integer(I), I >= 0, I < 18446744073709551616 )
+           ;  true )).
 
 cap_now_ms(Ms) :- get_time(T), Ms is integer(T * 1000).
 

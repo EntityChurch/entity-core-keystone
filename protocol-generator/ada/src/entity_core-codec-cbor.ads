@@ -29,4 +29,26 @@ package Entity_Core.Codec.Cbor is
    --  Entity_Core.Errors codec exceptions on malformed input.
    function Decode (S : Byte_Array) return Ecf_Value;
 
+   --  Decode S for the sole purpose of REPORTING a rejection, not of accepting
+   --  one. Identical to Decode except that a major-type-6 tag yields the item it
+   --  wrapped instead of raising Tag_Rejected.
+   --
+   --  Why this exists (§6.3, a conformance requirement rather than a
+   --  convenience): the tag rule is "Implementations MUST reject any received
+   --  protocol frame containing a CBOR tag on a data field. Rejection returns
+   --  400 non_canonical_ecf." Rejecting by dropping the frame on the floor
+   --  satisfies the first sentence and violates the second -- the peer owes the
+   --  sender a status, and §4.9(c) deliver-or-signal says the same from the
+   --  other direction. But the status must ride a response correlated by
+   --  request_id, and the strict decoder cannot reach the request_id in a frame
+   --  it refuses to parse. This recovers exactly that much and nothing more.
+   --
+   --  This is NOT a weakening of the tag reject. The frame stays rejected: the
+   --  value this returns is never converted to an entity, never stored, never
+   --  forwarded and never interpreted, so §6.3's MUST NOT silently strip / MUST
+   --  NOT preserve / MUST NOT attempt to interpret all still hold. The strict
+   --  Decode path that every real ingestion route uses is unchanged, which is
+   --  what keeps the tag_reject wire-conformance vectors meaningful.
+   function Decode_Salvage (S : Byte_Array) return Ecf_Value;
+
 end Entity_Core.Codec.Cbor;

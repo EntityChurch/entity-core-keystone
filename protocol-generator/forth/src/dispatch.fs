@@ -116,6 +116,30 @@ variable uri-addressed
   respaddr  incB-addr incB-len incB-n  env->wire { wu } { waddr }
   conn conn-fd@  waddr wu  frame-out ;
 
+\ salvage-request-id ( faddr fu -- rid-a rid-u | 0 0 )  §6.3: recover ONLY the request_id
+\ from a frame the strict decoder rejected. The frame stays rejected -- nothing else is read
+\ out of it. The envelope and entity-wrapper shapes are fixed maps with no legal tag position
+\ (§6.3), so a frame whose ONLY defect is a tag inside some entity's `data` still has a
+\ structurally sound root, which is exactly the case this recovers.
+: salvage-request-id { faddr fu -- ra ru }
+  faddr fu cbor-decode-salvage drop { v }
+  v s" root" tv-map-get dup 0= if drop 0 0 exit then { rootv }
+  rootv s" data" tv-map-get dup 0= if drop 0 0 exit then { datav }
+  datav s" request_id" tv-map-get dup 0= if drop 0 0 exit then { ridv }
+  ridv c@ [char] t <> if 0 0 exit then
+  ridv tv-payload ;
+
+\ reject-frame ( conn faddr fu -- )  answer a rejected frame with 400 non_canonical_ecf,
+\ correlated by the salvaged request_id. Runs under `catch` at the call site, so a further
+\ throw degrades to the silence this exists to remove -- no worse than the old behaviour.
+: reject-frame { conn faddr fu -- }
+  faddr fu salvage-request-id { ru } { ra }
+  ru 0= if exit then
+  resp-inc-reset
+  s" non_canonical_ecf" 0 0 error-result { eu } { ea }
+  conn ra ru 400 ea eu send-response ;
+
+
 \ dispatch-guarded ( conn exec -- status raddr ru )  run dispatch-execute; if it THROWs
 \ (a bug or a hostile-shaped-but-decodable EXECUTE), map the throw to a 500 error result
 \ rather than letting it propagate — a decodable EXECUTE MUST always get an EXECUTE_RESPONSE,
@@ -188,7 +212,20 @@ variable uri-addressed
   fd net-read-frame { faddr flen }           \ ( addr len ): locals bind in stack order
   faddr -1 = if conn fd conn-close exit then  \ EOF/error
   faddr 0= flen 0= and if exit then          \ oversize drained, keep serving
-  conn faddr flen ['] on-frame catch drop ;  \ swallow a malformed-frame THROW (§4.9)
+  conn faddr flen ['] on-frame catch if
+    \ §6.3: "Rejection returns 400 non_canonical_ecf" -- a rejected frame is owed a STATUS,
+    \ not silence. The bare `catch drop` here rejected the frame (correct) and then dropped
+    \ it on the floor (wrong): the sender saw no response at all and blocked until its own
+    \ timeout, violating §6.3's second sentence and §4.9(c) deliver-or-signal. It also made
+    \ a refusal indistinguishable from a dead peer, and on a single-connection oracle run
+    \ it poisons every later request on the same connection.
+    \
+    \ The frame is still REJECTED -- only enough is salvaged to correlate the response. If
+    \ even the request_id is unrecoverable the frame is unattributable and silence is the
+    \ only option left, which is what the inner catch leaves in place.
+    2drop drop                              \ catch left ( conn faddr flen code ) minus code
+    conn faddr flen ['] reject-frame catch drop
+  then ;
 
 : pump-once { sec usec -- fired }
   gather-fds { n } { fds }

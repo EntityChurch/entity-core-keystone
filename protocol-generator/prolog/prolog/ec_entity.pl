@@ -38,6 +38,7 @@
             included_get/3,           % +Envelope, +Hash, -Entity (semidet)
             envelope_to_bytes/2,      % +Envelope, -ByteString (framed payload)
             envelope_of_bytes/2,      % +ByteString, -Envelope
+            salvage_request_id/2,     % +ByteString, -RequestId (semidet; §6.3)
             bytes_hash/2              % +ByteString, -HexAtom (lowercase)
           ]).
 
@@ -105,6 +106,22 @@ envelope_to_bytes(envelope(Root, Included), Bytes) :-
             IncPairs),
     EnvV = map(["root"-RootV, "included"-map(IncPairs)]),
     cbor_encode_bytes(EnvV, Bytes).
+
+% §6.3 rejection reporting: recover ONLY the request_id from a frame the strict decoder
+% rejected, so the rejection can be delivered as a correlated `400 non_canonical_ecf`
+% response instead of silence. The frame stays rejected -- nothing else is read out of
+% it. FAILS when even the request_id is unrecoverable (an unattributable frame, where
+% silence is the only option left).
+%
+% The envelope and entity-wrapper shapes are fixed maps with no legal tag position
+% (§6.3), so a frame whose ONLY defect is a tag inside some entity's `data` still has a
+% structurally sound root -- which is exactly the case this recovers.
+salvage_request_id(Bytes, RequestId) :-
+    catch(cbor_decode_salvage_bytes(Bytes, map(Pairs)), _, fail),
+    memberchk("root"-map(RootPairs), Pairs),
+    memberchk("data"-map(DataPairs), RootPairs),
+    memberchk("request_id"-RequestId, DataPairs),
+    string(RequestId).
 
 envelope_of_bytes(Bytes, envelope(Root, Included)) :-
     cbor_decode_bytes(Bytes, map(Pairs)),

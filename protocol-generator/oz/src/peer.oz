@@ -68,14 +68,33 @@ define
    fun {OwnerGrants P} [{Cap.mkGrant ["*"] ["*"] ["*"] [P.localPeer]}] end
 
    %% ── token mint (§4.4 / §6.9a) -> minted(token:Ent sig:Ent) ──
+   %% MintTokenAt at the current instant with no section 5.6 ceiling. Used by the paths
+   %% that mint a self-issued grant from local authority (bootstrap, handler
+   %% registration, the section 4.4 handshake), where no MIN_DEFINED term is in play.
    fun {MintToken P GranteeHash Grants Parent}
+      {MintTokenAt P {Cap.nowMs} GranteeHash Grants Parent absent}
+   end
+
+   %% Mint at a caller-supplied instant, carrying section 5.6's MIN_DEFINED ceiling.
+   %%
+   %% ExpiresAt == absent means no term was defined and the token genuinely has no expiry
+   %% (the ONLY "no bound" spelling). A present value is emitted verbatim -- including one
+   %% equal to CreatedAt, which section 5.6 rule 2 requires for ttl_ms == 0 and which
+   %% means "already expired at every observable instant", not "unbounded".
+   %%
+   %% CreatedAt is supplied rather than sampled here so a computed expiry is guaranteed to
+   %% be relative to the SAME instant that lands in the token; sampling the clock twice
+   %% skews the two.
+   fun {MintTokenAt P CreatedAt GranteeHash Grants Parent ExpiresAt}
       Ident = P.identity
       Base = [{Val.mkPair "granter" bytes({Id.idHash Ident})}
               {Val.mkPair "grantee" bytes(GranteeHash)}
               {Val.mkPair "grants" arr(Grants)}
-              {Val.mkPair "created_at" int({Cap.nowMs})}]
-      Full = if Parent == absent then Base
-             else {Append Base [{Val.mkPair "parent" bytes(Parent)}]} end
+              {Val.mkPair "created_at" int(CreatedAt)}]
+      WithExp = if ExpiresAt == absent then Base
+                else {Append Base [{Val.mkPair "expires_at" int(ExpiresAt)}]} end
+      Full = if Parent == absent then WithExp
+             else {Append WithExp [{Val.mkPair "parent" bytes(Parent)}]} end
       Token = {Ent.make "system/capability/token" map(Full)}
       Sig = {Id.sign Ident Token}
    in
@@ -737,7 +756,7 @@ define
       Author = {Ent.getBytes {CtxExec Ctx} "author"}
    in
       if Author == absent then {OutErr 403 "capability_denied" ""}
-      else {CapMintBounded P Ctx.callerCap {ReqGrants Params} Author absent} end
+      else {CapMintBounded P {CtxIncluded Ctx} Params Ctx.callerCap {ReqGrants Params} Author absent} end
    end
 
    fun {CapDelegate P Ctx}
@@ -749,7 +768,7 @@ define
       elseif {IsZeroHash Ph} then {OutErr 400 "unexpected_params" "delegate: zero parent"}
       elseif {Not (Author \= absent andthen {Id.idHash P.identity} == Author)} then
          {OutErr 501 "unsupported_operation" "delegate: same-peer-only in v1"}
-      else {CapMintBounded P Ctx.callerCap {ReqGrants Params} Author Ph} end
+      else {CapMintBounded P {CtxIncluded Ctx} Params Ctx.callerCap {ReqGrants Params} Author Ph} end
    end
 
    fun {CapRevoke P Ctx}
@@ -787,7 +806,7 @@ define
       end
    end
 
-   fun {CapMintBounded P CallerCap ReqGr GranteeHash Parent}
+   fun {CapMintBounded P Included Params CallerCap ReqGr GranteeHash Parent}
       Local = P.localPeer
       Bounded = if CallerCap == absent orelse CallerCap == unit then false
                 else
@@ -801,7 +820,33 @@ define
    in
       if {Not Bounded} then {OutErr 403 "scope_exceeds_authority" ""}
       else
-         local M = {MintToken P GranteeHash ReqGr Parent} in
+         %% section 5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at
+         %% ONCE and convert the duration term against that same instant.
+         %%
+         %% Note what this is NOT: an authorization decision. An over-long ttl_ms from a
+         %% bounded caller MINTS a clamped token and returns 200 -- "rejecting it is
+         %% non-conformant" (section 5.6). The bound exists because `request` mints a ROOT
+         %% token (parent: null), so section 5.6's parent-child attenuation never reaches
+         %% it; without this clamp, temporal attenuation is the one dimension a requester
+         %% could escape, and policy withdrawal would have no bounded latency.
+         local
+            CreatedAt = {Cap.nowMs}
+            fun {FoldMin Acc T}
+               if T == absent then Acc
+               elseif Acc == absent orelse T < Acc then T
+               else Acc end
+            end
+            PT = if Parent == absent then absent
+                 else {Cap.resolve Included P.store Parent} end
+            C1 = if PT == absent then absent
+                 else {FoldMin absent {Ent.getUint PT "expires_at"}} end
+            C2 = if CallerCap == absent orelse CallerCap == unit then C1
+                 else {FoldMin C1 {Ent.getUint CallerCap "expires_at"}} end
+            Ttl = if Params == absent then absent else {Ent.getUint Params "ttl_ms"} end
+            Ceiling = if Ttl == absent then C2
+                      else {FoldMin C2 {Cap.addTtl CreatedAt Ttl}} end
+            M = {MintTokenAt P CreatedAt GranteeHash ReqGr Parent Ceiling}
+         in
             {OutOk {Ent.make "system/capability/grant" map([{Val.mkPair "token" bytes({Ent.hash M.token})}])}
              {CapIncluded P M}}
          end

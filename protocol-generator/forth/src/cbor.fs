@@ -359,10 +359,23 @@ defer dec-node
   ai 20 u< if  am-mark [char] s b, ai b, am-span exit  then
   E-NON-CANONICAL-ECF throw ;
 
+\ dkeep-tags — the §6.3 salvage flag. 0 on the strict path (every ingestion route), 1 for
+\ the ONE caller that reports a rejection (cbor-decode-salvage). This peer is a
+\ single-threaded select-pump, so one frame is fully decoded before the next is read and a
+\ decoder-global cannot interleave; both entry points set it, so a strict decode can never
+\ inherit a stale 1.
+variable dkeep-tags  0 dkeep-tags !
+
 \ dec-node-impl ( -- c-addr u )  decode ONE item at the cursor, append its TV, return span.
 : dec-node-impl ( -- c-addr u )
   d-peek 5 rshift { m0 }
-  m0 6 = if E-TAG-REJECTED throw then               \ N2: major-type-6 tag rejected
+  m0 6 = if
+    dkeep-tags @ 0= if E-TAG-REJECTED throw then    \ N2: major-type-6 tag rejected
+    \ Salvage path only (cbor-decode-salvage): consume the tag head and yield the item it
+    \ wrapped, so the caller can locate the request_id and SIGNAL the rejection. The frame
+    \ is still rejected -- the tag is never interpreted and never reaches an entity.
+    d-head 2drop  dec-node exit
+  then
   m0 7 = if dec-simple exit then
   d-head { major arg }
   major 0 = if  0 arg tv-int exit  then
@@ -394,6 +407,31 @@ defer dec-node
 \ cbor-decode ( wire-addr wire-u -- tv-addr tv-u )  the public decoder. Full-consume:
 \ trailing bytes are rejected. THROWs a leaf-kind on any canonical violation.
 : cbor-decode ( c-addr u -- c-addr u )
+  0 dkeep-tags !
   din-len !  din-addr !  0 dpos !
   dec-node
+  d-remain 0<> if E-TRUNCATED-INPUT throw then ;
+
+\ cbor-decode-salvage ( wire-addr wire-u -- tv-addr tv-u )  decode for the sole purpose of
+\ REPORTING a rejection, not of accepting one. Identical to cbor-decode except that a
+\ major-type-6 tag yields the item it wrapped instead of throwing.
+\
+\ Why this exists (§6.3, a conformance requirement rather than a convenience): the tag rule
+\ is "Implementations MUST reject any received protocol frame containing a CBOR tag on a
+\ data field. Rejection returns 400 non_canonical_ecf." Rejecting by dropping the frame on
+\ the floor satisfies the first sentence and violates the second -- the peer owes the sender
+\ a status, and §4.9(c) deliver-or-signal says the same from the other direction. But the
+\ status must ride a response correlated by request_id, and the strict decoder cannot reach
+\ the request_id in a frame it refuses to parse. This recovers exactly that much, no more.
+\
+\ This is NOT a weakening of the tag reject. The frame stays rejected: the TV this returns
+\ is never converted to an entity, never stored, never forwarded and never interpreted, so
+\ §6.3's MUST NOT silently strip / MUST NOT preserve / MUST NOT attempt to interpret all
+\ still hold. The strict cbor-decode path is byte-unchanged, which is what keeps the
+\ tag_reject wire-conformance vectors meaningful.
+: cbor-decode-salvage ( c-addr u -- c-addr u )
+  1 dkeep-tags !
+  din-len !  din-addr !  0 dpos !
+  dec-node
+  0 dkeep-tags !
   d-remain 0<> if E-TRUNCATED-INPUT throw then ;

@@ -432,7 +432,7 @@ proc ::entity::core::handlers::_cap_request {peer_h ctx} {
     set params [_params $ctx]
     set author [::entity::core::entity::bytes [dict get $ctx exec] author]
     if {$author eq ""} { return [err 403 capability_denied] }
-    return [_cap_mint_bounded $peer_h [dict get $ctx caller_cap] [req_grants $params] $author ""]
+    return [_cap_mint_bounded $peer_h $ctx [dict get $ctx caller_cap] $params [req_grants $params] $author ""]
 }
 
 proc ::entity::core::handlers::_cap_delegate {peer_h ctx} {
@@ -445,7 +445,7 @@ proc ::entity::core::handlers::_cap_delegate {peer_h ctx} {
     if {!($author ne "" && $id_hash eq $author)} {
         return [err 501 unsupported_operation "delegate: same-peer-only in v1"]
     }
-    return [_cap_mint_bounded $peer_h [dict get $ctx caller_cap] [req_grants $params] $author $ph]
+    return [_cap_mint_bounded $peer_h $ctx [dict get $ctx caller_cap] $params [req_grants $params] $author $ph]
 }
 
 proc ::entity::core::handlers::_cap_revoke {peer_h ctx} {
@@ -473,7 +473,7 @@ proc ::entity::core::handlers::_cap_configure {peer_h ctx} {
     return [ok [::entity::core::wire::empty_params]]
 }
 
-proc ::entity::core::handlers::_cap_mint_bounded {peer_h caller_cap req_grants grantee_hash parent} {
+proc ::entity::core::handlers::_cap_mint_bounded {peer_h ctx caller_cap params req_grants grantee_hash parent} {
     set local [::entity::core::peer::local_peer $peer_h]
     set bounded 0
     if {$caller_cap ne ""} {
@@ -489,7 +489,35 @@ proc ::entity::core::handlers::_cap_mint_bounded {peer_h caller_cap req_grants g
         }
     }
     if {!$bounded} { return [err 403 scope_exceeds_authority] }
-    set m [::entity::core::peer::mint_token $peer_h $grantee_hash $req_grants $parent]
+
+    # §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE and
+    # convert the duration term against that same instant.
+    #
+    # Note what this is NOT: an authorization decision. An over-long ttl_ms from a
+    # bounded caller MINTS a clamped token and returns 200 — "rejecting it is
+    # non-conformant" (§5.6). The bound exists because `request` mints a ROOT token
+    # (parent: null), so §5.6's parent-child attenuation never reaches it; without this
+    # clamp, temporal attenuation is the one dimension a requester could escape, and
+    # policy withdrawal would have no bounded latency.
+    set created_at [::entity::core::capability::now_ms]
+    set terms {}
+    if {$parent ne ""} {
+        set pt [::entity::core::capability::cap_resolve \
+                    [dict get $ctx included] [::entity::core::peer::store $peer_h] $parent]
+        if {$pt ne ""} { lappend terms [::entity::core::entity::uint $pt expires_at] }
+    }
+    if {$caller_cap ne ""} { lappend terms [::entity::core::entity::uint $caller_cap expires_at] }
+    if {$params ne ""} {
+        set ttl [::entity::core::entity::uint $params ttl_ms]
+        if {$ttl ne ""} { lappend terms [::entity::core::capability::add_ttl $created_at $ttl] }
+    }
+    set ceiling ""
+    foreach t $terms {
+        if {$t eq ""} { continue }
+        if {$ceiling eq "" || $t < $ceiling} { set ceiling $t }
+    }
+
+    set m [::entity::core::peer::mint_token_at $peer_h $created_at $grantee_hash $req_grants $parent $ceiling]
     return [ok [::entity::core::entity::make system/capability/grant [::entity::core::ecf::map \
         token [::entity::core::ecf::bstr [::entity::core::entity::hash [dict get $m token]]]]] \
         [::entity::core::peer::cap_included $peer_h $m]]

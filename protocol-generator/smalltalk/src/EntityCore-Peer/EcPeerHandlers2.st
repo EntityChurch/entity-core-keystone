@@ -192,17 +192,34 @@ ecPeer compile: 'handleTreeFull: ctx
 "════════════════════════ system/capability (§6.2) ════════════════════════"
 "mintGrantToken:grants: — a single-sig token {grantee, granter=us, grants, created_at}."
 ecPeer compile: 'mintGrantToken: aGranteeHash grants: aGrantsArray
-	^ EcEntity type: ''system/capability/token'' data: (EcVal map: {
-		''grantee'' -> (EcVal bytes: aGranteeHash).
-		''granter'' -> (EcVal bytes: identity idHash).
-		''grants'' -> aGrantsArray.
-		''created_at'' -> (EcVal uint: self nowMillis) })'.
+	^ self mintGrantToken: aGranteeHash grants: aGrantsArray at: self nowMillis expiresAt: nil'.
+
+"mintGrantToken:grants:at:expiresAt: — mint at a caller-supplied instant, carrying §5.6''s
+ MIN_DEFINED ceiling.
+
+ A nil expiresAt means no term was defined and the token genuinely has no expiry (the ONLY
+ `no bound` spelling). A non-nil value is emitted verbatim -- including one equal to
+ createdAt, which §5.6 rule 2 requires for ttl_ms == 0 and which means `already expired at
+ every observable instant`, not `unbounded`.
+
+ createdAt is supplied rather than sampled here so a computed expiry is guaranteed to be
+ relative to the SAME instant that lands in the token; sampling the clock twice skews the
+ two."
+ecPeer compile: 'mintGrantToken: aGranteeHash grants: aGrantsArray at: createdAt expiresAt: expiresAt
+	| pairs |
+	pairs := OrderedCollection new.
+	pairs add: ''grantee'' -> (EcVal bytes: aGranteeHash).
+	pairs add: ''granter'' -> (EcVal bytes: identity idHash).
+	pairs add: ''grants'' -> aGrantsArray.
+	pairs add: ''created_at'' -> (EcVal uint: createdAt).
+	expiresAt ifNotNil: [ :e | pairs add: ''expires_at'' -> (EcVal uint: e) ].
+	^ EcEntity type: ''system/capability/token'' data: (EcVal map: pairs asArray)'.
 
 "handleCapRequest: — mint a grant for the caller, attenuated against the presented capability.
  The requested grants ride in params.grants; grantee = the authenticated author. A requested
  grant that EXCEEDS the presented cap''s authority is refused 403 (§6.2 keystone accept-path)."
 ecPeer compile: 'handleCapRequest: ctx
-	| params grants author token result |
+	| params grants author token result createdAt ceiling callerCap |
 	params := ctx params.
 	params isNil ifTrue: [ ^ EcHandlerResult error: 400 code: ''invalid_params'' message: nil ].
 	grants := params field: ''grants''.
@@ -212,7 +229,26 @@ ecPeer compile: 'handleCapRequest: ctx
 		ifFalse: [ ^ EcHandlerResult error: 403 code: ''scope_exceeds_authority'' message: nil ].
 	author := ctx exec bytesAt: ''author''.
 	author isNil ifTrue: [ ^ EcHandlerResult error: 401 code: ''authentication_failed'' message: nil ].
-	token := self mintGrantToken: author grants: grants.
+	"§5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE and convert
+	 the duration term against that same instant.
+
+	 Note what this is NOT: an authorization decision. An over-long ttl_ms from a bounded
+	 caller MINTS a clamped token and returns 200 -- `rejecting it is non-conformant`
+	 (§5.6). The bound exists because `request` mints a ROOT token (parent: null), so
+	 §5.6''s parent-child attenuation never reaches it; without this clamp, temporal
+	 attenuation is the one dimension a requester could escape."
+	createdAt := self nowMillis.
+	ceiling := nil.
+	callerCap := (ctx exec bytesAt: ''capability'')
+		ifNil: [ nil ]
+		ifNotNil: [ :ch | ctx envelope includedForHash: ch ].
+	callerCap ifNotNil: [
+		(callerCap uintAt: ''expires_at'') ifNotNil: [ :ce |
+			(ceiling isNil or: [ ce < ceiling ]) ifTrue: [ ceiling := ce ] ] ].
+	(params uintAt: ''ttl_ms'') ifNotNil: [ :ttl |
+		(EcCapAuthz addTtl: ttl to: createdAt) ifNotNil: [ :abs |
+			(ceiling isNil or: [ abs < ceiling ]) ifTrue: [ ceiling := abs ] ] ].
+	token := self mintGrantToken: author grants: grants at: createdAt expiresAt: ceiling.
 	result := EcHandlerResult ok: (EcEntity type: ''system/capability/grant'' data: (EcVal map: {
 		''token'' -> (EcVal bytes: token contentHash) })).
 	^ self includeAuthority: result token: token'.
@@ -233,7 +269,12 @@ ecPeer compile: 'handleCapConfigure: ctx
 	(pat isNil or: [ (self validPeerPattern: pat) not ]) ifTrue: [
 		^ EcHandlerResult error: 400 code: ''invalid_params'' message: nil ].
 	grants := params field: ''grants''.
-	((grants isKindOf: EcArray) and: [ grants items notEmpty ]) ifFalse: [
+	"CAP-2 (§6.2): `grants: []` is the WITHDRAWAL form and MUST be accepted -- it writes a
+	 present policy entry carrying an empty grants array, which is how an operator revokes
+	 a seed policy without deleting the entry. `notEmpty` conflated `no grants` with
+	 `malformed`, and the two are distinct states: the ABSENT field is malformed, the
+	 EMPTY array is deliberate."
+	(grants isKindOf: EcArray) ifFalse: [
 		^ EcHandlerResult error: 400 code: ''invalid_params'' message: nil ].
 	store bind: (self capAbs: ''policy/'', pat) to: params.
 	^ EcHandlerResult ok: params'.

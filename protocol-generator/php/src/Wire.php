@@ -35,6 +35,31 @@ final class Wire
         return Envelope::ofCbor($v);
     }
 
+    /**
+     * §6.3 rejection reporting: recover ONLY the request_id from a frame the strict
+     * decoder rejected, so the rejection can be delivered as a correlated
+     * `400 non_canonical_ecf` response instead of silence. The frame stays rejected --
+     * nothing else is read out of it. Returns null when even the request_id is
+     * unrecoverable (an unattributable frame, where silence is the only option left).
+     * See {@see Cbor::decodeSalvage}.
+     *
+     * The envelope and entity-wrapper shapes are fixed maps with no legal tag position
+     * (§6.3), so a frame whose ONLY defect is a tag inside some entity's `data` still
+     * has a structurally sound root -- which is exactly the case this recovers.
+     */
+    public static function salvageRequestId(string $payload): ?string
+    {
+        try {
+            $v = Cbor::decodeSalvage($payload);
+        } catch (\Throwable) {
+            return null;
+        }
+        $root = ($v instanceof EcfMap) ? $v->get('root') : null;
+        $data = ($root instanceof EcfMap) ? $root->get('data') : null;
+        $rid = ($data instanceof EcfMap) ? $data->get('request_id') : null;
+        return \is_string($rid) ? $rid : null;
+    }
+
     /** Prefix $payload with its 4-byte big-endian length. */
     public static function frame(string $payload): string
     {

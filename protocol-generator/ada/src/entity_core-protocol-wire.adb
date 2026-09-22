@@ -135,6 +135,39 @@ package body Entity_Core.Protocol.Wire is
       return Entity_Core.Protocol.Envelope.Of_Cbor (V);
    end Envelope_Of_Frame;
 
+   -------------------------
+   -- Salvage_Request_Id  --
+   -------------------------
+   --  The envelope and entity-wrapper shapes are fixed maps with no legal tag
+   --  position (§6.3), so a frame whose ONLY defect is a tag inside some
+   --  entity's `data` still has a structurally sound root -- which is exactly
+   --  the case this recovers.
+   function Salvage_Request_Id (Payload : Byte_Array) return String is
+      V : constant Ecf_Value := Entity_Core.Codec.Cbor.Decode_Salvage (Payload);
+      Got : Boolean;
+      Root, Data_V, Rid : Ecf_Value;
+   begin
+      if Kind (V) /= K_Map then
+         return "";
+      end if;
+      Map_Get (V, "root", Got, Root);
+      if not Got or else Kind (Root) /= K_Map then
+         return "";
+      end if;
+      Map_Get (Root, "data", Got, Data_V);
+      if not Got or else Kind (Data_V) /= K_Map then
+         return "";
+      end if;
+      Map_Get (Data_V, "request_id", Got, Rid);
+      if not Got or else Kind (Rid) /= K_Text then
+         return "";
+      end if;
+      return As_Text (Rid);
+   exception
+      when others =>
+         return "";
+   end Salvage_Request_Id;
+
    -----------------------
    -- Frame_Of_Envelope --
    -----------------------

@@ -120,6 +120,17 @@ ec_entity *ec_env_get(const ec_envelope *env, const uint8_t *h33);
 ec_status ec_env_to_wire(const ec_envelope *env, uint8_t **out, size_t *out_len);
 ec_status ec_env_of_wire(const uint8_t *in, size_t in_len, ec_envelope **out);
 
+/* §6.3 rejection reporting: recover ONLY the request_id from a frame the strict
+ * decoder rejected, so the rejection can be delivered as a correlated
+ * `400 non_canonical_ecf` response instead of silence. The frame stays rejected —
+ * nothing else is read out of it. Returns a malloc'd string, or NULL when even the
+ * request_id is unrecoverable (an unattributable frame, where silence is the only
+ * option left). See ec_ecf_decode_salvage in ecf.c. */
+char *ec_salvage_request_id(const uint8_t *in, size_t in_len);
+
+/* Tag-tolerant decode. STRICTLY for ec_salvage_request_id — see ecf.c. */
+ec_status ec_ecf_decode_salvage(const uint8_t *in, size_t in_len, ec_value **out);
+
 /* ── store (foundation §1.7): content(hash→entity) + tree(path→hash) ─────────── */
 /* pthread_rwlock_t-guarded (§4.8 data-race safety, N6). Emit bus is live with zero
  * consumers (§6.13(c)). */

@@ -277,6 +277,26 @@ module EntityCore
       nil
     end
 
+    # §6.2 CAP-6a: true when every temporal field on a RECEIVED token is either
+    # absent (legal) or representable as a UInt64.
+    #
+    # This is the reader-side half of CAP-6 and it is where a peer fails OPEN. The
+    # idiomatic accessor `Entity#uint` answers nil both when a field is ABSENT and
+    # when it is PRESENT but not a major-0 EcInt — a negative integer or a bignum —
+    # so a token carrying expires_at:-1 silently skipped the expiry check and was
+    # honored with 200. §6.2 CAP-6a is explicit: such a token "is malformed. A
+    # verifier MUST refuse it and MUST NOT treat the unrepresentable field as
+    # absent." An absent expires_at stays legal and is NOT rejected here.
+    #
+    # Refusal must be the §5.2 capability_denied disposition (a status-bearing
+    # response), never a decode-layer silent drop or a transport close.
+    def temporal_fields_representable?(tok : Entity) : Bool
+      {"expires_at", "not_before", "created_at"}.all? do |key|
+        v = tok.data_map[key]?
+        v.nil? || (v.is_a?(Cbor::EcInt) && v.major == 0_u8)
+      end
+    end
+
     def cap_resolve(included : Array(Envelope::Included), store : Store, hash : Bytes) : Entity?
       e = included_get(included, hash)
       e || store.get_by_hash(hash)
@@ -506,7 +526,14 @@ module EntityCore
         else
           raise UnresolvableGranteeError.new
         end
-        # temporal validity
+        # temporal validity.
+        #
+        # CAP-6a FIRST: a present-but-unrepresentable expires_at / not_before /
+        # created_at is MALFORMED and must be refused outright. This has to run
+        # BEFORE the two range checks below, because those use `uint`, which cannot
+        # tell "absent" from "present but not a UInt64" — so on its own it would
+        # skip the check and honor the token (fail-open).
+        good = false unless temporal_fields_representable?(current)
         tnow = now_ms
         nb = current.uint("not_before")
         good = false if nb && tnow < nb

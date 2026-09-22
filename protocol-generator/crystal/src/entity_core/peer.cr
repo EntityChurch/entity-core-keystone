@@ -90,17 +90,57 @@ module EntityCore
       [Peer.grant(["*"], ["*"], ["*"], [@local_peer]).as(Cbor::EcValue)]
     end
 
+    # ── §5.6 temporal ceiling (CAP-5 / CAP-6) ────────────────────────────────────
+
+    # Convert a DURATION term to an absolute timestamp, reporting whether it
+    # contributes a ceiling at all (nil = no term).
+    #
+    # §5.6 rule 3: a term whose conversion created_at+ttl is not representable is
+    # treated as ABSENT, exactly as a null term is. It MUST NOT wrap and MUST NOT
+    # saturate to a representable maximum — saturation encodes differently from
+    # absence and manufactures expires_at == 2**64-1, a finite bound no reader can
+    # distinguish from a deliberate one.
+    #
+    # ttl == 0 is NOT a special case here and deliberately so: §5.6 rule 2 makes 0
+    # a DEFINED value yielding created_at (expire immediately). The absent field is
+    # the only "no bound" spelling, and falling out of the arithmetic is what keeps
+    # the two from ever collapsing into each other.
+    def self.add_ttl(created_at : UInt64, ttl : UInt64) : UInt64?
+      sum = created_at &+ ttl
+      sum < created_at ? nil : sum   # UInt64 wrap => not representable => drop
+    end
+
     # ── token mint (§4.4 / §6.9a) ────────────────────────────────────────────────
 
-    def mint_token(grantee_hash : Bytes, grants : Array(Cbor::EcValue), parent : Bytes? = nil) : Minted
+    # Mint at a caller-supplied instant, carrying §5.6's MIN_DEFINED ceiling.
+    #
+    # *expires_at* nil means no term was defined and the token genuinely has no
+    # expiry (the ONLY "no bound" spelling). A non-nil value is emitted verbatim —
+    # including one equal to *created_at*, which §5.6 rule 2 requires for
+    # ttl_ms == 0 and which means "already expired at every observable instant",
+    # not "unbounded".
+    #
+    # *created_at* is supplied rather than sampled here so a computed expiry is
+    # guaranteed to be relative to the SAME instant that lands in the token;
+    # sampling the clock twice skews the two.
+    def mint_token_at(created_at : UInt64, grantee_hash : Bytes, grants : Array(Cbor::EcValue),
+                      parent : Bytes? = nil, expires_at : UInt64? = nil) : Minted
       data = EcMap.new
       data["granter"] = @identity.identity_hash
       data["grantee"] = grantee_hash
       data["grants"] = grants
-      data["created_at"] = Cbor::EcInt.from(Capability.now_ms)
+      data["created_at"] = Cbor::EcInt.from(created_at)
+      data["expires_at"] = Cbor::EcInt.from(expires_at) if expires_at
       data["parent"] = parent if parent
       token = Entity.make("system/capability/token", data)
       Minted.new(token, @identity.sign(token))
+    end
+
+    # mint_token_at at the current instant with no §5.6 ceiling. Used by the paths
+    # that mint a self-issued grant from local authority (bootstrap, handler
+    # registration, the §4.4 handshake), where no MIN_DEFINED term is in play.
+    def mint_token(grantee_hash : Bytes, grants : Array(Cbor::EcValue), parent : Bytes? = nil) : Minted
+      mint_token_at(Capability.now_ms, grantee_hash, grants, parent)
     end
 
     def cap_included(minted : Minted) : Array(Entity)

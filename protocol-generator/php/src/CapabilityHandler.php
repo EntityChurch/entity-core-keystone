@@ -29,7 +29,7 @@ final class CapabilityHandler implements Handler
         if ($author === null) {
             return Outcome::err(403, 'capability_denied');
         }
-        return $this->mintBounded($ctx->callerCap, PeerHelpers::reqGrants($params), $author, null);
+        return $this->mintBounded($ctx->env, $ctx->callerCap, $params, PeerHelpers::reqGrants($params), $author, null);
     }
 
     private function delegate(HandlerContext $ctx): Outcome
@@ -46,7 +46,7 @@ final class CapabilityHandler implements Handler
         if (!($author !== null && \hash_equals($this->peer->identity->identityHash(), $author))) {
             return Outcome::err(501, 'unsupported_operation', 'delegate: same-peer-only in v1');
         }
-        return $this->mintBounded($ctx->callerCap, PeerHelpers::reqGrants($params), $author, $ph);
+        return $this->mintBounded($ctx->env, $ctx->callerCap, $params, PeerHelpers::reqGrants($params), $author, $ph);
     }
 
     private function revoke(HandlerContext $ctx): Outcome
@@ -84,7 +84,7 @@ final class CapabilityHandler implements Handler
     /**
      * @param list<EcfMap> $reqGrants
      */
-    private function mintBounded(?Entity $callerCap, array $reqGrants, string $granteeHash, ?string $parent): Outcome
+    private function mintBounded(Envelope $env, ?Entity $callerCap, ?Entity $params, array $reqGrants, string $granteeHash, ?string $parent): Outcome
     {
         $bounded = false;
         if ($callerCap !== null) {
@@ -109,7 +109,37 @@ final class CapabilityHandler implements Handler
         if (!$bounded) {
             return Outcome::err(403, 'scope_exceeds_authority');
         }
-        $m = $this->peer->mintToken($granteeHash, $reqGrants, $parent);
+        // §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE
+        // and convert the duration term against that same instant.
+        //
+        // Note what this is NOT: an authorization decision. An over-long ttl_ms from
+        // a bounded caller MINTS a clamped token and returns 200 -- "rejecting it is
+        // non-conformant" (§5.6). The bound exists because `request` mints a ROOT
+        // token (parent: null), so §5.6's parent-child attenuation never reaches it;
+        // without this clamp, temporal attenuation is the one dimension a requester
+        // could escape, and policy withdrawal would have no bounded latency.
+        $createdAt = Capability::nowMs();
+        $ceiling = null;
+        $fold = static function (?\GMP $term) use (&$ceiling): void {
+            if ($term !== null && ($ceiling === null || \gmp_cmp($term, $ceiling) < 0)) {
+                $ceiling = $term;
+            }
+        };
+        if ($parent !== null) {                                          // absolute
+            $pt = Capability::capResolve($env->included, $this->peer->store, $parent);
+            if ($pt !== null) {
+                $fold($pt->uint('expires_at'));
+            }
+        }
+        if ($callerCap !== null) {                                       // absolute
+            $fold($callerCap->uint('expires_at'));
+        }
+        $ttl = $params?->uint('ttl_ms');
+        if ($ttl !== null) {                                             // duration
+            $fold(Capability::addTtl($createdAt, $ttl));
+        }
+
+        $m = $this->peer->mintTokenAt($createdAt, $granteeHash, $reqGrants, $parent, $ceiling);
         return Outcome::ok(
             Entity::make('system/capability/grant', Ecf::map('token', new ByteString($m['token']->hash()))),
             $this->peer->capIncluded($m),

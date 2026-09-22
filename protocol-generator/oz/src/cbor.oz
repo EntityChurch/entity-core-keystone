@@ -22,7 +22,7 @@ functor
 import
    Util at 'util.ozf'
 export
-   Encode Decode DecodeCanonical MapGet MapGetD
+   Encode Decode DecodeSalvage DecodeCanonical MapGet MapGetD
 define
    Reject = Util.reject
    Pow2   = Util.pow2
@@ -254,34 +254,39 @@ define
       else {Reject truncatedInput emptyInput} end
    end
 
-   proc {DecN N Lin ?Items ?Lout}
+   proc {DecN KeepTags N Lin ?Items ?Lout}
       if N == 0 then Items = nil Lout = Lin
       else
          local It R1 Ir in
-            {Dec Lin ?It ?R1}
+            {DecT KeepTags Lin ?It ?R1}
             Items = It|Ir
-            {DecN N-1 R1 ?Ir ?Lout}
+            {DecN KeepTags N-1 R1 ?Ir ?Lout}
          end
       end
    end
 
-   proc {DecPairs N Lin Seen ?Pairs ?Lout}
+   proc {DecPairs KeepTags N Lin Seen ?Pairs ?Lout}
       if N == 0 then Pairs = nil Lout = Lin
       else
          local K R1 Val R2 Pr EncK in
-            {Dec Lin ?K ?R1}
-            {Dec R1 ?Val ?R2}
+            {DecT KeepTags Lin ?K ?R1}
+            {DecT KeepTags R1 ?Val ?R2}
             EncK = {Encode K}
             if {Member EncK Seen} then
                {Reject nonCanonicalEcf duplicateMapKey}
             end
             Pairs = (K#Val)|Pr
-            {DecPairs N-1 R2 EncK|Seen ?Pr ?Lout}
+            {DecPairs KeepTags N-1 R2 EncK|Seen ?Pr ?Lout}
          end
       end
    end
 
-   proc {Dec L ?V ?Rest}
+   %% KeepTags is a PARAMETER, not a cell: this peer runs a reader thread per
+   %% connection plus worker threads for dispatch, so a mutable global would race
+   %% across connections. Dataflow variables make threading it free.
+   proc {Dec L ?V ?Rest} {DecT false L ?V ?Rest} end
+
+   proc {DecT KeepTags L ?V ?Rest}
       Major Arg R0
    in
       {DecHead L ?Major ?Arg ?R0}
@@ -295,9 +300,14 @@ define
             if {ValidUtf8 C} then V = text(C)
             else {Reject nonCanonicalEcf invalidUtf8} end
          end
-      [] 4 then local Items in {DecN Arg R0 ?Items ?Rest} V = arr(Items) end
-      [] 5 then local Pairs in {DecPairs Arg R0 nil ?Pairs ?Rest} V = map(Pairs) end
-      [] 6 then {Reject tagRejected Arg}
+      [] 4 then local Items in {DecN KeepTags Arg R0 ?Items ?Rest} V = arr(Items) end
+      [] 5 then local Pairs in {DecPairs KeepTags Arg R0 nil ?Pairs ?Rest} V = map(Pairs) end
+      [] 6 then
+         %% N2: any major-type-6 tag, at any depth, is rejected. The salvage path
+         %% (DecodeSalvage) is the ONE exception -- the tag argument is already consumed
+         %% into Arg by DecHead, so yielding the item it wrapped is all that is left.
+         %% The frame is still rejected: the value never reaches an entity.
+         if KeepTags then {DecT KeepTags R0 ?V ?Rest} else {Reject tagRejected Arg} end
       [] 7 then
          case L of B|_ then
             Minor = B mod 32
@@ -320,6 +330,33 @@ define
       V Rest
    in
       {Dec Bytes ?V ?Rest}
+      if Rest \= nil then {Reject nonCanonicalEcf trailingBytes} end
+      V
+   end
+
+   %% Decode Bytes for the sole purpose of REPORTING a rejection, not of accepting one.
+   %% Identical to Decode except that a major-type-6 tag yields the item it wrapped
+   %% instead of rejecting.
+   %%
+   %% Why this exists (section 6.3, a conformance requirement rather than a convenience):
+   %% the tag rule is "Implementations MUST reject any received protocol frame containing
+   %% a CBOR tag on a data field. Rejection returns 400 non_canonical_ecf." Rejecting by
+   %% dropping the frame on the floor satisfies the first sentence and violates the second
+   %% -- the peer owes the sender a status, and section 4.9(c) deliver-or-signal says the
+   %% same from the other direction. But the status must ride a response correlated by
+   %% request_id, and the strict decoder cannot reach the request_id in a frame it refuses
+   %% to parse. This recovers exactly that much and nothing more.
+   %%
+   %% This is NOT a weakening of the tag reject. The frame stays rejected: the value this
+   %% returns is never converted to an entity, never stored, never forwarded and never
+   %% interpreted, so section 6.3's MUST NOT silently strip / MUST NOT preserve / MUST NOT
+   %% attempt to interpret all still hold. The strict Decode path that every real
+   %% ingestion route uses is unchanged, which is what keeps the tag_reject
+   %% wire-conformance vectors meaningful.
+   fun {DecodeSalvage Bytes}
+      V Rest
+   in
+      {DecT true Bytes ?V ?Rest}
       if Rest \= nil then {Reject nonCanonicalEcf trailingBytes} end
       V
    end

@@ -91,7 +91,31 @@ define
       Env0
    in
       try Env0 = {Wire.envelopeOfFrame Payload} catch _ then Env0 = absent end
-      if Env0 == absent then skip
+      if Env0 == absent then
+         %% section 6.3: "Rejection returns 400 non_canonical_ecf" -- a rejected frame is
+         %% owed a STATUS, not silence. This used to be a bare `skip`, which rejected the
+         %% frame (correct) and then dropped it on the floor (wrong): the sender saw no
+         %% response at all and blocked until its own timeout, violating section 6.3's
+         %% second sentence and section 4.9(c) deliver-or-signal. It also made a refusal
+         %% indistinguishable from a dead peer, and on a single-connection oracle run it
+         %% poisons every later request on the same connection.
+         %%
+         %% The frame is still REJECTED -- only enough is salvaged to correlate the
+         %% response. If even the request_id is unrecoverable the frame is unattributable
+         %% and silence is the only option left.
+         %%
+         %% Every literal here is ASCII by discipline (A-OZ-008): a non-ASCII byte in a
+         %% wire-visible Oz string constant crashed this peer's encode path once already.
+         local Rid in
+            try Rid = {Wire.salvageRequestId Payload} catch _ then Rid = absent end
+            if Rid \= absent then
+               try
+                  {Send Writer {Wire.frameOfEnvelope
+                     {Env.make {Wire.makeResponse Rid 400
+                                {Wire.errorResult "non_canonical_ecf" ""}} nil}}}
+               catch _ then skip end
+            end
+         end
       else
          local Root = {Env.root Env0} in
             if {Ent.typeIs Root "system/protocol/execute/response"} then

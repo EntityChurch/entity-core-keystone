@@ -206,6 +206,35 @@ module EntityCore
       :deny
     end
 
+    # ── §6.2 CAP-6a: unrepresentable temporal fields on INGEST ────────────────
+
+    UINT64_MAX = (1 << 64) - 1
+
+    # True when every CAP-6a temporal field on a RECEIVED token is either absent
+    # (legal) or representable as a uint64.
+    #
+    # This is the reader-side half of CAP-6 and it is where a peer fails OPEN.
+    # Ruby's fail-open is the ARITHMETIC one, not the null-collapse one, and the
+    # distinction matters because the grep that catches the other misses this:
+    # Entity#uint is +v if v.is_a?(::Integer)+, so it happily returns a NEGATIVE
+    # value. The expiry check therefore did NOT skip — it RAN and returned the
+    # wrong answer. For a negative not_before, +tnow < nb+ is simply false, so the
+    # capability passed. No nil, no skip, nothing an Option-shaped audit would find.
+    #
+    # Ruby integers are arbitrary-precision, so the >2**64 half is likewise a
+    # DELIBERATE range check rather than an overflow trap.
+    #
+    # §6.2 CAP-6a: such a token "is malformed. A verifier MUST refuse it and MUST
+    # NOT treat the unrepresentable field as absent." An absent expires_at stays
+    # legal and is deliberately NOT rejected here. Refusal must be the §5.2
+    # capability_denied disposition, never a decode-layer drop or a transport close.
+    def temporal_fields_representable?(tok)
+      %w[expires_at not_before created_at].all? do |key|
+        v = tok.field(key)
+        v.nil? || (v.is_a?(::Integer) && v >= 0 && v <= UINT64_MAX)
+      end
+    end
+
     # ── §5.5 / §5.6 chain verification + attenuation ──────────────────────────
 
     def now_ms
@@ -476,7 +505,14 @@ module EntityCore
         else
           raise UnresolvableGranteeError
         end
-        # temporal validity
+        # temporal validity.
+        #
+        # CAP-6a FIRST: a present-but-unrepresentable expires_at / not_before /
+        # created_at is MALFORMED and must be refused outright. This has to run
+        # BEFORE the two range checks below, because those are what the ambiguity
+        # defeats — see temporal_fields_representable? for the mechanism, which in
+        # Ruby is the ARITHMETIC form rather than the null-collapse one.
+        good = false unless temporal_fields_representable?(current)
         tnow = now_ms
         nb = current.uint("not_before")
         good = false if nb && tnow < nb

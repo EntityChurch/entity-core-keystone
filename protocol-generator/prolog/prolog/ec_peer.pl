@@ -104,14 +104,55 @@ now_ms(Ms) :- get_time(T), Ms is integer(T * 1000).
 mint_token(Identity, GranteeHash, Grants, Token, Sig) :-
     mint_token(Identity, GranteeHash, Grants, (-), Token, Sig).
 mint_token(Identity, GranteeHash, Grants, Parent, Token, Sig) :-
+    % No §5.6 ceiling: the self-issued paths (bootstrap, handler registration, the
+    % §4.4 handshake) mint from local authority, where no MIN_DEFINED term is in play.
+    now_ms(Created),
+    mint_token_at(Identity, Created, GranteeHash, Grants, Parent, (-), Token, Sig).
+
+% Mint at a caller-supplied instant, carrying §5.6's MIN_DEFINED ceiling.
+%
+% Expires == (-) means no term was defined and the token genuinely has no expiry (the
+% ONLY "no bound" spelling). A present value is emitted verbatim -- including one equal
+% to Created, which §5.6 rule 2 requires for ttl_ms == 0 and which means "already
+% expired at every observable instant", not "unbounded".
+%
+% Created is supplied rather than sampled here so a computed expiry is guaranteed to be
+% relative to the SAME instant that lands in the token; sampling the clock twice skews
+% the two.
+mint_token_at(Identity, Created, GranteeHash, Grants, Parent, Expires, Token, Sig) :-
     identity_hash(Identity, GranterHash),
     string_codes(GranterHash, GHC), string_codes(GranteeHash, GeC),
-    now_ms(Created),
     Base = ["granter"-bytes(GHC), "grantee"-bytes(GeC), "grants"-Grants, "created_at"-int(Created)],
-    ( Parent == (-) -> Pairs = Base
-    ; string_codes(Parent, PC), append(Base, ["parent"-bytes(PC)], Pairs) ),
+    ( Expires == (-) -> Base1 = Base
+    ; append(Base, ["expires_at"-int(Expires)], Base1) ),
+    ( Parent == (-) -> Pairs = Base1
+    ; string_codes(Parent, PC), append(Base1, ["parent"-bytes(PC)], Pairs) ),
     make_entity("system/capability/token", map(Pairs), Token),
     sign_entity(Identity, Token, Sig).
+
+% ── §5.6 temporal ceiling (CAP-5 / CAP-6) ────────────────────────────────────────
+%
+% add_ttl converts a DURATION term to an absolute timestamp, FAILING when it
+% contributes no term. §5.6 rule 3: a conversion that is not representable is treated
+% as ABSENT, exactly as a null term is -- it MUST NOT wrap and MUST NOT saturate to a
+% representable maximum, since saturation manufactures expires_at == 2^64-1, a finite
+% bound no reader can distinguish from a deliberate one. Prolog integers are
+% arbitrary-precision, so this is a DELIBERATE range check rather than an overflow trap.
+%
+% Ttl == 0 is NOT a special case and deliberately so: rule 2 makes 0 a DEFINED value
+% yielding Created (expire immediately). The absent field is the only "no bound"
+% spelling, and falling out of the arithmetic is what keeps the two from collapsing.
+add_ttl(Created, Ttl, Abs) :-
+    integer(Ttl), Ttl >= 0,
+    Abs is Created + Ttl,
+    Abs < 18446744073709551616.
+
+% MIN over the DEFINED terms only (§5.6). Terms arrive already shaped: absolute
+% timestamps enter directly, durations MUST be converted with add_ttl first. Mixing a
+% duration in unconverted yields a timestamp near the epoch and silently clamps every
+% token to already-expired -- the failure mode §5.6 calls out by name.
+min_defined([], (-)).
+min_defined(Terms, Min) :- Terms \== [], min_list(Terms, Min).
 
 % ── §6.9a seed policy (authenticate-time grant derivation) ───────────────────────
 derive_seed_grants(PeerId, StoreId, _RemotePeer, RemotePeerId, Grants) :-
@@ -438,24 +479,28 @@ path_flex_ok(Target) :-
     forall(member(S, Body), ( S \== "", S \== ".", S \== ".." )).
 
 % ── capability handler (§6.2) ──
-handle_op("system/capability", "request", ctx(Peer, _, Exec, CallerCap, _), Outcome) :- !,
+handle_op("system/capability", "request", ctx(Peer, Env, Exec, CallerCap, _), Outcome) :- !,
     ( ent_bytes(Exec, "author", Author)
-    -> ( ent_entity(Exec, "params", Params), ent_field(Params, "grants", ReqGrants), is_list(ReqGrants)
-       -> true ; ReqGrants = [] ),
-       mint_bounded(Peer, CallerCap, ReqGrants, Author, (-), Outcome)
+    -> % Bind Params to the (-) sentinel when absent rather than leaving it a fresh
+       % variable: the §5.6 ceiling reads ttl_ms off it, and an unbound term would
+       % UNIFY with whatever it was asked for instead of failing cleanly.
+       ( ent_entity(Exec, "params", P0) -> Params = P0 ; Params = (-) ),
+       ( Params \== (-), ent_field(Params, "grants", RG), is_list(RG)
+       -> ReqGrants = RG ; ReqGrants = [] ),
+       mint_bounded(Peer, Env, CallerCap, Params, ReqGrants, Author, (-), Outcome)
     ;  error_result("capability_denied", "", R), Outcome = outcome(403, R, []) ).
 
 % delegate (§6.2 / v7.62 §9): mint a bounded child cap under an explicit parent.
 % parent MUST be present and non-zero (else 400, before the same-peer gate so a
 % malformed delegate is 400 not 501). delegate is same-peer-only in v1 (closeout
 % F1): a remote author (author != local identity hash) → 501, not 403.
-handle_op("system/capability", "delegate", ctx(Peer, _, Exec, CallerCap, _), Outcome) :- !,
+handle_op("system/capability", "delegate", ctx(Peer, Env, Exec, CallerCap, _), Outcome) :- !,
     peer_identity(Peer, Identity), identity_hash(Identity, LocalHash),
     ( ent_entity(Exec, "params", Params), ent_bytes(Params, "parent", ParentH), \+ all_zero(ParentH)
     -> ( ent_bytes(Exec, "author", Author)
        -> ( Author == LocalHash
           -> ( ent_field(Params, "grants", ReqGrants), is_list(ReqGrants) -> true ; ReqGrants = [] ),
-             mint_bounded(Peer, CallerCap, ReqGrants, Author, ParentH, Outcome)
+             mint_bounded(Peer, Env, CallerCap, Params, ReqGrants, Author, ParentH, Outcome)
           ;  error_result("unsupported_operation", "delegate: same-peer-only in v1", R),
              Outcome = outcome(501, R, []) )
        ;  error_result("capability_denied", "", R), Outcome = outcome(403, R, []) )
@@ -562,19 +607,49 @@ handle_op(_Pattern, Op, _Ctx, outcome(501, R, [])) :- error_result("unsupported_
 
 % ── capability mint (§6.2 subset-bounded) ──
 mint_bounded(Peer, CallerCap, ReqGrants, GranteeHash, Parent, Outcome) :-
+    mint_bounded(Peer, (-), CallerCap, (-), ReqGrants, GranteeHash, Parent, Outcome).
+
+mint_bounded(Peer, Env, CallerCap, Params, ReqGrants, GranteeHash, Parent, Outcome) :-
     peer_identity(Peer, Identity),
     peer_local_peer(Peer, Local),
     ( CallerCap \== (-),
       ( ent_field(CallerCap, "grants", ParentGrants), is_list(ParentGrants) -> true ; ParentGrants = [] ),
       forall(member(CG, ReqGrants),
              once(( member(PG, ParentGrants), grant_subset(Local, Local, Local, CG, PG) )))
-    -> mint_token(Identity, GranteeHash, ReqGrants, Parent, Token, Sig),
+    -> % §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE and
+       % convert the duration term against that same instant.
+       %
+       % Note what this is NOT: an authorization decision. An over-long ttl_ms from a
+       % bounded caller MINTS a clamped token and returns 200 -- "rejecting it is
+       % non-conformant" (§5.6). The bound exists because `request` mints a ROOT token
+       % (parent: null), so §5.6's parent-child attenuation never reaches it; without
+       % this clamp, temporal attenuation is the one dimension a requester could
+       % escape, and policy withdrawal would have no bounded latency.
+       now_ms(Created),
+       findall(T, mint_ceiling_term(Peer, Env, CallerCap, Params, Parent, Created, T), Terms),
+       min_defined(Terms, Expires),
+       mint_token_at(Identity, Created, GranteeHash, ReqGrants, Parent, Expires, Token, Sig),
        entity_hash(Token, TokenHash), string_codes(TokenHash, THC),
        make_entity("system/capability/grant", map(["token"-bytes(THC)]), GrantE),
        identity_peer_entity(Identity, PeerEntity),
        included_pairs([Token, PeerEntity, Sig], Included),
        Outcome = outcome(200, GrantE, Included)
     ;  error_result("scope_exceeds_authority", "", R), Outcome = outcome(403, R, []) ).
+
+% One DEFINED term of the §5.6 MIN_DEFINED ceiling. Enumerated by findall, so a term
+% that does not apply simply fails rather than contributing a sentinel.
+mint_ceiling_term(Peer, Env, _CallerCap, _Params, Parent, _Created, T) :-   % absolute
+    Parent \== (-), Env \== (-),
+    peer_store(Peer, StoreId),
+    cap_resolve(Env, StoreId, Parent, ParentTok),
+    ent_uint(ParentTok, "expires_at", T).
+mint_ceiling_term(_Peer, _Env, CallerCap, _Params, _Parent, _Created, T) :- % absolute
+    CallerCap \== (-),
+    ent_uint(CallerCap, "expires_at", T).
+mint_ceiling_term(_Peer, _Env, _CallerCap, Params, _Parent, Created, T) :-  % duration
+    Params \== (-),
+    ent_uint(Params, "ttl_ms", Ttl),
+    add_ttl(Created, Ttl, T).
 
 % §6.2: user-installed handlers MUST NOT register at reserved system/* patterns.
 is_reserved_system_pattern(Pattern) :-

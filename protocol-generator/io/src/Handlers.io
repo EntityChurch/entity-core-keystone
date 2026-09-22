@@ -380,7 +380,7 @@ CapabilityHandler := Handler clone do(
         params := paramsOf(ctx)
         author := (execOf(ctx)) bytes("author")
         if(author == nil, return fail(403, "capability_denied", nil))
-        _mintBounded(ctx at("callerCap"), _reqGrants(params), author, nil)
+        _mintBounded(ctx, ctx at("callerCap"), params, _reqGrants(params), author, nil)
     )
 
     op_delegate := method(ctx,
@@ -391,7 +391,7 @@ CapabilityHandler := Handler clone do(
         if(HandlerUtil isZeroHash(ph), return fail(400, "unexpected_params", "delegate: zero parent"))
         if((author != nil and(peer idHash == author)) not,
             return fail(501, "unsupported_operation", "delegate: same-peer-only in v1"))
-        _mintBounded(ctx at("callerCap"), _reqGrants(params), author, ph)
+        _mintBounded(ctx, ctx at("callerCap"), params, _reqGrants(params), author, ph)
     )
 
     op_revoke := method(ctx,
@@ -426,7 +426,7 @@ CapabilityHandler := Handler clone do(
         ok
     )
 
-    _mintBounded := method(callerCap, reqGrants, granteeHash, parent,
+    _mintBounded := method(ctx, callerCap, params, reqGrants, granteeHash, parent,
         local := peer localPeer
         bounded := false
         if(callerCap != nil,
@@ -441,7 +441,28 @@ CapabilityHandler := Handler clone do(
             )
         )
         if(bounded not, return fail(403, "scope_exceeds_authority", nil))
-        minted := peer mintToken(granteeHash, reqGrants, parent)
+
+        // §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE and
+        // convert the duration term against that same instant.
+        //
+        // Note what this is NOT: an authorization decision. An over-long ttl_ms from a
+        // bounded caller MINTS a clamped token and returns 200 — "rejecting it is
+        // non-conformant" (§5.6). The bound exists because `request` mints a ROOT token
+        // (parent: null), so §5.6's parent-child attenuation never reaches it; without
+        // this clamp, temporal attenuation is the one dimension a requester could escape,
+        // and policy withdrawal would have no bounded latency.
+        createdAt := Capability nowMs
+        ceiling := nil
+        foldMin := block(t, if(t != nil and(ceiling == nil or(t < ceiling)), ceiling = t))
+        if(parent != nil,
+            pt := Capability capResolve(ctx at("included"), peer store, parent)
+            if(pt != nil, foldMin call(pt uint("expires_at"))))          // absolute
+        if(callerCap != nil, foldMin call(callerCap uint("expires_at"))) // absolute
+        if(params != nil,
+            ttl := params uint("ttl_ms")
+            if(ttl != nil, foldMin call(Capability addTtl(createdAt, ttl))))  // duration
+
+        minted := peer mintTokenAt(createdAt, granteeHash, reqGrants, parent, ceiling)
         ok(Entity with("system/capability/grant", EcMap with(
             "token", EcBytes with((minted at("token")) hash))),
            peer capIncluded(minted))

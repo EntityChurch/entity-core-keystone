@@ -296,6 +296,36 @@ bool ec_cap_check_resource_scope(const char *local_peer, const char *granter_pee
     return true;
 }
 
+/* ── §6.2 CAP-6a: unrepresentable temporal fields on INGEST ──────────────────── */
+
+/* True when every CAP-6a temporal field on a RECEIVED token is either absent
+ * (legal) or representable as a uint64.
+ *
+ * This is the reader-side half of CAP-6 and it is where a peer fails OPEN. The
+ * ec_ent_uint accessor answers false both when a field is ABSENT and when it is
+ * PRESENT but not a uint — a negative integer or a bignum — so a token carrying
+ * expires_at:-1 silently skipped the expiry check and was honored with 200. §6.2
+ * CAP-6a is explicit: such a token "is malformed. A verifier MUST refuse it and
+ * MUST NOT treat the unrepresentable field as absent." An absent expires_at stays
+ * legal and is deliberately NOT rejected here.
+ *
+ * Refusal must be the §5.2 capability_denied disposition (a status-bearing
+ * response), never a decode-layer silent drop or a transport close. */
+static bool temporal_fields_representable(const ec_entity *tok)
+{
+    static const char *const keys[] = { "expires_at", "not_before", "created_at" };
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        const ec_value *v = ec_ent_field(tok, keys[i]);
+        if (!v) {
+            continue;                    /* absent is legal */
+        }
+        if (v->kind != EC_INT || v->as.i.negative) {
+            return false;                /* present but not a uint64 => malformed */
+        }
+    }
+    return true;
+}
+
 /* ── §PR-8 granter peer resolution ──────────────────────────────────────────── */
 
 static ec_entity *cap_resolve(const ec_envelope *env, ec_store *store, const uint8_t *h)
@@ -305,6 +335,25 @@ static ec_entity *cap_resolve(const ec_envelope *env, ec_store *store, const uin
         return ec_entity_ref(e);
     }
     return ec_store_get_by_hash(store, h);
+}
+
+/* §5.6: the parent token's ABSOLUTE expires_at term, resolved from the frame's
+ * included set or the local store. False when there is no parent, the parent is
+ * unresolvable, or it carries no representable expiry — in each case it simply
+ * contributes no term to MIN_DEFINED. */
+bool ec_cap_parent_expiry(const ec_envelope *env, ec_store *store,
+                          const uint8_t *parent_hash, uint64_t *out)
+{
+    if (!parent_hash) {
+        return false;
+    }
+    ec_entity *parent = cap_resolve(env, store, parent_hash);
+    if (!parent) {
+        return false;
+    }
+    bool ok = ec_ent_uint(parent, "expires_at", out);
+    ec_entity_unref(parent);
+    return ok;
 }
 
 ec_status ec_cap_resolve_granter_peer(const ec_envelope *env, ec_store *store,
@@ -856,7 +905,16 @@ static ec_verdict verify_chain(const char *local_peer, ec_store *store,
             *unresolvable = true;
             goto done;
         }
-        /* temporal validity */
+        /* temporal validity.
+         *
+         * CAP-6a FIRST: a present-but-unrepresentable expires_at / not_before /
+         * created_at is MALFORMED and must be refused outright. This has to run
+         * BEFORE the two range checks below, because those use ec_ent_uint, which
+         * cannot tell "absent" from "present but not a uint64" — so on its own it
+         * would skip the check and honor the token (fail-open). */
+        if (!temporal_fields_representable(current)) {
+            good = false;
+        }
         uint64_t tnow = ec_now_ms();
         uint64_t nb, ex;
         if (ec_ent_uint(current, "not_before", &nb) && tnow < nb) {

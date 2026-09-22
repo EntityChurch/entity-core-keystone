@@ -1,3 +1,20 @@
+<!-- current-pin-banner:95edd774f4a2 -->
+> **CURRENT (2026-08-28) — spec snapshot `v0.8.2`, executed check set `95edd774f4a2…`.**
+> `validate-peer --profile core` → **PASS, 0 FAIL** · **755 total · 312 pass · 337 warn · 0 FAIL · 106 skip** (elapsed 2127 ms).
+>
+> That digest is the pinned `core_executed_check_set_digest`, so this number is
+> comparable to every other row in `CONFORMANCE-MATRIX.md` §1 — and it is a CONTENT
+> anchor, which is the only kind that survives the release boundary ([ADR-0012] Am. 1).
+> The machine-readable `CONFORMANCE-REPORT.json` beside this file is the authoritative
+> artifact; `tools/check-set-gate.py --tracked` gates it, and this banner is generated
+> from it by `tools/status-banner.py` rather than typed.
+>
+> **Everything below this line predates this measurement and is retained as build
+> history.** Where it disagrees with the figures above, the figures above win;
+> `CONFORMANCE-MATRIX.md` §1 is authoritative for the cohort.
+
+---
+
 > **v7.75 re-run (oracle `entity-core-go @ b30a589`).**
 > `validate-peer --profile core` → **PASS, 0 FAIL** · **576 total · 291 pass · 196 warn · 0 FAIL · 89 skip.**
 > New v7.75 categories scored GREEN: **`resource_bounds`** r1 `413 payload_too_large` PASS · r2 `400 chain_depth_exceeded` PASS · r3 connection-flood WARN (SHOULD, external-admission carve-out); **`concurrency`** 5/5 PASS.

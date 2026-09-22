@@ -154,12 +154,30 @@ _owner_grants: procedure expose EC.
   return Lst_Add('', g)
 
 /* ── token mint (§4.4 / §6.9a) -> a minted pair: len(token,4)||token||signature ── */
+/* Mint_Token_At at the current instant with no §5.6 ceiling. Used by the paths that
+ * mint a self-issued grant from local authority (bootstrap, handler registration, the
+ * §4.4 handshake), where no MIN_DEFINED term is in play. */
 Peer_MintToken: procedure expose EC.
   parse arg h, grantee_hash, grants, parent
+  return Peer_MintTokenAt(h, Cap_NowMs(), grantee_hash, grants, parent, '')
+
+/* Mint at a caller-supplied instant, carrying §5.6's MIN_DEFINED ceiling.
+ *
+ * An empty `expires_at` means no term was defined and the token genuinely has no expiry
+ * (the ONLY "no bound" spelling). A present value is emitted verbatim -- including one
+ * equal to `created_at`, which §5.6 rule 2 requires for ttl_ms == 0 and which means
+ * "already expired at every observable instant", not "unbounded".
+ *
+ * `created_at` is supplied rather than sampled here so a computed expiry is guaranteed
+ * to be relative to the SAME instant that lands in the token; sampling the clock twice
+ * skews the two. */
+Peer_MintTokenAt: procedure expose EC.
+  parse arg h, created_at, grantee_hash, grants, parent, expires_at
   ident = Peer_Identity(h)
   m = Ecf_Map('granter', Ecf_Bytes(Id_IdHash(ident)), 'grantee', Ecf_Bytes(grantee_hash))
   m = Ecf_MapPut(m, 'grants', Ecf_Array(grants))
-  m = Ecf_MapPut(m, 'created_at', Ecf_Int(Cap_NowMs()))
+  m = Ecf_MapPut(m, 'created_at', Ecf_Int(created_at))
+  if expires_at \== '' then m = Ecf_MapPut(m, 'expires_at', Ecf_Int(expires_at))
   if parent \== '' then m = Ecf_MapPut(m, 'parent', Ecf_Bytes(parent))
   token = Ent_Make('system/capability/token', m)
   sig = Id_Sign(ident, token)

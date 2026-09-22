@@ -108,13 +108,39 @@ proc openGrantsGrants(): seq[EcValue] =
 
 # ── token mint (§4.4 / §5.5 self-consistent root) ──────────────────────────────
 
+## §5.6 rule 1: convert a DURATION term (ttl_ms) to an absolute timestamp relative to
+## `createdAt`. Rule 3: a conversion that is not representable is treated as ABSENT
+## exactly as a null term is -- it MUST NOT wrap and MUST NOT saturate to a
+## representable maximum, since saturation manufactures expires_at == 2^64-1, a finite
+## bound no reader can distinguish from a deliberate one. Nim's uint64 `+` WRAPS, so
+## the check is mandatory rather than decorative: without it an overflowing ttl mints
+## an EARLIER expiry, which is what this peer was doing.
+##
+## `ttl == 0` is NOT a special case and deliberately so: rule 2 makes 0 a DEFINED value
+## yielding `createdAt` (expire immediately). The absent field is the only "no bound"
+## spelling, and falling out of the arithmetic is what keeps the two from collapsing.
+proc addTtl(createdAt, ttl: uint64): Option[uint64] =
+  let sum = createdAt + ttl
+  if sum < createdAt: none(uint64)   # uint64 wrap => not representable => drop
+  else: some(sum)
+
+## Mint at a caller-supplied instant, carrying §5.6's MIN_DEFINED ceiling.
+##
+## `expiresAt` none means no term was defined and the token genuinely has no expiry
+## (the ONLY "no bound" spelling). A present value is emitted verbatim -- including one
+## equal to `createdAt`, which §5.6 rule 2 requires for ttl_ms == 0.
+##
+## `createdAt` is supplied rather than sampled here so a computed expiry is guaranteed
+## to be relative to the SAME instant that lands in the token; sampling the clock twice
+## skews the two, which is what this peer was doing before.
 proc mintTokenRaw(p: Peer; granteeHash: seq[byte]; grants: seq[EcValue];
-                  expiresAt = none(uint64)): tuple[token, signature: Entity] =
+                  expiresAt = none(uint64);
+                  createdAt = nowMs()): tuple[token, signature: Entity] =
   var pairs = @[
     EcPair(key: textV("grants"), val: arrV(grants)),
     EcPair(key: textV("granter"), val: bytesV(p.identity.identityHash)),
     EcPair(key: textV("grantee"), val: bytesV(granteeHash)),
-    EcPair(key: textV("created_at"), val: uintV(nowMs())),
+    EcPair(key: textV("created_at"), val: uintV(createdAt)),
   ]
   if expiresAt.isSome:
     pairs.add EcPair(key: textV("expires_at"), val: uintV(expiresAt.get))
@@ -418,10 +444,32 @@ proc capabilityRequest(p: Peer; exec, params: Entity; cap: CapabilityToken; env:
   let requested = parseGrants(requestedV)
   if not grantsWithinAuthority(requested, cap.grants, p.localPeer):
     return errOut(403, "scope_exceeds_authority")
+  # §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6).
+  #
+  # This peer already had a ceiling, and it was WRONG IN THREE WAYS -- which is why a
+  # partial implementation is worse than an absent one: it produced a plausible value
+  # and read as done. (a) It carried only the request's ttl_ms term and never the
+  # caller capability's absolute expiry, so an over-long ttl minted a token that
+  # OUTLIVED the capability authorizing it (measured: expires_at 2102711331804 against
+  # a caller cap of 1787354931804 -- 10 years past its own authority). (b) It sampled
+  # nowMs() here and AGAIN inside mintTokenRaw for created_at, so the emitted
+  # created_at and the expiry computed from it were two different instants. (c)
+  # `nowMs() + ttl.get` WRAPS on uint64, so an overflowing ttl minted an EARLIER
+  # expiry rather than dropping the term -- §5.6 rule 3 forbids exactly that.
+  #
+  # Note what this is NOT: an authorization decision. An over-long ttl_ms from a
+  # bounded caller MINTS a clamped token and returns 200 -- "rejecting it is
+  # non-conformant" (§5.6).
+  let createdAt = nowMs()
+  var ceiling = none(uint64)
+  proc fold(term: Option[uint64]) =
+    if term.isSome and (ceiling.isNone or term.get < ceiling.get):
+      ceiling = term
+  if cap.hasExpiresAt: fold(some(cap.expiresAt))          # absolute
   let ttl = params.uintField("ttl_ms")
-  let expiresAt = if ttl.isSome: some(nowMs() + ttl.get) else: none(uint64)
+  if ttl.isSome: fold(addTtl(createdAt, ttl.get))        # duration
   let grantsArr = if requestedV != nil and requestedV.kind == ekArray: requestedV.arr else: @[]
-  let minted = mintTokenRaw(p, granteePeer.get.hash, grantsArr, expiresAt)
+  let minted = mintTokenRaw(p, granteePeer.get.hash, grantsArr, ceiling, createdAt)
   let grant = makeEntity("system/capability/grant", mapV(@[
     EcPair(key: textV("token"), val: bytesV(minted.token.hash)),
   ]))
@@ -452,7 +500,12 @@ proc capabilityConfigure(p: Peer; params: Entity): Outcome =
   let peerPattern = params.textField("peer_pattern")
   if peerPattern.isNone or not validPolicyPattern(peerPattern.get):
     return errOut(400, "invalid_params")
-  if parseGrants(params.field("grants")).len == 0:
+  # CAP-2 (§6.2): `grants: []` is the WITHDRAWAL form and MUST be accepted -- it
+  # writes a present policy entry carrying an empty grants array, which is how an
+  # operator revokes a seed policy without deleting the entry. Rejecting it with
+  # 400 conflates "no grants" with "malformed", and the two are distinct states:
+  # the absent field is malformed, the empty array is a deliberate withdrawal.
+  if params.field("grants") == nil or params.field("grants").kind != ekArray:
     return errOut(400, "invalid_params")
   p.store.bindAt(p.abs("system/capability/policy/" & peerPattern.get), params)
   okOut(emptyAck())

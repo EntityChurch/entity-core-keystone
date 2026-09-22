@@ -1665,13 +1665,23 @@ static void ecodec_authz_check_validity(t_ecodec *x)
     if (g_authz.valid) {
         cbor_rd cap;
         if (included_find(buf, len, g_authz.cap_h, &cap)) {
-            uint64_t now = wall_ms(), exp = 0, nbf = 0;
+            uint64_t now = wall_ms(), exp = 0, nbf = 0, cre = 0;
             int have_exp = entity_data_uint(buf, len, &cap, "expires_at", &exp);
             int have_nbf = entity_data_uint(buf, len, &cap, "not_before", &nbf);
+            /* §6.2 CAP-6a covers THREE fields, not two. This checked expires_at and
+             * not_before and left created_at unguarded -- and the oracle probes all
+             * three, so the peer honored a cap whose created_at was negative. The
+             * accessor already distinguishes absent (0) from present-but-not-uint64
+             * (-1); the omission was in which fields it was asked about. */
+            int have_cre = entity_data_uint(buf, len, &cap, "created_at", &cre);
             ok = 1;
             if (have_exp == 1 && exp < now) ok = 0;            /* expired */
             if (have_nbf == 1 && now < nbf) ok = 0;            /* not yet valid */
-            if (have_exp < 0 || have_nbf < 0) ok = 0;          /* malformed temporal field */
+            /* CAP-6a: present but unrepresentable is MALFORMED, not absent. This test
+             * must stand alongside (not behind) the range tests above -- those use the
+             * ==1 arm, so on their own an unrepresentable field is indistinguishable
+             * from an absent one and the cap is honored (fail-open). */
+            if (have_exp < 0 || have_nbf < 0 || have_cre < 0) ok = 0;
         }
     }
     authz_bit(x, "validity_ok", ok);
@@ -3098,14 +3108,51 @@ static void ecodec_cap_request_serve(t_ecodec *x)
         || wb_text(&gpd, "public_key") || wb_bytes(&gpd, g_pub, EC_ED25519_PUB_LEN)) goto done;
     if (ec_entity_hash("system/peer", gpd.p, gpd.len, granter_h)) goto done;
 
-    /* token {grants (echoed), grantee=author, granter=local, created_at} → token_h */
+    /* token {grants (echoed), grantee=author, granter=local, created_at[, expires_at]}
+     *
+     * §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE and
+     * convert the duration term against that same instant -- a second wall_ms() here
+     * would skew the emitted created_at from the expiry computed off it.
+     *
+     * Note what this is NOT: an authorization decision. An over-long ttl_ms from a
+     * bounded caller MINTS a clamped token and returns 200 -- "rejecting it is
+     * non-conformant" (§5.6). The bound exists because `request` mints a ROOT token
+     * (parent: null), so §5.6's parent-child attenuation never reaches it; without this
+     * clamp, temporal attenuation is the one dimension a requester could escape.
+     *
+     * Key order is length-then-lex over the encoded key bytes, so created_at(10)
+     * precedes expires_at(10) on the byte-lexicographic tiebreak. */
     {
         uint64_t now = wall_ms();
-        if (wb_head(&tokd, 5, 4)
+        uint64_t ceiling = 0; int have_ceiling = 0;
+        /* caller cap's ABSOLUTE expiry */
+        { cbor_rd cc;
+          if (included_find(buf, len, g_authz.cap_h, &cc)) {
+              uint64_t ce = 0;
+              if (entity_data_uint(buf, len, &cc, "expires_at", &ce) == 1) {
+                  ceiling = ce; have_ceiling = 1;
+              }
+          } }
+        /* request ttl_ms as a DURATION, converted against `now`. §5.6 rule 3: an
+         * unrepresentable conversion is treated as ABSENT -- it MUST NOT wrap and MUST
+         * NOT saturate, since saturation manufactures a finite bound no reader can
+         * distinguish from a deliberate one. ttl_ms == 0 is NOT special-cased: it falls
+         * out as `now`, which is what keeps it from collapsing into "no bound". */
+        { cbor_rd tf; int major; uint64_t arg;
+          if (cbor_map_find(buf, len, pdata.pos, "ttl_ms", &tf)
+              && cbor_head(&tf, &major, &arg) == 0 && major == 0) {
+              uint64_t sum = now + arg;
+              if (sum >= now && (!have_ceiling || sum < ceiling)) {
+                  ceiling = sum; have_ceiling = 1;
+              }
+          } }
+        if (wb_head(&tokd, 5, (uint64_t)(have_ceiling ? 5 : 4))
             || wb_text(&tokd, "grants")     || wb_raw(&tokd, gptr, glen)
             || wb_text(&tokd, "grantee")    || wb_bytes(&tokd, g_authz.author_h, 33)
             || wb_text(&tokd, "granter")    || wb_bytes(&tokd, granter_h, 33)
             || wb_text(&tokd, "created_at") || wb_head(&tokd, 0, now)) goto done;
+        if (have_ceiling
+            && (wb_text(&tokd, "expires_at") || wb_head(&tokd, 0, ceiling))) goto done;
     }
     if (ec_entity_hash("system/capability/token", tokd.p, tokd.len, token_h)) goto done;
 

@@ -106,17 +106,36 @@ ownerGrants p = [ grantV ["*"] ["*"] ["*"] (Some [Peer.pLocal p]) ]
 
 -- ── token mint (§4.4 / §5.4) — created_at at MS precision (A-PD-016) ──────────
 
+-- mintTokenAt at the current instant with no §5.6 ceiling. Used by the paths that mint a
+-- self-issued grant from local authority (bootstrap, handler registration, the §4.4
+-- handshake), where no MIN_DEFINED term is in play.
 mintToken : Peer -> Bytes -> Optional Bytes -> [Value] ->{IO} (Entity, Entity)
 mintToken p granteeHash parent grants =
-  t = nowMs ()
+  mintTokenAt p (nowMs ()) granteeHash parent grants None
+
+-- Mint at a caller-supplied instant, carrying §5.6's MIN_DEFINED ceiling.
+--
+-- `expiresAt = None` means no term was defined and the token genuinely has no expiry (the
+-- ONLY "no bound" spelling). A present value is emitted verbatim — including one equal to
+-- `createdAt`, which §5.6 rule 2 requires for ttl_ms == 0 and which means "already expired
+-- at every observable instant", not "unbounded".
+--
+-- `createdAt` is supplied rather than sampled here so a computed expiry is guaranteed to be
+-- relative to the SAME instant that lands in the token; sampling the clock twice skews the
+-- two. On this peer that also preserves the A-PD-016 ms-precision property.
+mintTokenAt : Peer -> Nat -> Bytes -> Optional Bytes -> [Value] -> Optional Nat ->{IO} (Entity, Entity)
+mintTokenAt p createdAt granteeHash parent grants expiresAt =
   base =
     [ (VText "granter", VBytes (Identity.idHash (Peer.pIdentity p)))
     , (VText "grantee", VBytes granteeHash)
     , (VText "grants", VArray grants)
-    , (VText "created_at", VUInt t) ]
-  withParent = match parent with
-    Some ph -> base :+ (VText "parent", VBytes ph)
+    , (VText "created_at", VUInt createdAt) ]
+  withExpiry = match expiresAt with
+    Some ex -> base :+ (VText "expires_at", VUInt ex)
     None -> base
+  withParent = match parent with
+    Some ph -> withExpiry :+ (VText "parent", VBytes ph)
+    None -> withExpiry
   token = makeEntity "system/capability/token" (VMap withParent)
   sgn = signEntity (Peer.pIdentity p) token
   (token, sgn)
@@ -424,11 +443,34 @@ checkBounded p callerCap reqGrants = match callerCap with
     parentGrants = grantsOfToken cap
     allL (cg -> grantBoundedBy p parentGrants (parseGrant cg)) reqGrants
 
-mintBounded : Peer -> Optional Entity -> [Value] -> Bytes -> Optional Bytes ->{IO} Outcome
-mintBounded p callerCap reqGrants granteeHash parent =
+mintBounded : Peer -> Optional Entity -> Optional Entity -> [Value] -> Bytes -> Optional Bytes ->{IO} Outcome
+mintBounded p callerCap params reqGrants granteeHash parent =
   if not (checkBounded p callerCap reqGrants) then errOc 403 "scope_exceeds_authority"
   else
-    tokPair = mintToken p granteeHash parent reqGrants
+    -- §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE and
+    -- convert the duration term against that same instant.
+    --
+    -- Note what this is NOT: an authorization decision. An over-long ttl_ms from a bounded
+    -- caller MINTS a clamped token and returns 200 — "rejecting it is non-conformant"
+    -- (§5.6). The bound exists because `request` mints a ROOT token (parent: null), so
+    -- §5.6's parent-child attenuation never reaches it; without this clamp, temporal
+    -- attenuation is the one dimension a requester could escape, and policy withdrawal
+    -- would have no bounded latency.
+    createdAt = nowMs ()
+    foldMin = acc t -> match (acc, t) with
+      (_, None) -> acc
+      (None, _) -> t
+      (Some a, Some b) -> if b < a then t else acc
+    capTerm = match callerCap with
+      Some cc -> natField cc "expires_at"
+      None -> None
+    ttlTerm = match params with
+      Some pr -> match natField pr "ttl_ms" with
+        Some ttl -> addTtl createdAt ttl
+        None -> None
+      None -> None
+    ceiling = foldMin (foldMin None capTerm) ttlTerm
+    tokPair = mintTokenAt p createdAt granteeHash parent reqGrants ceiling
     token = fst2 tokPair
     sgn = snd2 tokPair
     grantResult = makeEntity "system/capability/grant" (VMap [(VText "token", VBytes (Entity.ehash token))])
@@ -472,7 +514,7 @@ capabilityHandler p exec callerCap =
   author = bytesField exec "author"
   if op == "request" then match author with
     None -> errOc 403 "capability_denied"
-    Some granteeHash -> mintBounded p callerCap (reqGrantsOf params) granteeHash None
+    Some granteeHash -> mintBounded p callerCap params (reqGrantsOf params) granteeHash None
   else if op == "revoke" then capRevoke p params
   else if op == "configure" then capConfigure p params
   else errMsg 501 "unsupported_operation" ("capability: " Text.++ op)

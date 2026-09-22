@@ -323,6 +323,65 @@ final class Capability
     }
 
     /** @param callable(string):?Entity $resolve */
+    /**
+     * §6.2 CAP-6a: true when every temporal field on a RECEIVED token is either
+     * absent (legal) or representable as a uint64.
+     *
+     * This is the reader-side half of CAP-6 and it is where a peer fails OPEN.
+     * PHP's fail-open is the ARITHMETIC one, not the null-collapse one, and the
+     * distinction matters because the grep that catches the other misses this:
+     * Ecf::uint returns gmp_init() of ANY int and any \GMP verbatim, negative
+     * included. The expiry check therefore did NOT skip -- it RAN and returned the
+     * wrong answer. For a negative not_before, gmp_cmp($now, $nb) < 0 is simply
+     * false and the capability passed. No null, no skip, nothing an Option-shaped
+     * audit would find.
+     *
+     * GMP is arbitrary-precision, so the >2^64 half is likewise a DELIBERATE range
+     * check rather than an overflow trap.
+     *
+     * §6.2 CAP-6a: such a token "is malformed. A verifier MUST refuse it and MUST
+     * NOT treat the unrepresentable field as absent." An absent expires_at stays
+     * legal and is NOT rejected here. Refusal must be the §5.2 capability_denied
+     * disposition, never a decode-layer drop or a transport close.
+     */
+    public static function temporalFieldsRepresentable(Entity $tok): bool
+    {
+        $ceiling = \gmp_pow(2, 64);
+        foreach (['expires_at', 'not_before', 'created_at'] as $key) {
+            $v = $tok->field($key);
+            if ($v === null) {
+                continue; // absent is legal
+            }
+            $n = $tok->uint($key);
+            if ($n === null || \gmp_cmp($n, 0) < 0 || \gmp_cmp($n, $ceiling) >= 0) {
+                return false; // present but not a uint64 => malformed
+            }
+        }
+        return true;
+    }
+
+    /**
+     * §5.6 rule 1: convert a DURATION term (ttl_ms) to an absolute timestamp
+     * relative to $createdAt. Rule 3: a conversion that is not representable is
+     * treated as ABSENT (null) exactly as a null term is -- it MUST NOT wrap and
+     * MUST NOT saturate to a representable maximum, since saturation manufactures
+     * expires_at == 2^64-1, a finite bound no reader can distinguish from a
+     * deliberate one. GMP does not wrap, so this is a deliberate range check.
+     *
+     * ttl == 0 is NOT a special case and deliberately so: rule 2 makes 0 a DEFINED
+     * value yielding $createdAt (expire immediately). The absent field is the only
+     * "no bound" spelling, and falling out of the arithmetic is what keeps the two
+     * from ever collapsing into each other.
+     */
+    public static function addTtl(\GMP $createdAt, \GMP $ttl): ?\GMP
+    {
+        if (\gmp_cmp($ttl, 0) < 0) {
+            return null;
+        }
+        $sum = \gmp_add($createdAt, $ttl);
+        return \gmp_cmp($sum, \gmp_pow(2, 64)) >= 0 ? null : $sum;
+    }
+
     public static function capResolve(array $included, Store $store, string $h): ?Entity
     {
         foreach ($included as $pair) {
@@ -745,7 +804,16 @@ final class Capability
             } else {
                 throw new UnresolvableGranteeException();
             }
-            // temporal validity
+            // temporal validity.
+            //
+            // CAP-6a FIRST: a present-but-unrepresentable expires_at / not_before /
+            // created_at is MALFORMED and must be refused outright. This has to run
+            // BEFORE the two range checks below, because those are what the ambiguity
+            // defeats -- see temporalFieldsRepresentable for the mechanism, which in
+            // PHP is the ARITHMETIC form rather than the null-collapse one.
+            if (!self::temporalFieldsRepresentable($current)) {
+                $good = false;
+            }
             $now = self::nowMs();
             $nb = $current->uint('not_before');
             if ($nb !== null && \gmp_cmp($now, $nb) < 0) {

@@ -684,6 +684,11 @@ typedef struct cursor {
     const uint8_t *o;
     size_t len;
     size_t i;
+    /* keep_tags makes dec_value yield the tag's INNER item instead of returning
+     * EC_ERR_TAG_REJECTED. It exists for ONE caller — ec_ecf_decode_salvage —
+     * and is never set on the strict path. See that function for why this is
+     * not a weakening of the §6.3 tag reject. */
+    bool keep_tags;
 } cursor;
 
 static ec_status dec_value(cursor *c, int depth, ec_value **out);
@@ -941,6 +946,18 @@ static ec_status dec_value(cursor *c, int depth, ec_value **out)
         }
         case 6:
             /* N2: major-type-6 tag rejected anywhere, any depth. */
+            if (c->keep_tags) {
+                /* Salvage path only (ec_ecf_decode_salvage): consume the tag head
+                 * and yield the item it wrapped, so the caller can locate the
+                 * request_id and SIGNAL the rejection. The frame is still
+                 * rejected — the tag is never interpreted and the value never
+                 * reaches an entity. */
+                uint64_t tag_num;
+                ec_status st = dec_arg(c, info, &tag_num);
+                if (st != EC_OK) return st;
+                (void)tag_num;
+                return dec_value(c, depth + 1, out);
+            }
             return EC_ERR_TAG_REJECTED;
         case 7:
             return dec_simple(c, info, out);
@@ -958,7 +975,7 @@ ec_status ec_ecf_decode(const uint8_t *in, size_t in_len, ec_value **out)
     if (!in && in_len > 0) {
         return EC_ERR_BAD_INPUT;
     }
-    cursor c = { in, in_len, 0 };
+    cursor c = { in, in_len, 0, false };
     ec_value *v = NULL;
     ec_status st = dec_value(&c, 0, &v);
     if (st != EC_OK) {
@@ -967,6 +984,49 @@ ec_status ec_ecf_decode(const uint8_t *in, size_t in_len, ec_value **out)
     if (c.i < in_len) {
         ec_value_free(v);
         return EC_ERR_NON_CANONICAL_ECF; /* trailing bytes */
+    }
+    *out = v;
+    return EC_OK;
+}
+
+/* Parse `in` for the sole purpose of REPORTING a rejection, not of accepting one.
+ * Identical to ec_ecf_decode except that a major-type-6 tag yields the item it
+ * wrapped instead of EC_ERR_TAG_REJECTED.
+ *
+ * Why this exists (§6.3, a conformance requirement rather than a convenience):
+ * the tag rule is "Implementations MUST reject any received protocol frame
+ * containing a CBOR tag on a data field. Rejection returns 400
+ * non_canonical_ecf." Rejecting by dropping the frame on the floor satisfies the
+ * first sentence and violates the second — the peer owes the sender a status, and
+ * §4.9(c) deliver-or-signal says the same thing from the other direction. But the
+ * status must ride a response correlated by request_id, and the strict decoder
+ * cannot reach the request_id in a frame it refuses to parse. This recovers
+ * exactly that much and nothing more.
+ *
+ * This is NOT a weakening of the tag reject. The frame stays rejected: the value
+ * this returns is never converted to an entity, never stored, never forwarded and
+ * never interpreted, so §6.3's MUST NOT silently strip / MUST NOT preserve /
+ * MUST NOT attempt to interpret all still hold. The strict ec_ecf_decode path
+ * that every real ingestion route uses is byte-for-byte unchanged, which is what
+ * keeps the tag_reject wire-conformance vectors meaningful. */
+ec_status ec_ecf_decode_salvage(const uint8_t *in, size_t in_len, ec_value **out)
+{
+    if (!out) {
+        return EC_ERR_BAD_INPUT;
+    }
+    *out = NULL;
+    if (!in && in_len > 0) {
+        return EC_ERR_BAD_INPUT;
+    }
+    cursor c = { in, in_len, 0, true };
+    ec_value *v = NULL;
+    ec_status st = dec_value(&c, 0, &v);
+    if (st != EC_OK) {
+        return st;
+    }
+    if (c.i < in_len) {
+        ec_value_free(v);
+        return EC_ERR_NON_CANONICAL_ECF;
     }
     *out = v;
     return EC_OK;

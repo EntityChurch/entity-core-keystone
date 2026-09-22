@@ -102,9 +102,25 @@ read_loop_(IO, OnExecute, Stream) :-
        -> ( is_response(Env)
           -> route_response(IO, Env)
           ;  thread_create(ignore(call(OnExecute, IO, Env)), _, [detached(true)]) )
-       ;  true ),
+       ;  reject_frame(IO, Payload) ),
        read_loop_(IO, OnExecute, Stream)
     ;  true ).   % stream closed / framing ended
+
+% §6.3: "Rejection returns 400 non_canonical_ecf" -- a rejected frame is owed a STATUS,
+% not silence. The `true` this replaces rejected the frame (correct) and then dropped it
+% on the floor (wrong): the sender saw no response at all and blocked until its own
+% timeout, violating §6.3's second sentence and §4.9(c) deliver-or-signal. It also made
+% a refusal indistinguishable from a dead peer, and on a single-connection oracle run it
+% poisons every later request on the same connection.
+%
+% The frame is still REJECTED -- only enough is salvaged to correlate the response. If
+% even the request_id is unrecoverable the frame is unattributable and silence is the
+% only option left, which is what the `ignore/1` leaves in place.
+reject_frame(IO, Payload) :-
+    ignore(( salvage_request_id(Payload, ReqId),
+             error_result("non_canonical_ecf", "", ErrE),
+             make_response(ReqId, 400, ErrE, Resp),
+             catch(io_write(IO, envelope(Resp, [])), _, true) )).
 
 is_response(Env) :- envelope_root(Env, R), entity_type(R, "system/protocol/execute/response").
 

@@ -251,6 +251,31 @@ bool is_multi_sig(const Entity& cap) {
     return g && g->is<ecf::Map>();
 }
 
+// ── §6.2 CAP-6a: unrepresentable temporal fields on INGEST ──────────────────────
+//
+// True when every CAP-6a temporal field on a RECEIVED token is either absent (legal)
+// or representable as a uint64.
+//
+// This is the reader-side half of CAP-6 and it is where a peer fails OPEN. The idiomatic
+// accessor answers std::nullopt both when a field is ABSENT and when it is PRESENT but
+// not a uint -- `if (!i || i->negative) return std::nullopt;` -- so a token carrying
+// expires_at:-1 silently skipped the expiry check and was honored with 200. §6.2 CAP-6a
+// is explicit: such a token "is malformed. A verifier MUST refuse it and MUST NOT treat
+// the unrepresentable field as absent." An absent expires_at stays legal and is
+// deliberately NOT rejected here.
+//
+// Refusal must be the §5.2 capability_denied disposition (a status-bearing response),
+// never a decode-layer silent drop or a transport close.
+bool temporal_fields_representable(const Entity& tok) {
+    for (auto key : {"expires_at", "not_before", "created_at"}) {
+        const auto* v = tok.field(key);
+        if (!v) continue;  // absent is legal
+        const auto* i = std::get_if<ecf::Int>(&v->as_variant());
+        if (!i || i->negative) return false;  // present but not a uint64 => malformed
+    }
+    return true;
+}
+
 // §3.6 M3 / §5.5 M4+M6 genuine K-of-N multi-sig root validation. Returns ALLOW only if the
 // structure is well-formed AND a distinct-signer quorum (incl. the local peer) signs.
 // Structure precedes signature counting (precedence 25). Every failure → Deny (→403).
@@ -427,7 +452,14 @@ Verdict verify_chain(const std::string& local_peer, const Store& store, const En
             unresolvable = true;
             return Verdict::Deny;
         }
-        // temporal validity
+        // temporal validity.
+        //
+        // CAP-6a FIRST: a present-but-unrepresentable expires_at / not_before /
+        // created_at is MALFORMED and must be refused outright. This has to run BEFORE
+        // the two range checks below, because those use uint(), which cannot tell
+        // "absent" from "present but not a uint64" -- so on its own it would skip the
+        // check and honor the token (fail-open).
+        if (!temporal_fields_representable(current)) good = false;
         std::uint64_t tnow = now_ms();
         if (auto nb = current.uint("not_before"); nb && tnow < *nb) good = false;
         if (auto ex = current.uint("expires_at"); ex && *ex < tnow) good = false;
@@ -468,6 +500,20 @@ bool is_revoked(const std::string& local_peer, const Store& store, const EntityP
 }
 
 }  // namespace
+
+// ── §5.6 temporal ceiling terms (public) ───────────────────────────────────────
+std::optional<std::uint64_t> add_ttl(std::uint64_t created_at, std::uint64_t ttl) {
+    const std::uint64_t sum = created_at + ttl;
+    if (sum < created_at) return std::nullopt;  // uint64 wrap => drop the term
+    return sum;
+}
+
+std::optional<std::uint64_t> parent_expiry(const Envelope& env, const Store& store,
+                                           std::span<const std::byte> parent_hash) {
+    auto parent = resolve(env, store, parent_hash);
+    if (!parent) return std::nullopt;
+    return parent->uint("expires_at");
+}
 
 // ── path helpers (public) ──────────────────────────────────────────────────────
 bool starts_with(std::string_view prefix, std::string_view s) {

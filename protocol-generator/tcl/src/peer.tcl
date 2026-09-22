@@ -26,7 +26,7 @@ namespace eval ::entity::core::peer {
     variable P
     variable counter 0
     namespace export create identity store local_peer dispatch getHandler \
-        grant mint_token cap_included random_bytes abs
+        grant mint_token mint_token_at cap_included random_bytes abs
 }
 
 # ── outcome helpers (the recoverable handler-result seam) ──
@@ -85,17 +85,35 @@ proc ::entity::core::peer::_owner_grants {h} {
 }
 
 # ── token mint (§4.4 / §6.9a) ──
-proc ::entity::core::peer::mint_token {h grantee_hash grants {parent ""}} {
+# Mint at a caller-supplied instant, carrying §5.6's MIN_DEFINED ceiling.
+#
+# An empty $expires_at means no term was defined and the token genuinely has no expiry
+# (the ONLY "no bound" spelling). A present value is emitted verbatim — including one
+# equal to $created_at, which §5.6 rule 2 requires for ttl_ms == 0 and which means
+# "already expired at every observable instant", not "unbounded".
+#
+# $created_at is supplied rather than sampled here so a computed expiry is guaranteed to
+# be relative to the SAME instant that lands in the token; sampling the clock twice
+# skews the two.
+proc ::entity::core::peer::mint_token_at {h created_at grantee_hash grants {parent ""} {expires_at ""}} {
     variable P
     set ident [dict get $P($h) identity]
     set kv [list \
         granter    [::entity::core::ecf::bstr [dict get $ident id_hash]] \
         grantee    [::entity::core::ecf::bstr $grantee_hash] \
         grants     [::entity::core::ecf::tarray $grants] \
-        created_at [::entity::core::ecf::tint [::entity::core::capability::now_ms]]]
+        created_at [::entity::core::ecf::tint $created_at]]
+    if {$expires_at ne ""} { lappend kv expires_at [::entity::core::ecf::tint $expires_at] }
     if {$parent ne ""} { lappend kv parent [::entity::core::ecf::bstr $parent] }
     set token [::entity::core::entity::make system/capability/token [::entity::core::ecf::map {*}$kv]]
     return [dict create token $token signature [::entity::core::identity::sign $ident $token]]
+}
+
+# mint_token_at at the current instant with no §5.6 ceiling. Used by the paths that mint
+# a self-issued grant from local authority (bootstrap, handler registration, the §4.4
+# handshake), where no MIN_DEFINED term is in play.
+proc ::entity::core::peer::mint_token {h grantee_hash grants {parent ""}} {
+    return [mint_token_at $h [::entity::core::capability::now_ms] $grantee_hash $grants $parent]
 }
 
 proc ::entity::core::peer::cap_included {h minted} {

@@ -19,8 +19,8 @@ module Transport
 
 using Sockets
 using ..Cbor: CborMap
-using ..Model: Entity, Envelope, make_entity, textfield, bytesfield, uintfield, entityfield, included_get
-using ..Wire: read_envelope, write_envelope, make_execute, empty_params, FrameTooLarge
+using ..Model: Entity, Envelope, make_entity, textfield, bytesfield, uintfield, entityfield, included_get, envelope_offrame, salvage_request_id
+using ..Wire: read_envelope, write_envelope, read_frame, make_execute, make_response, error_result, empty_params, FrameTooLarge
 using ..Identity: PeerIdentity, sign_entity
 using ..Peer: Peer_t, Conn, dispatch
 
@@ -94,16 +94,49 @@ function dispatch_and_reply(peer::Peer_t, io::Io, env::Envelope)
     return nothing
 end
 
+"""§6.3: answer a rejected frame with `400 non_canonical_ecf`, correlated by the
+request_id salvaged from it. Best-effort — a failure here degrades to the silence this
+exists to remove, which is no worse than the old behaviour."""
+function reject_frame(io::Io, payload::AbstractVector{UInt8})
+    rid = salvage_request_id(payload)
+    rid === nothing && return nothing
+    try
+        resp = make_response(request_id=rid, status=400,
+                             result=error_result("non_canonical_ecf"))
+        write_envelope(io.sock, Envelope(resp))
+    catch
+        # write failure ends this exchange; the reader keeps going
+    end
+    return nothing
+end
+
 """The reader loop (§6.11 demux): EXECUTE_RESPONSE → route; EXECUTE → dispatch on its own Task.
 Runs until the connection closes / a frame ends it; closes all pending channels on exit."""
 function read_loop(peer::Peer_t, io::Io)
     while true
-        env = try
-            read_envelope(io.sock)
+        payload = try
+            read_frame(io.sock)
         catch e
             e isa EOFError && break              # peer closed → clean teardown
             e isa FrameTooLarge && break         # §4.10: cannot resync a length-prefixed stream
-            continue                             # malformed body: frame boundary known → keep reading
+            break
+        end
+        env = try
+            envelope_offrame(payload)
+        catch
+            # §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is
+            # owed a STATUS, not silence. This used to `continue`, which rejected the
+            # frame (correct) and then dropped it on the floor (wrong): the sender saw
+            # no response at all and blocked until its own timeout, violating §6.3's
+            # second sentence and §4.9(c) deliver-or-signal. It also made a refusal
+            # indistinguishable from a dead peer, and on a single-connection oracle run
+            # it poisons every later request on the same connection.
+            #
+            # The frame is still REJECTED — only enough is salvaged to correlate the
+            # response. If even the request_id is unrecoverable the frame is
+            # unattributable and silence is the only option left.
+            reject_frame(io, payload)
+            continue                             # frame boundary known → keep reading
         end
         if env.root.typ == "system/protocol/execute/response"
             route_response(io, env)

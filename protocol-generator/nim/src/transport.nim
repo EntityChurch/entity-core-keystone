@@ -196,7 +196,23 @@ proc readLoop*(p: Peer; conn: Conn; io: Io) {.async.} =
       try:
         env = envelopeOfFrame(frame.payload)
       except CatchableError:
-        continue                                     # malformed → drop, keep reading
+        # §6.3: "Rejection returns 400 non_canonical_ecf" -- a rejected frame is owed
+        # a STATUS, not silence. This used to `continue`, which rejected the frame
+        # (correct) and then dropped it on the floor (wrong): the sender saw no
+        # response at all and blocked until its own timeout, violating §6.3's second
+        # sentence and §4.9(c) deliver-or-signal. It also made a refusal
+        # indistinguishable from a dead peer, and on a single-connection oracle run it
+        # poisons every later request on the same connection.
+        #
+        # The frame is still REJECTED -- only enough is salvaged to correlate the
+        # response. If even the request_id is unrecoverable the frame is unattributable
+        # and silence is the only option left.
+        let rid = salvageRequestId(frame.payload)
+        if rid.isSome:
+          let rej = makeResponse(rid.get, 400'u64, errorResult("non_canonical_ecf"))
+          try: await io.writeFramed(Envelope(root: rej, included: @[]))
+          except CatchableError: break
+        continue                                     # keep reading
       if env.root.typ == ResponseType:
         io.routeResponse(env)
       elif env.root.typ == ExecuteType:

@@ -89,10 +89,31 @@ now_ms() = round(Int, time() * 1000)
 """Mint a capability token granted by us to `grantee_hash`; sign it. Returns (token, sig)."""
 function mint_token(p::Peer_t, grantee_hash::AbstractVector{UInt8},
                     parent::Union{Nothing,AbstractVector{UInt8}}, grants::Vector{Any})
+    # No §5.6 ceiling: the self-issued paths (bootstrap, handler registration, the
+    # §4.4 handshake) mint from local authority, where no MIN_DEFINED term applies.
+    mint_token_at(p, now_ms(), grantee_hash, parent, grants, nothing)
+end
+
+"""
+Mint at a caller-supplied instant, carrying §5.6's MIN_DEFINED ceiling.
+
+`expires_at === nothing` means no term was defined and the token genuinely has no
+expiry (the ONLY "no bound" spelling). A non-nothing value is emitted verbatim —
+including one equal to `created_at`, which §5.6 rule 2 requires for `ttl_ms == 0`
+and which means "already expired at every observable instant", not "unbounded".
+
+`created_at` is supplied rather than sampled here so a computed expiry is guaranteed
+to be relative to the SAME instant that lands in the token; sampling the clock twice
+skews the two.
+"""
+function mint_token_at(p::Peer_t, created_at::Integer, grantee_hash::AbstractVector{UInt8},
+                       parent::Union{Nothing,AbstractVector{UInt8}}, grants::Vector{Any},
+                       expires_at)
     ps = Pair[("granter" => p.identity.peer_entity.hash),
               ("grantee" => Vector{UInt8}(grantee_hash)),
               ("grants" => grants),
-              ("created_at" => now_ms())]
+              ("created_at" => created_at)]
+    expires_at === nothing || push!(ps, "expires_at" => expires_at)
     parent === nothing || push!(ps, "parent" => Vector{UInt8}(parent))
     token = make_entity("system/capability/token", CborMap(ps))
     store_put!(p.store, token)
@@ -326,7 +347,7 @@ function req_grants_raw(params)::Vector{Any}
 end
 
 """Mint a token for `grantee_hash`, bounded as a subset of the caller's cap (§6.2)."""
-function mint_bounded(p::Peer_t, caller_cap, params, grantee_hash::AbstractVector{UInt8},
+function mint_bounded(p::Peer_t, env, caller_cap, params, grantee_hash::AbstractVector{UInt8},
                       parent::Union{Nothing,AbstractVector{UInt8}})::HandlerResult
     reqs = req_grants(params)
     bounded = begin
@@ -343,7 +364,31 @@ function mint_bounded(p::Peer_t, caller_cap, params, grantee_hash::AbstractVecto
         end
     end
     bounded || return err(403, "scope_exceeds_authority")
-    token, sig = mint_token(p, grantee_hash, parent, req_grants_raw(params))
+
+    # §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE and
+    # convert the duration term against that same instant.
+    #
+    # Note what this is NOT: an authorization decision. An over-long ttl_ms from a
+    # bounded caller MINTS a clamped token and returns 200 — "rejecting it is
+    # non-conformant" (§5.6). The bound exists because `request` mints a ROOT token
+    # (parent: null), so §5.6's parent-child attenuation never reaches it; without
+    # this clamp, temporal attenuation is the one dimension a requester could escape,
+    # and policy withdrawal would have no bounded latency.
+    created_at = now_ms()
+    terms = Any[]
+    if parent !== nothing                                              # absolute
+        pt = resolve(env, p.store, parent)
+        pt === nothing || push!(terms, uintfield(pt, "expires_at"))
+    end
+    caller_cap === nothing || push!(terms, uintfield(caller_cap, "expires_at"))  # absolute
+    if params !== nothing                                              # duration
+        ttl = uintfield(params, "ttl_ms")
+        ttl === nothing || push!(terms, add_ttl(created_at, ttl))
+    end
+    defined = filter(!isnothing, terms)
+    ceiling = isempty(defined) ? nothing : minimum(defined)
+
+    token, sig = mint_token_at(p, created_at, grantee_hash, parent, req_grants_raw(params), ceiling)
     grant = make_entity("system/capability/grant", CborMap(Pair[("token" => token.hash)]))
     inc = Inc[token.hash => token,
               p.identity.peer_entity.hash => p.identity.peer_entity,
@@ -351,19 +396,19 @@ function mint_bounded(p::Peer_t, caller_cap, params, grantee_hash::AbstractVecto
     return okr(grant, inc)
 end
 
-function capability_handler(p::Peer_t, exec::Entity, caller_cap)::HandlerResult
+function capability_handler(p::Peer_t, env, exec::Entity, caller_cap)::HandlerResult
     op = textfield(exec, "operation"); op = op === nothing ? "" : op
     params = entityfield(exec, "params")
     author = bytesfield(exec, "author")
     if op == "request"
         author === nothing && return err(403, "capability_denied")
-        return mint_bounded(p, caller_cap, params, author, nothing)
+        return mint_bounded(p, env, caller_cap, params, author, nothing)
     elseif op == "delegate"
         parent = params === nothing ? nothing : bytesfield(params, "parent")
         (parent === nothing) && return err(400, "unexpected_params")
         is_zero_hash(parent) && return err(400, "unexpected_params")
         (author === nothing || author != p.identity.peer_entity.hash) && return err(501, "unsupported_operation")
-        return mint_bounded(p, caller_cap, params, author, parent)
+        return mint_bounded(p, env, caller_cap, params, author, parent)
     elseif op == "revoke"
         token_h = params === nothing ? nothing : bytesfield(params, "token")
         (token_h === nothing) && return err(400, "unexpected_params")
@@ -628,7 +673,7 @@ function dispatch_outcome(p::Peer_t, conn::Conn, env::Envelope)::HandlerResult
 
     stripped = strip_local(p, pattern)
     stripped == "system/tree" && return tree_handler(p, exec)
-    stripped == "system/capability" && return capability_handler(p, exec, caller_cap)
+    stripped == "system/capability" && return capability_handler(p, env, exec, caller_cap)
     stripped == "system/handler" && return handlers_handler(p, exec)
     stripped == "system/type" && return type_handler(exec)
     if p.validate && startswith(stripped, "system/validate/")

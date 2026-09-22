@@ -28,6 +28,55 @@
  * Ec_Init) so every `procedure expose EC.` sees it — a bare file-level constant would
  * be an unset local (hence a string) inside the routines. */
 
+/* §6.2 CAP-6a: 1 iff every temporal field on a RECEIVED token is either absent (legal)
+ * or representable as a uint64.
+ *
+ * This is the reader-side half of CAP-6 and it is where a peer fails OPEN. Ent_Uint
+ * answers '' BOTH when a field is ABSENT and when it is PRESENT but not an 'i'-tagged
+ * value; and REXX's native decimal number model means an 'i' value is a plain decimal
+ * STRING with no width at all, so a negative or a >2^64 magnitude passes through the tag
+ * check unharmed. Either way the range comparison could not fire and a hostile
+ * expires_at:-1 was honored with 200. §6.2 CAP-6a: such a token "is malformed. A
+ * verifier MUST refuse it and MUST NOT treat the unrepresentable field as absent." An
+ * absent field stays legal and is NOT rejected here.
+ *
+ * Both halves are therefore DELIBERATE range checks rather than overflow traps -- REXX
+ * arithmetic has no fixed width to overflow. `numeric digits 40` is required or the
+ * 2^64 comparison silently rounds. */
+Cap_TemporalFieldsRepresentable: procedure expose EC.
+  parse arg tok
+  numeric digits 40
+  keys = 'expires_at not_before created_at'
+  do i = 1 to words(keys)
+    k = word(keys, i)
+    v = Ent_Field(tok, k)
+    if v == '' then iterate
+    if Tv_Tag(v) \== 'i' then return 0
+    n = Tv_Payload(v)
+    if \datatype(n, 'W') then return 0
+    if n < 0 | n >= 18446744073709551616 then return 0
+  end
+  return 1
+
+/* §5.6 rule 1: convert a DURATION term (ttl_ms) to an absolute timestamp relative to
+ * `created_at`. Rule 3: a conversion that is not representable is treated as ABSENT ('')
+ * exactly as a null term is -- it MUST NOT wrap and MUST NOT saturate to a representable
+ * maximum, since saturation manufactures expires_at == 2^64-1, a finite bound no reader
+ * can distinguish from a deliberate one. REXX decimals do not wrap, so this is a
+ * deliberate range check.
+ *
+ * ttl == 0 is NOT a special case and deliberately so: rule 2 makes 0 a DEFINED value
+ * yielding `created_at` (expire immediately). The absent field is the only "no bound"
+ * spelling, and falling out of the arithmetic is what keeps the two from collapsing. */
+Cap_AddTtl: procedure expose EC.
+  parse arg created_at, ttl
+  numeric digits 40
+  if \datatype(ttl, 'W') then return ''
+  if ttl < 0 then return ''
+  sum = created_at + ttl
+  if sum >= 18446744073709551616 then return ''
+  return sum
+
 Cap_NowMs: procedure expose EC.
   return Crypto_NowMs()
 
@@ -532,6 +581,11 @@ Cap_VerifyChain: procedure expose EC.
       if Cap_Resolve(included, store_h, geh) == '' then do; call Throw 'UNRESOLVABLE_GRANTEE', 'grantee unresolvable'; return 'DENY'; end
     end
     else do; call Throw 'UNRESOLVABLE_GRANTEE', 'grantee absent'; return 'DENY'; end
+    /* CAP-6a FIRST (§6.2): a present-but-unrepresentable expires_at / not_before /
+     * created_at is MALFORMED and must be refused outright. This has to run BEFORE the
+     * two range checks below, because those are what the ambiguity defeats -- see
+     * Cap_TemporalFieldsRepresentable for the mechanism. */
+    if \Cap_TemporalFieldsRepresentable(current) then good = 0
     now = Cap_NowMs()
     nb = Ent_Uint(current, 'not_before')
     if nb \== '' & now < nb then good = 0

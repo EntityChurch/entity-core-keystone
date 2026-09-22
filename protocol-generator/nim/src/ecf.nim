@@ -205,6 +205,10 @@ proc encode*(v: EcValue): seq[byte] {.raises: [DuplicateKey].} =
 type Decoder = object
   s: seq[byte]
   pos: int
+  ## keepTags makes `item` yield the tag's INNER value instead of raising
+  ## TagRejected. It exists for ONE caller -- `decodeSalvage` -- and is never set on
+  ## the strict path. See `decodeSalvage` for why this is not a weakening of §6.3.
+  keepTags: bool
 
 proc need(d: Decoder; k: int) {.raises: [TruncatedInput].} =
   if d.pos + k > d.s.len:
@@ -266,7 +270,14 @@ proc item(d: var Decoder): EcValue =
       p[i] = EcPair(key: k, val: v)
     return mapV(p)
   of 6'u8:                                                  # N2: any tag, any depth
-    raise newException(TagRejected, "CBOR tag (major type 6) rejected")
+    if not d.keepTags:
+      raise newException(TagRejected, "CBOR tag (major type 6) rejected")
+    # Salvage path only (`decodeSalvage`): consume the tag head and yield the value it
+    # wrapped, so the caller can locate the request_id and SIGNAL the rejection. The
+    # frame is still rejected -- the tag is never interpreted and the value never
+    # reaches an entity.
+    discard d.readArg(ai)
+    return d.item()
   else:                                                     # major 7: simple / float
     case ai
     of 20'u8: return boolV(false)
@@ -280,7 +291,32 @@ proc item(d: var Decoder): EcValue =
 proc decode*(s: openArray[byte]): EcValue {.raises: [EcCodecError].} =
   ## Decode a single top-level ECF item; rejects tags, indefinite lengths, and
   ## trailing bytes. Any violation raises an `EcCodecError` (fail-closed).
-  var d = Decoder(s: @s, pos: 0)
+  var d = Decoder(s: @s, pos: 0, keepTags: false)
+  result = d.item()
+  if d.pos != d.s.len:
+    raise newException(TrailingBytes, "trailing bytes after a single ECF item")
+
+proc decodeSalvage*(s: openArray[byte]): EcValue {.raises: [EcCodecError].} =
+  ## Decode `s` for the sole purpose of REPORTING a rejection, not of accepting one.
+  ## Identical to `decode` except that a major-type-6 tag yields the item it wrapped
+  ## instead of raising `TagRejected`.
+  ##
+  ## Why this exists (§6.3, a conformance requirement rather than a convenience): the
+  ## tag rule is "Implementations MUST reject any received protocol frame containing a
+  ## CBOR tag on a data field. Rejection returns 400 non_canonical_ecf." Rejecting by
+  ## dropping the frame on the floor satisfies the first sentence and violates the
+  ## second -- the peer owes the sender a status, and §4.9(c) deliver-or-signal says
+  ## the same from the other direction. But the status must ride a response correlated
+  ## by request_id, and the strict decoder cannot reach the request_id in a frame it
+  ## refuses to parse. This recovers exactly that much and nothing more.
+  ##
+  ## This is NOT a weakening of the tag reject. The frame stays rejected: the value
+  ## this returns is never converted to an Entity, never stored, never forwarded and
+  ## never interpreted, so §6.3's MUST NOT silently strip / MUST NOT preserve / MUST
+  ## NOT attempt to interpret all still hold. The strict `decode` path that every real
+  ## ingestion route uses is unchanged, which is what keeps the `tag_reject`
+  ## wire-conformance vectors meaningful.
+  var d = Decoder(s: @s, pos: 0, keepTags: true)
   result = d.item()
   if d.pos != d.s.len:
     raise newException(TrailingBytes, "trailing bytes after a single ECF item")

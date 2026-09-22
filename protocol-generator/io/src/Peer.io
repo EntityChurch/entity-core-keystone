@@ -76,12 +76,30 @@ Peer := Object clone do(
     )
 
     // ── token mint (§4.4 / §6.9a). created_at in TRUE ms (A-PD-016). ──
+    // mintTokenAt at the current instant with no §5.6 ceiling. Used by the paths that
+    // mint a self-issued grant from local authority (bootstrap, handler registration,
+    // the §4.4 handshake), where no MIN_DEFINED term is in play.
     mintToken := method(granteeHash, grants, parent,
+        mintTokenAt(Capability nowMs, granteeHash, grants, parent, nil)
+    )
+
+    // Mint at a caller-supplied instant, carrying §5.6's MIN_DEFINED ceiling.
+    //
+    // expiresAt nil means no term was defined and the token genuinely has no expiry (the
+    // ONLY "no bound" spelling). A non-nil value is emitted verbatim — including one
+    // equal to createdAt, which §5.6 rule 2 requires for ttl_ms == 0 and which means
+    // "already expired at every observable instant", not "unbounded".
+    //
+    // createdAt is supplied rather than sampled here so a computed expiry is guaranteed
+    // to be relative to the SAME instant that lands in the token; sampling the clock
+    // twice skews the two.
+    mintTokenAt := method(createdAt, granteeHash, grants, parent, expiresAt,
         kv := EcMap with(
             "granter", EcBytes with(idHash),
             "grantee", EcBytes with(granteeHash),
             "grants", grants,
-            "created_at", Capability nowMs)
+            "created_at", createdAt)
+        if(expiresAt != nil, kv atPut("expires_at", expiresAt))
         if(parent != nil, kv atPut("parent", EcBytes with(parent)))
         token := Entity with("system/capability/token", kv)
         Map clone atPut("token", token) atPut("signature", identity sign(token))

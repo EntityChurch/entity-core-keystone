@@ -246,29 +246,117 @@ package body Entity_Core.Protocol.Handlers is
    ---------------------------------------------------------------------------
    --  Token mint (§4.4 / §6.9a). Returns the token entity + its signature.
    ---------------------------------------------------------------------------
-   procedure Mint_Token
-     (Peer        : Peer_Access;
+   --  Mint at a caller-supplied instant, with the §5.6 MIN_DEFINED ceiling.
+   --
+   --  Has_Expiry => False means no term was defined and the token genuinely has
+   --  no expiry (the ONLY "no bound" spelling). A supplied Expires_At is emitted
+   --  verbatim -- including a value equal to Created_At, which §5.6 rule 2
+   --  requires for ttl_ms = 0 and which means "already expired at every
+   --  observable instant", not "unbounded".
+   --
+   --  Created_At is supplied rather than sampled here so a computed expiry is
+   --  guaranteed to be relative to the SAME instant that lands in the token;
+   --  sampling the clock twice skews the two.
+   procedure Mint_Token_At
+     (Peer         : Peer_Access;
+      Created_At   : Interfaces.Unsigned_64;
       Grantee_Hash : Byte_Array;
-      Grants      : Ecf_Value;     --  the grants ARRAY
-      Parent      : Byte_Array;    --  empty => omit
-      Token       : out Materialized_Entity;
-      Signature   : out Materialized_Entity)
+      Grants       : Ecf_Value;     --  the grants ARRAY
+      Parent       : Byte_Array;    --  empty => omit
+      Has_Expiry   : Boolean;
+      Expires_At   : Interfaces.Unsigned_64;
+      Token        : out Materialized_Entity;
+      Signature    : out Materialized_Entity)
    is
       Has_Parent : constant Boolean := Parent'Length > 0;
       Base : constant Cbor_Util.Kv_List :=
         ((Key => K ("granter"),    Value => Make_Bytes (Id_Pkg.Identity_Hash (Peer.Id))),
          (Key => K ("grantee"),    Value => Make_Bytes (Grantee_Hash)),
          (Key => K ("grants"),     Value => Grants),
-         (Key => K ("created_at"), Value => Make_Uint (Now_Ms)));
-      All_Kv : Cbor_Util.Kv_List (1 .. Base'Length + (if Has_Parent then 1 else 0));
+         (Key => K ("created_at"), Value => Make_Uint (Created_At)));
+      Extra : constant Natural :=
+        (if Has_Parent then 1 else 0) + (if Has_Expiry then 1 else 0);
+      All_Kv : Cbor_Util.Kv_List (1 .. Base'Length + Extra);
+      Next : Natural := Base'Length;
    begin
       All_Kv (1 .. Base'Length) := Base;
+      if Has_Expiry then
+         Next := Next + 1;
+         All_Kv (Next) := (Key => K ("expires_at"), Value => Make_Uint (Expires_At));
+      end if;
       if Has_Parent then
-         All_Kv (All_Kv'Last) := (Key => K ("parent"), Value => Make_Bytes (Parent));
+         Next := Next + 1;
+         All_Kv (Next) := (Key => K ("parent"), Value => Make_Bytes (Parent));
       end if;
       Token := Make ("system/capability/token", Map_Of (All_Kv));
       Signature := Id_Pkg.Sign (Peer.Id, Token);
+   end Mint_Token_At;
+
+   --  Mint_Token_At at the current instant with no §5.6 ceiling. Used by the
+   --  paths that mint a self-issued grant from local authority (bootstrap,
+   --  handler registration, the §4.4 handshake), where no term is in play.
+   procedure Mint_Token
+     (Peer        : Peer_Access;
+      Grantee_Hash : Byte_Array;
+      Grants      : Ecf_Value;     --  the grants ARRAY
+      Parent      : Byte_Array;    --  empty => omit
+      Token       : out Materialized_Entity;
+      Signature   : out Materialized_Entity) is
+   begin
+      Mint_Token_At (Peer, Now_Ms, Grantee_Hash, Grants, Parent,
+                     Has_Expiry => False, Expires_At => 0,
+                     Token => Token, Signature => Signature);
    end Mint_Token;
+
+   ---------------------------------------------------------------------------
+   --  §5.6 temporal ceiling (CAP-5 / CAP-6).
+   --
+   --  Add_Ttl converts a DURATION term to an absolute timestamp, reporting
+   --  whether it contributes a ceiling at all. Rule 3: a conversion that is not
+   --  representable is treated as ABSENT, exactly as a null term is -- it MUST
+   --  NOT wrap and MUST NOT saturate to a representable maximum, since
+   --  saturation manufactures expires_at = 2**64-1, a finite bound no reader can
+   --  distinguish from a deliberate one.
+   --
+   --  ttl = 0 is NOT a special case and deliberately so: rule 2 makes 0 a
+   --  DEFINED value yielding Created_At (expire immediately). The absent field
+   --  is the only "no bound" spelling, and falling out of the arithmetic is what
+   --  keeps the two from ever collapsing into each other.
+   ---------------------------------------------------------------------------
+   procedure Add_Ttl
+     (Created_At : Interfaces.Unsigned_64;
+      Ttl        : Interfaces.Unsigned_64;
+      Ok         : out Boolean;
+      Result     : out Interfaces.Unsigned_64)
+   is
+   begin
+      Result := Created_At + Ttl;  --  Unsigned_64 wraps rather than raising
+      Ok := Result >= Created_At;
+      if not Ok then
+         Result := 0;
+      end if;
+   end Add_Ttl;
+
+   --  Fold one DEFINED term into the running MIN_DEFINED (§5.6). Callers pass
+   --  each term already shaped: absolute timestamps enter directly, durations
+   --  MUST be converted with Add_Ttl first. Mixing a duration in unconverted
+   --  yields a timestamp near the epoch and silently clamps every token to
+   --  already-expired -- the failure mode §5.6 calls out by name.
+   procedure Min_Defined
+     (Term_Found : Boolean;
+      Term       : Interfaces.Unsigned_64;
+      Have       : in out Boolean;
+      Acc        : in out Interfaces.Unsigned_64)
+   is
+   begin
+      if not Term_Found then
+         return;
+      end if;
+      if not Have or else Term < Acc then
+         Acc := Term;
+         Have := True;
+      end if;
+   end Min_Defined;
 
    --  Build the included carrier for a minted cap (token + granter peer + sig).
    function Cap_Included
@@ -788,7 +876,38 @@ package body Entity_Core.Protocol.Handlers is
             return Err (403, "scope_exceeds_authority",
                         "requested grant exceeds the presented capability");
          end if;
-         Mint_Token (Peer, Author, Requested, Empty_Bytes, Token, Sig);
+         --  §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at
+         --  ONCE and convert the duration term against that same instant.
+         --
+         --  Note what this is NOT: an authorization decision. An over-long
+         --  ttl_ms from a bounded caller MINTS a clamped token and returns 200 --
+         --  "rejecting it is non-conformant" (§5.6). The bound exists because
+         --  `request` mints a ROOT token (parent: null), so §5.6's parent-child
+         --  attenuation never reaches it; without this clamp, temporal
+         --  attenuation is the one dimension a requester could escape, and
+         --  policy withdrawal would have no bounded latency.
+         --
+         --  There is no parent term here: `delegate` is 501 same-peer-only in
+         --  this peer, so the only mint path is the root one.
+         declare
+            Created_At : constant Interfaces.Unsigned_64 := Now_Ms;
+            Have_Ceiling : Boolean := False;
+            Ceiling : Interfaces.Unsigned_64 := 0;
+            Cc_Found, Ttl_Found, Ttl_Ok : Boolean;
+            Cc_Exp : constant Interfaces.Unsigned_64 :=
+              Uint_Field (Data (Caller_Cap), "expires_at", Cc_Found);
+            Ttl : constant Interfaces.Unsigned_64 :=
+              Uint_Field (Field (Params, "data"), "ttl_ms", Ttl_Found);
+            Ttl_Abs : Interfaces.Unsigned_64;
+         begin
+            Min_Defined (Cc_Found, Cc_Exp, Have_Ceiling, Ceiling);  --  absolute
+            if Ttl_Found then                                        --  duration
+               Add_Ttl (Created_At, Ttl, Ttl_Ok, Ttl_Abs);
+               Min_Defined (Ttl_Ok, Ttl_Abs, Have_Ceiling, Ceiling);
+            end if;
+            Mint_Token_At (Peer, Created_At, Author, Requested, Empty_Bytes,
+                           Have_Ceiling, Ceiling, Token, Sig);
+         end;
          return Ok_Inc
            (Make ("system/capability/grant",
                   Map_Of ((1 => (Key => K ("token"), Value => Make_Bytes (Hash (Token)))))),

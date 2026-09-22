@@ -23,13 +23,58 @@ import
    Crypto at 'crypto.ozf'
    Util at 'util.ozf'
 export
-   NowMs ParseScope ParseGrant GrantsOfToken MkGrant
+   NowMs AddTtl TemporalFieldsRepresentable ParseScope ParseGrant GrantsOfToken MkGrant
    MatchesPattern MatchesScope CheckPermission CheckResourceScope
    Resolve ResolveGranterPeerId FindSignature
    VerifyChain ChainExceedsDepth IsRevoked VerifyRequest GrantSubset
    MaxChainDepth
 define
    MaxChainDepth = 64
+
+   %% section 6.2 CAP-6a: true iff every temporal field on a RECEIVED token is either
+   %% absent (legal) or representable as a uint64.
+   %%
+   %% This is the reader-side half of CAP-6 and it is where a peer fails OPEN.
+   %% Val.getUint answers `absent` BOTH when a field is ABSENT and when it is PRESENT but
+   %% not a non-negative int -- `case V of int(N) then if N >= 0 then N else absent end`
+   %% -- so a token carrying expires_at:-1 silently skipped the expiry check and was
+   %% honored with 200. Section 6.2 CAP-6a is explicit: such a token "is malformed. A
+   %% verifier MUST refuse it and MUST NOT treat the unrepresentable field as absent."
+   %% An absent expires_at stays legal and is NOT rejected here.
+   %%
+   %% Oz integers are arbitrary-precision, so the >2^64 half is a DELIBERATE range check
+   %% rather than an overflow trap.
+   fun {TemporalFieldsRepresentable Tok}
+      fun {Ok K}
+         V = {Ent.getField Tok K}
+      in
+         if V == absent then true
+         else case V of int(N) then N >= 0 andthen N < 18446744073709551616
+              else false end
+         end
+      end
+   in
+      {Ok "expires_at"} andthen {Ok "not_before"} andthen {Ok "created_at"}
+   end
+
+   %% section 5.6 rule 1: convert a DURATION term (ttl_ms) to an absolute timestamp
+   %% relative to CreatedAt. Rule 3: a conversion that is not representable is treated as
+   %% ABSENT exactly as a null term is -- it MUST NOT wrap and MUST NOT saturate to a
+   %% representable maximum, since saturation manufactures expires_at == 2^64-1, a finite
+   %% bound no reader can distinguish from a deliberate one. Oz integers do not wrap, so
+   %% this is a deliberate range check.
+   %%
+   %% Ttl == 0 is NOT a special case and deliberately so: rule 2 makes 0 a DEFINED value
+   %% yielding CreatedAt (expire immediately). The absent field is the only "no bound"
+   %% spelling, and falling out of the arithmetic is what keeps the two from collapsing.
+   fun {AddTtl CreatedAt Ttl}
+      if Ttl < 0 then absent
+      else
+         local Sum = CreatedAt + Ttl in
+            if Sum >= 18446744073709551616 then absent else Sum end
+         end
+      end
+   end
 
    fun {NowMs} {Crypto.nowMs} end
 
@@ -492,7 +537,15 @@ define
                                  Now = {NowMs}
                                  Nb = {Ent.getUint Cur "not_before"}
                                  Ex = {Ent.getUint Cur "expires_at"}
-                                 TempOk = {Not (Nb \= absent andthen Now < Nb)}
+                                 %% CAP-6a FIRST (section 6.2): a present-but-
+                                 %% unrepresentable expires_at / not_before / created_at
+                                 %% is MALFORMED and must be refused outright. It has to
+                                 %% be conjoined AHEAD of the two range tests, because
+                                 %% those use getUint, which cannot tell "absent" from
+                                 %% "present but not a uint64" -- on their own they skip
+                                 %% and honor the token (fail-open).
+                                 TempOk = {TemporalFieldsRepresentable Cur}
+                                          andthen {Not (Nb \= absent andthen Now < Nb)}
                                           andthen {Not (Ex \= absent andthen Ex < Now)}
                               in
                                  if {Not TempOk} then false

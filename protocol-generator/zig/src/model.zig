@@ -228,6 +228,28 @@ pub fn envelopeOfFrame(gpa: std.mem.Allocator, payload: []const u8) Error!Envelo
     return envelopeOfCbor(gpa, v);
 }
 
+/// §6.3 rejection reporting: recover ONLY the request_id from a frame the strict
+/// decoder rejected, so the rejection can be delivered as a correlated
+/// `400 non_canonical_ecf` response instead of silence. The frame stays rejected —
+/// nothing else is read out of it. Returns null when even the request_id is
+/// unrecoverable (an unattributable frame, where silence is the only option left).
+///
+/// The envelope and entity-wrapper shapes are fixed maps with no legal tag position
+/// (§6.3), so a frame whose ONLY defect is a tag inside some entity's `data` still has
+/// a structurally sound root — which is exactly the case this recovers. The returned
+/// slice borrows from the decoded tree, so it is copied out before that tree is freed.
+pub fn salvageRequestId(gpa: std.mem.Allocator, payload: []const u8) ?[]u8 {
+    const v = cbor.decodeSalvage(gpa, payload) catch return null;
+    defer v.deinit(gpa);
+    const root = mapGet(v, "root") orelse return null;
+    const data = mapGet(root, "data") orelse return null;
+    const rid = mapGet(data, "request_id") orelse return null;
+    return switch (rid) {
+        .text => |t| gpa.dupe(u8, t) catch null,
+        else => null,
+    };
+}
+
 // ── small cbor.Value helpers (owned allocations) ─────────────────────────────
 
 pub fn mapGet(c: Value, key: []const u8) ?Value {

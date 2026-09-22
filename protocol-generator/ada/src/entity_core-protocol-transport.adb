@@ -201,6 +201,30 @@ package body Entity_Core.Protocol.Transport is
    end Start_Dispatch;
 
    ---------------------------------------------------------------------------
+   --  §6.3: answer a rejected frame with `400 non_canonical_ecf`, correlated by
+   --  the request_id salvaged from it. Best-effort -- a failure here degrades to
+   --  the silence this exists to remove, which is no worse than the old
+   --  behaviour.
+   ---------------------------------------------------------------------------
+   procedure Reject_Frame (Conn : Connection_Access; Payload : Byte_Array) is
+      Rid : constant String := Wire.Salvage_Request_Id (Payload);
+   begin
+      if Rid = "" or else Conn.Closed then
+         return;
+      end if;
+      declare
+         Resp : constant Env_Pkg.Protocol_Envelope :=
+           Env_Pkg.Of_Root
+             (Wire.Make_Response (Rid, 400, Wire.Error_Result ("non_canonical_ecf")));
+      begin
+         Conn.Writer.Write (Conn.Socket, Wire.Frame_Of_Envelope (Resp));
+      end;
+   exception
+      when others =>
+         null;
+   end Reject_Frame;
+
+   ---------------------------------------------------------------------------
    --  Reader_Task body: the §6.11 demux loop. EXECUTE_RESPONSE → route; EXECUTE
    --  → dispatch + write the response. Inbound stays concurrent with any
    --  outbound the session issues because that runs on a different task (N6).
@@ -258,7 +282,21 @@ package body Entity_Core.Protocol.Transport is
                end;
             exception
                when others =>
-                  null;   --  skip a malformed frame; keep reading (resilience)
+                  --  §6.3: "Rejection returns 400 non_canonical_ecf" -- a
+                  --  rejected frame is owed a STATUS, not silence. This used to
+                  --  be a bare `null`, which rejected the frame (correct) and
+                  --  then dropped it on the floor (wrong): the sender saw no
+                  --  response at all and blocked until its own timeout,
+                  --  violating §6.3's second sentence and §4.9(c)
+                  --  deliver-or-signal. It also made a refusal indistinguishable
+                  --  from a dead peer, and on a single-connection oracle run it
+                  --  poisons every later request on the same connection.
+                  --
+                  --  The frame is still REJECTED -- only enough is salvaged to
+                  --  correlate the response. If even the request_id is
+                  --  unrecoverable the frame is unattributable and silence is
+                  --  the only option left.
+                  Reject_Frame (Conn, Payload);
             end;
          exception
             when others =>

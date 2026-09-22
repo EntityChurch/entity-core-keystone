@@ -233,9 +233,69 @@ cls class compile: 'signerIsLocal: aGmap local: aLocal in: anEnvelope
 	^ (self signerHashesOf: aGmap) anySatisfy: [ :sh |
 		sh notNil and: [ (self resolvePeerOfHash: sh in: anEnvelope) = aLocal ] ]'.
 
+"temporalFieldsRepresentable: — §6.2 CAP-6a. True iff every temporal field on a RECEIVED
+ token is either absent (legal) or representable as a uint64.
+
+ This is the reader-side half of CAP-6 and it is where a peer fails OPEN. EcEntity>>uintAt:
+ answers nil BOTH when a field is ABSENT and when it is PRESENT but not an EcInt; and
+ Smalltalk Integers are arbitrary-precision, so an EcInt can itself carry a negative or a
+ >2^64 magnitude that the range comparison then reads as an ordinary value. Either way the
+ expiry check could not fire and a hostile expires_at:-1 was honored with 200. §6.2 CAP-6a
+ is explicit: such a token `is malformed. A verifier MUST refuse it and MUST NOT treat the
+ unrepresentable field as absent.` An absent field stays legal and is NOT rejected here.
+
+ PRESENCE is asked of `hasField:` and REPRESENTABILITY of `uintAt:` -- deliberately, and it
+ is the whole point: the two disagree exactly on the malformed case, and the guard IS that
+ disagreement.
+
+ PRESENCE MUST BE `hasField:`, NOT `field: ... ifNotNil:`. EcEntity>>field: answers
+ `EcAbsent default` for a missing key, never nil -- the pure-object absent sentinel this
+ peer uses everywhere (A-ST-000). Written the obvious way, `v ifNotNil:` is therefore
+ ALWAYS true, every absent temporal field reads as present-but-unrepresentable, and the
+ guard denies every capability the peer has ever been shown. Measured: 176 FAILs, with the
+ handshake still green and every authenticated request 403.
+
+ That is the SAME defect this guard exists to fix, one level up. CAP-6a is about an
+ accessor whose `nothing` conflates absent with malformed; this is about an accessor whose
+ `something` conflates absent with present. The absent spelling is a per-peer decision and
+ has to be read from the peer, not assumed.
+
+ Refusal must be the §5.2 capability_denied disposition (a status-bearing response), never
+ a decode-layer silent drop or a transport close."
+cls class compile: 'temporalFieldsRepresentable: aCap
+	#(''expires_at'' ''not_before'' ''created_at'') do: [ :k |
+		| n |
+		(aCap hasField: k) ifTrue: [
+			n := aCap uintAt: k.
+			(n isNil or: [ n < 0 or: [ n >= 18446744073709551616 ] ]) ifTrue: [ ^ false ] ] ].
+	^ true'.
+
+"addTtl:to: — §5.6 rule 1: convert a DURATION term (ttl_ms) to an absolute timestamp
+ relative to createdAt. Rule 3: a conversion that is not representable is treated as ABSENT
+ (nil) exactly as a null term is -- it MUST NOT wrap and MUST NOT saturate to a
+ representable maximum, since saturation manufactures expires_at == 2^64-1, a finite bound
+ no reader can distinguish from a deliberate one. Smalltalk Integers do not wrap, so this
+ is a deliberate range check.
+
+ ttl == 0 is NOT a special case and deliberately so: rule 2 makes 0 a DEFINED value
+ yielding createdAt (expire immediately). The absent field is the only `no bound` spelling,
+ and falling out of the arithmetic is what keeps the two from collapsing."
+cls class compile: 'addTtl: aTtl to: createdAt
+	| sum |
+	aTtl < 0 ifTrue: [ ^ nil ].
+	sum := createdAt + aTtl.
+	sum >= 18446744073709551616 ifTrue: [ ^ nil ].
+	^ sum'.
+
 "validityWindowOk: — §5.6: reject if now < not_before or now > expires_at."
 cls class compile: 'validityWindowOk: aCap
 	| now nb ex |
+	"CAP-6a FIRST (§6.2): a present-but-unrepresentable expires_at / not_before /
+	 created_at is MALFORMED and must be refused outright. This has to run BEFORE the two
+	 range checks below, because those use uintAt:, which cannot tell `absent` from
+	 `present but not a uint64` -- so on their own they skip the check and honor the token
+	 (fail-open)."
+	(self temporalFieldsRepresentable: aCap) ifFalse: [ ^ false ].
 	now := self nowMillis.
 	nb := aCap uintAt: ''not_before''.
 	(nb notNil and: [ now < nb ]) ifTrue: [ ^ false ].

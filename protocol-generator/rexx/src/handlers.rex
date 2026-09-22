@@ -373,7 +373,7 @@ _cap_request: procedure expose EC.
   params = _hparams(ctx)
   author = Ent_Bytes(Ctx_Exec(ctx), 'author')
   if author == '' then return Out_Err(403, 'capability_denied', '')
-  return _cap_mint_bounded(peer_h, Ctx_CallerCap(ctx), Hnd_ReqGrants(params), author, '')
+  return _cap_mint_bounded(peer_h, ctx, Ctx_CallerCap(ctx), params, Hnd_ReqGrants(params), author, '')
 
 _cap_delegate: procedure expose EC.
   parse arg peer_h, ctx
@@ -385,7 +385,7 @@ _cap_delegate: procedure expose EC.
   if Hnd_IsZeroHash(ph) then return Out_Err(400, 'unexpected_params', 'delegate: zero parent')
   id_hash = Id_IdHash(Peer_Identity(peer_h))
   if \(author \== '' & id_hash == author) then return Out_Err(501, 'unsupported_operation', 'delegate: same-peer-only in v1')
-  return _cap_mint_bounded(peer_h, Ctx_CallerCap(ctx), Hnd_ReqGrants(params), author, ph)
+  return _cap_mint_bounded(peer_h, ctx, Ctx_CallerCap(ctx), params, Hnd_ReqGrants(params), author, ph)
 
 _cap_revoke: procedure expose EC.
   parse arg peer_h, ctx
@@ -412,8 +412,17 @@ _cap_configure: procedure expose EC.
   call Store_Bind store_h, '/' || Peer_LocalPeer(peer_h) || '/system/capability/policy/' || pp, params
   return Out_Ok(Wire_EmptyParams(), '')
 
+/* fold one term into the running §5.6 MIN_DEFINED; '' is "no term". */
+_min_defined: procedure expose EC.
+  parse arg acc, term
+  numeric digits 40
+  if term == '' then return acc
+  if acc == '' then return term
+  if term < acc then return term
+  return acc
+
 _cap_mint_bounded: procedure expose EC.
-  parse arg peer_h, caller_cap, req_grants, grantee_hash, parent
+  parse arg peer_h, ctx, caller_cap, params, req_grants, grantee_hash, parent
   local = Peer_LocalPeer(peer_h)
   bounded = 0
   if caller_cap \== '' then do
@@ -429,7 +438,30 @@ _cap_mint_bounded: procedure expose EC.
     end
   end
   if \bounded then return Out_Err(403, 'scope_exceeds_authority', '')
-  m = Peer_MintToken(peer_h, grantee_hash, req_grants, parent)
+
+  /* §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE and
+   * convert the duration term against that same instant.
+   *
+   * Note what this is NOT: an authorization decision. An over-long ttl_ms from a bounded
+   * caller MINTS a clamped token and returns 200 -- "rejecting it is non-conformant"
+   * (§5.6). The bound exists because `request` mints a ROOT token (parent: null), so
+   * §5.6's parent-child attenuation never reaches it; without this clamp, temporal
+   * attenuation is the one dimension a requester could escape, and policy withdrawal
+   * would have no bounded latency. */
+  numeric digits 40
+  created_at = Cap_NowMs()
+  ceiling = ''
+  if parent \== '' then do                                   /* absolute */
+    pt = Cap_Resolve(Ctx_Included(ctx), Peer_Store(peer_h), parent)
+    if pt \== '' then ceiling = _min_defined(ceiling, Ent_Uint(pt, 'expires_at'))
+  end
+  if caller_cap \== '' then ceiling = _min_defined(ceiling, Ent_Uint(caller_cap, 'expires_at'))
+  if params \== '' then do                                    /* duration */
+    ttl = Ent_Uint(params, 'ttl_ms')
+    if ttl \== '' then ceiling = _min_defined(ceiling, Cap_AddTtl(created_at, ttl))
+  end
+
+  m = Peer_MintTokenAt(peer_h, created_at, grantee_hash, req_grants, parent, ceiling)
   gm = Ecf_Map('token', Ecf_Bytes(Ent_Hash(Minted_Token(m))))
   return Out_Ok(Ent_Make('system/capability/grant', gm), Peer_CapIncluded(peer_h, m))
 

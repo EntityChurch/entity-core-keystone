@@ -10,7 +10,7 @@ import
    Env at 'envelope.ozf'
    Util at 'util.ozf'
 export
-   FrameOfEnvelope EnvelopeOfFrame Frame
+   FrameOfEnvelope EnvelopeOfFrame SalvageRequestId Frame
    MakeExecute MakeResponse ErrorResult EmptyParams ResourceTarget
    ResponseStatus ResponseResult
 define
@@ -21,6 +21,37 @@ define
    in
       case V of map(_) then {Env.ofCbor V}
       else {Util.reject notAMap frame} unit end
+   end
+
+   %% section 6.3 rejection reporting: recover ONLY the request_id from a frame the strict
+   %% decoder rejected, so the rejection can be delivered as a correlated
+   %% 400 non_canonical_ecf response instead of silence. The frame stays rejected --
+   %% nothing else is read out of it. Returns absent when even the request_id is
+   %% unrecoverable (an unattributable frame, where silence is the only option left).
+   %%
+   %% The envelope and entity-wrapper shapes are fixed maps with no legal tag position
+   %% (section 6.3), so a frame whose ONLY defect is a tag inside some entity's data still
+   %% has a structurally sound root -- which is exactly the case this recovers.
+   fun {SalvageRequestId Payload}
+      V
+   in
+      try V = {Cbor.decodeSalvage Payload} catch _ then V = absent end
+      if V == absent then absent
+      else
+         local Root = {Cbor.mapGet V "root"} in
+            if Root == absent then absent
+            else
+               local Data = {Cbor.mapGet Root "data"} in
+                  if Data == absent then absent
+                  else
+                     local Rid = {Cbor.mapGet Data "request_id"} in
+                        case Rid of text(T) then T else absent end
+                     end
+                  end
+               end
+            end
+         end
+      end
    end
 
    %% prefix with 4-byte BE length

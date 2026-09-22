@@ -196,7 +196,7 @@ module EntityCore
         params = exec.entity_field("params")
         author = exec.bytes("author")
         return Outcome.err(403, "capability_denied") if author.nil?
-        mint_bounded(ctx.caller_cap, Peer.req_grants(params), author, nil)
+        mint_bounded(ctx.env, ctx.caller_cap, params, Peer.req_grants(params), author, nil)
       end
 
       private def op_delegate(ctx : HandlerContext) : Outcome
@@ -209,7 +209,7 @@ module EntityCore
         unless author && author == @identity.identity_hash
           return Outcome.err(501, "unsupported_operation", "delegate: same-peer-only in v1")
         end
-        mint_bounded(ctx.caller_cap, Peer.req_grants(params), author, ph)
+        mint_bounded(ctx.env, ctx.caller_cap, params, Peer.req_grants(params), author, ph)
       end
 
       private def op_revoke(ctx : HandlerContext) : Outcome
@@ -241,7 +241,8 @@ module EntityCore
         Outcome.ok(Wire.empty_params)
       end
 
-      private def mint_bounded(caller_cap : Entity?, req_grants : Array(Cbor::EcValue),
+      private def mint_bounded(env : Envelope, caller_cap : Entity?, params : Entity?,
+                               req_grants : Array(Cbor::EcValue),
                                grantee_hash : Bytes, parent : Bytes?) : Outcome
         bounded = false
         if caller_cap
@@ -260,7 +261,33 @@ module EntityCore
         end
         return Outcome.err(403, "scope_exceeds_authority") unless bounded
 
-        minted = @peer.mint_token(grantee_hash, req_grants, parent)
+        # §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). Sample created_at ONCE
+        # and convert the duration term against that same instant.
+        #
+        # Note what this is NOT: an authorization decision. An over-long ttl_ms from
+        # a bounded caller MINTS a clamped token and returns 200 — "rejecting it is
+        # non-conformant" (§5.6). The bound exists because `request` mints a ROOT
+        # token (parent: null), so §5.6's parent-child attenuation never reaches it;
+        # without this clamp, temporal attenuation is the one dimension a requester
+        # could escape, and policy withdrawal would have no bounded latency.
+        created_at = Capability.now_ms
+        ceiling : UInt64? = nil
+        fold = ->(term : UInt64?) do
+          if t = term
+            c = ceiling
+            ceiling = (c.nil? || t < c) ? t : c
+          end
+        end
+        if parent
+          pt = Capability.cap_resolve(env.included, @store, parent)
+          fold.call(pt.uint("expires_at")) if pt                     # absolute
+        end
+        fold.call(caller_cap.uint("expires_at")) if caller_cap       # absolute
+        if ttl = params.try &.uint("ttl_ms")                         # duration
+          fold.call(Peer.add_ttl(created_at, ttl))
+        end
+
+        minted = @peer.mint_token_at(created_at, grantee_hash, req_grants, parent, ceiling)
         gdata = ::Hash(Cbor::EcValue, Cbor::EcValue).new
         gdata["token"] = minted.token.content_hash
         Outcome.ok(Entity.make("system/capability/grant", gdata), @peer.cap_included(minted))

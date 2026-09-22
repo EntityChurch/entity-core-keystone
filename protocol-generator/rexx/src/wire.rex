@@ -25,6 +25,28 @@ Wire_EnvelopeOfFrame: procedure expose EC.
   if Tv_Tag(v) \== 'm' then do; call Throw 'not_a_map', 'frame: not a map'; return ''; end
   return Env_OfCbor(v)
 
+/* §6.3 rejection reporting: recover ONLY the request_id from a frame the strict decoder
+ * rejected, so the rejection can be delivered as a correlated `400 non_canonical_ecf`
+ * response instead of silence. The frame stays rejected -- nothing else is read out of
+ * it. Returns '' when even the request_id is unrecoverable (an unattributable frame,
+ * where silence is the only option left).
+ *
+ * The envelope and entity-wrapper shapes are fixed maps with no legal tag position
+ * (§6.3), so a frame whose ONLY defect is a tag inside some entity's `data` still has a
+ * structurally sound root -- which is exactly the case this recovers. */
+Wire_SalvageRequestId: procedure expose EC.
+  parse arg payload
+  v = Cbor_DecodeSalvage(payload)
+  if v == '' then return ''
+  root = Ecf_Get(v, 'root')
+  if root == '' then return ''
+  data = Ecf_Get(root, 'data')
+  if data == '' then return ''
+  rid = Ecf_Get(data, 'request_id')
+  if rid == '' then return ''
+  if Tv_Tag(rid) \== 't' then return ''
+  return Tv_Payload(rid)
+
 /* prefix `payload` with its 4-byte big-endian length (§1.6). */
 Wire_Frame: procedure
   parse arg payload

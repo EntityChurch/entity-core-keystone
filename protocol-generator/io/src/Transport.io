@@ -71,7 +71,24 @@ Transport := Object clone do(
     _serviceFrame := method(conn, payload,
         dlog("[conn] frame " .. payload size .. "B")
         env := Wire envelopeOfFrame(payload)
-        if(env == nil, dlog("[conn] undecodable frame"); return)   // drop, keep serving
+        if(env == nil,
+            // §6.3: "Rejection returns 400 non_canonical_ecf" — a rejected frame is owed
+            // a STATUS, not silence. This used to `return`, which rejected the frame
+            // (correct) and then dropped it on the floor (wrong): the sender saw no
+            // response at all and blocked until its own timeout, violating §6.3's second
+            // sentence and §4.9(c) deliver-or-signal. It also made a refusal
+            // indistinguishable from a dead peer, and on a single-connection oracle run
+            // it poisons every later request on the same connection.
+            //
+            // The frame is still REJECTED — only enough is salvaged to correlate the
+            // response. If even the request_id is unrecoverable the frame is
+            // unattributable and silence is the only option left.
+            dlog("[conn] undecodable frame")
+            rid := Wire salvageRequestId(payload)
+            if(rid != nil,
+                _sendFrame(conn, Envelope with(
+                    Wire makeResponse(rid, 400, Wire errorResult("non_canonical_ecf", nil)))))
+            return)
         resp := peer dispatch(conn, env)
         if(resp != nil, _sendFrame(conn, resp))
     )
