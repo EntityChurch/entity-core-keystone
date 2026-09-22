@@ -874,14 +874,124 @@ func (h dispatchOutboundHandler) handleOp(op string, ctx *dispatchCtx) outcome {
 	operation, _ := params.Text("operation")
 	value, hasValue := params.Field("value")
 	capability, hasCap := params.SubEntity("reentry_capability")
-	granterPeer, hasGranter := params.SubEntity("reentry_granter")
-	capSig, hasSig := params.SubEntity("reentry_cap_signature")
-	if !hasValue || !hasCap || !hasGranter || !hasSig {
-		return errOutcome(400, "invalid_params", "dispatch-outbound requires value + reentry authority")
+	// GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the
+	// single-granter case is an array of ONE. They were singular, which made
+	// §1.4's multi-signature-root rule ungateable on the wire: driving it needs
+	// two granter identities and two signatures, and a single-credential carrier
+	// cannot express that input.
+	granterPeers, hasGranters := params.SubEntities("reentry_granters")
+	capSigs, hasSigs := params.SubEntities("reentry_cap_signatures")
+	// ⚠ TRANSITIONAL: the SINGULAR spellings are still accepted, as an array of
+	// one, because THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned
+	// oracle (78db4a9, executed set 7aa6f3de…, 778 checks) is what all 46 tracked
+	// reports are measured against and it sends the SINGULAR names; a plural-only
+	// peer reads the triple as absent there, takes the ambient arm, and refuses —
+	// measured, 2 of 778 severities moving PASS -> FAIL on `dispatch_outbound_reentry`
+	// and `t1_2_concurrent_reentry`. Accepting both keeps the cohort 0-FAIL at BOTH
+	// check sets, which is strictly better evidence than either alone.
+	//
+	// ⛔ REMOVE THIS FALLBACK AT THE ORACLE RE-PIN, and not before. The exit
+	// condition is that `tools/oracle-pin.env`'s `ref` names an oracle whose
+	// dispatch-outbound probe sends the plural carriers; at that point the singular
+	// spelling is dead wire vocabulary and keeping it would be an untested branch.
+	if !hasGranters {
+		if g, ok := params.SubEntity("reentry_granter"); ok {
+			granterPeers, hasGranters = []Entity{g}, true
+		}
 	}
+	if !hasSigs {
+		if s, ok := params.SubEntity("reentry_cap_signature"); ok {
+			capSigs, hasSigs = []Entity{s}, true
+		}
+	}
+	// The triple is ALL-OR-NONE (GUIDE-CONFORMANCE §7a.1): supplying all three
+	// selects the PRESENTED arm, omitting all three selects the AMBIENT arm, and a
+	// PARTIAL set is 400 invalid_params — a partial credential is malformed, not
+	// ambient. An empty array is partial, not present: it carries no credential.
+	nPresent := 0
+	for _, present := range []bool{hasCap, hasGranters && len(granterPeers) > 0, hasSigs && len(capSigs) > 0} {
+		if present {
+			nPresent++
+		}
+	}
+	if !hasValue {
+		return errOutcome(400, "invalid_params", "dispatch-outbound requires value")
+	}
+	if nPresent != 0 && nPresent != 3 {
+		return errOutcome(400, "invalid_params", "dispatch-outbound reentry authority is all-or-none")
+	}
+	hasCred := nPresent == 3
 	inner := mustEntity("primitive/any", value)
-	resource := ResourceTarget("system/handler/" + target)
-	env, ok := p.outboundDispatch(ctx.conn, target, operation, inner, capability, granterPeer, capSig, resource)
+	// `target` arrives as any of §1.4's three spellings and the validator sends the
+	// SCHEMED ABSOLUTE form (`entity://{peer}/system/validate/echo`). Both the
+	// handler-pattern dimension and the resource target want the PEER-RELATIVE path
+	// — §1.4's PD-2 block says so for Dimension 1, and a resource target carrying a
+	// scheme is not a path at all. It was latent while nothing consulted it.
+	relTarget := peerRelativeOf(p.localPeer, target)
+	resource := ResourceTarget("system/handler/" + relTarget)
+
+	// §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer,
+	// all four dimensions, on THIS handler's own grant — with a target-minted
+	// credential relaxing Dimension 4 and nothing else. Consulting only the
+	// presented credential here is the §6.8 confused-deputy bypass.
+	//
+	// The target peer is the connection's remote: on the §6.11 reentry seam the
+	// uri is peer-relative and the destination is decided by the connection, so
+	// extract_peer of that uri would answer the LOCAL peer and Dimension 4 would
+	// pass vacuously.
+	// ctx.pattern is the ABSOLUTE resolved pattern (`/{local}/system/validate/...`)
+	// because §6.6's tree walk works on absolute store keys, while the grant path
+	// is `{local}/system/capability/grants/{PEER-RELATIVE pattern}`. Concatenating
+	// the absolute form yields a doubled peer segment, the lookup misses, and the
+	// handler fails closed with "no handler grant" on a peer whose grant is right
+	// there — a 403 that reads as an authority verdict and is a path bug.
+	ownGrant, hasOwn := p.store.GetAt(grantPathFor(p.localPeer, ctx.pattern))
+	if !hasOwn {
+		// §6.8: a handler with no valid grant does not run. Fail closed rather
+		// than falling back to the credential, which is the substitution the
+		// section forbids by name.
+		return errOutcome(403, "capability_denied", "no handler grant for "+ctx.pattern)
+	}
+	// §7a.2a: the presented-authority arm verifies against a BUNDLE MERGED FROM THE
+	// PARENT ENVELOPE'S `included`. The credential, its granters and its link
+	// signatures arrive NESTED IN PARAMS (GUIDE-CONFORMANCE §7a.2a ratified shape
+	// (a), in-band), so they are not in `ctx.included` and a verifier handed
+	// `ctx.included` alone cannot resolve a single link — every credential then
+	// reads as invalid, the relaxation never happens, and the legitimate reentry is
+	// refused 403.
+	bundle := make(Included, len(ctx.included)+len(granterPeers)+len(capSigs)+1)
+	for k, v := range ctx.included {
+		bundle[k] = v
+	}
+	if hasCred {
+		bundle.Add(capability)
+		for _, e := range granterPeers {
+			bundle.Add(e)
+		}
+		for _, e := range capSigs {
+			bundle.Add(e)
+		}
+	}
+	// §1.4: `target_peer = extract_peer(uri, local_peer_id)`. The validator sends
+	// the absolute form, so the URI names the target and this is literal. Where the
+	// uri is PEER-RELATIVE there is no peer in it to extract and the §6.11 seam's
+	// destination is the connection's remote, so that is the fallback — without it
+	// Dimension 4 would pass vacuously on the default `{include: [local]}` and the
+	// exemption would never be exercised.
+	targetPeer := extractPeer(p.localPeer, target)
+	if targetPeer == p.localPeer && ctx.conn.helloPeerID != "" {
+		targetPeer = ctx.conn.helloPeerID
+	}
+	if !checkOutboundSubDispatch(p.localPeer, targetPeer, relTarget, operation,
+		p.store, ownGrant, resource, capability, hasCred, bundle) {
+		// §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic
+		// transport- or gateway-class code here would launder an authorization
+		// verdict into a route fault, and the ambient and presented branches would
+		// then disagree about what the same gate decided.
+		return errOutcome(403, "capability_denied", "outbound sub-dispatch not authorized by the handler grant")
+	}
+
+	env, ok := p.outboundDispatch(ctx.conn, target, operation, inner, capability, granterPeers, capSigs, resource)
 	if !ok {
 		return errOutcome(503, "no_outbound_seam", "no live section 6.11 reentry connection")
 	}

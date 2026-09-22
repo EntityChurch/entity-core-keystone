@@ -3027,6 +3027,128 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   and produced false positives on dated history, and the narrow list that fixed that had to be widened
   again — `pinned snapshot`, `NNN-check pin` — because the two real defects used forms the first list
   did not contain. A phrase list is a survey keyed on words you wrote down, so measure what it sees.
+- **RATIFIED, SIXTH OCCURRENCE OF THE STALE-INPUT CLASS AND THE FIRST WHERE THE INPUT IS AN ARCH-OWNED
+  FILE WE DELIBERATELY DO NOT VENDOR: A PIN WITH NO READER IS A COMMENT, AND THE ONE INPUT NOBODY
+  GATED IS THE ONE THAT SILENTLY MOVED UNDER 46 PEERS.** 2026-09-16. `tools/oracle-pin.env` has carried
+  `guide_conformance = <sha256>` since `v0.8.2`, and **`grep -rn guide_conformance tools/ Makefile`
+  returned exactly one line: the one that declares it.** Nothing read it, ever. Measured on landing a
+  gate for it: pinned `7d59fee6…`, actual `204f4897…`, **17 commits elapsed** (`3deee05` 2026-08-24 →
+  `a671a37` 2026-09-16, +485/−31 lines), carrying **three cohort obligations that reached us through no
+  channel** — §7a.2a's plural `reentry_*` carriers, *"pin the scaffold grant narrow"*, and §7a.1b's
+  per-call `deadline_ms` `[MUST]` (**`grep -rl deadline_ms protocol-generator/*/src/` → 0 of 46**).
+  **The mechanism is structural and it is the argument for the gate rather than for more diligence.**
+  Peers derive their **entire §7a conformance scaffolding** from `GUIDE-CONFORMANCE.md` — the
+  `system/validate` handlers, their params contracts, the §7b concurrency gate. The spec-data snapshots
+  are digest-verified on every `make lint`. The guide is deliberately **not** in `spec-data/`
+  (non-normative, arch-owned) — which is correct, and is exactly why **the one input that moved was the
+  one input with no gate**. And this file's own claim that the guide *"is pinned BY HASH in the
+  snapshot's `MANIFEST.md`"* had decayed in two steps: it was a *pointer* to that line in `v0.8.2`,
+  `.3` and `.11`, and `v0.8.2.25` and `.28` **dropped even the pointer**, so the documented control was
+  half-gone and the surviving half was inert.
+  **Enforcement: `tools/pin-gate.py` check 5, in `make lint`.** Three things about its shape are the
+  transferable part. (a) **It FAILS only when the sibling is present and DIFFERS, and REPORTS
+  "STALENESS NOT COMPARED" when the sibling is absent** — a clean clone has no sibling checkout and a
+  gate that exits 1 there is a gate people switch off (the `author-extension-host --check` lesson, red
+  on every clone for reading gitignored scratch). *"Could not look"* and *"looked and it matches"* must
+  not print the same word. (b) ⭐ **The digest is a READ MARKER, NOT A CONFORMANCE CLAIM** — the same
+  vendored-versus-consumed split `spec-data` already uses. Advancing it asserts *this revision has been
+  read and its obligations enumerated*, never *implemented*; the debt lives in the tracker and the
+  per-peer `spec_pin`. So it fires on an UNREAD revision, which is the state that costs, and does not
+  hold itself permanently red against tracked backlog. (c) **`PIN_GATE_GUIDE` exists so the three arms
+  can be driven without writing to the sibling** — the obvious way to test this check is to edit the
+  guide in place, which crosses the standing never-write-to-arch boundary *for a test*. I did that once
+  before adding the override; the override is so nobody has to again.
+  **Generalize past this file: for every input a peer's behaviour derives from, name the gate that
+  reads it — and count the inputs, because the uncounted one is arch-owned, non-normative, and
+  therefore outside every mechanism built for the normative set.** *(Sub-lesson, and it fired in the
+  very commit that added the gate: `link-gate` caught the new pin line naming
+  `docs/status/TRACKER-…` **by path**. `oracle-pin.env` is non-prose and **publishes**, so that is a
+  published file citing a path the release strips — the class `link-gate` exists for, found in the act
+  of adding another gate. Describe the source; never name the path.)*
+- **A SCAFFOLD PARAMS RENAME IS A WIRE-COMPATIBILITY BREAK AGAINST EVERY ORACLE PIN OLDER THAN IT —
+  SO IT IS COUPLED TO THE RE-PIN AND CANNOT BE SCOPED AS "A RENAME".** Candidate (first occurrence,
+  2026-09-16, enforcement exact). `GUIDE-CONFORMANCE` §7a.1 made the `reentry_*` carriers **plural** at
+  `0.8.2.19` and 40 of 46 peers stayed singular, which reads as a mechanical 40-peer rename and is not.
+  **The PINNED oracle sends the SINGULAR names.** A plural-only peer reads the triple as absent there,
+  takes the **ambient arm**, and refuses — measured on the vanguard as **2 of 778 severities moving
+  PASS → FAIL** (`dispatch_outbound_reentry`, `t1_2_concurrent_reentry`). Landing it across the cohort
+  as a rename would take **every published row from `0F` to `2F`**. The guide's own note calls it *"a
+  breaking params change"* without saying *against which pin*, and nothing on either side had joined the
+  two facts. **Fix: accept BOTH spellings, the legacy one as an array of one, with the exit condition
+  written AT THE SITE** — remove the fallback when `oracle-pin.env` names an oracle whose probe sends
+  the new form, and not before. That keeps the cohort 0-FAIL at **both** check sets, which is strictly
+  better evidence than either alone. **Enforcement: before sizing any change to a params contract, run
+  the vanguard against the PINNED oracle as well as the candidate** — the candidate tells you the work
+  and only the pinned one tells you the blast radius on what is already published.
+- **RATIFIED, AND IT IS THE SHARPEST FORM YET OF "A WRONG DENIAL CAN STAND IN FOR A MISSING CHECK":
+  A PARAM-VALIDATION `400` WAS ANSWERING TWO SECURITY CHECKS, AND THE HANDOFF THAT SCOPED THE ARC
+  CALLED ALL FOUR FAILURES "ONE CAUSE".** 2026-09-16, `go` vanguard to `0.8.2.31`. Four candidate-oracle
+  FAILs; the handoff attributed them to the singular→plural carrier rename and said *"all four are one
+  cause."* That was right about the **symptom** and wrong about the **cause**: the `400 invalid_params`
+  refused the probe before any authority code ran, so it was answering two checks for reasons unrelated
+  to what they test. The rename alone took it **4F → 2F**, and the two survivors were real:
+  - **F63** `dispatch_outbound_narrow_grant_refuses_out_of_scope` — an out-of-scope sub-dispatch
+    **SUCCEEDED** while presenting a target-minted credential: the credential was treated as a
+    **standalone authorizer**, steering the handler past its own grant. That is §6.8's confused-deputy
+    substitution, and §6.8 says outright that the defect is **wire-invisible** — *"both readings produce
+    a well-formed response and differ only in which authority was consulted"* — so the only thing that
+    can see it is a check whose handler grant is **narrow**, which is why the guide made narrowness a
+    scaffold-contract requirement.
+  - **E3/F66** `dispatch_outbound_multisig_root_refused` — a **K-of-2 multi-sig-rooted credential
+    relaxed Dimension 4** and the sub-dispatch succeeded. §1.4: *minted by the target* means the target
+    **solely** minted it; a quorum is a **group's** authority, so a multi-signature root **never**
+    relaxes Dimension 4. Over-acceptance.
+  **Enforcement, and it is a rule about SCOPING rather than about code: when several checks fail with
+  the SAME early refusal, the count of causes is UNKNOWN until that refusal is removed.** A shared
+  status is evidence of a shared *gate*, never of a shared *defect* — and a handoff that sizes the work
+  from it will under-scope in the direction that reads as cheap.
+  *(Three defects in the fix were found by INSTRUMENTING and by nothing else, and each produced a
+  403 that is indistinguishable at the wire from an authority verdict: `ctx.pattern` arrives ABSOLUTE
+  from §6.6's walk while the grant path wants it peer-relative, so the lookup missed; `target` arrives
+  as the SCHEMED ABSOLUTE form, so the handler-pattern dimension matched nothing — which is exactly why
+  §1.4 spells out *"the target uri's PEER-RELATIVE path"*, and the strip MUST NOT be unconditional or it
+  is the `smalltalk`/`forth` defect; and the granters and signatures arrive **nested in params**, not in
+  the envelope's `included`, so a verifier handed `ctx.included` alone cannot resolve one link. A source
+  read clears the peer on all three. One trace print answered all of them.)*
+  *(And the unit control was UNFAITHFUL TO THE WIRE in the way that matters: it fed the peer-relative
+  form the handler produces rather than the schemed form the validator sends, so it passed while the
+  wire refused. **A control that constructs its own input shape is testing the shape you believed.**)*
+- **RATIFIED — A REVISION'S OWN NEW `[MUST]` IS SATISFIED ON THE ROWS IT WAS INVESTIGATING AND NOT ON
+  THE SCOPE IT DECLARES, AND THAT IS THE `L23` CLASS POINTED AT ITS OWN AUTHOR.** 2026-09-16, auditing
+  `0.8.2.31`. The revision adds *"a row here that restates a rule stated elsewhere NAMES that section as
+  its normative home `[MUST]`"* plus *"a fold that changes a rule edits every row naming it, in the same
+  commit"* — and it lands having done that for the **two rows it was investigating**. Measured over §9.1
+  as vendored: **70 rows · 22 assert a rule AND cite a section · 8 name an authority relationship · 14
+  name none**, with three of the 14 opened and confirmed as restatements whose home is the cited section
+  (the `effective_targets` subject rule lives in §3.3's 400 row; the tree-listing filter in §6.3/§6.8;
+  the unimplemented-operation row in §3.3's 501 row, which §6.2 names as the authority in those words).
+  **The revision itself states the diagnosis:** the `0.8.2.22` fold *"enumerated its homes as §6.3's
+  three sites and §6.8's table; there were four, and the fourth is this list."*
+  **Two things generalize, and the second is about our own instrument.** (a) **When a rule is about a
+  CLASS OF ROW, the fold's scope is the class, not the instances that prompted it** — and a `[MUST]`
+  satisfied on 36% of its own scope on the day it lands is indistinguishable, to the next reader, from
+  one nobody has applied. (b) ⚠ **THE DISCRIMINATOR MUST ACCEPT EVERY SPELLING OF THE CONVENTION
+  BEFORE THE COUNT IS PUBLISHED.** My first scan keyed on the literal phrase `normative home` and
+  counted **6**; broadening to eight spellings (`is the authority`, `§N wins`, `§N governs`, `RESTATES`,
+  `where they differ`, …) counted **8**. The narrow scan would have overstated the defect by two rows —
+  the false-negative family's arithmetic half, arriving in the instrument built to measure somebody
+  else's. **Report the surface the count ranges over, including how many spellings the discriminator
+  accepts.**
+- **RE-DERIVE A COUNTERPART'S SELF-REPORTED RED NUMBER — AND WHEN IT MATCHES TO THE DIGIT, SAY SO,
+  BECAUSE THAT IS WHAT MAKES THE REST OF THEIR NUMBERS WORTH READING.** 2026-09-16, and it is the
+  standing *verify-a-routed-claim* rule pointed at the flattering direction for the third time. Auditing
+  arch, the temptation is to audit the claims that favour them. The higher-yield move was to re-derive
+  the number that **damns** them: their board's `A-16` says `spec standards --scope published-narrative`
+  is RED at **38 errors**, three of the four files being that week's own proposals landed without the
+  gate being run. Run against their tree: **38 errors, 0 warnings**, matching to the digit. Likewise
+  their citation of OUR instrument (`scope-cell-table.py --summary`: `640 → −320 → −32 → −16 → −126 →
+  146`, 37 named-vector / 109 unmeasured / 32 ruled-but-ungated / 1 DEFECT) reproduces exactly, and
+  `0.8.2.30`'s fold reached **all four** homes it names with §6.7 already consistent.
+  **The rule: a seat that reports its own red count accurately has earned a different prior than one
+  that does not, and the only way to know which you are dealing with is to re-derive the red one.** A
+  correction landed against a counterpart who is accurate about their own failures is worth more than
+  ten against one who is not — and recording the corroboration is what stops the audit degenerating
+  into *"distrust the sender"*.
 - **ONE FILE, FIVE PARSERS, AND THE ONE THAT CANNOT READ THE FORMAT BLAMES A DIFFERENT ARTIFACT —
   AUDIT EVERY READER BEFORE EDITING A MACHINE-CONSUMED VALUE, INCLUDING A COMMENT ON IT.** Candidate
   (first occurrence, 2026-09-16, `tools/oracle-pin.env`; enforcement exact, and it was caught before

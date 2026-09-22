@@ -228,20 +228,44 @@ class Peer:
     # ── §6.11 handler-facing outbound dispatch ───────────────────────────────
     def outbound_dispatch(
         self, c: Conn, uri: str, operation: str, params: Entity,
-        capability: Entity, granter_peer: Entity, cap_sig: Entity, resource: Any,
+        capability: Entity | None, granter_peers: list[Entity], cap_sigs: list[Entity],
+        resource: Any,
     ) -> Envelope | None:
+        """Send an outbound EXECUTE through the §6.11 reentry seam.
+
+        granter_peers and cap_sigs are PLURAL (GUIDE-CONFORMANCE §7a.1, 0.8.2.19)
+        so a K-of-N root can present every granter identity and every link
+        signature; the ordinary single-granter case is a list of one. Every member
+        goes into `included` because §5.5's chain walk resolves granters and signers
+        BY HASH out of that map — a granter left out is a link the verifier cannot
+        reach, which fails closed and reads as the peer refusing the credential form
+        rather than as a carrier we truncated.
+
+        The AMBIENT arm carries no credential (omitting the triple selects it), so
+        the EXECUTE carries no `capability` field and the bundle carries no cap,
+        granter or cap-signature. It still authenticates as this peer — §5.2a's auth
+        class is a separate question from whether any capability covers the request.
+        """
         if c.outbound is None:
             return None
         c.out_counter += 1
         request_id = "out-" + str(c.out_counter)
+        ambient = not granter_peers and not cap_sigs
         exec_e = make_execute(
             request_id, uri, operation, params,
             author=self.identity.identity_hash,
-            capability=capability.hash,
+            capability=None if ambient else capability.hash,
             resource=resource,
         )
         exec_sig = self.identity.sign_entity(exec_e)
-        env = Envelope.of(exec_e, capability, granter_peer, self.identity.peer_entity, cap_sig, exec_sig)
+        carried: list[Entity] = []
+        if not ambient:
+            carried.append(capability)
+            carried.extend(granter_peers)
+            carried.extend(cap_sigs)
+        carried.append(self.identity.peer_entity)
+        carried.append(exec_sig)
+        env = Envelope.of(exec_e, *carried)
         return c.outbound(env)
 
     # ── dispatcher-level signature ingestion (§6.5) ──────────────────────────
@@ -704,6 +728,24 @@ class Peer:
             d["output_type"] = out_t
         return d
 
+    # A handler's OWN grant (§6.8) — the authority it spends when it dispatches
+    # onward, as distinct from any capability a caller presents. §6.8 row 1: an
+    # access in service of a caller's request needs the caller's verified
+    # capability AND this grant, and BOTH must pass.
+    #
+    # ⛔ NARROW BY DESIGN for `dispatch-outbound`, and the narrowness is what makes
+    # the intersection MEASURABLE. GUIDE-CONFORMANCE §7a.1 makes it a
+    # scaffold-contract requirement: with a wide grant, consulting it and skipping
+    # it give the same answer on every input, so the confused-deputy discriminator
+    # cannot fire and a bypass reads as conformant.
+    _OWN_GRANTS: dict[str, list[dict]] = {
+        "system/validate/dispatch-outbound": [{
+            "handlers": {"include": ["system/validate/echo"]},
+            "operations": {"include": ["echo"]},
+            "resources": {"include": ["system/handler/system/validate/echo"]},
+        }],
+    }
+
     def _bootstrap_handler_entities(self, pattern: str, name: str, ops: list) -> None:
         local = self.local_peer
         op_map = {op: self._op_spec_cbor(in_t, out_t) for op, in_t, out_t in ops}
@@ -715,7 +757,14 @@ class Peer:
             "name": name,
             "operations": op_map,
         }))
-        token, _ = self.mint_token(self.identity.identity_hash, [], None)
+        # §6.8: the grant MUST exist at `system/capability/grants/{pattern}` and a
+        # handler with no valid grant does not run — so this bind is the ceiling
+        # row 1 intersects against, not bookkeeping. An empty grants list is the
+        # right default for a handler that never dispatches onward and the WRONG
+        # one for a handler that does.
+        token, _ = self.mint_token(
+            self.identity.identity_hash, self._OWN_GRANTS.get(pattern, []), None
+        )
         self.store.bind("/" + local + "/system/capability/grants/" + pattern, token)
 
     def _bootstrap(self) -> None:

@@ -18,14 +18,18 @@ from .capability import (
     _grant_subset,
     _grants_of_token,
     canonicalize,
+    check_outbound_sub_dispatch,
     check_path_permission,
+    extract_peer,
+    grant_path_for,
     is_peer_id,
     matches_pattern,
+    peer_relative_of,
 )
 from .._varint import decode_varint
 from ..content_hash import content_hash
 from .identity import verify_signature
-from .model import Entity
+from .model import Entity, Included
 from .store import ExecContext
 from .wire import (
     MAX_FRAME,
@@ -986,14 +990,100 @@ class DispatchOutboundHandler:
         operation = params.text("operation") or ""
         value = params.field("value")
         capability = params.sub_entity("reentry_capability")
-        granter_peer = params.sub_entity("reentry_granter")
-        cap_sig = params.sub_entity("reentry_cap_signature")
-        if value is None or capability is None or granter_peer is None or cap_sig is None:
-            return Outcome.err(400, "invalid_params", "dispatch-outbound needs value + reentry authority")
+        # GUIDE-CONFORMANCE §7a.1: PLURAL carriers [0.8.2.19]. Arrays, and the
+        # single-granter case is an array of ONE. They were singular, which made
+        # §1.4's multi-signature-root rule ungateable on the wire: driving it needs
+        # two granter identities and two signatures, and a single-credential carrier
+        # cannot express that input.
+        granter_peers = params.sub_entities("reentry_granters")
+        cap_sigs = params.sub_entities("reentry_cap_signatures")
+        # ⚠ TRANSITIONAL: the SINGULAR spellings are still accepted, as a list of one,
+        # because THE RENAME IS NOT INDEPENDENT OF THE ORACLE PIN. The pinned oracle is
+        # what all 46 tracked reports are measured against and it sends the SINGULAR
+        # names; a plural-only peer reads the triple as absent there, takes the ambient
+        # arm and refuses — measured on the `go` vanguard as 2 of 778 severities moving
+        # PASS -> FAIL. Accepting both keeps the cohort 0-FAIL at BOTH check sets.
+        # ⛔ REMOVE THIS FALLBACK AT THE ORACLE RE-PIN, and not before: the exit
+        # condition is that `tools/oracle-pin.env`'s `ref` names an oracle whose
+        # dispatch-outbound probe sends the plural carriers.
+        if granter_peers is None:
+            one = params.sub_entity("reentry_granter")
+            granter_peers = [one] if one is not None else None
+        if cap_sigs is None:
+            one = params.sub_entity("reentry_cap_signature")
+            cap_sigs = [one] if one is not None else None
+        if value is None:
+            return Outcome.err(400, "invalid_params", "dispatch-outbound requires value")
+        # The triple is ALL-OR-NONE (§7a.1): all three present selects the PRESENTED
+        # arm, all three absent selects the AMBIENT arm, and a PARTIAL set is
+        # 400 invalid_params — a partial credential is malformed, not ambient. An empty
+        # array is partial, not present: it carries no credential.
+        n_present = sum(1 for x in (capability, granter_peers, cap_sigs) if x)
+        if n_present not in (0, 3):
+            return Outcome.err(400, "invalid_params", "dispatch-outbound reentry authority is all-or-none")
+        has_cred = n_present == 3
         inner = Entity.make("primitive/any", value)
-        resource = resource_target("system/handler/" + target)
+        # `target` arrives as any of §1.4's three spellings and the validator sends the
+        # SCHEMED ABSOLUTE form. Both the handler-pattern dimension and the resource
+        # target want the PEER-RELATIVE path — §1.4's PD-2 block says so for Dimension 1,
+        # and a resource target carrying a scheme is not a path at all. Latent while
+        # nothing consulted it.
+        rel_target = peer_relative_of(p.local_peer, target)
+        resource = resource_target("system/handler/" + rel_target)
+
+        # §1.4 PD-2: check_permission runs BEFORE the sub-dispatch leaves the peer, all
+        # four dimensions, on THIS handler's own grant — with a target-minted credential
+        # relaxing Dimension 4 and nothing else. Consulting only the presented credential
+        # here is the §6.8 confused-deputy bypass.
+        # ctx.handler_grant is the grant §6.5 already resolved for this dispatch — use
+        # it rather than re-reading the store, so the handler-level check runs against
+        # the SAME authority the dispatch check resolved (recomputing invites the two to
+        # drift). The store read is the fallback for a context constructed without one.
+        own_grant = ctx.handler_grant
+        if own_grant is None:
+            own_grant = p.store.get_at(grant_path_for(p.local_peer, ctx.handler_pattern))
+        if own_grant is None:
+            # §6.8: a handler with no valid grant does not run. Fail closed rather than
+            # falling back to the credential, which is the substitution §6.8 forbids.
+            return Outcome.err(403, "capability_denied",
+                               "no handler grant for " + ctx.handler_pattern)
+        # §7a.2a: the presented arm verifies against a BUNDLE MERGED FROM THE PARENT
+        # ENVELOPE'S `included`. The credential, its granters and its signatures arrive
+        # NESTED IN PARAMS (ratified shape (a), in-band), so they are not in
+        # ctx.included and a verifier handed that alone cannot resolve a single link —
+        # every credential then reads as invalid and the legitimate reentry is refused.
+        # ⚠ `Included` is keyed by content_hash HEX, not bytes — use .add(), never a
+        # bare dict assignment. Keying by bytes puts entries in the map that
+        # cap_resolve() cannot see, and the credential then reads as unresolvable: the
+        # relaxation never happens and the legitimate reentry is refused. It passed the
+        # wire probe anyway, because the validator ALSO carries the credential in the
+        # envelope's included — so the mis-keyed additions were dead weight and the
+        # gate was working off a copy we did not put there. A peer whose caller does
+        # not double-carry would have been refused.
+        bundle = Included(ctx.included)
+        if has_cred:
+            for e in [capability, *granter_peers, *cap_sigs]:
+                bundle.add(e)
+        # §1.4: target_peer = extract_peer(uri, local_peer_id). The validator sends the
+        # absolute form, so the URI names the target. Where the uri is PEER-RELATIVE
+        # there is no peer in it and the §6.11 seam's destination is the connection's
+        # remote, so that is the fallback — without it Dimension 4 passes vacuously.
+        target_peer = extract_peer(p.local_peer, target)
+        if target_peer == p.local_peer and ctx.conn.hello_peer_id:
+            target_peer = ctx.conn.hello_peer_id
+        if not check_outbound_sub_dispatch(
+            p.local_peer, target_peer, rel_target, operation,
+            p.store, own_grant, resource, capability if has_cred else None, bundle,
+        ):
+            # §7a.1a: the surfaced code is the AUTHORIZATION domain's code. A generic
+            # transport- or gateway-class code would launder an authorization verdict
+            # into a route fault, and the ambient and presented branches would then
+            # disagree about what the same gate decided.
+            return Outcome.err(403, "capability_denied",
+                               "outbound sub-dispatch not authorized by the handler grant")
         env = p.outbound_dispatch(
-            ctx.conn, target, operation, inner, capability, granter_peer, cap_sig, resource
+            ctx.conn, target, operation, inner, capability,
+            granter_peers if has_cred else [], cap_sigs if has_cred else [], resource,
         )
         if env is None:
             return Outcome.err(503, "no_outbound_seam", "no live section 6.11 reentry connection")

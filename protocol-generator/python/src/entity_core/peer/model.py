@@ -140,6 +140,29 @@ class Entity:
         except BadEntityError:
             return None
 
+    def sub_entities(self, key: str) -> "list[Entity] | None":
+        """Decode an ARRAY of nested entities at key.
+
+        GUIDE-CONFORMANCE §7a.1's ``reentry_granters`` / ``reentry_cap_signatures`` are
+        plural carriers [0.8.2.19] — arrays, with the single-granter case an array of
+        one.  ``None`` means the key is absent or is not a list; an array whose members
+        do not all decode is a MALFORMED carrier and is also ``None``, never a silently
+        shorter list, because the caller's all-or-none test would then read a partial
+        credential as a complete one.
+        """
+        v = self.field(key)
+        if not isinstance(v, list):
+            return None
+        out: list[Entity] = []
+        for item in v:
+            if not isinstance(item, dict):
+                return None
+            try:
+                out.append(entity_of_cbor(item))
+            except BadEntityError:
+                return None
+        return out
+
     # ── wire form: an entity carries its content_hash ────────────────────────
     def to_cbor(self) -> dict:
         """Serialize to the wire map ``{type, data, content_hash}``."""

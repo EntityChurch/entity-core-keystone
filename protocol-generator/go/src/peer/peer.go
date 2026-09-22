@@ -78,8 +78,21 @@ type dispatchCtx struct {
 	// The two values §6.3's `check_path_permission` needs and the dispatch check
 	// already computed. They are carried rather than recomputed because the
 	// handler-level check MUST run against the same authority the dispatch check
-	// resolved — recomputing invites the two to drift, and §6.8 is explicit that
-	// the authority is selected by who named the path.
+	// resolved — recomputing invites the two to drift.
+	//
+	// ⛔ THE DISCRIMINATOR IS NOT WHO NAMED THE PATH (§6.8, corrected 0.8.2.22;
+	// §9.1's floor row corrected 0.8.2.31, which is where the wrong version was
+	// still being published). This comment said "§6.8 is explicit that the
+	// authority is selected by who named the path" — that is the superseded rule,
+	// and §6.8 now says "never by who derived the path" and "derivation is not the
+	// discriminator" in those words. The rule is WHETHER THE ACCESS SERVES A LIVE
+	// CALLER'S REQUEST: in service of it — a path the caller named OR one the
+	// handler derived within it — the caller's verified capability AND the
+	// executing handler's own grant, and BOTH must pass; on the handler's own
+	// behalf, the handler's own grant alone; a peer-root dispatch, no check. The
+	// two are duals and flattening the intersection makes the §6.3 listing filter
+	// vacuous. checkOutboundSubDispatch is where the conjunction is enforced for
+	// the §6.13(b) outbound seam.
 	//
 	// `pattern` is the OWNING handler's pattern (§6.3, 0.8.2.23): for the tree
 	// handler the owner and the runner coincide, so the distinction is not
@@ -253,23 +266,43 @@ func (p *Peer) deriveSeedGrants(remotePeer Entity, remotePeerID string) cbor.Val
 // outboundDispatch builds, signs (as the local peer), and sends an outbound
 // EXECUTE through the §6.11 reentry seam on the serving connection, returning the
 // correlated EXECUTE_RESPONSE envelope, or false if no reentrant connection.
-func (p *Peer) outboundDispatch(c *conn, uri, operation string, params Entity, capability, granterPeer, capSig Entity, resource cbor.Value) (Envelope, bool) {
+// granterPeers and capSigs are PLURAL (GUIDE-CONFORMANCE §7a.1, [0.8.2.19]) so a
+// K-of-N root can present every granter identity and every link signature; the
+// ordinary single-granter case is a slice of one. Every member goes into
+// `included` because §5.5's chain walk resolves granters and signers BY HASH out
+// of that map — a granter left out is a link the verifier cannot reach, which
+// fails closed as ChainUnreachable and would read as the peer refusing the
+// credential form rather than as a carrier we truncated.
+func (p *Peer) outboundDispatch(c *conn, uri, operation string, params Entity, capability Entity, granterPeers, capSigs []Entity, resource cbor.Value) (Envelope, bool) {
 	if c.outbound == nil {
 		return Envelope{}, false
 	}
 	c.outCounter++
 	requestID := "out-" + itoa(c.outCounter)
-	exec := MakeExecute(requestID, uri, operation, params,
+	// The AMBIENT arm carries no credential (GUIDE-CONFORMANCE §7a.1: omitting the
+	// triple selects it), so the EXECUTE carries no `capability` field and the
+	// bundle carries no cap, granter or cap-signature. It still authenticates as
+	// this peer — author plus request signature — because §5.2a's auth class is a
+	// separate question from whether any capability covers the request.
+	opts := []execOpt{
 		withAuthor(p.identity.IdentityHash()),
-		withCapability(capability.Hash),
-		withResource(resource))
+		withResource(resource),
+	}
+	ambient := len(granterPeers) == 0 && len(capSigs) == 0
+	if !ambient {
+		opts = append(opts, withCapability(capability.Hash))
+	}
+	exec := MakeExecute(requestID, uri, operation, params, opts...)
 	execSig := p.identity.SignEntity(exec)
-	env := NewEnvelope(exec,
-		capability,
-		granterPeer,
-		p.identity.PeerEntity(),
-		capSig,
-		execSig)
+	included := make([]Entity, 0, len(granterPeers)+len(capSigs)+3)
+	if !ambient {
+		included = append(included, capability)
+		included = append(included, granterPeers...)
+		included = append(included, capSigs...)
+	}
+	included = append(included, p.identity.PeerEntity())
+	included = append(included, execSig)
+	env := NewEnvelope(exec, included...)
 	return c.outbound(env)
 }
 

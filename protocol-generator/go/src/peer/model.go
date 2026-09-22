@@ -113,6 +113,33 @@ func (e Entity) SubEntity(key string) (Entity, bool) {
 	return sub, true
 }
 
+// SubEntities decodes an ARRAY of nested entities carried at key.
+//
+// GUIDE-CONFORMANCE §7a.1's `reentry_granters` / `reentry_cap_signatures` are
+// plural carriers [0.8.2.19] — arrays, with the single-granter case an array of
+// one. ok=false means the key is absent or is not an array; an array whose
+// members do not all decode is a MALFORMED carrier and is also ok=false, never
+// a silently shorter list, because the caller's all-or-none test would then read
+// a partial credential as a complete one.
+func (e Entity) SubEntities(key string) ([]Entity, bool) {
+	v, ok := e.Field(key)
+	if !ok || v.Kind != cbor.KindArray {
+		return nil, false
+	}
+	out := make([]Entity, 0, len(v.Array))
+	for _, item := range v.Array {
+		if item.Kind != cbor.KindMap {
+			return nil, false
+		}
+		sub, err := EntityOfCbor(item)
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, sub)
+	}
+	return out, true
+}
+
 // ── wire form: an entity carries its content_hash ──────────────────────────
 
 // ToCbor serializes the entity to its wire map {type, data, content_hash}.

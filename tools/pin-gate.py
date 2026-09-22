@@ -47,6 +47,23 @@ WHAT IT CHECKS
      per-line regex could not see it. A false negative in a gate is worse than a
      false positive, and this one hid the number on the front page.
   4. The anchors the matrix publishes for the CURRENT pin are the current values.
+  5. `guide_conformance` matches the sibling's GUIDE-CONFORMANCE.md, when the sibling
+     is on disk. That line sat in `oracle-pin.env` with NOTHING READING IT, and the
+     cost was a cohort-wide drift rather than untidiness: peers derive their entire
+     §7a conformance scaffolding from that guide, and when `0.8.2.19` made the
+     `reentry_*` carriers PLURAL, 40 of 46 peers silently stayed singular. The
+     spec-data snapshots are digest-verified by `make lint`; the guide is
+     deliberately not in spec-data (non-normative, arch-owned); so the one input that
+     moved was the one input with no gate. Measured 2026-09-16: 17 guide commits since
+     the recorded pin, including the plural carriers, a narrow-scaffold-grant
+     requirement, and a new `deadline_ms` MUST that 0 of 46 peers implement.
+     ⭐ THE DIGEST IS A *READ* MARKER, NOT A CONFORMANCE CLAIM — exactly the
+     vendored-versus-consumed split the spec-data snapshots already use. Advancing it
+     asserts "this revision has been read and its obligations enumerated," never
+     "implemented"; the implementation debt is tracked in the arch tracker and the
+     per-peer `spec_pin` column. So the gate fires on an UNREAD revision, which is the
+     state that costs, and does not hold itself red against tracked backlog — a gate
+     that is permanently red teaches people to skip it.
 
 WHAT IT DELIBERATELY DOES NOT CHECK
   Commit hashes in the dated `>` build-log note blocks and the closed-items ledger.
@@ -58,6 +75,8 @@ WHAT IT DELIBERATELY DOES NOT CHECK
   owns: our own anchors, and the column that publishes them.
 """
 
+import hashlib
+import os
 import pathlib
 import re
 import sys
@@ -321,6 +340,62 @@ def main():
             )
         else:
             notes.append(f"published {key} = {val[:8]}…")
+
+    # -- 5: the GUIDE-CONFORMANCE digest ---------------------------------------
+    #
+    # `guide_conformance` sat in oracle-pin.env with NOTHING READING IT, and that is
+    # the mechanism behind a cohort-wide drift rather than a tidiness complaint. Peers
+    # derive their whole §7a conformance scaffolding from that guide — the
+    # system/validate handlers, their params contracts, the §7b concurrency gate — and
+    # when `0.8.2.19` turned `reentry_granter`/`reentry_cap_signature` into PLURAL
+    # carriers, 40 of 46 peers silently stayed singular. Nothing could report it: the
+    # spec-data snapshots are digest-verified by `make lint` and the guide is
+    # deliberately NOT in spec-data (non-normative, arch-owned), so the one input that
+    # moved was the one input with no gate. A pin nobody reads is a comment.
+    #
+    # FAILS ONLY WHEN THE SIBLING IS PRESENT AND DIFFERS. A clean clone of this repo
+    # alone has no sibling checkout, and a gate that exits 1 there is a gate people
+    # switch off — the `author-extension-host --check` lesson, which was red on every
+    # clone for reading gitignored scratch. Absent sibling → say the comparison was not
+    # made, and pass. That distinction is the whole design: "could not look" and "looked
+    # and it matches" must not print the same word.
+    guide_pin = None
+    for line in PIN.read_text().splitlines():
+        s = line.strip()
+        if s.startswith("guide_conformance"):
+            guide_pin = s.split("=", 1)[1].split()[0]
+    # PIN_GATE_GUIDE exists so the three arms below can be exercised WITHOUT WRITING TO
+    # THE SIBLING REPO. Verifying this check the obvious way means making the guide
+    # differ, and the obvious way to do that is to edit it in place — which crosses the
+    # standing "never write to the architecture repo" boundary for a test. Copy it to a
+    # scratch path, mutate the copy, point this at it. Not for production use: it is a
+    # way to make the gate agree with you.
+    guide = pathlib.Path(os.environ.get("PIN_GATE_GUIDE", "")) if os.environ.get("PIN_GATE_GUIDE") \
+        else REPO.parent / "entity-system-architecture" / "guides" / "GUIDE-CONFORMANCE.md"
+    if guide_pin is None:
+        fails.append(
+            "tools/oracle-pin.env: no guide_conformance digest. Peers derive their §7a "
+            "conformance scaffolding from GUIDE-CONFORMANCE.md; unpinned, it moves "
+            "without anything reporting it (measured: the 0.8.2.19 plural-carrier "
+            "rename reached 0 of 46 peers)."
+        )
+    elif not guide.is_file():
+        notes.append(
+            f"guide_conformance = {guide_pin[:8]}… — sibling checkout absent, "
+            f"STALENESS NOT COMPARED (this is not a pass for that property)"
+        )
+    else:
+        actual = hashlib.sha256(guide.read_bytes()).hexdigest()
+        if actual == guide_pin:
+            notes.append(f"guide_conformance = {guide_pin[:8]}… matches the sibling")
+        else:
+            fails.append(
+                f"GUIDE-CONFORMANCE.md has MOVED: pinned {guide_pin[:8]}…, actual "
+                f"{actual[:8]}…. Peers derive their §7a conformance scaffolding from it, "
+                f"so a move is potential cohort work and must be read before the pin is "
+                f"advanced. Diff it, act on it, then update guide_conformance in "
+                f"tools/oracle-pin.env — do NOT advance the pin to silence this."
+            )
 
     quiet = "--quiet" in sys.argv
     if not quiet or fails:

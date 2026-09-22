@@ -35,33 +35,58 @@ type bootstrapSpec struct {
 	name    string
 	ops     []opSpec
 	make    func(*Peer) handler
+
+	// ownGrants is the handler's OWN grant (§6.8) — the authority it spends when
+	// it dispatches onward, as distinct from any capability a caller presents.
+	// nil mints the historical empty-grants token, which authorizes nothing.
+	//
+	// §6.8 row 1: an access in service of a caller's request needs the caller's
+	// verified capability AND this grant, and BOTH must pass. A handler that
+	// makes an onward dispatch and consults only the presented credential has
+	// performed the confused-deputy substitution §6.8 forbids — so this field
+	// must be NARROW wherever the handler dispatches onward, or compose and
+	// bypass agree on every input and nothing can discriminate between them.
+	ownGrants func(*Peer) cbor.Value
 }
 
 func coreBootstrapSpecs() []bootstrapSpec {
 	return []bootstrapSpec{
 		{"system/tree", "Tree", []opSpec{{"get", "", ""}, {"put", "", ""}},
-			func(p *Peer) handler { return treeHandler{p} }},
+			func(p *Peer) handler { return treeHandler{p} }, nil},
 		{"system/handler", "Handlers", []opSpec{
 			{"register", "system/handler/register-request", "system/handler/register-result"},
 			{"unregister", "system/handler/unregister-request", ""}},
-			func(p *Peer) handler { return handlersHandler{p} }},
+			func(p *Peer) handler { return handlersHandler{p} }, nil},
 		{"system/capability", "Capability", []opSpec{
 			{"request", "system/capability/request", "system/capability/grant"},
 			{"revoke", "system/capability/revoke-request", ""},
 			{"configure", "system/capability/policy-entry", ""},
 			{"delegate", "system/capability/delegate-request", "system/capability/grant"}},
-			func(p *Peer) handler { return capabilityHandler{p} }},
+			func(p *Peer) handler { return capabilityHandler{p} }, nil},
 		{"system/protocol/connect", "Connect", []opSpec{{"hello", "", ""}, {"authenticate", "", ""}},
-			func(p *Peer) handler { return connectHandler{p} }},
+			func(p *Peer) handler { return connectHandler{p} }, nil},
 	}
 }
 
 func conformanceBootstrapSpecs() []bootstrapSpec {
 	return []bootstrapSpec{
 		{"system/validate/echo", "validate-echo", []opSpec{{"echo", "", ""}},
-			func(p *Peer) handler { return echoHandler{p} }},
+			func(p *Peer) handler { return echoHandler{p} }, nil},
 		{"system/validate/dispatch-outbound", "validate-dispatch-outbound", []opSpec{{"dispatch", "", ""}},
-			func(p *Peer) handler { return dispatchOutboundHandler{p} }},
+			func(p *Peer) handler { return dispatchOutboundHandler{p} },
+			// NARROW BY DESIGN, and the narrowness is what makes the §6.8
+			// intersection measurable. GUIDE-CONFORMANCE §7a.1 ⛔ requires this
+			// handler's own grant to cover `echo` on `system/validate/echo` and
+			// NOTHING else: with a wide grant, consulting it and skipping it give
+			// the same answer on every input, so the confused-deputy
+			// discriminator cannot fire and a bypass reads as conformant.
+			func(p *Peer) cbor.Value {
+				return valList(grantSpec{
+					handlers:   []string{"system/validate/echo"},
+					operations: []string{"echo"},
+					resources:  []string{"system/handler/system/validate/echo"},
+				}.toCbor())
+			}},
 	}
 }
 
@@ -93,7 +118,17 @@ func (p *Peer) bootstrapHandlerEntities(spec bootstrapSpec) {
 		cbor.Entry("name", cbor.Text(spec.name)),
 		cbor.Entry("operations", cbor.NewMap(opPairs...)),
 	)))
-	token, _ := p.mintToken(p.identity.IdentityHash(), cbor.Value{Kind: cbor.KindArray}, nil, nil)
+	// §6.8: the handler's own grant MUST exist at
+	// `system/capability/grants/{pattern}` and a handler with no valid grant does
+	// not run — so this bind is not optional bookkeeping, it is the ceiling row 1
+	// intersects against. An empty grants array is a valid entity that authorizes
+	// nothing, which is the right default for a handler that never dispatches
+	// onward and the WRONG one for a handler that does.
+	grants := cbor.Value{Kind: cbor.KindArray}
+	if spec.ownGrants != nil {
+		grants = spec.ownGrants(p)
+	}
+	token, _ := p.mintToken(p.identity.IdentityHash(), grants, nil, nil)
 	p.store.Bind("/"+local+"/system/capability/grants/"+spec.pattern, token)
 }
 
