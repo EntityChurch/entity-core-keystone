@@ -179,13 +179,79 @@ ecPeer compile: 'admitPut: aValue
 	 authoring arm §6.3 forbids."
 	^ EcEntity admittedType: typeV string data: dataV hash: carried'.
 
+"effectiveTargetsOf: — §5.2's effective target list (0.8.2.20): the caller's OWN
+ `resource.exclude` removes entries from the request BEFORE anything else looks at it.
+
+ Survivors keep the CALLER'S OWN SPELLING, not a canonical form — 0.8.2.21 is explicit that
+ effective_targets yields RAW survivors, and it is load-bearing here because the value flows on
+ to treeCanon: and to the store, which canonicalize for themselves.
+
+ Answers #absent | #empty | #ambiguous | the single survivor String, AND THE FIRST TWO ARE
+ DIFFERENT REQUESTS rather than two spellings of one (0.8.2.24 N7, 0.8.2.25 N10). §3.3's `an
+ empty effective list IS the absent case` is scoped to an operation that REQUIRES a resource;
+ `get` does not, and EXTENSION-TREE §2.2a declares it resource-OPTIONAL and BROAD-RESULT —
+ absent answers the root listing, self-excluded answers path_required, because serving the root
+ listing to a caller who excluded the one path it named answers something WIDER than the
+ request. Collapsing the two here would delete the discriminator before any handler could read
+ it, and the refusal arm would become dead code only a wire drive could detect.
+
+ The caller-exclude arm is fail-OPEN on an unmatchable pattern: §5.4's table rules it separately
+ from the grant arm, canon answers the sentinel and path:matchesPattern: then answers false, so
+ the target simply survives. That asymmetry is 0.8.2.21's whole point and it is inherited from
+ the matcher rather than restated here."
+ecPeer compile: 'effectiveTargetsOf: anExec
+	| resource targets excl surv local |
+	resource := anExec field: ''resource''.
+	(resource isKindOf: EcMap) ifFalse: [ ^ #absent ].
+	targets := resource entryAt: ''targets''.
+	(targets isKindOf: EcArray) ifFalse: [ ^ #absent ].
+	local := identity peerId.
+	excl := OrderedCollection new.
+	(resource entryAt: ''exclude'') ifNotNil: [ :ex |
+		(ex isKindOf: EcArray) ifTrue: [
+			ex items do: [ :t | (t isKindOf: EcTextString) ifTrue: [ excl add: t string ] ] ] ].
+	surv := OrderedCollection new.
+	targets items do: [ :t |
+		(t isKindOf: EcTextString) ifTrue: [
+			| cv |
+			cv := EcCapAuthz canon: t string local: local.
+			(excl anySatisfy: [ :x | EcCapAuthz path: cv matchesPattern: (EcCapAuthz canon: x local: local) ])
+				ifFalse: [ surv add: t string ] ] ].
+	surv isEmpty ifTrue: [ ^ #empty ].
+	surv size > 1 ifTrue: [ ^ #ambiguous ].
+	^ surv first'.
+
+"isPatternPath: — §3.3 (0.8.2.20): a resource-requiring operation takes a CONCRETE path, so a
+ pattern surviving as the single effective target is 400 malformed_resource — not a 404 for a
+ literal key spelled with a star, which is what this peer answered before."
+ecPeer compile: 'isPatternPath: aPath  ^ aPath includes: $*'.
+
+"callerCapOf: — the capability the dispatch stage authorized this request against, resolved
+ the same way §5.2 resolved it. nil when none was presented."
+ecPeer compile: 'callerCapOf: ctx
+	| ch |
+	ch := ctx exec bytesAt: ''capability''.
+	ch isNil ifTrue: [ ^ nil ].
+	^ ctx envelope includedForHash: ch'.
+
 "handleTreePut: — §6.3 put + §3.9 CAS. params {entity, expected_hash}. CAS: expected absent ->
  unconditional; zero-hash -> create-only (409 if bound); else must equal the current binding."
 ecPeer compile: 'handleTreePut: ctx
 	| target params ent canon expected curHash result |
-	target := self treeTargetOf: ctx exec.
-	target isNil ifTrue: [ ^ EcHandlerResult error: 400 code: ''ambiguous_resource'' message: nil ].
+	"§3.3''s ladder, on the EFFECTIVE list — the same seam `get` uses, so one request cannot
+	 receive two different answers according to which operation it named. BOTH EMPTIES ANSWER
+	 path_required here, and that is the operation''s own specification rather than a shortcut:
+	 `put` REQUIRES a resource, and 0.8.2.24 (N7) scopes `an empty effective list IS the absent
+	 case` to exactly that kind of operation. §3.3 also pins path_required rather than
+	 ambiguous_resource for a MISSING target — 0.8.2.20 names inverting those two as the defect,
+	 because the remedies are opposites (name one against name fewer), and this peer answered
+	 ambiguous_resource for the absent case."
+	target := self effectiveTargetsOf: ctx exec.
+	target == #ambiguous ifTrue: [ ^ EcHandlerResult error: 400 code: ''ambiguous_resource'' message: nil ].
+	(target == #absent or: [ target == #empty ]) ifTrue: [
+		^ EcHandlerResult error: 400 code: ''path_required'' message: nil ].
 	(self pathFlexOk: target) ifFalse: [ ^ EcHandlerResult error: 400 code: ''invalid_path'' message: nil ].
+	(self isPatternPath: target) ifTrue: [ ^ EcHandlerResult error: 400 code: ''malformed_resource'' message: nil ].
 	canon := self treeCanon: target.
 	params := ctx params.
 	params isNil ifTrue: [ ^ EcHandlerResult error: 400 code: ''unexpected_params'' message: nil ].
@@ -227,10 +293,25 @@ ecPeer compile: 'immediateChildrenOf: aPrefix
 
 "handleTreeListing: — build a system/tree/listing {path, entries, count, offset} of the
  immediate children of a (canonical, trailing-/) prefix."
-ecPeer compile: 'handleTreeListing: aCanonPrefix
-	| prefix children entryPairs listing |
+ecPeer compile: 'handleTreeListing: aCanonPrefix ctx: ctx
+	| prefix children entryPairs listing cap hp local |
 	prefix := (aCanonPrefix notEmpty and: [ aCanonPrefix last = $/ ]) ifTrue: [ aCanonPrefix ] ifFalse: [ aCanonPrefix, ''/'' ].
 	children := self immediateChildrenOf: prefix.
+	"§6.3''s LISTING FILTER (0.8.2.21/.22): every entry of a multi-entry result is checked
+	 INDIVIDUALLY with check_path_permission, entries that DENY are omitted, and `count` MUST
+	 reflect the filtered total rather than the source tree''s. Filtering BEFORE the count is
+	 computed is what makes the two agree by construction rather than by a second pass.
+
+	 This is the read path at its highest volume, which is the reason 0.8.2.21 refused to carve
+	 reads out: a listing naming an entry the caller''s own capability excludes discloses a
+	 binding that capability was written to hide."
+	cap := self callerCapOf: ctx.
+	local := identity peerId.
+	hp := ctx isNil ifTrue: [ ''system/tree'' ] ifFalse: [ EcCapAuthz execHandlerPath: ctx exec ].
+	cap ifNotNil: [
+		children := children select: [ :assoc |
+			EcCapAuthz checkPathPermission: cap operation: ''get'' path: prefix, assoc key
+				local: local handler: hp ] ].
 	entryPairs := children collect: [ :assoc |
 		| hasChildren hashOrNil entryMap |
 		hasChildren := (assoc value at: 1).
@@ -248,15 +329,32 @@ ecPeer compile: 'handleTreeListing: aCanonPrefix
 
 "handleTree: — replaces the S3 get-only body: get / put / listing."
 ecPeer compile: 'handleTreeFull: ctx
-	| op target canon |
+	| op target canon cap |
 	op := ctx operation.
 	op = ''put'' ifTrue: [ ^ self handleTreePut: ctx ].
 	op = ''get'' ifFalse: [ ^ EcHandlerResult error: 501 code: ''unsupported_operation'' message: nil ].
-	target := self treeTargetOf: ctx exec.
-	(target isNil or: [ target isEmpty ]) ifTrue: [ ^ self handleTreeListing: (self treeCanon: ''/'') ].
+	"§3.3''s ladder runs on the EFFECTIVE list, never on resource.targets: a handler that counts
+	 the effective list and then indexes targets[0] has implemented the arithmetic completely
+	 and is still reading a path no authorization covered."
+	target := self effectiveTargetsOf: ctx exec.
+	target == #absent ifTrue: [ ^ self handleTreeListing: (self treeCanon: ''/'') ctx: ctx ].
+	target == #empty ifTrue: [
+		"`resource` PRESENT and every target carved out by the caller''s own exclude. Serving it
+		 the absent case would answer a request for one excluded path with a listing of the
+		 whole tree — wider than what was asked for, which is what BROAD-RESULT means."
+		^ EcHandlerResult error: 400 code: ''path_required'' message: nil ].
+	target == #ambiguous ifTrue: [ ^ EcHandlerResult error: 400 code: ''ambiguous_resource'' message: nil ].
+	target isEmpty ifTrue: [ ^ self handleTreeListing: (self treeCanon: ''/'') ctx: ctx ].
 	(self pathFlexOk: target) ifFalse: [ ^ EcHandlerResult error: 400 code: ''invalid_path'' message: nil ].
 	canon := self treeCanon: target.
-	(canon notEmpty and: [ canon last = $/ ]) ifTrue: [ ^ self handleTreeListing: canon ].
+	(canon notEmpty and: [ canon last = $/ ]) ifTrue: [ ^ self handleTreeListing: canon ctx: ctx ].
+	(self isPatternPath: target) ifTrue: [ ^ EcHandlerResult error: 400 code: ''malformed_resource'' message: nil ].
+	"§6.3 — the handler verifies the CALLER''s capability covers the path it is about to read.
+	 Not redundant with the dispatch stage: see EcCapAuthz>>checkPathPermission:..."
+	cap := self callerCapOf: ctx.
+	(EcCapAuthz checkPathPermission: cap operation: ''get'' path: canon local: identity peerId
+		handler: (EcCapAuthz execHandlerPath: ctx exec))
+		ifFalse: [ ^ EcHandlerResult error: 403 code: ''capability_denied'' message: nil ].
 	(store getAt: canon)
 		ifNil: [ ^ EcHandlerResult error: 404 code: ''not_found'' message: nil ]
 		ifNotNil: [ :e | ^ EcHandlerResult ok: e ]'.

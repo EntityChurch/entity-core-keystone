@@ -157,6 +157,41 @@ procedure division using lk-out lk-out-len.
     goback.
 end program oversize-result.
 
+*> ---- truncated-result : the §4.11 400 for a frame that never completed ----
+*> A stream that ends mid-frame is "a length prefix that never completes" in
+*> §4.11's own words, and it is owed a coded EXECUTE_RESPONSE like every other
+*> pre-admission refusal. UNCORRELATED BY CONSTRUCTION -- the request_id lives
+*> inside a frame that never arrived -- which is the section's "otherwise as a
+*> best-effort coded frame carrying no correlation" branch. Written before the
+*> close, because after it there is nowhere to write.
+identification division.
+program-id. truncated-result.
+data division.
+working-storage section.
+01 errc     pic x(15) value "invalid_request".
+01 errcl    pic 9(9) comp-5 value 15.
+01 res-ent  pic x(524288). 01 res-len  pic 9(9) comp-5. 01 res-hash  pic x(33).
+01 resp-ent pic x(524288). 01 resp-len pic 9(9) comp-5. 01 resp-hash pic x(33).
+01 incmap   pic x(524288). 01 incmap-len pic 9(9) comp-5.
+01 rid      pic x(128).   01 rid-len  pic 9(9) comp-5 value 0.
+01 rstatus  pic 9(9) comp-5 value 400.
+01 n0       pic 9(18) comp-5 value 0.
+linkage section.
+01 lk-out     pic x(524288).
+01 lk-out-len pic 9(9) comp-5.
+procedure division using lk-out lk-out-len.
+    move spaces to rid
+    move 0 to rid-len
+    move 0 to incmap-len
+    call "b-map" using incmap incmap-len n0
+    call "error-result" using errc errcl res-ent res-len res-hash
+    call "make-response" using rid rid-len rstatus res-ent res-len
+        resp-ent resp-len resp-hash
+    call "env-wrap" using resp-ent resp-len incmap incmap-len
+        lk-out lk-out-len
+    goback.
+end program truncated-result.
+
 *> ---- dispatch (§6.5 chain) -----------------------------------------
 *> Parse the inbound envelope, route the EXECUTE root through the §6.5 chain
 *> (ingest → verify_request → resolve_handler → check_permission → handler),
@@ -189,6 +224,9 @@ working-storage section.
 01 k-cap     pic x(10) value "capability".
 01 k-cap-len pic 9(9) comp-5 value 10.
 01 verdict   pic 9(1).
+01 pre       pic 9(1).
+01 kbind     pic 9(1).
+01 t-resp    pic x(32) value "system/protocol/execute/response".
 01 local     pic x(128).
 01 locallen  pic 9(9) comp-5.
 01 path      pic x(900).
@@ -231,24 +269,86 @@ linkage section.
 procedure division using lk-conn lk-env lk-env-len lk-out lk-out-len lk-hasresp.
     move 0 to lk-hasresp
     move 0 to lk-out-len
+    move spaces to rid  move 0 to rid-len
+    move 0 to incmap-len
+    call "b-map" using incmap incmap-len n0
+*> ---- §4.11 DECODE BOUNDARY ----
+*> Sited HERE, above everything, and the placement is the requirement rather than
+*> a convenience: §4.11 is about frames refused PRE-ADMISSION, so each of these
+*> causes has to be decided before the §1.4 address gate, before authentication
+*> and before any capability question. A peer that runs its address gate first
+*> answers `invalid_request` to a tagged frame and has not implemented §6.3's
+*> decode-time reject at all -- it has merely refused the frame for an unrelated
+*> reason that happens to share a code.
+    call "frame-precheck" using lk-env lk-env-len pre
+    if pre not = 0
+        if pre = 1
+            *> The frame is otherwise structurally sound -- frame-precheck reports
+            *> TAG only when the walk completed and consumed exactly the frame --
+            *> so the lenient readers are safe on it and the request_id is
+            *> recoverable. That ordering is what makes the salvage legitimate
+            *> rather than a second parse of condemned bytes.
+            perform salvage-rid
+            move 400 to rstatus
+            move "non_canonical_ecf" to errcode  move 17 to errcode-len
+        else
+            *> No salvage: the shape was never established, so a field read over
+            *> these bytes would be reading a structure that does not exist.
+            move 400 to rstatus
+            move "invalid_request" to errcode  move 15 to errcode-len
+        end-if
+        perform refuse-frame
+        goback
+    end-if
+    call "inc-keys-bind" using lk-env kbind
+    if kbind = 0
+        perform salvage-rid
+        move 400 to rstatus
+        move "hash_mismatch" to errcode  move 13 to errcode-len
+        perform refuse-frame
+        goback
+    end-if
     call "env-root-off" using lk-env root-off root-fnd
-    if root-fnd = 0 then goback end-if
+*> §4.11 -- the frame decoded and is NOT a well-formed request. Every one of these
+*> arms used to leave lk-hasresp at 0, which answers NOTHING: §4.9(c)'s silent
+*> drop, billed entirely to the caller's own §6.11(c) deadline, so it presents as
+*> a slow peer rather than a wrong one. A decoded root is CORRELATABLE -- the
+*> request_id is right there in it.
+    if root-fnd = 0
+        move 400 to rstatus
+        move "invalid_request" to errcode  move 15 to errcode-len
+        perform refuse-frame
+        goback
+    end-if
     call "ent-type" using lk-env root-off rtype rtype-len
-    if not (rtype-len = 23 and rtype(1:23) = t-exec) then
+    if rtype-len = 32 and rtype(1:32) = t-resp
+        *> A response frame, not a request. Deliberately dropped: answering it
+        *> would put a response on the wire for a response.
+        goback
+    end-if
+    if not (rtype-len = 23 and rtype(1:23) = t-exec)
+        perform salvage-rid
+        move 400 to rstatus
+        move "invalid_request" to errcode  move 15 to errcode-len
+        perform refuse-frame
         goback
     end-if
     move 1 to lk-hasresp
     move spaces to rid  move 0 to rid-len
     call "ent-field" using lk-env root-off k-rid k-rid-len voff vfnd
-    if vfnd = 1 then call "read-text" using lk-env voff rid rid-len end-if
+    if vfnd = 1
+        call "read-text" using lk-env voff rid rid-len
+    else
+        move 400 to rstatus
+        move "invalid_request" to errcode  move 15 to errcode-len
+        perform refuse-frame
+        goback
+    end-if
     move spaces to uri  move 0 to uri-len
     call "ent-field" using lk-env root-off k-uri k-uri-len voff vfnd
     if vfnd = 1 then call "read-text" using lk-env voff uri uri-len end-if
     call "env-inc-off" using lk-env inc-off inc-fnd
     call "ps-peerid" using local locallen
-
-    move 0 to incmap-len
-    call "b-map" using incmap incmap-len n0
 
     if uri-len = 23 and uri(1:23) = t-connect
         call "connect-handler" using lk-conn lk-env root-off inc-off inc-fnd
@@ -262,6 +362,29 @@ procedure division using lk-conn lk-env lk-env-len lk-out lk-out-len lk-hasresp.
     call "env-wrap" using resp-ent resp-len incmap incmap-len
         lk-out lk-out-len
     goback.
+
+*> refuse-frame : emit a §4.11 pre-admission refusal through the ordinary
+*> response path, so the framing, the correlation and the envelope shape are the
+*> same ones every other answer uses.
+refuse-frame.
+    move 1 to lk-hasresp
+    call "error-result" using errcode errcode-len res-ent res-len res-hash
+    call "make-response" using rid rid-len rstatus res-ent res-len
+        resp-ent resp-len resp-hash
+    call "env-wrap" using resp-ent resp-len incmap incmap-len
+        lk-out lk-out-len.
+
+*> salvage-rid : recover root.data.request_id for a frame already proven walkable.
+*> Leaves the response UNCORRELATED when any step is absent -- §4.11 provides for
+*> exactly that ("otherwise as a best-effort coded frame carrying no
+*> correlation"), and a correlation id that names a DIFFERENT request is worse
+*> than none, because the caller matches it to something.
+salvage-rid.
+    move spaces to rid  move 0 to rid-len
+    call "env-root-off" using lk-env root-off root-fnd
+    if root-fnd = 0 then exit paragraph end-if
+    call "ent-field" using lk-env root-off k-rid k-rid-len voff vfnd
+    if vfnd = 1 then call "read-text" using lk-env voff rid rid-len end-if.
 
 *> ---- §6.5 dispatch chain -------------------------------------------
 do-chain.
@@ -343,7 +466,7 @@ do-chain.
     evaluate true
         when splen = 11 and spat(1:11) = "system/tree"
             call "tree-handler" using lk-env root-off rstatus
-                res-ent res-len res-hash
+                res-ent res-len res-hash capbuf spat splen
         when splen = 17 and spat(1:17) = "system/capability"
             call "capability-handler" using lk-env root-off rstatus
                 res-ent res-len res-hash incmap incmap-len

@@ -282,6 +282,156 @@ procedure division.
     goback.
 end program bootstrap.
 
+*> ---- eff-target : §5.2's EFFECTIVE target list (0.8.2.20) ----------
+*>
+*> The caller's OWN `resource.exclude` removes entries from the request BEFORE
+*> anything else looks at it. The survivor keeps the CALLER'S OWN SPELLING, not a
+*> canonical form -- 0.8.2.21 is explicit that effective_targets yields RAW
+*> survivors, and it is load-bearing here because the value flows on to cap-canon
+*> and to the store, which canonicalize for themselves.
+*>
+*> lk-verdict: 0 = exactly one (in lk-tgt/lk-tgtlen) · 1 = ABSENT (no `resource`,
+*> or no `targets` inside it) · 2 = present and effectively EMPTY · 3 = more than
+*> one.
+*>
+*> THE FIRST TWO ARE DIFFERENT REQUESTS, not two spellings of one (0.8.2.24 N7,
+*> 0.8.2.25 N10). §3.3's "an empty effective list IS the absent case" is scoped to
+*> an operation that REQUIRES a resource; `get` does not, and EXTENSION-TREE §2.2a
+*> declares it resource-OPTIONAL and BROAD-RESULT -- absent answers the root
+*> listing, self-excluded answers path_required, because serving the root listing
+*> to a caller that excluded the one path it named answers something WIDER than
+*> the request. Collapsing them here would delete the discriminator before any
+*> handler could read it.
+*>
+*> The caller-exclude arm is fail-OPEN on an unmatchable pattern: §5.4's table
+*> rules it separately from the grant arm, cap-canon answers /never-match and
+*> cap-match then answers false, so the target simply survives. That asymmetry is
+*> 0.8.2.21's whole point and it is inherited from the matcher rather than
+*> restated here.
+identification division.
+program-id. eff-target.
+data division.
+working-storage section.
+01 resoff pic 9(9) comp-5.
+01 rgf    pic 9(1).
+01 toff   pic 9(9) comp-5.
+01 tf     pic 9(1).
+01 exoff  pic 9(9) comp-5.
+01 exf    pic 9(1).
+01 cur    pic 9(9) comp-5.
+01 ecur   pic 9(9) comp-5.
+01 maj    pic 9(2) comp-5.
+01 addl   pic 9(2) comp-5.
+01 arg    pic 9(18) comp-5.
+01 cnt    pic 9(9) comp-5.
+01 ecnt   pic 9(9) comp-5.
+01 i      pic 9(9) comp-5.
+01 j      pic 9(9) comp-5.
+01 tlen   pic 9(9) comp-5.
+01 xlen   pic 9(9) comp-5.
+01 t      pic x(900).
+01 x      pic x(900).
+01 ct     pic x(900).
+01 ctlen  pic 9(9) comp-5.
+01 cx     pic x(900).
+01 cxlen  pic 9(9) comp-5.
+01 local  pic x(128).
+01 locallen pic 9(9) comp-5.
+01 dropped pic 9(1).
+01 m      pic 9(1).
+01 surv   pic 9(9) comp-5.
+01 st     pic s9(9) comp-5.
+01 k-rsrc pic x(8) value "resource".
+01 k-rsrc-len pic 9(9) comp-5 value 8.
+01 k-tgts pic x(7) value "targets".
+01 k-tgts-len pic 9(9) comp-5 value 7.
+01 k-excl pic x(7) value "exclude".
+01 k-excl-len pic 9(9) comp-5 value 7.
+linkage section.
+01 lk-env    pic x(524288).
+01 lk-rootoff pic 9(9) comp-5.
+01 lk-tgt    pic x(900).
+01 lk-tgtlen pic 9(9) comp-5.
+01 lk-verdict pic 9(1).
+procedure division using lk-env lk-rootoff lk-tgt lk-tgtlen lk-verdict.
+    move 1 to lk-verdict
+    move 0 to lk-tgtlen
+    move spaces to lk-tgt
+    call "ps-peerid" using local locallen
+    call "ent-field" using lk-env lk-rootoff k-rsrc k-rsrc-len resoff rgf
+    if rgf = 0 then goback end-if
+    call "cbor-find-key" using lk-env resoff k-tgts k-tgts-len toff tf st
+    if tf = 0 then goback end-if
+    call "cbor-find-key" using lk-env resoff k-excl k-excl-len exoff exf st
+    move toff to cur
+    call "cbor-read-head" using lk-env cur maj addl arg st
+    if maj not = 4 then goback end-if
+    move arg to cnt
+    move 0 to surv
+    perform varying i from 1 by 1 until i > cnt
+        call "cbor-read-head" using lk-env cur maj addl arg st
+        move arg to tlen
+        move spaces to t
+        if tlen > 0 and tlen <= 900 then move lk-env(cur:tlen) to t(1:tlen) end-if
+        add tlen to cur
+        move 0 to dropped
+        if exf = 1
+            call "cap-canon" using t tlen local locallen ct ctlen
+            move exoff to ecur
+            call "cbor-read-head" using lk-env ecur maj addl arg st
+            if maj = 4
+                move arg to ecnt
+                perform varying j from 1 by 1 until j > ecnt
+                    call "cbor-read-head" using lk-env ecur maj addl arg st
+                    move arg to xlen
+                    move spaces to x
+                    if xlen > 0 and xlen <= 900
+                        move lk-env(ecur:xlen) to x(1:xlen)
+                    end-if
+                    add xlen to ecur
+                    call "cap-canon" using x xlen local locallen cx cxlen
+                    call "cap-match" using ct ctlen cx cxlen m
+                    if m = 1 then move 1 to dropped end-if
+                end-perform
+            end-if
+        end-if
+        if dropped = 0
+            add 1 to surv
+            if surv = 1
+                move t(1:tlen) to lk-tgt(1:tlen)
+                move tlen to lk-tgtlen
+            end-if
+        end-if
+    end-perform
+    evaluate true
+        when surv = 0  move 2 to lk-verdict
+        when surv = 1  move 0 to lk-verdict
+        when other     move 3 to lk-verdict
+    end-evaluate
+    goback.
+end program eff-target.
+
+*> ---- has-star : §3.3 (0.8.2.20) a CONCRETE path, never a pattern ---
+*> A pattern surviving as the single effective target is 400 malformed_resource --
+*> not a 404 for a literal key spelled with a star, which is what this peer
+*> answered before.
+identification division.
+program-id. has-star.
+data division.
+working-storage section.
+01 i pic 9(9) comp-5.
+linkage section.
+01 lk-s   pic x(900).
+01 lk-len pic 9(9) comp-5.
+01 lk-res pic 9(1).
+procedure division using lk-s lk-len lk-res.
+    move 0 to lk-res
+    perform varying i from 1 by 1 until i > lk-len
+        if lk-s(i:1) = "*" then move 1 to lk-res  goback end-if
+    end-perform
+    goback.
+end program has-star.
+
 *> ---- build-listing : §3.9 system/tree/listing for a prefix ---------
 identification division.
 program-id. build-listing.
@@ -333,6 +483,11 @@ working-storage section.
 01 k-off-len pic 9(9) comp-5 value 6.
 01 k-path pic x(4) value "path".
 01 k-path-len pic 9(9) comp-5 value 4.
+01 cpath  pic x(900).
+01 cplen  pic 9(9) comp-5.
+01 eperm  pic 9(1).
+01 v-get  pic x(64) value "get".
+01 v-get-len pic 9(9) comp-5 value 3.
 01 t-le   pic x(26) value "system/tree/listing-entry".
 01 t-le-len pic 9(9) comp-5 value 25.
 01 t-lst  pic x(20) value "system/tree/listing".
@@ -343,14 +498,40 @@ linkage section.
 01 lk-res    pic x(524288).
 01 lk-reslen pic 9(9) comp-5.
 01 lk-reshash pic x(33).
-procedure division using lk-path2 lk-plen lk-res lk-reslen lk-reshash.
+01 lk-tbuf   pic x(524288).
+01 lk-hpat   pic x(900).
+01 lk-hlen   pic 9(9) comp-5.
+procedure division using lk-path2 lk-plen lk-res lk-reslen lk-reshash
+                        lk-tbuf lk-hpat lk-hlen.
     call "store-listing" using lk-path2 lk-plen cnt
     *> pass 1: filter out deletion-marker-bound leaves (§6.3 / CORE-TREE-DELETE-1)
+    *> AND entries the caller's own capability does not cover (§6.3's LISTING
+    *> FILTER, 0.8.2.21/.22): every entry of a multi-entry result is checked
+    *> INDIVIDUALLY, entries that DENY are omitted, and `count` MUST reflect the
+    *> filtered total. Both live in the same pass so the count follows by
+    *> construction rather than from a second walk that could disagree with it.
+    *>
+    *> This is the read path at its highest volume, which is the reason 0.8.2.21
+    *> refused to carve reads out: a listing naming an entry the caller's own
+    *> capability excludes discloses a binding that capability was written to hide.
     move 0 to fcnt
     perform varying i from 1 by 1 until i > cnt
         call "store-list-entry" using i seg seglen lhash hashp child
         move 1 to incl(i)
-        if hashp = 1 and child = 0
+        move spaces to cpath
+        move 0 to cplen
+        if lk-plen > 0 and lk-plen <= 700
+            move lk-path2(1:lk-plen) to cpath(1:lk-plen)
+            move lk-plen to cplen
+        end-if
+        if seglen > 0 and cplen + seglen <= 900
+            move seg(1:seglen) to cpath(cplen + 1:seglen)
+            add seglen to cplen
+        end-if
+        call "cap-check-path-perm" using lk-tbuf v-get v-get-len cpath cplen
+            lk-hpat lk-hlen eperm
+        if eperm = 0 then move 0 to incl(i) end-if
+        if incl(i) = 1 and hashp = 1 and child = 0
             call "store-get-by-hash" using lhash dment dmlen dmf
             if dmf = 1
                 call "ent-type" using dment one dmtype dmtlen
@@ -446,6 +627,10 @@ working-storage section.
 01 n33    pic 9(9) comp-5 value 33.
 01 zero33 pic x(33) value all x"00".
 01 lastc  pic x.
+01 effv   pic 9(1).
+01 pperm  pic 9(1).
+01 v-get  pic x(64) value "get".
+01 v-get-len pic 9(9) comp-5 value 3.
 01 k-op   pic x(9) value "operation".
 01 k-op-len pic 9(9) comp-5 value 9.
 01 k-params pic x(6) value "params".
@@ -503,12 +688,27 @@ linkage section.
 01 lk-res    pic x(524288).
 01 lk-reslen pic 9(9) comp-5.
 01 lk-reshash pic x(33).
-procedure division using lk-env lk-rootoff lk-status lk-res lk-reslen lk-reshash.
+*> The caller's resolved capability and the handler id the dispatch check
+*> authorized against. Threaded in rather than re-derived: §6.3 must ask about the
+*> SAME authority §5.2 did, and a second resolution is a second thing that can
+*> disagree with it.
+01 lk-tbuf   pic x(524288).
+01 lk-hpat   pic x(900).
+01 lk-hlen   pic 9(9) comp-5.
+procedure division using lk-env lk-rootoff lk-status lk-res lk-reslen lk-reshash
+                        lk-tbuf lk-hpat lk-hlen.
     call "ps-peerid" using local locallen
     move spaces to op  move 0 to oplen
     call "ent-field" using lk-env lk-rootoff k-op k-op-len voff vf
     if vf = 1 then call "read-text" using lk-env voff op oplen end-if
-    call "get-target" using lk-env lk-rootoff tgt tgtlen tf
+    *> §3.3's ladder runs on the EFFECTIVE list, never on resource.targets: a
+    *> handler that counts the effective list and then indexes targets[0] has
+    *> implemented the arithmetic completely and is still reading a path no
+    *> authorization covered. Measured on the wire 2026-09-15 -- targets:[qA,qB]
+    *> exclude:[qA] served qA, the one entry the caller had carved out.
+    call "eff-target" using lk-env lk-rootoff tgt tgtlen effv
+    move 0 to tf
+    if effv = 0 then move 1 to tf end-if
     *> params entity offset
     call "ent-field" using lk-env lk-rootoff k-params k-params-len poff pfd
 
@@ -521,6 +721,25 @@ procedure division using lk-env lk-rootoff lk-status lk-res lk-reslen lk-reshash
             call "error-result" using errc errcl lk-res lk-reslen lk-reshash
             goback
         end-if
+    end-if
+    *> The two arms §3.3 fixes for BOTH operations. `resource` PRESENT and every
+    *> target carved out by the caller's own exclude is path_required: answering it
+    *> the absent case would answer a request for one excluded path with a listing
+    *> of the whole tree -- wider than what was asked for, which is what
+    *> BROAD-RESULT means. More than one effective entry is ambiguous_resource, and
+    *> §3.3 pins these two the way round 0.8.2.20 names inverting as the defect,
+    *> because the remedies are opposites ("name one" against "name fewer").
+    if effv = 2
+        move 400 to lk-status
+        move "path_required" to errc move 13 to errcl
+        call "error-result" using errc errcl lk-res lk-reslen lk-reshash
+        goback
+    end-if
+    if effv = 3
+        move 400 to lk-status
+        move "ambiguous_resource" to errc move 18 to errcl
+        call "error-result" using errc errcl lk-res lk-reslen lk-reshash
+        goback
     end-if
 
     evaluate true
@@ -540,6 +759,7 @@ do-get.
     if tf = 0
         call "mkpath-root" using path pathlen
         call "build-listing" using path pathlen lk-res lk-reslen lk-reshash
+            lk-tbuf lk-hpat lk-hlen
         move 200 to lk-status
         exit paragraph
     end-if
@@ -548,10 +768,29 @@ do-get.
     if tgtlen = 0 or lastc = "/"
         call "cap-canon" using tgt tgtlen local locallen path pathlen
         call "build-listing" using path pathlen lk-res lk-reslen lk-reshash
+            lk-tbuf lk-hpat lk-hlen
         move 200 to lk-status
         exit paragraph
     end-if
+    call "has-star" using tgt tgtlen okflag
+    if okflag = 1
+        move 400 to lk-status
+        move "malformed_resource" to errc move 18 to errcl
+        call "error-result" using errc errcl lk-res lk-reslen lk-reshash
+        exit paragraph
+    end-if
     call "cap-canon" using tgt tgtlen local locallen path pathlen
+    *> §6.3 -- the handler verifies the CALLER's capability covers the path it is
+    *> about to read. Not redundant with the dispatch stage: see
+    *> cap-check-path-perm.
+    call "cap-check-path-perm" using lk-tbuf v-get v-get-len path pathlen
+        lk-hpat lk-hlen pperm
+    if pperm = 0
+        move 403 to lk-status
+        move "capability_denied" to errc move 17 to errcl
+        call "error-result" using errc errcl lk-res lk-reslen lk-reshash
+        exit paragraph
+    end-if
     move path(1:pathlen) to spath(1:pathlen)  move pathlen to splen
     call "store-get-at" using spath splen ent entlen ef
     if ef = 0
@@ -579,9 +818,21 @@ do-get.
     move 200 to lk-status.
 
 do-put.
+    *> `put` REQUIRES a resource, so the ABSENT case is path_required here and not
+    *> ambiguous_resource -- 0.8.2.24 (N7) scopes "an empty effective list IS the
+    *> absent case" to exactly that kind of operation, and 0.8.2.20 names inverting
+    *> the two codes as the defect. (The self-excluded and >1 arms were already
+    *> answered above, on the shared ladder.)
     if tf = 0
         move 400 to lk-status
-        move "ambiguous_resource" to errc move 18 to errcl
+        move "path_required" to errc move 13 to errcl
+        call "error-result" using errc errcl lk-res lk-reslen lk-reshash
+        exit paragraph
+    end-if
+    call "has-star" using tgt tgtlen okflag
+    if okflag = 1
+        move 400 to lk-status
+        move "malformed_resource" to errc move 18 to errcl
         call "error-result" using errc errcl lk-res lk-reslen lk-reshash
         exit paragraph
     end-if

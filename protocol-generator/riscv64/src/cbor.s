@@ -331,4 +331,215 @@ w_cstr:
 	addi sp, sp, 32
 	tail w_txt                       # tail call
 
+# =========================== STRICT CHECKER ===========================
+# The readers above are DELIBERATELY lenient: map_find/skip_value walk whatever shape they
+# are handed, which is what lets a refusal path recover a request_id out of a frame the
+# strict pass has already condemned. Nothing else in this file asks whether the bytes are a
+# legal canonical-ECF value at all.
+#
+# cbor_check_frame is that question, and §4.11 is why it has to be asked BEFORE dispatch
+# rather than inside it: a frame that never becomes an Envelope is owed a coded
+# EXECUTE_RESPONSE, and the CAUSE decides the code.
+#
+#   a CBOR tag in any position  ->  ENTITY-CBOR-ENCODING §6.3 tag policy
+#                                   (`non_canonical_ecf`, and §6.3 already MUSTs it)
+#   anything else               ->  "never becomes an Envelope" (`invalid_request`)
+#
+# It is also the bound that makes the LENIENT readers safe. skip_value recurses with no
+# depth cap and no end pointer, so 16 MiB of nested array(1) is a stack smash reachable by
+# anyone who can send bytes, and read_head treats additional-info 31 as the 8-byte form and
+# reads eight bytes that are not there. Running this pass first means every later walk of
+# b_req is over bytes already proven in-bounds, finite and shallower than 128.
+#
+# NOT checked here, deliberately, and it is a recorded debt rather than an oversight:
+# MINIMAL head form and DUPLICATE map keys.
+
+	.bss
+	.lcomm g_saw_tag,    8
+	.lcomm g_chk_depth,  8
+
+	.text
+	.globl cbor_check_frame
+	.type cbor_check_frame, @function
+# cbor_check_frame(a0 = ptr, a1 = end) -> a0 = 0 OK | 1 TAG | 2 INVALID
+#
+# TAG wins over a clean structure but not over a broken one: a frame that is both truncated
+# and tagged is INVALID, because the tag was read out of bytes whose shape was never
+# established.
+cbor_check_frame:
+	addi sp, sp, -32
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	mv   s0, sp
+	mv   s1, a1                      # end
+	adr_l t0, g_saw_tag
+	sd   zero, 0(t0)
+	adr_l t0, g_chk_depth
+	sd   zero, 0(t0)
+	call cbor_check
+	beqz a0, .Lcf_invalid
+	bne  a0, s1, .Lcf_invalid        # trailing bytes: the frame length and the value
+					 # disagree, which is a framing fault, not a tag one
+	adr_l t0, g_saw_tag
+	ld   t0, 0(t0)
+	bnez t0, .Lcf_tag
+	li   a0, 0
+	j    .Lcf_ret
+.Lcf_tag:
+	li   a0, 1
+	j    .Lcf_ret
+.Lcf_invalid:
+	li   a0, 2
+.Lcf_ret:
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 32
+	ret
+
+	.type cbor_check, @function
+# cbor_check(a0 = ptr, a1 = end) -> a0 = ptr-after-value | 0 if not a legal value.
+# Records a major-6 tag anywhere in g_saw_tag and keeps walking, so one pass answers both
+# questions. Every read is bounds-checked against `end` before it happens.
+# s1 = p, s2 = end, s3 = major, s4 = argument, s5 = item counter.
+# NB t5/t6 are the bswap macros' internal scratch and are never held live across one.
+cbor_check:
+	addi sp, sp, -64
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	sd   s4, 40(sp)
+	sd   s5, 48(sp)
+	mv   s0, sp
+	mv   s1, a0                      # p
+	mv   s2, a1                      # end
+	adr_l t0, g_chk_depth
+	ld   t1, 0(t0)
+	addi t1, t1, 1
+	sd   t1, 0(t0)
+	li   t2, 128
+	bgtu t1, t2, .Lcc_bad            # canonical ECF nesting is shallow; a frame deeper than
+					 # this is hostile, and the cap is what keeps the
+					 # recursion off the guard page
+	bgeu s1, s2, .Lcc_bad            # no initial byte
+	lbu  t0, 0(s1)
+	addi s1, s1, 1
+	srli s3, t0, 5                   # major
+	andi t0, t0, 0x1f                # additional info
+	li   s4, 0
+	li   t1, 24
+	bltu t0, t1, .Lcc_small
+	beq  t0, t1, .Lcc_a1
+	li   t1, 25
+	beq  t0, t1, .Lcc_a2
+	li   t1, 26
+	beq  t0, t1, .Lcc_a4
+	li   t1, 27
+	beq  t0, t1, .Lcc_a8
+	j    .Lcc_bad                    # 28/29/30 reserved · 31 indefinite-length. Canonical
+					 # ECF admits neither, and read_head would decode 31 as
+					 # the 8-byte form and read past the frame.
+.Lcc_small:
+	mv   s4, t0
+	j    .Lcc_have
+.Lcc_a1:
+	addi t1, s1, 1
+	bgtu t1, s2, .Lcc_bad
+	lbu  s4, 0(s1)
+	mv   s1, t1
+	j    .Lcc_have
+.Lcc_a2:
+	addi t1, s1, 2
+	bgtu t1, s2, .Lcc_bad
+	lbu  s4, 0(s1)
+	slli s4, s4, 8
+	lbu  t2, 1(s1)
+	or   s4, s4, t2
+	mv   s1, t1
+	j    .Lcc_have
+.Lcc_a4:
+	addi t1, s1, 4
+	bgtu t1, s2, .Lcc_bad
+	lwu  t2, 0(s1)
+	bswap32 s4, t2
+	mv   s1, t1
+	j    .Lcc_have
+.Lcc_a8:
+	addi t1, s1, 8
+	bgtu t1, s2, .Lcc_bad
+	ld   t2, 0(s1)
+	bswap64 s4, t2
+	mv   s1, t1
+.Lcc_have:
+	li   t0, 2
+	bltu s3, t0, .Lcc_done           # 0 uint / 1 nint — the head is the whole value
+	li   t0, 3
+	bgeu t0, s3, .Lcc_bytes          # 2 bytes / 3 text
+	li   t0, 4
+	beq  s3, t0, .Lcc_arr
+	li   t0, 5
+	beq  s3, t0, .Lcc_map
+	li   t0, 6
+	beq  s3, t0, .Lcc_tag
+	j    .Lcc_done                   # 7 simple/float — argument bytes already consumed
+.Lcc_bytes:
+	sub  t0, s2, s1                  # bytes remaining in the frame
+	bltu t0, s4, .Lcc_bad            # a declared length longer than the frame. Compared this
+					 # way round rather than as p+arg, which wraps on a
+					 # 2^64-1 length and passes.
+	add  s1, s1, s4
+	j    .Lcc_done
+.Lcc_map:
+	srli t0, s4, 63
+	bnez t0, .Lcc_bad                # 2*count would wrap
+	slli s4, s4, 1                   # a map is 2*count items
+.Lcc_arr:
+	mv   s5, s4
+.Lcc_items:
+	beqz s5, .Lcc_done
+	mv   a0, s1
+	mv   a1, s2
+	call cbor_check
+	beqz a0, .Lcc_bad                # a huge declared count terminates HERE, on the first
+					 # element with no bytes left — the loop cannot run longer
+					 # than the frame
+	mv   s1, a0
+	addi s5, s5, -1
+	j    .Lcc_items
+.Lcc_tag:
+	adr_l t0, g_saw_tag
+	li    t1, 1
+	sd    t1, 0(t0)
+	mv   a0, s1
+	mv   a1, s2
+	call cbor_check
+	beqz a0, .Lcc_bad
+	mv   s1, a0
+.Lcc_done:
+	adr_l t0, g_chk_depth
+	ld   t1, 0(t0)
+	addi t1, t1, -1
+	sd   t1, 0(t0)
+	mv   a0, s1
+	j    .Lcc_ret
+.Lcc_bad:
+	adr_l t0, g_chk_depth
+	ld   t1, 0(t0)
+	addi t1, t1, -1
+	sd   t1, 0(t0)
+	li   a0, 0
+.Lcc_ret:
+	ld   s5, 48(sp)
+	ld   s4, 40(sp)
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 64
+	ret
+
 	.section .note.GNU-stack,"",@progbits

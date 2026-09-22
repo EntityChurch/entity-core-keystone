@@ -9,6 +9,7 @@
 	.extern ec_content_hash
 	.extern write_all, mcpy, strlen
 	.extern read_head, skip_value, map_find, get_text, memeq
+	.extern cbor_check_frame
 	.extern w_u8, w_map, w_arr, w_uint, w_txt, w_bstr, w_raw, w_cstr
 	.extern ec_ed25519_verify, ec_ed25519_sign, ec_peerid_format
 	.extern g_peerid, g_peerid_len, g_pubkey, g_seed, g_opengrants
@@ -37,6 +38,12 @@ s_entity_scheme: .asciz "entity://"
 ka_expires:  .asciz "expires_at"
 ka_notbefore: .asciz "not_before"
 s_star:     .asciz "*"
+# §5.4 (0.8.2.20) — the unmatchable value canonicalize answers for a form it cannot
+# resolve. Unreachable as a real canonical path BY CONSTRUCTION: its first segment would
+# have to be a peer_id, and is_peer_id wants >=46 Base58 characters while '-' is not in
+# the Base58 alphabet at all.
+s_never_match: .ascii "/never-match"
+	.equ NEVER_LEN, . - s_never_match
 # F-peers (§5.4 is_peer_id): Base58 alphabet (Bitcoin), 58 bytes, no terminator needed —
 # is_peer_id always scans exactly 58 entries. Ported from asm-arm64/src/dispatch.s.
 s_base58_alpha: .ascii "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -98,6 +105,10 @@ ec_invalid_params: .asciz "invalid_params"
 hexchars:     .ascii "0123456789abcdef"
 ec_unexpected_params: .asciz "unexpected_params"
 ec_hash_mismatch:     .asciz "hash_mismatch"
+ec_non_canonical:     .asciz "non_canonical_ecf"
+ec_path_required:     .asciz "path_required"
+ec_ambiguous_res:     .asciz "ambiguous_resource"
+ec_malformed_res:     .asciz "malformed_resource"
 ec_invalid_path:      .asciz "invalid_path"
 ec_unsupported_chf:   .asciz "unsupported_content_hash_format"
 
@@ -110,6 +121,18 @@ ec_unsupported_chf:   .asciz "unsupported_content_hash_format"
 	.lcomm ch_resp,  64
 	# §6.3 put-admission scratch: the recomputed content_hash of the SUBMITTED entity.
 	.lcomm ch_admit, 64
+	# §5.2 scope-check channel. Process globals rather than arguments, for the reason
+	# ch_admit/ch_bind are: this peer forks per connection and a child serves ONE frame at a
+	# time, so there is no second request to race with. grant_scope_ok CLEARS g_res_map on
+	# entry so a stale map can never widen a later single-target check.
+	.lcomm g_res_map,    8           # the caller's `resource` map for this request, or 0
+	.lcomm g_gs_tgt_ptr, 8           # the single concrete subject, when g_res_map is 0
+	.lcomm g_gs_tgt_len, 8
+	.lcomm g_gro_t_ptr,  8           # the target being examined inside the map walk
+	.lcomm g_gro_t_len,  8
+	.lcomm g_eff_ptr,    8           # §3.3's ladder result (0.8.2.20)
+	.lcomm g_eff_len,    8
+	.lcomm g_tok_data,   8           # §6.3: the token verify_get_scope authorized against
 	.lcomm ch_bind,  64              # §3.1 included-key bind: recomputed content_hash
                                          # (fork-per-connection, so a process global is
                                          # one frame at a time — same argument as ch_admit)
@@ -303,7 +326,20 @@ conn_serve:
 	li   a2, 4
 	call read_full
 	li   t0, 4
-	bne  a0, t0, .Lcs_done
+	beq  a0, t0, .Lcs_hdr_ok
+	# §4.11 — THE TWO ENDS-OF-STREAM ARE DIFFERENT EVENTS AND THEY DIFFER BY ONE BYTE.
+	#
+	# Zero bytes read is a clean close AT A FRAME BOUNDARY: there is no refusal here and
+	# nobody to answer, and emitting a coded frame would be refusing an ordinary hangup.
+	# One to three bytes and then FIN is "a length prefix that never completes", which
+	# §4.11's framing arm names in as many words and assigns 400 invalid_request.
+	#
+	# This loop used to collapse both into one `bne`, which is why the peer closed on a
+	# truncated frame with nothing on the wire — §4.11's named "CLOSING with no coded
+	# frame", indistinguishable from a network fault (§4.6).
+	beqz a0, .Lcs_done
+	j    .Lcs_truncated
+.Lcs_hdr_ok:
 	lla  t0, b_hdr
 	lwu  t0, 0(t0)
 	bswap32 t0, t0                  # BE → host
@@ -316,8 +352,74 @@ conn_serve:
 	mv   a2, t0                     # frame len (zero-extended)
 	mv   s2, a2
 	call read_full
-	bne  a0, s2, .Lcs_done
+	bne  a0, s2, .Lcs_truncated     # declared N, delivered fewer, then EOF
+	# ---- §4.11 DECODE BOUNDARY ----
+	# Sited HERE, above dispatch, and that placement is the requirement rather than a
+	# convenience: §4.11 is about frames refused PRE-ADMISSION, so every one of these
+	# causes has to be decided before the §1.4 address gate, before authentication and
+	# before any capability question. A peer that runs its address gate first answers
+	# `invalid_request` to a tagged frame and has not implemented §6.3's decode-time reject
+	# at all — it has merely refused the frame for an unrelated reason that happens to
+	# share a code.
+	mv   a0, s2
+	call frame_precheck             # 0 ok | 1 tag | 2 never becomes an Envelope
+	li   t0, 1
+	beq  a0, t0, .Lcs_noncanon
+	li   t0, 2
+	beq  a0, t0, .Lcs_undecodable
+	# §3.1 / §1.8 resolution integrity, at the boundary rather than at the lookup.
+	call included_all_keys_bind
+	beqz a0, .Lcs_miskeyed
 	call dispatch
+	j    .Lcs_loop
+.Lcs_truncated:
+	# Uncorrelated BY CONSTRUCTION — the request_id lives inside a frame that never arrived
+	# — and §4.11 provides for exactly that: "otherwise as a best-effort coded frame
+	# carrying no correlation". Then close: the stream is no longer framed, so there is
+	# nothing further to serve.
+	lla  t0, g_rid_len
+	sd   zero, 0(t0)
+	li   a0, 400
+	lla  a1, ec_invalid_request
+	call send_error
+	j    .Lcs_done
+.Lcs_noncanon:
+	# A CBOR tag in the frame. ENTITY-CBOR-ENCODING §6.3 defines `non_canonical_ecf` for
+	# tag-policy violations specifically and already MUSTs the refusal; §4.11 rules that
+	# same code non-conformant on the FRAMING arm, which is why the two are separate labels
+	# here and not one catch-all.
+	#
+	# The frame is otherwise structurally sound — cbor_check_frame reports TAG only when the
+	# walk completed and consumed exactly the frame — so the lenient readers are safe on it
+	# and the request_id is recoverable.
+	call salvage_rid
+	li   a0, 400
+	lla  a1, ec_non_canonical
+	call send_error
+	j    .Lcs_loop                  # the FRAMING is intact: keep serving
+.Lcs_undecodable:
+	# Complete frame, and not a CBOR value this peer can walk. No salvage is attempted and
+	# that is the point: the shape was never established, so map_find over these bytes would
+	# be reading a structure that does not exist.
+	lla  t0, g_rid_len
+	sd   zero, 0(t0)
+	li   a0, 400
+	lla  a1, ec_invalid_request
+	call send_error
+	j    .Lcs_loop
+.Lcs_miskeyed:
+	# An `included` entry filed under a key that is not its content_hash. §5.2a: a peer that
+	# refuses at the DECODE BOUNDARY answers 400 hash_mismatch. `non_canonical_ecf` is not
+	# conformant here — the bytes ARE canonical; what is false is the claim the KEY makes,
+	# and that code's remedy (re-encode) sends an honest caller to the wrong layer.
+	#
+	# included_find_by_key keeps its own bind check and that duplication is deliberate: this
+	# one is what the WIRE observes, that one is the backstop for any future caller that
+	# reaches the map without coming through here.
+	call salvage_rid
+	li   a0, 400
+	lla  a1, ec_hash_mismatch
+	call send_error
 	j    .Lcs_loop
 .Lcs_oversize:
 	# §4.10(a): answer 413 payload_too_large NOW, then close. request_id is unknown
@@ -392,6 +494,126 @@ read_full:
 	addi sp, sp, 48
 	ret
 
+# frame_precheck(a0 = frame length) -> a0 = 0 OK | 1 tag | 2 never becomes an Envelope.
+# A thin adapter over cbor.s's strict checker so the read loop names the buffer once.
+	.type frame_precheck, @function
+frame_precheck:
+	addi sp, sp, -16
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	mv   s0, sp
+	mv   t0, a0
+	lla  a0, b_req
+	add  a1, a0, t0
+	call cbor_check_frame
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 16
+	ret
+
+# salvage_rid — set g_rid_ptr/g_rid_len from root.data.request_id, or leave the response
+# uncorrelated if any step of that is absent.
+#
+# ZEROES FIRST, unconditionally. g_rid_* are process globals and a child serves many frames,
+# so a frame that carries no request_id would otherwise be answered with the PREVIOUS
+# frame's — a correlation id that names a completed request is worse than none, because the
+# caller matches it to something.
+#
+# Only ever called on bytes cbor_check_frame has already walked to completion.
+	.type salvage_rid, @function
+salvage_rid:
+	addi sp, sp, -16
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	mv   s0, sp
+	lla  t0, g_rid_len
+	sd   zero, 0(t0)
+	lla  a0, b_req
+	lla  a1, k_root
+	li   a2, 4
+	call map_find
+	beqz a0, .Lsr_ret
+	lla  a1, k_data
+	li   a2, 4
+	call map_find
+	beqz a0, .Lsr_ret
+	lla  a1, k_rid
+	li   a2, 10
+	call map_find
+	beqz a0, .Lsr_ret
+	call get_text                   # a0 = ptr, a2 = len
+	lla  t0, g_rid_ptr
+	sd   a0, 0(t0)
+	lla  t0, g_rid_len
+	sd   a2, 0(t0)
+.Lsr_ret:
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 16
+	ret
+
+# included_all_keys_bind() -> a0 = 1 if every checkable `included` entry hashes to the key it
+# is filed under, else 0.  §3.1 / §1.8, at the decode boundary.
+#
+# SCOPE, stated because it is a hole and not an omission: only 33-byte keys are checked. A key
+# of any other length cannot be an ecfv1-sha256 content_hash, and included_find_by_key only
+# ever MATCHES 33-byte keys — so an entry filed under a 7-byte key is unresolvable by
+# construction and refusing it here would be refusing a frame nothing can act on.
+# s1 = remaining pairs, s2 = cursor, s3 = key bytes, s4 = key len.
+	.type included_all_keys_bind, @function
+included_all_keys_bind:
+	addi sp, sp, -48
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	sd   s4, 40(sp)
+	mv   s0, sp
+	lla  a0, b_req
+	lla  a1, ka_included
+	li   a2, 8
+	call map_find
+	beqz a0, .Liab_yes              # no `included` — nothing claims to resolve
+	call read_head                  # a0 = after-head, a1 = major, a2 = count
+	li   t0, 5
+	bne  a1, t0, .Liab_no           # `included` is a map or the envelope is not one
+	mv   s2, a0                     # cursor
+	mv   s1, a2                     # remaining pairs
+.Liab_l:
+	beqz s1, .Liab_yes
+	mv   a0, s2
+	call read_head                  # a0 = key bytes, a2 = len
+	mv   s3, a0
+	mv   s4, a2
+	add  s2, a0, a2                 # cursor → value entity
+	li   t0, 33
+	bne  s4, t0, .Liab_next         # not a content_hash shape — see SCOPE above
+	mv   a0, s2
+	mv   a1, s3
+	call included_key_binds
+	beqz a0, .Liab_no
+.Liab_next:
+	mv   a0, s2
+	call skip_value
+	mv   s2, a0
+	addi s1, s1, -1
+	j    .Liab_l
+.Liab_yes:
+	li   a0, 1
+	j    .Liab_ret
+.Liab_no:
+	li   a0, 0
+.Liab_ret:
+	ld   s4, 40(sp)
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 48
+	ret
+
 # =====================================================================
 # dispatch — parse b_req envelope, route by operation. (only hello for now)
 # =====================================================================
@@ -407,12 +629,16 @@ dispatch:
 	sd   s2, 24(sp)
 	sd   s3, 32(sp)
 	mv   s0, sp
+	# Every frame starts UNCORRELATED. g_rid_* survive across frames in one child, so a
+	# frame that carries no request_id would otherwise be answered with its predecessor's.
+	lla  t0, g_rid_len
+	sd   zero, 0(t0)
 	# root = map_find(b_req, "root")
 	lla  a0, b_req
 	lla  a1, k_root
 	li   a2, 4
 	call map_find
-	beqz a0, .Ld_ret
+	beqz a0, .Ld_badreq             # decodes, has no `root` — not an Envelope (§4.11)
 	lla  t0, g_root_ptr
 	sd   a0, 0(t0)
 	# §7a: a root of type system/protocol/execute/response is a reply to one of our outbound
@@ -421,21 +647,38 @@ dispatch:
 	lla  a1, k_type
 	li   a2, 4
 	call map_find
-	beqz a0, .Ld_notresp
-	call get_text
+	beqz a0, .Ld_badreq             # a root with no `type` is not an entity
+	call get_text                   # a0 = type bytes, a2 = len
+	#
+	# Compared by LENGTH and then bytes, and NOTHING is held across the memeq calls: memeq
+	# clobbers t0/t1 here and the op ladder below reuses s2/s3 for the operation, so parking
+	# the type in either place would be correct today and one inserted call away from
+	# silently comparing the wrong bytes.
 	li   t0, 32
-	bne  a2, t0, .Ld_notresp
+	beq  a2, t0, .Ld_type_resp
+	li   t0, 23
+	bne  a2, t0, .Ld_badreq
+	mv   a1, a0
+	lla  a0, t_execute
+	li   a2, 23
+	call memeq
+	beqz a0, .Ld_badreq
+	j    .Ld_notresp
+.Ld_type_resp:
 	mv   a1, a0
 	lla  a0, t_resp
 	li   a2, 32                     # memeq len in a2
 	call memeq
-	beqz a0, .Ld_notresp
+	beqz a0, .Ld_badreq             # length 32 and not the response type
 	lla  t0, g_root_ptr
 	ld   a0, 0(t0)
 	lla  a1, k_data
 	li   a2, 4
 	call map_find
-	beqz a0, .Ld_ret
+	beqz a0, .Ld_ret                # a malformed RESPONSE, not a request. Deliberately
+					# dropped: §4.11 obliges an answer to a frame that is not
+					# a request, and answering a reply would put a response on
+					# the wire for a response.
 	call handle_dispatch_response
 	j    .Ld_ret
 .Ld_notresp:
@@ -445,14 +688,14 @@ dispatch:
 	lla  a1, k_data
 	li   a2, 4
 	call map_find
-	beqz a0, .Ld_ret
+	beqz a0, .Ld_badreq
 	mv   s1, a0                     # s1 = exec data map
 	# request_id → save
 	mv   a0, s1
 	lla  a1, k_rid
 	li   a2, 10
 	call map_find
-	beqz a0, .Ld_ret
+	beqz a0, .Ld_badreq
 	call get_text                   # a0=ptr, a2=len
 	lla  t0, g_rid_ptr
 	sd   a0, 0(t0)
@@ -469,7 +712,7 @@ dispatch:
 	lla  a1, k_op
 	li   a2, 9
 	call map_find
-	beqz a0, .Ld_ret
+	beqz a0, .Ld_badreq             # an EXECUTE with no `operation` is not a request
 	call get_text                   # a0=opptr, a2=oplen
 	# route: save op (ptr in a0, len in a2) then compare
 	mv   s2, a0                     # op ptr
@@ -711,6 +954,21 @@ dispatch:
 .Ld_501:
 	li   a0, 501
 	lla  a1, ec_unsupported_op
+	call send_error
+	j    .Ld_ret
+.Ld_badreq:
+	# §4.11 — the frame decoded and is NOT a well-formed request: no `root`, a root with no
+	# `type`, a root type that is neither EXECUTE nor EXECUTE_RESPONSE, no `data`, no
+	# `request_id`, or no `operation`. Every one of those used to fall through to .Ld_ret,
+	# which answers NOTHING — §4.9(c)'s silent drop, billed entirely to the caller's own
+	# §6.11(c) deadline, so it presents as a slow peer rather than a wrong one.
+	#
+	# salvage_rid rather than trusting g_rid_*: some of these arms are reached BEFORE the
+	# request_id is read, and re-deriving it from the frame is both idempotent and the only
+	# way a decoded non-EXECUTE root comes back correlated.
+	call salvage_rid
+	li   a0, 400
+	lla  a1, ec_invalid_request
 	call send_error
 .Ld_ret:
 	ld   s3, 32(sp)
@@ -2480,24 +2738,25 @@ serve_tree_get:
 	mv   a0, s3
 	call verify_get_scope
 	bnez a0, .Lstg_done           # rejected; 403 already sent
-	# resource = map_find(exec, "resource", 8)
+	# ---- §3.3's ladder, on the EFFECTIVE list (0.8.2.20) ----
+	# Never on resource.targets: a handler that counts the effective list and then indexes
+	# targets[0] has implemented the arithmetic completely and is still reading a path no
+	# authorization covered. Measured on the x86-64 sibling 2026-09-15 — `targets:[qA,qB]
+	# exclude:[qA]` served qA, the one entry the caller had carved out.
 	mv   a0, s3
-	lla  a1, k_resource
-	li   a2, 8
-	call map_find
-	beqz a0, .Lstg_404
-	# targets = map_find(resource, "targets", 7)
-	lla  a1, k_targets
-	li   a2, 7
-	call map_find
-	beqz a0, .Lstg_404
-	# a0 = targets array value; read head, require ≥1 element
-	call read_head                # a0=after-head, a1=major(4), a2=count
-	beqz a2, .Lstg_404
-	# first element is a text string → ptr,len
-	call get_text                 # a0=strptr, a2=strlen
-	mv   s1, a0                  # raw target ptr
-	mv   s2, a2                  # raw target len
+	call effective_target
+	li   t0, 1
+	beq  a0, t0, .Lstg_rootlist   # no `resource` at all → EXTENSION-TREE §2.2a's
+				      # absent-case answer for a resource-OPTIONAL,
+				      # BROAD-RESULT operation: the root listing
+	li   t0, 2
+	beq  a0, t0, .Lstg_pathreq
+	li   t0, 3
+	beq  a0, t0, .Lstg_ambig
+	adr_l t0, g_eff_ptr
+	ld   s1, 0(t0)               # raw target ptr (caller's own spelling)
+	adr_l t0, g_eff_len
+	ld   s2, 0(t0)               # raw target len
 	# §"invalid_path" reject (dot-relative / empty-segment / NUL).
 	mv   a1, s1
 	mv   a3, s2
@@ -2508,19 +2767,59 @@ serve_tree_get:
 	add  t0, s1, s2
 	lbu  t0, -1(t0)              # last byte
 	li   t1, 0x2f                # '/'?
-	bne  t0, t1, .Lstg_point
+	bne  t0, t1, .Lstg_concrete
 .Lstg_listing:
 	mv   a0, s1
 	mv   a1, s2
 	call serve_tree_listing       # emits its own 200/404
 	j    .Lstg_done
+.Lstg_rootlist:
+	# The root listing is `system/tree`'s ABSENT-case answer, so it is owed only to a request
+	# addressed to that handler.
+	#
+	# This peer routes by OPERATION and derive_handler falls back to system/tree for any URI
+	# it cannot parse, so without this test every `get` at an unregistered path — say
+	# entity://{peer}/system/peer/status/<hex> — was answered with a listing of the whole
+	# tree. Measured on the x86-64 sibling: peer_mut_2_no_auto_correlation_across_forms
+	# PASS -> FAIL, a 200 where a synthetic unrelated peer_id must get no state at all.
+	#
+	# What it does NOT fix is the routing: §6.5's resolution-first order makes an unregistered
+	# path 404 `handler_not_found` WHATEVER the operation, and this peer only reaches that
+	# verdict for UNKNOWN ops. Pre-existing, and named here rather than left to inference.
+	adr_l t0, g_handler_len
+	ld   t0, 0(t0)
+	li   t1, 11
+	bne  t0, t1, .Lstg_404
+	adr_l t0, g_handler_ptr
+	ld   a0, 0(t0)
+	lla  a1, va_systree
+	li   a2, 11
+	call memeq
+	beqz a0, .Lstg_404
+	li   s1, 0
+	li   s2, 0
+	j    .Lstg_listing
+.Lstg_concrete:
+	mv   a0, s1
+	mv   a1, s2
+	call has_star
+	bnez a0, .Lstg_malformed
 .Lstg_point:
 	# §1.4 canonicalize for the write-store key; the read-only typestore keeps raw keys.
 	mv   a1, s1
 	mv   a3, s2
 	call canon_path               # a0=canon ptr, a2=canon len
-	mv   a1, a0
-	mv   a3, a2
+	# §6.3 — the handler verifies the CALLER's capability covers the path it is about to
+	# read. See check_path_permission for why this is not redundant with the dispatch stage.
+	addi sp, sp, -16
+	sd   a0, 0(sp)
+	sd   a2, 8(sp)
+	mv   a1, a2
+	call check_path_permission
+	ld   a1, 0(sp)               # canonical ptr
+	ld   a3, 8(sp)               # canonical len
+	addi sp, sp, 16
+	beqz a0, .Lstg_403
 	call store_get                # -> a0=blob|0, a2=len
 	bnez a0, .Lstg_send
 	mv   a1, s1                  # raw target for the read-only typestore
@@ -2534,6 +2833,29 @@ serve_tree_get:
 .Lstg_invalid:
 	li   a0, 400
 	lla  a1, ec_invalid_path
+	call send_error
+	j    .Lstg_done
+.Lstg_pathreq:
+	# `resource` PRESENT and every target carved out by the caller's own exclude. Answering
+	# it the absent case would answer a request for one excluded path with a listing of the
+	# whole tree — wider than what was asked for, which is what BROAD-RESULT means.
+	li   a0, 400
+	lla  a1, ec_path_required
+	call send_error
+	j    .Lstg_done
+.Lstg_ambig:
+	li   a0, 400
+	lla  a1, ec_ambiguous_res
+	call send_error
+	j    .Lstg_done
+.Lstg_malformed:
+	li   a0, 400
+	lla  a1, ec_malformed_res
+	call send_error
+	j    .Lstg_done
+.Lstg_403:
+	li   a0, 403
+	lla  a1, ec_cap_denied
 	call send_error
 	j    .Lstg_done
 .Lstg_404:
@@ -3230,26 +3552,34 @@ serve_tree_put:
 	mv   a0, s2
 	call verify_get_scope
 	bnez a0, .Lstp_done
-	# path = resource.targets[0]
+	# §3.3's ladder, on the EFFECTIVE list — the same seam `get` uses, so one request cannot
+	# receive two different answers according to which operation it named.
+	#
+	# BOTH EMPTIES ANSWER path_required HERE, and that is the operation's own specification
+	# rather than a shortcut: `put` REQUIRES a resource, and 0.8.2.24 (N7) scopes "an empty
+	# effective list IS the absent case" to exactly that kind of operation. §3.3 also pins
+	# path_required rather than ambiguous_resource for a MISSING target, and 0.8.2.20 names
+	# inverting those two as the defect — the remedies are opposites ("name one" against
+	# "name fewer").
 	mv   a0, s2
-	lla  a1, k_resource
-	li   a2, 8
-	call map_find
-	beqz a0, .Lstp_400
-	lla  a1, k_targets
-	li   a2, 7
-	call map_find
-	beqz a0, .Lstp_400
-	call read_head                   # a2 = count
-	beqz a2, .Lstp_400
-	call get_text                    # a0=path ptr, a2=path len
-	mv   s3, a0
-	mv   s4, a2
+	call effective_target
+	li   t0, 3
+	beq  a0, t0, .Lstp_ambig
+	bnez a0, .Lstp_pathreq
+	adr_l t0, g_eff_ptr
+	ld   s3, 0(t0)
+	adr_l t0, g_eff_len
+	ld   s4, 0(t0)
 	# §"invalid_path" reject (dot-relative / empty-segment / NUL) before any write.
 	mv   a1, s3
 	mv   a3, s4
 	call path_valid
 	beqz a0, .Lstp_invalid
+	# A pattern is not a concrete subject for a resource-requiring operation (§3.3).
+	mv   a0, s3
+	mv   a1, s4
+	call has_star
+	bnez a0, .Lstp_malformed
 	# §1.4 canonicalize the store key (peer-relative → /{localPeerID}/…).
 	mv   a1, s3
 	mv   a3, s4
@@ -3331,6 +3661,21 @@ serve_tree_put:
 .Lstp_invalid:
 	li   a0, 400
 	lla  a1, ec_invalid_path
+	call send_error
+	j    .Lstp_done
+.Lstp_pathreq:
+	li   a0, 400
+	lla  a1, ec_path_required
+	call send_error
+	j    .Lstp_done
+.Lstp_ambig:
+	li   a0, 400
+	lla  a1, ec_ambiguous_res
+	call send_error
+	j    .Lstp_done
+.Lstp_malformed:
+	li   a0, 400
+	lla  a1, ec_malformed_res
 	call send_error
 	j    .Lstp_done
 .Lstp_400:
@@ -5227,9 +5572,23 @@ serve_tree_listing:
 	addi t0, t0, 1
 	j    .Lstl_slash
 .Lstl_slashdone:
+	# §6.3's LISTING FILTER (0.8.2.21/.22): every entry of a multi-entry result is checked
+	# individually, entries that DENY are omitted, and `count` reflects the filtered total.
+	# Filtering at ADD time is what makes the count follow by construction rather than by a
+	# second pass that could disagree with it.
+	#
+	# The subject is the CHILD path — the canonical prefix plus this segment — which for a
+	# write-store key is just a prefix of the key itself, already canonical.
+	mv   s3, t0                      # seg len (Klen is finished with)
+	ld   a0, 0(s1)                   # the canonical key
+	lla  t0, g_cpref_len
+	ld   a1, 0(t0)
+	add  a1, a1, s3                  # prefix + segment = the child path
+	call check_path_permission
+	beqz a0, .Lstl_next
 	mv   a0, s4                      # seg ptr
-	mv   a1, t0                      # seg len (= j)
-	li   a4, 0                       # r8 = has_child
+	mv   a1, s3                      # seg len (= j)
+	li   a4, 0                       # has_child
 	bgeu a1, s5, .Lstl_add           # j < restlen → has deeper segment
 	li   a4, 1
 .Lstl_add:
@@ -5243,16 +5602,87 @@ serve_tree_listing:
 	lla  t0, listing_n
 	ld   t0, 0(t0)
 	bnez t0, .Lstl_build
-	# no store children — fall back to the read-only typestore listing key, else 200 empty.
+	# no store children — fall back to the read-only typestore listing key, else enumerate.
+	# The length goes in a3: typestore_lookup reads a3, and this call site used to load it
+	# into a2 and depend on a3 surviving from before canon_path by accident. Same value, no
+	# behaviour change, one less thing that is true only until someone inserts a call.
+	lla  t0, g_lprefix_ptr
+	ld   a1, 0(t0)
+	lla  t0, g_lprefix_len
+	ld   a3, 0(t0)
+	call typestore_lookup
+	beqz a0, .Lstl_typescan          # no canned listing at this key → enumerate the table
+	mv   a1, a2                      # (send_get_ok: a0=ptr, a1=len)
+	call send_get_ok
+	j    .Lstl_done
+.Lstl_typescan:
+	# ENUMERATE THE READ-ONLY TYPESTORE. Only reached when the write store has no children
+	# here AND no canned listing blob is filed at this key, so `system/type/` keeps answering
+	# its pre-rendered blob and nothing already measured moves.
+	#
+	# Without this the peer enumerated NOTHING under `system/type/primitive/` — 42 of 45
+	# peers name its children and these three did not, which is a directory `get` answering
+	# an empty listing for a directory that plainly has contents.
+	#
+	# DISCLOSED, because it is the same rule failing one branch over: the canned-blob arm
+	# above is NOT filtered. It serves bytes harvested from the reference peer as a unit, so
+	# there is no per-entry subject for check_path_permission to be asked about without
+	# re-rendering it.
+	lla  s1, type_table
+	lla  t0, type_table_count
+	ld   s2, 0(t0)
+.Lstl_ts:
+	beqz s2, .Lstl_build
+	ld   s3, 8(s1)                   # entry.path_len
+	lla  t0, g_lprefix_len
+	ld   t0, 0(t0)                   # the RAW prefix: the typestore keeps raw keys
+	bltu s3, t0, .Lstl_ts_next
+	ld   a0, 0(s1)
 	lla  t0, g_lprefix_ptr
 	ld   a1, 0(t0)
 	lla  t0, g_lprefix_len
 	ld   a2, 0(t0)
-	call typestore_lookup
-	beqz a0, .Lstl_build             # nothing → emit an empty listing
-	mv   a1, a2                      # (send_get_ok: a0=ptr, a1=len)
-	call send_get_ok
-	j    .Lstl_done
+	call memeq
+	beqz a0, .Lstl_ts_next
+	ld   s4, 0(s1)
+	lla  t0, g_lprefix_len
+	ld   t0, 0(t0)
+	add  s4, s4, t0                  # rest ptr
+	sub  s5, s3, t0                  # rest len
+	beqz s5, .Lstl_ts_next           # the node itself
+	li   t0, 0
+.Lstl_ts_slash:
+	bgeu t0, s5, .Lstl_ts_done
+	add  t1, s4, t0
+	lbu  t1, 0(t1)
+	li   t2, 0x2f
+	beq  t1, t2, .Lstl_ts_done
+	addi t0, t0, 1
+	j    .Lstl_ts_slash
+.Lstl_ts_done:
+	mv   s3, t0                      # seg len
+	# The typestore's keys are RAW, so the child path has to be canonicalized before it can
+	# be matched against a capability's canonical patterns.
+	ld   a1, 0(s1)
+	lla  t0, g_lprefix_len
+	ld   a3, 0(t0)
+	add  a3, a3, s3
+	call canon_path                  # a0 = canon ptr, a2 = canon len
+	mv   a1, a2
+	call check_path_permission
+	beqz a0, .Lstl_ts_next
+	mv   a0, s4
+	mv   a1, s3
+	li   a4, 0
+	bgeu a1, s5, .Lstl_ts_add
+	li   a4, 1
+.Lstl_ts_add:
+	ld   a2, 16(s1)                  # blob ptr (leaf hash source)
+	call add_listing_entry
+.Lstl_ts_next:
+	addi s1, s1, 32
+	addi s2, s2, -1
+	j    .Lstl_ts
 .Lstl_build:
 	call emit_listing
 .Lstl_done:
@@ -6510,6 +6940,45 @@ canon:
 	mv   s3, a2                      # frame
 	mv   s4, a3                      # frame len
 	mv   s5, a4                      # out
+	# §5.4 (0.8.2.20): canonicalize is TOTAL. The three reserved prefixes — "./", "../"
+	# and "*/" — have no canonical form, and this used to fall through to the peer-relative
+	# arm and emit "/{frame}/../nope": a literal that matches nothing.
+	#
+	# MATCHING NOTHING IS THE RIGHT ANSWER IN AN INCLUDE AND THE OPPOSITE OF IT IN AN
+	# EXCLUDE. A grant whose resources exclude is `../nope` carved out NOTHING, so the grant
+	# was silently wider than its author wrote — measured on the x86-64 sibling 2026-09-15,
+	# 200 where 0.8.2.21 requires a denial. The sentinel is what lets the exclude-reading
+	# call sites tell the two positions apart; the matcher stays uniform over its operands.
+	li   t2, 2
+	bltu s2, t2, .Lcn_notsent
+	lbu  t0, 0(s1)
+	li   t1, 0x2a                    # '*'
+	beq  t0, t1, .Lcn_slash2
+	li   t1, 0x2e                    # '.'
+	bne  t0, t1, .Lcn_notsent
+	lbu  t0, 1(s1)
+	li   t1, 0x2f
+	beq  t0, t1, .Lcn_sentinel       # "./"
+	li   t1, 0x2e
+	bne  t0, t1, .Lcn_notsent        # ".."
+	li   t2, 3
+	bltu s2, t2, .Lcn_notsent
+	lbu  t0, 2(s1)
+	li   t1, 0x2f
+	beq  t0, t1, .Lcn_sentinel       # "../"
+	j    .Lcn_notsent
+.Lcn_slash2:
+	lbu  t0, 1(s1)
+	li   t1, 0x2f
+	bne  t0, t1, .Lcn_notsent        # "*/"
+.Lcn_sentinel:
+	mv   a0, s5
+	lla  a1, s_never_match
+	li   a2, NEVER_LEN
+	call mcpy
+	li   a0, NEVER_LEN
+	j    .Lcn_ret
+.Lcn_notsent:
 	beqz s2, .Lcn_rel
 	lbu  t0, 0(s1)
 	li   t1, 0x2f
@@ -6573,6 +7042,26 @@ pat_covers:
 	mv   s2, a1                      # child len
 	mv   s3, a2                      # parent ptr
 	mv   s4, a3                      # parent len
+	# THE SENTINEL NEVER MATCHES, IN EITHER OPERAND (§5.4, 0.8.2.20) — and it is a MATCHER
+	# RULE, asked FIRST, rather than a property the value happens to have. The segment walk
+	# below answers TRUE for a bare "*" parent, so safety must not rest on "/never-match"
+	# merely looking unmatchable to a reader.
+	li   t0, NEVER_LEN
+	bne  s2, t0, .Lpc_chk_parent
+	mv   a0, s1
+	lla  a1, s_never_match
+	li   a2, NEVER_LEN
+	call memeq
+	bnez a0, .Lpc_no
+.Lpc_chk_parent:
+	li   t0, NEVER_LEN
+	bne  s4, t0, .Lpc_sent_ok
+	mv   a0, s3
+	lla  a1, s_never_match
+	li   a2, NEVER_LEN
+	call memeq
+	bnez a0, .Lpc_no
+.Lpc_sent_ok:
 	beqz s2, .Lpc_no
 	beqz s4, .Lpc_no
 	li   t1, 0x2f
@@ -7834,6 +8323,12 @@ verify_get_scope:
 	sd   s5, 48(sp)
 	mv   s0, sp
 	mv   s5, a0                     # exec
+	# §6.3's handler-level check needs the SAME token this stage authorized against, and the
+	# handler runs after this function has returned. Cleared first: an open-grants run
+	# presents no capability at all, and a stale pointer from an earlier request on this
+	# connection would be a check against somebody else's authority.
+	adr_l t0, g_tok_data
+	sd   zero, 0(t0)
 	# derive the request's handler namespace from data.uri (→ g_handler_ptr/len).
 	mv   a0, s5                     # exec
 	call derive_handler
@@ -7858,6 +8353,8 @@ verify_get_scope:
 	call map_find
 	beqz a0, .Lvgsc_ok
 	mv   s4, a0                     # token data map
+	adr_l t0, g_tok_data
+	sd   s4, 0(t0)
 	# ---- §5.5a frame for the DISPATCH surface: the presented cap's own granter ----
 	# Derived here rather than assumed to be the local peer — they are byte-identical for
 	# every self-issued capability, which is exactly why framing against the verifier stays
@@ -7929,26 +8426,24 @@ verify_get_scope:
 	call get_text
 	mv   s2, a0                     # op ptr
 	mv   s1, a2                     # op len
-	# target = resource.targets[0]
+	# §5.2 evaluates the EFFECTIVE set, so this stage takes the caller's whole `resource`
+	# map — targets AND the caller's own exclude — rather than targets[0]. Reading targets[0]
+	# here authorizes an entry the handler may not act on, and vice versa; that gap IS the
+	# hole §6.3 means by "not a secondary check".
+	#
+	# AN ABSENT `resource` IS NOT A DENIAL. §5.2 asks the resources dimension only of a
+	# request that carries one, and `get` with no resource is the root listing
+	# (EXTENSION-TREE §2.2a). This used to 403 outright, which made the absent case
+	# unreachable and the §3.3 ladder's first arm dead code.
 	mv   a0, s5
 	adr_l a1, k_resource
 	li   a2, 8
 	call map_find
-	beqz a0, .Lvgsc_403
-	adr_l a1, k_targets
-	li   a2, 7
-	call map_find
-	beqz a0, .Lvgsc_403
-	call read_head                   # array head: a2=count
-	beqz a2, .Lvgsc_403
-	call get_text                    # a0=target ptr, a2=target len
-	# grant_scope_ok(token_data, target ptr, target len, op ptr, op len)
-	mv   a1, a0                      # target ptr
+	mv   a1, a0                      # resource map | 0
 	mv   a0, s4                      # token data
-	# a2 already = target len
 	mv   a3, s2                      # op ptr
 	mv   a4, s1                      # op len
-	call grant_scope_ok
+	call check_permission_scope
 	bnez a0, .Lvgsc_ok
 .Lvgsc_403:
 	li   a0, 403
@@ -7976,10 +8471,43 @@ verify_get_scope:
 # The handler is g_handler_ptr/len, parsed from data.uri by derive_handler.
 	.globl grant_scope_ok
 	.type grant_scope_ok, @function
-# s4=target ptr, s5=target len, s6 is the global cursor (untouched), s7=op ptr,
-# s8=op len, s3=cursor(grant map ptr), s1=grant count. (r12→s2, r13→s4, r14→s5,
-# r15→s7, rbp→s8, rbx→s1 — chosen to avoid the s6 writer cursor.)
+# grant_scope_ok(a0 = token data, a1 = target ptr, a2 = target len, a3 = op ptr, a4 = op len)
+# The SINGLE-CONCRETE-TARGET entry point (§6.3's shape, and the one tools/peers-scope-test.c
+# drives). Clears the resource-map channel so a stale value from a previous request can never
+# widen this one.
 grant_scope_ok:
+	adr_l t0, g_res_map
+	sd   zero, 0(t0)
+	adr_l t0, g_gs_tgt_ptr
+	sd   a1, 0(t0)
+	adr_l t0, g_gs_tgt_len
+	sd   a2, 0(t0)
+	j    grants_permit
+
+	.globl check_permission_scope
+	.type check_permission_scope, @function
+# check_permission_scope(a0 = token data, a1 = exec `resource` map | 0, a3 = op ptr,
+#   a4 = op len) -> a0 = 1 if some grant permits the request.
+#
+# §5.2's dispatch boundary, and it differs from grant_scope_ok in the resources dimension
+# ONLY: here the subject is the caller's whole `resource` map — targets AND the caller's own
+# `exclude` — because §5.2 evaluates the EFFECTIVE set, not resource.targets[0].
+check_permission_scope:
+	adr_l t0, g_res_map
+	sd   a1, 0(t0)
+	adr_l t0, g_gs_tgt_ptr
+	sd   zero, 0(t0)
+	adr_l t0, g_gs_tgt_len
+	sd   zero, 0(t0)
+	j    grants_permit
+
+	.type grants_permit, @function
+# The shared per-grant loop. Both entry points above set the resource channel and fall in
+# here; there is deliberately not a second copy of the four dimensions, because a second copy
+# is a second thing that drifts and only one of them would be on the wire path.
+# s1 = grant count, s2 = grant cursor, s4 = scope map scratch, s7 = op ptr, s8 = op len.
+# (s6 is the CBOR writer cursor and is left alone.)
+grants_permit:
 	addi sp, sp, -80
 	sd   s0, 0(sp)
 	sd   ra, 8(sp)
@@ -7991,8 +8519,6 @@ grant_scope_ok:
 	sd   s7, 56(sp)
 	sd   s8, 64(sp)
 	mv   s0, sp
-	mv   s4, a1                      # target ptr
-	mv   s5, a2                      # target len
 	mv   s7, a3                      # op ptr
 	mv   s8, a4                      # op len
 	# grants = map_find(token_data, "grants", 6)
@@ -8005,12 +8531,13 @@ grant_scope_ok:
 	mv   s1, a2                      # grant count
 .Lgs_loop:
 	beqz s1, .Lgs_no
-	# operations.include ∋ op ?
+	# ---- operations (ID-SCOPE, §3.6/F40: literal, no §5.4 transforms) ----
 	mv   a0, s2
 	adr_l a1, ka_operations
 	li   a2, 10
 	call map_find
 	beqz a0, .Lgs_next
+	mv   s4, a0                      # operations scope map
 	adr_l a1, ka_include
 	li   a2, 7
 	call map_find
@@ -8019,12 +8546,23 @@ grant_scope_ok:
 	mv   a2, s8                      # op len
 	call array_contains_star
 	beqz a0, .Lgs_next
-	# handlers.include ∋ system/tree ?
+	mv   a0, s4
+	adr_l a1, ka_exclude
+	li   a2, 7
+	call map_find
+	beqz a0, .Lgs_ops_ok
+	mv   a1, s7
+	mv   a2, s8
+	call array_contains_star
+	bnez a0, .Lgs_next               # excluded → this grant does not permit
+.Lgs_ops_ok:
+	# ---- handlers (PATH-SCOPE) ----
 	mv   a0, s2
 	adr_l a1, ka_handlers
 	li   a2, 8
 	call map_find
 	beqz a0, .Lgs_next
+	mv   s4, a0                      # handlers scope map
 	adr_l a1, ka_include
 	li   a2, 7
 	call map_find
@@ -8035,13 +8573,33 @@ grant_scope_ok:
 	ld   a2, 0(t0)
 	call array_contains_star
 	beqz a0, .Lgs_next
-	# peers.include ∋ target_peer ? (§5.2/F-peers) grant.peers defaults to
-	# {include:[local_peer_id]} when the grant omits the field entirely.
+	mv   a0, s4
+	adr_l a1, ka_exclude
+	li   a2, 7
+	call map_find
+	beqz a0, .Lgs_hnd_ok
+	mv   s4, a0                      # handlers exclude array
+	adr_l a1, g_dfr
+	adr_l t0, g_dfrlen
+	ld   a2, 0(t0)
+	call excl_unmatchable            # PATH-scope, so the sentinel applies here
+	bnez a0, .Lgs_next
+	mv   a0, s4
+	adr_l t0, g_handler_ptr
+	ld   a1, 0(t0)
+	adr_l t0, g_handler_len
+	ld   a2, 0(t0)
+	call resources_cover_target
+	bnez a0, .Lgs_next
+.Lgs_hnd_ok:
+	# ---- peers (ID-SCOPE, Dimension 4) ----
+	# grant.peers defaults to {include:[local_peer_id]} when the grant omits the field.
 	mv   a0, s2
 	adr_l a1, ka_peers
 	li   a2, 5
 	call map_find
 	beqz a0, .Lgs_peers_default
+	mv   s4, a0                      # peers scope map
 	adr_l a1, ka_include
 	li   a2, 7
 	call map_find
@@ -8052,6 +8610,21 @@ grant_scope_ok:
 	ld   a2, 0(t0)
 	call array_contains_star
 	beqz a0, .Lgs_next
+	# The EXCLUDE arm of Dimension 4, on the INBOUND path. A grant whose `peers` excludes
+	# this peer authorizes nothing here — and an exclude only NARROWS, so §6.2's mint-time
+	# subset check cannot refuse such a grant: if this arm is missing, the mint succeeds and
+	# the use succeeds, which is a grant strictly wider than its author wrote.
+	mv   a0, s4
+	adr_l a1, ka_exclude
+	li   a2, 7
+	call map_find
+	beqz a0, .Lgs_peers_ok
+	adr_l t0, g_target_peer_ptr
+	ld   a1, 0(t0)
+	adr_l t0, g_target_peer_len
+	ld   a2, 0(t0)
+	call array_contains_star
+	bnez a0, .Lgs_next
 	j    .Lgs_peers_ok
 .Lgs_peers_default:
 	adr_l t0, g_target_peer_len
@@ -8066,19 +8639,9 @@ grant_scope_ok:
 	call memeq
 	beqz a0, .Lgs_next
 .Lgs_peers_ok:
-	# resources.include matches target ?
+	# ---- resources (PATH-SCOPE) ----
 	mv   a0, s2
-	adr_l a1, ka_resources
-	li   a2, 9
-	call map_find
-	beqz a0, .Lgs_next
-	adr_l a1, ka_include
-	li   a2, 7
-	call map_find
-	beqz a0, .Lgs_next
-	mv   a1, s4                      # target ptr
-	mv   a2, s5                      # target len
-	call resources_cover_target
+	call grant_resources_ok
 	bnez a0, .Lgs_yes
 .Lgs_next:
 	mv   a0, s2
@@ -8295,8 +8858,36 @@ verify_op_scope:
 # catch, and which stays invisible for as long as the peer refuses foreign-granted caps
 # outright (a vacuous pass that the chain walk converts into a real one).
 	.type resources_cover_target, @function
+# resources_cover_target(a0 = array, a1 = target ptr, a2 = target len) -> a0.
+# The GRANT-pattern frame: patterns canonicalize against the granter (g_dfr). Three lines, so
+# that the frame choice is made in exactly one place per call site and never inherited by
+# accident — a frame argument on the wrong call site is how swift and sql each shipped the
+# §5.5a over-scoping, in opposite directions.
 resources_cover_target:
-	addi sp, sp, -80
+	adr_l a3, g_dfr
+	adr_l t0, g_dfrlen
+	ld   a4, 0(t0)
+	j    patterns_cover
+
+# patterns_cover_local(a0 = array, a1 = target ptr, a2 = target len) -> a0.
+# The CALLER-pattern frame. A `resource.exclude` is written in the REQUEST, by the caller,
+# about paths in THIS peer's namespace — §5.5a's granter frame governs a cap's grant patterns
+# and does not reach it. Framing a caller exclude against the granter is the same defect as
+# framing a grant pattern against the verifier, one operand over.
+	.type patterns_cover_local, @function
+patterns_cover_local:
+	adr_l a3, g_peerid
+	adr_l t0, g_peerid_len
+	ld   a4, 0(t0)
+	j    patterns_cover
+
+# patterns_cover(a0 = array, a1 = target ptr, a2 = target len, a3 = pattern frame ptr,
+#                a4 = pattern frame len) -> a0 = 1 if some pattern covers the target.
+# The TARGET always canonicalizes against the LOCAL peer; only the PATTERN frame varies,
+# which is why it is the only parameter.
+	.type patterns_cover, @function
+patterns_cover:
+	addi sp, sp, -96
 	sd   s0, 0(sp)
 	sd   ra, 8(sp)
 	sd   s1, 16(sp)
@@ -8305,8 +8896,12 @@ resources_cover_target:
 	sd   s4, 40(sp)
 	sd   s5, 48(sp)
 	sd   s7, 56(sp)
+	sd   s8, 64(sp)
+	sd   s9, 72(sp)
 	mv   s0, sp
-	mv   s1, a0                      # include array
+	mv   s1, a0                      # pattern array
+	mv   s8, a3                      # pattern frame ptr
+	mv   s9, a4                      # pattern frame len
 	mv   a0, a1
 	mv   a1, a2
 	adr_l a2, g_peerid
@@ -8331,9 +8926,8 @@ resources_cover_target:
 	addi s4, s4, -1
 	mv   a0, s5
 	mv   a1, s7
-	adr_l a2, g_dfr
-	adr_l t0, g_dfrlen
-	ld   a3, 0(t0)
+	mv   a2, s8
+	mv   a3, s9
 	adr_l a4, b_canon_b
 	call canon
 	mv   a3, a0
@@ -8347,6 +8941,8 @@ resources_cover_target:
 .Lrct_no:
 	li   a0, 0
 .Lrct_ret:
+	ld   s9, 72(sp)
+	ld   s8, 64(sp)
 	ld   s7, 56(sp)
 	ld   s5, 48(sp)
 	ld   s4, 40(sp)
@@ -8355,7 +8951,390 @@ resources_cover_target:
 	ld   s1, 16(sp)
 	ld   ra, 8(sp)
 	ld   s0, 0(sp)
-	addi sp, sp, 80
+	addi sp, sp, 96
+	ret
+
+# effective_target(a0 = exec data map) -> a0 = verdict. On verdict 0, g_eff_ptr/g_eff_len
+# hold the ONE effective target, in the CALLER'S OWN SPELLING — 0.8.2.21 is explicit that
+# effective_targets yields RAW survivors, and it is load-bearing here because the value flows
+# on to canon_path and to the typestore, which canonicalize for themselves.
+#
+#   0  exactly one effective target
+#   1  no `resource`, or no `targets` inside it — the ABSENT case
+#   2  present and effectively empty -> 400 path_required
+#   3  more than one                 -> 400 ambiguous_resource
+#
+# THE TWO EMPTIES ARE DIFFERENT REQUESTS, not two spellings of one (0.8.2.24 N7, 0.8.2.25
+# N10). §3.3's "an empty effective list IS the absent case" is scoped to an operation that
+# REQUIRES a resource; `get` does not, and EXTENSION-TREE §2.2a declares it resource-OPTIONAL
+# and BROAD-RESULT — absent answers the root listing, self-excluded answers path_required,
+# because serving the root listing to a caller who excluded the one path it named answers
+# something WIDER than the request.
+# s1 = remaining targets, s2 = resource map, s3 = element cursor, s4 = target ptr,
+# s5 = target len, s7 = survivor count.
+	.type effective_target, @function
+effective_target:
+	addi sp, sp, -64
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	sd   s4, 40(sp)
+	sd   s5, 48(sp)
+	sd   s7, 56(sp)
+	mv   s0, sp
+	adr_l t0, g_eff_ptr
+	sd   zero, 0(t0)
+	adr_l t0, g_eff_len
+	sd   zero, 0(t0)
+	adr_l a1, k_resource
+	li   a2, 8
+	call map_find
+	beqz a0, .Let_absent
+	mv   s2, a0                      # resource map
+	adr_l a1, k_targets
+	li   a2, 7
+	call map_find
+	beqz a0, .Let_absent
+	call read_head                   # a0 = first element, a1 = major, a2 = count
+	li   t0, 4
+	bne  a1, t0, .Let_absent
+	mv   s3, a0                      # element cursor
+	mv   s1, a2                      # remaining
+	li   s7, 0                       # survivors
+.Let_l:
+	beqz s1, .Let_done
+	mv   a0, s3
+	call read_head                   # a0 = target bytes, a2 = len
+	mv   s4, a0
+	mv   s5, a2
+	add  s3, a0, a2
+	addi s1, s1, -1
+	mv   a0, s2
+	adr_l a1, ka_exclude
+	li   a2, 7
+	call map_find
+	beqz a0, .Let_keep
+	mv   a1, s4
+	mv   a2, s5
+	call patterns_cover_local        # the caller's exclude, on the caller's own frame.
+					 # Fail-OPEN on the sentinel and that is correct HERE:
+					 # §5.4's table rules the caller arm separately from the
+					 # grant arm, so an unmatchable CALLER exclude carves out
+					 # nothing while an unmatchable GRANT exclude denies.
+	bnez a0, .Let_l
+.Let_keep:
+	addi s7, s7, 1
+	li   t0, 1
+	bne  s7, t0, .Let_l
+	adr_l t0, g_eff_ptr
+	sd   s4, 0(t0)
+	adr_l t0, g_eff_len
+	sd   s5, 0(t0)
+	j    .Let_l
+.Let_done:
+	beqz s7, .Let_empty
+	li   t0, 1
+	bgtu s7, t0, .Let_ambig
+	li   a0, 0
+	j    .Let_ret
+.Let_absent:
+	li   a0, 1
+	j    .Let_ret
+.Let_empty:
+	li   a0, 2
+	j    .Let_ret
+.Let_ambig:
+	li   a0, 3
+.Let_ret:
+	ld   s7, 56(sp)
+	ld   s5, 48(sp)
+	ld   s4, 40(sp)
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 64
+	ret
+
+# has_star(a0 = ptr, a1 = len) -> a0 = 1 if the path carries a '*' anywhere.
+# §3.3 (0.8.2.20): a resource-requiring operation takes a CONCRETE path, so a pattern that
+# survives as the single effective target is 400 malformed_resource — not a 404 for a literal
+# key spelled with a star, which is what this peer answered before.
+	.type has_star, @function
+has_star:
+	li   t0, 0
+	li   t2, 0x2a
+.Lhs_l:
+	bgeu t0, a1, .Lhs_no
+	add  t1, a0, t0
+	lbu  t1, 0(t1)
+	beq  t1, t2, .Lhs_yes
+	addi t0, t0, 1
+	j    .Lhs_l
+.Lhs_yes:
+	li   a0, 1
+	ret
+.Lhs_no:
+	li   a0, 0
+	ret
+
+# check_path_permission(a0 = canonical path ptr, a1 = path len) -> a0 = 1 permitted.
+#
+# §6.3, AND IT IS NOT A SECONDARY CHECK (0.8.2.20). It is the enforcement wherever the subject
+# is derived after dispatch, because the dispatch-level check can be made VACUOUS by
+# caller-controlled input: a caller who excludes the one target its capability does not cover
+# removes that target from check_permission's view entirely.
+#
+# Three dimensions and the LOCAL frame, both from §6.3's own signature. `peers` is not
+# consulted: the path is local by construction here, since §1.4's inbound rule refused a
+# foreign namespace at §6.5 step 3 before any handler ran.
+#
+# No presented capability (an open-grants run) -> permitted: there is no caller authority to
+# check the subject against, and the dispatch stage already decided the request.
+	.type check_path_permission, @function
+check_path_permission:
+	addi sp, sp, -32
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	mv   s0, sp
+	mv   s1, a0
+	mv   s2, a1
+	adr_l t0, g_tok_data
+	ld   t0, 0(t0)
+	beqz t0, .Lcpp_yes
+	mv   a0, t0
+	mv   a1, s1
+	mv   a2, s2
+	lla  a3, va_get
+	li   a4, 3
+	call grant_scope_ok
+	j    .Lcpp_ret
+.Lcpp_yes:
+	li   a0, 1
+.Lcpp_ret:
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 32
+	ret
+
+# grant_resources_ok(a0 = one grant map) -> a0 = 1 if THIS grant's resources dimension permits
+# the request.
+#
+# Two shapes, selected by g_res_map, and they are the same rule asked of a different subject:
+#
+#   g_res_map == 0  the subject is ONE concrete path (g_gs_tgt_ptr/len) — §6.3's shape.
+#   g_res_map != 0  the subject is the caller's whole `resource` map — §5.2's dispatch
+#                   boundary, which evaluates the EFFECTIVE set. A target the CALLER excluded
+#                   is ADMITTED rather than checked: the caller narrowed it out of its own
+#                   request, so there is nothing there to authorize. That is what lets
+#                   `targets:[qA] exclude:[qA]` reach the handler and be answered
+#                   400 path_required instead of 403.
+#
+# It does NOT pick a target. Selecting the subject is the handler's job (effective_target),
+# and a dispatch check that authorized targets[0] while the handler acted on a different entry
+# is precisely the hole §6.3 calls "not a secondary check".
+# s1 = grant map, s2 = resources scope map, s3 = grant exclude | 0, s4 = grant include,
+# s5 = target cursor, s7 = remaining targets.
+	.type grant_resources_ok, @function
+grant_resources_ok:
+	addi sp, sp, -64
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	sd   s4, 40(sp)
+	sd   s5, 48(sp)
+	sd   s7, 56(sp)
+	mv   s0, sp
+	mv   s1, a0                      # grant map
+	adr_l a1, ka_resources
+	li   a2, 9
+	call map_find
+	beqz a0, .Lgro_no                # a grant with no resources scope covers no path
+	mv   s2, a0                      # resources scope map
+	# §5.4 / 0.8.2.21 — an unmatchable GRANT exclude DENIES, and it is asked FIRST, before
+	# any target: the coverage tests below are correct in isolation and are simply never
+	# reached on a sentinel, because pat_covers answers false for it.
+	adr_l a1, ka_exclude
+	li   a2, 7
+	call map_find
+	mv   s3, a0                      # grant exclude array | 0
+	beqz a0, .Lgro_incl
+	adr_l a1, g_dfr
+	adr_l t0, g_dfrlen
+	ld   a2, 0(t0)
+	call excl_unmatchable
+	bnez a0, .Lgro_no
+.Lgro_incl:
+	mv   a0, s2
+	adr_l a1, ka_include
+	li   a2, 7
+	call map_find
+	beqz a0, .Lgro_no
+	mv   s4, a0                      # grant include array
+	adr_l t0, g_res_map
+	ld   t0, 0(t0)
+	bnez t0, .Lgro_map
+	# ---- single concrete subject ----
+	mv   a0, s4
+	adr_l t0, g_gs_tgt_ptr
+	ld   a1, 0(t0)
+	adr_l t0, g_gs_tgt_len
+	ld   a2, 0(t0)
+	call resources_cover_target
+	beqz a0, .Lgro_no
+	beqz s3, .Lgro_yes
+	mv   a0, s3
+	adr_l t0, g_gs_tgt_ptr
+	ld   a1, 0(t0)
+	adr_l t0, g_gs_tgt_len
+	ld   a2, 0(t0)
+	call resources_cover_target
+	bnez a0, .Lgro_no
+	j    .Lgro_yes
+.Lgro_map:
+	# ---- the caller's whole resource map ----
+	adr_l t0, g_res_map
+	ld   a0, 0(t0)
+	adr_l a1, k_targets
+	li   a2, 7
+	call map_find
+	beqz a0, .Lgro_no                # `resource` present with no `targets` — deny. An ABSENT
+					 # resource never reaches here: the caller passes 0 and
+					 # this dimension is not asked at all.
+	call read_head                   # a0 = first element, a1 = major, a2 = count
+	li   t0, 4
+	bne  a1, t0, .Lgro_no
+	beqz a2, .Lgro_no                # a present-but-empty targets list authorizes nothing
+	mv   s5, a0                      # target cursor
+	mv   s7, a2                      # remaining targets
+.Lgro_t:
+	beqz s7, .Lgro_yes               # every survivor was covered
+	mv   a0, s5
+	call read_head                   # a0 = target bytes, a2 = len
+	add  s5, a0, a2
+	adr_l t0, g_gro_t_ptr
+	sd   a0, 0(t0)
+	adr_l t0, g_gro_t_len
+	sd   a2, 0(t0)
+	addi s7, s7, -1
+	# caller-excluded -> ADMITTED, not checked
+	adr_l t0, g_res_map
+	ld   a0, 0(t0)
+	adr_l a1, ka_exclude
+	li   a2, 7
+	call map_find
+	beqz a0, .Lgro_t_check
+	adr_l t0, g_gro_t_ptr
+	ld   a1, 0(t0)
+	adr_l t0, g_gro_t_len
+	ld   a2, 0(t0)
+	call patterns_cover_local        # the CALLER's frame, never the granter's
+	bnez a0, .Lgro_t                 # carved out by the caller itself
+.Lgro_t_check:
+	mv   a0, s4
+	adr_l t0, g_gro_t_ptr
+	ld   a1, 0(t0)
+	adr_l t0, g_gro_t_len
+	ld   a2, 0(t0)
+	call resources_cover_target
+	beqz a0, .Lgro_no
+	beqz s3, .Lgro_t
+	mv   a0, s3
+	adr_l t0, g_gro_t_ptr
+	ld   a1, 0(t0)
+	adr_l t0, g_gro_t_len
+	ld   a2, 0(t0)
+	call resources_cover_target
+	bnez a0, .Lgro_no
+	j    .Lgro_t
+.Lgro_yes:
+	li   a0, 1
+	j    .Lgro_ret
+.Lgro_no:
+	li   a0, 0
+.Lgro_ret:
+	ld   s7, 56(sp)
+	ld   s5, 48(sp)
+	ld   s4, 40(sp)
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 64
+	ret
+
+# excl_unmatchable(a0 = exclude array, a1 = frame ptr, a2 = frame len) -> a0 = 1 if any
+# pattern in it canonicalizes to the §5.4 sentinel.
+#
+# AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED in an
+# include (covers nothing -> the grant grants nothing) and fail-OPEN in an exclude (carves out
+# nothing), so the reading has to be chosen where the POSITION is known — here — and the
+# matcher stays uniform over its operands.
+#
+# EVERY CALL SITE MUST GUARD THIS ON PATH-SCOPE (0.8.2.24, N2/N3). The sentinel is a §5.4
+# PATH-canonicalization artifact and has no meaning on an id-scope dimension, whose patterns
+# are literals §5.2 forbids putting through the §5.4 transforms. Asked of `operations`, an
+# exclude of "*/apply" — an ordinary namespaced operation name, a literal that matches nothing
+# under the id-scope grammar — canonicalizes to the sentinel and would deny EVERY operation.
+# Over-denial, and invisible on any well-formed grant.
+# s1 = remaining, s2 = cursor, s3 = frame ptr, s4 = frame len.
+	.type excl_unmatchable, @function
+excl_unmatchable:
+	addi sp, sp, -48
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	sd   s4, 40(sp)
+	mv   s0, sp
+	mv   s3, a1
+	mv   s4, a2
+	call read_head                   # a0 = first elem, a1 = major, a2 = count
+	li   t0, 4
+	bne  a1, t0, .Lexu_no
+	mv   s2, a0
+	mv   s1, a2
+.Lexu_l:
+	beqz s1, .Lexu_no
+	mv   a0, s2
+	call read_head                   # a0 = pattern bytes, a2 = len
+	add  s2, a0, a2                  # next cursor
+	mv   a1, a2
+	mv   a2, s3
+	mv   a3, s4
+	adr_l a4, b_canon_b
+	call canon                       # a0 = canonical length
+	addi s1, s1, -1
+	li   t0, NEVER_LEN
+	bne  a0, t0, .Lexu_l
+	adr_l a0, b_canon_b
+	lla  a1, s_never_match
+	li   a2, NEVER_LEN
+	call memeq
+	beqz a0, .Lexu_l
+	li   a0, 1
+	j    .Lexu_ret
+.Lexu_no:
+	li   a0, 0
+.Lexu_ret:
+	ld   s4, 40(sp)
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 48
 	ret
 
 # array_contains_star(a0=array, a1=needle, a2=needle len) -> a0 = 1 if the array

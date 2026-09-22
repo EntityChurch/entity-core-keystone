@@ -317,4 +317,209 @@ w_cstr:
 	mov  %rax, %rdx
 	jmp  w_txt
 
+# =========================== STRICT CHECKER ===========================
+# The readers above are DELIBERATELY lenient: map_find/skip_value walk whatever
+# shape they are handed, which is what lets a refusal path recover a request_id
+# out of a frame the strict pass has already condemned. Nothing else in this file
+# asks whether the bytes are a legal canonical-ECF value at all.
+#
+# cbor_check_frame is that question, and §4.11 is why it has to be asked BEFORE
+# dispatch rather than inside it: a frame that never becomes an Envelope is owed a
+# coded EXECUTE_RESPONSE, and the cause decides the code. The two causes this pass
+# separates are the two the section names:
+#
+#   a CBOR tag in any position  →  ENTITY-CBOR-ENCODING §6.3 tag policy
+#                                  (`non_canonical_ecf`, and §6.3 already MUSTs it)
+#   anything else               →  "never becomes an Envelope" (`invalid_request`)
+#
+# It is also the bound that makes the LENIENT readers safe. skip_value recurses with
+# no depth cap and no end pointer, so 16 MiB of 0x81 (array(1)) nested is a stack
+# smash reachable by anyone who can send bytes, and read_head treats additional-info
+# 31 as the 8-byte form and reads eight bytes that are not there. Running this pass
+# first means every later walk of b_req is over bytes already proven in-bounds,
+# finite and shallower than 128 — so this is a bound on the whole module, not a
+# local check.
+#
+# NOT checked here, deliberately, and it is a recorded debt rather than an oversight:
+# MINIMAL head form and DUPLICATE map keys. Both are canonicalization rules this peer
+# has never enforced on the decode side, both would refuse inputs that reach handlers
+# today, and folding either into a §4.11 commit would bury a separate finding inside
+# an unrelated one.
+
+	.bss
+	.lcomm g_saw_tag,    8
+	.lcomm g_chk_depth,  8
+
+	.text
+	.globl cbor_check_frame
+	.type cbor_check_frame, @function
+# cbor_check_frame(rdi = ptr, rsi = end) -> rax = 0 OK | 1 TAG | 2 INVALID
+#
+# TAG wins over a clean structure but not over a broken one: a frame that is both
+# truncated and tagged is INVALID, because the tag was read out of bytes whose shape
+# was never established.
+cbor_check_frame:
+	push %rbx
+	push %r12
+	mov  %rsi, %r12                  # end
+	movq $0, g_saw_tag(%rip)
+	movq $0, g_chk_depth(%rip)
+	call cbor_check                  # rdi=ptr, rsi=end -> rax = after | 0
+	test %rax, %rax
+	jz   .Lcf_invalid
+	cmp  %r12, %rax
+	jne  .Lcf_invalid                # trailing bytes after the top-level value: the
+					 # frame length and the value disagree, which is a
+					 # framing fault and not a tag-policy one
+	cmpq $0, g_saw_tag(%rip)
+	jne  .Lcf_tag
+	xor  %eax, %eax
+	jmp  .Lcf_ret
+.Lcf_tag:
+	mov  $1, %eax
+	jmp  .Lcf_ret
+.Lcf_invalid:
+	mov  $2, %eax
+.Lcf_ret:
+	pop  %r12
+	pop  %rbx
+	ret
+
+	.type cbor_check, @function
+# cbor_check(rdi = ptr, rsi = end) -> rax = ptr-after-value | 0 if not a legal value.
+# Records a major-6 tag anywhere in g_saw_tag and keeps walking, so one pass answers
+# both questions. Every read is bounds-checked against `end` before it happens.
+cbor_check:
+	push %rbx
+	push %r12
+	push %r13
+	push %r14
+	push %r15
+	mov  %rdi, %r12                  # p
+	mov  %rsi, %r13                  # end
+	incq g_chk_depth(%rip)
+	cmpq $128, g_chk_depth(%rip)
+	ja   .Lcc_bad                    # canonical ECF nesting is shallow; a frame deeper
+					 # than this is hostile, and the cap is what keeps
+					 # the recursion off the guard page
+	cmp  %r13, %r12
+	jae  .Lcc_bad                    # no initial byte
+	movzbl (%r12), %eax
+	inc  %r12
+	mov  %eax, %r14d
+	shr  $5, %r14d                   # r14 = major
+	and  $0x1f, %eax                 # eax = additional info
+	xor  %r15, %r15                  # r15 = argument
+	cmp  $24, %eax
+	jb   .Lcc_small
+	je   .Lcc_a1
+	cmp  $25, %eax
+	je   .Lcc_a2
+	cmp  $26, %eax
+	je   .Lcc_a4
+	cmp  $27, %eax
+	je   .Lcc_a8
+	jmp  .Lcc_bad                    # 28/29/30 reserved · 31 indefinite-length. Canonical
+					 # ECF admits neither, and read_head would decode 31 as
+					 # the 8-byte form and read past the frame.
+.Lcc_small:
+	mov  %eax, %r15d
+	jmp  .Lcc_have
+.Lcc_a1:
+	lea  1(%r12), %rcx
+	cmp  %r13, %rcx
+	ja   .Lcc_bad
+	movzbl (%r12), %r15d
+	mov  %rcx, %r12
+	jmp  .Lcc_have
+.Lcc_a2:
+	lea  2(%r12), %rcx
+	cmp  %r13, %rcx
+	ja   .Lcc_bad
+	movzbl (%r12), %r15d
+	shl  $8, %r15d
+	movzbl 1(%r12), %eax
+	or   %eax, %r15d
+	mov  %rcx, %r12
+	jmp  .Lcc_have
+.Lcc_a4:
+	lea  4(%r12), %rcx
+	cmp  %r13, %rcx
+	ja   .Lcc_bad
+	mov  (%r12), %eax
+	bswap %eax
+	mov  %eax, %r15d
+	mov  %rcx, %r12
+	jmp  .Lcc_have
+.Lcc_a8:
+	lea  8(%r12), %rcx
+	cmp  %r13, %rcx
+	ja   .Lcc_bad
+	mov  (%r12), %r15
+	bswap %r15
+	mov  %rcx, %r12
+.Lcc_have:
+	cmp  $2, %r14
+	jb   .Lcc_done                   # 0 uint / 1 nint — the head is the whole value
+	cmp  $3, %r14
+	jbe  .Lcc_bytes                  # 2 bytes / 3 text
+	cmp  $4, %r14
+	je   .Lcc_arr
+	cmp  $5, %r14
+	je   .Lcc_map
+	cmp  $6, %r14
+	je   .Lcc_tag
+	jmp  .Lcc_done                   # 7 simple/float — argument bytes already consumed
+.Lcc_bytes:
+	mov  %r13, %rcx
+	sub  %r12, %rcx                  # bytes remaining in the frame
+	cmp  %r15, %rcx
+	jb   .Lcc_bad                    # a declared length longer than the frame. Compared
+					 # this way round rather than as p+arg, which wraps
+					 # on a 2^64-1 length and passes.
+	add  %r15, %r12
+	jmp  .Lcc_done
+.Lcc_map:
+	mov  %r15, %rcx
+	shr  $63, %rcx
+	jnz  .Lcc_bad                    # 2*count would wrap
+	add  %r15, %r15                  # a map is 2*count items
+.Lcc_arr:
+	mov  %r15, %rbx
+.Lcc_items:
+	test %rbx, %rbx
+	jz   .Lcc_done
+	mov  %r12, %rdi
+	mov  %r13, %rsi
+	call cbor_check
+	test %rax, %rax
+	jz   .Lcc_bad                    # a huge declared count terminates HERE, on the
+					 # first element that has no bytes left — the loop
+					 # cannot run longer than the frame
+	mov  %rax, %r12
+	dec  %rbx
+	jmp  .Lcc_items
+.Lcc_tag:
+	movq $1, g_saw_tag(%rip)
+	mov  %r12, %rdi
+	mov  %r13, %rsi
+	call cbor_check
+	test %rax, %rax
+	jz   .Lcc_bad
+	mov  %rax, %r12
+.Lcc_done:
+	decq g_chk_depth(%rip)
+	mov  %r12, %rax
+	jmp  .Lcc_ret
+.Lcc_bad:
+	decq g_chk_depth(%rip)
+	xor  %eax, %eax
+.Lcc_ret:
+	pop  %r15
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	ret
+
 	.section .note.GNU-stack,"",@progbits

@@ -318,4 +318,209 @@ w_cstr:
 	ldp  x29, x30, [sp], #32
 	b    w_txt                       // tail call
 
+// =========================== STRICT CHECKER ===========================
+// The readers above are DELIBERATELY lenient: map_find/skip_value walk whatever shape
+// they are handed, which is what lets a refusal path recover a request_id out of a frame
+// the strict pass has already condemned. Nothing else in this file asks whether the bytes
+// are a legal canonical-ECF value at all.
+//
+// cbor_check_frame is that question, and §4.11 is why it has to be asked BEFORE dispatch
+// rather than inside it: a frame that never becomes an Envelope is owed a coded
+// EXECUTE_RESPONSE, and the CAUSE decides the code.
+//
+//   a CBOR tag in any position  →  ENTITY-CBOR-ENCODING §6.3 tag policy
+//                                  (`non_canonical_ecf`, and §6.3 already MUSTs it)
+//   anything else               →  "never becomes an Envelope" (`invalid_request`)
+//
+// It is also the bound that makes the LENIENT readers safe. skip_value recurses with no
+// depth cap and no end pointer, so 16 MiB of nested array(1) is a stack smash reachable by
+// anyone who can send bytes, and read_head treats additional-info 31 as the 8-byte form
+// and reads eight bytes that are not there. Running this pass first means every later walk
+// of b_req is over bytes already proven in-bounds, finite and shallower than 128.
+//
+// NOT checked here, deliberately, and it is a recorded debt rather than an oversight:
+// MINIMAL head form and DUPLICATE map keys.
+
+	.bss
+	.lcomm g_saw_tag,    8
+	.lcomm g_chk_depth,  8
+
+	.text
+	.globl cbor_check_frame
+	.type cbor_check_frame, %function
+// cbor_check_frame(x0 = ptr, x1 = end) -> x0 = 0 OK | 1 TAG | 2 INVALID
+//
+// TAG wins over a clean structure but not over a broken one: a frame that is both
+// truncated and tagged is INVALID, because the tag was read out of bytes whose shape was
+// never established.
+cbor_check_frame:
+	stp  x29, x30, [sp, #-32]!
+	mov  x29, sp
+	str  x19, [sp, #16]
+	mov  x19, x1                     // end
+	adr_l x9, g_saw_tag
+	str  xzr, [x9]
+	adr_l x9, g_chk_depth
+	str  xzr, [x9]
+	bl   cbor_check
+	cbz  x0, .Lcf_invalid
+	cmp  x0, x19
+	b.ne .Lcf_invalid                // trailing bytes: the frame length and the value
+					 // disagree, which is a framing fault, not a tag one
+	adr_l x9, g_saw_tag
+	ldr  x9, [x9]
+	cbnz x9, .Lcf_tag
+	mov  x0, #0
+	b    .Lcf_ret
+.Lcf_tag:
+	mov  x0, #1
+	b    .Lcf_ret
+.Lcf_invalid:
+	mov  x0, #2
+.Lcf_ret:
+	ldr  x19, [sp, #16]
+	ldp  x29, x30, [sp], #32
+	ret
+
+	.type cbor_check, %function
+// cbor_check(x0 = ptr, x1 = end) -> x0 = ptr-after-value | 0 if not a legal value.
+// Records a major-6 tag anywhere in g_saw_tag and keeps walking, so one pass answers both
+// questions. Every read is bounds-checked against `end` before it happens.
+// x19 = p, x20 = end, x21 = major, x22 = argument, x23 = item counter.
+cbor_check:
+	stp  x29, x30, [sp, #-64]!
+	mov  x29, sp
+	stp  x19, x20, [sp, #16]
+	stp  x21, x22, [sp, #32]
+	str  x23, [sp, #48]
+	mov  x19, x0                     // p
+	mov  x20, x1                     // end
+	adr_l x9, g_chk_depth
+	ldr  x10, [x9]
+	add  x10, x10, #1
+	str  x10, [x9]
+	cmp  x10, #128
+	b.hi .Lcc_bad                    // canonical ECF nesting is shallow; a frame deeper
+					 // than this is hostile, and the cap is what keeps the
+					 // recursion off the guard page
+	cmp  x19, x20
+	b.hs .Lcc_bad                    // no initial byte
+	ldrb w9, [x19]
+	add  x19, x19, #1
+	lsr  w21, w9, #5                 // major
+	and  w9, w9, #0x1f               // additional info
+	mov  x22, #0
+	cmp  w9, #24
+	b.lo .Lcc_small
+	b.eq .Lcc_a1
+	cmp  w9, #25
+	b.eq .Lcc_a2
+	cmp  w9, #26
+	b.eq .Lcc_a4
+	cmp  w9, #27
+	b.eq .Lcc_a8
+	b    .Lcc_bad                    // 28/29/30 reserved · 31 indefinite-length. Canonical
+					 // ECF admits neither, and read_head would decode 31 as
+					 // the 8-byte form and read past the frame.
+.Lcc_small:
+	mov  w22, w9
+	b    .Lcc_have
+.Lcc_a1:
+	add  x10, x19, #1
+	cmp  x10, x20
+	b.hi .Lcc_bad
+	ldrb w22, [x19]
+	mov  x19, x10
+	b    .Lcc_have
+.Lcc_a2:
+	add  x10, x19, #2
+	cmp  x10, x20
+	b.hi .Lcc_bad
+	ldrb w22, [x19]
+	lsl  w22, w22, #8
+	ldrb w11, [x19, #1]
+	orr  w22, w22, w11
+	mov  x19, x10
+	b    .Lcc_have
+.Lcc_a4:
+	add  x10, x19, #4
+	cmp  x10, x20
+	b.hi .Lcc_bad
+	ldr  w22, [x19]
+	rev  w22, w22                    // a W-register write zero-extends into x22
+	mov  x19, x10
+	b    .Lcc_have
+.Lcc_a8:
+	add  x10, x19, #8
+	cmp  x10, x20
+	b.hi .Lcc_bad
+	ldr  x22, [x19]
+	rev  x22, x22
+	mov  x19, x10
+.Lcc_have:
+	cmp  x21, #2
+	b.lo .Lcc_done                   // 0 uint / 1 nint — the head is the whole value
+	cmp  x21, #3
+	b.ls .Lcc_bytes                  // 2 bytes / 3 text
+	cmp  x21, #4
+	b.eq .Lcc_arr
+	cmp  x21, #5
+	b.eq .Lcc_map
+	cmp  x21, #6
+	b.eq .Lcc_tag
+	b    .Lcc_done                   // 7 simple/float — argument bytes already consumed
+.Lcc_bytes:
+	sub  x10, x20, x19               // bytes remaining in the frame
+	cmp  x10, x22
+	b.lo .Lcc_bad                    // a declared length longer than the frame. Compared
+					 // this way round rather than as p+arg, which wraps on
+					 // a 2^64-1 length and passes.
+	add  x19, x19, x22
+	b    .Lcc_done
+.Lcc_map:
+	lsr  x10, x22, #63
+	cbnz x10, .Lcc_bad               // 2*count would wrap
+	lsl  x22, x22, #1                // a map is 2*count items
+.Lcc_arr:
+	mov  x23, x22
+.Lcc_items:
+	cbz  x23, .Lcc_done
+	mov  x0, x19
+	mov  x1, x20
+	bl   cbor_check
+	cbz  x0, .Lcc_bad                // a huge declared count terminates HERE, on the first
+					 // element with no bytes left — the loop cannot run
+					 // longer than the frame
+	mov  x19, x0
+	sub  x23, x23, #1
+	b    .Lcc_items
+.Lcc_tag:
+	adr_l x9, g_saw_tag
+	mov  x10, #1
+	str  x10, [x9]
+	mov  x0, x19
+	mov  x1, x20
+	bl   cbor_check
+	cbz  x0, .Lcc_bad
+	mov  x19, x0
+.Lcc_done:
+	adr_l x9, g_chk_depth
+	ldr  x10, [x9]
+	sub  x10, x10, #1
+	str  x10, [x9]
+	mov  x0, x19
+	b    .Lcc_ret
+.Lcc_bad:
+	adr_l x9, g_chk_depth
+	ldr  x10, [x9]
+	sub  x10, x10, #1
+	str  x10, [x9]
+	mov  x0, #0
+.Lcc_ret:
+	ldr  x23, [sp, #48]
+	ldp  x21, x22, [sp, #32]
+	ldp  x19, x20, [sp, #16]
+	ldp  x29, x30, [sp], #64
+	ret
+
 	.section .note.GNU-stack,"",%progbits

@@ -524,6 +524,59 @@ create tree-path-buf 1024 allot
     dup tv-count 0= if drop 0 0 exit then
     0 tv-array-elem dup c@ [char] t <> if drop 0 0 exit then tv-payload ;
 
+\ ── §5.2's EFFECTIVE target list (§3.3's ladder, 0.8.2.20) ──
+\
+\ Two hooks, both DEFERRED and both filled from capauthz.fs, which owns §5.4's canonicalizer
+\ and matcher and is loaded AFTER this module. Forth resolves names at compile time, so a
+\ forward call is not available and a second copy of the matcher here would be a second thing
+\ that drifts — the same reason req-grants-bounded? below is deferred. The defaults are the
+\ conservative ones: no caller exclude carves anything out, and no capability filters anything,
+\ which is the behaviour a boot before capauthz already had.
+defer caller-excludes?                  \ ( t-a t-u excl-atv -- flag )
+:noname { ta tu atv -- flag }  false ; is caller-excludes?
+defer path-permitted?                   \ ( path-a path-u -- flag )   §6.3
+:noname { pa pu -- flag }  true ; is path-permitted?
+
+\ eff-target ( exec -- t-a t-u verdict )  verdict: 0 one · 1 ABSENT · 2 empty · 3 ambiguous.
+\
+\ The caller's OWN `resource.exclude` removes entries from the request BEFORE anything else
+\ looks at it, and the survivor keeps the CALLER'S OWN SPELLING — 0.8.2.21 is explicit that
+\ effective_targets yields RAW survivors, and it is load-bearing because the value flows on to
+\ tree-canon and to the store, which canonicalize for themselves.
+\
+\ 1 AND 2 ARE DIFFERENT REQUESTS, not two spellings of one (0.8.2.24 N7, 0.8.2.25 N10): §3.3's
+\ "an empty effective list IS the absent case" is scoped to an operation that REQUIRES a
+\ resource, and `get` does not — so the two are returned separately and each call site decides.
+\
+\ The caller-exclude arm is fail-OPEN on an unmatchable pattern, inherited from the matcher
+\ rather than restated: §5.4's table rules the CALLER arm separately from the GRANT arm, where
+\ the same sentinel denies.
+: eff-target { exec -- ta tu verdict }
+  exec s" resource" ent-field dup 0= if drop 0 0 1 exit then { rtv }
+  rtv s" targets" tv-map-get dup 0= if drop 0 0 1 exit then { tgts }
+  tgts c@ [char] a <> if 0 0 1 exit then
+  rtv s" exclude" tv-map-get { cex }
+  tgts tv-count { n }
+  0 { surv }  0 { ka }  0 { ku }
+  n 0 ?do
+    tgts i tv-array-elem dup c@ [char] t = if
+      tv-payload { xa xu }
+      xa xu cex caller-excludes? 0= if
+        surv 0= if xa to ka  xu to ku then
+        surv 1+ to surv
+      then
+    else drop then
+  loop
+  surv 0= if 0 0 2 exit then
+  surv 1 > if 0 0 3 exit then
+  ka ku 0 ;
+
+\ has-star? ( a u -- flag )  §3.3 (0.8.2.20): a resource-requiring operation takes a CONCRETE
+\ path, so a pattern surviving as the single effective target is 400 malformed_resource — not
+\ a 404 for a literal key that happens to be spelled with a star.
+: has-star? { a u -- flag }
+  u 0 ?do  a i + c@ [char] * = if true unloop exit then  loop  false ;
+
 \ child-of? ( prefix-a prefix-u path-idx -- rem-a rem-u flag )  is the store path at index a
 \ bound descendant of the prefix? (flag, on TOP for a following `if`) plus the remainder span
 \ after the prefix. To dedup by IMMEDIATE child, the caller only emits an entry the FIRST time a
@@ -563,6 +616,16 @@ variable listing-emitted
   pfa pfu i child-of? 0= if 2drop exit then           \ not a child (drops ra ru if any)
   child-seg { sa su hc }                               \ ( -- ) sa/su = seg, hc = has-children
   pfa pfu i sa su seg-seen? if exit then               \ already emitted this segment
+  \ §6.3's LISTING FILTER (0.8.2.21/.22): every entry of a multi-entry result is checked
+  \ INDIVIDUALLY, entries that DENY are omitted, and `count` MUST reflect the filtered total.
+  \ It sits here, inside the single emit path, and `count` is patched from listing-emitted
+  \ afterwards — so the two agree by construction rather than from a second walk.
+  \
+  \ This is the read path at its highest volume, which is the reason 0.8.2.21 refused to carve
+  \ reads out: a listing naming an entry the caller's own capability excludes discloses a
+  \ binding that capability was written to hide. The subject is prefix + segment, which is just
+  \ a prefix of the store key itself.
+  st-path-addr i cells + @  pfu su +  path-permitted? 0= if exit then
   sa su tv-text 2drop                                  \ key = child segment
   am-mark [char] m b, 2 4 >be
     s" has_children" tv-text 2drop  hc if [char] R else [char] F then b,
@@ -710,8 +773,18 @@ s" 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz" 2constant B58-ALP
 \ CAS: expected absent -> unconditional; zero-hash -> create-only (409 if bound); else must
 \ equal the current binding (409 hash_mismatch). Returns system/hash{hash} on success.
 : tree-put { exec -- status raddr ru }
-  exec tree-target dup 0= if 2drop 400 s" ambiguous_resource" 0 0 error-result exit then { ta tu }
+  \ §3.3's ladder on the EFFECTIVE list — the same seam `get` uses, so one request cannot
+  \ receive two different answers according to which operation it named. BOTH EMPTIES ANSWER
+  \ path_required here: `put` REQUIRES a resource, and 0.8.2.24 (N7) scopes "an empty effective
+  \ list IS the absent case" to exactly that kind of operation. §3.3 also pins path_required
+  \ rather than ambiguous_resource for a MISSING target — 0.8.2.20 names inverting those two as
+  \ the defect, because the remedies are opposites ("name one" against "name fewer"), and this
+  \ peer answered ambiguous_resource for the absent case.
+  exec eff-target { ev } { tu } { ta }
+  ev 3 = if 400 s" ambiguous_resource" 0 0 error-result exit then
+  ev 0<> if 400 s" path_required" 0 0 error-result exit then
   ta tu path-flex-ok? 0= if 400 s" invalid_path" 0 0 error-result exit then
+  ta tu has-star? if 400 s" malformed_resource" 0 0 error-result exit then
   ta tu tree-canon { ca cu }
   exec params-of dup 0= if drop 400 s" unexpected_params" 0 0 error-result exit then { p }
   p s" entity" ent-field { etv }                          \ the entity value TV
@@ -741,13 +814,29 @@ s" 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz" 2constant B58-ALP
 : hnd-tree { conn exec arr lens nvar -- status result-eaddr result-eu }
   exec s" put" op-eq if exec tree-put exit then
   exec s" get" op-eq 0= if 501 s" unsupported_operation" 0 0 error-result exit then
-  exec tree-target { ta tu }
+  \ §3.3's ladder runs on the EFFECTIVE list, never on resource.targets: a handler that counts
+  \ the effective list and then indexes targets[0] has implemented the arithmetic completely and
+  \ is still reading a path no authorization covered. Measured on the wire 2026-09-15 —
+  \ `targets:[qA,qB] exclude:[qA]` served qA, the one entry the caller had carved out.
+  exec eff-target { ev } { tu } { ta }
+  ev 2 = if
+    \ `resource` PRESENT and every target carved out by the caller's own exclude. Serving it the
+    \ absent case would answer a request for one excluded path with a listing of the whole tree
+    \ — wider than what was asked for, which is what BROAD-RESULT means (EXTENSION-TREE §2.2a).
+    400 s" path_required" 0 0 error-result exit then
+  ev 3 = if 400 s" ambiguous_resource" 0 0 error-result exit then
   ta 0= tu 0= or if                                   \ no target OR empty target -> list peer root
     s" /" tree-canon tree-listing exit
   then
   ta tu path-flex-ok? 0= if 400 s" invalid_path" 0 0 error-result exit then
   ta tu tree-canon { ca cu }
   cu 0> ca cu 1- + c@ [char] / = and if ca cu tree-listing exit then   \ trailing '/' -> listing
+  ta tu has-star? if 400 s" malformed_resource" 0 0 error-result exit then
+  \ §6.3 — the handler verifies the CALLER's capability covers the path it is about to read.
+  \ NOT a secondary check (0.8.2.20): the dispatch-level check can be made VACUOUS by
+  \ caller-controlled input, because a caller that excludes the one target its capability does
+  \ not cover removes that target from check-permission's view entirely.
+  ca cu path-permitted? 0= if 403 s" capability_denied" 0 0 error-result exit then
   ca cu store-get-at dup 0= if drop 404 s" not_found" 0 0 error-result exit then
   { e }  200 e e ent-len ;                                             \ ( status result-eaddr result-eu )
 

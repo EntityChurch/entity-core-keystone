@@ -120,6 +120,14 @@
   (data $b_register   "register")                       ;; op name (8)
   (data $b_unregister "unregister")                     ;; op name (10)
   (data $b_ambigres "ambiguous_resource")               ;; 400 error code (18)
+  ;; §5.4 (0.8.2.20) — the unmatchable value canonicalize answers for a form it cannot
+  ;; resolve. Unreachable as a real canonical path BY CONSTRUCTION: its first segment
+  ;; would have to be a peer_id, and $is_peer_id_seg wants >=46 Base58 characters while
+  ;; '-' is not in the Base58 alphabet at all.
+  (data $b_nevermatch "/never-match")                  ;; §5.4 sentinel (12)
+  (data $b_pathreq  "path_required")                   ;; 400 error code (13)
+  (data $b_malfres  "malformed_resource")              ;; 400 error code (18)
+  (data $b_noncanon "non_canonical_ecf")               ;; 400 error code (17)
   (data $b_manifmm  "manifest_pattern_mismatch")        ;; 400 error code (25)
   (data $b_pwild    "/*/*")                              ;; peer-wildcard resource pattern (4)
   (data $b_forbidpat "forbidden_pattern")                ;; §6.2 403 error code (17)
@@ -456,6 +464,10 @@
     (memory.init $b_register   (i32.const 0x466940) (i32.const 0) (i32.const 8))
     (memory.init $b_unregister (i32.const 0x466960) (i32.const 0) (i32.const 10))
     (memory.init $b_ambigres   (i32.const 0x466980) (i32.const 0) (i32.const 18))
+    (memory.init $b_nevermatch (i32.const 0x462d00) (i32.const 0) (i32.const 12))
+    (memory.init $b_pathreq    (i32.const 0x462d40) (i32.const 0) (i32.const 13))
+    (memory.init $b_malfres    (i32.const 0x462d80) (i32.const 0) (i32.const 18))
+    (memory.init $b_noncanon   (i32.const 0x462dc0) (i32.const 0) (i32.const 17))
     (memory.init $b_manifmm    (i32.const 0x4669b0) (i32.const 0) (i32.const 25))
     (memory.init $b_pwild      (i32.const 0x4669e0) (i32.const 0) (i32.const 4))
     ;; §7a conformance-handler constants @0x466a00 (slot → 0x466a00 + i*0x20/0x40)
@@ -1335,6 +1347,14 @@
   (global $g_cplen (mut i32) (i32.const 0))
   (global $g_chp   (mut i32) (i32.const 0))     ;; listing: immediate-child segment of a store key
   (global $g_chlen (mut i32) (i32.const 0))
+  ;; §5.2's EFFECTIVE target (§3.3's ladder, 0.8.2.20) — set by $eff_target.
+  (global $g_effp   (mut i32) (i32.const 0))
+  (global $g_efflen (mut i32) (i32.const 0))
+  ;; §6.3 needs the SAME token $verify_scope authorized against, and the handler runs after
+  ;; that check has returned. Cleared at the top of $verify_scope so an open-grants run — or
+  ;; a stale pointer from an earlier request — cannot be checked against somebody else's
+  ;; authority.
+  (global $g_tokd  (mut i32) (i32.const 0))
   (func $canon_path (param $pin i32) (param $plen i32)
     (local $pidlen i32) (local $pfx i32)
     (global.set $g_cpp (local.get $pin))
@@ -2911,7 +2931,7 @@
     (i32.const 0))
 
   (func $grant_scope_ok (param $td i32) (param $target i32) (param $tlen i32) (param $op i32) (param $oplen i32) (param $fr i32) (param $frlen i32) (result i32)
-    (local $grants i32) (local $n i64) (local $i i64) (local $g i32) (local $m i32) (local $inc i32)
+    (local $grants i32) (local $n i64) (local $i i64) (local $g i32) (local $m i32) (local $inc i32) (local $exc i32)
     (local.set $grants (call $map_find (local.get $td) (i32.const 0x4611c0) (i32.const 6)))   ;; grants
     (if (i32.eq (local.get $grants) (i32.const -1)) (then (return (i32.const 0))))
     (local.set $g (call $rd_head (local.get $grants)))
@@ -2925,19 +2945,40 @@
         (local.set $inc (call $map_find (local.get $m) (i32.const 0x4613c0) (i32.const 7)))   ;; include
         (br_if $next (i32.eq (local.get $inc) (i32.const -1)))
         (br_if $next (i32.eqz (call $array_contains_star (local.get $inc) (local.get $op) (local.get $oplen))))
+        ;; operations EXCLUDE — id-scope, so a literal match and NO §5.4 transforms, and
+        ;; therefore no sentinel test either (0.8.2.24 N2/N3: asking it here would put an
+        ;; ordinary namespaced operation name through the path transforms purely to classify
+        ;; it and then deny the whole dimension).
+        (local.set $exc (call $map_find (local.get $m) (i32.const 0x4619c0) (i32.const 7)))   ;; exclude
+        (if (i32.ne (local.get $exc) (i32.const -1))
+          (then (br_if $next (call $array_contains_star (local.get $exc) (local.get $op) (local.get $oplen)))))
         (local.set $m (call $map_find (local.get $g) (i32.const 0x461300) (i32.const 8)))     ;; handlers
         (br_if $next (i32.eq (local.get $m) (i32.const -1)))
         (local.set $inc (call $map_find (local.get $m) (i32.const 0x4613c0) (i32.const 7)))
         (br_if $next (i32.eq (local.get $inc) (i32.const -1)))
         (br_if $next (i32.eqz (call $array_contains_star (local.get $inc) (global.get $g_hptr) (global.get $g_hlen))))
+        (local.set $exc (call $map_find (local.get $m) (i32.const 0x4619c0) (i32.const 7)))
+        (if (i32.ne (local.get $exc) (i32.const -1))
+          (then (br_if $next (call $array_contains_star (local.get $exc) (global.get $g_hptr) (global.get $g_hlen)))))
         (br_if $next (i32.eqz (call $peers_scope_ok (local.get $g) (global.get $g_tpp) (global.get $g_tplen))))
         (local.set $m (call $map_find (local.get $g) (i32.const 0x461340) (i32.const 9)))     ;; resources
         (br_if $next (i32.eq (local.get $m) (i32.const -1)))
+        ;; resources EXCLUDE — PATH-scope, so the §5.4 sentinel applies, and it is asked
+        ;; FIRST, before any include test: the coverage tests are correct in isolation and
+        ;; are simply never reached on a sentinel, because $pat_covers answers 0 for it.
+        ;; Without this the exclude dimension was NOT READ AT ALL on the dispatch path — a
+        ;; grant excluding the very target requested was honoured (measured 2026-09-15).
+        (local.set $exc (call $map_find (local.get $m) (i32.const 0x4619c0) (i32.const 7)))
+        (if (i32.ne (local.get $exc) (i32.const -1))
+          (then (br_if $next (call $arr_has_unmatchable (local.get $exc)))))
         (local.set $inc (call $map_find (local.get $m) (i32.const 0x4613c0) (i32.const 7)))
         (br_if $next (i32.eq (local.get $inc) (i32.const -1)))
-        (if (call $resources_cover_target (local.get $inc) (local.get $target) (local.get $tlen)
-                                          (local.get $fr) (local.get $frlen))
-          (then (return (i32.const 1)))))
+        (br_if $next (i32.eqz (call $resources_cover_target (local.get $inc) (local.get $target) (local.get $tlen)
+                                                            (local.get $fr) (local.get $frlen))))
+        (if (i32.ne (local.get $exc) (i32.const -1))
+          (then (br_if $next (call $resources_cover_target (local.get $exc) (local.get $target) (local.get $tlen)
+                                                           (local.get $fr) (local.get $frlen)))))
+        (return (i32.const 1)))
       (local.set $g (call $skip (local.get $g)))
       (local.set $i (i64.add (local.get $i) (i64.const 1)))
       (br $L)))
@@ -3347,6 +3388,51 @@
       (then (return (i32.const 0))))
     (i32.const 1))
 
+  ;; Is this pattern one of §5.4's three reserved prefixes — "./", "../" or "*/" — i.e. a
+  ;; form canonicalize cannot resolve?
+  (func $pat_unmatchable (param $p i32) (param $plen i32) (result i32)
+    (if (i32.lt_u (local.get $plen) (i32.const 2)) (then (return (i32.const 0))))
+    (if (i32.and (i32.eq (i32.load8_u (local.get $p)) (i32.const 0x2a))              ;; '*'
+                 (i32.eq (i32.load8_u (i32.add (local.get $p) (i32.const 1))) (i32.const 0x2f)))
+      (then (return (i32.const 1))))
+    (if (i32.ne (i32.load8_u (local.get $p)) (i32.const 0x2e)) (then (return (i32.const 0))))  ;; '.'
+    (if (i32.eq (i32.load8_u (i32.add (local.get $p) (i32.const 1))) (i32.const 0x2f))
+      (then (return (i32.const 1))))                                                  ;; "./"
+    (if (i32.ne (i32.load8_u (i32.add (local.get $p) (i32.const 1))) (i32.const 0x2e))
+      (then (return (i32.const 0))))
+    (if (i32.lt_u (local.get $plen) (i32.const 3)) (then (return (i32.const 0))))
+    (i32.eq (i32.load8_u (i32.add (local.get $p) (i32.const 2))) (i32.const 0x2f)))   ;; "../"
+
+  ;; Is the canonical value at $p/$plen the §5.4 sentinel?
+  (func $is_sentinel (param $p i32) (param $plen i32) (result i32)
+    (if (i32.ne (local.get $plen) (i32.const 12)) (then (return (i32.const 0))))
+    (call $streq (local.get $p) (i32.const 12) (i32.const 0x462d00) (i32.const 12)))
+
+  ;; Does any text element of the array at $arr canonicalize to the §5.4 sentinel?
+  ;;
+  ;; AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED in an
+  ;; include (covers nothing → the grant grants nothing) and fail-OPEN in an exclude (carves
+  ;; out nothing), so the reading is chosen where the POSITION is known — here — and the
+  ;; matcher stays uniform over its operands.
+  ;;
+  ;; EVERY CALL SITE MUST GUARD THIS ON PATH-SCOPE (0.8.2.24, N2/N3): the sentinel is a §5.4
+  ;; PATH-canonicalization artifact with no meaning on an id-scope dimension, whose patterns
+  ;; are literals §5.2 forbids putting through the §5.4 transforms.
+  (func $arr_has_unmatchable (param $arr i32) (result i32)
+    (local $n i64) (local $i i64) (local $p i32) (local $ep i32) (local $el i32)
+    (local.set $p (call $rd_head (local.get $arr)))
+    (if (i32.ne (global.get $g_major) (i32.const 4)) (then (return (i32.const 0))))
+    (local.set $n (global.get $g_arg))
+    (block $done (loop $L
+      (br_if $done (i64.ge_u (local.get $i) (local.get $n)))
+      (local.set $ep (call $rd_head (local.get $p)))
+      (local.set $el (i32.wrap_i64 (global.get $g_arg)))
+      (local.set $p (i32.add (local.get $ep) (local.get $el)))
+      (if (call $pat_unmatchable (local.get $ep) (local.get $el)) (then (return (i32.const 1))))
+      (local.set $i (i64.add (local.get $i) (i64.const 1)))
+      (br $L)))
+    (i32.const 0))
+
   ;; §5.5a canonicalize(pattern, frame_peer_id) → out; returns the canonical length.
   ;;   leading "/"  ⇒ absolute: the pattern names a peer position explicitly — copy verbatim
   ;;   otherwise    ⇒ peer-relative: "/" + frame + "/" + pattern
@@ -3355,6 +3441,18 @@
   ;; own namespace, NOT a universal cross-peer wildcard". Special-casing it is how the
   ;; no-canon-before-wildcard-shortcircuit bug shape (§5.5a's informative footnote) gets built.
   (func $canon (param $p i32) (param $plen i32) (param $fr i32) (param $frlen i32) (param $out i32) (result i32)
+    ;; §5.4 (0.8.2.20): canonicalize is TOTAL. The three reserved prefixes — "./", "../"
+    ;; and "*/" — have no canonical form, and this used to fall through to the peer-relative
+    ;; arm and emit "/{frame}/../nope": a literal that matches nothing.
+    ;;
+    ;; MATCHING NOTHING IS THE RIGHT ANSWER IN AN INCLUDE AND THE OPPOSITE OF IT IN AN
+    ;; EXCLUDE. A grant whose resources exclude is "../nope" carved out NOTHING, so the grant
+    ;; was silently wider than its author wrote — measured on the wire 2026-09-15, 200 where
+    ;; 0.8.2.21 requires a denial. The sentinel is what lets the exclude-reading call sites
+    ;; tell the two positions apart while the matcher stays uniform over its operands.
+    (if (call $pat_unmatchable (local.get $p) (local.get $plen))
+      (then (memory.copy (local.get $out) (i32.const 0x462d00) (i32.const 12))
+            (return (i32.const 12))))
     (if (i32.and (i32.gt_u (local.get $plen) (i32.const 0))
                  (i32.eq (i32.load8_u (local.get $p)) (i32.const 0x2f)))
       (then (memory.copy (local.get $out) (local.get $p) (local.get $plen))
@@ -3374,6 +3472,12 @@
   ;; Both exhausted together → covered; either alone → not covered.
   (func $pat_covers (param $cp i32) (param $cplen i32) (param $pp i32) (param $pplen i32) (result i32)
     (local $ci i32) (local $pi i32) (local $cs i32) (local $cl i32) (local $ps i32) (local $pl i32)
+    ;; THE SENTINEL NEVER MATCHES, IN EITHER OPERAND (§5.4, 0.8.2.20) — and it is a MATCHER
+    ;; RULE, asked FIRST, rather than a property the value happens to have. The walk below
+    ;; answers TRUE for a bare "*" parent, so safety must not rest on "/never-match" merely
+    ;; looking unmatchable to a reader.
+    (if (call $is_sentinel (local.get $cp) (local.get $cplen)) (then (return (i32.const 0))))
+    (if (call $is_sentinel (local.get $pp) (local.get $pplen)) (then (return (i32.const 0))))
     (if (i32.eqz (local.get $cplen)) (then (return (i32.const 0))))
     (if (i32.eqz (local.get $pplen)) (then (return (i32.const 0))))
     (if (i32.ne (i32.load8_u (local.get $cp)) (i32.const 0x2f)) (then (return (i32.const 0))))
@@ -3881,11 +3985,117 @@
       (br $walk)))
     (i32.const 0))
 
+  ;; §5.2's EFFECTIVE target list (0.8.2.20), reduced to the ONE survivor a
+  ;; resource-requiring operation may act on. Sets $g_effp/$g_efflen (the CALLER'S OWN
+  ;; SPELLING — 0.8.2.21 is explicit that effective_targets yields RAW survivors, and it is
+  ;; load-bearing because the value flows on to $canon_path and to the store, which
+  ;; canonicalize for themselves) and answers:
+  ;;
+  ;;   0  exactly one effective target
+  ;;   1  no `resource`, or no `targets` inside it — the ABSENT case
+  ;;   2  present and effectively EMPTY  (§3.3 → path_required)
+  ;;   3  more than one                  (§3.3 → ambiguous_resource)
+  ;;
+  ;; THE FIRST TWO ARE DIFFERENT REQUESTS, not two spellings of one (0.8.2.24 N7, 0.8.2.25
+  ;; N10): §3.3's "an empty effective list IS the absent case" is scoped to an operation that
+  ;; REQUIRES a resource, and `get` does not.
+  ;;
+  ;; The caller-exclude arm is fail-OPEN on an unmatchable pattern — $canon answers the
+  ;; sentinel and $pat_covers then answers 0, so the target simply survives. That is CORRECT
+  ;; here: §5.4's table rules the CALLER arm separately from the GRANT arm, where the same
+  ;; sentinel denies. The asymmetry is inherited from the matcher rather than restated.
+  (func $eff_target (param $edp i32) (result i32)
+    (local $res i32) (local $ta i32) (local $ex i32) (local $p i32) (local $n i64) (local $i i64)
+    (local $ep i32) (local $el i32) (local $surv i32) (local $tclen i32) (local $q i32)
+    (local $m i64) (local $j i64) (local $xp i32) (local $xl i32) (local $xclen i32) (local $drop i32)
+    (global.set $g_effp (i32.const 0)) (global.set $g_efflen (i32.const 0))
+    (local.set $res (call $map_find (local.get $edp) (i32.const 0x462080) (i32.const 8)))     ;; resource
+    (if (i32.eq (local.get $res) (i32.const -1)) (then (return (i32.const 1))))
+    (local.set $ta (call $map_find (local.get $res) (i32.const 0x4620c0) (i32.const 7)))      ;; targets
+    (if (i32.eq (local.get $ta) (i32.const -1)) (then (return (i32.const 1))))
+    (local.set $ex (call $map_find (local.get $res) (i32.const 0x4619c0) (i32.const 7)))      ;; exclude
+    (local.set $p (call $rd_head (local.get $ta)))
+    (if (i32.ne (global.get $g_major) (i32.const 4)) (then (return (i32.const 1))))
+    (local.set $n (global.get $g_arg))
+    (block $done (loop $L
+      (br_if $done (i64.ge_u (local.get $i) (local.get $n)))
+      (local.set $ep (call $rd_head (local.get $p)))
+      (local.set $el (i32.wrap_i64 (global.get $g_arg)))
+      (local.set $p (i32.add (local.get $ep) (local.get $el)))
+      (local.set $drop (i32.const 0))
+      (if (i32.ne (local.get $ex) (i32.const -1))
+        (then
+          (local.set $tclen (call $canon (local.get $ep) (local.get $el)
+                                         (i32.const 0x420200) (i32.load (i32.const 0x4202F0))
+                                         (i32.const 0x9A1400)))
+          (local.set $q (call $rd_head (local.get $ex)))
+          (if (i32.eq (global.get $g_major) (i32.const 4))
+            (then
+              (local.set $m (global.get $g_arg))
+              (local.set $j (i64.const 0))
+              (block $xd (loop $XL
+                (br_if $xd (i64.ge_u (local.get $j) (local.get $m)))
+                (local.set $xp (call $rd_head (local.get $q)))
+                (local.set $xl (i32.wrap_i64 (global.get $g_arg)))
+                (local.set $q (i32.add (local.get $xp) (local.get $xl)))
+                ;; The caller's exclude is written in the REQUEST, about paths in THIS peer's
+                ;; namespace, so it frames against the LOCAL peer and never the granter.
+                (local.set $xclen (call $canon (local.get $xp) (local.get $xl)
+                                               (i32.const 0x420200) (i32.load (i32.const 0x4202F0))
+                                               (i32.const 0x9A1800)))
+                (if (call $pat_covers (i32.const 0x9A1400) (local.get $tclen)
+                                      (i32.const 0x9A1800) (local.get $xclen))
+                  (then (local.set $drop (i32.const 1))))
+                (local.set $j (i64.add (local.get $j) (i64.const 1)))
+                (br $XL))))))) 
+      (if (i32.eqz (local.get $drop))
+        (then
+          (if (i32.eqz (local.get $surv))
+            (then (global.set $g_effp (local.get $ep)) (global.set $g_efflen (local.get $el))))
+          (local.set $surv (i32.add (local.get $surv) (i32.const 1)))))
+      (local.set $i (i64.add (local.get $i) (i64.const 1)))
+      (br $L)))
+    (if (i32.eqz (local.get $surv)) (then (return (i32.const 2))))
+    (if (i32.gt_u (local.get $surv) (i32.const 1)) (then (return (i32.const 3))))
+    (i32.const 0))
+
+  ;; §3.3 (0.8.2.20): a resource-requiring operation takes a CONCRETE path, so a pattern
+  ;; surviving as the single effective target is 400 malformed_resource — not a 404 for a
+  ;; literal key that happens to be spelled with a star.
+  (func $has_star (param $p i32) (param $plen i32) (result i32)
+    (local $i i32)
+    (block $d (loop $l
+      (br_if $d (i32.ge_u (local.get $i) (local.get $plen)))
+      (if (i32.eq (i32.load8_u (i32.add (local.get $p) (local.get $i))) (i32.const 0x2a))
+        (then (return (i32.const 1))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))
+    (i32.const 0))
+
+  ;; §6.3 check_path_permission, AND IT IS NOT A SECONDARY CHECK (0.8.2.20). It is the
+  ;; enforcement wherever the subject is derived AFTER dispatch, because the dispatch-level
+  ;; check can be made VACUOUS by caller-controlled input: a caller that excludes the one
+  ;; target its capability does not cover removes that target from check_permission's view.
+  ;;
+  ;; THREE DIMENSIONS AND THE LOCAL FRAME, both from §6.3's own signature —
+  ;; matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id) has no
+  ;; granter parameter to pass. It reuses $grant_scope_ok, which asks operations, handlers,
+  ;; peers and resources; `peers` is satisfied by construction here (the path is local, since
+  ;; §1.4's inbound rule refused a foreign namespace before any handler ran).
+  ;;
+  ;; No presented capability → permitted: there is no caller authority to check the subject
+  ;; against, and the dispatch stage already decided the request.
+  (func $check_path_perm (param $path i32) (param $plen i32) (result i32)
+    (if (i32.eqz (global.get $g_tokd)) (then (return (i32.const 1))))
+    (call $grant_scope_ok (global.get $g_tokd) (local.get $path) (local.get $plen)
+                          (i32.const 0x462200) (i32.const 3)                       ;; "get"
+                          (i32.const 0x420200) (i32.load (i32.const 0x4202F0))))
+
   ;; §5.2 grant-scope (403): token temporal-valid + some grant covers op×handler×target.
   (func $verify_scope (param $edp i32) (param $in i32) (param $out i32) (param $rid i32) (param $rlen i32) (result i32)
     (local $cap i32) (local $capp i32) (local $incl i32) (local $tok i32) (local $td i32)
     (local $op i32) (local $opp i32) (local $oplen i32) (local $res i32) (local $ta i32) (local $tgp i32) (local $tglen i32)
     (local $f i32) (local $ms i64)
+    (global.set $g_tokd (i32.const 0))
     (call $derive_handler (local.get $edp))
     (local.set $cap (call $map_find (local.get $edp) (i32.const 0x462040) (i32.const 10)))
     (if (i32.eq (local.get $cap) (i32.const -1)) (then (return (i32.const 0))))
@@ -3896,6 +4106,7 @@
     (if (i32.eqz (local.get $tok)) (then (return (i32.const 0))))
     (local.set $td (call $map_find (local.get $tok) (i32.const 0x460010) (i32.const 4)))
     (if (i32.eq (local.get $td) (i32.const -1)) (then (return (i32.const 0))))
+    (global.set $g_tokd (local.get $td))
     (drop (call $clock_time_get (i32.const 0) (i64.const 0) (i32.const 0x930040)))
     (local.set $ms (i64.div_u (i64.load (i32.const 0x930040)) (i64.const 1000000)))
     (local.set $f (call $map_find (local.get $td) (i32.const 0x462180) (i32.const 10)))          ;; expires_at
@@ -3910,14 +4121,18 @@
     (if (i32.eq (local.get $op) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
     (local.set $opp (call $rd_head (local.get $op)))
     (local.set $oplen (i32.wrap_i64 (global.get $g_arg)))
-    (local.set $res (call $map_find (local.get $edp) (i32.const 0x462080) (i32.const 8)))        ;; resource
-    (if (i32.eq (local.get $res) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $ta (call $map_find (local.get $res) (i32.const 0x4620c0) (i32.const 7)))         ;; targets
-    (if (i32.eq (local.get $ta) (i32.const -1)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $tgp (call $rd_head (local.get $ta)))
-    (if (i64.eqz (global.get $g_arg)) (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $tgp (call $rd_head (local.get $tgp)))
-    (local.set $tglen (i32.wrap_i64 (global.get $g_arg)))
+    ;; §5.2 evaluates the EFFECTIVE set, so the subject here is the one the HANDLER will act
+    ;; on — not resource.targets[0]. Authorizing targets[0] while the handler acts on a
+    ;; different entry IS the gap §6.3 means by "not a secondary check"; this peer has exactly
+    ;; ONE narrowing seam ($eff_target) and both sides read it, so the two cannot disagree.
+    ;;
+    ;; An effective list that is EMPTY or AMBIGUOUS is not authorized here and not refused
+    ;; here either: nothing is being acted on, and §3.3's ladder in the handler answers it
+    ;; with the code the request's shape earns (path_required / ambiguous_resource) rather
+    ;; than an authorization verdict.
+    (if (i32.ne (call $eff_target (local.get $edp)) (i32.const 0)) (then (return (i32.const 0))))
+    (local.set $tgp (global.get $g_effp))
+    (local.set $tglen (global.get $g_efflen))
     ;; §5.5a frame for the DISPATCH surface: the presented cap's own granter. Derived here
     ;; rather than assumed to be the local peer — they are byte-identical for every
     ;; self-issued capability, which is exactly why framing against the verifier stays
@@ -3971,7 +4186,7 @@
   ;; true iff store entry $e is a live child under $prefix (path strictly under prefix AND the
   ;; bound entity is not a deletion marker).
   (func $listing_include (param $e i32) (param $prefix i32) (param $plen i32) (result i32)
-    (local $pl i32) (local $islocal i32)
+    (local $pl i32) (local $islocal i32) (local $rem i32) (local $remlen i32) (local $k i32)
     (local.set $pl (i32.load (i32.add (local.get $e) (i32.const 4))))
     (if (i32.eqz (i32.and (i32.gt_u (local.get $pl) (local.get $plen))
                           (call $streq (i32.load (local.get $e)) (local.get $plen) (local.get $prefix) (local.get $plen))))
@@ -3982,7 +4197,28 @@
     (if (local.get $plen) (then (if (i32.eq (i32.load8_u (local.get $prefix)) (i32.const 0x2f)) (then (local.set $islocal (i32.const 0))))))
     (if (i32.and (local.get $islocal) (i32.eq (i32.load8_u (i32.load (local.get $e))) (i32.const 0x2f)))
       (then (return (i32.const 0))))
-    (i32.eqz (call $is_delmarker (i32.load (i32.add (local.get $e) (i32.const 8))))))
+    (if (call $is_delmarker (i32.load (i32.add (local.get $e) (i32.const 8))))
+      (then (return (i32.const 0))))
+    ;; §6.3's LISTING FILTER (0.8.2.21/.22): every entry of a multi-entry result is checked
+    ;; INDIVIDUALLY with check_path_permission, entries that DENY are omitted, and `count` MUST
+    ;; reflect the filtered total. It lives HERE, in the predicate BOTH the counting pass and
+    ;; the emitting pass call, so the two agree by construction rather than by a second walk.
+    ;;
+    ;; The subject is the CHILD path — the prefix plus this entry's immediate segment — which
+    ;; is just a prefix of the store key itself, already canonical. The segment length is
+    ;; recomputed inline rather than via $child_of, which writes the $g_chp/$g_chlen globals
+    ;; the emit pass is holding.
+    ;;
+    ;; This is the read path at its highest volume, which is the reason 0.8.2.21 refused to
+    ;; carve reads out: a listing naming an entry the caller's own capability excludes
+    ;; discloses a binding that capability was written to hide.
+    (local.set $rem (i32.add (i32.load (local.get $e)) (local.get $plen)))
+    (local.set $remlen (i32.sub (local.get $pl) (local.get $plen)))
+    (block $d (loop $l
+      (br_if $d (i32.ge_u (local.get $k) (local.get $remlen)))
+      (br_if $d (i32.eq (i32.load8_u (i32.add (local.get $rem) (local.get $k))) (i32.const 0x2f)))
+      (local.set $k (i32.add (local.get $k) (i32.const 1))) (br $l)))
+    (call $check_path_perm (i32.load (local.get $e)) (i32.add (local.get $plen) (local.get $k))))
 
   ;; set $g_chp/$g_chlen to the IMMEDIATE child segment of store-entry $e under a $plen-byte prefix
   ;; (the remainder truncated at its first '/'), i.e. the directory-style child name.
@@ -4103,14 +4339,23 @@
     (if (local.get $e) (then (return (local.get $e))))
     (local.set $e (call $verify_scope (local.get $edp) (local.get $in) (local.get $out) (local.get $rid) (local.get $rlen)))
     (if (local.get $e) (then (return (local.get $e))))
-    (local.set $res (call $map_find (local.get $edp) (i32.const 0x462080) (i32.const 8)))
-    (if (i32.eq (local.get $res) (i32.const -1)) (then (return (call $err_404 (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $ta (call $map_find (local.get $res) (i32.const 0x4620c0) (i32.const 7)))
-    (if (i32.eq (local.get $ta) (i32.const -1)) (then (return (call $err_404 (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $tp (call $rd_head (local.get $ta)))
-    (if (i64.eqz (global.get $g_arg)) (then (return (call $err_404 (local.get $out) (local.get $rid) (local.get $rlen)))))
-    (local.set $tp (call $rd_head (local.get $tp)))
-    (local.set $tlen (i32.wrap_i64 (global.get $g_arg)))
+    ;; §3.3's ladder, on the EFFECTIVE list (0.8.2.20) — never on resource.targets. A handler
+    ;; that counts the effective list and then indexes targets[0] has implemented the
+    ;; arithmetic completely and is still reading a path no authorization covered: measured on
+    ;; the wire 2026-09-15, `targets:[qA,qB] exclude:[qA]` served qA, the one entry the caller
+    ;; had carved out.
+    (local.set $res (call $eff_target (local.get $edp)))
+    (if (i32.eq (local.get $res) (i32.const 1))
+      (then (return (call $err_404 (local.get $out) (local.get $rid) (local.get $rlen)))))     ;; absent: unchanged
+    (if (i32.eq (local.get $res) (i32.const 2))
+      ;; `resource` PRESENT and every target carved out by the caller's own exclude. Answering
+      ;; it the absent case would answer a request for one excluded path with something WIDER
+      ;; than the request.
+      (then (return (call $build_error (local.get $out) (i32.const 0x462d40) (i32.const 13) (i32.const 400) (local.get $rid) (local.get $rlen)))))
+    (if (i32.eq (local.get $res) (i32.const 3))
+      (then (return (call $build_error (local.get $out) (i32.const 0x466980) (i32.const 18) (i32.const 400) (local.get $rid) (local.get $rlen)))))
+    (local.set $tp (global.get $g_effp))
+    (local.set $tlen (global.get $g_efflen))
     (if (i32.eqz (call $path_valid (local.get $tp) (local.get $tlen)))
       (then (return (call $build_error (local.get $out) (i32.const 0x4622c0) (i32.const 12) (i32.const 400) (local.get $rid) (local.get $rlen)))))
     (call $canon_path (local.get $tp) (local.get $tlen))   ;; §1.4 canonical store key
@@ -4118,6 +4363,12 @@
     (if (i32.eqz (local.get $tlen)) (then (return (call $serve_listing (local.get $out) (local.get $tp) (i32.const 0) (local.get $rid) (local.get $rlen)))))   ;; root listing
     (if (i32.eq (i32.load8_u (i32.add (local.get $tp) (i32.sub (local.get $tlen) (i32.const 1)))) (i32.const 0x2f))
       (then (return (call $serve_listing (local.get $out) (local.get $tp) (local.get $tlen) (local.get $rid) (local.get $rlen)))))   ;; prefix listing
+    (if (call $has_star (local.get $tp) (local.get $tlen))
+      (then (return (call $build_error (local.get $out) (i32.const 0x462d80) (i32.const 18) (i32.const 400) (local.get $rid) (local.get $rlen)))))
+    ;; §6.3 — the handler verifies the CALLER's capability covers the path it is about to
+    ;; read. See $check_path_perm for why this is not redundant with the dispatch stage.
+    (if (i32.eqz (call $check_path_perm (local.get $tp) (local.get $tlen)))
+      (then (return (call $err_capden (local.get $out) (local.get $rid) (local.get $rlen)))))
     (local.set $blob (call $store_get (local.get $tp) (local.get $tlen)))
     (if (i32.eqz (local.get $blob)) (then (return (call $err_404 (local.get $out) (local.get $rid) (local.get $rlen)))))
     (call $build_get_ok (local.get $out) (local.get $blob) (global.get $s_blen) (local.get $rid) (local.get $rlen)))
@@ -4908,11 +5159,181 @@
     (if (i32.ne (local.get $parent) (i32.const -1)) (then (return (call $err_501 (local.get $out) (local.get $rid) (local.get $rlen)))))
     (call $err_invparams (local.get $out) (local.get $rid) (local.get $rlen)))
 
+  ;; ── §4.11's DECODE BOUNDARY ────────────────────────────────────────────────────
+  ;; $rd_head/$skip are the LENIENT readers: they navigate whatever shape they are handed,
+  ;; which is what lets a refusal path recover a request_id out of a frame the strict pass
+  ;; has condemned. Nothing else here asks whether the bytes are a legal canonical-ECF value.
+  ;;
+  ;; This walk is that question, and it separates the two causes §4.11 names by CODE:
+  ;;   a CBOR tag in any position  →  ENTITY-CBOR-ENCODING §6.3 tag policy (non_canonical_ecf)
+  ;;   anything else               →  "never becomes an Envelope"           (invalid_request)
+  ;;
+  ;; The tag is recorded in a global rather than returned, because TAG WINS OVER A CLEAN
+  ;; STRUCTURE BUT NOT OVER A BROKEN ONE: a frame that is both truncated and tagged is
+  ;; INVALID, since the tag was read out of bytes whose shape was never established.
+  ;;
+  ;; It reads bytes directly rather than through $rd_head, because it must BOUND every read
+  ;; against `end` — which is the property $rd_head does not have — and it caps depth, which
+  ;; $skip does not.
+  (global $g_sawtag (mut i32) (i32.const 0))
+  (global $g_fpos   (mut i32) (i32.const 0))
+  (func $frame_walk (param $end i32) (param $depth i32) (result i32)
+    (local $b i32) (local $major i32) (local $ai i32) (local $arg i64) (local $n i64) (local $i i64)
+    (if (i32.gt_u (local.get $depth) (i32.const 128)) (then (return (i32.const 0))))
+    (if (i32.ge_u (global.get $g_fpos) (local.get $end)) (then (return (i32.const 0))))
+    (local.set $b (i32.load8_u (global.get $g_fpos)))
+    (global.set $g_fpos (i32.add (global.get $g_fpos) (i32.const 1)))
+    (local.set $major (i32.shr_u (local.get $b) (i32.const 5)))
+    (local.set $ai (i32.and (local.get $b) (i32.const 0x1f)))
+    (if (i32.lt_u (local.get $ai) (i32.const 24))
+      (then (local.set $arg (i64.extend_i32_u (local.get $ai))))
+      (else
+        ;; ai 28..30 reserved, 31 indefinite — canonical ECF admits neither.
+        (if (i32.gt_u (local.get $ai) (i32.const 27)) (then (return (i32.const 0))))
+        (local.set $n (i64.extend_i32_u
+          (i32.shl (i32.const 1) (i32.sub (local.get $ai) (i32.const 24)))))   ;; 1,2,4,8
+        (if (i32.gt_u (i32.add (global.get $g_fpos) (i32.wrap_i64 (local.get $n))) (local.get $end))
+          (then (return (i32.const 0))))
+        (local.set $arg (i64.const 0))
+        (local.set $i (i64.const 0))
+        (block $hd (loop $hl
+          (br_if $hd (i64.ge_u (local.get $i) (local.get $n)))
+          (local.set $arg (i64.or (i64.shl (local.get $arg) (i64.const 8))
+                                  (i64.extend_i32_u (i32.load8_u (global.get $g_fpos)))))
+          (global.set $g_fpos (i32.add (global.get $g_fpos) (i32.const 1)))
+          (local.set $i (i64.add (local.get $i) (i64.const 1)))
+          (br $hl)))))
+    ;; 0 uint / 1 nint / 7 simple+float: the head is the whole value
+    (if (i32.or (i32.lt_u (local.get $major) (i32.const 2)) (i32.eq (local.get $major) (i32.const 7)))
+      (then (return (i32.const 1))))
+    (if (i32.lt_u (local.get $major) (i32.const 4))                             ;; 2 bytes / 3 text
+      (then
+        ;; Compared as remaining-vs-declared rather than as pos+arg, which wraps on a
+        ;; 2^64-1 length and passes.
+        (if (i64.gt_u (local.get $arg) (i64.extend_i32_u (i32.sub (local.get $end) (global.get $g_fpos))))
+          (then (return (i32.const 0))))
+        (global.set $g_fpos (i32.add (global.get $g_fpos) (i32.wrap_i64 (local.get $arg))))
+        (return (i32.const 1))))
+    (if (i32.eq (local.get $major) (i32.const 6))                               ;; tag
+      (then (global.set $g_sawtag (i32.const 1))
+            (return (call $frame_walk (local.get $end) (i32.add (local.get $depth) (i32.const 1))))))
+    (if (i32.gt_u (local.get $major) (i32.const 5)) (then (return (i32.const 0))))
+    (local.set $n (local.get $arg))
+    (if (i32.eq (local.get $major) (i32.const 5))                               ;; map: 2*count items
+      (then
+        (if (i64.ne (i64.shr_u (local.get $n) (i64.const 63)) (i64.const 0)) (then (return (i32.const 0))))
+        (local.set $n (i64.shl (local.get $n) (i64.const 1)))))
+    (local.set $i (i64.const 0))
+    (block $done (loop $L
+      (br_if $done (i64.ge_u (local.get $i) (local.get $n)))
+      ;; A huge declared count terminates HERE, on the first element with no bytes left —
+      ;; the loop cannot run longer than the frame.
+      (if (i32.eqz (call $frame_walk (local.get $end) (i32.add (local.get $depth) (i32.const 1))))
+        (then (return (i32.const 0))))
+      (local.set $i (i64.add (local.get $i) (i64.const 1)))
+      (br $L)))
+    (i32.const 1))
+
+  ;; 0 = a legal canonical-ECF value spanning exactly the frame · 1 = TAG · 2 = invalid.
+  (func $frame_precheck (param $in i32) (param $in_len i32) (result i32)
+    (if (i32.eqz (local.get $in_len)) (then (return (i32.const 2))))
+    (global.set $g_sawtag (i32.const 0))
+    (global.set $g_fpos (local.get $in))
+    (if (i32.eqz (call $frame_walk (i32.add (local.get $in) (local.get $in_len)) (i32.const 0)))
+      (then (return (i32.const 2))))
+    ;; Trailing bytes after the top-level value: the frame length and the value disagree,
+    ;; which is a FRAMING fault and not a tag-policy one.
+    (if (i32.ne (global.get $g_fpos) (i32.add (local.get $in) (local.get $in_len)))
+      (then (return (i32.const 2))))
+    (if (global.get $g_sawtag) (then (return (i32.const 1))))
+    (i32.const 0))
+
+  ;; Recover root.data.request_id into $g_sridp/$g_sridlen so a pre-admission refusal comes
+  ;; back CORRELATED where the id exists. Only ever called on bytes $frame_precheck has walked
+  ;; to completion. A frame with no request_id is answered uncorrelated, which §4.11 provides
+  ;; for in as many words — and a correlation id naming a DIFFERENT request would be worse
+  ;; than none, because the caller matches it to something.
+  (global $g_sridp   (mut i32) (i32.const 0))
+  (global $g_sridlen (mut i32) (i32.const 0))
+  (func $salvage_rid (param $in i32)
+    (local $r i32)
+    (global.set $g_sridp (i32.const 0x462400)) (global.set $g_sridlen (i32.const 0))
+    (local.set $r (call $map_find (local.get $in) (i32.const 0x460000) (i32.const 4)))     ;; root
+    (if (i32.eq (local.get $r) (i32.const -1)) (then (return)))
+    (local.set $r (call $map_find (local.get $r) (i32.const 0x460010) (i32.const 4)))      ;; data
+    (if (i32.eq (local.get $r) (i32.const -1)) (then (return)))
+    (local.set $r (call $map_find (local.get $r) (i32.const 0x4600b0) (i32.const 10)))     ;; request_id
+    (if (i32.eq (local.get $r) (i32.const -1)) (then (return)))
+    (global.set $g_sridp (call $rd_head (local.get $r)))
+    (global.set $g_sridlen (i32.wrap_i64 (global.get $g_arg))))
+
+  ;; §3.1 / §1.8 at the DECODE BOUNDARY: every `included` entry hashes to the key it is filed
+  ;; under. $included_find_by_key asks the same question at the LOOKUP — mechanism (b), where a
+  ;; forged address MISSES — and that check stays as the backstop. This one is mechanism (a)
+  ;; and is what the WIRE observes: §4.11 requires a coded refusal BEFORE admission, so a
+  ;; mis-keyed map must not reach the §1.4 address gate and come back as `invalid_request`.
+  ;; §5.2a pins 400 hash_mismatch here, and `non_canonical_ecf` is NOT conformant — the bytes
+  ;; ARE canonical; what is false is the claim the KEY makes.
+  ;;
+  ;; SCOPE, stated because it is a hole and not an omission: only 33-byte keys are checked. A
+  ;; key of any other length cannot be an ecfv1-sha256 content_hash, and $included_find_by_key
+  ;; only ever MATCHES 33-byte keys, so such an entry is unresolvable by construction.
+  (func $included_all_bind (param $in i32) (result i32)
+    (local $inclp i32) (local $n i64) (local $i i64) (local $p i32) (local $kb i32) (local $kl i32) (local $valp i32)
+    (local.set $inclp (call $map_find (local.get $in) (i32.const 0x461040) (i32.const 8)))
+    (if (i32.eq (local.get $inclp) (i32.const -1)) (then (return (i32.const 1))))
+    (local.set $p (call $rd_head (local.get $inclp)))
+    (if (i32.ne (global.get $g_major) (i32.const 5)) (then (return (i32.const 0))))
+    (local.set $n (global.get $g_arg))
+    (block $done (loop $L
+      (br_if $done (i64.ge_u (local.get $i) (local.get $n)))
+      (local.set $kb (call $rd_head (local.get $p)))
+      (local.set $kl (i32.wrap_i64 (global.get $g_arg)))
+      (local.set $valp (i32.add (local.get $kb) (local.get $kl)))
+      (if (i32.eq (local.get $kl) (i32.const 33))
+        (then (if (i32.eqz (call $included_key_binds (local.get $valp) (local.get $kb)))
+          (then (return (i32.const 0))))))
+      (local.set $p (call $skip (local.get $valp)))
+      (local.set $i (i64.add (local.get $i) (i64.const 1)))
+      (br $L)))
+    (i32.const 1))
+
+  ;; The §4.11 refusal the host emits for a frame that never completed: uncorrelated by
+  ;; construction, because the request_id lives inside a frame that never arrived.
+  (func $emit_trunc (export "emit_trunc") (param $out i32) (result i32)
+    (call $build_error (local.get $out) (i32.const 0x462c00) (i32.const 15) (i32.const 400)
+                       (i32.const 0x462400) (i32.const 0)))
+
   ;; dispatch(in,in_len,out,sess) → out_len. Parses the envelope; routes hello; echoes otherwise.
   ;; $sess = per-connection session state (nonce + hello_done), passed by the host per connection.
   (func $dispatch (export "dispatch") (param $in i32) (param $in_len i32) (param $out i32) (param $sess i32) (result i32)
     (local $rootp i32) (local $edp i32) (local $ridvp i32) (local $rid i32) (local $rlen i32)
-    (local $opvp i32) (local $op i32) (local $oplen i32) (local $nrej i32)
+    (local $opvp i32) (local $op i32) (local $oplen i32) (local $nrej i32) (local $pre i32)
+    ;; ---- §4.11 DECODE BOUNDARY ----
+    ;; Sited HERE, above everything, and the placement is the requirement rather than a
+    ;; convenience: §4.11 is about frames refused PRE-ADMISSION, so each cause is decided
+    ;; before the §1.4 address gate, before authentication and before any capability question.
+    ;; A peer that runs its address gate first answers `invalid_request` to a tagged frame and
+    ;; has not implemented §6.3's decode-time reject at all.
+    (local.set $pre (call $frame_precheck (local.get $in) (local.get $in_len)))
+    (if (i32.eq (local.get $pre) (i32.const 1))
+      (then
+        ;; The frame is otherwise structurally sound — $frame_precheck reports TAG only when
+        ;; the walk consumed exactly the frame — so the lenient readers are safe on it and the
+        ;; request_id is recoverable. That ordering is what makes the salvage legitimate.
+        (call $salvage_rid (local.get $in))
+        (return (call $build_error (local.get $out) (i32.const 0x462dc0) (i32.const 17) (i32.const 400)
+                      (global.get $g_sridp) (global.get $g_sridlen)))))
+    (if (i32.eq (local.get $pre) (i32.const 2))
+      ;; No salvage: the shape was never established, so a field read over these bytes would
+      ;; be reading a structure that is not there.
+      (then (return (call $build_error (local.get $out) (i32.const 0x462c00) (i32.const 15) (i32.const 400)
+                          (i32.const 0x462400) (i32.const 0)))))
+    (if (i32.eqz (call $included_all_bind (local.get $in)))
+      (then
+        (call $salvage_rid (local.get $in))
+        (return (call $build_error (local.get $out) (i32.const 0x466740) (i32.const 13) (i32.const 400)
+                      (global.get $g_sridp) (global.get $g_sridlen)))))
     (block $echo
       (local.set $rootp (call $map_find (local.get $in) (i32.const 0x460000) (i32.const 4)))   ;; "root"
       (br_if $echo (i32.eq (local.get $rootp) (i32.const -1)))
@@ -5003,8 +5424,13 @@
       ;; any other EXECUTE → §6.5 resolution-first flow (401 auth / 404 handler / 501 unknown-op /
       ;; 403 scope / 501 unimplemented). The dedicated capability handler replaces the tail next.
       (return (call $serve_auth_op (local.get $in) (local.get $edp) (local.get $out) (local.get $rid) (local.get $rlen) (local.get $op) (local.get $oplen))))
-    ;; fallthrough: envelope not a parseable EXECUTE → echo raw (last-resort, no request_id known)
-    (global.set $g_wp (local.get $out))
-    (call $w_bytes (local.get $in) (local.get $in_len))
-    (local.get $in_len))
+    ;; §4.11 — the frame decoded and is NOT a well-formed request: no `root`, no `data`, no
+    ;; `request_id`, no `operation`, or a root type that is neither EXECUTE nor
+    ;; EXECUTE_RESPONSE. This used to ECHO THE RAW FRAME BACK, which is not a response at all:
+    ;; the caller receives bytes carrying no status and no code, and §4.11's obligation is a
+    ;; CODED EXECUTE_RESPONSE. A decoded root is CORRELATABLE — the request_id is right there
+    ;; in it — so the salvage runs before the answer.
+    (call $salvage_rid (local.get $in))
+    (call $build_error (local.get $out) (i32.const 0x462c00) (i32.const 15) (i32.const 400)
+                       (global.get $g_sridp) (global.get $g_sridlen)))
 )

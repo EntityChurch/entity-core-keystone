@@ -24,7 +24,7 @@ import
    Util at 'util.ozf'
 export
    NowMs AddTtl TemporalFieldsRepresentable ParseScope ParseGrant GrantsOfToken MkGrant
-   MatchesPattern MatchesScope CheckPermission CheckResourceScope
+   MatchesPattern MatchesScope CheckPermission CheckResourceScope CheckPathPermission
    Resolve ResolveGranterPeerId FindSignature
    VerifyChain ChainExceedsDepth IsRevoked VerifyRequest GrantSubset
    MaxChainDepth
@@ -161,21 +161,65 @@ define
    %% AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is
    %% fail-CLOSED in an include (covers nothing -> the grant grants nothing) and
    %% fail-OPEN in an exclude (carves out nothing), so the reading is chosen where the
-   %% POSITION is known and MatchesPattern stays uniform over its operands. The guard
-   %% sits outside the scope-type dispatch, transcribing 5.2s loop literally.
+   %% POSITION is known and MatchesPattern stays uniform over its operands.
    fun {ExcludeUnmatchable Frame Excl}
       {Some Excl fun {$ P} {Hp.canonicalize Frame P} == Hp.neverMatch end}
    end
 
+   %% SCOPED TO PATH-SCOPE (0.8.2.24, N2/N3). This guard used to sit OUTSIDE the
+   %% scope-type dispatch, transcribing 5.2s loop literally -- which was right until
+   %% that loop grew a type dispatch of its own. neverMatch is a 5.4 PATH-
+   %% canonicalization sentinel and has no meaning on an id-scope dimension, whose
+   %% patterns are literal identifiers 5.2s own id-scope arm forbids putting through
+   %% the 5.4 transforms. Asked outside the dispatch it ran an id pattern through
+   %% those transforms purely to classify it and then DENIED THE WHOLE DIMENSION on a
+   %% property unrelated to whether the exclude carves anything out: an `operations`
+   %% exclude of star-slash-apply -- an ordinary namespaced operation name, a literal
+   %% matching nothing under the id-scope grammar -- canonicalizes to the sentinel and
+   %% denied every operation. Over-denial, and invisible on any well-formed grant.
    fun {MatchesScope LocalPeer Value S Kind}
-      if {ExcludeUnmatchable LocalPeer S.excl} then false
-      elseif Kind == id then
+      if Kind == id then
          {CoveredId S.incl Value} andthen {Not {CoveredId S.excl Value}}
+      elseif {ExcludeUnmatchable LocalPeer S.excl} then false
       else
          Cv = {Hp.canonicalize LocalPeer Value}
       in
          {Covered LocalPeer S.incl Cv} andthen {Not {Covered LocalPeer S.excl Cv}}
       end
+   end
+
+   %% 6.3s handler-level path check, AND IT IS NOT A SECONDARY CHECK (0.8.2.20). It is
+   %% the enforcement wherever the subject is derived after dispatch, because the
+   %% dispatch-level check can be made VACUOUS by caller-controlled input: a caller who
+   %% excludes the one target its capability does not cover removes that target from
+   %% CheckPermissions view entirely, and a handler that then acts on it has authorized
+   %% nothing.
+   %%
+   %% THREE DIMENSIONS, NOT FOUR, and the LOCAL frame -- both from 6.3s own signature,
+   %% matches_scope(canonical_path, grant.resources, path-scope, local_peer_id), which
+   %% has no granter parameter to pass. `peers` is not consulted: the path is local by
+   %% construction here, since 1.4s inbound rule refused a foreign namespace at 6.5
+   %% step 3 before any handler ran. 5.5a governs chain ATTENUATION, where the subject
+   %% is a pattern compared against a parents pattern; this call site compares a
+   %% CONCRETE local path the handler is about to touch.
+   %%
+   %% There is no caller-exclude set here: the subject is a single concrete path and
+   %% the callers exclusions were applied in deriving it, so every grant exclude
+   %% covering the subject denies -- which MatchesScope already implements, including
+   %% 0.8.2.21s sentinel rule.
+   fun {CheckPathPermission LocalPeer Operation Path Token HandlerPattern}
+      Grants = {GrantsOfToken Token}
+      fun {Go Gs}
+         case Gs of nil then false
+         [] G|Gr then
+            if {Not {MatchesScope LocalPeer HandlerPattern G.handlers path}} then {Go Gr}
+            elseif {Not {MatchesScope LocalPeer Operation G.operations id}} then {Go Gr}
+            elseif {Not {MatchesScope LocalPeer Path G.resources path}} then {Go Gr}
+            else true end
+         end
+      end
+   in
+      {Go Grants}
    end
 
    %% ── §5.2 check_permission ──

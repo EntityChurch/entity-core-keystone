@@ -354,6 +354,35 @@ int ec_serve(int listen_fd)
                 long r = (long)read(s->fd, s->in + s->have,
                                     (size_t)(sizeof(s->in) - s->have));
                 if (r <= 0) {
+                    /* §4.11 -- THE TWO ENDS-OF-STREAM ARE DIFFERENT EVENTS AND THEY
+                     * DIFFER BY ONE BYTE.
+                     *
+                     * Nothing buffered is a clean close AT A FRAME BOUNDARY: there is
+                     * no refusal here and nobody to answer, and emitting a coded frame
+                     * would be refusing an ordinary hangup. Bytes still buffered mean a
+                     * frame that never completed -- "a length prefix that never
+                     * completes" in §4.11's own words -- and that is owed 400
+                     * invalid_request. This branch used to collapse both into a bare
+                     * close, which is §4.11's named "CLOSING with no coded frame",
+                     * indistinguishable from a network fault (§4.6).
+                     *
+                     * UNCORRELATED BY CONSTRUCTION: the request_id lives inside a frame
+                     * that never arrived. `drain > 0` is excluded because an oversize
+                     * frame already had its 413 -- answering it twice would be a second
+                     * refusal for one cause. */
+                    if (s->drain == 0 && s->have > 0) {
+                        int32_t tr_len = 0;
+                        void *trargv[2] = { out, &tr_len };
+                        cob_call("truncated-result", 2, trargv);
+                        if (tr_len > 0) {
+                            outhdr[0] = (unsigned char)((tr_len >> 24) & 0xff);
+                            outhdr[1] = (unsigned char)((tr_len >> 16) & 0xff);
+                            outhdr[2] = (unsigned char)((tr_len >> 8) & 0xff);
+                            outhdr[3] = (unsigned char)(tr_len & 0xff);
+                            (void)ec_fd_write(s->fd, outhdr, 4);
+                            (void)ec_fd_write(s->fd, out, tr_len);
+                        }
+                    }
                     closed = 1;
                 } else {
                     s->have += r;

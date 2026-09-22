@@ -32,6 +32,7 @@
   (import "dispatch" "disp_init" (func $disp_init))
   (import "dispatch" "dispatch"  (func $dispatch (param i32 i32 i32 i32) (result i32)))
   (import "dispatch" "emit_413"  (func $emit_413 (param i32) (result i32)))
+  (import "dispatch" "emit_trunc" (func $emit_trunc (param i32) (result i32)))
   (import "dispatch" "set_open"  (func $set_open (param i32)))
   (import "dispatch" "set_validate" (func $set_validate (param i32)))
 
@@ -173,18 +174,47 @@
       (if (i32.eq (local.get $r) (i32.const 6)) (then (return)))              ;; EAGAIN → done for now
       (if (local.get $r) (then (call $slot_free (local.get $slot)) (return))) ;; error
       (local.set $k (i32.load (i32.const 0x450018)))
-      (if (i32.eqz (local.get $k)) (then (call $slot_free (local.get $slot)) (return)))  ;; EOF
+      (if (i32.eqz (local.get $k))
+        (then
+          ;; §4.11 — THE TWO ENDS-OF-STREAM ARE DIFFERENT EVENTS AND THEY DIFFER BY ONE BYTE.
+          ;; state LEN with got == 0 is a clean close AT A FRAME BOUNDARY: there is no refusal
+          ;; here and nobody to answer, and emitting a coded frame would be refusing an
+          ;; ordinary hangup. Anything else — a partial length prefix, or a body that never
+          ;; completed — is "a length prefix that never completes" in §4.11's own words, and is
+          ;; owed 400 invalid_request, uncorrelated by construction. DRAIN(2) is excluded: an
+          ;; oversize frame already had its 413 and answering twice is two refusals for one
+          ;; cause.
+          (if (i32.and (i32.ne (local.get $state) (i32.const 2))
+                       (i32.or (local.get $state) (local.get $got)))
+            (then
+              (local.set $rlen (call $emit_trunc (i32.const 0x1800004)))
+              (call $be32_store (i32.const 0x1800000) (local.get $rlen))
+              (drop (call $send_n (local.get $fd) (i32.const 0x1800000) (i32.add (local.get $rlen) (i32.const 4))))))
+          (call $slot_free (local.get $slot)) (return)))  ;; EOF
       (local.set $got (i32.add (local.get $got) (local.get $k)))
       (i32.store (i32.add (local.get $sa) (i32.const 8)) (local.get $got))
       (br_if $rd (i32.lt_u (local.get $got) (local.get $need)))               ;; phase incomplete → read more
       ;; phase complete
       (if (i32.eqz (local.get $state))
-        (then    ;; LEN done → parse framelen; ≤cap → BODY, >cap → DRAIN (§4.10(a) 413, not RST)
+        (then    ;; LEN done → parse framelen
           (local.set $fl (call $be32_load (i32.add (local.get $sa) (i32.const 16))))
+          ;; §4.10(a) became a MUST at 0.8.2.25 (§4.11 N14), and the ANSWER GOES OUT HERE —
+          ;; at the prefix, with the connection intact and nothing spent. Draining the declared
+          ;; body first and answering after is the fully-buffering §4.10(a) forbids, done one
+          ;; chunk at a time, and a sender that declares 4 GiB and sends NOTHING parks this
+          ;; connection forever while no 413 is ever emitted. The close that follows is the
+          ;; section's own MAY: staying framed is worth nothing once the frame is known to be
+          ;; unservable, and the connection is the attacker's to waste, not ours.
+          (if (i32.gt_u (local.get $fl) (global.get $CONNBUF))
+            (then
+              (local.set $rlen (call $emit_413 (i32.const 0x1800004)))
+              (call $be32_store (i32.const 0x1800000) (local.get $rlen))
+              (drop (call $send_n (local.get $fd) (i32.const 0x1800000) (i32.add (local.get $rlen) (i32.const 4))))
+              (call $slot_free (local.get $slot))
+              (return)))
           (i32.store (i32.add (local.get $sa) (i32.const 8)) (i32.const 0))   ;; got = 0
           (i32.store (i32.add (local.get $sa) (i32.const 12)) (local.get $fl)) ;; need = framelen
-          (i32.store (i32.add (local.get $sa) (i32.const 4))                  ;; state = >cap? DRAIN(2) : BODY(1)
-            (if (result i32) (i32.gt_u (local.get $fl) (global.get $CONNBUF)) (then (i32.const 2)) (else (i32.const 1)))))
+          (i32.store (i32.add (local.get $sa) (i32.const 4)) (i32.const 1)))  ;; state = BODY
         (else (if (i32.eq (local.get $state) (i32.const 2))
         (then    ;; DRAIN done → the over-`max_payload` body is consumed; emit 413 payload_too_large
                  ;; and KEEP the connection (§4.10(a) "continuing to serve"), never RST a pooled conn.

@@ -6,7 +6,11 @@
 %% envelope to an outbound response envelope; transport lives in transport.oz.
 %%
 %% Handlers return an OUTCOME (out(status:N result:Ent included:[Ent])). ctx is
-%% ctx(conn:Conn env:Env callerCap:Cap|absent). §4.8 store-safety is structural
+%% ctx(conn:Conn env:Env callerCap:Cap|absent pattern:HandlerPattern). §6.3 needs the
+%% SAME token and the SAME handler pattern the dispatch check authorized against, and the
+%% handler runs after that check has returned, so both ride the context rather than being
+%% re-derived (a re-derivation is a second copy of the resolution and can disagree with it).
+%% §4.8 store-safety is structural
 %% (the store is a port agent — store.oz); dataflow threads dispatch concurrently
 %% but every store touch serializes through its one owning thread.
 functor
@@ -244,7 +248,8 @@ define
       Operation = {Ent.getText Exec "operation"}
    in
       if Uri == "system/protocol/connect" then
-         {CallHandler P 'connect' Operation ctx(conn:C env:E callerCap:absent)}
+         {CallHandler P 'connect' Operation
+                       ctx(conn:C env:E callerCap:absent pattern:"system/protocol/connect")}
       else
          {IngestSignatures P E}
          %% §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. The address gate
@@ -291,7 +296,7 @@ define
                                              SA = {String.toAtom Stripped} in
                                           if {Dictionary.member P.handlers SA} then
                                              {CallHandler P {Dictionary.get P.handlers SA} Operation
-                                              ctx(conn:C env:E callerCap:CallerCap)}
+                                              ctx(conn:C env:E callerCap:CallerCap pattern:Pattern)}
                                           else {OutErr 501 "no_handler_body" Stripped} end
                                        end
                                     end
@@ -336,6 +341,62 @@ define
          end
       end
    end
+
+   fun {TextsOf L}
+      {FoldR L fun {$ V Acc} case V of text(S) then S|Acc else Acc end end nil}
+   end
+
+   %% §5.2s effective target list (0.8.2.20): the callers OWN `resource.exclude` removes
+   %% entries from the request BEFORE anything else looks at it.
+   %%
+   %% Survivors keep the CALLERS OWN SPELLING, not a canonical form -- 0.8.2.21 is explicit
+   %% that effective_targets yields RAW survivors, and it is load-bearing here because the
+   %% value flows on to Hp.canonicalize and to the store, which canonicalize for themselves.
+   %%
+   %% Answers absent | empty | ambiguous | one(T), and THE FIRST TWO ARE DIFFERENT REQUESTS
+   %% rather than two spellings of one (0.8.2.24 N7, 0.8.2.25 N10). §3.3s "an empty effective
+   %% list IS the absent case" is scoped to an operation that REQUIRES a resource; `get` does
+   %% not, and EXTENSION-TREE §2.2a declares it resource-OPTIONAL and BROAD-RESULT -- absent
+   %% answers the root listing, self-excluded answers path_required, because serving the root
+   %% listing to a caller who excluded the one path it named answers something WIDER than the
+   %% request. Collapsing the two here would delete the discriminator before any handler
+   %% could read it.
+   %%
+   %% The caller-exclude arm is fail-OPEN on an unmatchable pattern: §5.4s table rules it
+   %% separately from the grant arm, canonicalize answers neverMatch and MatchesPattern then
+   %% answers false, so the target simply survives. That asymmetry is 0.8.2.21s whole point
+   %% and it is inherited here rather than restated.
+   fun {EffectiveTargets Local Exec}
+      R = {Ent.getMap Exec "resource"}
+   in
+      if R == absent then absent
+      else
+         case {Val.getArr R "targets"} of absent then absent
+         [] Tl then
+            local
+               Ts = {TextsOf Tl}
+               Excl = case {Val.getArr R "exclude"} of absent then nil [] El then {TextsOf El} end
+               Surv = {Filter Ts
+                       fun {$ T}
+                          {Not {Some Excl
+                                fun {$ X}
+                                   {Cap.matchesPattern {Hp.canonicalize Local T}
+                                                       {Hp.canonicalize Local X}}
+                                end}}
+                       end}
+            in
+               case Surv of nil then empty
+               [] T|nil then one(T)
+               else ambiguous end
+            end
+         end
+      end
+   end
+
+   %% §3.3 (0.8.2.20): a resource-requiring operation takes a CONCRETE path, so a pattern
+   %% surviving as the single effective target is 400 malformed_resource -- not a 404 for a
+   %% literal key spelled with a star, which is what this peer answered before.
+   fun {IsPatternPath T} {Member &* T} end
 
    %% ═════ §4.1 / §4.6 connect handler ═════
    fun {HConnect P Operation Ctx}
@@ -553,26 +614,51 @@ define
       else {OutErr 501 "unsupported_operation" Operation} end
    end
 
+   %% §3.3s ladder runs on the EFFECTIVE list, never on resource.targets: a handler that
+   %% counts the effective list and then indexes targets[0] has implemented the arithmetic
+   %% completely and is still reading a path no authorization covered. Measured on the wire
+   %% 2026-09-15 -- `targets:[qA,qB] exclude:[qA]` served qA, the one entry the caller had
+   %% carved out, and `targets:[qB,qA] exclude:[qB]` under a grant covering only qA served
+   %% qB, which is the disclosure §6.3 calls itself the sole enforcement against.
    fun {TreeGet P Ctx}
       Exec = {CtxExec Ctx}
       Local = P.localPeer
       St = P.store
-      Target = {ExecResourceTarget Exec}
    in
-      if Target == absent then {TreeListing P {Append &/|Local "/"}}
-      elseif Target == nil orelse Target == "/" then {TreeListing P "/"}   % empty/"/" = universal root listing
-      elseif {Not {Hp.pathFlexOk Target}} then {OutErr 400 "invalid_path" Target}
-      elseif {List.last Target} == &/ then {TreeListing P {Hp.canonicalize Local Target}}
-      else
-         local Path = {Hp.canonicalize Local Target}
-               E = {Store.getAt St Path} in
-            if E == absent then {OutErr 404 "not_found" Path}
-            else
-               local Params = {Ent.getEntity Exec "params"}
-                     Mode = if Params == absent then absent else {Ent.getText Params "mode"} end in
-                  if Mode == "hash" then
-                     {OutOk {Ent.make "system/hash" map([{Val.mkPair "hash" bytes({Ent.hash E})}])} nil}
-                  else {OutOk E nil} end
+      case {EffectiveTargets Local Exec}
+      of absent then {TreeListing P Ctx {Append &/|Local "/"}}
+      [] empty then
+         %% `resource` PRESENT and every target carved out by the callers own exclude.
+         %% Serving it the absent case would answer a request for one excluded path with a
+         %% listing of the whole tree -- wider than what was asked for, which is what
+         %% BROAD-RESULT means.
+         {OutErr 400 "path_required" "tree: effective target list is empty"}
+      [] ambiguous then {OutErr 400 "ambiguous_resource" "tree: more than one effective target"}
+      [] one(Target) then
+         if Target == nil orelse Target == "/" then {TreeListing P Ctx "/"}   % empty/"/" = universal root listing
+         elseif {Not {Hp.pathFlexOk Target}} then {OutErr 400 "invalid_path" Target}
+         elseif {List.last Target} == &/ then {TreeListing P Ctx {Hp.canonicalize Local Target}}
+         elseif {IsPatternPath Target} then {OutErr 400 "malformed_resource" Target}
+         else
+            local Path = {Hp.canonicalize Local Target} in
+               %% §6.3 -- the handler verifies the CALLERS capability covers the path it is
+               %% about to read. Not redundant with the dispatch stage: see
+               %% Cap.checkPathPermission.
+               if Ctx.callerCap \= absent andthen
+                  {Not {Cap.checkPathPermission Local "get" Path Ctx.callerCap Ctx.pattern}} then
+                  {OutErr 403 "capability_denied" Path}
+               else
+                  local E = {Store.getAt St Path} in
+                     if E == absent then {OutErr 404 "not_found" Path}
+                     else
+                        local Params = {Ent.getEntity Exec "params"}
+                              Mode = if Params == absent then absent else {Ent.getText Params "mode"} end in
+                           if Mode == "hash" then
+                              {OutOk {Ent.make "system/hash" map([{Val.mkPair "hash" bytes({Ent.hash E})}])} nil}
+                           else {OutOk E nil} end
+                        end
+                     end
+                  end
                end
             end
          end
@@ -667,10 +753,22 @@ define
       Exec = {CtxExec Ctx}
       Local = P.localPeer
       St = P.store
-      Target = {ExecResourceTarget Exec}
+      Eff = {EffectiveTargets Local Exec}
    in
-      if Target == absent then {OutErr 400 "ambiguous_resource" "tree: missing resource target"}
-      elseif {Not {Hp.pathFlexOk Target}} then {OutErr 400 "invalid_path" Target}
+      %% The same seam `get` uses, so one request cannot receive two different answers
+      %% according to which operation it named. BOTH EMPTIES ANSWER path_required here, and
+      %% that is the operations own specification rather than a shortcut: `put` REQUIRES a
+      %% resource, and 0.8.2.24 (N7) scopes "an empty effective list IS the absent case" to
+      %% exactly that kind of operation. §3.3 also pins path_required rather than
+      %% ambiguous_resource for a MISSING target -- 0.8.2.20 names inverting those two as
+      %% the defect, because the remedies are opposites ("name one" against "name fewer"),
+      %% and this peer answered ambiguous_resource for the absent case.
+      case Eff of ambiguous then {OutErr 400 "ambiguous_resource" "tree: more than one effective target"}
+      [] absent then {OutErr 400 "path_required" "tree: put requires a resource target"}
+      [] empty then {OutErr 400 "path_required" "tree: effective target list is empty"}
+      [] one(Target) then
+      if {Not {Hp.pathFlexOk Target}} then {OutErr 400 "invalid_path" Target}
+      elseif {IsPatternPath Target} then {OutErr 400 "malformed_resource" Target}
       else
          local
             Path = {Hp.canonicalize Local Target}
@@ -697,11 +795,26 @@ define
             end
          end
       end
+      end
    end
 
-   fun {TreeListing P Path}
+   %% §6.3s LISTING FILTER (0.8.2.21/.22): every entry of a multi-entry result is checked
+   %% INDIVIDUALLY with check_path_permission, entries that DENY are omitted, and `count`
+   %% MUST reflect the filtered total rather than the source trees. Filtering inside
+   %% RowEntries is what makes the count follow by construction rather than from a second
+   %% pass that could disagree with it.
+   %%
+   %% This is the read path at its highest volume, which is the reason 0.8.2.21 refused to
+   %% carve reads out: a listing naming an entry the callers own capability excludes
+   %% discloses a binding that capability was written to hide.
+   fun {TreeListing P Ctx Path}
       St = P.store
       Rows = {Store.listing St Path}
+      fun {EntryAllowed Seg}
+         if Ctx == absent orelse Ctx.callerCap == absent then true
+         else {Cap.checkPathPermission P.localPeer "get" {Append Path Seg}
+                                       Ctx.callerCap Ctx.pattern} end
+      end
       fun {RowEntries Rs}
          case Rs of nil then nil
          [] R|Rr then
@@ -718,7 +831,8 @@ define
                          map([{Val.mkPair "has_children" bool(R.child)}])}
                      end
                %% deletion-marker filter (§6.3)
-               Skip = if HashBytes \= absent andthen {Not R.child} then
+               Skip = if {Not {EntryAllowed R.seg}} then true
+                      elseif HashBytes \= absent andthen {Not R.child} then
                          local Me = {Store.getByHash St HashBytes} in
                             Me \= absent andthen {Ent.typeIs Me "system/deletion-marker"}
                          end

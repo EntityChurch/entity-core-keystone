@@ -136,17 +136,23 @@ create acc-sa  16 allot   create acc-len 1 cells allot
 
 \ ── framed I/O over a blocking socket (the select loop gates readability first) ──
 \ recv-exact ( fd buf n -- ok? )  read exactly n bytes into buf; false on EOF/error.
+\ recv-exact-got — how many bytes the LAST recv-exact had consumed when it gave up. §4.11
+\ needs this and nothing else does: a failure at byte 0 is a clean close at a frame boundary
+\ and is owed NOTHING, while a failure after 1 or more bytes is a frame that never completed
+\ and is owed 400 invalid_request. The boolean alone cannot tell them apart.
+variable recv-exact-got
 : recv-exact { fd buf n -- ok }
   0 { got }
+  0 recv-exact-got !
   begin got n < while
     fd  buf got +  n got -  0 ec-recv  { r }
     r 0<= if
-      r 0= if false exit then                     \ orderly EOF
-      ec-errno EAGAIN- = if else false exit then   \ real error (EAGAIN: retry)
+      r 0= if got recv-exact-got ! false exit then       \ orderly EOF
+      ec-errno EAGAIN- = if else got recv-exact-got ! false exit then   \ real error (EAGAIN: retry)
     else
       got r + to got
     then
-  repeat true ;
+  repeat  got recv-exact-got !  true ;
 
 \ send-all ( fd buf n -- )  write all n bytes (loops over short sends).
 : send-all { fd buf n -- }
@@ -174,16 +180,32 @@ create drain-buf 4096 allot
 \   (addr,len) — a valid frame appended to the arena.
 \   0 0        — §4.10(a) oversize: drained + connection kept; caller loops on.
 \   -1 -1      — EOF / error: caller closes the connection.
+\ nrf-partial — set by net-read-frame when a read ended MID-FRAME rather than at a frame
+\ boundary. §4.11 assigns the two ends-of-stream different answers (nothing vs 400
+\ invalid_request) and they differ by one input byte, so the de-framer is the only place that
+\ can tell them apart: by the time serve-conn sees (-1,-1) the distinction is gone.
+variable nrf-partial
 : net-read-frame { fd -- addr len }
+  false nrf-partial !
   \ 4-byte BE length prefix
-  drain-buf fd swap 4 recv-exact 0= if -1 dup exit then    \ reuse drain-buf transiently
+  drain-buf fd swap 4 recv-exact 0= if
+    \ recv-exact reports failure for BOTH a clean EOF at byte 0 and a short prefix. Ask the
+    \ socket which it was: a partial prefix leaves bytes consumed that no frame will ever
+    \ complete.
+    recv-exact-got @ 0<> nrf-partial !
+    -1 dup exit then                                   \ reuse drain-buf transiently
   drain-buf 0 4 @be { flen }
   flen 0< flen MAX-FRAME > or if
-    \ §4.10(a): oversize — drain the body, keep the connection (413-class at de-framer).
-    fd flen drain-bytes  0 0 exit
+    \ §4.10(a) oversize. The body is NOT drained: draining is the fully-buffering §4.10(a)
+    \ forbids, done one chunk at a time, and a sender that declares 4 GiB and sends NOTHING
+    \ parks this connection forever while no 413 is ever emitted. The caller answers 413 here
+    \ and keeps serving; the declared body never arrives because the sender is refused.
+    0 0 exit
   then
   am-mark { mk }
-  fd  arena-here  flen  recv-exact 0= if mk rewind -1 dup exit then
+  fd  arena-here  flen  recv-exact 0= if
+    true nrf-partial !                                 \ the body never completed
+    mk rewind -1 dup exit then
   flen ap +!                                          \ commit the recv'd body into the arena
   mk flen ;
 

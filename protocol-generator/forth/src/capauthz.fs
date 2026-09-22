@@ -25,16 +25,30 @@
 : slash-from { a u start -- idx }
   u start ?do  a i + c@ [char] / = if i unloop exit then  loop  -1 ;
 
-\ ── §5.4 canonicalization: a bare (non-absolute) path is peer-rooted "/<local>/<path>".
-\ We render the canonical form into the scratch stack and return its span. THROWs on a
-\ reserved-relative / bare-peer-wildcard path (→ 400 at the dispatch boundary).
--25400 constant E-RESERVED-RELATIVE
--25401 constant E-AMBIGUOUS-WILDCARD
+\ ── §5.4 canonicalization, TOTAL (0.8.2.20): a bare (non-absolute) path is peer-rooted
+\ "/<local>/<path>"; the three reserved prefixes have no canonical form and answer the
+\ SENTINEL. We render the canonical form into the scratch stack and return its span.
+\
+\ IT USED TO THROW, AND THE THROW BECAME A 500. A grant whose resources exclude is "../nope"
+\ made the whole request an internal_error rather than the 403 §5.2 pins — measured on the
+\ wire 2026-09-15 — and a throw out of a MATCHER is a control-flow answer to a question that
+\ has a value answer. MATCHING NOTHING IS THE RIGHT ANSWER IN AN INCLUDE AND THE OPPOSITE OF
+\ IT IN AN EXCLUDE, which is why the sentinel exists: it lets the exclude-reading call sites
+\ tell the two positions apart while the matcher stays uniform over its operands.
+\
+\ /never-match is unreachable as a real canonical path BY CONSTRUCTION: its first segment
+\ would have to be a peer_id, and seg-is-peerid? wants >=46 Base58 characters while '-' is
+\ not in the Base58 alphabet at all.
+\
+\ The two throw codes are RETIRED rather than deleted: nothing raises them now, and a reader
+\ who greps for them should find why.
+-25400 constant E-RESERVED-RELATIVE    \ retired 2026-09-15 — canon is total
+-25401 constant E-AMBIGUOUS-WILDCARD   \ retired 2026-09-15 — canon is total
 \ canon ( local-a local-u path-a path-u -- ca cu )  canonicalized span in scratch.
 : canon { la lu pa pu -- ca cu }
-  pa pu s" ./"  str-starts if E-RESERVED-RELATIVE throw then
-  pa pu s" ../" str-starts if E-RESERVED-RELATIVE throw then
-  pa pu s" */"  str-starts if E-AMBIGUOUS-WILDCARD throw then
+  pa pu s" ./"  str-starts if s" /never-match" exit then
+  pa pu s" ../" str-starts if s" /never-match" exit then
+  pa pu s" */"  str-starts if s" /never-match" exit then
   pa pu s" /"   str-starts if pa pu exit then          \ already absolute
   \ build "/" + local + "/" + path into scratch
   1 lu + 1 + pu + sc-alloc { dst }
@@ -47,6 +61,11 @@
 \ ── §5.4 pattern matching (recursive /*/ + /* suffix) ──
 \ matches-pattern ( path-a path-u pat-a pat-u -- flag )
 : matches-pattern { pa pu qa qu -- flag }
+  \ THE SENTINEL NEVER MATCHES, IN EITHER OPERAND (§5.4, 0.8.2.20) — and it is a MATCHER RULE
+  \ asked FIRST, not a property the value happens to have: the very next line answers TRUE for
+  \ a bare "*", so safety must not rest on "/never-match" merely looking unmatchable.
+  pa pu s" /never-match" span-eq if false exit then
+  qa qu s" /never-match" span-eq if false exit then
   qu 1 = qa c@ [char] * = and if true exit then      \ pattern "*" matches all
   \ pattern begins "/*/" : strip a "/<seg>" from path, recurse on the remainder.
   qa qu s" /*/" str-starts if
@@ -118,15 +137,44 @@
     else drop then
   loop  false ;
 
+\ excl-unmatchable? ( frame-a frame-u atv -- flag )  does any pattern in the exclude array
+\ canonicalize to the §5.4 sentinel?
+\
+\ AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED in an
+\ include (covers nothing -> the grant grants nothing) and fail-OPEN in an exclude (carves out
+\ nothing), so the reading is chosen where the POSITION is known — here — and matches-pattern
+\ stays uniform over its operands.
+\
+\ ASKED ONLY ON SCOPE-PATH (0.8.2.24, N2/N3): the sentinel is a §5.4 PATH-canonicalization
+\ artifact with no meaning on an id-scope dimension, whose patterns are literal identifiers
+\ §5.2's own id-scope arm forbids putting through the §5.4 transforms. Asked of `operations`,
+\ an exclude of star-slash-apply — an ordinary namespaced operation name, a literal matching
+\ nothing under the id-scope grammar — canonicalizes to the sentinel and would deny EVERY
+\ operation.
+: excl-unmatchable? { fa fu atv -- flag }
+  atv 0= if false exit then
+  atv c@ [char] a <> if false exit then
+  atv tv-count { n }
+  n 0 ?do
+    atv i tv-array-elem dup c@ [char] t = if
+      tv-payload { pa pu }
+      sc-mark { mk }
+      fa fu pa pu canon s" /never-match" span-eq
+      mk sc-free
+      if true unloop exit then
+    else drop then
+  loop  false ;
+
 \ matches-scope ( frame-a frame-u val-a val-u scope-mtv kind -- flag )  §5.2, typed (0.8.1
 \ F40): kind == SCOPE-ID (operations, peers) compares literally, no canonicalization; kind ==
 \ SCOPE-PATH (handlers, resources) is the original §5.4 covered-by-include-AND-NOT-exclude,
-\ unchanged. `kind` has no default — every caller names its dimension explicitly.
+\ plus 0.8.2.21's sentinel rule. `kind` has no default — every caller names its dimension.
 : matches-scope { fa fu va vu s kind -- flag }
   kind SCOPE-ID = if
     va vu s s" include" scope-array covered-by-id-array 0= if false exit then
     va vu s s" exclude" scope-array covered-by-id-array 0= exit
   then
+  fa fu s s" exclude" scope-array excl-unmatchable? if false exit then
   sc-mark { mk }
   fa fu va vu canon { ca cu }                         \ canonicalize the value
   fa fu  ca cu  s s" include" scope-array covered-by-array 0= if mk sc-free false exit then
@@ -469,11 +517,32 @@ variable seen-n
 
 \ exec-handler-path ( exec -- ha hu )  the exec.uri stripped of "entity://<peer>/" (or a
 \ leading "/<peer>/") down to the bare handler path — the §6.6 resolved handler pattern.
+\
+\ THE LEADING SEGMENT IS DROPPED ONLY WHEN THE URI WAS ADDRESSED. §1.4 admits three
+\ spellings of one address — "system/tree", "/<peer>/system/tree" and
+\ "entity://<peer>/system/tree" — and this word used to drop the first segment
+\ unconditionally, so the BARE spelling came back as "tree". That is the spelling
+\ validate-peer and every wire probe send.
+\
+\ What it cost: the handlers dimension then compared "tree" against a grant naming
+\ "system/tree", so ANY caller-supplied grant written the way §3.7 and §6.2 write them was
+\ denied 403 — a self-minted token presented straight back to this peer could not authorize
+\ anything. It stayed invisible because the shipped seed policy and the oracle's own caps
+\ grant handlers as "*", which is vacuous over the value: the dimension passed for a reason
+\ unrelated to what it compares.
+\
+\ dispatch.fs's uri->handler-path already had exactly this discipline, and its comment
+\ already explained why the unconditional strip is wrong — in another file, 400 lines away,
+\ loaded after this one, so the two could not share a word. They are kept in step by naming
+\ each other rather than by a require.
 2variable ehp-span
+variable ehp-addressed
 : exec-handler-path { exec -- ha hu }
+  false ehp-addressed !
   exec exec-uri ehp-span 2!
-  ehp-span 2@ s" entity://" str-starts if ehp-span 2@ 9 /string ehp-span 2! then
-  ehp-span 2@ s" /" str-starts if ehp-span 2@ 1 /string ehp-span 2! then
+  ehp-span 2@ s" entity://" str-starts if ehp-span 2@ 9 /string ehp-span 2! true ehp-addressed ! then
+  ehp-span 2@ s" /" str-starts if ehp-span 2@ 1 /string ehp-span 2! true ehp-addressed ! then
+  ehp-addressed @ 0= if ehp-span 2@ exit then   \ bare: already a handler path
   ehp-span 2@ 0 slash-from { i }
   i 0< if ehp-span 2@ exit then
   ehp-span 2@ i 1+ /string ;
@@ -516,6 +585,10 @@ variable seen-n
 : resource-target-covered? { la lu ga gu grant ta tu -- flag }
   grant s" resources" grant-scope { rs }
   rs 0= if false exit then
+  \ An unmatchable GRANT exclude DENIES (0.8.2.21), asked FIRST, before any target: the
+  \ coverage tests below are correct in isolation and are simply never reached on a sentinel,
+  \ because matches-pattern answers false for it.
+  ga gu rs s" exclude" scope-array excl-unmatchable? if false exit then
   sc-mark { mk }
   la lu ta tu canon { ca cu }                          \ canonicalize the target vs local
   ga gu  ca cu  rs s" include" scope-array covered-by-array 0= if mk sc-free false exit then
@@ -530,10 +603,28 @@ variable seen-n
   rtv s" targets" tv-map-get dup 0= if drop true exit then { tgts }   \ no targets -> handler-only
   tgts c@ [char] a <> if true exit then
   tgts tv-count dup 0= if drop true exit then { tn }
+  rtv s" exclude" tv-map-get { cex }                    \ the CALLER's own carve-out
   tn 0 ?do
     tgts i tv-array-elem dup c@ [char] t = if
       tv-payload { xa xu }
-      exec la lu ga gu grant xa xu resource-target-covered? 0= if false unloop exit then
+      \ A TARGET THE CALLER EXCLUDED IS ADMITTED RATHER THAN CHECKED: the caller narrowed it
+      \ out of its own request, so there is nothing there to authorize. That is what lets
+      \ `targets:[qA] exclude:[qA]` reach the handler and be answered 400 path_required
+      \ instead of 403 — and it is what makes §6.3's handler-level check load-bearing rather
+      \ than redundant, because the dispatch check no longer sees the excluded path at all.
+      \ The caller's exclude frames against the LOCAL peer, never the granter: it is written
+      \ in the REQUEST, about paths in THIS peer's namespace.
+      cex 0<> if
+        sc-mark { mk2 }
+        la lu xa xu canon { cxa cxu }
+        la lu cxa cxu cex covered-by-array { carved }
+        mk2 sc-free
+        carved 0= if
+          exec la lu ga gu grant xa xu resource-target-covered? 0= if false unloop exit then
+        then
+      else
+        exec la lu ga gu grant xa xu resource-target-covered? 0= if false unloop exit then
+      then
     else drop then
   loop  true ;
 
@@ -564,6 +655,58 @@ variable seen-n
     ga i tv-array-elem { grant }
     exec la lu gpa gpu grant grant-covers-op-handler if true unloop exit then
   loop  false ;
+
+\ ── §6.3 check_path_permission, AND IT IS NOT A SECONDARY CHECK (0.8.2.20) ──
+\ It is the enforcement wherever the subject is derived AFTER dispatch, because the
+\ dispatch-level check can be made VACUOUS by caller-controlled input: a caller that excludes
+\ the one target its capability does not cover removes that target from check-permission's
+\ view entirely, and a handler that then acts on it has authorized nothing.
+\
+\ THREE DIMENSIONS, NOT FOUR, AND THE LOCAL FRAME — both from §6.3's own signature,
+\ matches_scope(canonical_path, grant.resources, "path-scope", local_peer_id), which has no
+\ granter parameter to pass. §5.5a governs chain ATTENUATION, where the subject is a PATTERN
+\ compared against a parent's; this call site compares a CONCRETE local path the handler is
+\ about to touch. `peers` is not consulted: the path is local by construction here, since
+\ §1.4's inbound gate refused a foreign namespace before any handler ran.
+\
+\ There is no caller-exclude set at this call site: the subject is one concrete path and the
+\ caller's exclusions were applied in deriving it, so every grant exclude covering the subject
+\ denies — which matches-scope already implements, including 0.8.2.21's sentinel rule.
+variable cpp-cap                        \ the token cap-authorize authorized against, or 0
+2variable cpp-hpat                      \ and the handler pattern it matched
+: check-path-perm { pa pu -- flag }
+  cpp-cap @ dup 0= if drop true exit then { cap }      \ no presented authority -> permitted
+  cap token-grants dup 0= if drop false exit then { ga }
+  cpp-hpat 2@ { hu } { ha }
+  ga tv-count { n }
+  n 0 ?do
+    ga i tv-array-elem { g }
+    g c@ [char] m = if
+      id-peerid s" get" g s" operations" grant-scope SCOPE-ID matches-scope if
+        id-peerid ha hu g s" handlers" grant-scope SCOPE-PATH matches-scope if
+          id-peerid pa pu g s" resources" grant-scope SCOPE-PATH matches-scope if
+            true unloop exit
+          then
+        then
+      then
+    then
+  loop  false ;
+
+\ caller-excluded? ( t-a t-u excl-atv -- flag )  is this raw target carved out by the CALLER's
+\ own `resource.exclude`? Framed against the LOCAL peer and never the granter: the exclude is
+\ written in the REQUEST, about paths in THIS peer's namespace.
+: caller-excluded? { ta tu atv -- flag }
+  atv 0= if false exit then
+  sc-mark { mk }
+  id-peerid ta tu canon { ca cu }
+  id-peerid ca cu atv covered-by-array
+  mk sc-free ;
+
+\ Fill handlers.fs's two deferred hooks. That module owns the §3.3 ladder and the listing and
+\ is loaded FIRST; this one owns §5.4's canonicalizer and matcher. Deferring is what lets both
+\ read ONE implementation instead of each carrying its own copy.
+' caller-excluded? is caller-excludes?
+' check-path-perm  is path-permitted?
 
 \ ── the §5.2 dispatch authorization gate (replaces the S3 cap-verify-authz stub) ──
 \ cap-authorize ( exec arr lens nvar -- verdict )  runs AFTER §6.6 handler resolution: resolve
@@ -613,6 +756,11 @@ create revchk-hex 160 allot
 ' mint-bounded? is req-grants-bounded?
 
 : cap-authorize { exec arr lens nvar -- verdict }
+  \ §6.3 needs the SAME token and the SAME handler pattern this gate authorized against, and
+  \ the handler runs after it has returned. Cleared FIRST: a run with no presented capability,
+  \ or a stale pointer from an earlier request on this connection, would otherwise be checked
+  \ against somebody else's authority.
+  0 cpp-cap !  0 0 cpp-hpat 2!
   exec s" capability" ent-field dup 0= if drop VERDICT-AUTHZ exit then
     tv-payload { cu } { ca }  arr lens nvar ca cu inc-get { cap }
   cap 0= if VERDICT-AUTHZ exit then
@@ -628,4 +776,5 @@ create revchk-hex 160 allot
   cap cap-grantee dup 0= if 2drop VERDICT-AUTHZ exit then aa au compare 0<> if VERDICT-AUTHZ exit then
   \ scope: some grant covers operation + handler.
   exec arr lens nvar id-peerid cap check-permission 0= if VERDICT-AUTHZ exit then
+  cap cpp-cap !  exec exec-handler-path cpp-hpat 2!
   VERDICT-ALLOW ;

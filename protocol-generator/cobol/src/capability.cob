@@ -489,6 +489,73 @@ key-binds.
     end-if.
 end program inc-find-hash.
 
+*> ---- inc-keys-bind : §3.1 / §1.8 at the DECODE BOUNDARY -------------
+*>
+*> Every `included` entry must hash to the key it is filed under. inc-find-hash
+*> above asks the same question at the LOOKUP, which is §1.8 mechanism (b) -- the
+*> key is discarded, a forged address MISSES, and each caller's existing rung
+*> answers the §5.2a row that lookup owns. This sweep is mechanism (a) at the
+*> boundary, and it is what the WIRE observes: §4.11 requires a coded refusal
+*> BEFORE admission, so a mis-keyed map cannot be allowed to reach the §1.4
+*> address gate and come back as `invalid_request` -- §5.2a pins 400
+*> hash_mismatch for a peer that refuses at the decode boundary, and
+*> `non_canonical_ecf` is not conformant there because the bytes ARE canonical;
+*> what is false is the claim the KEY makes.
+*>
+*> Keeping both is deliberate: this one is the wire answer, inc-find-hash is the
+*> backstop for any future caller that reaches the map without coming through
+*> here, and they spell the same rule.
+*>
+*> SCOPE, stated because it is a hole and not an omission: only 33-byte keys are
+*> checked. A key of any other length cannot be an ecfv1-sha256 content_hash, and
+*> inc-find-hash only ever MATCHES 33-byte keys, so an entry filed under a 7-byte
+*> key is unresolvable by construction and refusing it would refuse a frame
+*> nothing can act on.
+identification division.
+program-id. inc-keys-bind.
+data division.
+working-storage section.
+01 incoff pic 9(9) comp-5.
+01 incf   pic 9(1).
+01 cur    pic 9(9) comp-5.
+01 maj    pic 9(2) comp-5.
+01 addl   pic 9(2) comp-5.
+01 arg    pic 9(18) comp-5.
+01 cnt    pic 9(9) comp-5.
+01 i      pic 9(9) comp-5.
+01 klen   pic 9(9) comp-5.
+01 koff   pic 9(9) comp-5.
+01 eoff   pic 9(9) comp-5.
+01 st     pic s9(9) comp-5.
+01 key33  pic x(33).
+01 fnd    pic 9(1).
+linkage section.
+01 lk-buf pic x(524288).
+01 lk-res pic 9(1).
+procedure division using lk-buf lk-res.
+    move 1 to lk-res
+    call "env-inc-off" using lk-buf incoff incf
+    if incf = 0 then goback end-if
+    move incoff to cur
+    call "cbor-read-head" using lk-buf cur maj addl arg st
+    if maj not = 5 then move 0 to lk-res  goback end-if
+    move arg to cnt
+    perform varying i from 1 by 1 until i > cnt
+        call "cbor-read-head" using lk-buf cur maj addl arg st
+        move arg to klen
+        move cur to koff
+        add klen to cur
+        move cur to eoff
+        if klen = 33
+            move lk-buf(koff:33) to key33(1:33)
+            call "inc-find-hash" using lk-buf incoff key33 eoff fnd
+            if fnd = 0 then move 0 to lk-res  goback end-if
+        end-if
+        call "cbor-skip" using lk-buf cur st
+    end-perform
+    goback.
+end program inc-keys-bind.
+
 *> ---- cap-resolve : hash -> entity bytes (included then store) -------
 identification division.
 program-id. cap-resolve.
@@ -799,6 +866,126 @@ grant-ok.
     end-if
     move 1 to ok.
 end program cap-check-perm.
+
+*> ---- cap-check-path-perm : §6.3 check_path_permission ---------------
+*>
+*> AND IT IS NOT A SECONDARY CHECK (0.8.2.20). It is the enforcement wherever the
+*> subject is derived AFTER dispatch, because the dispatch-level check can be made
+*> VACUOUS by caller-controlled input: a caller that excludes the one target its
+*> capability does not cover removes that target from cap-check-perm's view
+*> entirely, and a handler that then acts on it has authorized nothing. Measured
+*> on the wire 2026-09-15: targets:[qB,qA] exclude:[qB] under a grant covering
+*> only qA served qB.
+*>
+*> THREE DIMENSIONS, NOT FOUR, and the LOCAL frame -- both from §6.3's own
+*> signature, matches_scope(canonical_path, grant.resources, "path-scope",
+*> local_peer_id), which has no granter parameter to pass. `peers` is not
+*> consulted: the path is local by construction here, since §1.4's inbound rule
+*> refused a foreign namespace before any handler ran.
+*>
+*> There is no caller-exclude set at this call site: the subject is ONE concrete
+*> path and the caller's exclusions were applied in deriving it, so every grant
+*> exclude covering the subject denies.
+identification division.
+program-id. cap-check-path-perm.
+data division.
+working-storage section.
+01 gsoff  pic 9(9) comp-5.
+01 gsf    pic 9(1).
+01 gcur   pic 9(9) comp-5.
+01 maj    pic 9(2) comp-5.
+01 addl   pic 9(2) comp-5.
+01 arg    pic 9(18) comp-5.
+01 gcnt   pic 9(9) comp-5.
+01 gi     pic 9(9) comp-5.
+01 gmap   pic 9(9) comp-5.
+01 soff   pic 9(9) comp-5.
+01 sf     pic 9(1).
+01 ioff   pic 9(9) comp-5.
+01 iff    pic 9(1).
+01 eoff   pic 9(9) comp-5.
+01 eff    pic 9(1).
+01 local  pic x(128).
+01 locallen pic 9(9) comp-5.
+01 cp     pic x(900).
+01 cplen  pic 9(9) comp-5.
+01 cov    pic 9(1).
+01 r      pic 9(1).
+01 ok     pic 9(1).
+01 st     pic s9(9) comp-5.
+01 one    pic 9(9) comp-5 value 1.
+01 k-grants pic x(6) value "grants".
+01 k-grants-len pic 9(9) comp-5 value 6.
+01 k-ops  pic x(10) value "operations".
+01 k-ops-len pic 9(9) comp-5 value 10.
+01 k-hdl  pic x(8) value "handlers".
+01 k-hdl-len pic 9(9) comp-5 value 8.
+01 k-res  pic x(9) value "resources".
+01 k-res-len pic 9(9) comp-5 value 9.
+01 k-incl pic x(7) value "include".
+01 k-incl-len pic 9(9) comp-5 value 7.
+01 k-excl pic x(7) value "exclude".
+01 k-excl-len pic 9(9) comp-5 value 7.
+linkage section.
+01 lk-tbuf   pic x(524288).
+01 lk-op     pic x(64).
+01 lk-oplen  pic 9(9) comp-5.
+01 lk-path   pic x(900).
+01 lk-pathlen pic 9(9) comp-5.
+01 lk-hpat   pic x(900).
+01 lk-hlen   pic 9(9) comp-5.
+01 lk-verdict pic 9(1).
+procedure division using lk-tbuf lk-op lk-oplen lk-path lk-pathlen
+                        lk-hpat lk-hlen lk-verdict.
+    move 0 to lk-verdict
+    call "ps-peerid" using local locallen
+    call "cap-canon" using lk-path lk-pathlen local locallen cp cplen
+    call "ent-field" using lk-tbuf one k-grants k-grants-len gsoff gsf
+    if gsf = 0 then goback end-if
+    move gsoff to gcur
+    call "cbor-read-head" using lk-tbuf gcur maj addl arg st
+    if maj not = 4 then goback end-if
+    move arg to gcnt
+    perform varying gi from 1 by 1 until gi > gcnt
+        move gcur to gmap
+        perform grant-ok
+        if ok = 1 then move 1 to lk-verdict  goback end-if
+        call "cbor-skip" using lk-tbuf gcur st
+    end-perform
+    goback.
+
+grant-ok.
+    move 0 to ok
+    *> operations (id-scope: literal, no frame)
+    call "cbor-find-key" using lk-tbuf gmap k-ops k-ops-len soff sf st
+    if sf = 0 then exit paragraph end-if
+    call "cap-scope-match" using lk-tbuf soff lk-op lk-oplen r
+    if r = 0 then exit paragraph end-if
+    *> handlers (id-scope: literal, no frame -- the same reading cap-check-perm
+    *> uses; the value is the STRIPPED handler id, not the absolute path)
+    call "cbor-find-key" using lk-tbuf gmap k-hdl k-hdl-len soff sf st
+    if sf = 0 then exit paragraph end-if
+    call "cap-scope-match" using lk-tbuf soff lk-hpat lk-hlen r
+    if r = 0 then exit paragraph end-if
+    *> resources (path-scope, LOCAL frame -- see the header)
+    call "cbor-find-key" using lk-tbuf gmap k-res k-res-len soff sf st
+    if sf = 0 then exit paragraph end-if
+    call "cbor-find-key" using lk-tbuf soff k-excl k-excl-len eoff eff st
+    if eff = 1
+        *> An unmatchable GRANT exclude DENIES (0.8.2.21), asked FIRST.
+        call "cap-arr-unmatchable" using lk-tbuf eoff local locallen cov
+        if cov = 1 then exit paragraph end-if
+    end-if
+    call "cbor-find-key" using lk-tbuf soff k-incl k-incl-len ioff iff st
+    if iff = 0 then exit paragraph end-if
+    call "cap-arr-covers" using lk-tbuf ioff cp cplen local locallen cov
+    if cov = 0 then exit paragraph end-if
+    if eff = 1
+        call "cap-arr-covers" using lk-tbuf eoff cp cplen local locallen cov
+        if cov = 1 then exit paragraph end-if
+    end-if
+    move 1 to ok.
+end program cap-check-path-perm.
 
 *> ---- cap-granter-peer : §PR-8 resolve_granter_peer_id ---------------
 *> The leaf cap's granter -> peer_id (single-sig). Multisig/unreachable -> local.
@@ -1882,16 +2069,88 @@ procedure division using lk-cbuf lk-gc lk-cframe lk-cframelen
     if okR = 0 then goback end-if
     call "cbor-find-key" using lk-cbuf lk-gc k-peers k-peers-len cpOff cpf st
     call "cbor-find-key" using lk-pbuf lk-gp k-peers k-peers-len ppOff ppf st
-    if cpf = 0 and ppf = 0
-        move 1 to okP
-    else
-        call "cap-dim-subset" using lk-cbuf cpOff cpf local locallen
-            lk-pbuf ppOff ppf local locallen okP
-    end-if
+    *> §5.2: AN OMITTED `peers` SCOPE IS THE VALUE {include:[local_peer_id]}, NOT
+    *> AN ABSENCE, and cap-dim-subset reads an absent parent dimension as covering
+    *> nothing. So a child that spells the default out explicitly -- which is what
+    *> every SDK and every wire probe does -- was refused 403
+    *> scope_exceeds_authority AT MINT, and the whole `peers` dimension became
+    *> unmeasurable on this peer. Measured 2026-09-15.
+    *>
+    *> Both asymmetric cases are materialized rather than only the one that was
+    *> measured: the other direction (child omits, parent names) would otherwise
+    *> be vacuously a subset, so a parent whose peers EXCLUDES this peer could be
+    *> escaped by a child that simply leaves the dimension out.
+    evaluate true
+        when cpf = 0 and ppf = 0
+            move 1 to okP
+        when cpf = 1 and ppf = 0
+            call "cap-peers-default-sub" using lk-cbuf cpOff okP
+        when cpf = 0 and ppf = 1
+            call "cap-scope-match" using lk-pbuf ppOff local locallen okP
+        when other
+            call "cap-dim-subset" using lk-cbuf cpOff cpf local locallen
+                lk-pbuf ppOff ppf local locallen okP
+    end-evaluate
     if okP = 0 then goback end-if
     move 1 to lk-res
     goback.
 end program cap-grant-subset.
+
+*> ---- cap-peers-default-sub : child `peers` subset of the §5.2 DEFAULT --
+*> Answers 1 iff every entry of the child's `peers.include` is literally the local
+*> peer id -- i.e. the child is a subset of the omitted-scope default
+*> {include:[local_peer_id]}.
+*>
+*> `peers` is an ID-SCOPE dimension (§3.6 / F40), so the comparison is LITERAL: no
+*> §5.4 canonicalization, and a bare "*" is WIDER than the default and is refused
+*> here, which is the direction that matters.
+identification division.
+program-id. cap-peers-default-sub.
+data division.
+working-storage section.
+01 cur   pic 9(9) comp-5.
+01 maj   pic 9(2) comp-5.
+01 addl  pic 9(2) comp-5.
+01 arg   pic 9(18) comp-5.
+01 cnt   pic 9(9) comp-5.
+01 i     pic 9(9) comp-5.
+01 plen  pic 9(9) comp-5.
+01 st    pic s9(9) comp-5.
+01 pat   pic x(900).
+01 local pic x(128).
+01 locallen pic 9(9) comp-5.
+01 ioff  pic 9(9) comp-5.
+01 iff   pic 9(1).
+01 k-incl pic x(7) value "include".
+01 k-incl-len pic 9(9) comp-5 value 7.
+linkage section.
+01 lk-cbuf pic x(524288).
+01 lk-csc  pic 9(9) comp-5.
+01 lk-res  pic 9(1).
+procedure division using lk-cbuf lk-csc lk-res.
+    move 0 to lk-res
+    call "ps-peerid" using local locallen
+    call "cbor-find-key" using lk-cbuf lk-csc k-incl k-incl-len ioff iff st
+    *> an absent include grants nothing, which is a subset of anything
+    if iff = 0 then move 1 to lk-res  goback end-if
+    move ioff to cur
+    call "cbor-read-head" using lk-cbuf cur maj addl arg st
+    if maj not = 4 then goback end-if
+    move arg to cnt
+    perform varying i from 1 by 1 until i > cnt
+        call "cbor-read-head" using lk-cbuf cur maj addl arg st
+        move arg to plen
+        move spaces to pat
+        if plen > 0 and plen <= 900
+            move lk-cbuf(cur:plen) to pat(1:plen)
+        end-if
+        add plen to cur
+        if plen not = locallen then goback end-if
+        if pat(1:plen) not = local(1:locallen) then goback end-if
+    end-perform
+    move 1 to lk-res
+    goback.
+end program cap-peers-default-sub.
 
 *> ---- cap-link-granter : §5.5a per-link granter frame (hard-fail) ----
 *> single-sig granter -> derive peer_id; multisig (map) -> local; an

@@ -28,19 +28,33 @@ cls := (Object << #EcCapAuthz package: pkg) install.
 "── wall clock (ms) for §5.6 validity windows ──"
 cls class compile: 'nowMillis  ^ (DateAndTime now asUnixTime) * 1000'.
 
-"── §5.4 canonicalization: a bare (non-absolute) path is peer-rooted /<local>/<path>. Answers
-    the canonical String, or signals a coded error Symbol via a return sentinel: a reserved-
-    relative (./ ../) or bare-peer-wildcard (*/) path is a 400 at the boundary — we answer nil
-    and let the caller treat an uncanonicalizable pattern as non-matching (§5.4). ──"
+"── §5.4 canonicalization, TOTAL (0.8.2.20). A bare (non-absolute) path is peer-rooted
+    /<local>/<path>; the three reserved prefixes (./ ../ */) have no canonical form and answer
+    the SENTINEL rather than nil.
+
+    MATCHING NOTHING IS THE RIGHT ANSWER IN AN INCLUDE AND THE OPPOSITE OF IT IN AN EXCLUDE,
+    which is why the nil return had to go: a grant whose resources exclude is `../nope` carved
+    out NOTHING, so the grant was silently wider than its author wrote. The sentinel is what
+    lets the exclude-reading call sites tell the two positions apart while the matcher stays
+    uniform over its operands.
+
+    neverMatch is unreachable as a real canonical path BY CONSTRUCTION: its first segment
+    would have to be a peer_id, and isPeerIdSeg: wants >= 46 Base58 characters while $- is not
+    in the Base58 alphabet at all. ──"
+cls class compile: 'neverMatch  ^ ''/never-match'''.
 cls class compile: 'canon: aPath local: aLocalPeerId
-	((aPath beginsWith: ''./'') or: [ aPath beginsWith: ''../'' ]) ifTrue: [ ^ nil ].
-	(aPath beginsWith: ''*/'') ifTrue: [ ^ nil ].
+	((aPath beginsWith: ''./'') or: [ aPath beginsWith: ''../'' ]) ifTrue: [ ^ self neverMatch ].
+	(aPath beginsWith: ''*/'') ifTrue: [ ^ self neverMatch ].
 	(aPath beginsWith: ''/'') ifTrue: [ ^ aPath ].
 	^ ''/'', aLocalPeerId, ''/'', aPath'.
 
 "── §5.4 pattern matching (recursive /*/ + /* suffix). Both path + pattern are already
     canonicalized (absolute /<peer>/...). ──"
 cls class compile: 'path: aPath matchesPattern: aPat
+	"THE SENTINEL NEVER MATCHES, IN EITHER OPERAND (§5.4, 0.8.2.20) — and it is a MATCHER
+	 RULE asked FIRST, not a property the value happens to have. The arm below answers true
+	 for a bare *, so safety must not rest on /never-match merely looking unmatchable."
+	(aPath = self neverMatch or: [ aPat = self neverMatch ]) ifTrue: [ ^ false ].
 	aPat = ''*'' ifTrue: [ ^ true ].                    "bare * matches all"
 	(aPat beginsWith: ''/*/'') ifTrue: [
 		"strip a /<seg> from the path, recurse on the remainder."
@@ -113,12 +127,29 @@ cls class compile: 'matchesScope: aScopeMap frame: aFrame value: aVal local: aLo
 			^ (self coveredByIdArray: exc value: aVal) not ]
 		ifFalse: [
 			| cv |
+			exc := self scopeArray: aScopeMap key: ''exclude''.
+			(self excludeUnmatchable: exc frame: aFrame) ifTrue: [ ^ false ].
 			cv := self canon: aVal local: aFrame.
-			cv isNil ifTrue: [ ^ false ].
 			inc := self scopeArray: aScopeMap key: ''include''.
 			(self coveredByArray: inc frame: aFrame value: cv local: aLocal) ifFalse: [ ^ false ].
-			exc := self scopeArray: aScopeMap key: ''exclude''.
 			^ (self coveredByArray: exc frame: aFrame value: cv local: aLocal) not ]'.
+
+"excludeUnmatchable:frame: — does any pattern in the exclude array canonicalize to the §5.4
+ sentinel? AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21): the sentinel is fail-CLOSED
+ in an include (covers nothing -> the grant grants nothing) and fail-OPEN in an exclude (carves
+ out nothing), so the reading is chosen where the POSITION is known — here — and the matcher
+ stays uniform over its operands.
+
+ ASKED ONLY ON THE PATH-SCOPE ARM (0.8.2.24, N2/N3), which is why it sits inside the kind
+ dispatch rather than above it. neverMatch is a §5.4 PATH-canonicalization artifact with no
+ meaning on an id-scope dimension, whose patterns are literal identifiers §5.2's own id-scope
+ arm forbids putting through the §5.4 transforms. Asked of `operations`, an exclude of
+ star-slash-apply — an ordinary namespaced operation name, a literal matching nothing under the
+ id-scope grammar — canonicalizes to the sentinel and would deny EVERY operation."
+cls class compile: 'excludeUnmatchable: anArray frame: aFrame
+	anArray isNil ifTrue: [ ^ false ].
+	^ anArray items anySatisfy: [ :e |
+		(e isKindOf: EcTextString) and: [ (self canon: e string local: aFrame) = self neverMatch ] ]'.
 
 "── token field reads ──"
 "grantsOf: — the {grants:[...]} EcArray of a token, or nil."
@@ -459,14 +490,33 @@ cls class compile: 'verifyChain: aCap local: aLocal in: anEnvelope
 	^ #allow'.
 
 "── §5.2 permission scope check (the resolved cap covers op + handler + resource targets) ──"
-"execHandlerPath: — the exec.uri stripped to the bare §6.6 handler path."
+"execHandlerPath: — the exec.uri stripped to the bare §6.6 handler path.
+
+ THE LEADING SEGMENT IS DROPPED ONLY IF IT IS A PEER ID. §1.4 admits three spellings of the
+ same address — `system/tree`, `/{peer}/system/tree` and `entity://{peer}/system/tree` — and
+ this used to drop the first segment unconditionally, so the PEER-RELATIVE spelling came back
+ as `tree`. That is the spelling validate-peer and every wire probe use.
+
+ What it cost, and why it survived: the handlers dimension then compared `/{local}/tree`
+ against a grant naming `system/tree`, so ANY caller-supplied grant written the way §3.7 and
+ §6.2 write them was denied 403 — a self-minted token presented straight back to this peer
+ could not authorize anything. It stayed invisible because the shipped seed policy and the
+ oracle's own caps grant handlers as `*`, which is vacuous over the value: the dimension
+ passed for a reason unrelated to what it compares. Measured 2026-09-15 by tracing the deny
+ site, after reading it had cleared the peer twice.
+
+ isPeerIdSeg: is the same predicate execTargetPeer: below already uses — a predicate written
+ for one caller's path form is not reusable by a second caller with a different one, so the
+ two call sites now share it rather than each carrying an assumption."
 cls class compile: 'execHandlerPath: anExec
-	| u idx |
+	| u idx first |
 	u := (anExec textAt: ''uri'') ifNil: [ ^ '''' ].
 	(u beginsWith: ''entity://'') ifTrue: [ u := u copyFrom: 10 to: u size ].
 	(u beginsWith: ''/'') ifTrue: [ u := u copyFrom: 2 to: u size ].
 	idx := u indexOf: $/.
 	idx = 0 ifTrue: [ ^ u ].
+	first := u copyFrom: 1 to: idx - 1.
+	(self isPeerIdSeg: first) ifFalse: [ ^ u ].
 	^ u copyFrom: idx + 1 to: u size'.
 
 "execResourceTargets: — the exec.resource.targets Strings (an OrderedCollection), or nil if the
@@ -487,20 +537,84 @@ cls class compile: 'resourceTargetCovered: aTarget local: aLocal granter: aGrant
 	| rs cv inc exc |
 	rs := self grantScope: aGrant key: ''resources''.
 	rs isNil ifTrue: [ ^ false ].
+	exc := self scopeArray: rs key: ''exclude''.
+	"An unmatchable GRANT exclude DENIES (0.8.2.21), and it is asked FIRST, before any target:
+	 the coverage tests below are correct in isolation and are simply never reached on a
+	 sentinel, because path:matchesPattern: answers false for it. UNGUARDED ON SCOPE TYPE on
+	 purpose, unlike matchesScope''s: `rs` here is always the RESOURCES dimension, which §5.2
+	 fixes as path-scope, so the type test would be a constant. Naming the dimension in the
+	 selector is what makes that checkable."
+	(self excludeUnmatchable: exc frame: aGranter) ifTrue: [ ^ false ].
 	cv := self canon: aTarget local: aLocal.
-	cv isNil ifTrue: [ ^ false ].
 	inc := self scopeArray: rs key: ''include''.
 	(self coveredByArray: inc frame: aGranter value: cv local: aLocal) ifFalse: [ ^ false ].
-	exc := self scopeArray: rs key: ''exclude''.
 	^ (self coveredByArray: exc frame: aGranter value: cv local: aLocal) not'.
 
-"grantCoversResource:exec:local:granter: — §5.2 resource dimension: EVERY target covered."
+"execResourceExcludes: — the exec.resource.exclude Strings (the CALLER's own carve-out), or an
+ empty collection. Written in the REQUEST, about paths in THIS peer's namespace, so it frames
+ against the LOCAL peer and never against the granter — framing a caller exclude against the
+ granter is the same defect as framing a grant pattern against the verifier, one operand over."
+cls class compile: 'execResourceExcludes: anExec
+	| r ex out |
+	out := OrderedCollection new.
+	r := anExec field: ''resource''.
+	(r isKindOf: EcMap) ifFalse: [ ^ out ].
+	ex := r entryAt: ''exclude''.
+	(ex isKindOf: EcArray) ifFalse: [ ^ out ].
+	ex items do: [ :t | (t isKindOf: EcTextString) ifTrue: [ out add: t string ] ].
+	^ out'.
+
+"grantCoversResource:exec:local:granter: — §5.2 resource dimension: EVERY target the CALLER
+ did not carve out is covered.
+
+ A TARGET THE CALLER EXCLUDED IS ADMITTED RATHER THAN CHECKED: the caller narrowed it out of
+ its own request, so there is nothing there to authorize. That is what lets
+ `targets:[qA] exclude:[qA]` reach the handler and be answered 400 path_required instead of
+ 403 — and it is also what makes §6.3's handler-level check load-bearing rather than
+ redundant, because the dispatch check no longer sees the excluded path at all."
 cls class compile: 'grant: aGrant coversResourceExec: anExec local: aLocal granter: aGranter
-	| targets |
+	| targets callerExcl |
 	targets := self execResourceTargets: anExec.
 	targets isNil ifTrue: [ ^ true ].                   "no targets -> handler-only, vacuous"
 	targets isEmpty ifTrue: [ ^ true ].
-	^ targets allSatisfy: [ :t | self resourceTargetCovered: t local: aLocal granter: aGranter grant: aGrant ]'.
+	callerExcl := self execResourceExcludes: anExec.
+	^ targets allSatisfy: [ :t |
+		(callerExcl notEmpty and: [ self coveredByArray: (self textArrayOf: callerExcl)
+			frame: aLocal value: (self canon: t local: aLocal) local: aLocal ])
+			or: [ self resourceTargetCovered: t local: aLocal granter: aGranter grant: aGrant ] ]'.
+
+"textArrayOf: — wrap a collection of Strings as the EcArray shape coveredByArray: reads, so
+ the caller-exclude arm goes through the SAME matcher as every grant pattern rather than a
+ second copy of it."
+cls class compile: 'textArrayOf: aStringCollection
+	^ EcArray items: (aStringCollection collect: [ :s | EcTextString string: s ]) asArray'.
+
+"checkPathPermission:operation:path:local:cap: — §6.3's handler-level path check, AND IT IS NOT
+ A SECONDARY CHECK (0.8.2.20). It is the enforcement wherever the subject is derived after
+ dispatch, because the dispatch-level check can be made VACUOUS by caller-controlled input: a
+ caller who excludes the one target its capability does not cover removes that target from
+ checkPermission's view entirely, and a handler that then acts on it has authorized nothing.
+
+ THREE DIMENSIONS, NOT FOUR, and the LOCAL frame — both from §6.3's own signature,
+ matches_scope(canonical_path, grant.resources, path-scope, local_peer_id), which has no
+ granter parameter to pass. `peers` is not consulted: the path is local by construction here,
+ since §1.4's inbound rule refused a foreign namespace before any handler ran.
+
+ There is no caller-exclude set at this call site: the subject is a single concrete path and
+ the caller's exclusions were applied in deriving it, so every grant exclude covering the
+ subject denies — which matchesScope already implements, including 0.8.2.21's sentinel rule."
+cls class compile: 'checkPathPermission: aCap operation: anOp path: aPath local: aLocal handler: aHandlerPattern
+	| grants |
+	aCap isNil ifTrue: [ ^ true ].                      "no presented authority to check against"
+	grants := self grantsOf: aCap.
+	grants isNil ifTrue: [ ^ false ].
+	^ grants items anySatisfy: [ :g |
+		(self matchesScope: (self grantScope: g key: ''handlers'')
+			frame: aLocal value: aHandlerPattern local: aLocal kind: #pathScope)
+		and: [ (self matchesScope: (self grantScope: g key: ''operations'')
+			frame: aLocal value: anOp local: aLocal kind: #idScope)
+		and: [ self matchesScope: (self grantScope: g key: ''resources'')
+			frame: aLocal value: aPath local: aLocal kind: #pathScope ] ] ]'.
 
 "── §5.2 peers dimension (target_peer): the EXECUTE''s own dispatch URI, NOT the resource-
     target field — §3.6 line 3228''s worked example (a peer serving /{remote_peer_id}/data/*

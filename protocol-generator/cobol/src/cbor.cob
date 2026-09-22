@@ -210,6 +210,149 @@ procedure division using lk-buf lk-off lk-status.
     goback.
 end program cbor-skip-ck.
 
+*> ---- frame-check (RECURSIVE) : the §4.11 DECODE BOUNDARY ------------
+*>
+*> cbor-skip-ck above is the map arm's strictness; this is the FRAME's. Two
+*> differences, and both are why it is a separate walk: it is BOUNDED by an end
+*> offset, so a declared length longer than the frame is caught rather than read
+*> past, and it separates the two causes §4.11 names by CODE --
+*>
+*>   a CBOR tag in any position  ->  ENTITY-CBOR-ENCODING §6.3 tag policy
+*>                                   (`non_canonical_ecf`, already a MUST there)
+*>   anything else               ->  "never becomes an Envelope"
+*>                                   (`invalid_request`)
+*>
+*> LK-TAG is the shared flag: passed by reference all the way down, so a tag seen
+*> at any depth is visible at the top. It is recorded rather than propagated as a
+*> result, because TAG WINS OVER A CLEAN STRUCTURE BUT NOT OVER A BROKEN ONE -- a
+*> frame that is both truncated and tagged is INVALID, since the tag was read out
+*> of bytes whose shape was never established.
+*>
+*> The depth cap is a bound on the whole module, not a local check: cbor-skip and
+*> cbor-find-key recurse with no cap and no end pointer, so running this pass
+*> FIRST means every later walk of the frame is over bytes already proven finite,
+*> in-bounds and shallower than 128.
+identification division.
+program-id. frame-check recursive.
+data division.
+local-storage section.
+01 ws-major pic 9(2) comp-5.
+01 ws-addl  pic 9(2) comp-5.
+01 ws-arg   pic 9(18) comp-5.
+01 ws-i     pic 9(18) comp-5.
+01 ws-n     pic 9(18) comp-5.
+01 ws-st    pic s9(9) comp-5.
+01 ws-avail pic 9(18) comp-5.
+01 ws-sub   pic 9(1).
+linkage section.
+01 lk-buf   pic x(524288).
+01 lk-off   pic 9(9) comp-5.
+01 lk-end   pic 9(9) comp-5.
+01 lk-depth pic 9(9) comp-5.
+01 lk-tag   pic 9(1).
+01 lk-res   pic 9(1).
+procedure division using lk-buf lk-off lk-end lk-depth lk-tag lk-res.
+    move 0 to lk-res
+    add 1 to lk-depth
+    if lk-depth > 128
+        move 2 to lk-res  subtract 1 from lk-depth  goback
+    end-if
+    if lk-off >= lk-end
+        move 2 to lk-res  subtract 1 from lk-depth  goback
+    end-if
+    call "cbor-read-head" using lk-buf lk-off ws-major ws-addl ws-arg ws-st
+    if ws-st not = 0
+        *> addl 28-30 reserved, 31 indefinite. Canonical ECF admits neither.
+        move 2 to lk-res  subtract 1 from lk-depth  goback
+    end-if
+    if lk-off > lk-end
+        move 2 to lk-res  subtract 1 from lk-depth  goback
+    end-if
+    evaluate ws-major
+        when 0
+            continue
+        when 1
+            continue
+        when 2
+            compute ws-avail = lk-end - lk-off
+            if ws-arg > ws-avail
+                move 2 to lk-res  subtract 1 from lk-depth  goback
+            end-if
+            add ws-arg to lk-off
+        when 3
+            compute ws-avail = lk-end - lk-off
+            if ws-arg > ws-avail
+                move 2 to lk-res  subtract 1 from lk-depth  goback
+            end-if
+            add ws-arg to lk-off
+        when 4
+            move ws-arg to ws-n
+            perform varying ws-i from 1 by 1 until ws-i > ws-n
+                call "frame-check" using lk-buf lk-off lk-end lk-depth
+                    lk-tag ws-sub
+                *> A huge declared count terminates HERE, on the first element
+                *> with no bytes left -- the loop cannot run longer than the frame.
+                if ws-sub not = 0
+                    move ws-sub to lk-res  subtract 1 from lk-depth  goback
+                end-if
+            end-perform
+        when 5
+            compute ws-n = ws-arg * 2
+            perform varying ws-i from 1 by 1 until ws-i > ws-n
+                call "frame-check" using lk-buf lk-off lk-end lk-depth
+                    lk-tag ws-sub
+                if ws-sub not = 0
+                    move ws-sub to lk-res  subtract 1 from lk-depth  goback
+                end-if
+            end-perform
+        when 6
+            move 1 to lk-tag
+            call "frame-check" using lk-buf lk-off lk-end lk-depth lk-tag ws-sub
+            if ws-sub not = 0
+                move ws-sub to lk-res  subtract 1 from lk-depth  goback
+            end-if
+        when other
+            *> 7 simple/float: the argument bytes are already consumed
+            continue
+    end-evaluate
+    subtract 1 from lk-depth
+    goback.
+end program frame-check.
+
+*> ---- frame-precheck : 0 OK | 1 TAG | 2 never becomes an Envelope ----
+identification division.
+program-id. frame-precheck.
+data division.
+working-storage section.
+01 poff  pic 9(9) comp-5.
+01 endo  pic 9(9) comp-5.
+01 depth pic 9(9) comp-5.
+01 tagf  pic 9(1).
+01 r     pic 9(1).
+linkage section.
+01 lk-buf pic x(524288).
+01 lk-len pic 9(9) comp-5.
+01 lk-res pic 9(1).
+procedure division using lk-buf lk-len lk-res.
+    move 2 to lk-res
+    if lk-len = 0 then goback end-if
+    move 1 to poff
+    compute endo = lk-len + 1
+    move 0 to depth
+    move 0 to tagf
+    call "frame-check" using lk-buf poff endo depth tagf r
+    if r not = 0 then goback end-if
+    *> Trailing bytes after the top-level value: the frame length and the value
+    *> disagree, which is a FRAMING fault and not a tag-policy one.
+    if poff not = endo then goback end-if
+    if tagf = 1
+        move 1 to lk-res
+    else
+        move 0 to lk-res
+    end-if
+    goback.
+end program frame-precheck.
+
 *> ---- cbor-canon (RECURSIVE) ----------------------------------------
 *> Transcode one value at LK-IN(LK-IN-OFF:) to canonical form appended to
 *> LK-OUT (advancing LK-OUT-LEN + LK-IN-OFF). Doubles as the validator: a

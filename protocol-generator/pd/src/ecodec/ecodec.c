@@ -314,6 +314,64 @@ static int cbor_skip(cbor_rd *r)
     }
 }
 
+/* ── §4.11's DECODE BOUNDARY ────────────────────────────────────────────────
+ * cbor_skip above is bounded and already refuses tags, but it cannot say WHICH
+ * cause it refused for — and §4.11 assigns the two causes DIFFERENT CODES:
+ *
+ *   a CBOR tag in any position  →  ENTITY-CBOR-ENCODING §6.3 tag policy
+ *                                  (`non_canonical_ecf`, already a MUST there)
+ *   anything else               →  "never becomes an Envelope" (`invalid_request`)
+ *
+ * The tag flag is recorded rather than returned immediately, because TAG WINS
+ * OVER A CLEAN STRUCTURE BUT NOT OVER A BROKEN ONE: a frame that is both
+ * truncated and tagged is INVALID, since the tag was read out of bytes whose
+ * shape was never established.
+ *
+ * It also caps depth, which cbor_skip does not: 16 MiB of nested array(1) is a
+ * stack smash reachable by anyone who can send bytes. Running this first means
+ * every later walk of the frame is over bytes already proven finite, in-bounds
+ * and shallower than 128. */
+static int frame_walk(cbor_rd *r, int depth, int *saw_tag)
+{
+    if (depth > 128) return -1;
+    int major; uint64_t arg;
+    if (cbor_head(r, &major, &arg) != 0) return -1;
+    switch (major) {
+        case 0: case 1: case 7: return 0;
+        case 2: case 3:
+            if (arg > (uint64_t)(r->len - r->pos)) return -1;
+            r->pos += (size_t)arg; return 0;
+        case 4:
+            for (uint64_t i = 0; i < arg; i++)
+                if (frame_walk(r, depth + 1, saw_tag) != 0) return -1;
+            return 0;
+        case 5:
+            for (uint64_t i = 0; i < arg; i++) {
+                if (frame_walk(r, depth + 1, saw_tag) != 0) return -1;
+                if (frame_walk(r, depth + 1, saw_tag) != 0) return -1;
+            }
+            return 0;
+        case 6:
+            *saw_tag = 1;
+            return frame_walk(r, depth + 1, saw_tag);
+        default: return -1;
+    }
+}
+
+/* 0 = a legal canonical-ECF value spanning exactly the frame · 1 = TAG ·
+ * 2 = never becomes an Envelope. */
+static int frame_precheck(const unsigned char *buf, size_t len)
+{
+    if (len == 0) return 2;
+    cbor_rd r = { buf, len, 0 };
+    int saw_tag = 0;
+    if (frame_walk(&r, 0, &saw_tag) != 0) return 2;
+    /* Trailing bytes after the top-level value: the frame length and the value
+     * disagree, which is a FRAMING fault and not a tag-policy one. */
+    if (r.pos != len) return 2;
+    return saw_tag ? 1 : 0;
+}
+
 /* Given a reader at a map head, find text-key `key`; on hit leave `out` at the
  * value and return 1; else return 0 (out consumed). */
 static int cbor_map_find(const unsigned char *buf, size_t len, size_t map_pos,
@@ -436,6 +494,49 @@ static int included_find(const unsigned char *buf, size_t len,
         if (cbor_skip(&r) != 0 || cbor_skip(&r) != 0) return 0;              /* skip key+value */
     }
     return 0;
+}
+
+/* §3.1 / §1.8 at the DECODE BOUNDARY: every `included` entry hashes to the key it
+ * is filed under.
+ *
+ * included_find above asks the same question at the LOOKUP, which is mechanism (b)
+ * — the key is discarded, a forged address MISSES, and each caller's existing rung
+ * answers the §5.2a row that lookup owns. This sweep is mechanism (a), and it is
+ * what the WIRE observes: §4.11 requires a coded refusal BEFORE admission, so a
+ * mis-keyed map must not reach the §1.4 address gate and come back as
+ * `invalid_request`. §5.2a pins 400 hash_mismatch for a peer refusing at the
+ * decode boundary, and `non_canonical_ecf` is not conformant there — the bytes ARE
+ * canonical; what is false is the claim the KEY makes, so that code's remedy
+ * (re-encode) sends an honest caller to the wrong layer.
+ *
+ * Keeping both is deliberate: this one is the wire answer, included_find is the
+ * backstop for any caller that reaches the map without coming through here.
+ *
+ * SCOPE, stated because it is a hole and not an omission: only 33-byte byte-string
+ * keys are checked. A key of any other shape cannot be an ecfv1-sha256
+ * content_hash, and included_find only ever MATCHES that shape, so such an entry
+ * is unresolvable by construction and refusing it would refuse a frame nothing can
+ * act on. */
+static int included_keys_all_bind(const unsigned char *buf, size_t len)
+{
+    cbor_rd inc;
+    if (!cbor_map_find(buf, len, 0, "included", &inc)) return 1;   /* nothing claims to resolve */
+    cbor_rd r = { buf, len, inc.pos };
+    int major; uint64_t n;
+    if (cbor_head(&r, &major, &n) != 0 || major != 5) return 0;
+    for (uint64_t i = 0; i < n; i++) {
+        size_t khead = r.pos;
+        int kmaj; uint64_t kl;
+        if (cbor_head(&r, &kmaj, &kl) != 0) return 0;
+        if (kmaj == 2 && kl == 33 && r.pos + 33 <= len) {
+            unsigned char key33[33];
+            memcpy(key33, r.p + r.pos, 33);
+            if (!included_key_binds(buf, len, r.pos + 33, key33)) return 0;
+        }
+        r.pos = khead;
+        if (cbor_skip(&r) != 0 || cbor_skip(&r) != 0) return 0;
+    }
+    return 1;
 }
 
 /* Copy a bstr field `name` from the data map of the entity at reader `ent`
@@ -2961,28 +3062,70 @@ static const char *store_entity_type(const char *path)
     return NULL;
 }
 
-/* Read the first resource target (execute.data.resource.targets[0]) as a
- * CANONICAL store key into out[cap] (§1.4: local → bare-relative, foreign →
- * "/{peer}/rest" preserved). Returns 1 present, 0 absent, -1 MALFORMED (an
- * embedded NUL byte — the wire text length exceeds the C-string length — or a
- * leading '/' whose first segment is not a peer id). */
-static int exec_resource_path(char *out, size_t cap)
+/* §5.2's EFFECTIVE target list (0.8.2.20), reduced to the ONE survivor a
+ * resource-requiring operation may act on, as a CANONICAL store key into out[cap]
+ * (§1.4: local → bare-relative, foreign → "/{peer}/rest" preserved).
+ *
+ * THE CALLER'S OWN `resource.exclude` REMOVES ENTRIES BEFORE ANYTHING ELSE LOOKS
+ * AT THEM. This used to read targets[0] unconditionally, so `targets:[qA,qB]
+ * exclude:[qA]` acted on qA — the one entry the caller had carved out (measured
+ * on the wire 2026-09-15). A handler that counts the effective list and then
+ * indexes targets[0] has implemented the arithmetic completely and is still
+ * reading a path no authorization covered.
+ *
+ * The exclude arm compares RAW peer-relative forms through matches_pattern_rel,
+ * which is this peer's own convention throughout (it never materializes a
+ * canonical absolute form). It is therefore fail-OPEN on an unmatchable pattern
+ * for free, via pat_unmatchable inside the matcher — and that is correct HERE:
+ * §5.4's table rules the CALLER arm separately from the GRANT arm, where the same
+ * sentinel denies.
+ *
+ *   1 one effective target (canonical in out)
+ *   0 absent — no `resource`, or no `targets` inside it
+ *  -1 MALFORMED (an embedded NUL — the wire text length exceeds the C-string
+ *     length — or a leading '/' whose first segment is not a peer id)
+ *  -2 present and effectively EMPTY  (§3.3 → path_required)
+ *  -3 more than one                  (§3.3 → ambiguous_resource)
+ *  -4 the single survivor is a PATTERN, not a concrete path (§3.3 →
+ *     malformed_resource; a star is not a literal key that happens to miss)
+ *
+ * -2 and 0 are DIFFERENT REQUESTS, not two spellings of one (0.8.2.24 N7,
+ * 0.8.2.25 N10) — §3.3's "an empty effective list IS the absent case" is scoped to
+ * an operation that REQUIRES a resource — so they are returned separately and each
+ * call site decides. */
+static int exec_effective_target(char *out, size_t cap)
 {
     const unsigned char *buf = g_rbuf; size_t len = g_rbuf_len;
-    cbor_rd root, rdata, resfld, targets;
+    cbor_rd root, rdata, resfld, targets, excl;
+    int have_excl = 0;
     if (!cbor_map_find(buf, len, 0, "root", &root)) return 0;
     if (!cbor_map_find(buf, len, root.pos, "data", &rdata)) return 0;
     if (!cbor_map_find(buf, len, rdata.pos, "resource", &resfld)) return 0;
     if (!cbor_map_find(buf, len, resfld.pos, "targets", &targets)) return 0;
+    have_excl = cbor_map_find(buf, len, resfld.pos, "exclude", &excl);
     cbor_rd tr = { buf, len, targets.pos }; int major; uint64_t n;
-    if (cbor_head(&tr, &major, &n) != 0 || major != 4 || n < 1) return 0;
-    char raw[512]; cbor_rd e = { buf, len, tr.pos };
-    if (cbor_get_text(&e, raw, sizeof raw) != 0) return 0;
-    {   /* embedded NUL: the wire text length exceeds the C-string length */
-        cbor_rd tv = { buf, len, tr.pos }; int mj; uint64_t tn;
-        if (cbor_head(&tv, &mj, &tn) == 0 && mj == 3 && (size_t)tn != strlen(raw)) return -1;
+    if (cbor_head(&tr, &major, &n) != 0 || major != 4) return 0;
+    int surv = 0, malformed = 0;
+    char keep[512] = "";
+    for (uint64_t i = 0; i < n; i++) {
+        char raw[512]; cbor_rd e = { buf, len, tr.pos };
+        if (cbor_get_text(&e, raw, sizeof raw) != 0) return 0;
+        {   /* embedded NUL: the wire text length exceeds the C-string length */
+            cbor_rd tv = { buf, len, tr.pos }; int mj; uint64_t tn;
+            if (cbor_head(&tv, &mj, &tn) == 0 && mj == 3 && (size_t)tn != strlen(raw))
+                malformed = 1;
+        }
+        if (!(have_excl && array_any_match(buf, len, excl.pos, raw))) {
+            if (surv == 0) { size_t rl = strlen(raw); if (rl < sizeof keep) memcpy(keep, raw, rl + 1); }
+            surv++;
+        }
+        if (cbor_skip(&tr) != 0) return 0;
     }
-    if (!canonical_key(raw, out, cap)) return -1;
+    if (surv == 0) return n == 0 ? 0 : -2;
+    if (surv > 1) return -3;
+    if (malformed) return -1;
+    if (strchr(keep, '*')) return -4;
+    if (!canonical_key(keep, out, cap)) return -1;
     return 1;
 }
 
@@ -3167,8 +3310,15 @@ static int path_shape_ok(const char *path)
 static void ecodec_tree_get_serve(t_ecodec *x)
 {
     char path[512];
-    int pr = exec_resource_path(path, sizeof path);
+    int pr = exec_effective_target(path, sizeof path);
     if (pr == 0) { emit_error_response(x, 400, "bad_request"); return; }
+    /* §3.3's ladder on the EFFECTIVE list. `resource` PRESENT and every target
+     * carved out by the caller's own exclude is path_required: answering it the
+     * absent case would answer a request for one excluded path with something
+     * WIDER than the request. */
+    if (pr == -2) { emit_error_response(x, 400, "path_required"); return; }
+    if (pr == -3) { emit_error_response(x, 400, "ambiguous_resource"); return; }
+    if (pr == -4) { emit_error_response(x, 400, "malformed_resource"); return; }
     if (pr < 0 || !path_shape_ok(path)) { emit_error_response(x, 400, "invalid_path"); return; }
     size_t pl = strlen(path);
     if (pl == 0 || path[pl - 1] == '/') {
@@ -3214,8 +3364,15 @@ static void ecodec_tree_put_serve(t_ecodec *x)
 {
     const unsigned char *buf = g_rbuf; size_t len = g_rbuf_len;
     char path[512];
-    int pr = exec_resource_path(path, sizeof path);
-    if (pr == 0) { emit_error_response(x, 400, "ambiguous_resource"); return; }
+    int pr = exec_effective_target(path, sizeof path);
+    /* `put` REQUIRES a resource, so BOTH empties answer path_required (0.8.2.24
+     * N7 scopes "an empty effective list IS the absent case" to exactly that kind
+     * of operation) — and §3.3 pins path_required rather than ambiguous_resource
+     * for a MISSING target, which 0.8.2.20 names inverting as the defect: the
+     * remedies are opposites ("name one" against "name fewer"). */
+    if (pr == 0 || pr == -2) { emit_error_response(x, 400, "path_required"); return; }
+    if (pr == -3) { emit_error_response(x, 400, "ambiguous_resource"); return; }
+    if (pr == -4) { emit_error_response(x, 400, "malformed_resource"); return; }
     if (pr < 0 || !path_shape_ok(path) || !path[0] || path[strlen(path) - 1] == '/') {
         emit_error_response(x, 400, "invalid_path"); return;
     }
@@ -3880,9 +4037,9 @@ done:
 static int register_pattern(char *out, size_t cap)
 {
     char target[512];
-    int pr = exec_resource_path(target, sizeof target);
-    if (pr == 0) return -1;
-    if (pr < 0) return -2;
+    int pr = exec_effective_target(target, sizeof target);
+    if (pr == 0 || pr == -2) return -1;      /* nothing to install at */
+    if (pr < 0) return -2;                   /* ambiguous / pattern / malformed */
     const char *prefix = "system/handler/";
     size_t pl = strlen(prefix);
     if (strncmp(target, prefix, pl) != 0 || strlen(target) == pl) return -2;
@@ -4078,6 +4235,36 @@ static void conn_free(ec_conn *c)
     }
 }
 
+/* Recover root.data.request_id into g_dec so a pre-admission refusal comes back
+ * CORRELATED where the id exists. Only ever called on bytes frame_precheck has
+ * already walked to completion. A frame that carries no request_id is answered
+ * uncorrelated, which §4.11 provides for in as many words ("otherwise as a
+ * best-effort coded frame carrying no correlation") — and a correlation id that
+ * names a DIFFERENT request would be worse than none, because the caller matches
+ * it to something. */
+static void salvage_request_id(void)
+{
+    cbor_rd root, rdata, f;
+    if (!cbor_map_find(g_rbuf, g_rbuf_len, 0, "root", &root)) return;
+    if (!cbor_map_find(g_rbuf, g_rbuf_len, root.pos, "data", &rdata)) return;
+    if (!cbor_map_find(g_rbuf, g_rbuf_len, rdata.pos, "request_id", &f)) return;
+    cbor_get_text(&f, g_dec.request_id, sizeof g_dec.request_id);
+}
+
+/* Is the decoded frame a request this peer can route — an EXECUTE, or the
+ * EXECUTE_RESPONSE the §6.11 reentry pump expects? A RESPONSE root is left to the
+ * existing path deliberately: answering it would put a response on the wire for a
+ * response. */
+static int frame_is_request(void)
+{
+    cbor_rd root, rt; char t[128];
+    if (!cbor_map_find(g_rbuf, g_rbuf_len, 0, "root", &root)) return 0;
+    if (!cbor_map_find(g_rbuf, g_rbuf_len, root.pos, "type", &rt)) return 0;
+    if (cbor_get_text(&rt, t, sizeof t) != 0) return 0;
+    return strcmp(t, "system/protocol/execute") == 0
+        || strcmp(t, "system/protocol/execute/response") == 0;
+}
+
 /* One complete frame assembled on connection `c`: copy the CBOR body into the
  * current-frame scratch (g_rbuf), mark `c` the reply target, and kick the canvas
  * decode→route→ladder→dispatch cascade SYNCHRONOUSLY. build_* funnels the response
@@ -4093,8 +4280,77 @@ static void dispatch_frame(ec_conn *c, const unsigned char *body, size_t bodylen
     memcpy(g_rbuf, body, bodylen);
     g_rbuf_len = bodylen;
     g_cur_fd = c->fd; g_cur_conn = c;
-    if (g_self) ecodec_decode_frame(g_self);      /* → canvas dispatch → reply to c->fd */
+    /* ---- §4.11 DECODE BOUNDARY ----
+     * In the SEAM and not on the canvas, and that is the wrapper-guard's own rule
+     * rather than a shortcut: FLOW-DESIGN draws the seam at what the substrate
+     * genuinely cannot do — bytes, maps, sockets — and these are events at the
+     * framing layer and below the request abstraction. The §6.5 SEQUENCE, the
+     * verdict ladder and every status the canvas decides stay on the canvas.
+     *
+     * Sited above ecodec_decode_frame because §4.11 is about frames refused
+     * PRE-ADMISSION: each cause has to be decided before the §1.4 address gate,
+     * before authentication and before any capability question. A peer that runs
+     * its address gate first answers `invalid_request` to a tagged frame and has
+     * not implemented §6.3's decode-time reject at all — it has merely refused the
+     * frame for an unrelated reason that happens to share a code. */
+    if (g_self) {
+        int pre = frame_precheck(g_rbuf, g_rbuf_len);
+        if (pre != 0) {
+            memset(&g_dec, 0, sizeof g_dec);
+            if (pre == 1) {
+                /* Structurally sound — frame_precheck reports TAG only when the
+                 * walk completed and consumed exactly the frame — so the readers
+                 * are safe on it and the request_id is recoverable. That ordering
+                 * is what makes the salvage legitimate rather than a second parse
+                 * of condemned bytes. */
+                salvage_request_id();
+                emit_error_response(g_self, 400, "non_canonical_ecf");
+            } else {
+                /* No salvage: the shape was never established, so a field read
+                 * over these bytes would be reading a structure that is not there. */
+                emit_error_response(g_self, 400, "invalid_request");
+            }
+            g_cur_fd = -1; g_cur_conn = NULL;
+            return;
+        }
+        if (!included_keys_all_bind(g_rbuf, g_rbuf_len)) {
+            memset(&g_dec, 0, sizeof g_dec);
+            salvage_request_id();
+            emit_error_response(g_self, 400, "hash_mismatch");
+            g_cur_fd = -1; g_cur_conn = NULL;
+            return;
+        }
+        if (!frame_is_request()) {
+            /* The frame decoded and is NOT a well-formed request: no `root`, a root
+             * with no `type`, or a root type that is neither EXECUTE nor
+             * EXECUTE_RESPONSE. ecodec_decode_frame answers these with a `decerr`
+             * to the canvas, which has nothing to say back — §4.9(c)'s silent drop,
+             * billed entirely to the caller's own §6.11(c) deadline, so it presents
+             * as a slow peer rather than a wrong one. A decoded root is
+             * CORRELATABLE: the request_id is right there in it. */
+            memset(&g_dec, 0, sizeof g_dec);
+            salvage_request_id();
+            emit_error_response(g_self, 400, "invalid_request");
+            g_cur_fd = -1; g_cur_conn = NULL;
+            return;
+        }
+        ecodec_decode_frame(g_self);              /* → canvas dispatch → reply to c->fd */
+    }
     g_cur_fd = -1; g_cur_conn = NULL;
+}
+
+/* Emit a §4.11 pre-admission refusal that carries NO correlation, on a connection
+ * that has no decoded request behind it. g_dec is cleared so no earlier frame's
+ * request_id can leak into this one, and g_cur_fd is set/restored around the write
+ * because emit_error_response funnels through the transport-owned socket. */
+static void refuse_uncorrelated(ec_conn *c, unsigned status, const char *code)
+{
+    if (!g_self) return;
+    int prev_fd = g_cur_fd; ec_conn *prev_conn = g_cur_conn;
+    memset(&g_dec, 0, sizeof g_dec);
+    g_cur_fd = c->fd; g_cur_conn = c;
+    emit_error_response(g_self, status, code);
+    g_cur_fd = prev_fd; g_cur_conn = prev_conn;
 }
 
 /* Poll callback: a connection fd is readable. Drain into the per-connection buffer,
@@ -4105,7 +4361,17 @@ static void conn_read(ec_conn *c, int fd)
 {
     unsigned char tmp[65536];
     ssize_t r = recv(fd, tmp, sizeof tmp, 0);
-    if (r == 0) { conn_free(c); return; }                 /* peer closed */
+    if (r == 0) {
+        /* §4.11 — THE TWO ENDS-OF-STREAM ARE DIFFERENT EVENTS AND THEY DIFFER BY
+         * ONE BYTE. Nothing buffered is a clean close AT A FRAME BOUNDARY: there is
+         * no refusal here and nobody to answer, and emitting a coded frame would be
+         * refusing an ordinary hangup. Bytes still buffered mean a frame that never
+         * completed — "a length prefix that never completes" in §4.11's own words —
+         * and that is owed 400 invalid_request, uncorrelated by construction
+         * because the request_id lives inside a frame that never arrived. */
+        if (c->rlen > 0) refuse_uncorrelated(c, 400, "invalid_request");
+        conn_free(c); return;                             /* peer closed */
+    }
     if (r < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) return; conn_free(c); return; }
     c->got_data = 1;                                       /* active — exempt from idle reaping */
 
@@ -4126,7 +4392,15 @@ static void conn_read(ec_conn *c, int fd)
             if (c->rlen < 4) return;
             c->framelen = ((uint32_t)c->rbuf[0] << 24) | ((uint32_t)c->rbuf[1] << 16)
                         | ((uint32_t)c->rbuf[2] << 8) | (uint32_t)c->rbuf[3];
-            if (c->framelen > (uint32_t)ECODEC_MAX_FRAME) { conn_free(c); return; }  /* §4.10 → close */
+            if (c->framelen > (uint32_t)ECODEC_MAX_FRAME) {
+                /* §4.10(a) became a MUST at 0.8.2.25 (§4.11 N14) precisely because
+                 * this condition is detected AT THE LENGTH PREFIX with the
+                 * connection intact and nothing spent: the peer has not allocated,
+                 * has not buffered, and has every resource needed to answer. A bare
+                 * close here is §4.11's named "CLOSING with no coded frame". */
+                refuse_uncorrelated(c, 413, "payload_too_large");
+                conn_free(c); return;
+            }
             c->have_len = 1;
         }
         if (c->rlen < 4 + (size_t)c->framelen) return;    /* body incomplete — await more */

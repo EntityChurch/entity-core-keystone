@@ -174,14 +174,36 @@ variable uri-addressed
   ridv c@ [char] t <> if 0 0 exit then
   ridv tv-payload ;
 
-\ reject-frame ( conn faddr fu -- )  answer a rejected frame with 400 non_canonical_ecf,
-\ correlated by the salvaged request_id. Runs under `catch` at the call site, so a further
-\ throw degrades to the silence this exists to remove -- no worse than the old behaviour.
-: reject-frame { conn faddr fu -- }
-  faddr fu salvage-request-id { ru } { ra }
-  ru 0= if exit then
+\ reject-code ( code -- a u )  §4.11: THE FRAME OBLIGATION BELONGS TO THE CLASS AND THE CODE
+\ BELONGS TO THE CAUSE. Every pre-admission refusal used to answer `non_canonical_ecf`, which
+\ is right for exactly one of them.
+\
+\ This peer's decoder already separated the causes by THROW CODE and nobody had read that as a
+\ code map: E-TAG-REJECTED is ENTITY-CBOR-ENCODING §6.3's tag policy and keeps its own code;
+\ E-INCLUDED-KEY-MISMATCH is §3.1 resolution integrity, which §5.2a pins to 400 hash_mismatch
+\ at the decode boundary (`non_canonical_ecf` is NOT conformant there — the bytes ARE
+\ canonical; what is false is the claim the KEY makes, so that code's remedy, re-encode, sends
+\ an honest caller to the wrong layer). Everything else — a truncated item, a non-minimal
+\ head, a reserved or indefinite head, a missing root, a depth blowout — is §4.11's
+\ "never becomes an Envelope", which takes invalid_request.
+: reject-code { code -- a u }
+  code E-TAG-REJECTED          = if s" non_canonical_ecf" exit then
+  code E-INCLUDED-KEY-MISMATCH = if s" hash_mismatch"     exit then
+  s" invalid_request" ;
+
+\ reject-frame ( conn faddr fu code -- )  answer a rejected frame with the code its CAUSE is
+\ assigned, correlated by the salvaged request_id where one is recoverable. Runs under `catch`
+\ at the call site, so a further throw degrades to the silence this exists to remove.
+\
+\ AN UNRECOVERABLE REQUEST_ID IS NO LONGER SILENCE. This word used to `exit` when the salvage
+\ came back empty, so a frame whose shape was broken enough to hide its own id got no answer
+\ at all — §4.9(c)'s silent drop, billed entirely to the caller's deadline. §4.11 provides for
+\ exactly that case in as many words: "otherwise as a best-effort coded frame carrying no
+\ correlation".
+: reject-frame { conn faddr fu code -- }
+  faddr fu ['] salvage-request-id catch if 2drop 0 0 then { ru } { ra }
   resp-inc-reset
-  s" non_canonical_ecf" 0 0 error-result { eu } { ea }
+  code reject-code 0 0 error-result { eu } { ea }
   conn ra ru 400 ea eu send-response ;
 
 
@@ -232,8 +254,19 @@ variable uri-addressed
   root ent-type s" system/protocol/execute/response" compare 0= if
     root park-reply exit
   then
-  \ any other root type: close the connection (§3.3).
-  conn conn conn-fd@ conn-close ;
+  \ §4.11 — the root decoded and is neither an EXECUTE nor an EXECUTE_RESPONSE. Everything
+  \ parses; the frame is simply not a request. CLOSING here is §4.11's named "CLOSING with no
+  \ coded frame", indistinguishable from a network fault (§4.6) — and it takes every later
+  \ request on a pooled connection with it. The caller is owed a status AND is correlatable:
+  \ the request_id is right there in a decoded root.
+  resp-inc-reset
+  root s" data" ent-field dup 0= if drop 0 0 else
+    s" request_id" tv-map-get dup 0= if drop 0 0 else
+      dup c@ [char] t <> if drop 0 0 else tv-payload then
+    then
+  then { ru } { ra }
+  s" invalid_request" 0 0 error-result { eu } { ea }
+  conn ra ru 400 ea eu send-response ;
 
 \ conn-of-fd ( fd -- conn-idx | -1 )
 : conn-of-fd { fd -- idx }
@@ -255,9 +288,29 @@ variable uri-addressed
   fd conn-of-fd { conn }
   conn 0< if fd net-close exit then
   fd net-read-frame { faddr flen }           \ ( addr len ): locals bind in stack order
-  faddr -1 = if conn fd conn-close exit then  \ EOF/error
-  faddr 0= flen 0= and if exit then          \ oversize drained, keep serving
-  conn faddr flen ['] on-frame catch if
+  faddr -1 = if
+    \ §4.11 — THE TWO ENDS-OF-STREAM ARE DIFFERENT EVENTS AND THEY DIFFER BY ONE BYTE. A
+    \ clean close AT A FRAME BOUNDARY is no refusal and nobody to answer; a stream that ends
+    \ mid-frame is "a length prefix that never completes" in §4.11's own words and is owed
+    \ 400 invalid_request, uncorrelated by construction because the request_id lives inside a
+    \ frame that never arrived. net-read-frame sets nrf-partial to tell them apart.
+    nrf-partial @ if
+      resp-inc-reset
+      s" invalid_request" 0 0 error-result { eu } { ea }
+      conn 0 0 400 ea eu ['] send-response catch drop
+    then
+    conn fd conn-close exit then            \ EOF / truncated / error
+  faddr 0= flen 0= and if
+    \ §4.10(a) became a MUST at 0.8.2.25 (§4.11 N14): the oversize condition is detected AT
+    \ THE LENGTH PREFIX, with the connection intact and nothing spent, so the peer has every
+    \ resource needed to answer. Emitting nothing was a §4.9(c) drop billed to the caller's
+    \ deadline. The id is unavailable by construction — refusing before decoding is the point.
+    resp-inc-reset
+    s" payload_too_large" 0 0 error-result { eu } { ea }
+    conn 0 0 413 ea eu ['] send-response catch drop
+    exit then
+  conn faddr flen ['] on-frame catch { code }
+  code if
     \ §6.3: "Rejection returns 400 non_canonical_ecf" -- a rejected frame is owed a STATUS,
     \ not silence. The bare `catch drop` here rejected the frame (correct) and then dropped
     \ it on the floor (wrong): the sender saw no response at all and blocked until its own
@@ -265,11 +318,11 @@ variable uri-addressed
     \ a refusal indistinguishable from a dead peer, and on a single-connection oracle run
     \ it poisons every later request on the same connection.
     \
-    \ The frame is still REJECTED -- only enough is salvaged to correlate the response. If
-    \ even the request_id is unrecoverable the frame is unattributable and silence is the
-    \ only option left, which is what the inner catch leaves in place.
-    2drop drop                              \ catch left ( conn faddr flen code ) minus code
-    conn faddr flen ['] reject-frame catch drop
+    \ The frame is still REJECTED -- only enough is salvaged to correlate the response. The
+    \ THROW CODE is carried through now, because §4.11 assigns the causes different codes and
+    \ this peer's decoder already told them apart (see reject-code).
+    2drop drop                              \ catch left ( conn faddr flen ) after `code`
+    conn faddr flen code ['] reject-frame catch drop
   then ;
 
 : pump-once { sec usec -- fired }
