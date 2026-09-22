@@ -10,6 +10,22 @@ Cross-language register of findings surfaced by keystone work. Per-language spec
 
 **Why this section exists**: arch caught itself twice in one session about to draft proposals for already-folded work because the pipe-table cells below carried stale "Open" status. Cells are append-only history; this section is the **current** disposition. Read here first; pipe-table is for provenance.
 
+> **OPEN, measured 2026-08-30 — F52: §4.7's status table contradicts itself on a pre-hello
+> `authenticate`, and the cohort splits 38 / 6 / 1 on the wire.**
+> Raised by `entity-core-formalization` (`ROUTING-2026-08-30-PREHELLO-AUTHENTICATE`) from a SOURCE
+> census; measured here because `validate-peer` has no vector for the input and they said plainly it
+> was unmeasured. Evidence: [`prehello-authenticate-wire-census.md`](../../protocol-generator/shared/findings/prehello-authenticate-wire-census.md)
+> — filed with the findings, not here, for the same publish reason as F51 below.
+> **The question is theirs, not ours:** §4.7 row 6 says `401 invalid_nonce` (restating §4.6 step 1,
+> with the citation), row 10 says `400 connection_sequence_error`, for the same input.
+> **What the measurement adds beyond confirming them:** their source read was right on all 34 peers
+> it committed to (0 disagreements) and this resolves the 11 it could not. And asked the same
+> `authenticate` *after* a hello, only 6 peers answer differently — **the other 39 give the same
+> answer either way**, i.e. they never model the pre-hello case and reach row 6's status as a
+> by-product of the nonce check. **A 38–6 majority is 6 decisions and 38 fall-throughs**; cohort
+> weight should not be cited without that. No conformance number moves. **Sequencing: land the
+> ruling before the v0.8.2 regeneration or the ~6-peer sweep is done twice.**
+>
 > **OPEN, routed 2026-08-30 — F51: the §5.2 `peers` dimension is structurally unreachable in 40 of 46 peers.**
 > Evidence: [`peers-dimension-reachability.md`](../../protocol-generator/shared/findings/peers-dimension-reachability.md)
 > — filed with the findings, not in `research/stewardship/`, because this register PUBLISHES and

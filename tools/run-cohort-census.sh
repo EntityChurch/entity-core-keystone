@@ -71,21 +71,41 @@ CONCURRENCY="${CONCURRENCY:-1}"
 # TRACKED status/CONFORMANCE-REPORT.json). See the --to-status block in the header.
 DEST="${DEST:-census}"
 
-# Container-visible path this peer's report should be written to.
+# THIRD DESTINATION: "probe" (--probe). Same dispatch table, a different tool at
+# the end of it — ORACLE is swapped for a one-off measurement binary and the
+# output goes to output/scratch/p47/, NEVER to output/scratch/census/. That
+# separation is the whole point: a probe report is not a conformance report, and
+# writing one where check-set-gate and tier-status look for the other would be the
+# stale/foreign-input defect this repo has already been bitten by three times.
 jout_for() {
-  if [ "$DEST" = "status" ]; then
-    echo "/work/protocol-generator/$1/status/CONFORMANCE-REPORT.json"
-  else
-    echo "/work/output/scratch/census/$1.json"
-  fi
+  case "$DEST" in
+    status) echo "/work/protocol-generator/$1/status/CONFORMANCE-REPORT.json" ;;
+    probe)  echo "/work/output/scratch/p47/$1.json" ;;
+    *)      echo "/work/output/scratch/census/$1.json" ;;
+  esac
 }
 
 # Host-side path for the same report (for the post-run summary read).
 hostout_for() {
-  if [ "$DEST" = "status" ]; then
-    echo "$REPO_ROOT/protocol-generator/$1/status/CONFORMANCE-REPORT.json"
+  case "$DEST" in
+    status) echo "$REPO_ROOT/protocol-generator/$1/status/CONFORMANCE-REPORT.json" ;;
+    probe)  echo "$REPO_ROOT/output/scratch/p47/$1.json" ;;
+    *)      echo "$OUT/$1.json" ;;
+  esac
+}
+
+# Which absolute path the probe binary must be named by, for THIS peer.
+#
+# Most run-s4.sh scripts run the oracle INSIDE the container, where the repo is
+# mounted at /work. A few (unison) resolve it against $REPO_ROOT and run it on the
+# HOST. Passing the wrong form makes the peer's own oracle-existence preflight exit
+# 3 — which reads as "the probe is missing" and is really "the probe is somewhere
+# else". Derived from the script itself rather than from a second dispatch table.
+oracle_for() {
+  if grep -q 'ORACLE:-\$REPO_ROOT' "$REPO_ROOT/protocol-generator/$1/run-s4.sh" 2>/dev/null; then
+    echo "$REPO_ROOT/output/s4-oracles/p47-probe"
   else
-    echo "$OUT/$1.json"
+    echo "/work/output/s4-oracles/p47-probe"
   fi
 }
 
@@ -105,7 +125,7 @@ run_direct_envjson() {
 # Mode B: no self-relaunch — construct the documented podman invocation.
 run_podman() {
   local peer="$1"; local image="$2"; shift 2
-  podman run $PODMAN_RUN_CAPS --rm "$@" \
+  podman run $PODMAN_RUN_CAPS --rm "$@" ${ORACLE:+-e ORACLE="$ORACLE"} \
     -v "$REPO_ROOT":/work:Z "$image" \
     sh /work/protocol-generator/"$peer"/run-s4.sh -profile core \
     -json-out "$(jout_for "$peer")"
@@ -114,7 +134,7 @@ run_podman() {
 # Same peer, with an explicit -timeout (see the run_direct case-statement note above).
 run_podman_timeout() {
   local peer="$1"; local image="$2"; local budget="$3"; shift 3
-  podman run $PODMAN_RUN_CAPS --rm "$@" \
+  podman run $PODMAN_RUN_CAPS --rm "$@" ${ORACLE:+-e ORACLE="$ORACLE"} \
     -v "$REPO_ROOT":/work:Z "$image" \
     sh /work/protocol-generator/"$peer"/run-s4.sh -profile core -timeout "$budget" \
     -json-out "$(jout_for "$peer")"
@@ -125,7 +145,32 @@ census_one() {
   local log="$LOGS/$peer.log"
   local jout; jout="$(jout_for "$peer")"
   echo "=== $peer starting $(date -u +%H:%M:%S) [dest=$DEST] ===" > "$log"
+  if [ "$DEST" = "probe" ]; then ORACLE="$(oracle_for "$peer")"; export ORACLE; fi
   local rc=0
+  # PROBE-ONLY special case, and it exists because of a measured gap rather than a
+  # preference: `lean` and `unison` re-exec into their container forwarding ONLY
+  # `-e INCONTAINER=1`, so an ORACLE set in the environment is silently DROPPED at
+  # the container boundary and the inner run falls back to the real validator. That
+  # is invisible — the run succeeds and writes a perfectly good conformance report
+  # where a probe report was expected. Enter their container directly with
+  # INCONTAINER=1 so ORACLE survives. (Checked across all 46: only these two.)
+  if [ "$DEST" = "probe" ]; then
+    case "$peer" in
+      lean)
+        run_podman "$peer" localhost/entity-core-keystone/lean-toolchain:latest \
+          --network=none -e INCONTAINER=1 -e HOME=/root \
+          -v "$REPO_ROOT/ffi-generator/c-abi/entity-core-codec-ffi-rust/target/release":/codec:z,ro \
+          -e LD_LIBRARY_PATH=/codec >>"$log" 2>&1; rc=$?
+        echo "=== $peer done rc=$rc $(date -u +%H:%M:%S) ===" >>"$log"; return $rc ;;
+      unison)
+        # Entered directly, so the repo is at /work here regardless of what
+        # unison's own host-side REPO_ROOT resolution would have chosen.
+        ORACLE=/work/output/s4-oracles/p47-probe; export ORACLE
+        run_podman "$peer" localhost/entity-core-keystone/unison-toolchain:latest \
+          --network=none -e INCONTAINER=1 >>"$log" 2>&1; rc=$?
+        echo "=== $peer done rc=$rc $(date -u +%H:%M:%S) ===" >>"$log"; return $rc ;;
+    esac
+  fi
   case "$peer" in
     # ---- Mode A: self-contained, CLI passthrough ----
     # NOTE: passing explicit args here overrides EVERY default the script would
@@ -228,8 +273,9 @@ census_one() {
     echo "$peer: rc=$rc NO JSON PRODUCED (see $log)"
   fi
 }
-export -f census_one run_direct run_direct_envjson run_podman run_podman_timeout jout_for hostout_for
+export -f oracle_for census_one run_direct run_direct_envjson run_podman run_podman_timeout jout_for hostout_for
 export REPO_ROOT OUT LOGS PODMAN_RUN_CAPS DEST
+export ORACLE 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Peer selection. The maintenance-tier policy (CONFORMANCE-MATRIX.md §4) exists so
@@ -271,6 +317,7 @@ while [ "$#" -gt 0 ]; do
     --tier=*) TIER_SEL="${1#--tier=}"; shift ;;
     --stale) STALE_ONLY=1; shift ;;
     --to-status) DEST=status; shift ;;
+    --probe) DEST=probe; mkdir -p "$REPO_ROOT/output/scratch/p47"; shift ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done
@@ -345,6 +392,30 @@ echo "=============================================================="
 # Gate ONLY the peers this run produced. A tier run must not inherit an unrelated
 # peer's stale deviation from a previous full census — otherwise `--tier M1` exits
 # non-zero because of a probe nobody re-ran, and the exit code stops meaning anything.
+# A probe run produces measurements, not conformance reports. Gating them with
+# check-set-gate (which asks "was every peer scored on the identical CHECK SET?")
+# is a category error, and the roster stamp below would attribute a probe to the
+# oracle pin. Summarize and stop.
+if [ "$DEST" = "probe" ]; then
+  echo
+  echo "probe results (output/scratch/p47/) — NOT a conformance measurement:"
+  printf '  %-24s %-8s %-28s %s\n' PEER STATUS CODE TRUSTED
+  for peer in "${PEERS[@]}"; do
+    f="$(hostout_for "$peer")"
+    if [ -f "$f" ]; then
+      python3 - "$f" <<'PYEOF'
+import json,sys
+d=json.load(open(sys.argv[1]))
+print("  %-24s %-8s %-28s %s" % (d.get("peer",""), d.get("status",""),
+      d.get("code","") or "-", "yes" if d.get("trusted") else "NO — untrusted"))
+PYEOF
+    else
+      printf '  %-24s %-8s %-28s %s\n' "$peer" "-" "-" "NO REPORT"
+    fi
+  done
+  exit 0
+fi
+
 GATE_FILES=()
 for peer in "${PEERS[@]}"; do
   f="$(hostout_for "$peer")"

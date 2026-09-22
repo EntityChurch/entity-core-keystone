@@ -848,6 +848,45 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   violates deliver-or-signal (§4.9(c)). Two peers landed this independently: Oz (`""` IS `nil` → a
   raise escaped a narrow catch, hung the request; also never use `== nil` as a string sentinel —
   A-OZ-005) and Smalltalk (one `doesNotUnderstand:` cascaded 229 FAILs — A-ST-016). Cohort rule.
+- **A WIRE PROBE FAILS IN THE DIRECTION OF THE ANSWER IT IS LOOKING FOR — so a probe without a
+  CONTROL is not a measurement, it is a rumour with a number attached.** RATIFIED 2026-08-30
+  (three independent instances in one afternoon, building `tools/p47-probe` to measure the §4.7
+  pre-hello `authenticate` divergence formalization routed to us). Every one of the three would
+  have produced a confident, publishable, wrong finding, and **none was visible in the output**:
+  - **A placeholder `content_hash`** (33 zero bytes) is rejected under §1.8 validate-before-trust —
+    and `go` reports that rejection as **`400 non_canonical_ecf`**, a bare 400 that reads exactly
+    like the row-10 answer being measured. The frame was structurally perfect.
+  - **`key_type` sent as the numeric §1.5 registry code** when the wire field is **text**
+    (`"ed25519"`) made four peers answer `400 unsupported_key_type` — a plausible *fifth behaviour
+    class*, concentrated in the hand-authored group, which is exactly where a real one would be.
+  - **A `hello` with no `nonce` field** is accepted by 38 peers and rejected by three with
+    **`400 connection_sequence_error`** — the precise status *and code* under measurement.
+  **Two controls, and the second is the one nobody thinks to build.** (a) A *positive* control on a
+  fresh connection — here a plain `hello` that MUST answer 200; if it does not, the peer's result
+  is UNTRUSTED and is a probe fault, not a finding. (b) A **differential** control that supplies the
+  same input in a state where the answer should differ — here `hello` *then* the same
+  `authenticate`. Control (a) catches a malformed frame; only control (b) catches a frame that is
+  well-formed and asks the wrong question, which is how the `key_type` class was killed.
+  **And (b) paid for itself twice, because it turned out to be the actual finding.** 38 peers answer
+  `401 invalid_nonce` pre-hello and **the same thing post-hello** — they never model the pre-hello
+  case, they just reach the nonce check and find nothing to match. So a 38–6 "majority" is 6 peers
+  that decided something and 38 that got one reading for free. **Generalize past this probe: when a
+  census counts implementations agreeing, check whether the agreeing ones DECIDED — an answer
+  reached by fall-through is not a vote**, and cohort weight built from it is an overclaim.
+  **Enforcement:** no wire probe lands without a positive control asserted in the same run and
+  recorded per-peer in its output (`trusted: false` must suppress the peer's result), plus a
+  differential control wherever the input under test is a *state* rather than a *value*.
+- **A ROUTED SOURCE CENSUS CAN BE EXACTLY RIGHT, AND SAYING SO IS AS IMPORTANT AS A CORRECTION.**
+  Same session. `entity-core-formalization` censused 46 peers by reading source, explicitly flagged
+  it as unmeasured, and left 11 unresolved. Measuring all 45 buildable peers found **zero
+  disagreements across the 34 they committed to**. The standing rule to re-verify a routed claim
+  exists for *calibration in both directions* — the point is that the check is cheap and answers
+  directly, not that packets are unreliable — and a rule only ever exercised on the miss quietly
+  becomes "distrust the sender." Record the corroboration with the same weight as a catch.
+  What the measurement DID add is the part a source read structurally cannot reach: the 11
+  unresolved, and the sequence-distinguished dimension above, which needs each peer's behaviour on
+  *two* inputs. **Prefer measuring what a source read cannot see over re-deriving what it already
+  got right.**
 - **A sibling clearing the bar with a costlier seam disproves a "substrate can't" ceiling.** Io's
   "single-threaded throughput ceiling" verdict was contradicted by Oz passing the same checks with
   *slower* co-process crypto → forced re-measurement → two fixable bugs, ceiling retracted. Cross-peer
