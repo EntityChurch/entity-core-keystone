@@ -86,7 +86,11 @@
 # SHA-256 recorded at fetch time (Koji predates distro GPG signing). gprbuild/
 # libsodium-devel/openssl-devel/make stay on the regular dnf repo pin for now (not
 # yet observed to rot; same treatment if they do).
-FROM registry.fedoraproject.org/fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
 # ── Ada (GNAT) toolchain + crypto, from the Fedora 43 distro channel ─────────
 # Every package pinned to its EXACT Fedora 43 NVR (S11), captured at the S2 build
@@ -105,14 +109,24 @@ RUN chmod +x /usr/local/bin/koji-fetch.sh \
     && koji-fetch.sh gcc 15.3.1 1.fc43 \
         gcc:5361a544a8412eecfdfb1dc117749b637bfcd19de41eaa9468f94cade6cf1824 \
         gcc-gnat:2275b0231f79569bda75021130e7afbf1647c1b91d3b31247fd4a7b822190f70 \
+    && koji-fetch.sh gprbuild 25.0.0 5.fc43 \
+        gprbuild:ca51baddacb706bceea53564f4dbb726f965612f097797fb481eb0ee7d5806d4 \
+    && koji-fetch.sh libsodium 1.0.22 1.fc43 \
+        libsodium-devel:79555893dd91510682545b45ee14450f6b5bd0e213fc22d34982f6891818ea7b \
+    && koji-fetch.sh openssl 3.5.7 2.fc43 \
+        openssl-devel:083c53c466b91514ec0300a5a6f1e7f477a5a412f011136f84dfc41c849ebd70 \
+    && koji-fetch.sh make 4.4.1 11.fc43 \
+        make:15efaea3972cca7f43e9619af676498a3e586d312b59acfc3715d9fb595c06d2 \
     && dnf install -y \
-        /tmp/rpms/*.rpm \
-        gprbuild-25.0.0-5.fc43 \
-        libsodium-devel-1.0.22-1.fc43 \
-        openssl-devel-3.5.7-2.fc43 \
-        make-4.4.1-11.fc43 \
-        git curl ca-certificates tar gzip xz \
-        findutils which \
+            /tmp/rpms/*.rpm \
+            git \
+            curl \
+            ca-certificates \
+            tar \
+            gzip \
+            xz \
+            findutils \
+            which \
     && rm -rf /tmp/rpms \
     && dnf clean all \
     # Smoke the toolchain at BUILD time (fails the image build if GNAT/gprbuild absent).

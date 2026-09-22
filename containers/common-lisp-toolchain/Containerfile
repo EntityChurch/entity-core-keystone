@@ -38,7 +38,11 @@
 # Build (the SBCL source build is the heavy step):
 #   podman build -t entity-core-keystone/common-lisp-toolchain:latest \
 #     -f containers/common-lisp-toolchain/Containerfile .
-FROM registry.fedoraproject.org/fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
 # Build deps for SBCL-from-source + fetching the pinned Quicklisp dist.
 #   sbcl  — bootstrap host compiler (SBCL is written in Lisp; building 2.6.4 from
@@ -104,7 +108,12 @@ RUN sbcl --non-interactive \
 # and re-stamp this header — the build asserts the resolved version below.)
 ENV QUICKLISP_HOME=/opt/quicklisp
 ARG QL_DIST_VERSION=2026-01-01
+# quicklisp.lisp is DOWNLOADED AND EXECUTED, so an unverified fetch is both a
+# reproducibility hole and arbitrary code from the network running in our build.
+# SHA-256 recorded 2026-08-27. The dist itself is separately version-pinned above.
+ARG QL_SHA256=4a7a5c2aebe0716417047854267397e24a44d0cce096127411e9ce9ccfeb2c17
 RUN curl -fsSL -o /tmp/quicklisp.lisp "https://beta.quicklisp.org/quicklisp.lisp" \
+    && echo "${QL_SHA256}  /tmp/quicklisp.lisp" | sha256sum -c - \
     && sbcl --non-interactive \
          --load /tmp/quicklisp.lisp \
          --eval "(quicklisp-quickstart:install :path \"${QUICKLISP_HOME}/\")" \

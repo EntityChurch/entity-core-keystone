@@ -56,22 +56,41 @@
 #   podman build --memory=4g --memory-swap=4g \
 #     -t entity-core-keystone/datalog-toolchain:latest \
 #     -f containers/datalog-toolchain/Containerfile .
-FROM registry.fedoraproject.org/fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
 # rust + cargo (the peer host) from the distro (reviewed channel, pinned NVR for repro).
 # clippy + rustfmt: the lint floor for the Rust host sources.
 # gcc/gcc-c++/make/cmake/pkgconfig + libsodium-static/-devel: build the C-ABI codec
 #   (libentitycore_codec) from the in-repo C source — the crypto/CBOR seam.
 # git/python3/etc: source ops + harness helpers.
-RUN dnf install -y \
-        rust-1.96.1-1.fc43 \
-        cargo-1.96.1-1.fc43 \
-        clippy-1.96.1-1.fc43 \
-        rustfmt-1.96.1-1.fc43 \
-        gcc gcc-c++ make cmake pkgconfig \
-        libsodium-static libsodium-devel \
-        git python3 \
-        ca-certificates findutils which glibc-langpack-en \
+COPY containers/koji-fetch.sh /usr/local/bin/koji-fetch.sh
+RUN chmod +x /usr/local/bin/koji-fetch.sh \
+    && koji-fetch.sh rust 1.96.1 1.fc43 \
+        rust:d008ed30fa93406d30a044bbcb360f1d744796e428921b78140982be232d2b9b \
+        cargo:91c098b91ad70e3aa1470f9bb6c0b8c5b8475dcc84526a5ec909873f550263ff \
+        clippy:a2da29e6891cfb157bfb58bd75f92392ef8b851befc8befa1a5193a370fa527b \
+        rustfmt:23ddfae74e2b9ffa6c2833c0dd2ecb8b39392795a10c5b977de805d26a2590c6 \
+        rust-std-static:fd28b8fd1266dab0df34cdc058257a71ea00b7b102b92d3da66468d41108600a \
+    && dnf install -y \
+            /tmp/rpms/*.rpm \
+            gcc \
+            gcc-c++ \
+            make \
+            cmake \
+            pkgconfig \
+            libsodium-static \
+            libsodium-devel \
+            git \
+            python3 \
+            ca-certificates \
+            findutils \
+            which \
+            glibc-langpack-en \
+    && rm -rf /tmp/rpms \
     && dnf clean all
 
 # UTF-8 locale (same lesson the prolog/tcl/puredata images hit).
@@ -87,8 +106,14 @@ ENV CARGO_HOME=/cargo \
 # The peer's canonical CBOR + Ed25519/Ed448 + SHA all cross this .so via FFI. Build
 # it self-contained (static libsodium) and stage the .so + header at $ENTITY_CODEC_DIR.
 COPY ffi-generator/c-abi/entity-core-codec-ffi-c /opt/codec-src
+# Build parallelism is BOUNDED, not derived from nproc: `podman build` takes a memory
+# cap but no usable cpu cap here (rootless cpuset is undelegated; --cpus does not change
+# nproc), so `-j$(nproc)` starts one compiler per HOST core inside --memory=4g and the OOM
+# killer takes cc1plus. It gets worse on a bigger machine, not better. Override for a
+# roomier host with --build-arg BUILD_JOBS=N.
+ARG BUILD_JOBS=4
 RUN cmake -S /opt/codec-src -B /opt/codec-src/build-img -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build /opt/codec-src/build-img --target entitycore_codec -j"$(nproc)" \
+    && cmake --build /opt/codec-src/build-img --target entitycore_codec -j"${BUILD_JOBS}" \
     && mkdir -p "${ENTITY_CODEC_DIR}/include" \
     && cp /opt/codec-src/build-img/libentitycore_codec.so "${ENTITY_CODEC_DIR}/" \
     && cp /opt/codec-src/include/entitycore_codec.h "${ENTITY_CODEC_DIR}/include/" \

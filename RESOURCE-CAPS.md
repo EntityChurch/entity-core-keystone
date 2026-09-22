@@ -38,6 +38,29 @@ such flag on build). It comes from capping the build's own parallelism
 (`go build -p N`, `make -jN`, `cargo -j`) and/or the host-wide `dev-heavy.slice`
 below.
 
+**That rule was right and eight Containerfiles ignored it — measured 2026-08-27.**
+`make -j"$(nproc)"` appeared in `apl` `beam` `datalog` `io` `prolog` `puredata`
+`sqlite` `tcl`. Since the build container gets a memory cap but **no cpu cap**,
+`nproc` reports every core on the *host* — 32 here — so the build starts 32 C++
+compilers inside `--memory=4g` and the OOM killer takes them: `g++: fatal error:
+Killed signal terminated program cc1plus`, six times, which surfaces only as
+`make: *** Error 2`. `apl-toolchain` failed exactly this way and had done so
+undetected because nobody rebuilt without a cache.
+
+**Note the inversion, because it decides who hits it:** the failure gets *more*
+likely on a **bigger** machine — `nproc` grows, the 4 GB ceiling does not. It is
+precisely the class an author with 8 cores never sees and an adopter with 64 does.
+
+`--cpuset-cpus` would fix it at the flag level (unlike `--cpus`, it changes what
+`nproc` reports) but is **unavailable in rootless podman here** — the `cpuset`
+controller is not delegated to the user slice, and the build dies with
+``controller `cpuset` is not available``. So the cap has to live in the recipe:
+every such build now takes `ARG BUILD_JOBS=4` and uses `-j"${BUILD_JOBS}"`,
+overridable with `--build-arg BUILD_JOBS=N` on a roomier host.
+
+**Enforcement:** `tools/containers-gate.py` check 4, run by `make lint`, rejects
+`-j$(nproc)` in any Containerfile. Regression-tested against a planted defect.
+
 ## Per-machine overrides (no edit to the tracked Makefile)
 
 - **One-off via env:**

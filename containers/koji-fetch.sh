@@ -46,10 +46,27 @@ for spec in "$@"; do
     echo "koji-fetch: $spec has no :sha256 suffix — refusing to fetch unverified" >&2
     exit 2
   fi
-  url="https://kojipkgs.fedoraproject.org/packages/${SRC}/${VER}/${REL}/x86_64/${name}-${VER}-${REL}.x86_64.rpm"
-  out="$OUT_DIR/${name}-${VER}-${REL}.x86_64.rpm"
-  echo "koji-fetch: $url" >&2
-  curl -fsSL --max-time 60 -o "$out" "$url"
+  # Arch is per-BINARY, not per-source: a single source package ships x86_64 and noarch
+  # subpackages side by side (glibc -> glibc-static is x86_64, sysroot-aarch64-fc43-glibc
+  # is noarch; rust -> rust is x86_64, rust-std-static-wasm32-wasip1 is noarch). Hardcoding
+  # x86_64 turned that into a 404 that reads exactly like a rotted NVR. Try both.
+  out=""
+  for arch in x86_64 noarch; do
+    url="https://kojipkgs.fedoraproject.org/packages/${SRC}/${VER}/${REL}/${arch}/${name}-${VER}-${REL}.${arch}.rpm"
+    cand="$OUT_DIR/${name}-${VER}-${REL}.${arch}.rpm"
+    echo "koji-fetch: $url" >&2
+    if curl -fsSL --max-time 60 -o "$cand" "$url"; then
+      out="$cand"
+      break
+    fi
+    rm -f "$cand"
+  done
+  if [ -z "$out" ]; then
+    echo "koji-fetch: $name-$VER-$REL not found under source '$SRC' (tried x86_64, noarch)" >&2
+    echo "  Wrong SOURCE package name is the usual cause, not a missing build." >&2
+    echo "  Resolve it with: python3 tools/koji-pin.py resolve containers/<image>" >&2
+    exit 1
+  fi
   got="$(sha256sum "$out" | cut -d' ' -f1)"
   if [ "$got" != "$sha" ]; then
     echo "koji-fetch: SHA-256 mismatch for $name-$VER-$REL: expected $sha, got $got" >&2

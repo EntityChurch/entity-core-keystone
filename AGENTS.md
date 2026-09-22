@@ -80,9 +80,74 @@ distinction is stated precisely or not at all.
   rustfmt ⇐ `rust`; clang/libcxx* ⇐ `llvm`, NOT `clang`; dotnet-sdk-9.0 ⇐ `dotnet9.0`) —
   verify with a HEAD request before assuming otherwise. Koji's raw archive predates distro
   GPG signing, so integrity rides on a SHA-256 recorded at fetch time (the same trust model
-  already used for the Nim/APL source tarballs), not GPG. Packages that haven't yet been
-  observed to rot stay on a plain `dnf install <NVR>` pin; convert them the same way the
-  first time they do.
+  already used for the Nim/APL source tarballs), not GPG.
+  **RETRACTED 2026-08-27 — this bullet used to end "Packages that haven't yet been observed
+  to rot stay on a plain `dnf install <NVR>` pin; convert them the same way the first time
+  they do." That is a policy of waiting to be broken, and it is withdrawn.** It left **36 of
+  46 images** on rolling pins and **45 of 46** on a floating base tag, and the only reason it
+  read as working is that nobody ever rebuilt without a cache. **Every pinned RPM now comes
+  from Koji (0 rolling pins, enforced) and every base image is pinned by digest.**
+- **AN IMAGE NOBODY REBUILDS FROM SCRATCH IS NOT A RECIPE, IT IS A LOCAL ACCIDENT — and the
+  layer cache is what hides that from the machine that authored it.** Ratified 2026-08-27.
+  The trigger was a request to bring peers to parity; the blocker was that the per-toolchain
+  images were gone from the host and **nothing in the repo could tell us whether they still
+  built.** They mostly did — the panic premise ("our NVRs don't work") was wrong, `c-toolchain`
+  rebuilt in 26 s — but the *design* was one supersession away from the 2026-07-27 outage
+  repeating, and two images were **already unbuildable and had been for weeks, silently**.
+  Four distinct defect classes, all found by actually running the build:
+  - **An incomplete pin is indistinguishable from rot, and it is the one you introduce
+    yourself.** A Koji pin MUST carry its **version-locked dependency closure**:
+    `rust-1.96.1-1.fc43` Requires `rust-std-static(x86-64) = 1.96.1-1.fc43`, `golang` requires
+    `golang-bin` + `golang-src` at its own NVR, `glibc-static` requires `glibc-devel`. Pin the
+    parent alone and it builds fine *until the rolling repo moves past the sibling*, then dies
+    with `nothing provides X = <the exact version you pinned>` — which reads as rot and is not.
+    **Four images shipped in that state** (`cargo` `datalog` `rust-wasm` `rust-wasm-wasmtime`),
+    plus `asm-x86_64` whose `glibc-static-2.42-13` had *already* rotted against the base's
+    `2.42-16`. Enforcement: `tools/koji-pin.py closure` (in `make images-audit`) reads
+    `rpm -qpR` on each pinned RPM and reports any locked sibling not in the same group.
+  - **Arch is a property of the BINARY, not the source package.** `koji-fetch.sh` hardcoded
+    `x86_64`, but one source ships both — `glibc` → `glibc-static` is x86_64 while
+    `sysroot-aarch64-fc43-glibc` is **noarch**; `rust` → `rust-std-static-wasm32-wasip1` is
+    noarch. The hardcode turns a present package into a 404 that, again, reads exactly like a
+    rotted NVR. Now tries both arches and says which it found.
+  - **An upstream tarball can be DELETED, not merely superseded.** GNU **removed**
+    `apl-1.9.tar.gz` when 2.0 shipped — verified 404 across six mirrors and `ftp.gnu.org`, with
+    the `apl/` directory listing exactly one file. The pin was not stale, it was *unfetchable*,
+    so that image had been unbuildable since June with nothing watching. A distro archive
+    (Koji, snapshot.debian.org) keeps everything; **an upstream project's own download
+    directory does not** — treat any `curl` of a project tarball as a rot risk equal to a dnf
+    pin, and record the digest so any mirror can serve it.
+  - **A mirror REDIRECTOR is not a mirror.** `ftpmirror.gnu.org` picks a different host per
+    request and hands out ones that do not carry the project at all (measured: it 302'd to a
+    host that 404'd while other mirrors served the file). Name the mirrors explicitly, in
+    order, and let the digest make any of them safe.
+  **Enforcement, three layers, because they answer different questions:** `tools/containers-gate.py`
+  (in `make lint`, offline, ~0.1 s) — no rolling pins, every base digest-pinned, every remote
+  download digest-verified; `make images-audit` (network, no build) — every recorded pin still
+  resolves, still hashes, and carries its closure; **`make images-cold` / `tools/cold-build-gate.sh`
+  (`--no-cache`, all 46, ~35 min) — the only one that asks the adopter's question.** The first two
+  passing means the recipes are well-formed, NOT that they work; only the cold build knows that.
+  Run the cold build before any release and whenever `containers/` changes. All three are
+  regression-tested against planted defects.
+- **A GUARD THAT WAS NEVER EXECUTED IS NOT A GUARD — and "it's just a preflight" is exactly how
+  one ships unrun.** Candidate (first occurrence here, but it is the `check-set-gate --tracked`
+  shape again: a control that watches the wrong copy). The 2026-08-23 release sweep added an
+  oracle-existence preflight to `run-s4.sh` to fix a real defect (a missing oracle exited 0,
+  so the documented Quick-start appeared to succeed while validating nothing). The guard tests
+  `[ -x "$ORACLE" ]` on the **host**, but `$ORACLE` is a **container** path (`/work/...`, the
+  repo root's mount point) — so it can never pass. **Every one of the 33 peers carrying it in
+  that form exited 3 on the documented entry point**, from the day it landed until 2026-08-27,
+  *(Sub-lesson from the same session, cheap and general: **a mechanical rewriter that cannot
+  tell code from commentary must be scoped to the files it was asked about and must skip
+  comment lines outright.** A `dnf install` canonicaliser run fleet-wide reflowed the words
+  "dnf install erlang" out of a PROSE SENTENCE in `containers/beam/`, destroying the comment —
+  it matched text, not a command. Anchor such patterns to the start of a line, exclude `#`
+  lines, and pass an explicit target list rather than globbing the tree.)*
+  and the same sweep **missed 5 peers** (`datalog io pd prolog sql`) which kept the original
+  silent-false-green. Only the 8 that re-exec into the container before the guard runs, plus
+  `unison` (which derives a host path), were correct. **Rule: a guard added across N files must
+  be executed on at least one of them before the commit lands** — the fix is one `case` mapping
+  `/work/*` back to the repo root, and five minutes of running it would have caught all 33.
 - **Per-language worktree model:** each target lives under `protocol-generator/<lang>/`
   (generated `src/`, `profile.toml`, `templates/`, `status/`, `reference/`, `run-s4.sh`,
   `run-origination-core.sh`). Shared, language-agnostic inputs are in

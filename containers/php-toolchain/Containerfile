@@ -36,7 +36,11 @@
 # Build (at S2, NOT in S1):
 #   podman build -t entity-core-keystone/php-toolchain:latest \
 #     -f containers/php-toolchain/Containerfile .
-FROM docker.io/library/php:8.3.21-cli-bookworm
+# Base pinned BY DIGEST, not by tag (php:8.3.21-cli-bookworm, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM docker.io/library/php@sha256:e589a647c2361002a640f30de48a72ee90e37881083dfcb7c57be390dc9fa48f
 
 # ── Build deps + ext-gmp (the uint64 head-form carrier) ──────────────────────
 # ext-sodium (Ed25519 + the SHA-2 family for content_hash) ships BUILT IN to the

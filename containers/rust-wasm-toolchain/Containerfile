@@ -38,19 +38,33 @@
 # NETWORK: the one-time `cargo fetch` of the small registry closure needs network at
 # first build; after Cargo.lock + the .cargo cache are populated, the build runs fully
 # offline (`cargo build --offline`, podman `--network=none`).
-FROM registry.fedoraproject.org/fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
-RUN dnf install -y --setopt=install_weak_deps=False \
-        rust-1.96.1-1.fc43 \
-        cargo-1.96.1-1.fc43 \
-        rust-std-static-wasm32-wasip1-1.96.1-1.fc43 \
-        gcc \
-        wabt-1.0.37-2.fc43 \
-        wasmedge-0.17.1-1.fc43 \
-        binaryen-126-1.fc43 \
-        make-1:4.4.1-11.fc43 \
-        findutils \
-        which \
+COPY containers/koji-fetch.sh /usr/local/bin/koji-fetch.sh
+RUN chmod +x /usr/local/bin/koji-fetch.sh \
+    && koji-fetch.sh rust 1.96.1 1.fc43 \
+        rust:d008ed30fa93406d30a044bbcb360f1d744796e428921b78140982be232d2b9b \
+        cargo:91c098b91ad70e3aa1470f9bb6c0b8c5b8475dcc84526a5ec909873f550263ff \
+        rust-std-static-wasm32-wasip1:6ce69dce6c1b7f29f214e2c42046f785eada0e7a17093ba4b0e3fa1b61bebb77 \
+        rust-std-static:fd28b8fd1266dab0df34cdc058257a71ea00b7b102b92d3da66468d41108600a \
+    && koji-fetch.sh wabt 1.0.37 2.fc43 \
+        wabt:7f07bbd7594f17c6eb4f1b69d1741d61f16d1cbbb0676141eba15b09b711fb9c \
+    && koji-fetch.sh wasmedge 0.17.1 1.fc43 \
+        wasmedge:a2b013d5aaf29286bc4b487d319076cb27d5d6f237c235c3c571878489375103 \
+    && koji-fetch.sh binaryen 126 1.fc43 \
+        binaryen:2bed1db412c7dc6da8f1fa1240ed8be0b4530c50f4e0845ad5cb40c391daf462 \
+    && koji-fetch.sh make 4.4.1 11.fc43 \
+        make:15efaea3972cca7f43e9619af676498a3e586d312b59acfc3715d9fb595c06d2 \
+    && dnf install -y --setopt=install_weak_deps=False \
+            /tmp/rpms/*.rpm \
+            gcc \
+            findutils \
+            which \
+    && rm -rf /tmp/rpms \
     && dnf clean all
 
 # Keep cargo's registry/cache on a mountable path so repeated conformance runs don't

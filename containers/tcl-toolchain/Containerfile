@@ -45,7 +45,11 @@
 # Build (S2, not S1):
 #   podman build -t entity-core-keystone/tcl-toolchain:latest \
 #     -f containers/tcl-toolchain/Containerfile .
-FROM registry.fedoraproject.org/fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
 # System deps. Preference order for Tcl itself:
 #   (1) the fedora:43 `tcl` package IF it is 9.0.x — simplest, distro-reviewed; OR
@@ -106,6 +110,12 @@ RUN echo 'set s "héllo"; \
 # against tcl-devel + libffi-devel. Fail closed if neither yields a loadable cffi.
 #   ARG CFFI_VERSION=1.2.0
 #   ARG CFFI_SHA256=<fill-and-verify-at-build>   # fail closed on mismatch (A-CL-006 discipline)
+# Build parallelism is BOUNDED, not derived from nproc: `podman build` takes a memory
+# cap but no usable cpu cap here (rootless cpuset is undelegated; --cpus does not change
+# nproc), so `-j$(nproc)` starts one compiler per HOST core inside --memory=4g and the OOM
+# killer takes cc1plus. It gets worse on a bigger machine, not better. Override for a
+# roomier host with --build-arg BUILD_JOBS=N.
+ARG BUILD_JOBS=4
 RUN dnf install -y tcl-cffi 2>/dev/null || true \
     && ( echo 'package require cffi; puts "cffi [package present cffi] OK (distro)"' | tclsh ) \
     || ( echo "cffi not packaged — source build required (see commented block; A-TCL-005)" )
@@ -115,7 +125,7 @@ RUN dnf install -y tcl-cffi 2>/dev/null || true \
 #     && echo "${CFFI_SHA256}  /tmp/cffi.tar.gz" | sha256sum -c - \
 #     && mkdir -p /tmp/cffi && tar -xzf /tmp/cffi.tar.gz -C /tmp/cffi --strip-components=1 \
 #     && cd /tmp/cffi && ./configure --with-tcl=/usr/lib64 --with-tclinclude=/usr/include \
-#     && make -j"$(nproc)" && make install \
+#     && make -j"${BUILD_JOBS}" && make install \
 #     && cd / && rm -rf /tmp/cffi /tmp/cffi.tar.gz \
 #     && ( echo 'package require cffi; puts "cffi [package present cffi] OK (source)"' | tclsh )
 
@@ -128,7 +138,7 @@ RUN dnf install -y tcl-cffi 2>/dev/null || true \
 #     && echo "${TCL_SHA256}  /tmp/tcl.tar.gz" | sha256sum -c - \
 #     && mkdir -p /tmp/tcl && tar -xzf /tmp/tcl.tar.gz -C /tmp/tcl --strip-components=1 \
 #     && cd /tmp/tcl/unix && ./configure --prefix=/opt/tcl --enable-64bit \
-#     && make -j"$(nproc)" && make install \
+#     && make -j"${BUILD_JOBS}" && make install \
 #     && cd / && rm -rf /tmp/tcl /tmp/tcl.tar.gz
 #   ENV PATH=/opt/tcl/bin:$PATH
 

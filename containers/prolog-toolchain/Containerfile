@@ -43,7 +43,11 @@
 # Build (S2, not S1):
 #   podman build -t entity-core-keystone/prolog-toolchain:latest \
 #     -f containers/prolog-toolchain/Containerfile .
-FROM registry.fedoraproject.org/fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
 # System deps. Preference order for SWI-Prolog itself:
 #   (1) the fedora:43 `swi-prolog` package IF it is a 9.2.x stable patch — simplest,
@@ -110,6 +114,12 @@ RUN swipl -q -g '( use_module(library(crypto)), \
 
 # A-PL: confirm the bundled libraries the codec/transport/test layers need are all
 # present in the distribution (no pack install required).
+# Build parallelism is BOUNDED, not derived from nproc: `podman build` takes a memory
+# cap but no usable cpu cap here (rootless cpuset is undelegated; --cpus does not change
+# nproc), so `-j$(nproc)` starts one compiler per HOST core inside --memory=4g and the OOM
+# killer takes cc1plus. It gets worse on a bigger machine, not better. Override for a
+# roomier host with --build-arg BUILD_JOBS=N.
+ARG BUILD_JOBS=4
 RUN swipl -q -g '( use_module(library(socket)), \
                    use_module(library(thread)), \
                    use_module(library(dcg/basics)), \
@@ -133,7 +143,7 @@ RUN swipl -q -g '( use_module(library(socket)), \
 #       && mkdir -p /tmp/swipl && tar -xzf /tmp/swipl.tar.gz -C /tmp/swipl --strip-components=1 \
 #       && cd /tmp/swipl && mkdir build && cd build \
 #       && cmake -DCMAKE_INSTALL_PREFIX=/opt/swipl .. \
-#       && make -j"$(nproc)" && make install \
+#       && make -j"${BUILD_JOBS}" && make install \
 #       && cd / && rm -rf /tmp/swipl /tmp/swipl.tar.gz
 #   ENV PATH=/opt/swipl/bin:$PATH
 

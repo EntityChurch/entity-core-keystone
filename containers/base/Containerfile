@@ -7,7 +7,11 @@
 # Build:
 #   podman build -t entity-core-keystone/base:latest -f containers/base/Containerfile .
 
-FROM fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
 # Shared tools every language workflow needs
 RUN dnf install -y \

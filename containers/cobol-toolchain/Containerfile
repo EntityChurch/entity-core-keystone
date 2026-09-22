@@ -29,7 +29,11 @@
 # KOJI-PIN (2026-07-27, closing the rot class): gcc/binutils fetched from Koji's
 # permanent build archive (containers/koji-fetch.sh), not the rolling dnf repo — see
 # c-toolchain's Containerfile for the full rationale. SHA-256 recorded at fetch time.
-FROM registry.fedoraproject.org/fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
 # GnuCOBOL compiler + runtime, the C toolchain it lowers through, and the C-ABI
 # codec's link-time deps (libsodium present so a locally-built libentitycore_codec
@@ -41,12 +45,15 @@ RUN chmod +x /usr/local/bin/koji-fetch.sh \
         gcc:5361a544a8412eecfdfb1dc117749b637bfcd19de41eaa9468f94cade6cf1824 \
     && koji-fetch.sh binutils 2.45.1 5.fc43 \
         binutils:a3971b2f8c7b97b8f6e7000223226dc47d4ef8fa0d5b585791a3cf1f9f975431 \
+    && koji-fetch.sh gnucobol 3.2 8.fc43 \
+        gnucobol:eebb2f91003e1059e6c072c2f43d745345876a0a686500272ac27c4781bd312c \
+    && koji-fetch.sh make 4.4.1 11.fc43 \
+        make:15efaea3972cca7f43e9619af676498a3e586d312b59acfc3715d9fb595c06d2 \
+    && koji-fetch.sh libsodium 1.0.22 1.fc43 \
+        libsodium:cb0c2c0df9e9bfa778848c717d218954b769c84a0abc6ba717edaa6a8ff035fa \
+        libsodium-devel:79555893dd91510682545b45ee14450f6b5bd0e213fc22d34982f6891818ea7b \
     && dnf install -y \
-        /tmp/rpms/*.rpm \
-        gnucobol-3.2-8.fc43 \
-        make-1:4.4.1-11.fc43 \
-        libsodium-1.0.22-1.fc43 \
-        libsodium-devel-1.0.22-1.fc43 \
+            /tmp/rpms/*.rpm \
     && rm -rf /tmp/rpms \
     && dnf clean all
 

@@ -32,6 +32,22 @@ IMAGE="entity-core-keystone/datalog-toolchain:latest"
 WORKDIR="/work/protocol-generator/datalog"
 PORT="${PORT:-7737}"
 ORACLE="${ORACLE:-/work/output/s4-oracles/validate-peer}"
+
+# Preflight: the oracle must actually be there. The run below ends in `|| true` so a
+# conformance FAIL does not abort the harness -- but that also swallows a MISSING
+# binary, and the script would exit 0 having validated nothing.
+# $ORACLE is a CONTAINER path -- the repo root is mounted at /work -- so the existence
+# test has to be made against the HOST path, or it can never pass. Measured 2026-08-27:
+# in this form the guard rejected all 33 peers carrying it. It had never been executed.
+ORACLE_HOST="$ORACLE"
+case "$ORACLE_HOST" in
+  /work/*) ORACLE_HOST="$(cd "$(dirname "$0")/../.." && pwd)/${ORACLE_HOST#/work/}" ;;
+esac
+[ -x "$ORACLE_HOST" ] || { echo "run-s4: ERROR conformance oracle not found at $ORACLE_HOST" >&2
+  echo "  The oracle is a gitignored local tool built from the sibling entity-core-go" >&2
+  echo "  repo. Clone it NEXT TO this one, then run tools/oracle-bootstrap.sh." >&2
+  echo "  See the Quick start in README.md." >&2
+  exit 3; }
 NAME="${PEERNAME:-conformance}"
 TARGET_VOL="${TARGET_VOL:-kc-dl-target}"
 

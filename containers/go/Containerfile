@@ -15,9 +15,23 @@
 #   Re-pinned to the freshest reviewed distro build per the S11 pin-for-repro rule.
 #   Plain dnf pin (not yet converted to koji-fetch.sh) since this is the first
 #   observed rot for golang, per AGENTS.md's "convert the first time it rots" rule.
-FROM registry.fedoraproject.org/fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
-RUN dnf install -y golang-1.25.12-1.fc43 git && dnf clean all
+COPY containers/koji-fetch.sh /usr/local/bin/koji-fetch.sh
+RUN chmod +x /usr/local/bin/koji-fetch.sh \
+    && koji-fetch.sh golang 1.25.12 1.fc43 \
+        golang:182439cc636a5cb6e932bf066c8ad9618a5dba57336077760fe195b12fc7124d \
+        golang-bin:a380528f1b721488a3494cef0ddd205917784d4f5a6c6504f4409795b7c62748 \
+        golang-src:518a8c9b41d0852cd013a5140243db7fb416d72f550250742f99e07c552675dc \
+    && dnf install -y \
+            /tmp/rpms/*.rpm \
+            git \
+    && rm -rf /tmp/rpms \
+    && dnf clean all
 
 ENV GOTOOLCHAIN=local \
     GOFLAGS=-mod=mod

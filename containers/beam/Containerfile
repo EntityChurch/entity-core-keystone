@@ -25,7 +25,11 @@
 # Build (heavy: the OTP source build is ~10-15 min):
 #   podman build -t entity-core-keystone/beam:latest \
 #     -f containers/beam/Containerfile .
-FROM registry.fedoraproject.org/fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
 # Build deps for OTP from source + the system OpenSSL that backs `:crypto`'s
 # EdDSA (ed25519 + ed448) and SHA-2. ncurses for the erl shell; unzip for the
@@ -42,8 +46,19 @@ RUN dnf install -y \
 # up the system OpenSSL, which is what provides ed25519/ed448/sha2 to crypto.
 # --enable-deterministic-build aids reproducibility.
 ARG OTP_VERSION=27.3.4
+# SHA-256 recorded at pin time (2026-08-27). A release asset fetched by URL with no
+# integrity check is neither reproducible nor verifiable -- the same trust model the
+# Koji RPM pins use, applied to the source tarballs.
+ARG OTP_SHA256=c3a0a0b51df08f877eed88378f3d2da7026a75b8559803bd78071bb47cd4783b
+# Build parallelism is BOUNDED, not derived from nproc: `podman build` takes a memory
+# cap but no usable cpu cap here (rootless cpuset is undelegated; --cpus does not change
+# nproc), so `-j$(nproc)` starts one compiler per HOST core inside --memory=4g and the OOM
+# killer takes cc1plus. It gets worse on a bigger machine, not better. Override for a
+# roomier host with --build-arg BUILD_JOBS=N.
+ARG BUILD_JOBS=4
 RUN curl -fsSL -o /tmp/otp_src.tar.gz \
         "https://github.com/erlang/otp/releases/download/OTP-${OTP_VERSION}/otp_src_${OTP_VERSION}.tar.gz" \
+    && echo "${OTP_SHA256}  /tmp/otp_src.tar.gz" | sha256sum -c - \
     && mkdir -p /tmp/otp_src \
     && tar -xzf /tmp/otp_src.tar.gz -C /tmp/otp_src --strip-components=1 \
     && cd /tmp/otp_src \
@@ -53,7 +68,7 @@ RUN curl -fsSL -o /tmp/otp_src.tar.gz \
         --without-wx --without-observer --without-debugger --without-et \
         --without-javac --without-odbc \
         --enable-deterministic-build \
-    && make -j"$(nproc)" \
+    && make -j"${BUILD_JOBS}" \
     && make install \
     && cd / && rm -rf /tmp/otp_src /tmp/otp_src.tar.gz
 ENV PATH=/opt/otp/bin:$PATH
@@ -72,8 +87,10 @@ RUN erl -noshell -eval \
 
 # ── Elixir 1.18.4 — precompiled-for-OTP-27 release ───────────────────────────
 ARG ELIXIR_VERSION=1.18.4
+ARG ELIXIR_SHA256=5be18f35e329f7c5914a80dd9f323d7bbb144616df1ed16f6f0862a1900b4bb5
 RUN curl -fsSL -o /tmp/elixir.zip \
         "https://github.com/elixir-lang/elixir/releases/download/v${ELIXIR_VERSION}/elixir-otp-27.zip" \
+    && echo "${ELIXIR_SHA256}  /tmp/elixir.zip" | sha256sum -c - \
     && mkdir -p /opt/elixir \
     && unzip -q /tmp/elixir.zip -d /opt/elixir \
     && rm -f /tmp/elixir.zip

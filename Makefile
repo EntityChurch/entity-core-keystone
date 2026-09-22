@@ -60,7 +60,7 @@ PODMAN_BUILD_CAPS := --memory=$(_cap_mem) --memory-swap=$(_cap_swap) $(_cap_cgp)
 PODMAN_RUN_CAPS   := --memory=$(_cap_mem) --memory-swap=$(_cap_swap) \
                      --pids-limit=$(_cap_pids) --cpus=$(_cap_cpus) $(_cap_cgp)
 
-.PHONY: build images caps test lint fmt check clean help $(TOOLCHAINS)
+.PHONY: build images images-cold images-audit caps test lint fmt check clean help $(TOOLCHAINS)
 
 .DEFAULT_GOAL := help
 
@@ -78,6 +78,9 @@ help:
 	@echo
 	@echo "  build    build the shared base toolchain image (the release gate)"
 	@echo "  images   build every per-toolchain image"
+	@echo "  images-cold   rebuild EVERY image with --no-cache (what a clean pull does)"
+	@echo "  images-audit  network audit: every pinned RPM still resolves, digests match,"
+	@echo "                and each pin group carries its version-locked siblings"
 	@echo "  <name>   build one toolchain image, e.g. 'make go' / 'make lean-toolchain'"
 	@echo "  test     substrate smoke (base image builds); per-language conformance"
 	@echo "           runs per-toolchain via /entity-rosetta + the oracles"
@@ -94,6 +97,22 @@ build: base
 
 # Build every toolchain image.
 images: $(TOOLCHAINS)
+
+# Build every image FROM SCRATCH. This is the only target that asks the question an
+# adopter asks, because the layer cache and the already-present local images hide a
+# broken recipe from the machine that authored it. Run before a release and whenever
+# containers/ changes. Slow by design (~35 min; source-building images dominate).
+images-cold:
+	@tools/cold-build-gate.sh
+
+# Network audit of the pins themselves, without building anything: every recorded RPM
+# still resolves from Koji's permanent archive, still hashes to the recorded digest,
+# and every pin group carries its version-locked siblings. That last one is not
+# pedantry -- pinning `rust` without `rust-std-static` at the same NVR builds fine
+# until the rolling repo moves past it, then fails in a way indistinguishable from rot.
+images-audit:
+	@python3 tools/koji-pin.py verify
+	@python3 tools/koji-pin.py closure
 
 # Per-toolchain image, e.g. `make go`, `make dotnet9`, `make zig-toolchain`.
 $(TOOLCHAINS):
@@ -167,6 +186,18 @@ lint:
 	@# links, not backticked paths, wrapped fragments, or a path a tool prints at runtime.
 	@# The hand-walk of the published tree stays mandatory (AGENTS.md).
 	@python3 tools/link-gate.py --quiet
+	@echo "lint: gating container recipe reproducibility (read-only, offline)…"
+	@# Fifth root-level invariant. Every image in containers/ is a recipe an adopter has
+	@# to be able to run, and until 2026-08-27 nothing asked whether they still could:
+	@# 36 of 46 images pinned RPMs against rolling dnf repos (which drop an NVR the moment
+	@# it is superseded — eleven images died at once on 2026-07-27, `clang` twice in one
+	@# day), 45 of 46 floated on an unpinned base tag that had already moved, and three
+	@# fetched and ran remote artifacts with no digest check at all. The old policy was
+	@# explicitly reactive — convert a package to Koji only after it breaks — which is a
+	@# policy of waiting to be broken. These three properties are checkable offline, so
+	@# they run every lint; whether the pins still RESOLVE and whether the images still
+	@# BUILD need the network and live in `make images-audit` / `make images-cold`.
+	@python3 tools/containers-gate.py --quiet
 
 # fmt = autoformat (writes). Intentionally a no-op: generated source is formatted
 # by its own toolchain, and spec-data/<version>/ is a SHA-256-pinned immutable

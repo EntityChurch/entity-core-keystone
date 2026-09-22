@@ -54,7 +54,11 @@
 #   ALSO aged out of the `updates` repo mid-session (superseded by 21.1.8-6.fc43) — live
 #   proof of the rot class recurring within hours, not months. Koji-pinned too (source
 #   package "llvm", not "clang" — verify with a HEAD request before assuming otherwise).
-FROM registry.fedoraproject.org/fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
 # ── C++20 toolchain + CMake build system + libsodium ─────────────────────────
 # gcc-c++ (g++) is the primary C++20 compiler and ships libstdc++ with <expected>,
@@ -89,15 +93,19 @@ RUN chmod +x /usr/local/bin/koji-fetch.sh \
         libcxx-devel:f4242775c1317339deb60e66c6f1e6c483234a495ea6d9d29022fd7530eedb2d \
         libcxxabi:ea1b0e3375bbec622beab31bc74e0af17538b09076c4de691f23539a8ef4f866 \
         libcxxabi-devel:dd43b3d4de0da697e09d12745f7be7ba17f66a4bc5a4ba81ada7a92479946045 \
+    && koji-fetch.sh cmake 3.31.11 1.fc43 \
+        cmake:80995529b25b1b695505279389010679d4f517364d9dfac2fa0fcd6efda5c2a2 \
+    && koji-fetch.sh ninja-build 1.13.1 4.fc43 \
+        ninja-build:f381109f240b78f27d26d3dc98aaa508ea5ccb19489f78bc01e9580aa2df5955 \
+    && koji-fetch.sh make 4.4.1 11.fc43 \
+        make:15efaea3972cca7f43e9619af676498a3e586d312b59acfc3715d9fb595c06d2 \
+    && koji-fetch.sh libsodium 1.0.22 1.fc43 \
+        libsodium:cb0c2c0df9e9bfa778848c717d218954b769c84a0abc6ba717edaa6a8ff035fa \
+        libsodium-static:72b3a920fad2ef8f64594d60c5e3e7b3c37957a011ea1bf63b7cd2aec0221ccb \
+        libsodium-devel:79555893dd91510682545b45ee14450f6b5bd0e213fc22d34982f6891818ea7b \
     && dnf install -y \
-        /tmp/rpms/*.rpm \
-        cmake-3.31.11-1.fc43 \
-        ninja-build-1.13.1-4.fc43 \
-        make-1:4.4.1-11.fc43 \
-        pkgconf-pkg-config \
-        libsodium-1.0.22-1.fc43 \
-        libsodium-static-1.0.22-1.fc43 \
-        libsodium-devel-1.0.22-1.fc43 \
+            /tmp/rpms/*.rpm \
+            pkgconf-pkg-config \
     && rm -rf /tmp/rpms \
     && dnf clean all
 

@@ -33,11 +33,17 @@
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # PIN STATUS: pinned (S11). Ages at authoring 2026-07-12:
-#   GNU APL     1.9   (2024-06-29, ~24mo) — the S11-clean GNU release. apl-2.0
-#                                          EXISTS (2026-06-24) but is only ~18 days
-#                                          old → VIOLATES the 30-day supply-chain
-#                                          cool-down, so it is DECLINED for 1.9
-#                                          (A-APL-004). 1.9 builds clean on GCC 15.
+#   GNU APL     2.0   (2026-06-24, ~64d)  — RE-PINNED 2026-08-27, forced. The original
+#                                          pin was 1.9, with 2.0 DECLINED at authoring
+#                                          for being ~18 days old (A-APL-004, the S11
+#                                          30-day cool-down). GNU has since DELETED 1.9
+#                                          from the ftp tree entirely — 2.0 is the only
+#                                          published release — so the 1.9 pin was not
+#                                          merely stale, it was unfetchable, and this
+#                                          image could not build from a clean pull.
+#                                          2.0 now clears the cool-down at 64 days.
+#                                          The peer source is NOT yet re-validated
+#                                          against 2.0 (see the build step below).
 #   gcc/g++     15.2.1 (fedora:43)        — builds GNU APL (C++) + the native-fn
 #                                          shim + lowers the C-ABI codec.
 #   libsodium   1.0.22 (fedora:43)        — statically + privately linked into
@@ -51,7 +57,11 @@
 # Build (capped per RESOURCE-CAPS.md; S1 verification of the substrate probes):
 #   podman build $PODMAN_BUILD_CAPS -t entity-core-keystone/apl-toolchain:latest \
 #     -f containers/apl-toolchain/Containerfile .
-FROM registry.fedoraproject.org/fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
 # System deps.
 # gcc-c++/gcc: build GNU APL (C++), the native-function shim, and the C-ABI codec.
@@ -70,27 +80,56 @@ RUN dnf install -y \
 # non-ASCII text + argv load cleanly (the same locale lesson tcl/prolog hit).
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
-# ── Build GNU APL 1.9 from the SHA-256-pinned GNU source (NOT in fedora dnf) ──
+# ── Build GNU APL from the SHA-256-pinned GNU source (NOT in fedora dnf) ─────
 # fail-closed on checksum (the GHC-bindist / A-CL-006 discipline). The SOURCE TREE
-# is RETAINED at /opt/gnu-apl-1.9 because GNU APL native functions must compile
+# is RETAINED at /opt/apl-${APL_VERSION} because GNU APL native functions must compile
 # against apl's INTERNAL headers (Value.hh/Cell.hh/...), which `make install` does
 # NOT ship (it installs only libapl.h + Error.def). The native-fn shim (crypto FFI)
-# is built with -I/opt/gnu-apl-1.9/src at peer-build time. apl is linked
+# is built with -I$APL_SRC at peer-build time. apl is linked
 # -export-dynamic, so a dlopen'd native-fn .so resolves apl's symbols at ⎕FX load.
-ARG APL_VERSION=1.9
-ARG APL_SHA256=291867f1b1937693abb57be7d9a37618b0376e3e2709574854a7bbe52bb28eb8
+# FORCED BUMP 1.9 -> 2.0 (2026-08-27). GNU **deleted** apl-1.9.tar.gz from the ftp tree
+# when 2.0 shipped; 2.0 is now the ONLY release published. Verified against six GNU
+# mirrors plus ftp.gnu.org: every one 404s for 1.9, and the apl/ directory lists exactly
+# one tarball. So this was not a pin that might rot later -- the image was already
+# unbuildable from a clean pull, silently, because nobody had rebuilt it without a cache.
+#
+# 2.0 was released 2026-06-24, i.e. 64 days old here, which clears the S11 >=30-day
+# supply-chain cool-down. Taking it is strictly better than shipping a recipe that cannot
+# run. NOTE HONESTLY: the apl PEER SOURCE was authored against 1.9 and has NOT been
+# re-validated against 2.0 -- the peer is `probe` tier and already carries UNMEASURED /
+# upstream-blocked status in tools/peer-tiers.tsv, so this changes the toolchain, not any
+# published conformance number.
+ARG APL_VERSION=2.0
+ARG APL_SHA256=24bbb744fce47e62837234a053bdeecee51b9ea61c82c79f7cc191bc6a54c0a1
+# Named mirrors, tried in order, NOT ftpmirror.gnu.org: the redirector picks a different
+# mirror per request and hands out ones that do not carry this project at all (measured
+# 2026-08-27: it redirected to a host that 404'd while other mirrors served the file).
+# ftp.gnu.org itself was unreachable from the build network. The SHA-256 is what makes
+# serving from any of them safe -- whichever host answers, the bytes must match.
+# Build parallelism is BOUNDED, not derived from nproc: `podman build` takes a memory
+# cap but no usable cpu cap here (rootless cpuset is undelegated; --cpus does not change
+# nproc), so `-j$(nproc)` starts one compiler per HOST core inside --memory=4g and the OOM
+# killer takes cc1plus. It gets worse on a bigger machine, not better. Override for a
+# roomier host with --build-arg BUILD_JOBS=N.
+ARG BUILD_JOBS=4
 RUN cd /opt \
-    && curl -fsSL -o apl.tar.gz "https://ftp.gnu.org/gnu/apl/apl-${APL_VERSION}.tar.gz" \
+    && { curl -fsSL --max-time 300 -o apl.tar.gz \
+             "https://mirrors.ocf.berkeley.edu/gnu/apl/apl-${APL_VERSION}.tar.gz" \
+         || curl -fsSL --max-time 300 -o apl.tar.gz \
+             "https://www.mirrorservice.org/sites/ftp.gnu.org/gnu/apl/apl-${APL_VERSION}.tar.gz" \
+         || curl -fsSL --max-time 300 -o apl.tar.gz \
+             "https://ftp.gnu.org/gnu/apl/apl-${APL_VERSION}.tar.gz"; } \
     && echo "${APL_SHA256}  apl.tar.gz" | sha256sum -c - \
     && tar xf apl.tar.gz \
     && rm -f apl.tar.gz \
     && cd "apl-${APL_VERSION}" \
     && ./configure --prefix=/usr/local >/tmp/apl-cfg.log 2>&1 \
-    && make -j"$(nproc)" >/tmp/apl-make.log 2>&1 \
+    && make -j"${BUILD_JOBS}" >/tmp/apl-make.log 2>&1 \
     && make install >/tmp/apl-inst.log 2>&1 \
     && ldconfig \
     && apl --version 2>&1 | head -3
-ENV APL_SRC=/opt/apl-1.9/src
+ENV APL_ROOT=/opt/apl-${APL_VERSION}
+ENV APL_SRC=/opt/apl-${APL_VERSION}/src
 
 # ── Verify the ARRAY / value-model + the int64->double numeric ceiling (A-APL-002/003) ──
 # The seams this peer exists to exercise must have working primitives:
@@ -118,13 +157,13 @@ APL
 # retained apl source headers, loaded with dyadic ⎕FX, resolves + calls a C symbol
 # (here libc strlen — a self-contained stand-in for the ec_* codec symbols the peer
 # binds at S2) and returns an APL value. Proves ⎕FX loading + C linkage end-to-end.
-# Compile notes (verified): native-fn shims need BOTH the build root (-I/opt/apl-1.9,
+# Compile notes (verified): native-fn shims need BOTH the build root (-I$APL_ROOT,
 # for the configure-generated config.h) and the src dir (-I$APL_SRC); NativeFunction
 # must be forward-declared; and `UCS_string ucs((UTF8_string(buf)))` needs the extra
 # parens to defeat the most-vexing-parse. apl is fed </dev/null so --script exits at
 # )OFF instead of blocking on stdin; the grep is the real gate.
 RUN cat > /tmp/ec_probe.cc <<'CC' && \
-    g++ -shared -fPIC -std=gnu++17 -I/opt/apl-1.9 -I"${APL_SRC}" -o /tmp/ec_probe.so /tmp/ec_probe.cc 2>/tmp/shim.log && \
+    g++ -shared -fPIC -std=gnu++17 -I"${APL_ROOT}" -I"${APL_SRC}" -o /tmp/ec_probe.so /tmp/ec_probe.cc 2>/tmp/shim.log && \
     cat > /tmp/ffi.apl <<'APL' && \
     apl --script -f /tmp/ffi.apl </dev/null > /tmp/ffi.out 2>&1 ; cat /tmp/ffi.out ; grep -q 'strlen(entity-core)=11' /tmp/ffi.out
 #include <cstring>
@@ -165,7 +204,7 @@ WORKDIR /work
 
 LABEL org.entity-core-keystone.role="apl-toolchain"
 LABEL org.entity-core-keystone.version="1"
-LABEL org.entity-core-keystone.apl="gnu-apl-1.9"
+LABEL org.entity-core-keystone.apl="gnu-apl-2.0"
 LABEL org.entity-core-keystone.experimental="array-value-model-alien-substrate-probe"
 
 CMD ["/bin/bash"]

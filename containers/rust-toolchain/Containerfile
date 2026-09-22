@@ -77,7 +77,11 @@
 # added to the koji-fetch list — `dnf install` failed with "nothing provides
 # rust-std-static(x86-64) = 1.96.1-1.fc43". Added it to the same koji pin (verified
 # present at the same 1.96.1-1.fc43 Koji path; SHA-256 recorded at fetch time).
-FROM registry.fedoraproject.org/fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
 # rust + cargo from the distro (reviewed channel, pinned NVR for repro); gcc/cc is the
 # linker Rust needs + the C toolchain for the FUTURE opt-in Ed448-FFI seam (extern "C"

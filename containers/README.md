@@ -33,58 +33,64 @@ podman build --memory=4g --memory-swap=4g -t entity-core-keystone/dotnet9:latest
 
 `entity-core-keystone/<toolchain>:latest`
 
-## When a pinned dnf package NVR ages out (`No match for argument`)
+## Every image must build from a clean pull. Two rules, both enforced.
 
-Fedora's `fedora`/`updates` repos only carry the CURRENT + recent build of each
-package. A `Containerfile` pinning an exact NVR (`gcc-15.2.1-7.fc43`) will build fine
-for a while and then start failing with `No match for argument` the moment that NVR is
-superseded — sometimes within hours, not months (`clang` rotted twice in one day during
-the 2026-07-27/28 sweep). This is not a "something's wrong with our setup" bug; it's
-what pinning against a rolling repo does. Recipe, once it happens:
+An image nobody can rebuild is not a build recipe, it is a local accident. Both ways
+that used to happen are now closed structurally rather than per-incident.
 
-1. **Confirm it's rot, not a typo.** Inside `containers/base` (or any built image):
-   `dnf list --showduplicates <pkg>` — if your pinned NVR isn't in the list, it's gone
-   from the repo, permanently (the repo doesn't keep history).
-2. **Pick the fix per package, not per image:**
-   - **First time this exact package has rotted** → re-pin it to the freshest available
-     NVR from `dnf list --showduplicates` (the old, now-abandoned approach) — fine as a
-     one-off, but expect to repeat this indefinitely for a volatile package.
-   - **A package that has rotted before, or one in the volatile families (gcc, gcc-c++,
-     gcc-gnat, libstdc++\*, libasan, libubsan, binutils, rust, cargo, clippy, rustfmt,
-     clang, libcxx\*, dotnet-sdk-9.0\*)** → koji-pin it instead (see below). This is the
-     one that actually stops recurring.
-3. **To koji-pin a package:**
-   1. Find its **Koji source-package (SRPM) name** — not always the binary name. Verify
-      with a HEAD request, don't assume:
-      `curl -sSI https://kojipkgs.fedoraproject.org/packages/<guess>/<ver>/<rel>/x86_64/<binary>-<ver>-<rel>.x86_64.rpm`
-      (known mappings: `gcc*`/`libstdc++*`/`libasan`/`libubsan` ⇐ `gcc`;
-      `rust`/`cargo`/`clippy`/`rustfmt` ⇐ `rust`; `clang`/`libcxx*` ⇐ `llvm`, **not**
-      `clang`; `dotnet-sdk-9.0` ⇐ `dotnet9.0`).
-   2. Download the RPM and compute its SHA-256 (`sha256sum`) — this is the integrity
-      floor since Koji's raw archive predates distro GPG signing.
-   3. In the `Containerfile`, add (mirroring any of the nine already-converted images —
-      `c-toolchain` is the smallest example):
-      ```
-      COPY containers/koji-fetch.sh /usr/local/bin/koji-fetch.sh
-      RUN chmod +x /usr/local/bin/koji-fetch.sh \
-          && koji-fetch.sh <source-pkg> <version> <release> \
-              <binary-pkg>:<sha256> [<binary-pkg2>:<sha256> ...] \
-          && dnf install -y /tmp/rpms/*.rpm <other, still dnf-repo-pinned packages> \
-          && rm -rf /tmp/rpms \
-          && dnf clean all
-      ```
-   4. Rebuild (`podman build -t entity-core-keystone/<toolchain>:latest -f
-      containers/<toolchain>/Containerfile .`) and confirm it's clean from a fresh build,
-      not just cache — `--no-cache` if in doubt.
-4. **Record it.** A one-line `RE-PIN (<date>): ...` comment in the Containerfile is
-   enough; it doesn't need its own stewardship doc unless something about the rot itself
-   was surprising (e.g. it recurred same-day, or the package family wasn't on the
-   known-volatile list above — both are worth a note back to AGENTS.md).
+**1. Every pinned RPM comes from Koji, never from a rolling dnf repo.**
 
-Full rationale + the "why not just cache the RPMs locally" reasoning (rejected — not
-portable):`containers/koji-fetch.sh`'s header comment and AGENTS.md's Setup/environment
-section. Session detail: `research/stewardship/SESSION-2026-07-28-container-harness-
-stabilization.md`.
+Fedora's `fedora`/`updates` repos carry only the CURRENT + recent build of each package.
+A `Containerfile` pinning an exact NVR (`gcc-15.2.1-7.fc43`) builds fine until that NVR
+is superseded, then fails with `No match for argument` — sometimes within hours, not
+months (`clang` rotted twice in one day during the 2026-07-27/28 sweep; eleven images
+broke at once on 2026-07-27). Koji, the build system that *produces* those RPMs, retains
+every NVR ever built, forever, at a stable URL.
+
+This used to be handled reactively — convert the one package that broke, leave the rest.
+That policy left 36 of 46 images on rolling pins and guaranteed a next time. **As of
+2026-08-27 all 58 pinned RPMs across all 13 affected images are Koji-fetched, and a
+rolling dnf NVR pin is no longer an accepted state.** Verify with:
+
+```
+python3 tools/koji-pin.py scan       # must report 0 rolling pins
+python3 tools/koji-pin.py verify     # every recorded pin still resolves + digest matches
+```
+
+To pin a new package, do not hand-resolve it — `tools/koji-pin.py` knows the SRPM
+mapping (the source name is often not the binary name: `gcc-c++`/`libasan` ⇐ `gcc`;
+`cargo`/`clippy`/`rustfmt` ⇐ `rust`; `clang`/`libcxx*` ⇐ `llvm`, **not** `clang`;
+`glibc-static` and the cross sysroots ⇐ `glibc`; `gcc-riscv64-linux-gnu` ⇐ `cross-gcc`,
+**not** `gcc`) and falls back to `dnf repoquery` when it doesn't:
+
+```
+python3 tools/koji-pin.py resolve containers/<image>   # prints the koji-fetch block
+```
+
+It downloads each RPM to record its SHA-256. That digest is the integrity control —
+Koji's raw archive predates distro GPG signing.
+
+**2. Every base image is pinned by digest, never by tag.**
+
+A tag is republished in place; a digest is not. `fedora:43` moved between 2026-06-17 and
+2026-08-27, so an image pinning the tag floated on whatever the registry served that day.
+All bases now carry `@sha256:…` with the tag kept in a comment for readability.
+
+**Enforcement — `tools/cold-build-gate.sh`.** Builds every image with `--no-cache` and
+fails on any that doesn't. This is the only thing that actually asks the adopter's
+question, because the layer cache and the already-present local images hide a broken
+recipe from the machine that authored it. A pin nobody re-checks is a claim, not an
+anchor. Run it before a release and whenever `containers/` changes:
+
+```
+tools/cold-build-gate.sh              # all images, from scratch
+tools/cold-build-gate.sh c-toolchain  # one image
+```
+
+Record a deliberate re-pin with a one-line `RE-PIN (<date>): …` comment in the
+Containerfile. Full rationale, and the "why not just cache the RPMs locally" reasoning
+(rejected — not portable): `containers/koji-fetch.sh`'s header and AGENTS.md's
+Setup/environment section.
 
 ## Conformance oracle inclusion
 

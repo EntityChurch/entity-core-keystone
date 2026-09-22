@@ -35,21 +35,35 @@
 #   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm --network=none \
 #     -v "$PWD":/work:Z -w /work/protocol-generator/asm-arm64 \
 #     entity-core-keystone/asm-arm64-toolchain:latest make s2
-FROM registry.fedoraproject.org/fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
 # Cross assembler (GAS) + cross link driver + aarch64 glibc sysroot + qemu-user + codec build deps.
-RUN dnf install -y --setopt=install_weak_deps=False \
-        binutils-aarch64-linux-gnu-2.45-1.fc43 \
-        gcc-aarch64-linux-gnu-15.2.1-1.fc43 \
-        sysroot-aarch64-fc43-glibc-2.42-13.fc43 \
-        qemu-user-static-aarch64-2:10.1.5-1.fc43 \
-        cmake-3.31.11-1.fc43 \
-        make-1:4.4.1-11.fc43 \
-        dnf-plugins-core \
-        cpio \
-        file \
-        findutils \
-        which \
+COPY containers/koji-fetch.sh /usr/local/bin/koji-fetch.sh
+RUN chmod +x /usr/local/bin/koji-fetch.sh \
+    && koji-fetch.sh cross-binutils 2.45 1.fc43 \
+        binutils-aarch64-linux-gnu:2140869c8b4ffb8bc9564e54ad6aaa9f2850cb516b235b304d58e7fcea2bad79 \
+    && koji-fetch.sh cross-gcc 15.2.1 1.fc43 \
+        gcc-aarch64-linux-gnu:a022b42ee3890c981c17485189a720aa7d14b9fb9da7216c2ed5b29d4a971f64 \
+    && koji-fetch.sh glibc 2.42 13.fc43 \
+        sysroot-aarch64-fc43-glibc:4734ce6d01a7f0050de2883b05e7e3c16c11eceef64faa1ffc220f9fc57f4118 \
+    && koji-fetch.sh qemu 10.1.5 1.fc43 \
+        qemu-user-static-aarch64:b32d01c2bab1ee3695d16f231aad37ecca820a7205c7a10b5616934bbab5673a \
+    && koji-fetch.sh cmake 3.31.11 1.fc43 \
+        cmake:80995529b25b1b695505279389010679d4f517364d9dfac2fa0fcd6efda5c2a2 \
+    && koji-fetch.sh make 4.4.1 11.fc43 \
+        make:15efaea3972cca7f43e9619af676498a3e586d312b59acfc3715d9fb595c06d2 \
+    && dnf install -y --setopt=install_weak_deps=False \
+            /tmp/rpms/*.rpm \
+            dnf-plugins-core \
+            cpio \
+            file \
+            findutils \
+            which \
+    && rm -rf /tmp/rpms \
     && dnf clean all
 
 # The AArch64 glibc sysroot (from sysroot-aarch64-fc43-glibc) lives under the aarch64-REDHAT-linux

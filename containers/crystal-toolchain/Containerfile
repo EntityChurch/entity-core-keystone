@@ -29,7 +29,11 @@
 # Build:
 #   podman build -t entity-core-keystone/crystal-toolchain:latest \
 #     -f containers/crystal-toolchain/Containerfile .
-FROM docker.io/crystallang/crystal:1.20.2
+# Base pinned BY DIGEST, not by tag (crystallang/crystal:1.20.2, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM docker.io/crystallang/crystal@sha256:d48dcb2242ac7a854ca7b6286c70c9110d5bd8e336630a4af535dfd107766539
 
 # libsodium (Ed25519 crypto floor, bound in-process via lib/fun) + pkg-config to
 # resolve it, ca-certificates + git for the one network-on `shards install` step

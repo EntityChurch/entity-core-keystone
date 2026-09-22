@@ -53,41 +53,75 @@
 #   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm --network=none \
 #     -v "$PWD":/work:Z -w /work/protocol-generator/riscv64 \
 #     entity-core-keystone/riscv64-toolchain:latest make host
-FROM registry.fedoraproject.org/fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
 # Cross assembler (GAS) + cross link driver + qemu-user + host binutils (ar, for .deb extract) +
 # codec build deps. NVRs pinned to fedora:43 @ 2026-07-15.
-RUN dnf install -y --setopt=install_weak_deps=False \
-        binutils-riscv64-linux-gnu-2.45-1.fc43 \
-        gcc-riscv64-linux-gnu-15.2.1-1.fc43 \
-        qemu-user-static-riscv-2:10.1.5-1.fc43 \
-        binutils-2.45-1.fc43 \
-        cmake-3.31.11-1.fc43 \
-        make-1:4.4.1-11.fc43 \
-        curl \
-        xz \
-        cpio \
-        file \
-        findutils \
-        which \
+COPY containers/koji-fetch.sh /usr/local/bin/koji-fetch.sh
+RUN chmod +x /usr/local/bin/koji-fetch.sh \
+    && koji-fetch.sh cross-binutils 2.45 1.fc43 \
+        binutils-riscv64-linux-gnu:1e3de440ae64b18551512ccca817d28f3d55ebf796cfdbf67f2e8d11997e313e \
+    && koji-fetch.sh cross-gcc 15.2.1 1.fc43 \
+        gcc-riscv64-linux-gnu:31d99b965f9accc8f3b5c465ab4ae07d8c8b1b914ef129a0d81de8f16c0922fa \
+    && koji-fetch.sh qemu 10.1.5 1.fc43 \
+        qemu-user-static-riscv:ab1bce8d94003d743d5bf9bb68ab97ac8eaae0c9582cd81b880b09e685d82b52 \
+    && koji-fetch.sh binutils 2.45 1.fc43 \
+        binutils:867a4573a5df7e6e85f24a4e16d5e189a5527aa0a2bde8f304b0eeac4295fd05 \
+    && koji-fetch.sh cmake 3.31.11 1.fc43 \
+        cmake:80995529b25b1b695505279389010679d4f517364d9dfac2fa0fcd6efda5c2a2 \
+    && koji-fetch.sh make 4.4.1 11.fc43 \
+        make:15efaea3972cca7f43e9619af676498a3e586d312b59acfc3715d9fb595c06d2 \
+    && dnf install -y --setopt=install_weak_deps=False \
+            /tmp/rpms/*.rpm \
+            curl \
+            xz \
+            cpio \
+            file \
+            findutils \
+            which \
+    && rm -rf /tmp/rpms \
     && dnf clean all
 
 # Assemble the Debian trixie riscv64 glibc + libsodium sysroot (see header "WHY DEBIAN"). No
-# foreign-arch execution: fetch .debs from the official mirror, extract with ar+tar. The exact
-# pool paths are resolved from the signed Packages index so this stays green across point updates.
+# foreign-arch execution: fetch .debs from the official mirror, extract with ar+tar.
+#
+# PINNED (2026-08-27). This block used to resolve pool paths out of the CURRENT Packages
+# index, with the comment "so this stays green across point updates" -- i.e. it deliberately
+# tracked whatever the mirror served that day. Two builds a month apart got different libc,
+# and nothing verified what arrived. That is not a reproducible sysroot.
+#
+# Each .deb is now pinned to an exact version + SHA-256. Debian's pool DELETES superseded
+# versions (unlike Koji, which keeps every build forever), so a pool path rots the same way
+# a dnf NVR does -- hence the fallback to snapshot.debian.org, Debian's permanent archive.
+# The digest is what makes either source safe.
 ENV RISCV_SYSROOT=/opt/riscv64-sysroot
 RUN set -eux; \
     S="$RISCV_SYSROOT"; mkdir -p "$S" /tmp/debs; \
     MIRROR=http://deb.debian.org/debian; \
-    curl -fsSL "$MIRROR/dists/trixie/main/binary-riscv64/Packages.xz" -o /tmp/Packages.xz; \
-    xz -d /tmp/Packages.xz; \
-    pkg_file() { awk -v p="$1" '/^Package: /{n=$2} /^Filename: /{if(n==p){print $2; exit}}' /tmp/Packages; }; \
-    for p in libc6 libc6-dev libgcc-s1 linux-libc-dev libsodium23 libsodium-dev; do \
-      f="$(pkg_file "$p")"; \
-      test -n "$f" || { echo "!! $p not in trixie riscv64 index"; exit 3; }; \
-      echo "  $p -> $f"; \
-      curl -fsSL "$MIRROR/$f" -o "/tmp/debs/$(basename "$f")"; \
-    done; \
+    SNAPSHOT=https://snapshot.debian.org/archive/debian/20260820T000000Z; \
+    fetch() { \
+      f="$1"; sha="$2"; out="/tmp/debs/$(basename "$f")"; \
+      curl -fsSL "$MIRROR/$f" -o "$out" \
+        || { echo "  pool miss, falling back to snapshot: $f"; \
+             curl -fsSL "$SNAPSHOT/$f" -o "$out"; }; \
+      echo "$sha  $out" | sha256sum -c -; \
+    }; \
+    fetch pool/main/g/glibc/libc6_2.41-12+deb13u3_riscv64.deb \
+          fee42ebb2a148cc0dbc46ba938d8d69495b6dd5250cecafed9d585c567550b7a; \
+    fetch pool/main/g/glibc/libc6-dev_2.41-12+deb13u3_riscv64.deb \
+          962c0eac9eda3a556962201f753e1a0f5c38401bae794fa83c1a4d91bd11d347; \
+    fetch pool/main/g/gcc-14/libgcc-s1_14.2.0-19_riscv64.deb \
+          16d3f9f534028615413d23f649e5d246baef48fe7db739ad564ef8b9a6e5587c; \
+    fetch pool/main/l/linux/linux-libc-dev_6.12.86-1_all.deb \
+          b3d0d91cda2905cd5c201c8bb3d2369e10cc03a19ea432217a62e54480d6446a; \
+    fetch pool/main/libs/libsodium/libsodium23_1.0.18-1+deb13u1_riscv64.deb \
+          8e52c28654081940fe73306adaed5b68da50289ac966c8e8694f646ebdf33548; \
+    fetch pool/main/libs/libsodium/libsodium-dev_1.0.18-1+deb13u1_riscv64.deb \
+          e99f3ebcb3e954065bafb4f5abb6b8f68f3afbedcc9b3e14b83bc8e68ca4d410; \
     cd /tmp/debs; \
     for d in *.deb; do ar x "$d"; tar -xf data.tar.*; rm -f data.tar.* control.tar.* debian-binary; done; \
     cp -a etc usr "$S/" 2>/dev/null || true; \

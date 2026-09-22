@@ -64,7 +64,11 @@
 #   . tools/podman-caps.sh && podman build $PODMAN_BUILD_CAPS \
 #     -t entity-core-keystone/io-toolchain:latest \
 #     -f containers/io-toolchain/Containerfile .
-FROM registry.fedoraproject.org/fedora:43
+# Base pinned BY DIGEST, not by tag (fedora:43, resolved 2026-08-27).
+# A tag is republished in place; a digest is not. Pinning the tag meant every
+# image in this tree floated on whatever the registry served that day, which is
+# not reproducible for anyone pulling the repo.
+FROM registry.fedoraproject.org/fedora@sha256:6e1245e9a4a72ec879b9d681ebb464a6e9fd93eea36b4506d438aceb95a7da0b
 
 # System deps.
 #   gcc/gcc-c++/make/cmake/pkgconfig: build io core, the C-ABI codec, the addons.
@@ -111,10 +115,16 @@ RUN curl -fsSL -o /tmp/parson.tar.gz \
 # ── Build + install io (core VM only: libs/ + tools/; no addons, no eerie) ───
 # Installs: /usr/local/bin/io{,_static}, /usr/local/lib/lib{basekit,iovmall,
 # garbagecollector}.so, /usr/local/include/io/*.h (the addon-compile headers).
+# Build parallelism is BOUNDED, not derived from nproc: `podman build` takes a memory
+# cap but no usable cpu cap here (rootless cpuset is undelegated; --cpus does not change
+# nproc), so `-j$(nproc)` starts one compiler per HOST core inside --memory=4g and the OOM
+# killer takes cc1plus. It gets worse on a bigger machine, not better. Override for a
+# roomier host with --build-arg BUILD_JOBS=N.
+ARG BUILD_JOBS=4
 RUN cd "${IO_SRC}" \
     && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
              -DCMAKE_C_FLAGS="${IO_C_DIALECT}" \
-    && cmake --build build -j"$(nproc)" \
+    && cmake --build build -j"${BUILD_JOBS}" \
     && cmake --install build \
     && ldconfig
 
