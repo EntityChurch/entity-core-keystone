@@ -7,6 +7,13 @@ smoke-bin
 entity-peer-c
 typereg-bin
 spike
+# scope-bin was the ONE artifact missing from this list, and that omission is exactly how a
+# 3.1 MB ELF executable got committed (2026-09-17, found when `make clean` in the S2 axis
+# sweep deleted a TRACKED file). An enumerated ignore list fails open: a Makefile target
+# added later is not covered by anything, and nothing objects. Same shape as the root
+# `**/bin/` allowlist that swallowed `forth`'s entrypoint, in the opposite direction --
+# there an omission hid a source file, here it published a binary.
+scope-bin
 *.pc
 # dist artifacts (the make dist source tarball is built on demand, not committed)
 entity-core-protocol-c-*.tar.gz

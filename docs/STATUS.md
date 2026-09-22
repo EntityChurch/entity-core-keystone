@@ -56,6 +56,41 @@ addition is that one commit.
   tranche** — it is a different rule (`0.8.2.22`), invisible for the patterns this peer writes, and
   it diverges on §5.4's leading-`/` universal reading and `/*/` interior wildcard.
 
+### The closing claim is three ROSTER RUNS, not a sum of tranche reports
+
+**Conformance — `tools/run-cohort-census.sh`, all 46, one at a time (`CONCURRENCY` stays 1).**
+46 of 46 conforming at the pinned 778-check set, every peer on the identical check set, report-age
+span **0.315 h**, report set asserted equal to the roster (none missing, none extra), every report
+content-checked for the row being counted, **no `budget_exhausted` anywhere**, and every denominator
+asserted non-zero (46 of 46). Compared per-check against all 46 committed reports: **1 of 35 788
+severities moved** — `dart` `concurrency/t1_1_concurrent_demux` WARN → PASS, the documented timing
+ratio (footnote ¹¹). **It is NOT banked**: a single sample is not a rate, it moved in the flattering
+direction, and the tracked row stands.
+
+**§5 authority — `tools/arc-probe`, all 46, single-age (span 0.04 h).** **41 peers at 0 of 15**, all
+controls and antecedents green. The other five — `asm-arm64` `asm-x86_64` `riscv64` `sql` `wasm-wat`
+— refuse every `system/capability:request` under the §6.9a discovery floor, so their C/E/F/G family
+controls fail and those rows grade **VOID, which is unmeasured rather than conformant**; they were
+re-driven through the documented instrument (`tools/arc-probe/run-mint-floor.sh`): four at **0 of
+15** and `sql` reproducing its one known **`F85`** row (Dimension 4 not checked on the inbound path).
+**Nothing new, and the reproduction is worth as much as a catch.** ⚠ Reading
+`output/scratch/arc/` as one table now would be wrong — the mint-floor run writes a SEPARATE
+directory (`output/scratch/arc-mint-floor/`) precisely so the roster picture stays single-age, and
+only the mint families may be read out of it.
+
+**§4.11 pre-admission refusals — `tools/pa-probe`, all 46, single-age (span 0.047 h).** 46 of 46
+reported, every `P0`/`D3` control PASS, **43 peers at 0 of 6**, and the remaining four arms sit on
+exactly the three peers already disclosed: `io` (`D2` substrate limit + `D4` ruled not owed),
+`smalltalk` (`D2` substrate limit), `sql` (`D4` ruled not owed). **No arm anywhere is
+owed-and-unexplained**, and both newly-swept peers are `0 of 6`.
+
+*(Sub-lesson from the arc-probe verification, and it is the examined-zero-things class catching the
+person who keeps citing it: my first read of the mint-floor reports counted a `verdict` field that
+**does not exist in the raw JSON** — the summarizer computes it — and printed a confident
+`0 void, 0 no` for all five peers. The number was vacuous and would have published `sql` as clean.
+Read the artifact through the tool that grades it, and when a hand-rolled read of five files agrees
+perfectly, suspect the read.)*
+
 **Two plants per peer, each reddening DISJOINT named cases**, and the multisig row carries its
 antecedent (**F70**): the same quorum root is asserted to verify in the LOCAL frame first, because a
 deny establishes nothing on its own. **No check set on any peer measures that clause** — the oracle's
@@ -365,6 +400,22 @@ that was wrong — it drove its post-auth EXECUTEs through a helper commented *"
 presents a signed, capability-bearing request built from the grant material lifted out of leg 2, and
 two planted controls confirm the green discriminates: a corrupted signature returns `401
 authentication_failed`, withheld grant material returns `403 capability_denied`.
+
+### Pre-release axis sweep, 2026-09-17 — every axis driven, and the S3 backlog is named
+
+| axis | authority | result |
+|---|---|---|
+| **s2** codec / crypto-agility corpus | ARCHITECTURE (vendored, digest-pinned) | **46 GREEN · 0 RED · 0 NO-GATE** |
+| **s3** two-direction loopback interop | **OURS** — hand-written, no oracle behind it | **39 GREEN · 0 RED · 7 NO-GATE** |
+| **s4** conformance | `entity-core-go` ORACLE, content-pinned | **46 of 46 conforming**, 1 of 35 788 severities moved (the documented flake) |
+| **ffi** codec C-ABI arm | ARCHITECTURE (corpus) + OURS (ABI, differential, leak) | **PASS** — 0 leak records through the exported ABI, all spec-declared symbols probed |
+| **contract** keystone peer contract | OURS (Layer 2d) | **3 of 3 brought-up peers certified** — 23/23 REQUIRED, 56/56 driver cases each |
+
+**The 7 `NO-GATE` on s3 are named rather than counted: `cobol` `asm-arm64` `asm-x86_64` `oz` `pd`
+`riscv64` `wasm-wat`.** None has a `run-s3.sh`. That is backlog and it is printed on every run so it
+cannot quietly become an exclusion — the standing `apl` lesson — and it is worth saying which axis it
+is: **s3 is the one axis with no external authority**, which is exactly the axis whose per-peer
+assertions went stale silently once before.
 
 **A `NO-GATE` column entry is backlog, not an exemption.** It means that peer has no harness on that
 axis; the count is printed on every run so it cannot quietly become an exclusion, which is the

@@ -535,10 +535,17 @@ Per-language layout under `protocol-generator/<lang>/`: `src/` (generated source
 `run-origination-core.sh`.
 
 Shared, language-agnostic — `protocol-generator/shared/`: `spec-data/<version>/` (pinned
-spec snapshot — **`v0.8.2.28` is the newest, vendored 2026-09-16 from `entity-core-protocol`
-`3684c0b`**, and **`v0.8.2.25` is what the cohort currently IMPLEMENTS** (`spec_pin` on all 46
-roster rows, gated by `tools/spec-pin-gate.py`). `v0.8.2.11`, `v0.8.2.3`, `v0.8.2` and `v0.8.0` are
-retained as point-in-time pins; `v7.*` retired at the V8 cutover. **The two are separate facts and
+spec snapshot — **`v0.8.2.31` is the newest vendored**, and what the cohort IMPLEMENTS is
+**`0.8.2.31` on the 26 MAINTAINED-tier rows and `0.8.2.25` on the other 20** (`spec_pin` per peer,
+gated by `tools/spec-pin-gate.py`, which reports the 20 with a count rather than failing). ⚠ **A
+`.31` pin means SWEPT to `.31`, NOT that every `.31` rule is implemented — six behaviour items are
+outstanding cohort-wide and NONE is gated by the pinned 778-check set**, so a `0F` row is silent
+about all six; they are enumerated per item in `CONFORMANCE-MATRIX.md` footnote ¹⁴
+(`resolve_peer_scope`, §7a.1b's `deadline_ms` `[MUST]` at **0 of 46**, §4.6 step 3's
+binding-not-form test, §4.11's bounded close, tag depth, and `501`-only-after-`check_permission`).
+**`v0.8.2.28` stays vendored-and-never-implemented on purpose** — `.29` withdraws text `.28`
+carries, so a `.28` sweep implements a shape already retracted. `v0.8.2.11`, `v0.8.2.3`, `v0.8.2`
+and `v0.8.0` are retained as point-in-time pins; `v7.*` retired at the V8 cutover. **The two are separate facts and
 the gap between them is deliberate**: a snapshot is what peers are *written against*, and vendoring
 runs AHEAD of implementation on purpose after `v0.8.2.25` was vendored *behind* it (its `MANIFEST.md`
 records that as a provenance defect — *"the correct order is vendor, then implement"*). Neither is
@@ -3173,6 +3180,51 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   convention drift this file records for lockfiles and dependency pins, in a 10-line config. Verified
   no value in the file legitimately contains `#` before making comment-stripping general.
 
+- **A GATE'S SUBJECT IS NOT ITS OWNER — §1.4's PD-2 Dimension 1 IS THE TARGET URI'S PEER-RELATIVE
+  PATH, AND THE EXECUTING HANDLER'S OWN PATTERN IS THE PLAUSIBLE WRONG VALUE.** Candidate
+  (2026-09-17, `ada`; enforcement exact). The gate reads the *executing* handler's grant (§6.8), so
+  the pattern to hand it reads like the executing handler's — and it is the handler the sub-dispatch
+  is ABOUT TO REACH, which is what that grant names. Measured as **2 of 778 FAILing**
+  (`dispatch_outbound_reentry`, `t1_2_concurrent_reentry`), refusing the oracle's legitimate reentry
+  with a **403 indistinguishable at the wire from an authority verdict**.
+  **ONE TRACE PRINT SETTLED IT AND NO AMOUNT OF READING WOULD HAVE, because every obvious input was
+  right:** grant found, target peer foreign, credential present, and the relaxation *verified*. So
+  the refusal was in Dimensions 1–3 — the opposite end from where a 403 on a credential-bearing
+  request sends you. **Print the four dimensions SEPARATELY** (`h=FALSE o=TRUE r=TRUE p4=FALSE
+  relaxes=TRUE relax_match=TRUE`) rather than the verdict: a conjunction's value names none of its
+  terms, and this is A1 pointed at a predicate instead of at a value.
+  **AND THE UNIT GATE HAD IT RIGHT WHILE THE CALL SITE DID NOT.** The standing rule is that a control
+  constructing its own input shape tests the shape you believed; here the CONTROL was faithful to
+  §1.4 and the CALLER was not, so the two disagreed and only the wire could say which. **Read that as
+  the argument for driving both, never as a point for the unit test** — a unit gate written from the
+  spec and a call site written from the surrounding code are two independent transcriptions, and the
+  value of having both is exactly that they can disagree.
+- **AN ENUMERATED IGNORE LIST FAILS OPEN, AND THE OMISSION IS ALWAYS THE NEWEST ARTIFACT.** Candidate
+  (2026-09-17). `protocol-generator/c/.gitignore` names `conformance` `smoke-bin` `entity-peer-c`
+  `typereg-bin` `spike` — and not `scope-bin`, a later Makefile target, so a **3.1 MB ELF executable
+  was committed** and nothing objected. Found when `make clean` inside an axis sweep **deleted a
+  TRACKED file**, which is the only signal such a mistake produces. Same shape as the root `**/bin/`
+  allowlist that swallowed `forth`'s entrypoint, in the opposite direction: there an omission HID a
+  source file, here it PUBLISHED a binary. **Enforcement: a scan over the git BLOBS at HEAD for an
+  ELF/Mach-O/PE magic, with the read count asserted equal to the listed count.**
+  ⚠ **AND THE FIRST FORM OF THAT SCAN WAS VACUOUS ON THE ONE FILE IT WAS CHASING** — it read the
+  WORKING TREE, where the binary was already deleted, so `open()` failed, the file was silently
+  skipped, and it printed `0 tracked native binaries` over a tree that had one. **A scan of tracked
+  files must read them from git, not from disk, or a deleted-but-tracked file is invisible by
+  construction** — and asserting `read == listed` is what turns that from a silent skip into a stop.
+- **A SHARED EARLY ANSWER HIDES AN UNKNOWN NUMBER OF CAUSES, AND A `SKIP` COUNTS — not just a FAIL.**
+  Ratified 2026-09-17 (`cobol`), extending the standing rule from the `go` vanguard. There, four
+  checks FAILING behind one `400 invalid_params` were attributed to one cause and were two. Here the
+  candidate oracle reported **`1F` on `dispatch_outbound_ambient_refused` with the F63 narrow-grant
+  discriminator and the multisig row SKIPPED behind it** — and a SKIP is the easier one to
+  misread, because it looks like a carve-out rather than a consequence. Both PASSed once the first
+  answer was removed. **Read the skips under a failing check as part of that check's blast radius,
+  and size the work only after the early answer is gone.**
+  *(And the same run is why `cobol` could not be swept as a rename: `boot-handler` bound **no §6.8
+  grant at all** — only the wire register op ever wrote one — so the gate could not be landed before
+  the thing it reads. The `nim` shape. **When a gate has nothing to read, the missing artifact is the
+  first half of the work and the gate is the second**; landing only the gate produces a peer that
+  fails closed everywhere and reads as over-strict.)*
 - **"IS UPSTREAM STABILIZING?" IS A MEASURABLE QUESTION, AND THE REVISION COUNT IS THE WRONG
   INSTRUMENT — ANSWER THE COST QUESTION WITH THE ORACLE, NEVER WITH THE SPEC'S VERSION NUMBER.**
   Candidate (first occurrence, 2026-09-16, answering *"do we wait for the spec to settle?"*). Three
@@ -3789,6 +3841,18 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   *(And the meta-lesson is about where to look for this: the defect lived in the ONE arm of the gate
   that had never been run end-to-end against a real sweep. `--self-test` was green throughout,
   because a self-test builds its own commits and therefore its own subjects.)*
+  **THIRD OCCURRENCE 2026-09-17, IN THE SAME GATE, UNDER THIS ENTRY'S OWN COMMENT — AND THE PATTERN
+  WAS ANCHORED WHERE THE WORD IS NOT.** `^(sweep |vanguard)` cannot see **"second vanguard: python
+  takes the same shape…"**, so closing the `0.8.2.31` sweep reported `python` as
+  pin-advanced-but-never-touched and the claim had to be waved through with `--ack-unchanged` — the
+  silent default that flag exists to prevent. **`vanguard` is a WORD in the subject, not a prefix of
+  it**, and the fix is `^sweep |\bvanguard\b`: anchor on the TOKEN, not on the position, because the
+  position is a property of one author's word order on one day. Hit lists diffed over both ranges
+  rather than the counts trusted (22 → 23 and 41 → 42, the single addition being that one commit in
+  each). **The generalizable half: after broadening a selector once, the next deviation will be a
+  different AXIS of the same convention** — the second occurrence was a missing *word* (`tranche`),
+  the third a missing *position*. A pattern that must be loosened twice is measuring the convention's
+  spelling rather than its meaning.
 - **A READ-LOOP FIX IS NOT INHERITED BY A PEER THAT REIMPLEMENTS THE READ LOOP — and depending on
   the crate that holds the fix looks exactly like inheriting it.** RATIFIED 2026-09-14 (the §6.3
   silent-refusal sweep reaching `rust-wasm`, `rust-wasm-wasmtime` and `node-red`), and it is the
