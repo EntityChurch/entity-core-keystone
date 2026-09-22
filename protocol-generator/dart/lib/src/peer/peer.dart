@@ -909,6 +909,17 @@ final class Peer {
           .handle(operation, HandlerContext(exec, conn, env.included, null, env));
     }
     _ingestSignatures(env);
+    // §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to
+    // sit below the verdict, so a pre-establishment EXECUTE naming a FOREIGN namespace took
+    // the 401 an unauthenticated request takes. §4.7's own reason: "a 401 directs the caller
+    // to authenticate and retry, and for a foreign-namespace address that retry cannot
+    // succeed at any authentication state — so the 401 names a remedy that does not exist."
+    // §6.5 step 3 calls it "a gate, not an ordering preference" and §1.4 makes the downstream
+    // permission check unreachable here.
+    final path = cap.canonicalize(localPeer, cap.normalizeUri(uri));
+    if (cap.extractPeer(localPeer, path) != localPeer) {
+      return Outcome.err(400, 'invalid_request', 'not local peer');
+    }
     // §5.2 three-way request verdict (+ §4.10(b) chain-depth) — exhaustive switch.
     switch (await cap.verifyRequest(localPeer, store, env)) {
       case cap.RequestVerdict.authnFail:
@@ -920,14 +931,8 @@ final class Peer {
       case cap.RequestVerdict.allow:
         break; // fall through
     }
-    final path = cap.canonicalize(localPeer, cap.normalizeUri(uri));
-    // §1.4: inbound dispatch must target the local peer.
-    if (cap.extractPeer(localPeer, path) != localPeer) {
-      // §1.4 / §6.5 step 3 — the ADDRESS gate, ahead of handler resolution and
-      // check_permission: 400 invalid_request, never a handler verdict (§6.2,
-      // 0.8.2.2).
-      return Outcome.err(400, 'invalid_request', 'not local peer');
-    }
+    // (The §1.4 address gate that used to sit here has moved ABOVE the verdict — §4.7
+    // 0.8.2.6 orders it before authentication. Reaching this line means the path is local.)
     final pattern = _resolveHandler(path);
     if (pattern == null) return Outcome.err(404, 'handler_not_found', path);
     final capH = exec.bytes('capability');

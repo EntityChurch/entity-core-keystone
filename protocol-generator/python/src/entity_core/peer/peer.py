@@ -321,6 +321,21 @@ class Peer:
 
         self._ingest_signatures(env)
 
+        # §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION, and this gate
+        # used to sit below the verdict. A pre-establishment EXECUTE naming a FOREIGN
+        # namespace therefore took the 401 an unauthenticated request takes. §4.7's own
+        # reason: "a 401 directs the caller to authenticate and retry, and for a
+        # foreign-namespace address that retry cannot succeed at any authentication state
+        # — so the 401 names a remedy that does not exist." §6.5 step 3 calls it "a gate,
+        # not an ordering preference" and §1.4 makes the downstream permission check
+        # unreachable on this path, so evaluating authentication first can only mislead.
+        #
+        # Guarded on a canonicalizable path so a MALFORMED one keeps its existing 400
+        # invalid_path disposition below rather than being silently re-coded here.
+        addr = canonicalize(self.local_peer, normalize_uri(uri))
+        if addr is not None and extract_peer(self.local_peer, addr) != self.local_peer:
+            return Outcome.err(400, "invalid_request", "not local peer")
+
         verdict = verify_request(self.local_peer, self.store, env)
         if verdict == AUTHN_FAIL:
             return Outcome.err(401, "authentication_failed")
@@ -335,8 +350,9 @@ class Peer:
         path = canonicalize(self.local_peer, normalize_uri(uri))
         if path is None:
             return Outcome.err(400, "invalid_path", uri)
-        if extract_peer(self.local_peer, path) != self.local_peer:
-            return Outcome.err(400, "invalid_request", "not local peer")
+        # (The §1.4 / §6.5 step 3 address gate that used to sit here has moved ABOVE the
+        # verdict — §4.7 0.8.2.6 orders it before authentication. Reaching this line at
+        # all now means the path is local.)
         pattern = self._resolve_handler(path)
         if pattern is None:
             return Outcome.err(404, "handler_not_found", path)

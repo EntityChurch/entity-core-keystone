@@ -256,6 +256,19 @@ public actor Peer {
             return (try? errorResponse(requestID: reqID, status: 409, code: "connection_already_established")) ?? fallbackError()
         }
 
+        // §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used
+        // to sit below the verdict, so a pre-establishment EXECUTE naming a FOREIGN
+        // namespace took the 401 an unauthenticated request takes. §4.7's own reason: "a
+        // 401 directs the caller to authenticate and retry, and for a foreign-namespace
+        // address that retry cannot succeed at any authentication state — so the 401 names
+        // a remedy that does not exist." §6.5 step 3 calls it "a gate, not an ordering
+        // preference" and §1.4 makes the downstream permission check unreachable here.
+        let canonURI = Capability.canonicalize(uri, frame: localPeerID)
+        let targetPeer = Capability.extractPeer(canonURI, localPeerID: localPeerID)
+        if targetPeer != localPeerID {
+            return (try? errorResponse(requestID: reqID, status: 400, code: "invalid_request")) ?? fallbackError()
+        }
+
         // Any other path requires auth (§4.2): reject missing author/capability 403.
         // §5.2 verify_request.
         let verdict = await verifyRequest(env)
@@ -275,12 +288,9 @@ public actor Peer {
         // Ingest signatures from envelope.included (§6.5 dispatcher-level).
         await ingestSignatures(env)
 
-        // Canonicalize URI; reject non-self peer (§1.4 inbound dispatch).
-        let canonURI = Capability.canonicalize(uri, frame: localPeerID)
-        let targetPeer = Capability.extractPeer(canonURI, localPeerID: localPeerID)
-        if targetPeer != localPeerID {
-            return (try? errorResponse(requestID: reqID, status: 400, code: "invalid_request")) ?? fallbackError()
-        }
+        // (The §1.4 address gate that used to sit here has moved ABOVE the verdict —
+        // §4.7 0.8.2.6 orders it before authentication. Reaching this line at all means
+        // canonURI/targetPeer are already computed and local.)
 
         // Resolve handler (§6.6 longest-prefix tree walk).
         guard let resolved = await resolveHandler(canonURI) else {

@@ -143,7 +143,17 @@ cls compile: 'dispatch: anExec envelope: anEnvelope on: aConn
 	"connect is the sole pre-auth path (§4.1)."
 	(handlerPath beginsWith: ''system/protocol/connect'') ifTrue: [
 		^ self runHandler: ''system/protocol/connect'' exec: anExec envelope: anEnvelope on: aConn ].
-	"1. integrity / authn first (an unsigned request is 401 whatever the path)."
+	"0. §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used
+	     to sit one rung DOWN, after verifyAuthn:, so a pre-establishment EXECUTE naming a
+	     FOREIGN namespace took the 401 an unsigned request takes. The reason §4.7 gives: a
+	     401 directs the caller to authenticate and retry, and for a foreign-namespace
+	     address that retry cannot succeed at any authentication state — so the 401 names a
+	     remedy that does not exist. §6.5 step 3 calls it a gate, not an ordering
+	     preference. (NO APOSTROPHE MAY APPEAR IN THIS FILE: every method body is embedded
+	     in an outer Smalltalk string literal, so a bare one terminates it mid-comment.)"
+	(self uriTargetsLocalPeer: uri) ifFalse: [
+		^ EcHandlerResult error: 400 code: ''invalid_request'' message: ''not local peer'' ].
+	"1. integrity / authn (an unsigned request is 401 on any LOCAL path)."
 	authn := EcCapability verifyAuthn: anExec in: anEnvelope.
 	authn = #allow ifFalse: [ ^ self verdictError: authn ].
 	"1a. §1.4 / §6.5 step 3 — the ADDRESS gate, BEFORE handler resolution and before

@@ -2157,8 +2157,31 @@ ec_status ec_peer_dispatch(ec_peer *p, ec_conn *conn, const ec_envelope *env,
         goto respond;
     }
 
-    /* §6.5 signature ingestion + §5.2 verify */
+    /* §6.5 signature ingestion */
     ingest_signatures(p, env);
+    /*
+     * §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to
+     * sit below the verdict, so a pre-establishment EXECUTE naming a FOREIGN namespace took
+     * the 401 an unauthenticated request takes. §4.7's own reason: "a 401 directs the caller
+     * to authenticate and retry, and for a foreign-namespace address that retry cannot
+     * succeed at any authentication state — so the 401 names a remedy that does not exist."
+     * §6.5 step 3 calls it "a gate, not an ordering preference" and §1.4 makes the downstream
+     * permission check unreachable here.
+     */
+    {
+        char *anorm = NULL, *apath = NULL, *atp = NULL;
+        if (ec_normalize_uri(uri, &anorm) == EC_OK &&
+            ec_canonicalize(p->local, anorm, &apath) == EC_OK) {
+            int foreign = (ec_extract_peer(p->local, apath, &atp) != EC_OK ||
+                           strcmp(atp, p->local) != 0);
+            free(atp); free(apath); free(anorm);
+            if (foreign) { outcome_err(&o, 400, "invalid_request", "not local peer"); goto respond; }
+        } else {
+            free(anorm);   /* malformed path keeps its 400 invalid_path disposition below */
+        }
+    }
+
+    /* §5.2 verify */
     ec_req_verdict v = ec_cap_verify_request(p->local, p->store, env);
     switch (v) {
         case EC_REQ_AUTHN_FAIL:    outcome_err(&o, 401, "authentication_failed", NULL); goto respond;
@@ -2178,13 +2201,11 @@ ec_status ec_peer_dispatch(ec_peer *p, ec_conn *conn, const ec_envelope *env,
             goto respond;
         }
         free(norm);
-        if (ec_extract_peer(p->local, path, &target_peer) != EC_OK ||
-            strcmp(target_peer, p->local) != 0) {
-            free(path); free(target_peer);
-            outcome_err(&o, 400, "invalid_request", "not local peer");
-            goto respond;
-        }
-        free(target_peer);
+        /*
+         * (The §1.4 address gate that used to sit here has moved ABOVE the verdict — §4.7
+         * 0.8.2.6 orders it before authentication. Reaching this line means the path is local.)
+         */
+        (void)target_peer;
 
         char *pattern = resolve_handler_path(p, path);
         free(path);

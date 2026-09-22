@@ -490,6 +490,21 @@ impl Peer {
 
         self.ingest_signatures(env);
 
+        // §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION, and this gate
+        // used to sit below the verdict. A pre-establishment EXECUTE naming a FOREIGN
+        // namespace therefore took the 401 an unauthenticated request takes. §4.7's own
+        // reason: "a 401 directs the caller to authenticate and retry, and for a
+        // foreign-namespace address that retry cannot succeed at any authentication state
+        // — so the 401 names a remedy that does not exist." §6.5 step 3 calls it "a gate,
+        // not an ordering preference" and §1.4 makes the downstream permission check
+        // unreachable on this path, so evaluating authentication first can only mislead.
+        {
+            let path = cap::canonicalize(&self.local_peer, &cap::normalize_uri(&uri));
+            if cap::extract_peer(&self.local_peer, &path) != self.local_peer {
+                return err_out(400, "invalid_request", Some("not local peer"));
+            }
+        }
+
         // §5.2 verify_request — 3-way verdict (+ §4.10(b) chain-depth pre-check).
         match cap::verify_request(env, &self.store, &self.local_peer) {
             cap::ReqVerdict::AuthnFail => {
@@ -507,11 +522,9 @@ impl Peer {
 
         let norm = cap::normalize_uri(&uri);
         let path = cap::canonicalize(&self.local_peer, &norm);
-        // §1.4: inbound dispatch must target the local peer.
-        let tp = cap::extract_peer(&self.local_peer, &path);
-        if tp != self.local_peer {
-            return err_out(400, "invalid_request", Some("not local peer"));
-        }
+        // (The §1.4 address gate that used to sit here has moved ABOVE the verdict —
+        // §4.7 0.8.2.6 orders it before authentication. Reaching this line at all now
+        // means the path is local.)
         let pattern = match self.resolve_handler(&path) {
             Some(p) => p,
             None => return err_out(404, "handler_not_found", Some(&path)),

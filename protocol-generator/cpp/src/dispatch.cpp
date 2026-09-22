@@ -1084,8 +1084,22 @@ std::optional<Envelope> Peer::dispatch(Connection& conn, const Envelope& env) {
         return respond();
     }
 
-    // §6.5 signature ingestion + §5.2 verify
+    // §6.5 signature ingestion
     ingest_signatures(env);
+    // §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to
+    // sit below the verdict, so a pre-establishment EXECUTE naming a FOREIGN namespace took
+    // the 401 an unauthenticated request takes. §4.7's own reason: "a 401 directs the caller
+    // to authenticate and retry, and for a foreign-namespace address that retry cannot
+    // succeed at any authentication state — so the 401 names a remedy that does not exist."
+    // §6.5 step 3 calls it "a gate, not an ordering preference" and §1.4 makes the downstream
+    // permission check unreachable here.
+    std::string norm = cap::normalize_uri(uri);
+    auto path = cap::canonicalize(local_, norm);
+    if (path && cap::extract_peer(local_, *path) != local_) {
+        err(o, 400, "invalid_request", "not local peer"); return respond();
+    }
+
+    // §5.2 verify
     switch (cap::verify_request(local_, store_, env)) {
         case cap::ReqVerdict::AuthnFail:    err(o, 401, "authentication_failed"); return respond();
         case cap::ReqVerdict::AuthzDeny:    err(o, 403, "capability_denied"); return respond();
@@ -1094,13 +1108,10 @@ std::optional<Envelope> Peer::dispatch(Connection& conn, const Envelope& env) {
         case cap::ReqVerdict::Allow: break;
     }
 
-    // §1.4 path resolution + local-peer gate
-    std::string norm = cap::normalize_uri(uri);
-    auto path = cap::canonicalize(local_, norm);
+    // §1.4 path resolution (the local-peer gate moved above the verdict)
+    // (The §1.4 address gate that used to sit here has moved ABOVE the verdict — §4.7
+    // 0.8.2.6 orders it before authentication. Reaching this line means the path is local.)
     if (!path) { err(o, 400, "invalid_path", uri); return respond(); }
-    if (cap::extract_peer(local_, *path) != local_) {
-        err(o, 400, "invalid_request", "not local peer"); return respond();
-    }
     auto pattern = resolve_handler_path(*path);
     if (!pattern) { err(o, 404, "handler_not_found", uri); return respond(); }
 

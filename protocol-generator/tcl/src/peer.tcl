@@ -284,6 +284,16 @@ proc ::entity::core::peer::_dispatch_inner {h conn_h env exec} {
         return [$proc $h $operation [dict create exec $exec conn $conn_h included $included caller_cap "" env $env]]
     }
     _ingest_signatures $h $env
+    # §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to
+    # sit below the §5.2 verdict, so a pre-establishment EXECUTE naming a FOREIGN namespace
+    # took the 401 an unauthenticated request takes. §4.7's own reason: "a 401 directs the
+    # caller to authenticate and retry, and for a foreign-namespace address that retry
+    # cannot succeed at any authentication state — so the 401 names a remedy that does not
+    # exist." §6.5 step 3 calls it "a gate, not an ordering preference".
+    set path [::entity::core::capability::canonicalize [local_peer $h] [::entity::core::capability::normalize_uri $uri]]
+    if {[::entity::core::capability::extract_peer [local_peer $h] $path] ne [local_peer $h]} {
+        return [outcome_err 400 invalid_request "not local peer"]
+    }
     # §5.2 three-way request verdict (+ §4.10(b) chain-depth).
     set rv [::entity::core::capability::verify_request [local_peer $h] $store_h $env]
     switch -- $rv {
@@ -291,11 +301,8 @@ proc ::entity::core::peer::_dispatch_inner {h conn_h env exec} {
         AUTHZ_DENY     { return [outcome_err 403 capability_denied] }
         CHAIN_TOO_DEEP { return [outcome_err 400 chain_depth_exceeded] }
     }
-    set path [::entity::core::capability::canonicalize [local_peer $h] [::entity::core::capability::normalize_uri $uri]]
-    # §1.4: inbound dispatch must target the local peer.
-    if {[::entity::core::capability::extract_peer [local_peer $h] $path] ne [local_peer $h]} {
-        return [outcome_err 400 invalid_request "not local peer"]
-    }
+    # (The §1.4 address gate that used to sit here has moved ABOVE the verdict — §4.7
+    # 0.8.2.6 orders it before authentication. Reaching this line means the path is local.)
     set pattern [_resolve_handler $h $path]
     if {$pattern eq ""} { return [outcome_err 404 handler_not_found $path] }
     set cap_h [::entity::core::entity::bytes $exec capability]

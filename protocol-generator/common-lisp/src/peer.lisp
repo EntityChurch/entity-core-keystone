@@ -884,15 +884,29 @@ non-EXECUTE root (§3.3 server side ignores non-EXECUTE)."
                                     (list :exec exec :conn conn :included (envelope-included env) :env env))
                          (progn
                            (ingest-signatures peer env)
+                           ;; §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION.
+                           ;; This gate used to sit inside the :allow arm, so a pre-establishment
+                           ;; EXECUTE naming a FOREIGN namespace took the 401 an unauthenticated
+                           ;; request takes. §4.7's own reason: "a 401 directs the caller to
+                           ;; authenticate and retry, and for a foreign-namespace address that
+                           ;; retry cannot succeed at any authentication state — so the 401 names
+                           ;; a remedy that does not exist." §6.5 step 3 calls it "a gate, not an
+                           ;; ordering preference" and §1.4 makes the downstream permission check
+                           ;; unreachable here, so evaluating authentication first can only mislead.
+                           (let ((addr-path (canonicalize (peer-local-peer peer) (normalize-uri uri))))
+                            (if (not (string= (extract-peer (peer-local-peer peer) addr-path)
+                                              (peer-local-peer peer)))
+                                (err 400 "invalid_request" "not local peer")
                            (ecase (verify-request (peer-local-peer peer) (peer-store peer) env)
                              (:authn-fail (err 401 "authentication_failed"))
                              (:authz-deny (err 403 "capability_denied"))
                              (:chain-too-deep (err 400 "chain_depth_exceeded"))
                              (:allow
-                              (let ((path (canonicalize (peer-local-peer peer) (normalize-uri uri))))
-                                ;; §1.4: inbound dispatch must target the local peer.
-                                (if (not (string= (extract-peer (peer-local-peer peer) path) (peer-local-peer peer)))
-                                    (err 400 "invalid_request" "not local peer")
+                              (let ((path addr-path))
+                                ;; (The §1.4 address gate that used to sit here has moved ABOVE
+                                ;; the verdict — §4.7 0.8.2.6 orders it before authentication.
+                                ;; Reaching this arm at all means the path is local.)
+                                (progn
                                     (multiple-value-bind (pattern suffix) (resolve-handler peer path)
                                       (declare (ignore suffix))
                                       (if (null pattern) (err 404 "handler_not_found" path)
@@ -912,7 +926,7 @@ non-EXECUTE root (§3.3 server side ignores non-EXECUTE)."
                                                                     (list :exec exec :conn conn
                                                                           :included (envelope-included env)
                                                                           :caller-cap caller-cap :env env))
-                                                         (entity-native-dispatch peer pattern)))))))))))))))
+                                                         (entity-native-dispatch peer pattern)))))))))))))))))
                    (unresolvable-grantee () (err 401 "unresolvable_grantee"))
                    (error () (err 500 "internal_error")))))
           (make-envelope (make-response request-id (outcome-status outcome) (outcome-result outcome))

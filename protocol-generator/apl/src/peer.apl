@@ -233,14 +233,22 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  →(~uri≡'system/protocol/connect')/authz
  Z←fd CallHandler(R_CONNECT)(op)(env)(EntAbsent)('')('')
  →0
- authz:vr←CapVerifyRequest gLocal env ⋄ verdict←1⊃vr ⋄ unres←2⊃vr
+⍝ section 4.7 (0.8.2.6) - THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate
+⍝ used to sit below the verdict branches, so a pre-establishment EXECUTE naming a
+⍝ FOREIGN namespace took the 401 an unauthenticated request takes. The spec's own
+⍝ reason: a 401 directs the caller to authenticate and retry, and for a foreign
+⍝ namespace that retry cannot succeed at any authentication state, so the 401 names a
+⍝ remedy that does not exist. section 6.5 step 3 calls it a gate, not an ordering
+⍝ preference. An INVALID path keeps its 400 invalid_path disposition, below.
+ authz:cn←gLocal CapCanonicalize CapNormalizeUri uri ⋄ path←1⊃cn ⋄ invalid←2⊃cn
+ →(invalid)/av
+ →(~(gLocal CapExtractPeer path)≡gLocal)/eNotLocal
+ av:vr←CapVerifyRequest gLocal env ⋄ verdict←1⊃vr ⋄ unres←2⊃vr
  →(unres)/eUnres
  →(verdict=CV_AUTHN_FAIL)/eAuthn
  →(verdict=CV_AUTHZ_DENY)/eDeny
  →(verdict=CV_CHAIN_TOO_DEEP)/eDeep
- cn←gLocal CapCanonicalize CapNormalizeUri uri ⋄ path←1⊃cn ⋄ invalid←2⊃cn
  →(invalid)/eInvalid
- →(~(gLocal CapExtractPeer path)≡gLocal)/eNotLocal
  pattern←ResolveHandler path
  →(0=≢pattern)/eNoHandler
 ⍝ the BARE handler id, assigned here rather than after the granter branch below:

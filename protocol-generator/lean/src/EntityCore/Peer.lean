@@ -940,16 +940,28 @@ def dispatch (peer : Peer) (conn : Conn) (env : Envelope) : IO (Option Envelope)
       if uri == "system/protocol/connect" then connectHandler peer conn exec env.included
       else do
         ingestSignatures peer env
+        -- §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used
+        -- to sit inside the .allow arm, so a pre-establishment EXECUTE naming a FOREIGN
+        -- namespace took the 401 an unauthenticated request takes. §4.7's own reason: "a
+        -- 401 directs the caller to authenticate and retry, and for a foreign-namespace
+        -- address that retry cannot succeed at any authentication state — so the 401 names
+        -- a remedy that does not exist." §6.5 step 3 calls it "a gate, not an ordering
+        -- preference" and §1.4 makes the downstream permission check unreachable here.
+        let addrPath := canonPath peer.localPeer (EntityCore.Capability.normalizeUri uri)
+        if EntityCore.Capability.extractPeer peer.localPeer addrPath != peer.localPeer then
+          pure (err 400 "invalid_request" (some "not local peer"))
+        else
         match ← verifyRequest peer env with
         | .unresolvableGrantee => pure (err 401 "unresolvable_grantee")
         | .authnFail => pure (err 401 "authentication_failed")
         | .authzDeny => pure (err 403 "capability_denied")
         | .chainTooDeep => pure (err 400 "chain_depth_exceeded")
         | .allow => do
-          let path := canonPath peer.localPeer (EntityCore.Capability.normalizeUri uri)
-          if EntityCore.Capability.extractPeer peer.localPeer path != peer.localPeer then
-            pure (err 400 "invalid_request" (some "not local peer"))
-          else match ← resolveHandler peer path with
+          -- (The §1.4 address gate that used to sit here has moved ABOVE the verdict —
+          -- §4.7 0.8.2.6 orders it before authentication. Reaching this arm at all now
+          -- means the path is local.)
+          let path := addrPath
+          match ← resolveHandler peer path with
           | none => pure (err 404 "handler_not_found" (some path))
           | some (pattern, _suffix) =>
             let callerCap := (bytesField exec "capability").bind (includedGet env)

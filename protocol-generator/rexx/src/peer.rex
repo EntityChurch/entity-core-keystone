@@ -356,6 +356,14 @@ _dispatch_inner: procedure expose EC.
     return Peer_CallHandler('connect', h, operation, ctx)
   end
   call _ingest_signatures h, env
+  /* §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to  */
+  /* sit below the §5.2 verdict, so a pre-establishment EXECUTE naming a FOREIGN namespace  */
+  /* took the 401 an unauthenticated request takes. §4.7's own reason: "a 401 directs the  */
+  /* caller to authenticate and retry, and for a foreign-namespace address that retry  */
+  /* cannot succeed at any authentication state — so the 401 names a remedy that does not  */
+  /* exist." §6.5 step 3 calls it "a gate, not an ordering preference".  */
+  path = Cap_Canonicalize(Peer_LocalPeer(h), Cap_NormalizeUri(uri))
+  if Cap_ExtractPeer(Peer_LocalPeer(h), path) \== Peer_LocalPeer(h) then return Out_Err(400, 'invalid_request', 'not local peer')
   rv = Cap_VerifyRequest(Peer_LocalPeer(h), store_h, env)
   select
     when rv == 'AUTHN_FAIL'     then return Out_Err(401, 'authentication_failed', '')
@@ -363,8 +371,8 @@ _dispatch_inner: procedure expose EC.
     when rv == 'CHAIN_TOO_DEEP' then return Out_Err(400, 'chain_depth_exceeded', '')
     otherwise nop
   end
-  path = Cap_Canonicalize(Peer_LocalPeer(h), Cap_NormalizeUri(uri))
-  if Cap_ExtractPeer(Peer_LocalPeer(h), path) \== Peer_LocalPeer(h) then return Out_Err(400, 'invalid_request', 'not local peer')
+  /* (The §1.4 address gate that used to sit here has moved ABOVE the verdict — §4.7  */
+  /* 0.8.2.6 orders it before authentication. Reaching this line means the path is local.)  */
   pattern = _resolve_handler(h, path)
   if pattern == '' then return Out_Err(404, 'handler_not_found', path)
   cap_h = Ent_Bytes(exec, 'capability')

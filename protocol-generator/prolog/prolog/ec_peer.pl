@@ -201,8 +201,22 @@ run_chain(Peer, Env, Exec, Outbound, Outcome) :-
     peer_store(Peer, StoreId),
     peer_local_peer(Peer, Local),
     ingest_signatures(Peer, Env),
-    verify_request(Local, StoreId, Env, Verdict),
-    verdict_outcome(Verdict, Peer, Env, Exec, Outbound, Outcome).
+    % §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to
+    % sit in authorized_dispatch/5, reachable only on the `allow` verdict, so a
+    % pre-establishment EXECUTE naming a FOREIGN namespace took the 401 an unauthenticated
+    % request takes. §4.7's own reason: "a 401 directs the caller to authenticate and retry,
+    % and for a foreign-namespace address that retry cannot succeed at any authentication
+    % state — so the 401 names a remedy that does not exist." §6.5 step 3 calls it "a gate,
+    % not an ordering preference" and §1.4 makes the downstream permission check unreachable
+    % here, so evaluating authentication first can only mislead.
+    ( ent_text(Exec, "uri", AUri) -> true ; AUri = "" ),
+    normalize_uri(AUri, ANU),
+    canonicalize(Local, ANU, APath),
+    (   \+ extract_peer(Local, APath, Local)
+    ->  error_result("invalid_request", "not local peer", AR),
+        Outcome = outcome(400, AR, [])
+    ;   verify_request(Local, StoreId, Env, Verdict),
+        verdict_outcome(Verdict, Peer, Env, Exec, Outbound, Outcome) ).
 
 verdict_outcome(authn_fail, _, _, _, _, outcome(401, R, [])) :- !, error_result("authentication_failed", "", R).
 verdict_outcome(authz_deny, _, _, _, _, outcome(403, R, [])) :- !, error_result("capability_denied", "", R).
@@ -226,6 +240,10 @@ authorized_dispatch(Peer, Env, Exec, Outbound, Outcome) :-
     % 500 internal_error. So the refusal a source read finds — a tidy fallback
     % clause naming the right status — was never the answer on the wire. Measured
     % at oracle f313028: (500, "internal_error").
+    % (The gate itself has moved UP into run_chain/5, ahead of verify_request/4 —
+    % §4.7 0.8.2.6 orders the address before authentication. Reaching this clause at
+    % all now means the path is local; the check is kept as a cheap restatement so the
+    % two cannot drift apart silently.)
     ( \+ extract_peer(Local, Path, Local)
     -> error_result("invalid_request", "not local peer", R), Outcome = outcome(400, R, [])
     ;  resolve_handler(Peer, Path, Pattern)

@@ -46,8 +46,14 @@ def dec(b, p):
     raise ValueError("major %d" % major)
 
 
-# EXECUTE hello — connect path, no auth (§4.2). params = empty primitive/any.
-params = cmap([(txt("type"), txt("primitive/any")), (txt("data"), cmap([])),
+# EXECUTE hello — connect path, no auth (§4.2). params carry the §4.5 negotiated
+# fields. `protocols` is the one Required with NO default, so a hello without it is
+# refused 400 invalid_request: this fixture sent empty params until the §4.7 ladder
+# landed and then measured the peer as broken. A test client is a peer too.
+hello_data = cmap([(txt("key_types"), head(4, 1) + txt("ed25519")),
+                   (txt("protocols"), head(4, 1) + txt("entity-core/1.0")),
+                   (txt("hash_formats"), head(4, 1) + txt("ecfv1-sha256"))])
+params = cmap([(txt("type"), txt("primitive/any")), (txt("data"), hello_data),
                (txt("content_hash"), bstr(bytes(33)))])
 ed = cmap([(txt("request_id"), txt("hello-001")), (txt("uri"), txt("system/protocol/connect")),
            (txt("operation"), txt("hello")), (txt("params"), params)])

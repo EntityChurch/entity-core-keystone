@@ -91,6 +91,9 @@ typedef struct ec_conn {
     int            nonce_set;
     int            authenticated;     /* RT-6 (§4.6): a valid authenticate has already been
                                        * accepted on THIS conn — a second one is a nonce replay */
+    char           hello_peer[128];   /* §4.6 step 3 / §4.7 row 8: the peer_id THIS conn greeted
+                                       * as. Recorded only on the ACCEPT path of build_hello — a
+                                       * refused hello must leave no state on the connection. */
     double         accept_ms;         /* accept time (for idle-flood reaping) */
     int            got_data;          /* has this conn ever sent a byte? */
 } ec_conn;
@@ -663,6 +666,8 @@ static int           g_issued_nonce_set = 0;
 /* RT-6 (§4.6): mirrors ec_conn.authenticated for the single-global legacy
  * ([netreceive] test patch) path, same per-connection/global split as the nonce. */
 static int           g_authenticated = 0;
+/* §4.7 row 8: mirrors ec_conn.hello_peer on the same legacy path. */
+static char          g_hello_peer[128] = "";
 
 /* Minimal base64 decode (standard alphabet, '=' padding). Returns bytes or -1. */
 static int b64_decode(const char *in, unsigned char *out, size_t outcap)
@@ -765,6 +770,40 @@ static int hello_set_ok(const unsigned char *buf, size_t len, const char *field,
     return array_has_str(buf, len, arr.pos, value);
 }
 
+/* Element count of a hello params array field. -1 = the field is ABSENT (or the
+ * frame has no hello params at all), 0 = present and empty, n>0 = present with n
+ * entries. hello_set_ok above deliberately conflates absent with compatible — an
+ * absent hash_formats/key_types takes the §4.5 default set — and `protocols` is the
+ * one negotiated field with NO default, so it needs a predicate that can tell the
+ * two apart. */
+static int hello_array_len(const unsigned char *buf, size_t len, const char *field)
+{
+    cbor_rd root, rdata, params, pdata, arr;
+    if (!cbor_map_find(buf, len, 0, "root", &root)) return -1;
+    if (!cbor_map_find(buf, len, root.pos, "data", &rdata)) return -1;
+    if (!cbor_map_find(buf, len, rdata.pos, "params", &params)) return -1;
+    if (!cbor_map_find(buf, len, params.pos, "data", &pdata)) return -1;
+    if (!cbor_map_find(buf, len, pdata.pos, field, &arr)) return -1;   /* absent */
+    { cbor_rd r = { buf, len, arr.pos }; int mj; uint64_t n;
+      if (cbor_head(&r, &mj, &n) != 0 || mj != 4) return -1;
+      return (int)n; }
+}
+
+/* The peer_id the initiator greeted as, out of the hello params. Empty string when
+ * absent — a hello need not carry one, and §4.7 row 8's second input only bites when
+ * BOTH legs name a peer_id and they differ. */
+static void hello_peer_id(const unsigned char *buf, size_t len, char *out, size_t cap)
+{
+    cbor_rd root, rdata, params, pdata, f;
+    out[0] = '\0';
+    if (!cbor_map_find(buf, len, 0, "root", &root)) return;
+    if (!cbor_map_find(buf, len, root.pos, "data", &rdata)) return;
+    if (!cbor_map_find(buf, len, rdata.pos, "params", &params)) return;
+    if (!cbor_map_find(buf, len, params.pos, "data", &pdata)) return;
+    if (!cbor_map_find(buf, len, pdata.pos, "peer_id", &f)) return;
+    if (cbor_get_text(&f, out, cap) != 0) out[0] = '\0';
+}
+
 static void ecodec_build_hello(t_ecodec *x)
 {
     ec_init_identity();
@@ -779,6 +818,49 @@ static void ecodec_build_hello(t_ecodec *x)
     if (!hello_set_ok(g_rbuf, g_rbuf_len, "key_types", "ed25519")) {
         emit_error_response(x, 400, "unsupported_key_type"); return;
     }
+    /* §4.4 surface 6 / §4.7 row 3: the greeted identity's OWN key_type, read out of the
+     * peer_id multihash (§1.5) rather than out of any text field — an agility probe
+     * presents key_type=0xFD in the peer_id while `key_type` still reads "ed25519".
+     * pd already gated this at AUTHENTICATE; the hello is the earlier surface and §4.5
+     * calls it the canonical reject point.
+     *
+     * ORDERED BEFORE THE `protocols` LADDER BELOW, AND THAT ORDER IS THE WHOLE POINT
+     * (F56): AGILITY-UNKNOWN-1 sends key_type 0xFD **and** protocols ["entity-core/v7"]
+     * in ONE hello, so both gates match and whichever runs first names the failure.
+     * Measured with the two the other way round: 400 incompatible_protocol, where the
+     * §4.7 registry pins unsupported_key_type. */
+    {
+        char greeted[128];
+        hello_peer_id(g_rbuf, g_rbuf_len, greeted, sizeof greeted);
+        if (greeted[0]) {
+            uint64_t kt = 0, ht = 0; unsigned char dig[256]; size_t dl = 0;
+            int parsed = ec_peerid_parse((const uint8_t *)greeted, strlen(greeted),
+                                         &kt, &ht, dig, &dl) == EC_OK;
+            if (!parsed || kt != 1 /*Ed25519 — this peer's only sign/verify algorithm,
+                                    * same floor the authenticate rung enforces */) {
+                emit_error_response(x, 400, "unsupported_key_type"); return;
+            }
+        }
+    }
+    /* §4.5 `protocols` — the one negotiated field Required with NO default, so it
+     * carries TWO distinct §4.7 refusals and they are different rows:
+     *   absent or empty  → 400 invalid_request      (a peer that names no version has
+     *                                                made no incompatible-VERSION claim;
+     *                                                the request is malformed, row 10's
+     *                                                argument one row up)
+     *   non-empty disjoint → 400 incompatible_protocol   (§4.7 row 1)
+     *
+     * CHECKED LAST, AND THAT ORDER IS OBSERVABLE (F56): AGILITY-UNKNOWN-1 sends
+     * key_type 0xfd AND protocols ["entity-core/v7"] in one hello, so whichever gate
+     * runs first names the failure. §4.5 fixes no precedence between them, so the
+     * order is stated here rather than left to the order these ifs happen to sit in. */
+    {
+        int nproto = hello_array_len(g_rbuf, g_rbuf_len, "protocols");
+        if (nproto <= 0) { emit_error_response(x, 400, "invalid_request"); return; }
+        if (!hello_set_ok(g_rbuf, g_rbuf_len, "protocols", "entity-core/1.0")) {
+            emit_error_response(x, 400, "incompatible_protocol"); return;
+        }
+    }
     /* nonce: 32 bytes of CSPRNG (§4.5 hello `random(32)`, §4.6 "≥32-byte CSPRNG").
      * Sourced from a throwaway libsodium keypair's 32-byte public key (real
      * randomness). EC_ED25519_PUB_LEN == 32 = the required nonce width. */
@@ -788,6 +870,11 @@ static void ecodec_build_hello(t_ecodec *x)
      * (g_cur_conn set), else the single global (legacy [netreceive] test patches). */
     if (g_cur_conn) { memcpy(g_cur_conn->nonce, nonce, 32); g_cur_conn->nonce_set = 1; }
     else { memcpy(g_issued_nonce, nonce, sizeof(g_issued_nonce)); g_issued_nonce_set = 1; }
+    /* §4.7 row 8 second input: remember who we were greeted BY, so a later authenticate
+     * naming a different peer_id is caught. Recorded only here, past every refusal above
+     * — a rejected hello must leave no state on the connection. */
+    if (g_cur_conn) hello_peer_id(g_rbuf, g_rbuf_len, g_cur_conn->hello_peer, sizeof g_cur_conn->hello_peer);
+    else hello_peer_id(g_rbuf, g_rbuf_len, g_hello_peer, sizeof g_hello_peer);
     uint64_t ts = wall_ms();
 
     /* result data — canonical key order (length-then-lex): nonce(5) peer_id(7)
@@ -842,6 +929,70 @@ static void ecodec_auth_check_established(t_ecodec *x)
     int already = g_cur_conn ? g_cur_conn->authenticated : g_authenticated;
     t_atom a; SETFLOAT(&a, already ? 0 : 1);
     outlet_anything(x->x_out, gensym("established_ok"), 1, &a);
+}
+
+/* [hello_state( — §4.7 rows 8 and 9: which connection state is THIS `hello` arriving
+ * in? A PREDICATE, not a decision — the canvas owns the three-way verdict.
+ *
+ *   0 = fresh        — no hello has been accepted on this conn → build_hello
+ *   1 = half-open    — hello accepted, authenticate not yet → 409 connection_sequence_error
+ *   2 = established  — the handshake completed            → 409 connection_already_established
+ *
+ * The two refusals are DIFFERENT rows with different codes and the same status, and
+ * §4.7 spells the distinction out: "connection already established" is its own row,
+ * while a second hello before authenticate is the out-of-order row — "a connect
+ * operation the responder implements, arriving in a state that forbids it". A peer
+ * that folds them into one code fails the MUST-emit contract that table exists for.
+ *
+ * `nonce_set` IS the half-open bit: build_hello writes it only past every §4.5
+ * refusal, so a REJECTED hello leaves the connection fresh and the caller may retry
+ * with a conformant one. */
+static void ecodec_hello_state(t_ecodec *x)
+{
+    int done = g_cur_conn ? g_cur_conn->nonce_set     : g_issued_nonce_set;
+    int est  = g_cur_conn ? g_cur_conn->authenticated : g_authenticated;
+    t_atom a; SETFLOAT(&a, est ? 2 : (done ? 1 : 0));
+    outlet_anything(x->x_out, gensym("hello_state"), 1, &a);
+}
+
+/* [uri_is_connect( — is this EXECUTE addressed to the connect handler? A PREDICATE;
+ * the canvas branches on it.
+ *
+ * It exists for §4.7's LAST row: "an operation name the responder does not implement,
+ * in any state" is 400 invalid_request — but ONLY for a connect EXECUTE. The same
+ * unknown operation on system/tree is 501 unsupported_operation (§3.3's 501 slot), and
+ * on an unregistered path 404 handler_not_found. Without this predicate the canvas
+ * cannot tell those three apart, and pd's op-switch sent every non-hello/authenticate
+ * operation down the §5.2 authz ladder — where an unknown CONNECT op arrived carrying
+ * no author and was refused 401 authentication_failed, naming a remedy (authenticate)
+ * that cannot fix an operation name. */
+static const char *to_peer_relative(const char *in);   /* defined with the §6.6 walk helpers */
+static void ecodec_uri_is_connect(t_ecodec *x)
+{
+    const char *rel = to_peer_relative(g_dec.uri);
+    int ok = (strcmp(rel, "system/protocol/connect") == 0);
+    t_atom a; SETFLOAT(&a, ok);
+    outlet_anything(x->x_out, gensym("connect_uri"), 1, &a);
+}
+
+/* [auth_check_hello_binding( — §4.6 step 3 / §4.7 row 8, SECOND input. The row names
+ * two: `peer_id` not derived from `public_key` (that is [auth_check_bind(, above) and
+ * a hello/authenticate peer_id MISMATCH — this one. They share a code because they are
+ * one failure seen from two sides, and implementing only the first leaves a caller free
+ * to greet as one peer and authenticate as another: deriving peer_id from public_key
+ * proves the identity is SELF-CONSISTENT and says nothing about whether it is the
+ * identity this connection has been negotiating with. Every seed-policy lookup after
+ * the handshake then resolves against the wrong peer.
+ *
+ * Vacuous when the hello named no peer_id (the field is optional there) — the row bites
+ * only when both legs name one and they differ. */
+static void ecodec_auth_check_hello_binding(t_ecodec *x)
+{
+    const char *greeted = g_cur_conn ? g_cur_conn->hello_peer : g_hello_peer;
+    int ok = !(greeted && greeted[0] && g_auth.valid && g_auth.peer_id[0]
+               && strcmp(greeted, g_auth.peer_id) != 0);
+    t_atom a; SETFLOAT(&a, ok ? 1 : 0);
+    outlet_anything(x->x_out, gensym("hello_bind_ok"), 1, &a);
 }
 
 /* [auth_decode( — parse the authenticate EXECUTE in the frame buffer. The
@@ -3993,7 +4144,12 @@ void ecodec_setup(void)
     class_addmethod(ecodec_class, (t_method)ecodec_auth_check_nonce, gensym("auth_check_nonce"), 0);
     class_addmethod(ecodec_class, (t_method)ecodec_auth_check_sig,   gensym("auth_check_sig"),   0);
     class_addmethod(ecodec_class, (t_method)ecodec_auth_check_bind,  gensym("auth_check_bind"),  0);
+    class_addmethod(ecodec_class, (t_method)ecodec_auth_check_hello_binding, gensym("auth_check_hello_binding"), 0);
     class_addmethod(ecodec_class, (t_method)ecodec_build_grant,      gensym("build_grant"),      0);
+    /* §4.7 connect-error rungs: which state is this hello in, and is this EXECUTE
+     * addressed to the connect handler at all. */
+    class_addmethod(ecodec_class, (t_method)ecodec_hello_state,      gensym("hello_state"),      0);
+    class_addmethod(ecodec_class, (t_method)ecodec_uri_is_connect,   gensym("uri_is_connect"),   0);
     /* §5.2 verify_request authorization rungs (canvas guard ladder) */
     class_addmethod(ecodec_class, (t_method)ecodec_authz_decode,             gensym("authz_decode"),             0);
     class_addmethod(ecodec_class, (t_method)ecodec_authz_check_integrity,    gensym("authz_check_integrity"),    0);

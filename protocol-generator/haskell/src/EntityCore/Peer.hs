@@ -972,16 +972,28 @@ dispatch p conn env = do
             ingestSignatures p env
             (resolve, revoked) <- buildResolver p env
             t <- nowMs
-            case verifyRequest (peerLocal p) t revoked resolve env of
+            -- §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate
+            -- used to sit inside the ReqAllow arm, so a pre-establishment EXECUTE naming a
+            -- FOREIGN namespace took the 401 an unauthenticated request takes. §4.7's own
+            -- reason: "a 401 directs the caller to authenticate and retry, and for a
+            -- foreign-namespace address that retry cannot succeed at any authentication
+            -- state — so the 401 names a remedy that does not exist." §6.5 step 3 calls it
+            -- "a gate, not an ordering preference" and §1.4 makes the downstream permission
+            -- check unreachable here, so evaluating authentication first can only mislead.
+            let addrPath = canonicalize (peerLocal p) (normalizeUri uri)
+            if extractPeer (peerLocal p) addrPath /= peerLocal p
+              then pure (errMsg 400 "invalid_request" "not local peer")
+              else case verifyRequest (peerLocal p) t revoked resolve env of
               ReqUnresolvable -> pure (errOc 401 "unresolvable_grantee")
               ReqAuthnFail -> pure (errOc 401 "authentication_failed")
               ReqAuthzDeny -> pure (errOc 403 "capability_denied")
               ReqChainTooDeep -> pure (errOc 400 "chain_depth_exceeded")
               ReqAllow -> do
-                let path = canonicalize (peerLocal p) (normalizeUri uri)
-                if extractPeer (peerLocal p) path /= peerLocal p
-                  then pure (errMsg 400 "invalid_request" "not local peer")
-                  else do
+                -- (The §1.4 address gate that used to sit here has moved ABOVE the
+                -- verdict — §4.7 0.8.2.6 orders it before authentication. Reaching this
+                -- arm at all now means the path is local.)
+                let path = addrPath
+                do
                     mres <- resolveHandler p path
                     case mres of
                       Nothing -> pure (errMsg 404 "handler_not_found" path)

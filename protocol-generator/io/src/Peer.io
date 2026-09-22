@@ -217,15 +217,22 @@ Peer := Object clone do(
         if(uri == nil or(Capability isReservedPath(Capability normalizeUri(uri))),
             return Outcome err(400, "non_canonical_ecf", nil))
         _ingestSignatures(env)
+        // §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to
+        // sit below the §5.2 verdict, so a pre-establishment EXECUTE naming a FOREIGN namespace
+        // took the 401 an unauthenticated request takes. §4.7's own reason: "a 401 directs the
+        // caller to authenticate and retry, and for a foreign-namespace address that retry
+        // cannot succeed at any authentication state — so the 401 names a remedy that does not
+        // exist." §6.5 step 3 calls it "a gate, not an ordering preference".
+        path := Capability canonicalize(localPeer, Capability normalizeUri(uri))
+        if(Capability extractPeer(localPeer, path) != localPeer,
+            return Outcome err(400, "invalid_request", "not local peer"))
         rv := Capability verifyRequest(localPeer, store, env)
         if(rv == "AUTHN_FAIL", return Outcome err(401, "authentication_failed", nil))
         if(rv == "UNRESOLVABLE_GRANTEE", return Outcome err(401, "unresolvable_grantee", nil))  // §5.2/PR-3 carve-out
         if(rv == "AUTHZ_DENY", return Outcome err(403, "capability_denied", nil))
         if(rv == "CHAIN_TOO_DEEP", return Outcome err(400, "chain_depth_exceeded", nil))
-        path := Capability canonicalize(localPeer, Capability normalizeUri(uri))
-        // §1.4 inbound dispatch must target the local peer
-        if(Capability extractPeer(localPeer, path) != localPeer,
-            return Outcome err(400, "invalid_request", "not local peer"))
+        // (The §1.4 address gate that used to sit here has moved ABOVE the verdict — §4.7
+        // 0.8.2.6 orders it before authentication. Reaching this line means the path is local.)
         pattern := store resolveHandlerPattern(path)
         if(pattern == nil, return Outcome err(404, "handler_not_found", path))
         capH := exec bytes("capability")

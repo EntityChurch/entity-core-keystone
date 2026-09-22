@@ -240,9 +240,17 @@ perm AS (
        THEN 'capability_revoked'
 
   -- §6.6 handler resolution (AFTER verify_request passes, §6.5 order): no handler → 404
+  --
+  -- The code is `handler_not_found` (§3.3's 404 row, 0.8.2.7), NOT `not_found`. The two
+  -- are different rows with different remedies: this one says no handler governs the path
+  -- at all, while `not_found` is a bound-path miss INSIDE a resolved handler (tree get,
+  -- handlers.inc.c). THIS rung is the one the wire observes -- the host carries the same
+  -- refusal at peer.c's resolve_handler() miss, but the ladder runs FIRST and the host arm
+  -- is unreachable for an unregistered path. Correcting only the host site left the peer
+  -- answering `not_found` and read as if the fix had not landed.
   WHEN (SELECT path FROM handler h
         WHERE (SELECT uri FROM req)=h.path OR (SELECT uri FROM req) GLOB h.path||'/*'
-        ORDER BY length(h.path) DESC LIMIT 1) IS NULL THEN 'not_found'
+        ORDER BY length(h.path) DESC LIMIT 1) IS NULL THEN 'handler_not_found'
 
   -- §5.2 check_permission: no single grant covers op+handler+peer(+resource) → 403
   WHEN NOT EXISTS (SELECT 1 FROM perm) THEN 'capability_denied'
@@ -297,7 +305,7 @@ SELECT
     WHEN 'chain_depth_exceeded'   THEN '400'   -- §4.10(b) structural excess (NOT 403 by design)
     WHEN 'authentication_failed'  THEN '401'   -- §5.2 step-2 auth-class
     WHEN 'unresolvable_grantee'   THEN '401'   -- §5.5 PR-3 authz carve-out
-    WHEN 'not_found'              THEN '404'   -- §6.6 no handler resolved
+    WHEN 'handler_not_found'      THEN '404'   -- §6.6 no handler resolved (§3.3 404 row)
     WHEN 'scope_exceeds_authority' THEN '403'  -- §6.2 mint-bound (authz, distinct code)
     WHEN 'ok'                     THEN '200'
     ELSE                               '403'   -- capability_denied / capability_revoked (authz)

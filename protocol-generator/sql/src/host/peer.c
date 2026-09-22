@@ -963,18 +963,19 @@ static void dispatch_frame(int fd, conn_state *cs, const unsigned char *buf, siz
         (void)emit_error(fd, rid, 400, "invalid_request"); return;
     }
 
-    /* §4.7: a non-connect EXECUTE arriving BEFORE the handshake completes is refused
-     * 401 authentication_failed. `capability_denied` is authorization-class and names a
-     * remedy that does not apply: the caller's remedy is to finish the handshake, not to
-     * present authority. */
-    if (!cs->established) { (void)emit_error(fd, rid, 401, "authentication_failed"); return; }
-
     /* §1.4 normalize the dispatch URI: strip the entity:// scheme → an absolute /{peer}/... path
      * (the wire uri is entity://{peer}/rest; handler registration paths + resolve.sql are /{peer}/…). */
     char nuri[600];
     if (strncmp(uri,"entity://",9)==0) snprintf(nuri,sizeof nuri,"/%s",uri+9);
     else if (uri[0]=='/') snprintf(nuri,sizeof nuri,"%s",uri);
     else snprintf(nuri,sizeof nuri,"/%s/%s",g_peer_id,uri);
+
+    /* §4.7 (0.8.2.6): THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION, so the gate below
+     * now runs ahead of the pre-establishment refusal rather than after it. A
+     * pre-establishment EXECUTE naming a FOREIGN namespace used to take the 401, and
+     * §4.7's own reason for the split is that "a 401 directs the caller to authenticate
+     * and retry, and for a foreign-namespace address that retry cannot succeed at any
+     * authentication state — so the 401 names a remedy that does not exist." */
 
     /* §1.4 / §6.5 step 3: the ADDRESS gate. An inbound EXECUTE naming another
      * peer's namespace is refused here — after canonicalization, BEFORE handler
@@ -997,6 +998,14 @@ static void dispatch_frame(int fd, conn_state *cs, const unsigned char *buf, siz
         }
     }
 
+    /* §4.7: a non-connect EXECUTE on a LOCAL address arriving BEFORE the handshake
+     * completes is refused 401 authentication_failed. `capability_denied` is
+     * authorization-class and names a remedy that does not apply: the caller's remedy is
+     * to finish the handshake, not to present authority. Ordered AFTER the address gate
+     * above — §4.7 0.8.2.6 — because for a foreign address no authentication state can
+     * make the retry succeed. */
+    if (!cs->established) { (void)emit_error(fd, rid, 401, "authentication_failed"); return; }
+
     /* §6.5: project the §5.8 chain, ask verify_ladder.sql for the (status,code) verdict. */
     char status[8], code[64];
     project_and_verify(buf,len,root.pos,rdata.pos,nuri,op,status,code);
@@ -1006,7 +1015,13 @@ static void dispatch_frame(int fd, conn_state *cs, const unsigned char *buf, siz
     char pattern[512];
     /* §3.3's 404 row (0.8.2.7) names the code `handler_not_found`. `not_found` is the
      * code for a bound-path miss INSIDE a handler (tree get); this is the RESOLUTION
-     * step failing, a different row and a different remedy. */
+     * step failing, a different row and a different remedy.
+     *
+     * NOTE this arm is NOT what the wire observes: verify_ladder.sql carries the same
+     * §6.6 resolution-miss rung and runs FIRST (project_and_verify above), so an
+     * unregistered path is refused there. Kept as a backstop for the case where the
+     * ladder's handler table and this query could disagree; the SPELLING must stay in
+     * step with the ladder's, and changing only this one is measurably a no-op. */
     if (!resolve_handler(nuri,pattern,sizeof pattern)) { (void)emit_error(fd, rid, 404, "handler_not_found"); return; }
     dispatch_body(fd, cs, rid, pattern, nuri, op, buf, len, rdata.pos);
 }
@@ -1163,7 +1178,20 @@ static int selftest_client(int port) {
 
     /* leg 1: hello — parse the full response for status/type/rid AND the issued §4.6 nonce */
     unsigned char nonce[64]={0}; size_t nonce_len=0;
-    if (send_execute(fd,"hello-1","system/protocol/connect","hello",NULL,0,NULL,0)) { fprintf(stderr,"send hello\n"); return 2; }
+    /* §4.5 makes `protocols` REQUIRED on a hello with NO default, so a dialer that sends
+     * empty params is refused `400 missing_required_field` by our own responder — which is
+     * exactly what this selftest did from the day the §4.7 ladder landed until the S3 gate
+     * was next run. The client is a peer too: every in-tree site that BUILDS a hello has to
+     * carry the field. Key order is canonical length-then-lex: key_types(9) protocols(9)
+     * hash_formats(12). */
+    wbuf hp={0};
+    if (wb_head(&hp,5,3)
+        || wb_text(&hp,"key_types")    || wb_head(&hp,4,1) || wb_text(&hp,"ed25519")
+        || wb_text(&hp,"protocols")    || wb_head(&hp,4,1) || wb_text(&hp,"entity-core/1.0")
+        || wb_text(&hp,"hash_formats") || wb_head(&hp,4,1) || wb_text(&hp,"ecfv1-sha256")) {
+        free(hp.p); fprintf(stderr,"build hello params\n"); return 2; }
+    if (send_execute(fd,"hello-1","system/protocol/connect","hello",hp.p,hp.len,NULL,0)) { free(hp.p); fprintf(stderr,"send hello\n"); return 2; }
+    free(hp.p);
     { unsigned char *fb; uint32_t fl; if (read_frame(fd,&fb,&fl)!=1) { fprintf(stderr,"recv hello\n"); return 2; }
       cbor_rd root,tf,rdata,ridf,statf,res,resd,nf; st=0; rt[0]=rid[0]=0;
       if (cbor_map_find(fb,fl,0,"root",&root)) {

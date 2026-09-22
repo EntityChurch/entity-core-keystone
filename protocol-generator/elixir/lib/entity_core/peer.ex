@@ -1283,6 +1283,23 @@ defmodule EntityCore.Peer do
   defp dispatch_request(t, conn, env, exec, uri) do
     ingest_signatures(t, env)
 
+    # §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to
+    # sit below the verdict, so a pre-establishment EXECUTE naming a FOREIGN namespace
+    # took the 401 an unauthenticated request takes. §4.7's own reason: "a 401 directs
+    # the caller to authenticate and retry, and for a foreign-namespace address that
+    # retry cannot succeed at any authentication state — so the 401 names a remedy that
+    # does not exist." §6.5 step 3 calls it "a gate, not an ordering preference" and
+    # §1.4 makes the downstream permission check unreachable here.
+    addr_path = Capability.canonicalize(t.local_peer, Capability.normalize_uri(uri))
+
+    if Capability.extract_peer(t.local_peer, addr_path) != t.local_peer do
+      err(400, "invalid_request", "not local peer")
+    else
+      dispatch_verified(t, conn, env, exec, uri)
+    end
+  end
+
+  defp dispatch_verified(t, conn, env, exec, uri) do
     case Capability.verify_request(t.local_peer, t.store, env) do
       :unresolvable_grantee -> err(401, "unresolvable_grantee")
       :req_authn_fail -> err(401, "authentication_failed")
@@ -1295,10 +1312,9 @@ defmodule EntityCore.Peer do
   defp dispatch_authorized(t, conn, env, exec, uri) do
     path = Capability.canonicalize(t.local_peer, Capability.normalize_uri(uri))
 
-    # §1.4: inbound dispatch must target the local peer.
-    if Capability.extract_peer(t.local_peer, path) != t.local_peer do
-      err(400, "invalid_request", "not local peer")
-    else
+    # (The §1.4 address gate that used to sit here has moved ABOVE the verdict — §4.7
+    # 0.8.2.6 orders it before authentication. Reaching this line means the path is local.)
+    if true do
       case resolve_handler(t, path) do
         nil ->
           err(404, "handler_not_found", path)

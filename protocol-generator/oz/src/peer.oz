@@ -247,8 +247,23 @@ define
          {CallHandler P 'connect' Operation ctx(conn:C env:E callerCap:absent)}
       else
          {IngestSignatures P E}
-         local Rv = {Cap.verifyRequest P.localPeer St E} in
-            if Rv == 'authnFail' then {OutErr 401 "authentication_failed" ""}
+         %% §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. The address gate
+         %% below is reachable only on the `allow` verdict, so a pre-establishment EXECUTE naming
+         %% a FOREIGN namespace took the 401 an unauthenticated request takes. §4.7's own reason:
+         %% "a 401 directs the caller to authenticate and retry, and for a foreign-namespace
+         %% address that retry cannot succeed at any authentication state — so the 401 names a
+         %% remedy that does not exist." §6.5 step 3 calls it "a gate, not an ordering preference".
+         %%
+         %% Expressed as the FIRST branch of the existing verdict chain rather than as a wrapping
+         %% if/else: Rv is a pure verdict and binding it costs nothing observable, so the branch
+         %% order alone decides the answer, and the deep `end` nesting below stays untouched. The
+         %% gate on the `allow` path is left in place as a cheap restatement so the two cannot
+         %% drift apart silently.
+         local Rv = {Cap.verifyRequest P.localPeer St E}
+               AddrPath = {Hp.canonicalize P.localPeer {Hp.normalizeUri Uri}} in
+            if {Hp.extractPeer P.localPeer AddrPath} \= P.localPeer then
+               {OutErr 400 "invalid_request" "not local peer"}
+            elseif Rv == 'authnFail' then {OutErr 401 "authentication_failed" ""}
             elseif Rv == 'authzDeny' then {OutErr 403 "capability_denied" ""}
             elseif Rv == 'chainTooDeep' then {OutErr 400 "chain_depth_exceeded" ""}
             else

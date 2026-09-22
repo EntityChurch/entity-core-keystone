@@ -369,6 +369,23 @@ func (p *Peer) runChain(c *conn, env Envelope, exec Entity, uri string) outcome 
 
 	p.ingestSignatures(env)
 
+	// §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION, and this gate used
+	// to sit below the verdict switch. A pre-establishment EXECUTE naming a FOREIGN
+	// namespace is 400 invalid_request, not the 401 an unauthenticated request would
+	// otherwise take: §4.7's own reason is that "a 401 directs the caller to authenticate
+	// and retry, and for a foreign-namespace address that retry cannot succeed at any
+	// authentication state — so the 401 names a remedy that does not exist." §6.5 step 3
+	// calls it "a gate, not an ordering preference" and §1.4 makes the downstream
+	// permission check unreachable on this path, so evaluating authentication first can
+	// only mislead.
+	//
+	// Guarded on pathOK so a MALFORMED path keeps its existing disposition (400
+	// invalid_path, below, after the verdict) rather than being silently re-coded here.
+	if path, pathOK := canonicalize(p.localPeer, normalizeURI(uri)); pathOK &&
+		extractPeer(p.localPeer, path) != p.localPeer {
+		return errOutcome(400, "invalid_request", "not local peer")
+	}
+
 	switch verifyRequest(p.localPeer, p.store, env) {
 	case VerdictAuthnFail:
 		return errOutcome(401, "authentication_failed", "")
@@ -384,15 +401,10 @@ func (p *Peer) runChain(c *conn, env Envelope, exec Entity, uri string) outcome 
 	if !pathOK {
 		return errOutcome(400, "invalid_path", uri)
 	}
-	// §1.4 / §6.5 step 3: inbound dispatch must target the local peer. This is a
-	// gate on the ADDRESS, evaluated before handler resolution and before
-	// check_permission, so the refusal is 400 invalid_request and never an authz
-	// or handler verdict — a 404 here would assert "this peer has no such
-	// handler", which is false of a peer that has it and is refusing the address
-	// (§6.2, 0.8.2.2).
-	if extractPeer(p.localPeer, path) != p.localPeer {
-		return errOutcome(400, "invalid_request", "not local peer")
-	}
+	// (The §1.4 / §6.5 step 3 address gate that used to sit here has moved ABOVE the
+	// verdict switch — §4.7 0.8.2.6 orders it before authentication, not merely before
+	// handler resolution and check_permission. Reaching it here at all now means the path
+	// is local.)
 	pattern, ok := p.resolveHandler(path)
 	if !ok {
 		return errOutcome(404, "handler_not_found", path)

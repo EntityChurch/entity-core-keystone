@@ -266,6 +266,28 @@ procedure division using lk-conn lk-env lk-env-len lk-out lk-out-len lk-hasresp.
 *> ---- §6.5 dispatch chain -------------------------------------------
 do-chain.
     call "ingest-signatures" using lk-env inc-off inc-fnd
+*> §4.7 (0.8.2.6) -- THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate
+*> used to sit after the verify-request evaluate below, so a pre-establishment
+*> EXECUTE naming a FOREIGN namespace took the 401 an unauthenticated request
+*> takes. §4.7's own reason: a 401 directs the caller to authenticate and retry,
+*> and for a foreign-namespace address that retry cannot succeed at any
+*> authentication state -- so the 401 names a remedy that does not exist. §6.5
+*> step 3 calls it a gate, not an ordering preference, and §1.4 makes the
+*> downstream permission check unreachable here.
+    if uri-len >= 9 and uri(1:9) = "entity://"
+        move "/" to nuri(1:1)
+        compute nuri-len = uri-len - 9
+        if nuri-len > 0 then move uri(10:nuri-len) to nuri(2:nuri-len) end-if
+        compute nuri-len = nuri-len + 1
+    else
+        move uri(1:uri-len) to nuri(1:uri-len)
+        move uri-len to nuri-len
+    end-if
+    call "cap-canon" using nuri nuri-len local locallen path pathlen
+    call "cap-extract-peer" using path pathlen local locallen tp tplen
+    if not (tplen = locallen and tp(1:tplen) = local(1:locallen))
+        perform resp-400-invreq  exit paragraph
+    end-if
     call "verify-request" using lk-env root-off inc-off inc-fnd verdict
     evaluate verdict
         when 1
@@ -289,22 +311,9 @@ do-chain.
             call "error-result" using errcode errcode-len res-ent res-len res-hash
             exit paragraph
     end-evaluate
-    *> verdict 0 = allow. normalize + canonicalize uri -> path
-    if uri-len >= 9 and uri(1:9) = "entity://"
-        move "/" to nuri(1:1)
-        compute nuri-len = uri-len - 9
-        if nuri-len > 0 then move uri(10:nuri-len) to nuri(2:nuri-len) end-if
-        compute nuri-len = nuri-len + 1
-    else
-        move uri(1:uri-len) to nuri(1:uri-len)
-        move uri-len to nuri-len
-    end-if
-    call "cap-canon" using nuri nuri-len local locallen path pathlen
-    *> §1.4 inbound must target the local peer
-    call "cap-extract-peer" using path pathlen local locallen tp tplen
-    if not (tplen = locallen and tp(1:tplen) = local(1:locallen))
-        perform resp-400-invreq  exit paragraph
-    end-if
+    *> verdict 0 = allow. `path` was already normalized, canonicalized and
+    *> address-gated above the verify-request call -- §4.7 0.8.2.6 orders the
+    *> address before authentication -- so reaching this line means it is local.
     call "resolve-handler" using path pathlen pat patlen hfound
     if hfound = 0 then perform resp-404  exit paragraph end-if
     *> Strip "/{local}/" to the bare handler id BEFORE the permission check.

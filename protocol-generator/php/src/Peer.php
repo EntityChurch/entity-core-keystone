@@ -356,6 +356,17 @@ final class Peer
                 ->handle($operation, new HandlerContext($exec, $conn, $env->included, null, $env));
         }
         $this->ingestSignatures($env);
+        // §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to
+        // sit below the verdict, so a pre-establishment EXECUTE naming a FOREIGN namespace took
+        // the 401 an unauthenticated request takes. §4.7's own reason: "a 401 directs the caller
+        // to authenticate and retry, and for a foreign-namespace address that retry cannot
+        // succeed at any authentication state — so the 401 names a remedy that does not exist."
+        // §6.5 step 3 calls it "a gate, not an ordering preference" and §1.4 makes the downstream
+        // permission check unreachable here.
+        $path = Capability::canonicalize($this->localPeer, Capability::normalizeUri($uri));
+        if (Capability::extractPeer($this->localPeer, $path) !== $this->localPeer) {
+            return Outcome::err(400, 'invalid_request', 'not local peer');
+        }
         // §5.2 three-way request verdict (+ §4.10(b) chain-depth) — exhaustive match.
         $rv = Capability::verifyRequest($this->localPeer, $this->store, $env);
         $deny = match ($rv) {
@@ -367,11 +378,8 @@ final class Peer
         if ($deny !== null) {
             return $deny;
         }
-        $path = Capability::canonicalize($this->localPeer, Capability::normalizeUri($uri));
-        // §1.4: inbound dispatch must target the local peer.
-        if (Capability::extractPeer($this->localPeer, $path) !== $this->localPeer) {
-            return Outcome::err(400, 'invalid_request', 'not local peer');
-        }
+        // (The §1.4 address gate that used to sit here has moved ABOVE the verdict — §4.7
+        // 0.8.2.6 orders it before authentication. Reaching this line means the path is local.)
         $pattern = $this->resolveHandler($path);
         if ($pattern === null) {
             return Outcome::err(404, 'handler_not_found', $path);

@@ -105,11 +105,13 @@ variable uri-addressed
   hpa hpu s" system/protocol/connect" str-starts if
     conn exec  incA-addr incA-len incA-n  hnd-connect exit
   then
-  \ authenticated path (§6.5 order): AUTHN → resolve (404) → AUTHZ (403) → dispatch.
-  \ 1. integrity/authn first (an unsigned request is 401 whatever the path).
-  exec incA-addr incA-len incA-n cap-verify-authn { averdict }
-  averdict VERDICT-ALLOW <> if averdict cap-verdict-error exit then
-  \ 1a. §1.4 / §6.5 step 3 — the ADDRESS gate, BEFORE resolution and BEFORE authz.
+  \ authenticated path (§6.5 order): ADDRESS → AUTHN → resolve (404) → AUTHZ (403) → dispatch.
+  \ 0. §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to sit
+  \    one rung DOWN, after cap-verify-authn, so a pre-establishment EXECUTE naming a FOREIGN
+  \    namespace took the 401 an unsigned request takes. §4.7's own reason: a 401 directs the
+  \    caller to authenticate and retry, and for a foreign-namespace address that retry cannot
+  \    succeed at any authentication state — so the 401 names a remedy that does not exist.
+  \ §1.4 / §6.5 step 3 — the ADDRESS gate, BEFORE authn, BEFORE resolution and BEFORE authz.
   \     uri->handler-path above drops the peer segment unconditionally, which is exactly
   \     the route §6.5 forbids: strip the foreign peer id, resolve the LOCAL handler at
   \     the remaining path, and let §5.2 Dimension 4 decide. That answers 403/404 for what
@@ -118,6 +120,9 @@ variable uri-addressed
   \     foreign-namespace escalation.
   exec exec-uri uri-targets-local? 0= if
     400 s" invalid_request" 0 0 error-result exit then
+  \ 1. integrity/authn (an unsigned request is 401 on any LOCAL path).
+  exec incA-addr incA-len incA-n cap-verify-authn { averdict }
+  averdict VERDICT-ALLOW <> if averdict cap-verdict-error exit then
   \ 2. resolve the handler by the URI (§6.6 tree-walk); miss -> 404 (resolution-first: 404
   \    beats 403 for an unregistered path).
   hpa hpu resolve-handler dup 0= if 2drop 404 s" handler_not_found" 0 0 error-result exit then

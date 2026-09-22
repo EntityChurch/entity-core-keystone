@@ -391,6 +391,16 @@ contains
       oc = call_handler(R_CONNECT, slot, operation, env, ent_absent(), '', '')
       return
     end if
+    ! §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to
+    ! sit below the §5.2 verdict, so a pre-establishment EXECUTE naming a FOREIGN namespace
+    ! took the 401 an unauthenticated request takes. §4.7's own reason: "a 401 directs the
+    ! caller to authenticate and retry, and for a foreign-namespace address that retry
+    ! cannot succeed at any authentication state — so the 401 names a remedy that does not
+    ! exist." §6.5 step 3 calls it "a gate, not an ordering preference".
+    call cap_canonicalize(g_local, cap_normalize_uri(uri), path, invalid)
+    if (.not. invalid) then
+      if (cap_extract_peer(g_local, path) /= g_local) then; oc = out_err(400, 'invalid_request', 'not local peer'); return; end if
+    end if
     verdict = cap_verify_request(g_local, g_store, env, unresolvable)
     if (unresolvable) then; oc = out_err(401, 'unresolvable_grantee', ''); return; end if
     select case (verdict)
@@ -400,7 +410,8 @@ contains
     end select
     call cap_canonicalize(g_local, cap_normalize_uri(uri), path, invalid)
     if (invalid) then; oc = out_err(400, 'invalid_path', ''); return; end if
-    if (cap_extract_peer(g_local, path) /= g_local) then; oc = out_err(400, 'invalid_request', 'not local peer'); return; end if
+    ! (The §1.4 address gate that used to sit here has moved ABOVE the verdict — §4.7
+    ! 0.8.2.6 orders it before authentication. Reaching this line means the path is local.)
     pattern = resolve_handler(path)
     if (len(pattern) == 0) then; oc = out_err(404, 'handler_not_found', path); return; end if
     cap_h = ent_bytes(exec, 'capability')

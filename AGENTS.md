@@ -325,7 +325,33 @@ Two conformance **oracles** are ground truth (built from `entity-core-go`, see B
   *previous* census and reads exactly like "this run starved." Scope every census-wide grep to the
   peers the run actually measured (or check mtimes) before drawing a conclusion from it — the
   starvation check itself is mandatory and unchanged, but it must be asked of the right files.
-- **A source grep is not a conformance census.** The bucket-B RT-6 audit was grep-derived
+  **RATIFIED 2026-09-08 — the same is true of every `--probe <NAME>` directory, and it bites
+  harder there because a probe report has no check-set gate behind it.** Re-reading
+  `output/scratch/kind-c-connect-errors/*.json` after re-running six peers showed forty files, of
+  which six were current and thirty-four were from a roster run two days older — including four
+  peers whose defects had been fixed that morning and which the stale files still reported as
+  failing. Nothing warns: the JSON is well-formed and carries no run identity. **Before reading a
+  probe directory as a cohort picture, either re-run the whole roster or compare mtimes** — and
+  prefer the roster run, because a mixed-age table is the one artifact that reads as a measurement
+  and is not one.
+- **TWO SITES FOR ONE REFUSAL, AND ONLY THE ONE THAT RUNS FIRST IS OBSERVABLE — so correcting the
+  other is a measurable NO-OP that reads as "the fix did not work."** RATIFIED 2026-09-08 (`sql`),
+  and it is the `ec_content_hash` link-order lesson moved INSIDE a single peer: there two
+  implementations of one symbol and the linker chose; here two implementations of one §6.6
+  resolution-miss and the call order chose. `sql` answered `404 not_found` where §3.3's 404 row
+  (0.8.2.7) pins `handler_not_found`. The previous session changed the host's `resolve_handler()`
+  miss at `peer.c:1010`, measured no change, and correctly concluded the answer came from
+  somewhere else — then handed off the wrong somewhere ("a too-broad row in the `handler` table").
+  **`verify_ladder.sql` carries its OWN resolution-miss rung, spelled `not_found`, and
+  `project_and_verify` runs BEFORE `resolve_handler`**, so the host arm is unreachable for an
+  unregistered path and the handler table was never suspect.
+  **One TRACE print settled it in one run and no amount of reading would have**: the trace showed
+  `resolve_handler` was only ever called with `system/tree`, i.e. the probe URI never reached the
+  line under repair. That is A1 (trace a value before you theorize) pointed at *control flow*
+  rather than at data. **Enforcement: when a fix to a refusal produces no measurable change, do
+  not look for a second cause — instrument the site and confirm it EXECUTES.** And when a peer
+  carries the same refusal at two layers, say so at both, name which one the wire observes, and
+  keep the spellings in step: the backstop is worth keeping, silently diverging is not.
   and was wrong in both directions once measured: `ruby` was listed as having no
   established-gate yet returns 409; `sql` carries the 409 string yet returns **200**;
   `rust-wasm`/`rust-wasm-wasmtime` carry neither string yet return **401** (they are thin
@@ -2578,6 +2604,20 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   was 1, and a gate that returns the wrong answer is worse than no gate.** Generalize: **before
   trusting a load-time-clean claim, confirm the loader's diagnostics are being kept**, and treat any
   format where comments share a terminator with code (Pd, CSV-ish DSLs, some `.ini`) as executable.
+  **RATIFIED 2026-09-08 — THIRD FORMAT, AND THE RULE IS NOW ABOUT THE ENCLOSING CONSTRUCT RATHER
+  THAN ABOUT PUNCTUATION.** Pd's terminator is `,`/`;`; a Tcl `switch` body is a LIST so `#`
+  between pairs is not a comment (both already recorded); and **a Smalltalk chunk-format `.st`
+  embeds every method body in an OUTER string literal, so a single APOSTROPHE anywhere in a
+  comment terminates it mid-sentence.** Writing *"§4.7's own reason"* into `EcPeer.st` would have
+  done it. **The tell is cheap and it is a MEASUREMENT, not a memory: `HEAD` of that file contains
+  zero apostrophes in 700 lines and exactly 38 odd-single-quote lines** — a file whose existing
+  prose scrupulously avoids a common English character is telling you the character is fatal.
+  Count before and after any edit and require the number to be unchanged. The prohibition is now
+  written into the comment that nearly broke it, which is the only place a future editor will be
+  looking. *(Second half of the same near-miss, and it is about the EDITOR rather than the format:
+  the replacement also lost its doubled `''` string quotes to Python's own quoting and produced
+  `code: invalid_request` — syntactically plausible, silently wrong. Both defects were caught by
+  READING the written result; the scripted assertion succeeded on both.)*
 - **AN AXIS'S PER-PEER GATES ROT EXACTLY WHERE NO COHORT RUNNER REACHES — the NO-GATE column is not a
   list of peers without tests, it is a list of tests nobody runs.** RATIFIED 2026-09-02, and it is the
   entry below (*a second axis with no cohort gate*) proven a second time by its own leftovers. That
@@ -3238,6 +3278,64 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   it twice. The leftover containers then produced `odin: script file read error: Permission denied`
   on the next run, which is the standing contention signature — a filesystem-permission failure is
   contention until proven otherwise, and it was.)*
+  **CLOSED 2026-09-08 AT 46 OF 46, AND THE CLOSING IS A HARDER CLAIM THAN THE FINDING WAS:
+  INDEPENDENT CONVERGENCE IS NOT EVIDENCE OF CORRECTNESS WHEN THE TEXT IS EXPLICIT.** The three
+  ground-up implementations — `entity-core-{go,rust,py}` — and our own `go` peer, four separate
+  lineages, all answered `401` on this row. This repo's standing warning is the opposite one:
+  *"a cohort all passing one author's vectors is cohort-consistent, not independent convergence."*
+  Here the convergence was genuinely independent **and on the wrong side of a table that names the
+  status, the code, and its own reason in one paragraph**, with §1.4 supplying the MUST. Nine
+  keystone peers already answered `400`, which is what made it reportable at all.
+  **So the rule cuts both ways and the discriminator is the TEXT, not the tally**: agreement among
+  implementations is evidence about a spec's SILENCE and evidence about nothing when the spec
+  speaks. Where it speaks, AGENTS.md's boundary already decides it — *derive behavior from the
+  spec, not from the oracle* — and the honest form of the report is the one used here: implement
+  the text, say plainly that four independent implementations disagree, and route the vector ask
+  rather than assume the answer. **State the reversal cost when you do it** (25 peers × a
+  three-line hoist) so the decision stays cheap to unwind if arch rules the other way.
+  **The propagation itself was one shape in 37 languages and that invariance is the evidence.**
+  Every peer already HAD the gate, below the §5.2 verdict where it is unreachable for an
+  unauthenticated caller — so this was an ORDERING change, not a feature, and the diff is
+  hoist-plus-a-note in 33 of them. **Four needed a different shape and each reason is worth
+  keeping**: `forth`/`smalltalk` had it one rung down (after authn rather than after authz, a
+  smaller move); `pd` took a three-line canvas REWIRE that moves the single existing rung rather
+  than adding a second; `prolog`'s lived in a clause reachable only on `allow`, and the old check
+  is KEPT as a restatement so the two cannot drift; and `oz` was expressed as the FIRST BRANCH of
+  the existing verdict chain rather than as a wrapping `if/else`, because wrapping meant +2 `end`s
+  outside and −1 inside a run of eighteen contiguous `end` tokens. **On a substrate whose block
+  structure the compiler checks by counting, prefer the edit that changes no counts** — binding a
+  pure verdict one line earlier costs nothing observable and cannot be got wrong.
+  **Verified the way the ratchet requires and the number is the point: 3 of 34 868 severities moved
+  across all 46 tracked reports, all three the same documented `t1_1_concurrent_demux` timing flake,
+  two against us and one for.** Reporting only the flattering one would have been the error this
+  file records twice; none of the three was banked.
+- **A HANDLER PREDICATE MUST ACCEPT EVERY §1.4 SPELLING OF THE PATH, AND THE ONE THE ORACLE USES IS
+  THE BARE PEER-RELATIVE FORM.** Candidate (2026-09-08, `asm-x86_64` then ported to three more).
+  §4.7's row 10 — *an operation name the responder does not implement, in any state* → `400
+  invalid_request` — has to be scoped to the CONNECT handler, because the same unknown operation on
+  `system/tree` is `501 unsupported_operation` and on an unregistered path `404 handler_not_found`.
+  The obvious way to scope it is to reuse whatever the peer already computed for the address gate,
+  and on the asm peers that is `derive_handler`, which strips an `entity://<peer>/` prefix and
+  **falls back to `system/tree` for anything else**. `validate`'s `connectURI` is the bare
+  `"system/protocol/connect"` — no scheme — so the reuse matched nothing, the peer kept answering
+  501, and the build was clean. **A predicate written for one caller's path form is not reusable by
+  a second caller with a different one**: the new `uri_is_connect` accepts all three spellings and
+  says at its definition why `derive_handler` is not it. Enforcement is the check itself — but the
+  cheap tell is that a scoping predicate which never fires looks identical to a peer that has not
+  been changed.
+- **A CANDIDATE ORACLE CAN MAKE THE DOCUMENTED ENTRY POINT REPORT `FAIL` — AND EXIT NON-ZERO — ON A
+  PEER THAT IS 0-FAIL, INCLUDING THE REFERENCE PEER.** Candidate (2026-09-08, and it is a re-pin
+  blocker rather than a peer defect). At go `78db4a9` (778 executed) `connectivity/
+  connect_ping_before_hello` SKIPs on any peer that does not serve the NETWORK-extension `ping`,
+  and that skip is **not** in the §9.0 profile carve-out: the run prints `106 skip(s)
+  auto-allowlisted … 1 skip(s) count as FAIL` and ends `Result: FAIL (un-allowlisted skips)` with
+  a JSON summary of `0 failed`. **`go` does this too**, which is what makes it upstream's and not
+  ours — and checking `go` first is the whole diagnostic, one run against the reference peer
+  instead of an investigation into the peer in hand. The blast radius is the five harnesses that
+  propagate the oracle's exit code rather than `|| true`-ing it (`io pd python ruby sql`): those
+  will exit 1 on a green run the moment the pin flips. **Route it with the re-pin; do not raise it
+  as a peer finding, and do not paper over it by adding a `|| true` — the harnesses that hold the
+  exit code hold it deliberately.**
 - **A PER-PEER ENTRY POINT ONLY WORKS THE WAY ITS AUTHOR HAPPENED TO INVOKE IT, AND NOTHING FINDS
   THAT UNTIL SOMETHING INVOKES IT DIFFERENTLY — this one class was 15 of the 21 failures across two
   axes.** RATIFIED 2026-09-02, and it is the third and largest occurrence of the shape already

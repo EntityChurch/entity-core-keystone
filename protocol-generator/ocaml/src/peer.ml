@@ -905,17 +905,27 @@ let dispatch (t : t) (conn : conn) (env : Model.envelope) : Model.envelope optio
         connect_handler t conn exec ~included:env.included
       else begin
         ingest_signatures t env;
+        (* §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used
+           to sit inside the Req_allow arm, so a pre-establishment EXECUTE naming a FOREIGN
+           namespace took the 401 an unauthenticated request takes. §4.7's own reason: "a
+           401 directs the caller to authenticate and retry, and for a foreign-namespace
+           address that retry cannot succeed at any authentication state — so the 401 names
+           a remedy that does not exist." §6.5 step 3 calls it "a gate, not an ordering
+           preference" and §1.4 makes the downstream permission check unreachable here. *)
+        let addr_path = Capability.canonicalize ~local_peer:t.local_peer (Capability.normalize_uri uri) in
+        if not (String.equal (Capability.extract_peer ~local_peer:t.local_peer addr_path) t.local_peer) then
+          err 400 "invalid_request" ~message:"not local peer"
+        else
         match Capability.verify_request ~local_peer:t.local_peer ~store:t.store env with
         | exception Capability.Unresolvable_grantee -> err 401 "unresolvable_grantee"
         | Capability.Req_authn_fail -> err 401 "authentication_failed"
         | Capability.Req_authz_deny -> err 403 "capability_denied"
         | Capability.Req_chain_too_deep -> err 400 "chain_depth_exceeded"
         | Capability.Req_allow -> (
-            let path = Capability.canonicalize ~local_peer:t.local_peer (Capability.normalize_uri uri) in
-            (* §1.4: inbound dispatch must target the local peer *)
-            if not (String.equal (Capability.extract_peer ~local_peer:t.local_peer path) t.local_peer) then
-              err 400 "invalid_request" ~message:"not local peer"
-            else
+            (* The §1.4 address gate that used to sit here has moved ABOVE the verdict —
+               §4.7 0.8.2.6 orders it before authentication. Reaching this arm at all now
+               means the path is local. *)
+            let path = addr_path in
               match resolve_handler t path with
               | None -> err 404 "handler_not_found" ~message:path
               | Some (pattern, _suffix) -> (

@@ -274,7 +274,10 @@ int main(void) {
     put_handler(db, htree);                                              /* only system/tree registered */
     set_request(db, exec_hhex, exec_hhex, alice.hhex, root_hhex, uri_unreg, "get", 5000, P.peer_id);
     run_verdict(db, ladder, status, code);
-    check("not_found_unregistered_path", status, code, "404", "not_found");
+    /* §3.3's 404 row (0.8.2.7) spells the RESOLUTION miss `handler_not_found`. `not_found`
+     * is the neighbouring row -- a bound-path miss INSIDE a resolved handler -- and this
+     * assertion carried it until the ladder was corrected. */
+    check("not_found_unregistered_path", status, code, "404", "handler_not_found");
 
     /* 8. 403 capability_denied — expired capability (expires_at < now) */
     reset_data(db); put_peer(db,&P); put_peer(db,&alice);

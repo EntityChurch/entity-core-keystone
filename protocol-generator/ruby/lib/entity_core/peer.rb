@@ -879,18 +879,24 @@ module EntityCore
       end
 
       ingest_signatures(env)
+      # §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to
+      # sit below the verdict, so a pre-establishment EXECUTE naming a FOREIGN namespace took
+      # the 401 an unauthenticated request takes. §4.7's own reason: "a 401 directs the caller
+      # to authenticate and retry, and for a foreign-namespace address that retry cannot
+      # succeed at any authentication state — so the 401 names a remedy that does not exist."
+      # §6.5 step 3 calls it "a gate, not an ordering preference" and §1.4 makes the downstream
+      # permission check unreachable here.
+      path = Capability.canonicalize(@local_peer, Capability.normalize_uri(uri))
+      return Outcome.err(400, "invalid_request", "not local peer") unless Capability.extract_peer(@local_peer, path) == @local_peer
+
       case Capability.verify_request(@local_peer, @store, env)
       when :authn_fail then return Outcome.err(401, "authentication_failed")
       when :authz_deny then return Outcome.err(403, "capability_denied")
       when :chain_too_deep then return Outcome.err(400, "chain_depth_exceeded")
       end
 
-      path = Capability.canonicalize(@local_peer, Capability.normalize_uri(uri))
-      # §1.4: inbound dispatch must target the local peer.
-      # §1.4 / §6.5 step 3 — the ADDRESS gate, ahead of handler resolution and
-      # check_permission: 400 invalid_request, never a handler verdict (§6.2, 0.8.2.2).
-      return Outcome.err(400, "invalid_request", "not local peer") unless Capability.extract_peer(@local_peer, path) == @local_peer
-
+      # (The §1.4 address gate that used to sit here has moved ABOVE the verdict — §4.7
+      # 0.8.2.6 orders it before authentication. Reaching this line means the path is local.)
       pattern = resolve_handler(path)
       return Outcome.err(404, "handler_not_found", path) if pattern.nil?
 

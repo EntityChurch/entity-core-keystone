@@ -74,6 +74,14 @@
   (data $b_invpath  "invalid_path") (data $b_notfound "not_found") (data $b_unresg "unresolvable_grantee")
   (data $b_paytoobig "payload_too_large")  ;; §4.10(a) 413 code
   (data $b_invreq "invalid_request")       ;; §1.4/§6.5 step 3 address-gate code
+  ;; §4.7 connect-error table (0.8.2.4): three codes this peer did not carry. A STATE
+  ;; CONFLICT IS 409 AND AN UNKNOWN OPERATION IS 400, and the two 409s are two ROWS —
+  ;; "connection already established" is its own row while a second hello BEFORE
+  ;; authenticate is the out-of-order row. Clients key error handling off result.data.code,
+  ;; so collapsing them selects the wrong remedy for the caller.
+  (data $b_incproto "incompatible_protocol")            ;; 21
+  (data $b_connseq  "connection_sequence_error")        ;; 25
+  (data $b_connest  "connection_already_established")   ;; 30
   (data $b_entity "entity") (data $b_exphash "expected_hash") (data $b_hashmm "hash_mismatch")  ;; §6.3 tree put
   (data $b_unsupfmt "unsupported_content_hash_format")   ;; §6.3 step-1 / §1.2 ingest-dispatch row
   (data $b_scheme   "entity://")   (data $b_star   "*")          (data $b_slashstar "/*")
@@ -501,6 +509,9 @@
     (memory.init $b_invparams (i32.const 0x462b80) (i32.const 0) (i32.const 14))
     (memory.init $b_hexchars  (i32.const 0x462bc0) (i32.const 0) (i32.const 16))
     (memory.init $b_invreq    (i32.const 0x462c00) (i32.const 0) (i32.const 15))
+    (memory.init $b_incproto  (i32.const 0x462c40) (i32.const 0) (i32.const 21))
+    (memory.init $b_connseq   (i32.const 0x462c80) (i32.const 0) (i32.const 25))
+    (memory.init $b_connest   (i32.const 0x462cc0) (i32.const 0) (i32.const 30))
     ;; ===== §9.5 Core Type Floor string constants =====
     (memory.init $t_000 (i32.const 0x463000) (i32.const 0) (i32.const 11))
     (memory.init $t_001 (i32.const 0x463040) (i32.const 0) (i32.const 23))
@@ -750,7 +761,7 @@
   ;; 400 unsupported_key_type. Absent fields ⇒ no reject (the happy path advertises our sets).
   ;; Returns the built error length (>0) if rejected, else 0 (proceed to build_hello).
   (func $hello_neg (param $edp i32) (param $out i32) (param $rid i32) (param $rlen i32) (result i32)
-    (local $params i32) (local $pdata i32) (local $hf i32) (local $kt i32) (local $pid i32) (local $pidp i32)
+    (local $params i32) (local $pdata i32) (local $hf i32) (local $kt i32) (local $pid i32) (local $pidp i32) (local $pr i32)
     (local.set $params (call $map_find (local.get $edp) (i32.const 0x461000) (i32.const 6)))    ;; "params"
     (if (i32.eq (local.get $params) (i32.const -1)) (then (return (i32.const 0))))
     (local.set $pdata (call $map_find (local.get $params) (i32.const 0x460010) (i32.const 4)))   ;; "data"
@@ -772,6 +783,25 @@
         (if (i32.or (call $peerid_parse (local.get $pidp) (i32.wrap_i64 (global.get $g_arg)) (i32.const 0x972200) (i32.const 0x972208) (i32.const 0x972210) (i32.const 0x972260))
                     (i64.ne (i64.load (i32.const 0x972200)) (i64.const 1)))
           (then (return (call $build_error (local.get $out) (i32.const 0x461880) (i32.const 20) (i32.const 400) (local.get $rid) (local.get $rlen)))))))
+    ;; §4.5 `protocols` — the one negotiated field Required with NO default, so unlike the two
+    ;; sets above ABSENT is not lenient here, and the field carries TWO §4.7 rows:
+    ;;   absent or EMPTY    → 400 invalid_request       (a peer that names no version has made
+    ;;                                                   no incompatible-VERSION claim; the
+    ;;                                                   request is malformed, not incompatible)
+    ;;   non-empty disjoint → 400 incompatible_protocol (row 1)
+    ;;
+    ;; ORDERED AFTER THE key_type GATE ABOVE, AND THAT ORDER IS THE POINT (F56):
+    ;; AGILITY-UNKNOWN-1 sends key_type 0xFD *and* protocols ["entity-core/v7"] in ONE hello,
+    ;; so both gates match and whichever runs first names the failure. §4.5 fixes no precedence
+    ;; between them, so the choice is stated here rather than left to source order.
+    (local.set $pr (call $map_find (local.get $pdata) (i32.const 0x460110) (i32.const 9)))          ;; "protocols"
+    (if (i32.eq (local.get $pr) (i32.const -1))
+      (then (return (call $build_error (local.get $out) (i32.const 0x462c00) (i32.const 15) (i32.const 400) (local.get $rid) (local.get $rlen)))))
+    (drop (call $rd_head (local.get $pr)))
+    (if (i32.or (i32.ne (global.get $g_major) (i32.const 4)) (i64.eqz (global.get $g_arg)))
+      (then (return (call $build_error (local.get $out) (i32.const 0x462c00) (i32.const 15) (i32.const 400) (local.get $rid) (local.get $rlen)))))
+    (if (i32.eqz (call $array_contains (local.get $pr) (i32.const 0x460150) (i32.const 15)))       ;; "entity-core/1.0"
+      (then (return (call $build_error (local.get $out) (i32.const 0x462c40) (i32.const 21) (i32.const 400) (local.get $rid) (local.get $rlen)))))
     (i32.const 0))
 
   ;; build the hello RESPONSE at $out; echo request_id [rid,rlen]. Returns out length.
@@ -1038,6 +1068,23 @@
     (if (i32.or (i32.ne (local.get $pidlen) (i32.load (i32.const 0x972100)))
                 (i32.eqz (call $streq (local.get $pidp) (local.get $pidlen) (i32.const 0x972000) (i32.load (i32.const 0x972100)))))
       (then (return (call $build_error (local.get $out) (i32.const 0x461840) (i32.const 17) (i32.const 401) (local.get $rid) (local.get $rlen)))))
+
+    ;; --- §4.7 row 8, SECOND input: the authenticate's peer_id must be the peer_id THIS
+    ;; connection was greeted by. The check directly above proves the identity is
+    ;; SELF-CONSISTENT (derived from its own public_key) and says nothing about whether it is
+    ;; the identity we have been negotiating with — so with only that rung a caller may greet as
+    ;; one peer and authenticate as another, and every seed-policy lookup afterwards resolves
+    ;; against the wrong peer. Same row, same code: 401 identity_mismatch.
+    ;; Vacuous when the hello named no peer_id (length 0 at sess+40); the field is optional there.
+    (if (i32.load (i32.add (local.get $sess) (i32.const 40)))
+      (then
+        (if (i32.or (i32.ne (local.get $pidlen) (i32.load (i32.add (local.get $sess) (i32.const 40))))
+                    (i32.eqz (call $streq (local.get $pidp) (local.get $pidlen)
+                                   (i32.add (i32.const 0x4B0000)
+                                            (i32.mul (i32.div_u (i32.sub (local.get $sess) (i32.const 0x4A0000)) (i32.const 64))
+                                                     (i32.const 128)))
+                                   (i32.load (i32.add (local.get $sess) (i32.const 40))))))
+          (then (return (call $build_error (local.get $out) (i32.const 0x461840) (i32.const 17) (i32.const 401) (local.get $rid) (local.get $rlen)))))))
 
     ;; --- §4.6 check 2 (proof-of-possession): verify the included signature over auth_hash ---
     (local.set $pdatalen (i32.sub (call $skip (local.get $pdata)) (local.get $pdata)))
@@ -3072,6 +3119,68 @@
   ;; $derive_handler defaults g_tpp/g_tplen to local_peer_id whenever the uri is absent, carries
   ;; no "entity://" scheme, or has no peer-id-shaped first segment, so all of those pass the gate
   ;; untouched — hello/authenticate carry no uri and are unaffected.
+  ;; uri_is_connect(edp) → 1 if data.uri addresses the connect handler. A PREDICATE: §4.7's
+  ;; row 10 verdict stays at the call site.
+  ;;
+  ;; It accepts all three §1.4 spellings — bare peer-relative "system/protocol/connect",
+  ;; "/{peer}/system/protocol/connect" and "entity://{peer}/system/protocol/connect" — because
+  ;; the address gate has already established the peer segment is ours and the only question
+  ;; left is which handler is named. $derive_handler is NOT reusable here: it strips the scheme
+  ;; form only and defaults everything else to system/tree, which is right for the scope check
+  ;; it feeds and wrong for this. validate's own connectURI is the BARE form.
+  (func $uri_is_connect (param $edp i32) (result i32)
+    (local $uvp i32) (local $p i32) (local $len i32)
+    (local.set $uvp (call $map_find (local.get $edp) (i32.const 0x462100) (i32.const 3)))   ;; "uri"
+    (if (i32.eq (local.get $uvp) (i32.const -1)) (then (return (i32.const 0))))
+    (local.set $p (call $rd_head (local.get $uvp)))
+    (local.set $len (i32.wrap_i64 (global.get $g_arg)))
+    (block $seg
+      (if (i32.ge_u (local.get $len) (i32.const 9))
+        (then (if (call $streq (local.get $p) (i32.const 9) (i32.const 0x462380) (i32.const 9))   ;; "entity://"
+          (then (local.set $p (i32.add (local.get $p) (i32.const 9)))
+                (local.set $len (i32.sub (local.get $len) (i32.const 9)))
+                (br $seg)))))
+      (if (i32.eqz (local.get $len)) (then (return (i32.const 0))))
+      ;; no scheme: a leading '/' means "/{peer}/rest", otherwise it is already peer-relative
+      (if (i32.ne (i32.load8_u (local.get $p)) (i32.const 0x2f))
+        (then (return (call $streq (local.get $p) (local.get $len) (i32.const 0x462740) (i32.const 23)))))
+      (local.set $p (i32.add (local.get $p) (i32.const 1)))
+      (local.set $len (i32.sub (local.get $len) (i32.const 1))))
+    ;; skip the peer segment up to and including its trailing '/'
+    (block $done (loop $L
+      (if (i32.eqz (local.get $len)) (then (return (i32.const 0))))       ;; one segment, no '/'
+      (br_if $done (i32.eq (i32.load8_u (local.get $p)) (i32.const 0x2f)))
+      (local.set $p (i32.add (local.get $p) (i32.const 1)))
+      (local.set $len (i32.sub (local.get $len) (i32.const 1)))
+      (br $L)))
+    (local.set $p (i32.add (local.get $p) (i32.const 1)))
+    (local.set $len (i32.sub (local.get $len) (i32.const 1)))
+    (call $streq (local.get $p) (local.get $len) (i32.const 0x462740) (i32.const 23)))          ;; "system/protocol/connect"
+
+  ;; record_hello_peer(edp, sess) — latch §4.7 row 8's second input: the peer_id THIS connection
+  ;; was greeted by. Called ONLY past every refusal, from the one site about to build a 200 — a
+  ;; rejected hello must leave the connection fresh so the caller may retry with a conformant
+  ;; one, and a latch set at parse time would forbid that retry.
+  ;; The bytes go in a parallel 128-B-per-slot table at 0x4B0000 (the 64-B session slot has no
+  ;; room for a ~46-char base58 id); the LENGTH lives in the session slot at +40, so 0 there
+  ;; reads as "the hello named no peer_id" and the authenticate-side comparison is vacuous.
+  (func $record_hello_peer (param $edp i32) (param $sess i32)
+    (local $params i32) (local $pdata i32) (local $pid i32) (local $p i32) (local $len i32) (local $idx i32)
+    (i32.store (i32.add (local.get $sess) (i32.const 40)) (i32.const 0))
+    (local.set $params (call $map_find (local.get $edp) (i32.const 0x461000) (i32.const 6)))    ;; "params"
+    (if (i32.eq (local.get $params) (i32.const -1)) (then (return)))
+    (local.set $pdata (call $map_find (local.get $params) (i32.const 0x460010) (i32.const 4)))  ;; "data"
+    (if (i32.eq (local.get $pdata) (i32.const -1)) (then (return)))
+    (local.set $pid (call $map_find (local.get $pdata) (i32.const 0x4600f0) (i32.const 7)))     ;; "peer_id"
+    (if (i32.eq (local.get $pid) (i32.const -1)) (then (return)))
+    (local.set $p (call $rd_head (local.get $pid)))
+    (local.set $len (i32.wrap_i64 (global.get $g_arg)))
+    (if (i32.gt_u (local.get $len) (i32.const 128)) (then (return)))     ;; not a peer id
+    (local.set $idx (i32.div_u (i32.sub (local.get $sess) (i32.const 0x4A0000)) (i32.const 64)))
+    (memory.copy (i32.add (i32.const 0x4B0000) (i32.mul (local.get $idx) (i32.const 128)))
+                 (local.get $p) (local.get $len))
+    (i32.store (i32.add (local.get $sess) (i32.const 40)) (local.get $len)))
+
   (func $uri_targets_local (param $edp i32) (result i32)
     (call $derive_handler (local.get $edp))
     (if (i32.ne (global.get $g_tplen) (i32.load (i32.const 0x4202F0))) (then (return (i32.const 0))))
@@ -4805,6 +4914,25 @@
         (then
           (local.set $nrej (call $hello_neg (local.get $edp) (local.get $out) (local.get $rid) (local.get $rlen)))
           (if (local.get $nrej) (then (return (local.get $nrej))))                              ;; §4.5 disjoint reject
+          ;; §4.7 rows 8/9 — a SECOND hello. Two rows, two codes, one status:
+          ;;   established → 409 connection_already_established
+          ;;   half-open   → 409 connection_sequence_error  (§4.7's own worked example: "a
+          ;;                 second hello after hello_done" is an operation this peer
+          ;;                 implements arriving in a state that forbids it)
+          ;;
+          ;; CONTENT BEFORE STATE, DELIBERATELY. §4.5 and §4.7 fix no precedence between the
+          ;; negotiation refusals above and these, and the order is OBSERVABLE: measured on
+          ;; `prolog`, negotiation/format_disjoint_reject's disjoint hello arrives on a
+          ;; HALF-OPEN connection in a full core run and on a FRESH one when the category is
+          ;; driven alone, so a state-first ladder answers 409 there and passes in isolation.
+          ;; Content-first satisfies both vectors, which is why it is the order here.
+          (if (i32.load (i32.add (local.get $sess) (i32.const 36)))                             ;; auth_done
+            (then (return (call $build_error (local.get $out) (i32.const 0x462cc0) (i32.const 30)
+                                (i32.const 409) (local.get $rid) (local.get $rlen)))))
+          (if (i32.load (i32.add (local.get $sess) (i32.const 32)))                             ;; hello_done
+            (then (return (call $build_error (local.get $out) (i32.const 0x462c80) (i32.const 25)
+                                (i32.const 409) (local.get $rid) (local.get $rlen)))))
+          (call $record_hello_peer (local.get $edp) (local.get $sess))                          ;; row 8's second input
           (return (call $build_hello (local.get $out) (local.get $rid) (local.get $rlen) (local.get $sess)))))
       (if (call $streq (local.get $op) (local.get $oplen) (i32.const 0x4618c0) (i32.const 12))  ;; "authenticate"
         (then (return (call $build_auth (local.get $in) (local.get $out) (local.get $edp) (local.get $rid) (local.get $rlen) (local.get $sess)))))
@@ -4830,6 +4958,15 @@
         (then (return (call $serve_dispatch_outbound (local.get $in) (local.get $edp) (local.get $out) (local.get $rid) (local.get $rlen)))))
       (if (i32.and (global.get $g_validate) (call $streq (local.get $op) (local.get $oplen) (i32.const 0x466b20) (i32.const 4)))   ;; "echo"
         (then (return (call $serve_echo (local.get $edp) (local.get $out) (local.get $rid) (local.get $rlen)))))
+      ;; §4.7's LAST row: an operation name the responder does not implement, in ANY state, is
+      ;; 400 invalid_request — but ONLY on the CONNECT handler. The same unknown operation on
+      ;; system/tree is 501 unsupported_operation (§3.3's 501 slot) and on an unregistered path
+      ;; 404 handler_not_found, so the scoping is what keeps three different rows apart. Without
+      ;; it an unknown connect op fell into the §5.2 ladder below and was refused 401
+      ;; authentication_failed — a remedy that cannot fix an operation NAME.
+      (if (call $uri_is_connect (local.get $edp))
+        (then (return (call $build_error (local.get $out) (i32.const 0x462c00) (i32.const 15)
+                            (i32.const 400) (local.get $rid) (local.get $rlen)))))
       ;; any other EXECUTE → §6.5 resolution-first flow (401 auth / 404 handler / 501 unknown-op /
       ;; 403 scope / 501 unimplemented). The dedicated capability handler replaces the tail next.
       (return (call $serve_auth_op (local.get $in) (local.get $edp) (local.get $out) (local.get $rid) (local.get $rlen) (local.get $op) (local.get $oplen))))

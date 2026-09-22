@@ -917,7 +917,16 @@ dispatchOutcome p conn env exec uri =
     resolve = mkResolve contentSnap (Envelope.eincluded env)
     revoked = mkRevoked treeSnap (Peer.pLocal p)
     t = nowMs ()
-    match verifyRequest (Peer.pLocal p) t revoked resolve env with
+    -- §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to
+    -- sit below the §5.2 verdict, so a pre-establishment EXECUTE naming a FOREIGN namespace
+    -- took the 401 an unauthenticated request takes. §4.7's own reason: "a 401 directs the
+    -- caller to authenticate and retry, and for a foreign-namespace address that retry
+    -- cannot succeed at any authentication state — so the 401 names a remedy that does not
+    -- exist." §6.5 step 3 calls it "a gate, not an ordering preference".
+    addrPath = canonicalize (Peer.pLocal p) (normalizeUri uri)
+    if not ((extractPeer (Peer.pLocal p) addrPath) == (Peer.pLocal p)) then
+      errMsg 400 "invalid_request" "not local peer"
+    else match verifyRequest (Peer.pLocal p) t revoked resolve env with
       RUnresolvable -> errOc 401 "unresolvable_grantee"
       RAuthnFail -> errOc 401 "authentication_failed"
       RAuthzDeny -> errOc 403 "capability_denied"

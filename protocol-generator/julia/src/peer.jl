@@ -790,15 +790,24 @@ function dispatch_outcome(p::Peer_t, conn::Conn, env::Envelope)::HandlerResult
     uri == "system/protocol/connect" && return connect_handler(p, conn, exec, env)   # §4.2 pre-auth
 
     ingest_signatures(p, env)
+    # §4.7 (0.8.2.6) — THE ADDRESS IS EVALUATED BEFORE AUTHENTICATION. This gate used to
+    # sit below the verdict, so a pre-establishment EXECUTE naming a FOREIGN namespace took
+    # the 401 an unauthenticated request takes. §4.7's own reason: "a 401 directs the caller
+    # to authenticate and retry, and for a foreign-namespace address that retry cannot
+    # succeed at any authentication state — so the 401 names a remedy that does not exist."
+    # §6.5 step 3 calls it "a gate, not an ordering preference" and §1.4 makes the downstream
+    # permission check unreachable here.
+    path = canonicalize(p.peer_id, Capability.normalize_uri(uri))
+    extract_peer(p.peer_id, path) == p.peer_id || return err(400, "invalid_request")
+
     v = verify_request(env, p.store, p.peer_id)                # §6.5: AUTH BEFORE RESOLVE (F31)
     v == :authn_fail && return err(401, "authentication_failed")
     v == :unresolvable && return err(401, "unresolvable_grantee")
     v == :chain_too_deep && return err(400, "chain_depth_exceeded")
     v == :authz_deny && return err(403, "capability_denied")
 
-    path = canonicalize(p.peer_id, Capability.normalize_uri(uri))
-    tp = extract_peer(p.peer_id, path)
-    tp == p.peer_id || return err(400, "invalid_request")     # §1.4 must target local peer
+    # (The §1.4 address gate that used to sit here has moved ABOVE the verdict — §4.7
+    # 0.8.2.6 orders it before authentication. Reaching this line means the path is local.)
     pattern = resolve_handler(p, path)
     pattern === nothing && return err(404, "handler_not_found")
 

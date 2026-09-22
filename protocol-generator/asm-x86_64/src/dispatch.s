@@ -263,6 +263,17 @@ conn_serve:
 	push %r12
 	mov  %rdi, %r12
 	mov  %r12, g_connfd(%rip)
+	# Per-connection handshake state, cleared HERE rather than in build_hello_response.
+	# The fork-per-connection path gets a fresh zeroed .bss for free, but host.s's
+	# fork-exhaustion fallback serves a connection INLINE in the parent and reuses one
+	# process across connections — so the reset has to sit at the start of a connection,
+	# not at the start of a handshake. It used to live in build_hello_response, which was
+	# fine while nothing read the latch before the hello and is wrong now that §4.7 rows
+	# 8/9 do: a second hello must see the state its predecessor left, and only a NEW
+	# connection may clear it.
+	movq $0, g_authenticated(%rip)
+	movq $0, g_hello_done(%rip)
+	movq $0, g_hello_peer_len(%rip)
 	call seed_dispatch_entities      # publish §6.2 native dispatch entities into this fork
 .Lcs_loop:
 	# read 4-byte BE length header
@@ -450,13 +461,41 @@ dispatch:
 	call memeq
 	test %rax, %rax
 	jz   .Ld_unknown                 # len 5 but not "hello" → 501, never a silent drop
-	# §4.5 negotiation: reject a hello whose advertised hash_formats/key_types are
+	# §4.5 negotiation: reject a hello whose advertised hash_formats/key_types/protocols are
 	# disjoint from ours (400) before building the happy-path response.
 	mov  %rbx, %rdi                  # exec data map
 	call check_hello_negotiation
 	test %rax, %rax
 	jnz  .Ld_ret                     # rejected (400 already sent)
+	# §4.7 rows 8/9 — a SECOND hello. Two rows, two codes, one status:
+	#   established → 409 connection_already_established
+	#   half-open   → 409 connection_sequence_error  (§4.7's own worked example: "a second
+	#                 hello after hello_done" is an operation this peer implements arriving
+	#                 in a state that forbids it)
+	#
+	# CONTENT BEFORE STATE, DELIBERATELY. §4.5 and §4.7 fix no precedence between the
+	# negotiation refusals and these, and the order is OBSERVABLE: measured on `prolog`,
+	# negotiation/format_disjoint_reject's disjoint hello arrives on a HALF-OPEN connection
+	# in a full core run and on a FRESH one when the category is driven alone, so a
+	# state-first ladder answers 409 there and passes in isolation. Content-first satisfies
+	# both vectors, which is why it is the order here.
+	cmpq $0, g_authenticated(%rip)
+	jne  .Ld_hello_established
+	cmpq $0, g_hello_done(%rip)
+	jne  .Ld_hello_midhandshake
+	mov  %rbx, %rdi                  # exec data map
+	call record_hello_peer           # latches hello_done + the greeted peer_id (row 8)
 	call build_hello_response
+	jmp  .Ld_ret
+.Ld_hello_established:
+	mov  $409, %rdi
+	lea  ec_conn_already(%rip), %rsi
+	call send_error
+	jmp  .Ld_ret
+.Ld_hello_midhandshake:
+	mov  $409, %rdi
+	lea  ec_conn_seq(%rip), %rsi
+	call send_error
 	jmp  .Ld_ret
 .Ld_try_auth:
 	# op == "authenticate"?
@@ -598,6 +637,27 @@ dispatch:
 	call serve_revoke
 	jmp  .Ld_ret
 .Ld_unknown:
+	# §4.7's LAST row FIRST: an operation name the responder does not implement, in ANY
+	# state, is 400 invalid_request — but ONLY on the CONNECT handler. The same unknown
+	# operation on system/tree is 501 unsupported_operation (§3.3's 501 slot) and on an
+	# unregistered path 404 handler_not_found, so the scoping is what keeps three different
+	# rows apart. Without it this peer answered 501 for an unknown connect op, which points
+	# the caller at a capability it might obtain when the defect is the operation NAME.
+	#
+	# NOT g_handler_ptr/len: derive_handler only strips an "entity://<peer>/" prefix and
+	# falls back to system/tree for anything else, and the conformance probes address the
+	# connect handler by its BARE peer-relative path (validate's connectURI is
+	# "system/protocol/connect", no scheme). Reading the derived handler here matched
+	# nothing and left the peer answering 501 — measured.
+	mov  %rbx, %rdi                  # exec data map
+	call uri_is_connect
+	test %rax, %rax
+	jz   .Ld_unknown_notconnect
+	mov  $400, %rdi
+	lea  ec_invalid_request(%rip), %rsi
+	call send_error
+	jmp  .Ld_ret
+.Ld_unknown_notconnect:
 	# An operation this peer doesn't route falls into two classes:
 	#  - a KNOWN vocabulary op (delegate/configure/revoke/register/unregister/put) we don't
 	#    (yet) implement gets an authorization decision — if the presented capability doesn't
@@ -707,11 +767,9 @@ build_hello_response:
 	push %r13
 	push %r14
 	push %r15
-	# RT-6: (re)start of a connection's handshake — clear any authenticated-latch left over
-	# from a prior connection served by this same process (the fork-exhaustion inline-serve
-	# fallback in host.s reuses one process across connections; the common fork-per-connection
-	# path gets this for free via a fresh, zeroed child .bss).
-	movq $0, g_authenticated(%rip)
+	# The authenticated-latch reset that used to sit here moved to conn_serve: a hello is
+	# no longer the start of a connection's state, it is an event that a PRIOR hello may
+	# already have forbidden (§4.7 rows 8/9). See conn_serve.
 	# nonce (32 CSPRNG bytes)
 	lea  b_nonce(%rip), %rdi
 	mov  $32, %rsi
@@ -938,6 +996,16 @@ ec_forbidden_pattern: .asciz "forbidden_pattern"
 ec_unresolvable_grantee: .asciz "unresolvable_grantee"
 ec_chain_depth: .asciz "chain_depth_exceeded"
 ec_invalid_request: .asciz "invalid_request"
+# ---- §4.7 connect-error table (0.8.2.4): three codes this peer did not carry ----
+# A STATE CONFLICT IS 409 AND AN UNKNOWN OPERATION IS 400, and the two 409s are two
+# ROWS: "connection already established" is its own row, while a second hello BEFORE
+# authenticate is the out-of-order row -- §4.7's own worked example. The table is a
+# normative MUST-emit contract because clients key error handling off result.data.code,
+# so a peer that collapses these into one code selects the wrong remedy for the caller.
+ec_incompat_proto: .asciz "incompatible_protocol"
+ec_conn_seq:  .asciz "connection_sequence_error"
+ec_conn_already: .asciz "connection_already_established"
+va_sysconnect: .asciz "system/protocol/connect"
 ka_parent:   .asciz "parent"
 ka_threshold: .asciz "threshold"
 ka_signers:  .asciz "signers"
@@ -966,6 +1034,13 @@ ka_ttl_ms:   .asciz "ttl_ms"
 	.lcomm g_authenticated, 8         # RT-6 (§4.6): 0/1, set once authenticate succeeds — a
                                            # second authenticate on this connection must not
                                            # re-verify the (single-use) nonce and re-mint a grant.
+	# §4.7 rows 8/9. This peer forks per connection, so a .bss global IS per-connection
+	# state; nothing here is shared across sockets.
+	.lcomm g_hello_done, 8            # 0/1, set only on the ACCEPT path of build_hello_response
+                                           # — a REFUSED hello must leave the connection fresh, so
+                                           # the caller may retry with a conformant one.
+	.lcomm b_hello_peer, 128          # §4.7 row 8's second input: the peer_id this connection
+	.lcomm g_hello_peer_len, 8        # was greeted BY, for the authenticate-side comparison.
 	.lcomm b_err,        128
 	.lcomm err_ch,       64
 	.lcomm b_er_resp,    2048
@@ -1341,6 +1416,32 @@ build_authenticate_response:
 	call memeq
 	test %rax, %rax
 	jz   .Lauth_bad_pid
+	# 2b. §4.7 row 8 names TWO inputs and this is the second: the authenticate's peer_id
+	# must be the peer_id this connection was GREETED by. Rung 2 above proves the identity
+	# is SELF-CONSISTENT (derived from its own public_key) and says nothing about whether it
+	# is the identity we have been negotiating with — so with only rung 2 a caller may greet
+	# as one peer and authenticate as another, and every seed-policy lookup afterwards
+	# resolves against the wrong peer. Same row, same code: 401 identity_mismatch.
+	# Vacuous when the hello named no peer_id; the field is optional there.
+	cmpq $0, g_hello_peer_len(%rip)
+	je   .Lauth_hello_bind_ok
+	mov  %r14, %rdi                  # pdata
+	lea  k_peerid(%rip), %rsi
+	mov  $7, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lauth_bad_pid
+	mov  %rax, %rdi
+	call get_text                    # rax = ptr, rdx = len
+	cmp  g_hello_peer_len(%rip), %rdx
+	jne  .Lauth_bad_pid
+	mov  %rax, %rdi
+	lea  b_hello_peer(%rip), %rsi
+	mov  %rdx, %rcx
+	call memeq
+	test %rax, %rax
+	jz   .Lauth_bad_pid
+.Lauth_hello_bind_ok:
 	# 3. PoP signature — verify client sig over the authenticate entity content_hash
 	mov  %r14, %rdi
 	call skip_value
@@ -5344,16 +5445,173 @@ check_hello_negotiation:
 	test %eax, %eax
 	jnz  .Lhn_bad_kt                 # parse failure → unsupported
 	cmpq $1, g_pid_kt(%rip)          # 1 = ed25519 (the core floor)
-	je   .Lhn_ok
+	je   .Lhn_proto
 .Lhn_bad_kt:
 	mov  $400, %rdi
 	lea  ec_unsup_kt(%rip), %rsi
 	call send_error
 	mov  $1, %eax
 	jmp  .Lhn_ret
+.Lhn_proto:
+	# §4.5 `protocols` — the one negotiated field Required with NO default, so unlike the
+	# two sets above ABSENT is not lenient here, and the field carries TWO §4.7 rows:
+	#   absent or EMPTY    → 400 invalid_request      (a peer that names no version has made
+	#                                                  no incompatible-VERSION claim; the
+	#                                                  request is malformed, not incompatible)
+	#   non-empty disjoint → 400 incompatible_protocol (row 1)
+	#
+	# ORDERED AFTER THE key_type GATE ABOVE, AND THAT ORDER IS THE POINT (F56):
+	# AGILITY-UNKNOWN-1 sends key_type 0xFD **and** protocols ["entity-core/v7"] in ONE
+	# hello, so both gates match and whichever runs first names the failure. §4.5 fixes no
+	# precedence between them, so the choice is stated here rather than left to the order
+	# these blocks happen to sit in.
+	mov  %rbx, %rdi                  # pdata
+	lea  k_protos(%rip), %rsi
+	mov  $9, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lhn_bad_proto              # ABSENT → 400 invalid_request (no default)
+	mov  %rax, %r13                  # the protocols array node
+	mov  %r13, %rdi
+	call read_head                   # rax = after-head, rcx = major(4), rdx = element count
+	cmp  $4, %rcx
+	jne  .Lhn_bad_proto              # not an array → malformed
+	test %rdx, %rdx
+	jz   .Lhn_bad_proto              # EMPTY → 400 invalid_request, same row as absent
+	mov  %r13, %rdi
+	lea  v_ecore(%rip), %rsi
+	mov  $15, %rdx                   # "entity-core/1.0"
+	call array_contains
+	test %rax, %rax
+	jnz  .Lhn_ok
+	mov  $400, %rdi
+	lea  ec_incompat_proto(%rip), %rsi
+	call send_error
+	mov  $1, %eax
+	jmp  .Lhn_ret
+.Lhn_bad_proto:
+	mov  $400, %rdi
+	lea  ec_invalid_request(%rip), %rsi
+	call send_error
+	mov  $1, %eax
+	jmp  .Lhn_ret
 .Lhn_ok:
 	xor  %eax, %eax
 .Lhn_ret:
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	ret
+
+# uri_is_connect(rdi = exec data map) -> rax = 1 if data.uri addresses the connect handler.
+# A PREDICATE: it decides nothing, and §4.7's row 10 verdict stays at the call site.
+#
+# It accepts all three §1.4 spellings — bare peer-relative "system/protocol/connect",
+# "/{peer}/system/protocol/connect", and "entity://{peer}/system/protocol/connect" —
+# because the address gate has already established the peer segment is ours and the only
+# question left is which handler is named. derive_handler is NOT reusable here: it strips
+# the scheme form only and defaults everything else to system/tree, which is right for the
+# scope check it feeds and wrong for this.
+	.type uri_is_connect, @function
+uri_is_connect:
+	push %rbx
+	push %r12
+	push %r13                        # 3 (odd) → keep calls 16B-aligned
+	xor  %r13d, %r13d
+	lea  k_uri(%rip), %rsi
+	mov  $3, %rdx
+	call map_find                    # rdi = exec (preserved)
+	test %rax, %rax
+	jz   .Luic_ret
+	mov  %rax, %rdi
+	call get_text                    # rax = ptr, rdx = len
+	mov  %rax, %rbx                  # cursor
+	mov  %rdx, %r12                  # remaining
+	cmp  $9, %r12
+	jb   .Luic_slash
+	mov  %rbx, %rdi
+	lea  s_entity_scheme(%rip), %rsi
+	mov  $9, %rcx
+	call memeq
+	test %rax, %rax
+	jz   .Luic_slash
+	add  $9, %rbx                    # past "entity://" → "{peer}/rest"
+	sub  $9, %r12
+	jmp  .Luic_scan
+.Luic_slash:
+	test %r12, %r12
+	jz   .Luic_ret
+	cmpb $0x2f, (%rbx)
+	jne  .Luic_cmp                   # no leading '/' and no scheme → already peer-relative
+	inc  %rbx                        # "/{peer}/rest"
+	dec  %r12
+.Luic_scan:
+	test %r12, %r12
+	jz   .Luic_ret                   # one segment, no '/' → not a handler path
+	cmpb $0x2f, (%rbx)
+	je   .Luic_skip
+	inc  %rbx
+	dec  %r12
+	jmp  .Luic_scan
+.Luic_skip:
+	inc  %rbx                        # past the '/' that ends the peer segment
+	dec  %r12
+.Luic_cmp:
+	cmp  $23, %r12                   # "system/protocol/connect"
+	jne  .Luic_ret
+	mov  %rbx, %rdi
+	lea  va_sysconnect(%rip), %rsi
+	mov  $23, %rcx
+	call memeq
+	mov  %rax, %r13
+.Luic_ret:
+	mov  %r13, %rax
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	ret
+
+# record_hello_peer(rdi = exec data map) — latch the accepted-hello state for §4.7 rows 8/9.
+# Called ONLY past every refusal, from the one site that is about to build a 200: a rejected
+# hello must leave the connection fresh so the caller may retry with a conformant one, and a
+# latch set at parse time would forbid that retry.
+# Records params.data.peer_id (row 8's second input) when the hello names one; absent leaves
+# g_hello_peer_len at 0, which the authenticate-side comparison reads as "nothing to compare".
+	.type record_hello_peer, @function
+record_hello_peer:
+	push %rbx
+	push %r12
+	push %r13                        # 3 (odd) → keep calls 16B-aligned
+	movq $0, g_hello_peer_len(%rip)
+	lea  k_params(%rip), %rsi
+	mov  $6, %rdx
+	call map_find                    # rdi = exec (preserved)
+	test %rax, %rax
+	jz   .Lrhp_done
+	mov  %rax, %rdi
+	lea  k_data(%rip), %rsi
+	mov  $4, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lrhp_done
+	mov  %rax, %rdi
+	lea  k_peerid(%rip), %rsi
+	mov  $7, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lrhp_done
+	mov  %rax, %rdi
+	call get_text                    # rax = ptr, rdx = len
+	cmp  $128, %rdx                  # b_hello_peer is 128 bytes — a longer id is not one
+	ja   .Lrhp_done
+	mov  %rdx, %r12
+	mov  %rax, %rsi
+	lea  b_hello_peer(%rip), %rdi
+	mov  %r12, %rdx
+	call mcpy
+	mov  %r12, g_hello_peer_len(%rip)
+.Lrhp_done:
+	movq $1, g_hello_done(%rip)
 	pop  %r13
 	pop  %r12
 	pop  %rbx
