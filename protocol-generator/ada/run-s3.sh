@@ -19,7 +19,10 @@
 #
 #   ./run-s3.sh            # build (if needed) + the two-direction smoke gate
 #   ./run-s3.sh build      # gprbuild the Ada peer only
-#   NOBUILD_GO=1 ./run-s3.sh   # skip the go vendor build (reuse .s3-oracle/)
+#
+# The Go reference binaries are the PINNED oracle artifacts in output/s4-oracles,
+# installed by tools/oracle-bootstrap.sh — never a fresh build from a sibling
+# checkout. See step 1 for what the unpinned form cost.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -27,20 +30,32 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 IMAGE="entity-core-keystone/ada-toolchain:latest"
 WORKDIR="/work/protocol-generator/ada"
 ADA_DIR="$REPO_ROOT/protocol-generator/ada"
-GO_ORACLE="${GO_ORACLE:-$HOME/projects/entity-systems/entity-core-go}"
-ORACLE_DIR="$ADA_DIR/.s3-oracle"          # gitignored; vendored go ELFs land here
+ORACLE_DIR="$REPO_ROOT/output/s4-oracles"  # gitignored; the PINNED oracle artifacts
 
-# ── 1. Vendor the Go reference binaries (host build from the Go oracle) ──────────
-if [ "${NOBUILD_GO:-0}" != "1" ]; then
-  mkdir -p "$ORACLE_DIR"
-  echo "vendoring go reference peer from $GO_ORACLE (HEAD $(git -C "$GO_ORACLE" rev-parse --short HEAD))"
-  if [ -n "$(git -C "$GO_ORACLE" status -s)" ]; then
-    echo "WARNING: go oracle working tree is not clean" >&2
-  fi
-  ( cd "$GO_ORACLE/cmd" \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$ORACLE_DIR/entity-peer" ./entity-peer \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$ORACLE_DIR/probe-peer"  ./probe-peer )
-fi
+# ── 1. The Go reference binaries come from the PINNED oracle, not from a build ──
+# This step used to `go build` entity-peer + probe-peer out of a sibling
+# entity-core-go checkout at whatever its HEAD happened to be, printing the SHA
+# and carrying on. That is an unpinned input deciding a verdict, and on
+# 2026-09-02 the first S3 cohort sweep caught what it costs: the sibling checkout
+# on this machine is a different line of history altogether (branch `main`,
+# subjects "testing validate continuation refinements"), the pinned commit
+# f313028 does not resolve in it at all, and the reference peer ada was being
+# measured against was built from none-of-the-above. The gate reported
+# `[FAIL] session established (§4.1 handshake) — authenticate failed`, which
+# reads as an ada defect and is not one.
+#
+# The pinned artifacts in output/s4-oracles are content-anchored (see
+# tools/oracle-pin.env and its PROVENANCE.txt) and maintained by
+# tools/oracle-bootstrap.sh, which hard-stops rather than silently falling back.
+# Consuming them is the same choice datalog and sql already made.
+for b in entity-peer probe-peer; do
+  [ -x "$ORACLE_DIR/$b" ] || {
+    echo "run-s3: ERROR pinned '$b' not found at $ORACLE_DIR/$b" >&2
+    echo "  This gate drives the PINNED Go reference, never a build from a" >&2
+    echo "  sibling checkout's HEAD. Run tools/oracle-bootstrap.sh to install it." >&2
+    exit 3; }
+done
+echo "using PINNED go reference from $ORACLE_DIR (see output/s4-oracles/PROVENANCE.txt)"
 
 # ── 2. Build the Ada peer (offline, in-container) ───────────────────────────────
 build() {
@@ -59,7 +74,7 @@ build
 podman run $PODMAN_RUN_CAPS --rm --network=none -v "$REPO_ROOT":/work:Z -w "$WORKDIR" "$IMAGE" \
   bash -c '
     set -u
-    ORACLE="'"$WORKDIR"'/.s3-oracle"
+    ORACLE=/work/output/s4-oracles
     PASS=0; FAIL=0
 
     # ── Scenario A: Ada dials the Go reference peer ──────────────────────────────

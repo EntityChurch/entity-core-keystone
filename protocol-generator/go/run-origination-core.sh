@@ -35,7 +35,7 @@ REFPEER="${REFPEER:-/work/output/s4-oracles/entity-peer}"
 
 podman run $PODMAN_RUN_CAPS --rm --network=none --security-opt label=disable \
   -v "$REPO_ROOT/protocol-generator":/work/protocol-generator:Z \
-  -v "$REPO_ROOT/protocol-generator/go/output/s4-oracles":/work/output/s4-oracles:Z \
+  -v "$REPO_ROOT/output/s4-oracles":/work/output/s4-oracles:Z \
   -e GOFLAGS= -e GOTOOLCHAIN=local -e GOWORK=off \
   -e TPORT="$TPORT" -e RPORT="$RPORT" -e ORACLE="$ORACLE" -e REFPEER="$REFPEER" \
   -w "$WORKDIR/src" "$IMAGE" \

@@ -47,7 +47,7 @@ working-storage section.
 01 nrq     pic 9(18) comp-5 value 7.
 01 narr    pic 9(18) comp-5.
 linkage section.
-01 lk-out  pic x(8192).
+01 lk-out  pic x(32768).
 01 lk-out-len pic 9(9) comp-5.
 01 lk-open pic 9(1).
 procedure division using lk-out lk-out-len lk-open.
@@ -129,7 +129,7 @@ working-storage section.
 01 k-grants pic x(6) value "grants".
 01 k-ca    pic x(10) value "created_at".
 01 idhash  pic x(33).
-01 nd      pic x(8192).
+01 nd      pic x(32768).
 01 nd-len  pic 9(9) comp-5.
 01 one     pic 9(9) comp-5 value 1.
 01 n4      pic 9(18) comp-5 value 4.
@@ -142,12 +142,12 @@ working-storage section.
 01 st      pic s9(9) comp-5.
 linkage section.
 01 lk-grantee pic x(33).
-01 lk-grants  pic x(8192).
+01 lk-grants  pic x(32768).
 01 lk-grants-len pic 9(9) comp-5.
-01 lk-tok     pic x(8192).
+01 lk-tok     pic x(32768).
 01 lk-tok-len pic 9(9) comp-5.
 01 lk-tok-hash pic x(33).
-01 lk-sig     pic x(8192).
+01 lk-sig     pic x(32768).
 01 lk-sig-len pic 9(9) comp-5.
 01 lk-sig-hash pic x(33).
 01 lk-created pic 9(18) comp-5.
@@ -196,7 +196,7 @@ working-storage section.
 01 idhash pic x(33).
 linkage section.
 01 lk-target pic x(33).
-01 lk-sig    pic x(8192).
+01 lk-sig    pic x(32768).
 01 lk-sig-len pic 9(9) comp-5.
 01 lk-sig-hash pic x(33).
 procedure division using lk-target lk-sig lk-sig-len lk-sig-hash.

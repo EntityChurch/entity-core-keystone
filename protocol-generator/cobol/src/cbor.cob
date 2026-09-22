@@ -176,7 +176,7 @@ local-storage section.
    05 ls-pair occurs 64.
       10 ls-key      pic x(512).
       10 ls-key-len  pic 9(9) comp-5.
-      10 ls-val      pic x(4096).
+      10 ls-val      pic x(32768).
       10 ls-val-len  pic 9(9) comp-5.
 01 ls-order.
    05 ls-ord-idx occurs 64 pic 9(9) comp-5.
@@ -185,7 +185,7 @@ local-storage section.
 01 ls-b         pic 9(9) comp-5.
 01 ls-kbuf      pic x(512).
 01 ls-kbuf-len  pic 9(9) comp-5.
-01 ls-vbuf      pic x(4096).
+01 ls-vbuf      pic x(32768).
 01 ls-vbuf-len  pic 9(9) comp-5.
 linkage section.
 01 lk-in        pic x(65535).

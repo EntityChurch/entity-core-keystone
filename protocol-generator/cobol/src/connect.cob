@@ -102,7 +102,7 @@ working-storage section.
 01 v-ed     pic x(7) value "ed25519".
 01 my-peerid pic x(128).
 01 my-peerid-len pic 9(9) comp-5.
-01 nd       pic x(8192).
+01 nd       pic x(32768).
 01 nd-len   pic 9(9) comp-5.
 01 one      pic 9(9) comp-5 value 1.
 01 n0map    pic 9(18) comp-5 value 0.
@@ -142,21 +142,21 @@ working-storage section.
 01 verok    pic 9(1).
 01 derived  pic x(128).
 01 derivedlen pic 9(9) comp-5.
-01 rpent    pic x(8192).
+01 rpent    pic x(32768).
 01 rpent-len pic 9(9) comp-5.
 01 ridhash  pic x(33).
-01 grants   pic x(8192).
+01 grants   pic x(32768).
 01 grants-len pic 9(9) comp-5.
 01 openf    pic 9(1).
 01 conff    pic 9(1).
-01 token    pic x(8192).
+01 token    pic x(32768).
 01 token-len pic 9(9) comp-5.
 01 token-hash pic x(33).
-01 csig     pic x(8192).
+01 csig     pic x(32768).
 01 csig-len pic 9(9) comp-5.
 01 csig-hash pic x(33).
 01 myidhash pic x(33).
-01 mypent   pic x(8192).
+01 mypent   pic x(32768).
 01 mypent-len pic 9(9) comp-5.
 01 k-token  pic x(5) value "token".
 01 t-grant  pic x(23) value "system/capability/grant".
@@ -186,7 +186,7 @@ linkage section.
 01 lk-incoff  pic 9(9) comp-5.
 01 lk-incfnd  pic 9(1).
 01 lk-rstatus pic 9(9) comp-5.
-01 lk-res     pic x(8192).
+01 lk-res     pic x(32768).
 01 lk-res-len pic 9(9) comp-5.
 01 lk-res-hash pic x(33).
 01 lk-incmap  pic x(16384).

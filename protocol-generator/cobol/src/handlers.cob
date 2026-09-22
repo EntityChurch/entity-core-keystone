@@ -80,9 +80,9 @@ identification division.
 program-id. boot-handler.
 data division.
 working-storage section.
-01 nd     pic x(8192).
+01 nd     pic x(32768).
 01 nd-len pic 9(9) comp-5.
-01 ent    pic x(8192).
+01 ent    pic x(32768).
 01 entlen pic 9(9) comp-5.
 01 hash   pic x(33).
 01 iface  pic x(700).
@@ -114,7 +114,7 @@ linkage section.
 01 lk-patlen pic 9(9) comp-5.
 01 lk-name   pic x(32).
 01 lk-namelen pic 9(9) comp-5.
-01 lk-ops    pic x(8192).
+01 lk-ops    pic x(32768).
 01 lk-opslen pic 9(9) comp-5.
 procedure division using lk-pat2 lk-patlen lk-name lk-namelen lk-ops lk-opslen.
     *> interface rel = "system/handler/{pattern}"
@@ -163,7 +163,7 @@ linkage section.
 01 lk-inlen  pic 9(9) comp-5.
 01 lk-ot     pic x(64).
 01 lk-otlen  pic 9(9) comp-5.
-01 lk-buf    pic x(8192).
+01 lk-buf    pic x(32768).
 01 lk-buflen pic 9(9) comp-5.
 procedure division using lk-in lk-inlen lk-ot lk-otlen lk-buf lk-buflen.
     move 0 to cnt
@@ -190,7 +190,7 @@ working-storage section.
 01 patlen pic 9(9) comp-5.
 01 nm     pic x(32).
 01 nmlen  pic 9(9) comp-5.
-01 ops    pic x(8192).
+01 ops    pic x(32768).
 01 opslen pic 9(9) comp-5.
 01 openf  pic 9(1).
 01 conff  pic 9(1).
@@ -290,7 +290,7 @@ working-storage section.
 01 cnt    pic 9(9) comp-5.
 01 fcnt   pic 9(9) comp-5.
 01 incl   pic 9(1) occurs 256.
-01 dment  pic x(8192).
+01 dment  pic x(32768).
 01 dmlen  pic 9(9) comp-5.
 01 dmf    pic 9(1).
 01 dmtype pic x(64).
@@ -302,10 +302,10 @@ working-storage section.
 01 lhash  pic x(33).
 01 hashp  pic 9(1).
 01 child  pic 9(1).
-01 lent   pic x(4096).
+01 lent   pic x(32768).
 01 lentlen pic 9(9) comp-5.
 01 lehash pic x(33).
-01 led    pic x(4096).
+01 led    pic x(32768).
 01 led-len pic 9(9) comp-5.
 01 emap   pic x(60000).
 01 emap-len pic 9(9) comp-5.
@@ -420,7 +420,7 @@ working-storage section.
 01 okflag pic 9(1).
 01 spath  pic x(700).
 01 splen  pic 9(9) comp-5.
-01 ent    pic x(8192).
+01 ent    pic x(32768).
 01 entlen pic 9(9) comp-5.
 01 ef     pic 9(1).
 01 ehash  pic x(33).
@@ -430,16 +430,16 @@ working-storage section.
 01 pfd     pic 9(1).
 01 eoff   pic 9(9) comp-5.
 01 endo   pic 9(9) comp-5.
-01 nent   pic x(8192).
+01 nent   pic x(32768).
 01 nentlen pic 9(9) comp-5.
-01 entmax pic 9(9) comp-5 value 8192.
+01 entmax pic 9(9) comp-5 value 32768.
 01 nhash  pic x(33).
 01 exph   pic x(33).
 01 expl   pic 9(9) comp-5.
 01 hasexp pic 9(1).
 01 curh   pic x(33).
 01 curf   pic 9(1).
-01 nd     pic x(8192).
+01 nd     pic x(32768).
 01 nd-len pic 9(9) comp-5.
 01 st     pic s9(9) comp-5.
 01 one    pic 9(9) comp-5 value 1.
@@ -664,18 +664,18 @@ working-storage section.
 01 goff   pic 9(9) comp-5.
 01 gf     pic 9(1).
 01 endo   pic 9(9) comp-5.
-01 grants pic x(8192).
+01 grants pic x(32768).
 01 grantslen pic 9(9) comp-5.
-01 token  pic x(8192).
+01 token  pic x(32768).
 01 token-len pic 9(9) comp-5.
 01 token-hash pic x(33).
-01 csig   pic x(8192).
+01 csig   pic x(32768).
 01 csig-len pic 9(9) comp-5.
 01 csig-hash pic x(33).
 01 myidhash pic x(33).
-01 mypent pic x(8192).
+01 mypent pic x(32768).
 01 mypent-len pic 9(9) comp-5.
-01 nd     pic x(8192).
+01 nd     pic x(32768).
 01 nd-len pic 9(9) comp-5.
 01 st     pic s9(9) comp-5.
 01 one    pic 9(9) comp-5 value 1.
@@ -698,7 +698,7 @@ working-storage section.
 01 t-grant-len pic 9(9) comp-5 value 23.
 01 incoff  pic 9(9) comp-5.
 01 incfnd  pic 9(1).
-01 capbuf  pic x(8192).
+01 capbuf  pic x(32768).
 01 caplen  pic 9(9) comp-5.
 01 capfnd  pic 9(1).
 01 caph    pic x(33).
@@ -735,11 +735,11 @@ working-storage section.
 01 cpath   pic x(700).
 01 cpathlen pic 9(9) comp-5.
 01 nowv    pic 9(18) comp-5.
-01 pent    pic x(8192).
+01 pent    pic x(32768).
 01 pentlen pic 9(9) comp-5.
 01 pendo   pic 9(9) comp-5.
 01 phash   pic x(33).
-01 mk-ent  pic x(8192).
+01 mk-ent  pic x(32768).
 01 mk-len  pic 9(9) comp-5.
 01 mk-hash pic x(33).
 01 zero33  pic x(33) value all x"00".
@@ -1108,7 +1108,7 @@ working-storage section.
 01 nmlen  pic 9(9) comp-5.
 01 opsoff pic 9(9) comp-5.
 01 opsf   pic 9(1).
-01 ops    pic x(8192).
+01 ops    pic x(32768).
 01 opslen pic 9(9) comp-5.
 01 endo   pic 9(9) comp-5.
 01 exoff  pic 9(9) comp-5.
@@ -1119,24 +1119,24 @@ working-storage section.
 01 isf    pic 9(1).
 01 rsoff  pic 9(9) comp-5.
 01 rsf    pic 9(1).
-01 gscope pic x(8192).
+01 gscope pic x(32768).
 01 gslen  pic 9(9) comp-5.
 01 toff2  pic 9(9) comp-5.
 01 tf2    pic 9(1).
 01 idhash pic x(33).
-01 token  pic x(8192).
+01 token  pic x(32768).
 01 token-len pic 9(9) comp-5.
 01 token-hash pic x(33).
-01 csig   pic x(8192).
+01 csig   pic x(32768).
 01 csig-len pic 9(9) comp-5.
 01 csig-hash pic x(33).
 01 tdoff  pic 9(9) comp-5.
 01 tdf    pic 9(1).
-01 tdraw  pic x(8192).
+01 tdraw  pic x(32768).
 01 tdrawlen pic 9(9) comp-5.
 01 hexh   pic x(256).
 01 hexlen pic 9(9) comp-5.
-01 ent    pic x(8192).
+01 ent    pic x(32768).
 01 entlen pic 9(9) comp-5.
 01 hash   pic x(33).
 01 rel    pic x(700).
@@ -1145,7 +1145,7 @@ working-storage section.
 01 pathlen pic 9(9) comp-5.
 01 iface  pic x(700).
 01 ifacelen pic 9(9) comp-5.
-01 nd     pic x(8192).
+01 nd     pic x(32768).
 01 nd-len pic 9(9) comp-5.
 01 mapcnt pic 9(18) comp-5.
 01 st     pic s9(9) comp-5.
@@ -1165,7 +1165,7 @@ working-storage section.
 01 tname  pic x(128).
 01 tvoff  pic 9(9) comp-5.
 01 tvend  pic 9(9) comp-5.
-01 tvraw  pic x(4096).
+01 tvraw  pic x(32768).
 01 tvlen  pic 9(9) comp-5.
 01 errc   pic x(32).
 01 errcl  pic 9(9) comp-5.
@@ -1406,7 +1406,7 @@ working-storage section.
 01 rellen pic 9(9) comp-5.
 01 path   pic x(700).
 01 pathlen pic 9(9) comp-5.
-01 gent   pic x(8192).
+01 gent   pic x(32768).
 01 gentlen pic 9(9) comp-5.
 01 gf     pic 9(1).
 01 ghash  pic x(33).

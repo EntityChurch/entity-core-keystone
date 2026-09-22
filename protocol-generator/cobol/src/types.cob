@@ -24,8 +24,8 @@ working-storage section.
 01 namelen  pic 9(9) comp-5.
 01 tname    pic x(128).
 01 datalen  pic 9(9) comp-5.
-01 tdata    pic x(4096).
-01 ent      pic x(8192).
+01 tdata    pic x(32768).
+01 ent      pic x(32768).
 01 entlen   pic 9(9) comp-5.
 01 hash     pic x(33).
 01 rel      pic x(700).

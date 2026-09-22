@@ -2209,11 +2209,40 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   true of one of two cases reads exactly like a disclosure that is true.**
   **AND THE CEILING ITSELF IS SPEC-LEGAL, so say what is a defect and what is a bound.** §4.10(a)
   requires only that the maximum be FINITE; the protocol places *"no restriction on entity size"*
-  and the 16 MiB frame figure is a SHOULD. The missing 413 was the defect. The capacity is a
-  trade: the store is a fixed `8192 × 8192`-byte array and every caller of `store-put`/`store-get`
-  passes a matching fixed buffer, so the ceiling is **one number that has to agree across ~89
-  sites in ten files**, in a language where one missed site is a remotely-triggerable process
-  kill — the defect this peer has already shipped once.
+  and the 16 MiB frame figure is a SHOULD. The missing 413 was the defect; the capacity is a bound
+  — and **a conformant peer can be recorded as FAILING for honouring it**, because the oracle
+  scores the resulting refusal as a SKIP and prints *"skip(s) count as FAIL"*. Routed to arch as
+  **F53** (`shared/findings/conformance-payload-capacity-floor.md`).
+  **RAISING IT TAUGHT THREE THINGS, and the first is the one to carry.**
+  - **A CEILING IS A FAMILY, NOT A NUMBER, AND THE FAMILY IS NOT THE LITERAL YOU GREPPED FOR.**
+    In COBOL a LINKAGE item is a VIEW over the caller's storage, so a callee declaring
+    `pic x(32768)` over a caller's `pic x(8192)` reads 32 KiB out of an 8 KiB field on any
+    full-length `MOVE` — **a PARTIAL raise is more dangerous than no raise**, which is why this
+    lands as one uniform edit or not at all. And the first pass, keyed on `pic x(8192)`, **missed
+    `cbor.cob`'s map-pair value slot, which is `pic x(4096)`** — a second family. That pass would
+    have shipped a peer whose handlers accept a 32 KiB entity and whose canonicaliser cannot carry
+    one, i.e. a 413 traded for a canon error. **Enumerate the size literals and classify each,
+    rather than substituting the one you noticed.**
+  - **THE SIZE THAT LOOKS AFFORDABLE IS DECIDED BY WHERE THE BUFFER LIVES.** 512 KiB works
+    *functionally* — both probes PASS — and is unusable: `cbor-canon` is **recursive** and its
+    per-call `LOCAL-STORAGE` holds a 64-entry pair table, so a 512 KiB value slot costs **~34 MB
+    per call per nesting level**. Measured: sustained load dropped **7454 of 10000** requests, the
+    category went **15.5 s → 9 m 50 s**, and both robustness checks that had been passing FAILED.
+    At 32 KiB the same table costs 2 MB and the suite runs in 55 s. **Before raising a buffer, ask
+    whether it is `WORKING-STORAGE` (once) or `LOCAL-STORAGE` in a recursive program (per call, per
+    level)** — the same declaration in the two places differs by orders of magnitude.
+  - **THE TRADE HAD A LOSING SIDE AND IT HAD TO BE PUBLISHED.** `t1_4` went SKIP → PASS **and**
+    `t1_1_concurrent_demux` went PASS → WARN, because the bigger buffers slowed the peer past the
+    check's 0.70 concurrent/sequential ratio. Not flaky — **4 of 4 WARN after against 3 of 3 PASS
+    before**, counted rather than assumed. The WARN is the *more accurate* label (the oracle's own
+    text: *"not a §6.11 violation — informational … for runtimes that do not physically
+    parallelize"*), but it still moves a published column, and reporting only the gain would be the
+    overclaim. **Verified per-check: exactly 2 of 756 severities moved.**
+  **What is NOT done, named rather than disguised:** `t1_3`'s 264 KB needs `cbor-canon` rebuilt
+  around a depth-indexed arena instead of per-level fixed buffers — a redesign of the one routine
+  every entity hash depends on. The store geometry is already the cheap half: peak occupancy across
+  a full run is **116–119 content entries against 8192 slots**, so slot count was ~70x
+  over-provisioned and bought the per-entity size at constant footprint (8192 → 1024 slots).
   **The gate is `tools/harness-gate.py` — teardown AND args, one file, because both are
   invariants of the same interface.** It counts its ANCHORS, not just its failures: `46 wait ·
   46 forward · 11 hand argv across a container boundary`, and that 11 is asserted non-zero and

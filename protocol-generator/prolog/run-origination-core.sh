@@ -20,6 +20,21 @@
 #     protocol-generator/prolog/run-origination-core.sh
 set -euo pipefail
 
+
+# ── Host entry point ────────────────────────────────────────────────────────
+# Inside-container ONLY until 2026-09-02 — from the host this died with
+# `swipl: command not found`, rc=127, which reads as a broken toolchain rather
+# than as a wrong invocation. Identical to the defect fixed in this peer's
+# run-s2.sh earlier the same day and in its run-s3.sh alongside this: three
+# sibling entry points, one class, found only once each axis had a sweep.
+if [ "${INCONTAINER:-0}" != "1" ]; then
+  HOSTREPO="$(cd "$(dirname "$0")/../.." && pwd)"
+  . "$HOSTREPO/tools/podman-caps.sh"
+  exec podman run $PODMAN_RUN_CAPS --rm --network=none -e INCONTAINER=1 \
+    -v "$HOSTREPO":/work:Z -w /work entity-core-keystone/prolog-toolchain:latest \
+    bash /work/protocol-generator/prolog/run-origination-core.sh "$@"
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PEER="$ROOT/protocol-generator/prolog"
 CABI="$ROOT/ffi-generator/c-abi/entity-core-codec-ffi-c"

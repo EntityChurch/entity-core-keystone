@@ -368,7 +368,7 @@ program-id. cap-resolve.
 data division.
 working-storage section.
 01 eoff  pic 9(9) comp-5.
-01 cap-entmax pic 9(9) comp-5 value 8192.
+01 cap-entmax pic 9(9) comp-5 value 32768.
 01 endo  pic 9(9) comp-5.
 01 f     pic 9(1).
 01 st    pic s9(9) comp-5.
@@ -377,7 +377,7 @@ linkage section.
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
 01 lk-hash   pic x(33).
-01 lk-out    pic x(8192).
+01 lk-out    pic x(32768).
 01 lk-outlen pic 9(9) comp-5.
 01 lk-found  pic 9(1).
 procedure division using lk-env lk-incoff lk-incfnd lk-hash
@@ -430,7 +430,7 @@ working-storage section.
 linkage section.
 01 lk-sbuf pic x(65535).
 01 lk-soff pic 9(9) comp-5.
-01 lk-pbuf pic x(8192).
+01 lk-pbuf pic x(32768).
 01 lk-poff pic 9(9) comp-5.
 01 lk-res  pic 9(1).
 procedure division using lk-sbuf lk-soff lk-pbuf lk-poff lk-res.
@@ -489,7 +489,7 @@ working-storage section.
 linkage section.
 01 lk-env   pic x(65535).
 01 lk-resoff pic 9(9) comp-5.
-01 lk-tbuf  pic x(8192).
+01 lk-tbuf  pic x(32768).
 01 lk-gmapoff pic 9(9) comp-5.
 01 lk-local pic x(128).
 01 lk-locallen pic 9(9) comp-5.
@@ -598,7 +598,7 @@ working-storage section.
 linkage section.
 01 lk-env    pic x(65535).
 01 lk-rootoff pic 9(9) comp-5.
-01 lk-tbuf   pic x(8192).
+01 lk-tbuf   pic x(32768).
 01 lk-hpat   pic x(900).
 01 lk-hlen   pic 9(9) comp-5.
 01 lk-granter pic x(128).
@@ -680,7 +680,7 @@ working-storage section.
 01 st   pic s9(9) comp-5.
 01 gh   pic x(33).
 01 gl   pic 9(9) comp-5.
-01 gp   pic x(8192).
+01 gp   pic x(32768).
 01 gplen pic 9(9) comp-5.
 01 found pic 9(1).
 01 pub  pic x(32).
@@ -695,7 +695,7 @@ linkage section.
 01 lk-env    pic x(65535).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
-01 lk-cap    pic x(8192).
+01 lk-cap    pic x(32768).
 01 lk-out    pic x(128).
 01 lk-outlen pic 9(9) comp-5.
 procedure division using lk-env lk-incoff lk-incfnd lk-cap lk-out lk-outlen.
@@ -727,13 +727,13 @@ program-id. cap-chain-depth.
 data division.
 working-storage section.
 01 depth pic 9(9) comp-5.
-01 cur   pic x(8192).
+01 cur   pic x(32768).
 01 curlen pic 9(9) comp-5.
 01 voff  pic 9(9) comp-5.
 01 f     pic 9(1).
 01 phash    pic x(33).
 01 pl    pic 9(9) comp-5.
-01 nxt   pic x(8192).
+01 nxt   pic x(32768).
 01 nxtlen pic 9(9) comp-5.
 01 found pic 9(1).
 01 done  pic 9(1).
@@ -744,7 +744,7 @@ linkage section.
 01 lk-env    pic x(65535).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
-01 lk-cap    pic x(8192).
+01 lk-cap    pic x(32768).
 01 lk-caplen pic 9(9) comp-5.
 01 lk-exceeds pic 9(1).
 procedure division using lk-env lk-incoff lk-incfnd lk-cap lk-caplen lk-exceeds.
@@ -788,9 +788,9 @@ working-storage section.
 01 ws-n   pic 9(9) comp-5.
 01 ws-chain.
    05 ws-ce occurs 64.
-      10 ws-ce-buf pic x(4096).
+      10 ws-ce-buf pic x(32768).
       10 ws-ce-len pic 9(9) comp-5.
-01 cur    pic x(8192).
+01 cur    pic x(32768).
 01 curlen pic 9(9) comp-5.
 01 voff   pic 9(9) comp-5.
 01 f      pic 9(1).
@@ -799,7 +799,7 @@ working-storage section.
 01 arg    pic 9(18) comp-5.
 01 phash     pic x(33).
 01 pl     pic 9(9) comp-5.
-01 tmp    pic x(8192).
+01 tmp    pic x(32768).
 01 tmplen pic 9(9) comp-5.
 01 found  pic 9(1).
 01 done   pic 9(1).
@@ -811,7 +811,7 @@ working-storage section.
 01 sf     pic 9(1).
 01 signer pic x(33).
 01 snl    pic 9(9) comp-5.
-01 gp     pic x(8192).
+01 gp     pic x(32768).
 01 gplen  pic 9(9) comp-5.
 01 vres   pic 9(1).
 01 msrok  pic 9(1).
@@ -860,7 +860,7 @@ linkage section.
 01 lk-env    pic x(65535).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
-01 lk-cap    pic x(8192).
+01 lk-cap    pic x(32768).
 01 lk-caplen pic 9(9) comp-5.
 01 lk-verdict pic 9(1).
 01 lk-unres  pic 9(1).
@@ -1008,13 +1008,13 @@ program-id. cap-is-revoked.
 data division.
 working-storage section.
 01 caphash pic x(33).
-01 cur     pic x(8192).
+01 cur     pic x(32768).
 01 curlen  pic 9(9) comp-5.
 01 voff    pic 9(9) comp-5.
 01 f       pic 9(1).
 01 phash   pic x(33).
 01 pl      pic 9(9) comp-5.
-01 nxt     pic x(8192).
+01 nxt     pic x(32768).
 01 nxtlen  pic 9(9) comp-5.
 01 found   pic 9(1).
 01 done    pic 9(1).
@@ -1027,7 +1027,7 @@ working-storage section.
 01 rellen  pic 9(9) comp-5.
 01 path    pic x(700).
 01 pathlen pic 9(9) comp-5.
-01 ent     pic x(8192).
+01 ent     pic x(32768).
 01 entlen  pic 9(9) comp-5.
 01 efound  pic 9(1).
 01 s-revs  pic x(30) value "system/capability/revocations/".
@@ -1037,7 +1037,7 @@ linkage section.
 01 lk-env    pic x(65535).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
-01 lk-cap    pic x(8192).
+01 lk-cap    pic x(32768).
 01 lk-caplen pic 9(9) comp-5.
 01 lk-res    pic 9(1).
 procedure division using lk-env lk-incoff lk-incfnd lk-cap lk-caplen lk-res.
@@ -1092,13 +1092,13 @@ working-storage section.
 01 sf      pic 9(1).
 01 signer  pic x(33).
 01 snl     pic 9(9) comp-5.
-01 abuf    pic x(8192).
+01 abuf    pic x(32768).
 01 ablen   pic 9(9) comp-5.
 01 found   pic 9(1).
 01 vres    pic 9(1).
 01 caph    pic x(33).
 01 cl      pic 9(9) comp-5.
-01 capbuf  pic x(8192).
+01 capbuf  pic x(32768).
 01 caplen  pic 9(9) comp-5.
 01 exceeds pic 9(1).
 01 cverdict pic 9(1).
@@ -1182,7 +1182,7 @@ working-storage section.
 01 curlen pic 9(9) comp-5.
 01 j      pic 9(9) comp-5.
 01 pos    pic 9(9) comp-5.
-01 ent    pic x(8192).
+01 ent    pic x(32768).
 01 elen   pic 9(9) comp-5.
 01 ef     pic 9(1).
 01 etype  pic x(64).
@@ -1267,7 +1267,7 @@ linkage section.
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
 01 lk-hash   pic x(33).
-01 lk-out    pic x(8192).
+01 lk-out    pic x(32768).
 01 lk-outlen pic 9(9) comp-5.
 01 lk-found  pic 9(1).
 procedure division using lk-env lk-incoff lk-incfnd lk-hash
@@ -1445,7 +1445,7 @@ working-storage section.
    05 sg occurs 16.
       10 sg-hash pic x(33).
 01 roothash pic x(33).
-01 gp      pic x(8192).
+01 gp      pic x(32768).
 01 gplen   pic 9(9) comp-5.
 01 found   pic 9(1).
 01 pub     pic x(32).
@@ -1481,13 +1481,13 @@ working-storage section.
 01 k-ex-len pic 9(9) comp-5 value 10.
 01 gee     pic x(33).
 01 gel     pic 9(9) comp-5.
-01 tmp     pic x(8192).
+01 tmp     pic x(32768).
 01 tmplen  pic 9(9) comp-5.
 linkage section.
 01 lk-env     pic x(65535).
 01 lk-incoff  pic 9(9) comp-5.
 01 lk-incfnd  pic 9(1).
-01 lk-rootbuf pic x(8192).
+01 lk-rootbuf pic x(32768).
 01 lk-groff   pic 9(9) comp-5.
 01 lk-ok      pic 9(1).
 procedure division using lk-env lk-incoff lk-incfnd lk-rootbuf lk-groff lk-ok.
@@ -1774,7 +1774,7 @@ working-storage section.
 01 st   pic s9(9) comp-5.
 01 gh   pic x(33).
 01 gl   pic 9(9) comp-5.
-01 gp   pic x(8192).
+01 gp   pic x(32768).
 01 gplen pic 9(9) comp-5.
 01 found pic 9(1).
 01 pub  pic x(32).
@@ -1789,7 +1789,7 @@ linkage section.
 01 lk-env    pic x(65535).
 01 lk-incoff pic 9(9) comp-5.
 01 lk-incfnd pic 9(1).
-01 lk-cap    pic x(8192).
+01 lk-cap    pic x(32768).
 01 lk-out    pic x(128).
 01 lk-outlen pic 9(9) comp-5.
 01 lk-ok     pic 9(1).
@@ -1857,10 +1857,10 @@ working-storage section.
 01 k-ex-len pic 9(9) comp-5 value 10.
 linkage section.
 01 lk-env    pic x(65535).
-01 lk-cbuf   pic x(8192).
+01 lk-cbuf   pic x(32768).
 01 lk-cframe pic x(128).
 01 lk-cframelen pic 9(9) comp-5.
-01 lk-pbuf   pic x(8192).
+01 lk-pbuf   pic x(32768).
 01 lk-pframe pic x(128).
 01 lk-pframelen pic 9(9) comp-5.
 01 lk-res    pic 9(1).

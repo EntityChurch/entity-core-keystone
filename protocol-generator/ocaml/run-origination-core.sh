@@ -14,6 +14,23 @@
 # reader-demux + per-thread dispatch + outbound primitive); this gate is the
 # cross-impl wire proof of that seam.
 set -eu
+
+# ── Host entry point ────────────────────────────────────────────────────────
+# This script was inside-container ONLY until 2026-09-02: invoked from the host
+# it died with `cd: /work/...: No such file or directory`, which reads as a
+# broken tree rather than as a wrong invocation. The origination axis had no
+# cohort sweep, so nothing ever invoked it the way a sweep does, and FOURTEEN of
+# the thirty-one authored gates were in this state simultaneously. The podman
+# line below is the one this file's own header already documented — it is now
+# executed instead of described. Set INCONTAINER=1 to skip the relaunch.
+if [ "${INCONTAINER:-0}" != "1" ]; then
+  HOSTREPO="$(cd "$(dirname "$0")/../.." && pwd)"
+  . "$HOSTREPO/tools/podman-caps.sh"
+  exec podman run $PODMAN_RUN_CAPS --rm --network=none -e INCONTAINER=1 \
+    -v "$HOSTREPO":/work:Z -w /work entity-core-keystone/ocaml-toolchain:latest \
+    sh /work/protocol-generator/ocaml/run-origination-core.sh "$@"
+fi
+
 TPORT="${TPORT:-7777}"   # target (OCaml)
 RPORT="${RPORT:-7778}"   # reference (Go)
 ORACLE="${ORACLE:-/work/output/s4-oracles/validate-peer}"

@@ -21,13 +21,13 @@ working-storage section.
 01 k-code pic x(4) value "code".
 01 n1     pic 9(18) comp-5 value 1.
 01 n4     pic 9(9) comp-5 value 4.
-01 nd     pic x(8192).
+01 nd     pic x(32768).
 01 nd-len pic 9(9) comp-5.
 01 st     pic s9(9) comp-5.
 linkage section.
 01 lk-code pic x(128).
 01 lk-code-len pic 9(9) comp-5.
-01 lk-out pic x(8192).
+01 lk-out pic x(32768).
 01 lk-out-len pic 9(9) comp-5.
 01 lk-hash pic x(33).
 procedure division using lk-code lk-code-len lk-out lk-out-len lk-hash.
@@ -96,7 +96,7 @@ working-storage section.
 01 nd-len pic 9(9) comp-5.
 01 st     pic s9(9) comp-5.
 linkage section.
-01 lk-out pic x(8192).
+01 lk-out pic x(32768).
 01 lk-out-len pic 9(9) comp-5.
 01 lk-hash pic x(33).
 procedure division using lk-out lk-out-len lk-hash.

@@ -967,17 +967,25 @@ static int serve(int port) {
  * client-style initiator, then a post-auth EXECUTE to an unregistered path (expect 404), then
  * two interleaved requests with distinct request_ids to confirm the responder echoes each id
  * (§6.11 request_id demux). Runs in a forked child against the loopback listener. */
+/* The disposition CODE of the last response read. A selftest line that prints only
+ * a status says `401` and leaves the reader to guess which of the nine 401 sites
+ * produced it; the code names it. Kept as a single global because this client runs
+ * strictly one frame at a time on one fd. */
+static char g_last_code[64];
 static int recv_response(int fd, char *rid_out, unsigned *status_out, char *rtype_out) {
     unsigned char *fb; uint32_t fl; if (read_frame(fd,&fb,&fl)!=1) return -1;
     cbor_rd root, rdata, f;
-    rid_out[0]=0; *status_out=0; rtype_out[0]=0;
+    rid_out[0]=0; *status_out=0; rtype_out[0]=0; g_last_code[0]=0;
     if (cbor_map_find(fb,fl,0,"root",&root)) {
         cbor_rd tf; if (cbor_map_find(fb,fl,root.pos,"type",&tf)) cbor_get_text(&tf,rtype_out,80);
         if (cbor_map_find(fb,fl,root.pos,"data",&rdata)) {
             if (cbor_map_find(fb,fl,rdata.pos,"request_id",&f)) cbor_get_text(&f,rid_out,128);
             if (cbor_map_find(fb,fl,rdata.pos,"status",&f)) { int mj; uint64_t v; cbor_rd t=f; if (cbor_head(&t,&mj,&v)==0&&mj==0) *status_out=(unsigned)v; }
             /* result type */
-            cbor_rd res; if (cbor_map_find(fb,fl,rdata.pos,"result",&res)) { cbor_rd rt; if (cbor_map_find(fb,fl,res.pos,"type",&rt)) cbor_get_text(&rt,rtype_out,80); }
+            cbor_rd res; if (cbor_map_find(fb,fl,rdata.pos,"result",&res)) {
+                cbor_rd rt; if (cbor_map_find(fb,fl,res.pos,"type",&rt)) cbor_get_text(&rt,rtype_out,80);
+                cbor_rd rd2, cf; if (cbor_map_find(fb,fl,res.pos,"data",&rd2) && cbor_map_find(fb,fl,rd2.pos,"code",&cf)) cbor_get_text(&cf,g_last_code,sizeof g_last_code);
+            }
         }
     }
     free(fb); return 0;
@@ -1061,7 +1069,7 @@ static int selftest_client(int port) {
     if (send_execute(fd,"req-404",unreg,"get",NULL,0,NULL,0)) return 2;
     if (recv_response(fd,rid,&st,rt)) return 2;
     int ok3 = (st==404 && strcmp(rid,"req-404")==0);
-    printf("  [%s] 404 unregistered path   → status=%u rid=%s\n", ok3?"PASS":"FAIL", st, rid); fails += !ok3;
+    printf("  [%s] 404 unregistered path   → status=%u code=%s rid=%s\n", ok3?"PASS":"FAIL", st, g_last_code, rid); fails += !ok3;
 
     /* request_id demux: two interleaved requests, distinct ids, each response echoes its own id */
     char reg[256]; snprintf(reg,sizeof reg,"/%s/system/tree", g_peer_id);

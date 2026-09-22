@@ -39,6 +39,25 @@ Cross-language register of findings surfaced by keystone work. Per-language spec
 > Implementing it is a peer-behaviour change (the constructor must reject a non-floor home format
 > for one type), not a test edit.
 >
+> **OPEN, measured 2026-09-02 — F53: conformance assumes a payload capacity the spec never
+> states, so a peer can obey §4.10(a) exactly and be recorded as FAILING for it.**
+> Evidence: [`conformance-payload-capacity-floor.md`](../../protocol-generator/shared/findings/conformance-payload-capacity-floor.md)
+> — filed with the findings, not here, for the same publish reason as F52.
+> §4.10(a) requires a **finite** configured maximum and a `413 payload_too_large` above it; the
+> framing paragraph says the protocol "places no restriction on entity size" and 16 MiB is a
+> **SHOULD**. There is no floor. `concurrency/t1_3_no_head_of_line` stages a **264 109-byte** frame
+> (measured on the wire, not read off the vector description, which says "256 KiB"), and a peer
+> bounded below that refuses it correctly — whereupon the oracle records a SKIP and prints
+> *"skip(s) count as FAIL"*, so obeying the MUST produces `Result: FAIL`.
+> **Why it is not just an implementation bug:** capacity is not free on every substrate.
+> `cobol` canonicalises with a recursive program whose per-call `LOCAL-STORAGE` holds a 64-entry
+> map-pair table, so a 512 KiB value slot costs ~34 MB **per call per nesting level** — measured,
+> sustained load dropped 7454 of 10000 requests and the category went 15.5 s → 9 m 50 s. It sits at
+> a 32 KiB ceiling, which clears `t1_4` and not `t1_3`. **Ask (arch's call, no wording proposed):**
+> state a floor, or make the probe discover the peer's maximum and stage under it, or rule the SKIP
+> correct and non-gating and say so in GUIDE-CONFORMANCE. **Our half is already fixed** — the
+> oversize path emitted nothing at all, a §4.9(c) drop, now a correlated 413. One peer of 46.
+>
 > **OPEN, measured 2026-08-30 — F52: §4.7's status table contradicts itself on a pre-hello
 > `authenticate`, and the cohort splits 38 / 6 / 1 on the wire.**
 > Raised by `entity-core-formalization` (`ROUTING-2026-08-30-PREHELLO-AUTHENTICATE`) from a SOURCE

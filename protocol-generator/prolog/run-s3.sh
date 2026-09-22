@@ -10,11 +10,28 @@
 #   3. Two-peer loopback smoke gate (11/11): boot a responder peer, drive the §4.1
 #      handshake + core ops over real loopback TCP from an initiator peer.
 #
-# Invoke from the repo root (the mount point /work) on the host:
-#   podman run --memory=4g --memory-swap=4g --pids-limit=2048 --cpus=4 --rm --network=none -v "$PWD":/work:Z -w /work \
-#     entity-core-keystone/prolog-toolchain:latest \
-#     protocol-generator/prolog/run-s3.sh
+# Invoke from the HOST, like every sibling:
+#   ./run-s3.sh
+# It relaunches itself inside the prolog-toolchain container. Set INCONTAINER=1
+# to skip the relaunch (already inside).
+#
+# This script was inside-container ONLY until 2026-09-02, and the S3 cohort sweep
+# caught it the first time one existed: `swipl: command not found`, rc=127, which
+# reads as a broken toolchain rather than as a wrong invocation. That is the
+# identical defect fixed in this peer's run-s2.sh EARLIER THE SAME DAY — the
+# sibling one file over was never checked, which is the charter's own "harden one
+# anchor, check its siblings the same day" rule failing on its own terms.
 set -euo pipefail
+
+if [ "${INCONTAINER:-0}" != "1" ]; then
+  HOSTREPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  . "$HOSTREPO/tools/podman-caps.sh"
+  exec podman run $PODMAN_RUN_CAPS --rm --network=none \
+    -e INCONTAINER=1 \
+    -v "$HOSTREPO":/work:Z -w /work \
+    entity-core-keystone/prolog-toolchain:latest \
+    bash /work/protocol-generator/prolog/run-s3.sh "$@"
+fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # repo root (/work)
 PEER="$ROOT/protocol-generator/prolog"

@@ -200,7 +200,7 @@ working-storage section.
 01 hfound    pic 9(1).
 01 caph      pic x(33).
 01 cl        pic 9(9) comp-5.
-01 capbuf    pic x(8192).
+01 capbuf    pic x(32768).
 01 caplen    pic 9(9) comp-5.
 01 capfnd    pic 9(1).
 01 granter   pic x(128).

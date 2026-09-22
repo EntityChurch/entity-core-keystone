@@ -93,7 +93,16 @@ nPass←0 ⋄ nFail←0
  env←exec EnvMake inc
  vr←CapVerifyRequest ap env
  'verify_request ALLOWs a valid delegated request'Check(CV_ALLOW=1⊃vr)∧0=2⊃vr
- 'permission check ALLOWs system/tree:get'Check CapCheckPermission ap ap exec token('/',ap,'/system/tree')
+ ⍝ CapCheckPermission takes the STRIPPED handler pattern, not the absolute URI:
+ ⍝ DispatchInner calls it as `CapCheckPermission gLocal granterPeer exec callerCap stripped`
+ ⍝ where stripped is `StripLocal pattern`. This assertion passed the absolute
+ ⍝ `/{peer}/system/tree` and was therefore comparing an absolute path against a
+ ⍝ grant that names the handler RELATIVELY (`CapGrant('system/tree')...` above), so
+ ⍝ it could only ever deny. Same shape as the cobol id-scope defect: an id is
+ ⍝ compared literally, and the value handed to the matcher decides everything.
+ ⍝ The peer was right (756 · 0F); this unit had gone stale under it, and the S3
+ ⍝ axis had no cohort sweep to say so.
+ 'permission check ALLOWs system/tree:get'Check CapCheckPermission ap ap exec token'system/tree'
  'chain-depth pre-check: single token within bound'Check~token CapChainExceedsDepth inc
  ⍝ tamper: A signs but author claims B -> signer!=author -> AUTHN_FAIL
  bexec←WireMakeExecute('r2')('/',ap,'/system/tree')('get')(WireEmptyParams)(IdHash b)(EntHash token)(EV_ABSENT ⍬)

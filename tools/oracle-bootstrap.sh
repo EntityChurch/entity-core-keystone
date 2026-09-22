@@ -296,11 +296,17 @@ podman run $PODMAN_RUN_CAPS --rm --security-opt label=disable -v "$TMP":/src:Z -
     for m in core ext cmd; do (cd /src/$m && go mod tidy); done
     unset GOWORK; cd /src/cmd
     go build -o /src/_out/validate-peer ./validate-peer
-    go build -o /src/_out/entity-peer  ./entity-peer' || die "go build failed"
+    go build -o /src/_out/entity-peer  ./entity-peer
+    go build -o /src/_out/probe-peer   ./probe-peer' || die "go build failed"
 
 # 4. Install into repo-root, backing up the prior binaries for bisection.
 mkdir -p "$OUT"
-for b in validate-peer entity-peer; do
+# probe-peer joined the pinned set on 2026-09-02. The S3 two-direction gates need
+# a Go CLIENT as well as a Go responder, and ada was building one from a sibling
+# checkout HEAD because the pinned set did not carry it — an unpinned input
+# deciding a verdict, which is exactly what the digests exist to prevent. If the
+# reference peer is pinned, so must be the reference client.
+for b in validate-peer entity-peer probe-peer; do
   [ -f "$OUT/$b" ] && cp "$OUT/$b" "$OUT/$b.$SHORT.bak"
   cp "$TMP/_out/$b" "$OUT/$b"; chmod +x "$OUT/$b"
 done
@@ -323,4 +329,4 @@ done
   echo "built_at              = $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$PROV_FILE"
 
-echo "oracle-bootstrap: installed validate-peer + entity-peer @ $SHORT into $OUT"
+echo "oracle-bootstrap: installed validate-peer + entity-peer + probe-peer @ $SHORT into $OUT"
