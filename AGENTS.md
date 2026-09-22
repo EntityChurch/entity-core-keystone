@@ -3191,6 +3191,53 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   emit `Result: PASS (with warnings)` and no banner — checked, not assumed. I had drafted this as a
   cohort-wide overclaim finding before reading `output/scratch/census-logs/go.log`. **Compare against
   the harness the number actually came from, never against a hand-rolled invocation of the same tool.**)*
+- **A RULE WITH TWO INDEPENDENT VARIABLES NEEDS A VECTOR AT THE CORNER — TWO CHECKS THAT EACH COVER
+  ONE AXIS READ AS COVERAGE OF THE SURFACE, AND NEITHER CAN SEE THE INTERSECTION.** Candidate (first
+  occurrence, 2026-09-07), and it is the first thing the first **Kind C** independent check found, on
+  its first roster run. §4.7's 0.8.2.6 note is a table over two variables — connection *state*
+  (pre-establishment / established) × *address* (own namespace / foreign) — and pins the corner:
+  a pre-establishment EXECUTE naming a **foreign** namespace is `400 invalid_request`, **not** the
+  `401 authentication_failed` the own-namespace row takes, because *"a 401 names a remedy that does
+  not exist"* for an address no authentication state can fix. The oracle ships
+  `execute_before_established_refused` (pre-establishment × own) and
+  `dispatch_inbound_foreign_namespace_refused` (established × foreign). **A peer that evaluates
+  authentication first passes both** — on the own-namespace input 401 IS correct, and on the foreign
+  input it is already authenticated. Measured: **36 of 45 peers answer 401 (or, `sql`, 403) where the
+  table pins 400**, every one of them at `756 · 0F`. The 9 that get it right are what make it a
+  defect rather than a reading.
+  **The diagnostic that generalizes is cheap: for any rule stated as a TABLE, enumerate the cells and
+  ask which vector supplies each one.** Coverage is counted per check, and a check names one input;
+  a two-variable rule has four cells and two checks can only reach two of them. Do this before
+  concluding a surface is covered — "there are checks on this" is an answer about the axes.
+  **A DIFFERENTIAL CONTROL MUST VARY EXACTLY ONE THING, AND MINE VARIED TWO — a control that cannot
+  separate its own two explanations is not a control, it is a second copy of the case.** The finding
+  is only reportable because a differential re-sends the same foreign URI on an ESTABLISHED
+  connection: all 36 answer `400 invalid_request` there, so the address IS recognised and the
+  ordering is the defect rather than our URI being malformed. **The first cut sent it UNSIGNED** —
+  which answers `401 authentication_failed` on any address, because an EXECUTE with no verified
+  signer is auth-class by §5.2a — so it returned the identical status to the case it existed to
+  disambiguate and discriminated nothing. It read as "the peer does not recognise the URI", i.e. as
+  *our* bug, which would have killed a true finding. **Before trusting a differential, name the two
+  explanations it is separating and check that only one variable moved.**
+  **AND "THE ORACLE HAS NO VECTOR FOR X" IS A CLAIM ABOUT *WHICH* ORACLE — ask the candidate, not the
+  pin, whenever a re-pin is in flight.** Same session, and it withdrew half of this finding before it
+  left the tree. The check also caught `501 operation_not_supported` (4 peers) and `401
+  missing_author` (5 peers) — minted codes on a surface §4.7 declares a *"MUST-emit contract"* — and
+  reasoning from the **pinned** oracle, where the covering checks do not exist, that read as a second
+  coverage gap and was drafted as one. The **candidate** oracle catches both by name, asserting the
+  code and not just the status (`unsupported_operation_on_registered_handler`,
+  `execute_before_established_refused`), plus a third of the same class we never drove. So they are
+  ordinary cohort debt the re-pin gates, and the honest report is **corroboration between two
+  independently authored readings**, not an accusation. This is the standing *"verify the exculpatory
+  half"* rule pointed at the accusatory half of my own draft, and it cost one `python3 -c` against a
+  report the census had already written.
+  *(Sub-lesson, cheap and it silently truncated a 46-peer run: **`nohup cmd &` inside a
+  background-task runner exits IMMEDIATELY and the census is killed partway through.** The wrapper
+  reports exit 0, the log ends mid-roster with no error, and 17 of 46 peers have JSONs — which reads
+  exactly like a completed run of a smaller roster. Let the runner background it; do not background
+  it twice. The leftover containers then produced `odin: script file read error: Permission denied`
+  on the next run, which is the standing contention signature — a filesystem-permission failure is
+  contention until proven otherwise, and it was.)*
 - **A PER-PEER ENTRY POINT ONLY WORKS THE WAY ITS AUTHOR HAPPENED TO INVOKE IT, AND NOTHING FINDS
   THAT UNTIL SOMETHING INVOKES IT DIFFERENTLY — this one class was 15 of the 21 failures across two
   axes.** RATIFIED 2026-09-02, and it is the third and largest occurrence of the shape already

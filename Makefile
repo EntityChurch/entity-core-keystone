@@ -244,6 +244,23 @@ lint:
 	@python3 tools/fold-reference-peer.py --check
 	@echo "lint: gating skip provenance — every SKIP explained (read-only)…"
 	@python3 tools/skip-provenance-gate.py
+	@echo "lint: gating the Kind C publication boundary (read-only)…"
+	@# The tenth gate, and the newest kind of thing in the tree. Kind C is a check
+	@# THIS repo authors, from the spec, at the same normative target as the oracle
+	@# (docs/VERIFICATION-ARCHITECTURE.md). It was held until 2026-09-07 and unblocked
+	@# on one condition: an official full-green pass requires the independent test
+	@# suite, which is validate-peer and which we do not author.
+	@# That condition has a silent failure mode and it is the ORDINARY invocation.
+	@# Every run-s4.sh defaults -json-out to that peer's TRACKED conformance report, so
+	@# a Kind C binary dropped in via ORACLE= and run with no arguments republishes a
+	@# peer's number over the oracle's — with no error, and with check-set-gate,
+	@# tier-status and coherence-gate all reading it as though the oracle produced it.
+	@# The binary refuses that destination; this gates the same boundary over the tree,
+	@# requires each artifact to declare its kind and its spec snapshot, and asserts
+	@# that no committed report carries a Kind C marker. Counts are printed, and an
+	@# empty tools/kind-c/ says "vacuous pass" rather than OK.
+	@# Regression suite: `python3 tools/kind-c-gate.py --self-test`.
+	@python3 tools/kind-c-gate.py --quiet
 
 # fmt = autoformat (writes). Intentionally a no-op: generated source is formatted
 # by its own toolchain, and spec-data/<version>/ is a SHA-256-pinned immutable

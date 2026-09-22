@@ -34,6 +34,7 @@ change, and the findings themselves do not.
 | [`concurrency-latency-floor-and-cap-sig-coverage.md`](concurrency-latency-floor-and-cap-sig-coverage.md) | **F33/F34** — §6.11 T2.1 imports a de-facto absolute throughput floor into a spec that says it is not a performance bar; and no vector tampers a *capability* signature |
 | [`wasm-dialer-parity-F35-and-execution-mode.md`](wasm-dialer-parity-F35-and-execution-mode.md) | **F35** — the §7a reentry-echo skips §5.2 entirely, so outbound authorization is untested |
 | [`peers-grant-dimension-oracle-gap.md`](peers-grant-dimension-oracle-gap.md) | The §5.2 `peers` grant dimension had **zero** oracle coverage — a MUST-gate nothing checked |
+| [`connect-error-table-independent-check.md`](connect-error-table-independent-check.md) | **F57** — §4.7's address-before-authentication row is the **corner of a two-variable rule**: two checks cover one axis each and neither reaches the cell. 37 of 46 peers answer `401` where the table pins `400` |
 | [`frame-only-multisig-cohort.md`](frame-only-multisig-cohort.md) | Frame-only §3.6 multisig in 4 of 5 peers — a rejection-only category let them all pass without implementing K-of-N |
 | [`budget-exhaustion-reporting.md`](budget-exhaustion-reporting.md) | `validate-peer` reports "never ran" and "deliberately not run" identically in JSON, so a starved run reads as a clean one |
 | [`v7-section-citation-drift.md`](v7-section-citation-drift.md) | A stale "V7 §6.6" citation in the reference oracle, wire-observable |

@@ -165,6 +165,29 @@ while [ "$#" -gt 0 ]; do
         [ -f "$p/README.md" ] || st="$st (NO README — undeclared)"
         printf '%-14s %-46s %s\n' '' "  $n" "$st"
       done
+      # KIND C IS LISTED FOR THE SAME REASON PROBES ARE, and the reason to read
+      # the row carefully is that this is the only entry in the whole inventory
+      # with NO upstream referent at all. An independent check is authored HERE,
+      # from the spec, at the same target as the oracle -- so nothing external
+      # moves when it goes stale, which is precisely the hazard measured on S3
+      # (the one axis we author alone is the one axis whose checks rotted).
+      #
+      # IT DOES NOT GATE, AND THE CONSTRAINT IS THE TERM IT EXISTS UNDER: an
+      # official full-green pass requires the independent test suite, which is
+      # validate-peer and is not this. Divergence between a Kind C check and the
+      # oracle is a FINDING TO ROUTE, never a verdict to publish -- a silently
+      # divergent test set manufactures a second de-facto standard, which is the
+      # one thing this repo must not do. tools/kind-c-gate.py enforces the
+      # publication boundary; docs/VERIFICATION-ARCHITECTURE.md states the rest.
+      printf '%-14s %-46s %s\n' 'kind-c' 'tools/kind-c/<name>/ (run-cohort-census.sh --probe)' 'independent spec-derived checks — NOT an axis, NOT a gate, NOT a conformance number'
+      printf '%-14s %-46s authority: %s\n' '' '' 'OURS (Kind C) — the only entry here with no upstream referent; corroborates the oracle, never overrides it'
+      for k in "$REPO_ROOT"/tools/kind-c/*; do
+        [ -d "$k" ] || continue
+        n=$(basename "$k")
+        st='ACTIVE'
+        [ -f "$k/README.md" ] || st='ACTIVE (NO README — undeclared)'
+        printf '%-14s %-46s %s\n' '' "  $n" "$st"
+      done
       exit 0 ;;
     --tier) TIER_SEL="$2"; shift 2 ;;
     --tier=*) TIER_SEL="${1#*=}"; shift ;;

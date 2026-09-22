@@ -111,14 +111,40 @@ bug the oracle and the peers share.
    equivalence must publish the surface it ranges over — `abi_differential` said "71/71" while
    driving 19 of 27 declared symbols.
 
-**Open posture question, routed not assumed.** `GUIDE-CONFORMANCE.md` §7.0 currently reads that
-*"`entity-core-keystone` authors none of these"* and that asking keystone for a vector *"asks the
-scorer to write the exam."* That sentence is about **canonical vectors**, and an independent
-verification lineage is a different claim — it does not become canonical, it gates nobody, and its
-disagreements are routed. But the distinction is ours, not arch's, and adopting it unilaterally
-would be the exact overclaim this repo is the anchor against. **The posture change is routed to arch
-before Kind C ships anything.** Until it is answered, Kind C work is authored and held, not
-published.
+**Posture — RULED 2026-09-07, by the operator, and the ruling is a condition rather than a
+permission.** Kind C is **unblocked for authoring and for running**, on one standing requirement:
+
+> **An official full-green pass requires the independent test suite.** Our own checks never
+> constitute one. A peer is conformant because `validate-peer` — a suite this repo does not author —
+> says so, and no Kind C result may stand in for that, supplement it, or appear in any published
+> number.
+
+That is constraint 2 above, promoted from a design intention to the term on which this work is
+allowed to exist at all. It is the reason the hold could be lifted without becoming the overclaim
+the hold was protecting against: the exam we do not write is still the exam that counts.
+
+**What this does and does not settle.** It settles **our** posture, which was the actual blocker —
+whether keystone may hold a second, spec-derived reading of a surface it has just implemented. It
+settles nothing about arch's. `GUIDE-CONFORMANCE.md` §7.0 reads that *"`entity-core-keystone` authors
+none of these"* and that asking keystone for a vector *"asks the scorer to write the exam"* — that
+sentence is about **canonical vectors**, and we still author none: nothing here becomes a vector,
+enters the corpus, or is offered to another implementation as something to pass. **The question of
+whether arch WANTS a second lineage's findings, and in what form, remains routed and unanswered**,
+and answering it for them by shipping is precisely what stays forbidden. The ruling licenses the
+lineage; it does not license publishing its verdicts.
+
+**Enforcement, because a constraint with no enforcement point is theater.** The publication boundary
+is structural, not a promise: Kind C runs on its own axis, writes only under `output/scratch/kind-c/`,
+and **must never write a `status/CONFORMANCE-REPORT.{md,json}`** — the three gates that read those
+(`check-set-gate --tracked`, `tier-status`, `coherence-gate`) are what make a published number mean
+the oracle, and a Kind C artifact that can reach them has broken the ruling regardless of what its
+README says. `tools/kind-c-gate.py` asserts that boundary and prints its count.
+
+**One reading recorded rather than guessed.** *"Officially requires an independent test suite"* is
+implemented above as *the oracle remains the sole authority for a published verdict*. The stronger
+reading — that a full-green claim requires a Kind C green **in addition** — is available and is a
+deliberate future strengthening, not today's rule; it would make our own suite a release gate, which
+is a bigger commitment than unblocking authorship and should be decided on its own.
 
 ---
 
@@ -162,8 +188,10 @@ build that is not a plan. The increments, in order, each of which is useful alon
 
 1. **Declare and document what exists** — this file, plus a README per probe, plus the probes in the
    axis inventory. *(No new checks; closes the accretion gap.)*
-2. **Route the posture question to arch** — may keystone author an independent verification lineage,
-   on the constraints above. Nothing of Kind C publishes until answered.
+2. ~~**Route the posture question to arch**~~ — **answered 2026-09-07 by the operator**, on the
+   condition above: authorship is unblocked, an official green still requires the suite we do not
+   author. Arch's own question (does arch want a second lineage's findings, and in what form) stays
+   routed and is not a blocker on the work, only on publishing its verdicts.
 3. **Retrofit the S3 axis into Kind C properly** — it already is one, badly. Give it the
    `scope-matching` treatment: named authority, spec citation, executed controls, printed counts.
    This is the highest-value increment because the surface is already ours and already measured to
