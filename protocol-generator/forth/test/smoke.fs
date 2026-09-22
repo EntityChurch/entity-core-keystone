@@ -63,7 +63,11 @@ variable pass  variable total
   [char] m b,  4 4 >be
   s" peer_id"   tv-text 2drop  id-peerid tv-text 2drop
   s" nonce"     tv-text 2drop  init-seed 32 tv-bytes 2drop     \ a fixed 32-byte nonce
-  s" protocols" tv-text 2drop  s" entity-core/0.8" text-array1 2drop
+  \ §8.4's protocol version identifier, and it must be the one the responder accepts:
+  \ "entity-core/0.8" is a SPEC-LINE name, not an identifier, and §4.5's negotiation
+  \ answers 400 incompatible_protocol for it. This read as green only while nothing
+  \ compared the field (F56 is the same confusion reached from the probe side).
+  s" protocols" tv-text 2drop  s" entity-core/1.0" text-array1 2drop
   s" timestamp" tv-text 2drop  0 tv-uint 2drop
   pmk am-span
   s" system/protocol/connect/hello" 2swap ent-make { pu } { paddr }

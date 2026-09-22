@@ -25,7 +25,8 @@
             client_send/3,               % +ClientConn, +RequestEnv, -ResponseEnv
             client_close/1,              % +ClientConn
             conn_outbound/3,             % +Conn, +RequestEnv, -ResponseEnv  (server-side §6.13b seam)
-            new_request_id/2             % +ClientConn, -ReqId
+            new_request_id/2,            % +ClientConn, -ReqId
+            register_conn_close_hook/1   % +Goal/1(+ConnId) — called at teardown
           ]).
 
 :- use_module(ec_wire).
@@ -46,9 +47,26 @@
                                % vars are thread-local in SWI, so the 8-way demux
                                % needs the shared clause DB, not nb_setval)
 
+% ATOMIC. accept_loop spawns one thread per connection and each calls make_io, so
+% a retract/assert pair here is a read-modify-write RACE: two threads can retract
+% the same N and both mint `conn<N+1>`. That was harmless while ConnId was only a
+% label; it stopped being harmless the moment the peer keyed its per-connection
+% HANDSHAKE STATE on it (ec_peer conn_key/2) — two connections sharing an id share
+% whether a nonce was issued and whether the connection is established. `flag/3` is
+% SWI's atomic get-and-set and needs no mutex of its own.
 new_conn_id(Id) :-
-    ( retract(conn_counter(N)) -> true ; N = 0 ), N1 is N+1,
-    assertz(conn_counter(N1)), format(atom(Id), 'conn~d', [N1]).
+    flag(ec_conn_counter, N, N + 1), N1 is N + 1,
+    format(atom(Id), 'conn~d', [N1]).
+
+% ── connection-teardown hooks ─────────────────────────────────────────────────
+% Per-connection state that lives ABOVE the transport (the peer's handshake state)
+% has to be released when the connection goes, or it accumulates one record per
+% connection for the life of the process — which a 256-connection flood or a
+% 100-cycle churn makes measurable. The transport must not know what that state IS,
+% so it publishes the event and the owner registers for it.
+:- dynamic conn_close_hook/1.
+register_conn_close_hook(Goal) :-
+    ( conn_close_hook(Goal) -> true ; assertz(conn_close_hook(Goal)) ).
 
 % ── per-connection I/O object ─────────────────────────────────────────────────
 %   io(ConnId, In, Out, PendingMutex, WriteMutex)
@@ -63,7 +81,8 @@ make_io(In, Out, io(ConnId, In, Out, PMtx, WMtx)) :-
     mutex_create(PMtx), mutex_create(WMtx).
 
 % release a connection's anonymous mutexes (called at serve/dialer teardown).
-io_destroy(io(_, _, _, PMtx, WMtx)) :-
+io_destroy(io(ConnId, _, _, PMtx, WMtx)) :-
+    forall(conn_close_hook(G), ignore(catch(call(G, ConnId), _, true))),
     catch(mutex_destroy(PMtx), _, true),
     catch(mutex_destroy(WMtx), _, true).
 

@@ -114,7 +114,16 @@ check "type-model content_hash deterministic" \
 # ── §4.5 hello negotiation: present-empty vs absent (review finding #1) ──
 # The oracle can't cover present-empty hash_formats/key_types; this locks the fix.
 set npeer [::entity::core::peer::create $seedA]
+# Every case below builds its hello through here, and `protocols` is added to ALL of
+# them because §4.5 makes it Required with NO default: a hello that omits it is
+# MALFORMED (400 invalid_request) whatever its hash_formats say, so without this the
+# two ACCEPT cases stop measuring negotiation and start measuring the fixture. They
+# are also the two that caught it — the three DENY cases below pass either way, which
+# is the standing rule that a predicate test built only from deny cases cannot tell a
+# working check from a broken fixture.
 proc hello_status {peer fields} {
+    set fields [list map [concat [::entity::core::ecf::entries $fields] \
+        [list [list text protocols] [::entity::core::ecf::text_array {entity-core/1.0}]]]]
     set hello [::entity::core::entity::make system/protocol/connect/hello $fields]
     set exec [::entity::core::wire::make_execute rq system/protocol/connect hello $hello]
     set conn [::entity::core::conn::new]

@@ -25,13 +25,14 @@ module EntityCore.Peer
   , outboundDispatch
   ) where
 
-import Control.Monad (forM_, when)
+import Control.Monad (forM_, guard, when)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.IORef
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Word (Word64)
 import System.IO (IOMode (ReadMode), withBinaryFile)
@@ -55,6 +56,7 @@ import EntityCore.Codec.Varint (varintDecode)
 import EntityCore.ContentHash (contentHash)
 import EntityCore.Identity (Identity (..), ed25519VerifyRaw, identityOfSeed, peerEntityOfPubkey, peerIdOfPubkey, signEntity, verifySignature)
 import EntityCore.Model
+import EntityCore.PeerId (PeerIdParts (..), parsePeerId)
 import EntityCore.SeedPolicy (SeedPolicy (..))
 import EntityCore.Store (Store)
 import qualified EntityCore.Store as Store
@@ -265,19 +267,70 @@ connectHandler p conn exec included = do
     "hello"
       | established -> pure (errOc 409 "connection_already_established")
       | otherwise -> do
+          -- §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on
+          -- a HALF-OPEN connection (hello done, authenticate not yet) is an
+          -- operation we implement arriving in a state that forbids it — the same
+          -- class as connection_already_established above, taking the same 409.
+          -- A half-open connection is NOT established, so the guard above cannot
+          -- reach it; §4.7 names this gap explicitly because two adjacent rules
+          -- each look like they cover it and neither does. We re-issued a nonce
+          -- and answered 200.
+          alreadyGreeted <- readIORef (connIssuedNonce conn)
           let params = entityField exec "params"
               strArray key = case params >>= (`field` key) of
                 Just (VArray l) -> Just (mapMaybe (\case VText s -> Just s; _ -> Nothing) l)
                 _ -> Nothing
               hashOk = maybe True (elem "ecfv1-sha256") (strArray "hash_formats")
               keyOk = maybe True (elem "ed25519") (strArray "key_types")
-          if not hashOk
-            then pure (errOc 400 "incompatible_hash_format")
-            else
-              if not keyOk
-                then pure (errOc 400 "unsupported_key_type")
-                else do
-                  writeIORef (connHelloPeerId conn) (params >>= (`textField` "peer_id"))
+              initiatorPid = params >>= (`textField` "peer_id")
+              -- §4.5 mutual verifiability, the direction that is NOT the array.
+              -- key_types is an ACCEPT-SET; the initiator's OWN key_type is not in
+              -- it — it rides in its peer_id — so a hello may advertise a perfectly
+              -- good accept-set and still name an identity we cannot verify.
+              -- Checking only the array leaves that MUST unenforced at hello, which
+              -- is where §4.5 wants it (the "symmetric earliest-reject guarantee").
+              -- An UNPARSEABLE peer_id is deliberately left alone: that is a
+              -- malformed field, not a key_type we lack, and authenticate refuses it.
+              initiatorKeyOk = case initiatorPid of
+                Nothing -> True
+                Just pid -> case parsePeerId (TE.encodeUtf8 pid) of
+                  Right parts -> pidKeyType parts == 0x01
+                  Left _ -> True
+              -- §4.5 `protocols` — the one negotiated field Required with NO
+              -- default, so there is no floor to fall back to, and its two failure
+              -- modes carry different codes on purpose:
+              --   absent or empty     -> 400 invalid_request       (a malformed hello)
+              --   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+              -- "a caller that named no version cannot be told the comparison
+              -- failed" — the remedies differ (send the field vs change the
+              -- version) and §4.7 exists so the code selects the remedy. The
+              -- vocabulary is §8.4's identifiers, today the single entity-core/1.0.
+              protos = strArray "protocols"
+              -- The refusal ladder as DATA rather than as nesting: first Just wins.
+              -- ORDER IS OBSERVABLE AND §4.5 FIXES NONE, so it is stated here in one
+              -- place instead of being implied by indentation. `protocols` is LAST,
+              -- matching the reference peer, which refuses key_types first. Checking
+              -- protocols first is equally spec-legal and makes AGILITY-UNKNOWN-1
+              -- answer incompatible_protocol, because that probe's own hello carries
+              -- protocols ["entity-core/v7"] — a spec-line name, not a §8.4
+              -- identifier. Matching the reference's precedence is the interoperable
+              -- choice; the probe's identifier is routed as F56.
+              refusal =
+                listToMaybe $
+                  catMaybes
+                    [ errOc 409 "connection_sequence_error" <$ guard (isJust alreadyGreeted)
+                    , errOc 400 "incompatible_hash_format" <$ guard (not hashOk)
+                    , errOc 400 "unsupported_key_type" <$ guard (not keyOk)
+                    , errOc 400 "unsupported_key_type" <$ guard (not initiatorKeyOk)
+                    , errMsg 400 "invalid_request" "hello: protocols absent or empty"
+                        <$ guard (maybe True null protos)
+                    , errOc 400 "incompatible_protocol"
+                        <$ guard (notElem "entity-core/1.0" (fromMaybe [] protos))
+                    ]
+          case refusal of
+            Just o -> pure o
+            Nothing -> do
+                  writeIORef (connHelloPeerId conn) initiatorPid
                   nonce <- randomBytes 32
                   writeIORef (connIssuedNonce conn) (Just nonce)
                   t <- nowMs
@@ -349,7 +402,20 @@ connectHandler p conn exec included = do
                                               , (entHash sgn, sgn)
                                               ]
                                               grantResult
-    other -> pure (errMsg 501 "unsupported_operation" ("connect: " <> other))
+    -- §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+    -- 400 invalid_request, not the 501 every other handler answers. The table
+    -- separates a STATE conflict from an UNKNOWN operation because they select
+    -- different remedies — "an unknown connect operation is not out of order at
+    -- all; it exists in no state", so reporting connection_sequence_error would
+    -- point the caller at its ORDERING when the defect is its OPERATION NAME.
+    -- Row 10 is scoped "in any state", so this arm covers pre-handshake AND
+    -- established; the genuine sequence cases are refused above, with 409.
+    --
+    -- SCOPED TO THIS HANDLER DELIBERATELY. The generic registered-handler rule
+    -- (§3.3's 501 row, §6.2 — unknown op on a registered handler -> 501
+    -- unsupported_operation) is a different contract and is separately gated;
+    -- moving the shared 501 would trade one green check for another.
+    other -> pure (errMsg 400 "invalid_request" ("connect: unknown operation " <> other))
   where
     badKeyType auth =
       (textField auth "key_type" /= Nothing && textField auth "key_type" /= Just "ed25519")
@@ -495,10 +561,30 @@ admitPut v = do
 -- table, or 'Nothing' when this peer cannot verify that code. The total wire
 -- length is this plus the varint prefix, which is not a constant of the code
 -- (§7.3): codes ≥ 0x80 occupy more than one byte.
+--
+-- __@0x00@ and @0x01@ only.__ @0x02@ (ECFv1-SHA-512) is ALLOCATED by §1.5 with a
+-- defined 64-byte digest, and this peer used to verify it — @crypton@ ships
+-- SHA-512, so an allocated code with a known algorithm looked computable and
+-- therefore verifiable. That reading is withdrawn. §1.5 marks @0x02@ /Reserved/,
+-- and all three ground-up implementations (go, rust, py) read /Reserved/ as
+-- not-implemented and refuse it.
+--
+-- __The justification is the three-way convergence, NOT the wire vector that
+-- surfaced it.__ Aligning a peer to a vector is authoring against the oracle;
+-- aligning it to three independently written implementations is not, and those
+-- three ARE independent convergence in a way 46 peers from one generator are not.
+-- §1.5's @Status@ column never states what it obliges — that gap is routed as F55,
+-- and until it is answered the conservative reading is the interoperable one.
+--
+-- @0x01@ STAYS: the crypto-agility corpus exercises SHA-384 and S2 goes red
+-- without it. And the asymmetry is deliberate — __name the codes a peer can
+-- VERIFY, not the codes its construction path will serialise__: 'contentHash'
+-- will still emit a prefix for an unimplemented code on the forward-compat
+-- construction path (§4.7), and this is the ingest surface, which is the one that
+-- decides interop.
 hashDigestLen :: Integer -> Maybe Int
 hashDigestLen 0x00 = Just 32
 hashDigestLen 0x01 = Just 48
-hashDigestLen 0x02 = Just 64
 hashDigestLen _ = Nothing
 
 treeHandler :: Peer -> Entity -> IO Outcome

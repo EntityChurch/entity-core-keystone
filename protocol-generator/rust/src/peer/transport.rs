@@ -299,7 +299,24 @@ impl Session {
 /// Initiator handshake (§4.1): hello → authenticate, returning a [`Session`].
 pub fn initiate(local: Arc<Peer>, io: Arc<Io>, conn: Arc<Mutex<Conn>>) -> Option<Session> {
     // 1. hello
-    let r1 = send_connect(&io, &conn, "hello", wire::empty_params(), vec![])?;
+    //
+    // `protocols` is Required with NO default (§4.5), so a hello that omits it is a
+    // malformed hello and a conforming responder answers 400 invalid_request. This
+    // dialer used to send empty params and it worked only because no peer enforced
+    // the rule — the moment the responder side landed, the peer could not complete a
+    // handshake with itself. The oracle cannot see this: its origination check reuses
+    // the INBOUND connection ("validator-as-B on the same connection") and never makes
+    // us dial, so the only thing that exercises it is a real two-peer test.
+    let hello_params = Entity::make(
+        "primitive/any",
+        model::map(vec![
+            ("peer_id", model::text(&local.local_peer)),
+            ("protocols", model::text_array(&["entity-core/1.0"])),
+            ("hash_formats", model::text_array(&["ecfv1-sha256"])),
+            ("key_types", model::text_array(&["ed25519"])),
+        ]),
+    );
+    let r1 = send_connect(&io, &conn, "hello", hello_params, vec![])?;
     if r1.root.uint_field("status") != Some(200) {
         return None;
     }

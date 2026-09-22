@@ -124,7 +124,16 @@ handshake : Client ->{IO} Boolean
 handshake cl =
   ident = Client.clIdent cl
   ridH = nextReqId cl
-  helloParams = makeEntity "primitive/any" (VMap [(VText "peer_id", VText (Identity.idPeerId ident))])
+  -- §4.5 makes `protocols` Required with NO default, so a hello that omits it is a
+  -- MALFORMED hello and a conforming responder answers 400 invalid_request. This
+  -- smoke client sent peer_id alone and it worked only because no peer enforced the
+  -- rule — the moment the responder side landed, the peer could not complete a
+  -- handshake with itself. THE ORACLE CANNOT SEE THIS: it is always the client.
+  helloParams = makeEntity "primitive/any" (VMap
+    [ (VText "peer_id", VText (Identity.idPeerId ident))
+    , (VText "protocols", VArray [VText "entity-core/1.0"])
+    , (VText "hash_formats", VArray [VText "ecfv1-sha256"])
+    , (VText "key_types", VArray [VText "ed25519"]) ])
   helloExec = makeExecute ridH "system/protocol/connect" "hello" helloParams None (Identity.idHash ident) Bytes.empty
   helloResp = sendOver (Client.clCio cl) (Envelope helloExec [(Identity.idHash ident, Identity.idPeerEntity ident)])
   okHello = (statusOf helloResp) == 200

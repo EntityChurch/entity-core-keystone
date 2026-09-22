@@ -199,7 +199,18 @@ end
 `Session`. Both request/response legs traverse real frames through the responder's dispatch."""
 function initiate(io::Io, local_id::PeerIdentity)::Session
     io.out_counter += 1
-    r1 = execute_raw(io, "system/protocol/connect", "hello", empty_params();
+    # §4.5 makes `protocols` Required with NO default, so a hello that omits it is a
+    # MALFORMED hello and a conforming responder answers 400 invalid_request. This
+    # dialer used to send empty params and it worked only because no peer enforced
+    # the rule — the moment the responder side landed, the peer could not complete a
+    # handshake with itself. THE ORACLE CANNOT SEE THIS: its origination check
+    # reuses the INBOUND connection and never makes us dial.
+    hello_params = make_entity("primitive/any", CborMap(Pair[
+        ("peer_id" => local_id.peer_id),
+        ("protocols" => Any["entity-core/1.0"]),
+        ("hash_formats" => Any["ecfv1-sha256"]),
+        ("key_types" => Any["ed25519"])]))
+    r1 = execute_raw(io, "system/protocol/connect", "hello", hello_params;
                      request_id="h-$(io.out_counter)")
     r1 === nothing && error("handshake: no hello response")
     status_of(r1) == 200 || error("handshake: hello status $(status_of(r1))")

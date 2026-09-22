@@ -5,6 +5,7 @@
 #
 #   make build   # compile the peer host  → bin/entity-core-peer
 #   make test    # odin test test (71-vector codec + head-form + Ed25519 KATs + peer units)
+#   make smoke   # two Odin peers over loopback TCP — the only driver of this peer's dialer
 #   make dist    # source tarball (no compiled binaries) → dist/entity-core-protocol-odin-<V>.tar.gz
 #   make clean   # remove build artifacts (bin/*, dist/)
 
@@ -17,7 +18,7 @@ PODMAN    ?= podman
 RUN_CAPS  ?= $(shell . $(REPO_ROOT)/tools/podman-caps.sh 2>/dev/null && echo $$PODMAN_RUN_CAPS)
 RUN        = $(PODMAN) run $(RUN_CAPS) --rm --network=none -v "$(REPO_ROOT)":/work:Z -w $(WORKDIR) $(IMAGE) sh -c
 
-.PHONY: all build test check clean dist
+.PHONY: all build test check smoke clean dist
 
 all: test
 
@@ -33,6 +34,17 @@ test:
 # ── Check: type-check without codegen (odin check; no separate ecosystem linter at core). ──
 check:
 	$(RUN) 'odin check src'
+
+# ── Smoke: two Odin peers over real loopback TCP (§4.1 handshake both directions, §6.5 ──
+# dispatch, §6.11 request_id demux), leak-checked. This is the ONLY thing in the tree that
+# drives this peer's own DIALER — `initiate()` in src/transport.odin — because the
+# conformance oracle is always the client and its origination check reuses the inbound
+# connection rather than making us dial. `smoke/` was already copied into the source
+# tarball by `make dist` and had no build or run target, so it had never been executed by
+# anything: a §4.5 defect in the hello we SEND was invisible to every gate. Verified to
+# have teeth by planting one (empty hello params → SMOKE: FAIL).
+smoke:
+	$(RUN) 'odin build smoke -out:bin/smoke -o:none && ./bin/smoke'
 
 # ── S5 packaging ──
 # Odin has NO package manager and NO module system — a peer is a directory of .odin files a

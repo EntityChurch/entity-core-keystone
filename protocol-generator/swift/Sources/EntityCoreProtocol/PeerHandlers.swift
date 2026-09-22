@@ -15,6 +15,16 @@ extension Peer {
     func handleConnect(root: Entity, env: Envelope, operation: String, requestID: String, session: Session) async -> BuiltEntity {
         switch operation {
         case "hello":
+            // §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a
+            // HALF-OPEN connection (hello done, authenticate not yet) is an operation
+            // we implement arriving in a state that forbids it — the same class as
+            // connection_already_established, and it takes the same 409. A half-open
+            // connection is NOT established, so the already-established guard cannot
+            // reach it; §4.7 names this gap explicitly because two adjacent rules each
+            // look like they cover it and neither does.
+            if session.issuedNonce != nil {
+                return (try? errorResponse(requestID: requestID, status: 409, code: "connection_sequence_error")) ?? fallbackError()
+            }
             // §4.5 negotiation: a hello advertising hash_formats / key_types with no
             // overlap with our accept-set MUST be rejected up front (NEGOTIATE-*-1 b).
             if let p = params(root) {
@@ -26,6 +36,52 @@ extension Peer {
                    !kts.contains("ed25519") {
                     return (try? errorResponse(requestID: requestID, status: 400, code: "unsupported_key_type")) ?? fallbackError()
                 }
+                // §4.5 mutual verifiability, the direction that is NOT the array.
+                // key_types is an ACCEPT-SET; the initiator's OWN key_type is not in
+                // it — it rides in its peer_id — so a hello may advertise a perfectly
+                // good accept-set and still name an identity we cannot verify.
+                // We already reject this at `authenticate` (three surfaces, below),
+                // which §4.5 calls conformant but non-canonical; hello is the
+                // canonical earliest reject point and the "symmetric earliest-reject
+                // guarantee" is stated there. An UNPARSEABLE peer_id stays untouched:
+                // that is a malformed field, not a key_type we lack.
+                if let claimed = p.textAt("peer_id"),
+                   let kt = try? PeerID.parse(claimed).keyType, kt != 0x01 {
+                    return (try? errorResponse(requestID: requestID, status: 400, code: "unsupported_key_type")) ?? fallbackError()
+                }
+                // §4.5 `protocols` — the one negotiated field Required with NO
+                // default, so there is no floor to fall back to, and its two failure
+                // modes carry different codes on purpose (§4.5 table row / §4.7 row 1):
+                //
+                //   absent or empty     -> 400 invalid_request       (a malformed hello)
+                //   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+                //
+                // "a caller that named no version cannot be told the comparison
+                // failed" — the remedies differ (send the field vs change the version)
+                // and §4.7 exists so the code selects the remedy. The vocabulary is
+                // §8.4's protocol version identifiers, today the single
+                // entity-core/1.0 — NOT this document's section numbering, which §4.5
+                // names as the plausible wrong value.
+                //
+                // ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY. §4.5 states
+                // no precedence between the three, so a hello disjoint in more than
+                // one dimension may be refused on any of them — but the choice is
+                // OBSERVABLE, and the reference peer refuses key_types first. Checking
+                // protocols first is equally spec-legal and makes AGILITY-UNKNOWN-1
+                // answer incompatible_protocol, because that probe's own hello carries
+                // protocols ["entity-core/v7"] — a spec-line name, not a §8.4
+                // identifier. Matching the reference's precedence is the interoperable
+                // choice; the probe's identifier is routed as F56.
+                let protos = p.arrayAt("protocols")?.compactMap({ $0.textValue })
+                guard let protos, !protos.isEmpty else {
+                    return (try? errorResponse(requestID: requestID, status: 400, code: "invalid_request")) ?? fallbackError()
+                }
+                if !protos.contains("entity-core/1.0") {
+                    return (try? errorResponse(requestID: requestID, status: 400, code: "incompatible_protocol")) ?? fallbackError()
+                }
+            } else {
+                // No params at all is also a hello with no `protocols` field.
+                return (try? errorResponse(requestID: requestID, status: 400, code: "invalid_request")) ?? fallbackError()
             }
             // §4.2 ordering: hello establishes the connection's claimed identity.
             session.helloReceived = true
@@ -95,6 +151,18 @@ extension Peer {
             guard let derived = try? PeerID.fromEd25519(publicKey: pubkey).format(), derived == peerIDClaim else {
                 return (try? errorResponse(requestID: requestID, status: 401, code: "identity_mismatch")) ?? fallbackError()
             }
+            // Step 3, SECOND HALF: the authenticate's peer_id must also be the one
+            // the hello claimed. §4.7 row 8 names both inputs on one row —
+            // "`peer_id` not derived from `public_key`, OR `hello`/`authenticate`
+            // peer_id mismatch (§4.6 step 3)" -> 401 `identity_mismatch` — and only
+            // the first half was implemented. The check above proves the identity is
+            // SELF-CONSISTENT; it says nothing about whether it is the identity this
+            // connection has been negotiating with, so a caller could greet as one
+            // peer and authenticate as another, and every seed-policy lookup after it
+            // resolves against the second. `session.remotePeerID` is set by hello.
+            if let greeted = session.remotePeerID, greeted != peerIDClaim {
+                return (try? errorResponse(requestID: requestID, status: 401, code: "identity_mismatch")) ?? fallbackError()
+            }
             // Build the remote's system/peer entity; its hash is the identity hash.
             guard let remotePeer = try? Model.make(type: "system/peer", fields: [
                 ("public_key", .bytes(pubkey)), ("key_type", .text(keyType)),
@@ -111,7 +179,20 @@ extension Peer {
             return await mintAuthenticateGrant(requestID: requestID, remoteIdentityHash: remotePeer.hash, remotePeerID: peerIDClaim)
 
         default:
-            return (try? errorResponse(requestID: requestID, status: 501, code: "unsupported_operation")) ?? fallbackError()
+            // §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+            // 400 invalid_request, not the 501 every other handler answers. The table
+            // separates a STATE conflict from an UNKNOWN operation because they select
+            // different remedies — "an unknown connect operation is not out of order at
+            // all; it exists in no state", so connection_sequence_error would point the
+            // caller at its ORDERING when the defect is its OPERATION NAME. Row 10 is
+            // scoped "in any state", so this arm covers pre-handshake AND established;
+            // the genuine sequence cases are refused above, with 409.
+            //
+            // SCOPED TO THIS HANDLER DELIBERATELY. The generic registered-handler rule
+            // (§3.3's 501 row, §6.2 — unknown op on a registered handler -> 501
+            // unsupported_operation) is a different contract and is separately gated;
+            // moving the shared 501 would trade one green check for another.
+            return (try? errorResponse(requestID: requestID, status: 400, code: "invalid_request")) ?? fallbackError()
         }
     }
 
@@ -197,16 +278,24 @@ extension Peer {
                 entity = e
             }
             // §3.9 CAS: expected_hash present → must match current binding (zero =
-            // create-only). Mismatch → 409 conflict.
+            // create-only). Mismatch → 409 `hash_mismatch`.
+            //
+            // THE CODE IS `hash_mismatch`, NOT `cas_mismatch`. §9's conformance
+            // requirements pin it twice and name no synonym — CORE-TREE-PUT-CAS-1
+            // ("on a bound path → 409 `hash_mismatch`") and CORE-TREE-PUT-CAS-2
+            // ("non-matching → 409 `hash_mismatch`"). `cas_mismatch` was a minted
+            // spelling on the `incompatible_key_type` / `invalid_signature` /
+            // `unknown_operation` precedent: a plausible name for a code slot that
+            // already had one, and clients key error handling off the code.
             if let expected = p.bytesAt("expected_hash") {
                 let current = await store.hashAt(path: canon)
                 let isZero = expected.allSatisfy { $0 == 0 }
                 if isZero {
                     if current != nil {
-                        return try errorResponse(requestID: requestID, status: 409, code: "cas_mismatch")
+                        return try errorResponse(requestID: requestID, status: 409, code: "hash_mismatch")
                     }
                 } else if !(current?.elementsEqual(expected) ?? false) {
-                    return try errorResponse(requestID: requestID, status: 409, code: "cas_mismatch")
+                    return try errorResponse(requestID: requestID, status: 409, code: "hash_mismatch")
                 }
             }
             await store.bind(path: canon, entity)
@@ -276,11 +365,29 @@ extension Peer {
     /// table, or nil when this peer cannot VERIFY that code. The total wire
     /// length is this plus the varint prefix, which is not a constant of the
     /// code (§7.3): codes ≥ 0x80 occupy more than one byte.
+    ///
+    /// **0x00 and 0x01 only.** `0x02` (ECFv1-SHA-512) is ALLOCATED by §1.5 with a
+    /// defined 64-byte digest, and this peer used to verify it — CryptoKit ships
+    /// SHA-512, so an allocated code with a known algorithm looked computable and
+    /// therefore verifiable. That reading is withdrawn. §1.5 marks `0x02`
+    /// *Reserved*, and all three ground-up implementations (go, rust, py) read
+    /// *Reserved* as not-implemented and refuse it.
+    ///
+    /// **The justification is the three-way convergence, NOT the wire vector that
+    /// surfaced it.** Aligning a peer to a vector is authoring against the oracle;
+    /// aligning it to three independently written implementations is not, and those
+    /// three ARE independent convergence in a way 46 peers from one generator are
+    /// not. §1.5's `Status` column never states what it obliges — routed as F55.
+    ///
+    /// `0x01` STAYS: the crypto-agility corpus exercises SHA-384 and S2 goes red
+    /// without it. And the asymmetry is deliberate — **name the codes a peer can
+    /// VERIFY, not the codes its construction path will serialise**: `ContentHash`
+    /// still computes SHA-512 for a caller that asks, and this is the ingest
+    /// surface, which is the one that decides interop.
     func hashDigestLen(_ formatCode: UInt64) -> Int? {
         switch formatCode {
         case 0x00: return 32
         case 0x01: return 48
-        case 0x02: return 64
         default: return nil
         }
     }

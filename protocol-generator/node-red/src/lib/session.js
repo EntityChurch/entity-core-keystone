@@ -216,6 +216,14 @@ function newSession(kernel, connId, sendFrame) {
     /** Every authenticated EXECUTE MUST carry author (§5.1). Missing → 401 (§3.3). */
     dpAuthorPresent(did) {
       const ctx = dispatches.get(did);
+      // §4.7: a non-connect EXECUTE arriving BEFORE the handshake completes is refused
+      // 401 authentication_failed. `missing_author` is the right code for an ESTABLISHED
+      // connection that omits `author`, and the wrong one here: the caller's remedy is to
+      // finish the handshake, not to sign this frame.
+      if (!connState.established) {
+        ctx.err = { status: ec.Status.Unauthorized, code: "authentication_failed", message: "connection not established" };
+        return "err";
+      }
       if (ctx.execute.author === null) {
         ctx.err = { status: ec.Status.Unauthorized, code: "missing_author", message: "author required" };
         return "err";
@@ -262,7 +270,10 @@ function newSession(kernel, connId, sendFrame) {
       try {
         const res = registry.resolve(ctx.path);
         if (res === null) {
-          ctx.err = { status: ec.Status.NotFound, code: "not_found", message: "no handler resolves " + ctx.path };
+          // §3.3's 404 row (0.8.2.7) names the code `handler_not_found`. `not_found` is
+          // the code for a bound-path miss INSIDE a handler (tree get); this is the
+          // resolution step failing, a different row and a different remedy.
+          ctx.err = { status: ec.Status.NotFound, code: "handler_not_found", message: "no handler resolves " + ctx.path };
           return "err";
         }
         ctx.res = res;

@@ -703,9 +703,14 @@ put-admit.
     end-if
     move choff to vpos
     call "cbor-read-head" using lk-env vpos rmaj raddl rarg st
-    *> The LENGTH is checked before any copy: `carried` is a fixed 33-byte field
-    *> and this value comes straight off the wire.
-    if rmaj not = 2 or rarg = 0 or rarg > 33
+    *> The LENGTH is bounded before any read, because this value comes straight off
+    *> the wire. The bound is 128 and NOT 33: `carried` is a fixed 33-byte field, but
+    *> rejecting on ITS size here answers invalid_request for a well-formed hash that
+    *> merely names a LONGER digest — SHA-384's 0x01 form is 49 bytes — and §1.2 gives
+    *> that its own row. The 33-byte guard belongs at the copy, where it is implied by
+    *> construction: the only format code this peer verifies is 0x00, whose single
+    *> varint byte plus a 32-byte digest is exactly 33.
+    if rmaj not = 2 or rarg = 0 or rarg > 128
         move "invalid_request" to admc  move 15 to admcl
         exit paragraph
     end-if

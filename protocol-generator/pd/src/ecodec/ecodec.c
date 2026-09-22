@@ -3062,7 +3062,13 @@ static void ecodec_tree_put_serve(t_ecodec *x)
     if (cbor_value_slice(buf, len, edataf.pos, &edp, &edl) != 0) {
         emit_error_response(x, 400, "invalid_request"); return;
     }
-    {   cbor_rd chf; unsigned char carried[33]; size_t chl = 0;
+    {   cbor_rd chf; unsigned char carried[128]; size_t chl = 0;
+        /* 128 and NOT 33: `carried` only ever holds the 0x00 form (one varint byte plus
+         * a 32-byte digest = 33), but sizing the READ buffer to that answers
+         * invalid_request for a well-formed hash that merely names a LONGER digest —
+         * SHA-384's 0x01 form is 49 bytes — and §1.2 gives that its own row. The 33-byte
+         * bound is re-established below by `chl != i + 32` on the only format code this
+         * peer verifies. */
         if (!cbor_map_find(buf, len, entf.pos, "content_hash", &chf)) {
             emit_error_response(x, 400, "invalid_request"); return;
         }

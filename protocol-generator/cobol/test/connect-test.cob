@@ -34,6 +34,10 @@ working-storage section.
 01 k-op      pic x(9)  value "operation".
 01 k-params  pic x(6)  value "params".
 01 k-pid     pic x(7)  value "peer_id".
+01 k-proto   pic x(9)  value "protocols".
+01 v-proto   pic x(15) value "entity-core/1.0".
+01 n9k       pic 9(18) comp-5 value 9.
+01 n15k      pic 9(18) comp-5 value 15.
 01 k-pk      pic x(10) value "public_key".
 01 k-kt      pic x(8)  value "key_type".
 01 k-nonce   pic x(5)  value "nonce".
@@ -116,11 +120,17 @@ procedure division.
     move all x"00" to conn2
 
     *> ---------- 1. hello ----------
-    *> params entity {peer_id: cli}
+    *> params entity {peer_id: cli, protocols: ["entity-core/1.0"]}
+    *> §4.5 makes `protocols` Required with NO default, so a hello that omits it is a
+    *> MALFORMED hello and this peer's own §4.7 ladder answers 400 invalid_request. The
+    *> fixture sent peer_id alone and read as green only while nothing compared the field.
     move 0 to nd-len
-    call "b-map"  using nd nd-len n1
+    call "b-map"  using nd nd-len n2
     call "b-text" using nd nd-len k-pid n7
     call "b-text" using nd nd-len cli-peerid cli-peerid-len
+    call "b-text" using nd nd-len k-proto n9k
+    call "b-arr"  using nd nd-len n1
+    call "b-text" using nd nd-len v-proto n15k
     call "b-entity" using t-any t-any-len nd nd-len pent-buf pent-len phash bst
     perform build-exec-with-params
        *> uses op "hello", rid "connect-hello"

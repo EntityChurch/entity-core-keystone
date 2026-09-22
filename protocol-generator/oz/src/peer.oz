@@ -326,7 +326,41 @@ define
    fun {HConnect P Operation Ctx}
       if Operation == "hello" then {ConnectHello P Ctx}
       elseif Operation == "authenticate" then {ConnectAuthenticate P Ctx}
-      else {OutErr 501 "unsupported_operation" Operation} end
+      %% §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+      %% 400 invalid_request, not the 501 every other handler answers. The table
+      %% separates a STATE conflict from an UNKNOWN operation because they select
+      %% different remedies -- "an unknown connect operation is not out of order at
+      %% all; it exists in no state", so connection_sequence_error would point the
+      %% caller at its ORDERING when the defect is its OPERATION NAME. Row 10 is
+      %% scoped "in any state", so this arm covers pre-handshake AND established; the
+      %% genuine sequence cases are refused in the two functions below, with 409.
+      %%
+      %% SCOPED TO THIS FUNCTION DELIBERATELY. The generic registered-handler rule
+      %% (section 3.3's 501 row, section 6.2) is a different contract and is
+      %% separately gated; moving the other handlers' 501 would trade one green check
+      %% for another.
+      %%
+      %% (The message text stays ASCII: a non-ASCII byte in an Oz string constant has
+      %% crashed this peer at runtime before -- A-OZ-008.)
+      else {OutErr 400 "invalid_request" {Util.vsToBytes "connect: unknown operation "#Operation}} end
+   end
+
+   %% section 4.5 `protocols`: is it present at all -- a non-empty array carrying at
+   %% least one text? Separates the MALFORMED-hello case from the we-compared-and-
+   %% disagreed case, which take different section 4.7 codes. NegotiationDisjoint
+   %% deliberately conflates the two (absent means "no constraint" there), so
+   %% `protocols`, which is Required with NO default, needs this asked first.
+   fun {ProtocolsPresent Params}
+      if Params == absent then false
+      else
+         local D = {Ent.dataMap Params} in
+            if {Not {Val.has D "protocols"}} then false
+            else
+               case {Val.getArr D "protocols"} of absent then false
+               [] L then {FoldR L fun {$ V Acc} case V of text(_) then true else Acc end end false} end
+            end
+         end
+      end
    end
 
    fun {NegotiationDisjoint Params Key Supported}
@@ -348,11 +382,56 @@ define
       C = Ctx.conn
       Exec = {CtxExec Ctx}
    in
+      %% section 4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a
+      %% HALF-OPEN connection (hello done, authenticate not yet) is an operation we
+      %% implement arriving in a state that forbids it -- the same class as
+      %% connection_already_established, taking the same 409. A half-open connection is
+      %% NOT established, so the established guard cannot reach it; section 4.7 names
+      %% this gap explicitly because two adjacent rules each look like they cover it and
+      %% neither does.
       if {Conn.get C established} then {OutErr 409 "connection_already_established" ""}
+      elseif {Conn.get C issuedNonce} \= unit then {OutErr 409 "connection_sequence_error" ""}
       else
-         local Params = {Ent.getEntity Exec "params"} in
+         local Params = {Ent.getEntity Exec "params"}
+               %% section 4.5 mutual verifiability, the direction that is NOT the
+               %% array. `key_types` is an ACCEPT-SET; the initiator's OWN key_type is
+               %% not in it -- it rides in its `peer_id` -- so a hello may advertise a
+               %% perfectly good accept-set and still name an identity we cannot
+               %% verify. An UNPARSEABLE peer_id is left alone: that is a malformed
+               %% field, not a key_type we lack, and authenticate already refuses it.
+               HelloPid = if Params == absent then absent
+                          else {Ent.getText Params "peer_id"} end
+               HelloKt = if HelloPid == absent then 1
+                         else
+                            try KT HT DG in {Peerid.parse HelloPid ?KT ?HT ?DG} KT
+                            catch _ then 1 end
+                         end
+         in
             if {NegotiationDisjoint Params "hash_formats" "ecfv1-sha256"} then {OutErr 400 "incompatible_hash_format" ""}
             elseif {NegotiationDisjoint Params "key_types" "ed25519"} then {OutErr 400 "unsupported_key_type" ""}
+            elseif HelloKt \= 1 then {OutErr 400 "unsupported_key_type" ""}
+            %% section 4.5 `protocols` -- the one negotiated field Required with NO
+            %% default, so there is no floor to fall back to, and its two failure modes
+            %% carry different codes on purpose (section 4.5 table row / 4.7 row 1):
+            %%
+            %%   absent or empty     -> 400 invalid_request       (a malformed hello)
+            %%   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+            %%
+            %% The remedies differ (send the field vs change the version) and section
+            %% 4.7 exists so the code selects the remedy. The vocabulary is section
+            %% 8.4's protocol version identifiers, today the single entity-core/1.0.
+            %%
+            %% ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY. Section 4.5
+            %% states no precedence between the three, so a hello disjoint in more than
+            %% one dimension may be refused on any of them -- but the choice is
+            %% OBSERVABLE, and the reference peer refuses key_types first. Checking
+            %% protocols first makes AGILITY-UNKNOWN-1 answer incompatible_protocol,
+            %% because that probe's hello carries ["entity-core/v7"] -- a spec-line
+            %% name, not a section 8.4 identifier (F56).
+            elseif {Not {ProtocolsPresent Params}} then
+               {OutErr 400 "invalid_request" {Util.vsToBytes "hello: protocols absent or empty"}}
+            elseif {NegotiationDisjoint Params "protocols" "entity-core/1.0"} then
+               {OutErr 400 "incompatible_protocol" ""}
             else
                local Nonce = {RandomBytes 32} in
                   if Params \= absent then {Conn.set C helloPeerId {Ent.getText Params "peer_id"}} end

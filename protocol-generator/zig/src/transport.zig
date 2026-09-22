@@ -458,10 +458,33 @@ fn sendConnect(gpa: std.mem.Allocator, io: *Io, conn: *Conn, operation: []const 
     return io.outbound(req);
 }
 
+/// The initiator's §4.5 hello params. `protocols` is the load-bearing field: it is
+/// Required with no default, so omitting it is a malformed hello, not a lenient one.
+fn helloParams(gpa: std.mem.Allocator, local_peer: []const u8) Error!Entity {
+    var list: std.ArrayList(Value.Pair) = .empty;
+    try list.append(gpa, .{ .key = try model.textVal(gpa, "peer_id"), .value = try model.textVal(gpa, local_peer) });
+    const protos = try gpa.alloc(Value, 1);
+    protos[0] = try model.textVal(gpa, "entity-core/1.0");
+    try list.append(gpa, .{ .key = try model.textVal(gpa, "protocols"), .value = .{ .array = protos } });
+    const hf = try gpa.alloc(Value, 1);
+    hf[0] = try model.textVal(gpa, "ecfv1-sha256");
+    try list.append(gpa, .{ .key = try model.textVal(gpa, "hash_formats"), .value = .{ .array = hf } });
+    const kt = try gpa.alloc(Value, 1);
+    kt[0] = try model.textVal(gpa, "ed25519");
+    try list.append(gpa, .{ .key = try model.textVal(gpa, "key_types"), .value = .{ .array = kt } });
+    return Entity.make(gpa, "primitive/any", .{ .map = try list.toOwnedSlice(gpa) });
+}
+
 /// Initiator handshake (§4.1): hello → authenticate, returning a Session.
 pub fn initiate(gpa: std.mem.Allocator, local: *Peer, io: *Io, conn: *Conn) Error!Session {
     // 1. hello
-    const hello_params = try wire.emptyParams(gpa);
+    // §4.5 makes `protocols` Required with NO default, so a hello that omits it is a
+    // MALFORMED hello and a conforming responder answers 400 invalid_request. This
+    // dialer used to send empty params and it worked only because no peer enforced
+    // the rule — the moment the responder side landed, the peer could not complete a
+    // handshake with itself. THE ORACLE CANNOT SEE THIS: its origination check
+    // reuses the INBOUND connection and never makes us dial.
+    const hello_params = try helloParams(gpa, local.local_peer);
     const r1 = (try sendConnect(gpa, io, conn, "hello", hello_params, &.{})) orelse return error.ConnectionBroken;
     defer r1.deinit(gpa);
     if (r1.root.uintField("status") != 200) return error.ConnectionBroken;

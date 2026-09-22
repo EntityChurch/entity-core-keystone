@@ -22,7 +22,8 @@
             peer_store/2,            % +Peer, -StoreId
             peer_identity/2,         % +Peer, -Identity
             dispatch/4,              % +Peer, +Env, +Outbound/2, -RespEnv   (the §6.5 chain)
-            serve_goal/4             % +Peer, +Env, +Outbound, -RespEnv     (transport entry)
+            serve_goal/4,            % +Peer, +Env, +Outbound, -RespEnv     (transport entry)
+            conn_forget/1            % +ConnId — drop a closed connection's handshake state
           ]).
 
 :- use_module(ec_codec).
@@ -43,7 +44,7 @@
 % predicates by handler section (tree near cas_ok/path_flex_ok, capability near
 % peer_pattern_ok, …) for readability — declare it discontiguous.
 :- discontiguous handle_op/4.
-:- discontiguous handle_connect/5.
+:- discontiguous handle_connect/6.
 
 % Peer is peer(PeerId) — a handle; the heavy state is in peer_fact/2.
 
@@ -191,10 +192,11 @@ chain_error_outcome(Err, outcome(500, R, [])) :-
 
 % run_chain: connect ops bypass authz; everything else runs verify → resolve →
 % check_permission → handler.
-run_chain(Peer, Env, Exec, _Outbound, Outcome) :-
+run_chain(Peer, Env, Exec, Outbound, Outcome) :-
     ent_text(Exec, "uri", "system/protocol/connect"), !,
     ( ent_text(Exec, "operation", Op) -> true ; Op = "" ),
-    handle_connect(Peer, Env, Exec, Op, Outcome).
+    % Outbound is threaded in ONLY to identify the CONNECTION — see conn_key/2.
+    handle_connect(Peer, Env, Exec, Op, Outbound, Outcome).
 run_chain(Peer, Env, Exec, Outbound, Outcome) :-
     peer_store(Peer, StoreId),
     peer_local_peer(Peer, Local),
@@ -254,18 +256,82 @@ granter_frame(Env, StoreId, Local, CallerCap, GranterPeer) :-
 % ═══════════════════════════════════════════════════════════════════════════
 % §4.1 / §4.6 handshake (connect handler).
 % ═══════════════════════════════════════════════════════════════════════════
-handle_connect(Peer, Env, Exec, "hello", Outcome) :- !,
+handle_connect(Peer, _Env, Exec, "hello", Outbound, Outcome) :- !,
     peer_local_peer(Peer, Local),
-    % §4.5 negotiation: an EXPLICIT hash_formats/key_types list that is DISJOINT
-    % from our floor (ecfv1-sha256 / ed25519) is rejected up front (400). An absent
-    % list = no constraint (admit). NEGOTIATE-FORMAT-1 / NEGOTIATE-KEYTYPE-1.
+    conn_key(Outbound, CK),
     ( ent_entity(Exec, "params", P) -> true ; P = (-) ),
-    ( P \== (-), ent_field(P, "hash_formats", HFs), is_list(HFs), \+ list_has_text(HFs, "ecfv1-sha256")
+    ( P \== (-), ent_text(P, "peer_id", HPid0) -> HPid = HPid0 ; HPid = (-) ),
+    ( % ── §4.5 CONTENT checks first, then §4.7 STATE checks. ──────────────────
+      %
+      % THE TWO ORDERS ARE DISTINGUISHABLE AND THE ORACLE DISTINGUISHES THEM.
+      % Measured at oracle 78db4a9: in a FULL core run this peer receives
+      % `negotiation/format_disjoint_reject`'s disjoint hello on a HALF-OPEN
+      % connection (traced: ck=conn117, established=false, hash_formats=
+      % ["ecfv1-fake-disjoint-format"]), so a state-first ladder answers
+      % 409 connection_sequence_error and the check wants 400
+      % incompatible_hash_format. Driven as `-category negotiation` alone the same
+      % hello arrives on a FRESH connection and either order passes — which is why
+      % the category run is green and the full run is not.
+      %
+      % Content-first is the reading that satisfies both vectors, and it is the one
+      % §4.5 argues for: a hello naming no common hash format is refusable on what
+      % it CONTAINS, in any state, and §4.5 wants that refusal at the earliest
+      % point. It is the same principle as §4.7 row 10 — an operation that "exists
+      % in no state" is not an ordering defect — applied to a field rather than an
+      % operation name. §4.5 and §4.7 fix no precedence between them, so both
+      % orders are spec-legal and only one passes: that is a finding, not a
+      % preference, and it is recorded rather than silently absorbed.
+      %
+      % §4.5 negotiation: an EXPLICIT hash_formats/key_types list that is DISJOINT
+      % from our floor (ecfv1-sha256 / ed25519) is rejected up front (400). An
+      % absent list = no constraint (admit). NEGOTIATE-FORMAT-1 / NEGOTIATE-KEYTYPE-1.
+      P \== (-), ent_field(P, "hash_formats", HFs), is_list(HFs), \+ list_has_text(HFs, "ecfv1-sha256")
     -> error_result("incompatible_hash_format", "", R), Outcome = outcome(400, R, [])
     ;  P \== (-), ent_field(P, "key_types", KTs), is_list(KTs), \+ list_has_text(KTs, "ed25519")
     -> error_result("unsupported_key_type", "", R), Outcome = outcome(400, R, [])
+      % §4.5 mutual verifiability, the direction that is NOT the array. `key_types`
+      % is an ACCEPT-SET; the initiator's OWN key_type is not in it — it rides in
+      % its `peer_id` — so a hello may advertise a perfectly good accept-set and
+      % still name an identity we cannot verify. An UNPARSEABLE peer_id is left
+      % alone: a malformed field, not a key_type we lack.
+    ;  HPid \== (-), catch(ec_peerid_parse(HPid, HKT, _, _), _, fail), HKT =\= 1
+    -> error_result("unsupported_key_type", "", R), Outcome = outcome(400, R, [])
+      % §4.5 `protocols` — the one negotiated field Required with NO default, so
+      % there is no floor to fall back to, and its two failure modes carry
+      % different codes on purpose (§4.5 table row / §4.7 row 1):
+      %
+      %   absent or empty     -> 400 invalid_request       (a malformed hello)
+      %   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+      %
+      % "a caller that named no version cannot be told the comparison failed" — the
+      % remedies differ (send the field vs change the version) and §4.7 exists so
+      % the code selects the remedy.
+      %
+      % ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY. §4.5 states no
+      % precedence between the three, so a hello disjoint in more than one
+      % dimension may be refused on any of them — but the choice is OBSERVABLE, and
+      % the reference peer refuses key_types first. Checking protocols first makes
+      % AGILITY-UNKNOWN-1 answer incompatible_protocol, because that probe's hello
+      % carries ["entity-core/v7"] — a spec-line name, not a §8.4 identifier (F56).
+    ;  \+ ( P \== (-), ent_field(P, "protocols", Ps0), is_list(Ps0), Ps0 \== [] )
+    -> error_result("invalid_request", "hello: protocols absent or empty", R),
+       Outcome = outcome(400, R, [])
+    ;  ent_field(P, "protocols", Ps), \+ list_has_text(Ps, "entity-core/1.0")
+    -> error_result("incompatible_protocol", "", R), Outcome = outcome(400, R, [])
+      % ── §4.7 STATE checks, after the content is known to be acceptable. ───────
+      % Rows 3/4: a hello on an ESTABLISHED connection is a state conflict.
+    ;  conn_established_key(CK)
+    -> error_result("connection_already_established", "", R), Outcome = outcome(409, R, [])
+      % The out-of-order row + the 0.8.2.8 half-open note: a second hello on a
+      % HALF-OPEN connection (hello done, authenticate not yet) is an operation we
+      % implement arriving in a state that forbids it — the same class as the row
+      % above, taking the same 409. A half-open connection is NOT established, so
+      % the guard above cannot reach it; §4.7 names this gap explicitly because two
+      % adjacent rules each look like they cover it and neither does.
+    ;  conn_issued_nonce_key(CK, _)
+    -> error_result("connection_sequence_error", "", R), Outcome = outcome(409, R, [])
     ;  random_nonce(Nonce), string_codes(Nonce, NC),
-       conn_remember(Env, hello, Nonce),
+       conn_remember_key(CK, Nonce, HPid),
        make_entity("system/protocol/connect/hello",
                    map(["peer_id"-Local, "nonce"-bytes(NC),
                         "protocols"-["entity-core/1.0"], "timestamp"-int(0),
@@ -274,19 +340,34 @@ handle_connect(Peer, Env, Exec, "hello", Outcome) :- !,
        Outcome = outcome(200, HelloE, []) ).
 
 list_has_text(L, T) :- member(X, L), ( X == T -> true ; ( string(X), string(T), X == T ) ), !.
-handle_connect(Peer, Env, Exec, "authenticate", Outcome) :- !,
-    handle_authenticate(Peer, Env, Exec, Outcome).
-handle_connect(_, _, _, Op, outcome(501, R, [])) :- error_result("unsupported_operation", Op, R).
+handle_connect(Peer, Env, Exec, "authenticate", Outbound, Outcome) :- !,
+    handle_authenticate(Peer, Env, Exec, Outbound, Outcome).
+% §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+% 400 invalid_request, not the 501 every other handler answers. The table separates
+% a STATE conflict from an UNKNOWN operation because they select different remedies
+% — "an unknown connect operation is not out of order at all; it exists in no
+% state", so connection_sequence_error would point the caller at its ORDERING when
+% the defect is its OPERATION NAME. Row 10 is scoped "in any state", so this clause
+% covers pre-handshake AND established.
+%
+% SCOPED TO THIS PREDICATE DELIBERATELY. The generic registered-handler rule (§3.3's
+% 501 row, §6.2) is a different contract and is separately gated; and note it is a
+% CLAUSE and not a throw/1 — the ec_peer §1.4 gate above records what happens when a
+% refusal is raised into a generic catch instead of answered where it is decided.
+handle_connect(_, _, _, Op, _, outcome(400, R, [])) :-
+    format(string(Msg), "connect: unknown operation ~w", [Op]),
+    error_result("invalid_request", Msg, R).
 
-handle_authenticate(Peer, Env, Exec, Outcome) :-
+handle_authenticate(Peer, Env, Exec, Outbound, Outcome) :-
     peer_local_peer(Peer, Local),
     peer_identity(Peer, Identity),
     peer_store(Peer, StoreId),
+    conn_key(Outbound, CK),
     % RT-6 (§4.6) anti-replay: a SECOND authenticate on an already-established
     % connection must not be re-processed (it would re-verify the same
     % still-cached nonce and re-issue a grant) — the nonce is documented
     % single-use. Reject outright, before any nonce/signature work.
-    ( conn_established(Env)
+    ( conn_established_key(CK)
     -> error_result("invalid_nonce", "", R), Outcome = outcome(401, R, [])
     % FM-1 (§4.2, §4.7 row 6, 0.8.2.1): an authenticate arriving before any hello
     % nonce was issued is the SAME input as the replay above — a captured
@@ -295,25 +376,45 @@ handle_authenticate(Peer, Env, Exec, Outcome) :-
     % surfaces as 401 authentication_failed: the right STATUS reached by a later
     % check, with a code that names the wrong failure. (Absence of a guard does not
     % predict which later check catches the frame — measured, not assumed.)
-    ; \+ conn_issued_nonce(Env, _)
+    ; \+ conn_issued_nonce_key(CK, _)
     -> error_result("invalid_nonce", "", R), Outcome = outcome(401, R, [])
     ; ent_entity(Exec, "params", Auth), unsupported_key_type(Auth)
     -> error_result("unsupported_key_type", "", R), Outcome = outcome(400, R, [])
     ; ent_entity(Exec, "params", Auth)
-    -> ( authenticate_ok(Env, Auth, Pub, Claimed)
-       -> peer_entity_of_pubkey(Pub, RemotePeer),
-          entity_hash(RemotePeer, RemoteHash),
-          derive_seed_grants(Local, StoreId, RemotePeer, Claimed, Grants),
-          mint_token(Identity, RemoteHash, Grants, Token, Sig),
-          store_put_entity(StoreId, RemotePeer),
-          entity_hash(Token, TokenHash), string_codes(TokenHash, THC),
-          make_entity("system/capability/grant", map(["token"-bytes(THC)]), GrantE),
-          identity_peer_entity(Identity, PeerEntity),
-          included_pairs([Token, PeerEntity, Sig], Included),
-          conn_mark_established(Env),
-          Outcome = outcome(200, GrantE, Included)
+    -> ( % §4.7 row 8 names TWO inputs and BOTH are 401 identity_mismatch, so they
+         % are checked AFTER proof-of-possession and separately from it. Folding
+         % them into authenticate_ok/4 made every one of the three §4.6 checks
+         % collapse into a single 401 authentication_failed — the right status
+         % reached by the wrong check, with a code that names the wrong failure.
+         %
+         %   (a) the claimed peer_id is not derived from the presented public_key
+         %       — the identity is not SELF-CONSISTENT;
+         %   (b) the claimed peer_id is not the one this connection GREETED as
+         %       — self-consistent, and not the identity we have been negotiating
+         %       with. Without (b) a caller may greet as one peer and authenticate
+         %       as another, and every seed-policy lookup after it resolves against
+         %       the second.
+         authenticate_ok(CK, Env, Auth, Pub, Claimed)
+       -> ( peer_id_of_pubkey(Pub, Derived), Derived \== Claimed
+          -> error_result("identity_mismatch", "", R), Outcome = outcome(401, R, [])
+          ;  conn_hello_peer_key(CK, Greeted), Greeted \== (-), Greeted \== Claimed
+          -> error_result("identity_mismatch", "", R), Outcome = outcome(401, R, [])
+          ;  handshake_grant(Peer, Local, Identity, StoreId, CK, Pub, Claimed, Outcome) )
        ;  error_result("authentication_failed", "", R), Outcome = outcome(401, R, []) )
     ;  error_result("authentication_failed", "", R), Outcome = outcome(401, R, []) ).
+
+handshake_grant(_Peer, Local, Identity, StoreId, CK, Pub, Claimed, Outcome) :-
+    peer_entity_of_pubkey(Pub, RemotePeer),
+    entity_hash(RemotePeer, RemoteHash),
+    derive_seed_grants(Local, StoreId, RemotePeer, Claimed, Grants),
+    mint_token(Identity, RemoteHash, Grants, Token, Sig),
+    store_put_entity(StoreId, RemotePeer),
+    entity_hash(Token, TokenHash), string_codes(TokenHash, THC),
+    make_entity("system/capability/grant", map(["token"-bytes(THC)]), GrantE),
+    identity_peer_entity(Identity, PeerEntity),
+    included_pairs([Token, PeerEntity, Sig], Included),
+    conn_mark_established_key(CK),
+    Outcome = outcome(200, GrantE, Included).
 
 % §4.6 hardening / AGILITY-UNKNOWN-1: an unsupported key_type → 400 (NOT 401).
 % The unsupported code can ride in the key_type field, a non-32-byte public_key,
@@ -326,59 +427,86 @@ unsupported_key_type(Auth) :-
       catch(ec_peerid_parse(PID, ParsedKT, _, _), _, fail), ParsedKT =\= 1
     ), !.
 
-% §4.6 three checks: nonce-echo, proof-of-possession, identity binding.
-authenticate_ok(Env, Auth, Pub, Claimed) :-
+% The §4.6 checks that are authentication_failed when they fail: shape, nonce-echo
+% and proof-of-possession. The IDENTITY-BINDING pair (§4.7 row 8) is deliberately NOT
+% here — both of its inputs are identity_mismatch, and a caller told
+% "authentication_failed" for a peer_id mismatch is pointed at the wrong remedy.
+authenticate_ok(CK, Env, Auth, Pub, Claimed) :-
     ent_bytes(Auth, "public_key", Pub), string_length(Pub, 32),
     ent_text(Auth, "peer_id", Claimed),
     ( ent_text(Auth, "key_type", KT) -> KT == "ed25519" ; true ),
     % nonce-echo: the echoed nonce must match the one we issued for this connection.
     ent_bytes(Auth, "nonce", Echoed),
-    conn_issued_nonce(Env, Issued),
+    conn_issued_nonce_key(CK, Issued),
     Echoed == Issued,
     % proof of possession: signature over auth's content_hash verifies under Pub.
     entity_hash(Auth, AuthHash),
     find_sig_for(Env, AuthHash, Sig),
     ent_bytes(Sig, "signature", SigBytes),
-    catch(ec_ed25519_verify(Pub, AuthHash, SigBytes), _, fail),
-    % identity binding: claimed peer_id == peer_id_of(Pub).
-    peer_id_of_pubkey(Pub, Derived), Derived == Claimed.
+    catch(ec_ed25519_verify(Pub, AuthHash, SigBytes), _, fail).
 
 find_sig_for(Env, Target, Sig) :-
     envelope_included(Env, Inc), member(_-Sig, Inc),
     entity_type(Sig, "system/signature"),
     ent_bytes(Sig, "target", T), T == Target, !.
 
-% per-connection nonce memory keyed by the issued nonce's first occurrence. The
-% loopback uses one connection per handshake; we key on the initiator's hello
-% peer_id present in the env's root params. Simplest correct scheme for the smoke:
-% remember the last nonce we issued globally per process is unsafe under 8-way; so
-% we key by the claimed initiator peer_id from the hello params.
-conn_remember(Env, hello, Nonce) :-
-    envelope_root(Env, Exec),
-    ( ent_entity(Exec, "params", P), ent_text(P, "peer_id", InitId) -> true ; InitId = "anon" ),
-    retractall(conn_state_f(InitId, _)),
-    assertz(conn_state_f(InitId, conn(false, Nonce, InitId))).
-conn_issued_nonce(Env, Nonce) :-
-    envelope_root(Env, Exec),
-    ent_entity(Exec, "params", P),
-    ent_text(P, "peer_id", InitId),
-    conn_state_f(InitId, conn(_, Nonce, _)).
+% ── per-CONNECTION handshake state ──────────────────────────────────────────────
+%
+% THE KEY IS THE TRANSPORT'S CONNECTION ID, NOT A FIELD FROM THE FRAME. This used
+% to be keyed on the initiator peer_id carried in the hello's own params, with a
+% comment calling it "the simplest correct scheme for the smoke". It is not correct
+% and the defect is not subtle once named: the state that decides whether a nonce
+% was issued, and whether this connection is established, was addressed by a value
+% the CALLER chooses. Two consequences, both measured at oracle 78db4a9:
+%
+%   - an authenticate naming a different peer_id than the hello looked up a
+%     DIFFERENT key, found no state, and answered 401 invalid_nonce — so §4.7
+%     row 8's greeted-vs-claimed mismatch was refused for the wrong reason, and
+%     the refusal was an accident of the lookup rather than a check;
+%   - two connections greeting as the same peer_id SHARE one state record, so one
+%     can consume or establish the other's handshake.
+%
+% `Outbound` is the §6.13(b) reentry seam the transport hands the dispatcher:
+% `ec_transport:outbound_via(io(ConnId, ...))`, one io per accepted socket. Reading
+% ConnId off it identifies the connection without changing serve_goal/4's arity —
+% and it is the transport's own identifier, so nothing on the wire can name it.
+conn_key(Outbound, ConnId) :-
+    nonvar(Outbound),
+    Outbound = _:outbound_via(io(ConnId, _, _, _, _)), !.
+% No io in scope (an in-process caller, not a served connection). Fail CLOSED to a
+% single named key rather than to a wire value: a shared key can only ever refuse
+% or confuse a second concurrent in-process handshake, where a caller-chosen key
+% hands the choice to the caller.
+conn_key(_, no_connection).
+
+% Release this connection's handshake state when the connection goes. Without it
+% one record accumulates per connection for the life of the process, which the
+% oracle's 100-cycle churn and 256-connection flood make measurable.
+%
+% REGISTERED BY THE HOST, NOT HERE. ec_peer deliberately does not import
+% ec_transport — the dependency runs the other way (the transport calls
+% serve_goal/4) — so registering the hook from this module would either create a
+% cycle or race the load order. ec_host imports both and wires them.
+conn_forget(CK) :- retractall(conn_state_f(CK, _)).
+
+conn_remember_key(CK, Nonce, HelloPeerId) :-
+    retractall(conn_state_f(CK, _)),
+    assertz(conn_state_f(CK, conn(false, Nonce, HelloPeerId))).
+conn_issued_nonce_key(CK, Nonce) :- conn_state_f(CK, conn(_, Nonce, _)).
+
+% §4.7 row 8, second input: the identity this connection GREETED as, or (-) if the
+% hello named none. Fails when there is no state at all, so callers guard with the
+% nonce check first.
+conn_hello_peer_key(CK, HelloPeerId) :- conn_state_f(CK, conn(_, _, HelloPeerId)).
 
 % RT-6 (§4.6): has this connection already completed a successful authenticate?
 % Fails (not established) when no conn_state_f fact exists yet, so a first-time
 % authenticate falls through to the normal nonce-echo/signature checks.
-conn_established(Env) :-
-    envelope_root(Env, Exec),
-    ent_entity(Exec, "params", P),
-    ent_text(P, "peer_id", InitId),
-    conn_state_f(InitId, conn(true, _, _)).
+conn_established_key(CK) :- conn_state_f(CK, conn(true, _, _)).
 
-conn_mark_established(Env) :-
-    envelope_root(Env, Exec),
-    ent_entity(Exec, "params", P),
-    ent_text(P, "peer_id", InitId),
-    retract(conn_state_f(InitId, conn(_, Nonce, InitId))),
-    assertz(conn_state_f(InitId, conn(true, Nonce, InitId))).
+conn_mark_established_key(CK) :-
+    retract(conn_state_f(CK, conn(_, Nonce, HelloPeerId))),
+    assertz(conn_state_f(CK, conn(true, Nonce, HelloPeerId))).
 
 random_nonce(Nonce) :-
     length(Codes, 32),

@@ -166,6 +166,11 @@ working-storage section.
 01 c7       pic 9(9) comp-5 value 7.
 01 c9       pic 9(9) comp-5 value 9.
 01 c12      pic 9(9) comp-5 value 12.
+01 c15      pic 9(9) comp-5 value 15.
+01 prok     pic 9(1).
+01 prpres   pic 9(1).
+01 hpid     pic x(64).
+01 hpidlen  pic 9(9) comp-5.
 01 k-ktf    pic x(8) value "key_type".
 01 k-ktf-len pic 9(9) comp-5 value 8.
 01 ktval    pic x(32).
@@ -211,8 +216,18 @@ procedure division using lk-conn lk-buf lk-rootoff lk-incoff lk-incfnd
         when op-len = 12 and op(1:12) = "authenticate"
             perform do-auth
         when other
-            move 501 to lk-rstatus
-            move "unsupported_operation" to errc move 21 to errc-len
+    *> §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+    *> 400 invalid_request, not the 501 every other handler answers. The table
+    *> separates a STATE conflict from an UNKNOWN operation because they select
+    *> different remedies -- an unknown connect operation is not out of order at
+    *> all, it exists in no state, so connection_sequence_error would point the
+    *> caller at its ORDERING when the defect is its OPERATION NAME. Row 10 is
+    *> scoped "in any state", so this arm covers pre-handshake AND established;
+    *> the genuine sequence cases are refused in do-hello, with 409.
+    *> SCOPED TO THIS PROGRAM: the generic §3.3/§6.2 501 row is a different
+    *> contract, gated elsewhere, and moving it would trade one check for another.
+            move 400 to lk-rstatus
+            move "invalid_request" to errc move 15 to errc-len
             call "error-result" using errc errc-len lk-res lk-res-len lk-res-hash
     end-evaluate
     goback.
@@ -222,6 +237,19 @@ do-hello.
     if c-estab = 1
         move 409 to lk-rstatus
         move "connection_already_established" to errc move 30 to errc-len
+        call "error-result" using errc errc-len lk-res lk-res-len lk-res-hash
+        exit paragraph
+    end-if
+    *> §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a
+    *> HALF-OPEN connection (hello done, authenticate not yet) is an operation we
+    *> implement arriving in a state that forbids it -- the same class as
+    *> connection_already_established above, taking the same 409. A half-open
+    *> connection is NOT established, so the guard above cannot reach it; §4.7
+    *> names this gap explicitly because two adjacent rules each look like they
+    *> cover it and neither does.
+    if c-havenonce = 1
+        move 409 to lk-rstatus
+        move "connection_sequence_error" to errc move 25 to errc-len
         call "error-result" using errc errc-len lk-res lk-res-len lk-res-hash
         exit paragraph
     end-if
@@ -241,6 +269,62 @@ do-hello.
             call "error-result" using errc errc-len lk-res lk-res-len lk-res-hash
             exit paragraph
         end-if
+    end-if
+    *> §4.5 mutual verifiability, the direction that is NOT the array. `key_types` is
+    *> an ACCEPT-SET; the initiator's OWN key_type is not in it -- it rides in its
+    *> `peer_id` -- so a hello may advertise a perfectly good accept-set and still
+    *> name an identity we cannot verify. An UNPARSEABLE peer_id is left alone: that
+    *> is a malformed field, not a key_type we lack, and authenticate refuses it.
+    *>
+    *> ORDERED BEFORE THE protocols COMPARISON, DELIBERATELY. AGILITY-UNKNOWN-1's
+    *> probe sends key_type 0xfd AND protocols ["entity-core/v7"] in one hello, so
+    *> whichever check runs first decides the code. §4.5 fixes no precedence and the
+    *> reference peer answers unsupported_key_type; checking protocols first makes
+    *> this peer answer incompatible_protocol, which is spec-legal and fails the
+    *> vector (F56).
+    if pfnd = 1
+        move 0 to hpidlen
+        call "ent-field" using lk-buf params-off k-pid k-pid-len voff vfnd
+        if vfnd = 1 then call "read-text" using lk-buf voff hpid hpidlen end-if
+        if hpidlen > 0
+            call "base58-decode" using hpid hpidlen decbuf declen
+            if declen >= 1 and decbuf(1:1) not = x"01"
+                move 400 to lk-rstatus
+                move "unsupported_key_type" to errc move 20 to errc-len
+                call "error-result" using errc errc-len lk-res lk-res-len lk-res-hash
+                exit paragraph
+            end-if
+        end-if
+    end-if
+    *> §4.5 `protocols` -- the one negotiated field Required with NO default, so
+    *> there is no floor to fall back to, and its two failure modes carry different
+    *> codes on purpose (§4.5 table row / §4.7 row 1):
+    *>   absent or empty     -> 400 invalid_request       (a malformed hello)
+    *>   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+    *> A caller that named no version cannot be told the comparison failed: the
+    *> remedies differ (send the field vs change the version) and §4.7 exists so
+    *> the code selects the remedy. neg-ok answers 0 for BOTH an empty array and a
+    *> disjoint one, so arr-any-text is what separates them.
+    *> ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY: §4.5 fixes no
+    *> precedence, but the choice is OBSERVABLE and the reference peer refuses
+    *> key_types first; checking protocols first makes AGILITY-UNKNOWN-1 answer
+    *> incompatible_protocol (F56).
+    move 0 to prpres
+    if pfnd = 1
+        call "arr-any-text" using lk-buf params-off k-proto c9 prpres
+    end-if
+    if prpres = 0
+        move 400 to lk-rstatus
+        move "invalid_request" to errc move 15 to errc-len
+        call "error-result" using errc errc-len lk-res lk-res-len lk-res-hash
+        exit paragraph
+    end-if
+    call "neg-ok" using lk-buf params-off k-proto c9 v-proto c15 prok
+    if prok = 0
+        move 400 to lk-rstatus
+        move "incompatible_protocol" to errc move 21 to errc-len
+        call "error-result" using errc errc-len lk-res lk-res-len lk-res-hash
+        exit paragraph
     end-if
     *> capture the initiator's claimed peer_id (optional)
     if pfnd = 1
@@ -402,6 +486,50 @@ auth-400-keytype.
     move "unsupported_key_type" to errc move 20 to errc-len
     call "error-result" using errc errc-len lk-res lk-res-len lk-res-hash.
 end program connect-handler.
+
+*> ---- arr-any-text : §4.5 — is params.data.{key} a non-empty array of text? ----
+*> Separates the MALFORMED case (absent, non-array, or empty) from the
+*> we-compared-and-disagreed case, which take different §4.7 codes. neg-ok
+*> deliberately conflates the two -- absent means "no constraint" there -- so
+*> `protocols`, which is Required with NO default, needs this asked first.
+identification division.
+program-id. arr-any-text.
+data division.
+working-storage section.
+01 voff pic 9(9) comp-5.
+01 f    pic 9(1).
+01 cur  pic 9(9) comp-5.
+01 maj  pic 9(2) comp-5.
+01 addl pic 9(2) comp-5.
+01 arg  pic 9(18) comp-5.
+01 cnt  pic 9(9) comp-5.
+01 i    pic 9(9) comp-5.
+01 elen pic 9(9) comp-5.
+01 st   pic s9(9) comp-5.
+linkage section.
+01 lk-buf    pic x(524288).
+01 lk-poff   pic 9(9) comp-5.
+01 lk-key    pic x(32).
+01 lk-keylen pic 9(9) comp-5.
+01 lk-ok     pic 9(1).
+procedure division using lk-buf lk-poff lk-key lk-keylen lk-ok.
+    move 0 to lk-ok
+    call "ent-field" using lk-buf lk-poff lk-key lk-keylen voff f
+    if f = 0 then goback end-if
+    move voff to cur
+    call "cbor-read-head" using lk-buf cur maj addl arg st
+    if maj not = 4 then goback end-if
+    move arg to cnt
+    perform varying i from 1 by 1 until i > cnt
+        call "cbor-read-head" using lk-buf cur maj addl arg st
+        move arg to elen
+        if maj = 3
+            move 1 to lk-ok
+        end-if
+        add elen to cur
+    end-perform
+    goback.
+end program arr-any-text.
 
 *> ---- neg-ok : §4.5 — an advertised string-set accepts the target ----
 *> Returns 1 if the array at params.data.{key} is absent (no constraint) OR

@@ -88,7 +88,19 @@ Hnd_Connect: procedure expose EC.
   select
     when operation == 'hello'        then return _connect_hello(peer_h, ctx)
     when operation == 'authenticate' then return _connect_authenticate(peer_h, ctx)
-    otherwise return Out_Err(501, 'unsupported_operation', operation)
+    /* §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+     * 400 invalid_request, not the 501 every other handler answers. The table
+     * separates a STATE conflict from an UNKNOWN operation because they select
+     * different remedies — "an unknown connect operation is not out of order at all;
+     * it exists in no state", so connection_sequence_error would point the caller at
+     * its ORDERING when the defect is its OPERATION NAME. Row 10 is scoped "in any
+     * state", so this arm covers pre-handshake AND established; the genuine sequence
+     * cases are refused in the two routines below, with 409.
+     *
+     * SCOPED TO THIS ROUTINE DELIBERATELY. The generic registered-handler rule
+     * (§3.3's 501 row, §6.2) is a different contract and is separately gated; moving
+     * the other handlers' 501 would trade one green check for another. */
+    otherwise return Out_Err(400, 'invalid_request', 'connect: unknown operation' operation)
   end
 
 /* is a §4.5-declared format list PRESENT and DISJOINT from our single supported value?
@@ -107,10 +119,62 @@ _connect_hello: procedure expose EC.
   conn = Ctx_Conn(ctx)
   exec = Ctx_Exec(ctx)
   if Conn_Get(conn, 'established') then return Out_Err(409, 'connection_already_established', '')
+  /* §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a HALF-OPEN
+   * connection (hello done, authenticate not yet) is an operation we implement
+   * arriving in a state that forbids it — the same class as
+   * connection_already_established above, taking the same 409. A half-open connection
+   * is NOT established, so the guard above cannot reach it; §4.7 names this gap
+   * explicitly because two adjacent rules each look like they cover it and neither
+   * does. */
+  if Conn_Get(conn, 'issued_nonce') \== '' then return Out_Err(409, 'connection_sequence_error', '')
   params = Ent_EntityField(exec, 'params')
   if _negotiation_disjoint(params, 'hash_formats', 'ecfv1-sha256') then return Out_Err(400, 'incompatible_hash_format', '')
   if _negotiation_disjoint(params, 'key_types', 'ed25519') then return Out_Err(400, 'unsupported_key_type', '')
-  if params \== '' then call Conn_Set conn, 'hello_peer_id', Ent_Text(params, 'peer_id')
+  /* §4.5 mutual verifiability, the direction that is NOT the array. `key_types` is an
+   * ACCEPT-SET; the initiator's OWN key_type is not in it — it rides in its `peer_id` —
+   * so a hello may advertise a perfectly good accept-set and still name an identity we
+   * cannot verify. Checking only the array leaves that MUST unenforced at hello, which
+   * is where §4.5 wants it; authenticate catches it one leg later, which is conformant
+   * but non-canonical.
+   *
+   * An UNPARSEABLE peer_id is deliberately left alone: that is a malformed field, not a
+   * key_type we lack, and authenticate already refuses it — EC.!OK cleared by
+   * Peerid_Parse is read as "not our question". */
+  hello_pid = ''
+  if params \== '' then hello_pid = Ent_Text(params, 'peer_id')
+  if hello_pid \== '' then do
+    EC.!OK = 1
+    hparsed = Peerid_Parse(hello_pid)
+    if EC.!OK then do
+      parse var hparsed hkt .
+      if hkt \= 1 then return Out_Err(400, 'unsupported_key_type', '')
+    end
+    EC.!OK = 1
+  end
+  /* §4.5 `protocols` — the one negotiated field Required with NO default, so there is
+   * no floor to fall back to, and its two failure modes carry different codes on
+   * purpose (§4.5 table row / §4.7 row 1):
+   *
+   *   absent or empty     -> 400 invalid_request       (a malformed hello)
+   *   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+   *
+   * "a caller that named no version cannot be told the comparison failed" — the
+   * remedies differ (send the field vs change the version) and §4.7 exists so the code
+   * selects the remedy. The vocabulary is §8.4's protocol version identifiers, today
+   * the single entity-core/1.0.
+   *
+   * ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY. §4.5 states no precedence
+   * between the three, so a hello disjoint in more than one dimension may be refused on
+   * any of them — but the choice is OBSERVABLE, and the reference peer refuses
+   * key_types first. Checking protocols first is equally spec-legal and makes
+   * AGILITY-UNKNOWN-1 answer incompatible_protocol, because that probe's own hello
+   * carries protocols ["entity-core/v7"] — a spec-line name, not a §8.4 identifier
+   * (F56). */
+  protos = ''
+  if params \== '' then protos = Ecf_TextList(Ent_DataMap(params), 'protocols')
+  if Lst_Count(protos) == 0 then return Out_Err(400, 'invalid_request', 'hello: protocols absent or empty')
+  if \_lst_has(protos, 'entity-core/1.0') then return Out_Err(400, 'incompatible_protocol', '')
+  if params \== '' then call Conn_Set conn, 'hello_peer_id', hello_pid
   nonce = Peer_RandomBytes(32)
   call Conn_Set conn, 'issued_nonce', nonce
   hm = Ecf_Map('peer_id', Ecf_Str(Peer_LocalPeer(peer_h)), 'nonce', Ecf_Bytes(nonce))

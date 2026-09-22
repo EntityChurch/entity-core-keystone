@@ -529,7 +529,13 @@ static void dispatch_body(int fd, conn_state *cs, const char *rid, const char *p
             if (!cbor_map_find(pd,pl,entf.pos,"data",&edf)) { (void)emit_error(fd,rid,400,"invalid_request"); return; }
             const unsigned char *edp=NULL; size_t edl=0;
             if (cbor_value_slice(pd,pl,edf.pos,&edp,&edl)!=0 || !edp) { (void)emit_error(fd,rid,400,"invalid_request"); return; }
-            cbor_rd chf; unsigned char carried[33]; size_t chl=0;
+            cbor_rd chf; unsigned char carried[128]; size_t chl=0;
+            /* 128 and NOT 33: `carried` only ever holds the 0x00 form (one varint byte plus a
+                 * 32-byte digest = 33), but sizing the READ buffer to that answers
+                 * invalid_request for a well-formed hash that merely names a LONGER digest —
+                 * SHA-384's 0x01 form is 49 bytes — and §1.2 gives that its own row. The
+                 * 33-byte bound is re-established below by `chl != i + 32` on the only format
+                 * code this peer verifies. */
             if (!cbor_map_find(pd,pl,entf.pos,"content_hash",&chf)
                 || cbor_get_bytes(&chf,carried,sizeof carried,&chl)!=0 || chl==0) {
                 (void)emit_error(fd,rid,400,"invalid_request"); return;

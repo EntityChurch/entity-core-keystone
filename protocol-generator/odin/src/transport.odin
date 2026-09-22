@@ -386,10 +386,35 @@ send_connect :: proc(
 	return io_outbound(io, req)
 }
 
+// hello_params_of builds the initiator's §4.5 hello params. `protocols` is the
+// load-bearing field: it is Required with no default, so omitting it is a malformed
+// hello, not a lenient one.
+@(private = "file")
+hello_params_of :: proc(local_peer: string, allocator := context.allocator) -> (Entity, Codec_Error) {
+	list := make([dynamic]Ec_Pair, allocator)
+	append(&list, Ec_Pair{text_val("peer_id", allocator), text_val(local_peer, allocator)})
+	protos := make([]Ec_Value, 1, allocator)
+	protos[0] = text_val("entity-core/1.0", allocator)
+	append(&list, Ec_Pair{text_val("protocols", allocator), Ec_Array(protos)})
+	hf := make([]Ec_Value, 1, allocator)
+	hf[0] = text_val("ecfv1-sha256", allocator)
+	append(&list, Ec_Pair{text_val("hash_formats", allocator), Ec_Array(hf)})
+	kt := make([]Ec_Value, 1, allocator)
+	kt[0] = text_val("ed25519", allocator)
+	append(&list, Ec_Pair{text_val("key_types", allocator), Ec_Array(kt)})
+	return entity_make("primitive/any", Ec_Map(list[:]), allocator)
+}
+
 // initiate runs the initiator handshake (§4.1): hello → authenticate → Session.
 initiate :: proc(local: ^Peer, io: ^Io, conn: ^Conn, allocator := context.allocator) -> (Session, bool) {
 	// 1. hello
-	hello_params, _ := empty_params(allocator)
+	// §4.5 makes `protocols` Required with NO default, so a hello that omits it is a
+	// MALFORMED hello and a conforming responder answers 400 invalid_request. This
+	// dialer used to send empty params and it worked only because no peer enforced
+	// the rule — the moment the responder side landed, the peer could not complete a
+	// handshake with itself. THE ORACLE CANNOT SEE THIS: its origination check
+	// reuses the INBOUND connection and never makes us dial.
+	hello_params, _ := hello_params_of(local.local_peer, allocator)
 	r1, ok1 := send_connect(io, conn, "hello", hello_params, {}, allocator)
 	if !ok1 {
 		return Session{}, false

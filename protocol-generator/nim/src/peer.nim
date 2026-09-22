@@ -37,7 +37,9 @@ const
   NonceLen = 32
   SupportedHashFormats = ["ecfv1-sha256"]
   SupportedKeyTypes = ["ed25519"]
-  ProtocolVersion = "entity-core/1.0"
+  # Exported: the DIALER (transport.nim) must name the same version it accepts, and
+  # a second literal there would be a second copy of the negotiated vocabulary.
+  ProtocolVersion* = "entity-core/1.0"
 
 type
   Peer* = ref object
@@ -204,15 +206,41 @@ proc connectHandler(p: Peer; conn: Conn; exec: Entity; env: Envelope): Outcome =
   let paramsE = exec.entityField("params")
   if op == "hello":
     if conn.established: return errOut(409, "connection_already_established")
-    if paramsE.isNone: return errOut(400, "connection_sequence_error")
+    # §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a
+    # HALF-OPEN connection (hello done, authenticate not yet) is an operation we
+    # implement arriving in a state that forbids it — the same class as
+    # connection_already_established above, taking the same 409. A half-open
+    # connection is NOT established, so the guard above cannot reach it; §4.7 names
+    # this gap explicitly because two adjacent rules each look like they cover it and
+    # neither does.
+    if conn.issuedNonce.len > 0: return errOut(409, "connection_sequence_error")
+    # §4.5 `protocols` is Required with NO default, so a hello that omits `params`
+    # entirely is a MALFORMED hello — 400 invalid_request, the same answer as an
+    # absent-or-empty `protocols` below. It is not a sequence error: nothing about
+    # the ORDER of this frame is wrong.
+    if paramsE.isNone:
+      return errOut(400, "invalid_request", some("hello: protocols absent or empty"))
     let pe = paramsE.get
     # §4.7: reject an unsupported peer_id key family up front (peer_canonicalization).
     let claimedPid = pe.textField("peer_id")
     if claimedPid.isSome and not peerIdKeyTypeOk(claimedPid.get):
       return errOut(400, "unsupported_key_type")
     # §4.5 negotiation: protocol / hash_format / key_type intersection.
+    # `protocols` is the one negotiated field Required with NO default, so there is no
+    # floor to fall back to, and its two failure modes carry different codes on purpose
+    # (§4.5 table row / §4.7 row 1):
+    #
+    #   absent or empty     -> 400 invalid_request       (a malformed hello)
+    #   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+    #
+    # "a caller that named no version cannot be told the comparison failed" — the
+    # remedies differ (send the field vs change the version) and §4.7 exists so the
+    # code selects the remedy. This peer already had the comparison; what it did not
+    # have is the distinction, so an empty set was accepted with 200.
     let protocols = textArrayV(pe.field("protocols"))
-    if protocols.len > 0 and ProtocolVersion notin protocols:
+    if protocols.len == 0:
+      return errOut(400, "invalid_request", some("hello: protocols absent or empty"))
+    if ProtocolVersion notin protocols:
       return errOut(400, "incompatible_protocol")
     let theirFormats = textArrayV(pe.field("hash_formats"))
     if theirFormats.len > 0:
@@ -235,7 +263,15 @@ proc connectHandler(p: Peer; conn: Conn; exec: Entity; env: Envelope): Outcome =
     ]))
     return okOut(hello)
   elif op == "authenticate":
-    if conn.established: return errOut(409, "connection_already_established")
+    # RT-6 (§4.6, 0.8.1): a second authenticate on an established connection is a
+    # replay of the consumed SINGLE-USE nonce, and the status is pinned to
+    # 401 invalid_nonce — a 409 state-conflict under-signals the replay, which is
+    # the attack §4.6 step 1 exists to stop. This branch used to answer 409 and was
+    # unreachable: dispatch routed connect ONLY while not established, so a replayed
+    # authenticate got 401 missing_author from the author check instead. Making the
+    # connect handler reachable in any state (§4.7 row 10) exposed the wrong code —
+    # a dead arm becoming live, which reads as a regression and is the opposite.
+    if conn.established: return errOut(401, "invalid_nonce")
     # FM-1 (§4.2, §4.7 row 6, 0.8.2.1): a pre-hello authenticate is a captured
     # authenticate replayed onto a fresh connection — 401 invalid_nonce, the same
     # status as the established-connection replay one line above, not a 400.
@@ -275,7 +311,19 @@ proc connectHandler(p: Peer; conn: Conn; exec: Entity; env: Envelope): Outcome =
       (key: remotePeer.hash, entity: remotePeer),
       (key: minted.signature.hash, entity: minted.signature),
     ])
-  return errOut(501, "unsupported_operation", some(op))
+  # §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+  # 400 invalid_request, not the 501 every other handler answers. The table separates
+  # a STATE conflict from an UNKNOWN operation because they select different remedies
+  # — "an unknown connect operation is not out of order at all; it exists in no
+  # state", so connection_sequence_error would point the caller at its ORDERING when
+  # the defect is its OPERATION NAME. Row 10 is scoped "in any state", so this arm
+  # covers pre-handshake AND established; the genuine sequence cases are refused in
+  # the two branches above, with 409.
+  #
+  # SCOPED TO THIS PROC DELIBERATELY. The generic registered-handler rule (§3.3's 501
+  # row, §6.2) is a different contract and is separately gated; moving the other
+  # handlers' 501 would trade one green check for another.
+  return errOut(400, "invalid_request", some("connect: unknown operation " & op))
 
 # ── §6.5 signature ingestion ────────────────────────────────────────────────────
 
@@ -756,8 +804,23 @@ proc dispatchOutcome(p: Peer; conn: Conn; env: Envelope; sender: OutboundSender)
   if extractPeer(uri, p.localPeer) != p.localPeer:
     return errOut(400, "invalid_request", some("not local peer"))
   let connectPath = p.abs("system/protocol/connect")
-  if path == connectPath and not conn.established:
+  # §4.7 row 10 is scoped "IN ANY STATE", and rows 3/4 pin a second hello on an
+  # ESTABLISHED connection to 409 connection_already_established — so the connect
+  # handler has to be reachable after establishment too. Gating the route on
+  # `not conn.established` sent every post-handshake connect EXECUTE into the
+  # author check below, which answered 401 missing_author: a code about the
+  # request's SIGNING for a request whose defect is its OPERATION or its ORDER.
+  # The connect handler is unauthenticated by §4.1 in both states; it is the
+  # handler's own guards that decide what each state permits.
+  if path == connectPath:
     return connectHandler(p, conn, exec, env)
+
+  # §4.7: a non-connect EXECUTE arriving BEFORE the handshake completes is refused
+  # 401 authentication_failed. The generic missing_author below is the right answer
+  # for an ESTABLISHED connection that omits `author`, and the wrong one here: the
+  # caller's remedy is to finish the handshake, not to sign this frame.
+  if not conn.established:
+    return errOut(401, "authentication_failed")
 
   if exec.bytesField("author").isNone: return errOut(401, "missing_author")
   if exec.bytesField("capability").isNone: return errOut(403, "missing_authorization")

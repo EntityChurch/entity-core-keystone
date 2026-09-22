@@ -353,8 +353,51 @@ def connectHandler (peer : Peer) (conn : Conn) (exec : Entity)
         | _ => none
       let hashOk := match strArray "hash_formats" with | some fmts => fmts.contains "ecfv1-sha256" | none => true
       let keyOk := match strArray "key_types" with | some kts => kts.contains "ed25519" | none => true
-      if !hashOk then pure (err 400 "incompatible_hash_format")
+      -- §4.5 mutual verifiability, the direction that is NOT the array. key_types
+      -- is an ACCEPT-SET; the initiator's OWN key_type is not in it — it rides in
+      -- its peer_id — so a hello may advertise a perfectly good accept-set and
+      -- still name an identity we cannot verify. We already reject this at
+      -- `authenticate` (three surfaces), which §4.5 calls conformant but
+      -- NON-CANONICAL; hello is the canonical earliest reject point and is where
+      -- the "symmetric earliest-reject guarantee" lives. An UNPARSEABLE peer_id is
+      -- left alone: that is a malformed field, not a key_type we lack.
+      let initiatorKeyOk := match params.bind (fun p => textField p "peer_id") with
+        | some pid => match EntityCore.Identity.peerIdKeyType pid with
+          | some kt => kt == 1
+          | none => true
+        | none => true
+      -- §4.5 `protocols` — the one negotiated field Required with NO default, so
+      -- there is no floor to fall back to, and its two failure modes carry
+      -- different codes on purpose (§4.5 table row / §4.7 row 1):
+      --   absent or empty     -> 400 invalid_request       (a malformed hello)
+      --   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+      -- "a caller that named no version cannot be told the comparison failed" —
+      -- the remedies differ (send the field vs change the version) and §4.7 exists
+      -- so the code selects the remedy. The vocabulary is §8.4's identifiers.
+      let protos := strArray "protocols"
+      -- §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a
+      -- HALF-OPEN connection (hello done, authenticate not yet) is an operation we
+      -- implement arriving in a state that forbids it — the same class as
+      -- connection_already_established above, and it takes the same 409. A
+      -- half-open connection is NOT established, so the guard above cannot reach
+      -- it; §4.7 names this gap explicitly because two adjacent rules each look
+      -- like they cover it and neither does.
+      if (← conn.issuedNonce.get).isSome then pure (err 409 "connection_sequence_error")
+      else if !hashOk then pure (err 400 "incompatible_hash_format")
       else if !keyOk then pure (err 400 "unsupported_key_type")
+      else if !initiatorKeyOk then pure (err 400 "unsupported_key_type")
+      -- ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY. §4.5 states no
+      -- precedence between the three, so a hello disjoint in more than one
+      -- dimension may be refused on any of them — but the choice is OBSERVABLE,
+      -- and the reference peer refuses key_types first. Checking protocols first
+      -- makes AGILITY-UNKNOWN-1 answer incompatible_protocol, because that probe's
+      -- own hello carries protocols ["entity-core/v7"] — a spec-line name, not a
+      -- §8.4 identifier. Matching the reference's precedence is the interoperable
+      -- choice; the probe's identifier is routed as F56.
+      else if (match protos with | some l => l.isEmpty | none => true) then
+        pure (err 400 "invalid_request" (some "hello: protocols absent or empty"))
+      else if !((protos.getD []).contains "entity-core/1.0") then
+        pure (err 400 "incompatible_protocol")
       else do
         conn.helloPeerId.set (params.bind (fun p => textField p "peer_id"))
         let nonce ← EntityCore.Net.randomBytes 32
@@ -416,7 +459,19 @@ def connectHandler (peer : Peer) (conn : Conn) (exec : Entity)
               pure (ok grantResult [ (token.hash, token),
                                      (peer.identity.identityHash, peer.identity.peerEntity),
                                      (sgn.hash, sgn) ])
-  | other => pure (err 501 "unsupported_operation" (some s!"connect: {other}"))
+  -- §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+  -- 400 invalid_request, not the 501 every other handler answers. The table
+  -- separates a STATE conflict from an UNKNOWN operation because they select
+  -- different remedies — "an unknown connect operation is not out of order at all;
+  -- it exists in no state", so connection_sequence_error would point the caller at
+  -- its ORDERING when the defect is its OPERATION NAME. Row 10 is scoped "in any
+  -- state", so this arm covers pre-handshake AND established; the genuine sequence
+  -- cases are refused above, with 409.
+  --
+  -- SCOPED TO THIS HANDLER DELIBERATELY. The generic registered-handler rule
+  -- (§3.3's 501 row, §6.2) is a different contract and is separately gated; moving
+  -- the shared 501 would trade one green check for another.
+  | other => pure (err 400 "invalid_request" (some s!"connect: unknown operation {other}"))
 
 -- ── tree handler (§6.3) ───────────────────────────────────────────────────────
 

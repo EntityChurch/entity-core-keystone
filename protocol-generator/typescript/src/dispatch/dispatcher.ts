@@ -137,6 +137,13 @@ export class Dispatcher {
     // Authenticated path. Every EXECUTE MUST carry author + capability (§5.1). A
     // missing author is authentication-class → 401; a missing capability is
     // authorization-class → 403 (§3.3 two-level model).
+    // §4.7: a non-connect EXECUTE arriving BEFORE the handshake completes is
+    // refused 401 authentication_failed. `missing_author` is the right code for an
+    // ESTABLISHED connection that omits `author`, and the wrong one here: the
+    // caller's remedy is to finish the handshake, not to sign this frame.
+    if (conn !== null && !conn.established) {
+      return errorEnvelope(requestId, Status.Unauthorized, "authentication_failed", "connection not established");
+    }
     if (execute.author === null) {
       return errorEnvelope(requestId, Status.Unauthorized, "missing_author", "author required");
     }
@@ -156,7 +163,10 @@ export class Dispatcher {
     // Resolve handler by tree walk (§6.6). No match → 404.
     const res = this.#registry.resolve(path);
     if (res === null) {
-      return errorEnvelope(requestId, Status.NotFound, "not_found", `no handler resolves ${path}`);
+      // §3.3's 404 row (0.8.2.7) names the code `handler_not_found`. `not_found` is
+      // the code for a bound-path miss INSIDE a handler (tree get); this is the
+      // resolution step failing, which is a different row and a different remedy.
+      return errorEnvelope(requestId, Status.NotFound, "handler_not_found", `no handler resolves ${path}`);
     }
 
     // Dispatch permission check (§5.2 check_permission). §PR-8: resolve the cap's granter

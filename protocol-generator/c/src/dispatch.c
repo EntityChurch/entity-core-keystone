@@ -675,6 +675,35 @@ static bool advertised_excludes(const ec_entity *params, const char *key, const 
     return true;            /* non-empty + no overlap = disjoint */
 }
 
+/* §4.5 `protocols`: is it present at all — a non-empty array carrying at least one
+ * text? Separates the MALFORMED-hello case from the we-compared-and-disagreed case,
+ * which take different §4.7 codes. */
+static bool protocols_present(const ec_entity *params)
+{
+    const ec_value *arr = params ? ec_ent_field(params, "protocols") : NULL;
+    if (!arr || arr->kind != EC_ARRAY) { return false; }
+    for (size_t i = 0; i < arr->as.arr.len; i++) {
+        const ec_value *it = arr->as.arr.items[i];
+        if (it && it->kind == EC_TEXT && it->as.bytes.p) { return true; }
+    }
+    return false;
+}
+
+/* §4.5 `protocols`: does it name a version we speak? */
+static bool protocols_accept(const ec_entity *params)
+{
+    const ec_value *arr = params ? ec_ent_field(params, "protocols") : NULL;
+    if (!arr || arr->kind != EC_ARRAY) { return false; }
+    for (size_t i = 0; i < arr->as.arr.len; i++) {
+        const ec_value *it = arr->as.arr.items[i];
+        if (it && it->kind == EC_TEXT && it->as.bytes.p &&
+            strcmp((const char *)it->as.bytes.p, "entity-core/1.0") == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void h_connect(ec_peer *p, ec_conn *conn, const ec_envelope *env,
                       const ec_entity *exec, const ec_entity *caller_cap,
                       const char *op, ec_outcome *out)
@@ -683,6 +712,17 @@ static void h_connect(ec_peer *p, ec_conn *conn, const ec_envelope *env,
     if (strcmp(op, "hello") == 0) {
         if (conn->established) {
             outcome_err(out, 409, "connection_already_established", NULL);
+            return;
+        }
+        /* §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a
+         * HALF-OPEN connection (hello done, authenticate not yet) is an operation we
+         * implement arriving in a state that forbids it — the same class as
+         * connection_already_established above, taking the same 409. A half-open
+         * connection is NOT established, so the guard above cannot reach it; §4.7
+         * names this gap explicitly because two adjacent rules each look like they
+         * cover it and neither does. */
+        if (conn->have_nonce) {
+            outcome_err(out, 409, "connection_sequence_error", NULL);
             return;
         }
         ec_entity *params = ec_ent_entity_field(exec, "params");
@@ -697,6 +737,57 @@ static void h_connect(ec_peer *p, ec_conn *conn, const ec_envelope *env,
         if (advertised_excludes(params, "key_types", "ed25519")) {
             ec_entity_unref(params);
             outcome_err(out, 400, "unsupported_key_type", NULL);
+            return;
+        }
+        /* §4.5 mutual verifiability, the direction that is NOT the array. `key_types`
+         * is an ACCEPT-SET; the initiator's OWN key_type is not in it — it rides in its
+         * `peer_id` — so a hello may advertise a perfectly good accept-set and still
+         * name an identity we cannot verify. Checking only the array leaves that MUST
+         * unenforced at hello, which is where §4.5 wants it; authenticate catches it
+         * one leg later, which is conformant but non-canonical.
+         *
+         * An UNPARSEABLE peer_id is deliberately left alone: that is a malformed field,
+         * not a key_type we lack, and authenticate already refuses it. */
+        if (initiator) {
+            uint64_t hkt = 0, hht = 0;
+            uint8_t *hdig = NULL;
+            size_t hdlen = 0;
+            if (ec_peer_id_parse(initiator, &hkt, &hht, &hdig, &hdlen) == EC_OK) {
+                free(hdig);
+                if (hkt != EC_KEY_TYPE_ED25519) {
+                    ec_entity_unref(params);
+                    outcome_err(out, 400, "unsupported_key_type", NULL);
+                    return;
+                }
+            }
+        }
+        /* §4.5 `protocols` — the one negotiated field Required with NO default, so
+         * there is no floor to fall back to, and its two failure modes carry different
+         * codes on purpose (§4.5 table row / §4.7 row 1):
+         *
+         *   absent or empty     -> 400 invalid_request       (a malformed hello)
+         *   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+         *
+         * "a caller that named no version cannot be told the comparison failed" — the
+         * remedies differ (send the field vs change the version) and §4.7 exists so the
+         * code selects the remedy. The vocabulary is §8.4's protocol version
+         * identifiers, today the single entity-core/1.0.
+         *
+         * ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY. §4.5 states no
+         * precedence between the three, so a hello disjoint in more than one dimension
+         * may be refused on any of them — but the choice is OBSERVABLE, and the
+         * reference peer refuses key_types first. Checking protocols first is equally
+         * spec-legal and makes AGILITY-UNKNOWN-1 answer incompatible_protocol, because
+         * that probe's own hello carries protocols ["entity-core/v7"] — a spec-line
+         * name, not a §8.4 identifier (F56). */
+        if (!protocols_present(params)) {
+            ec_entity_unref(params);
+            outcome_err(out, 400, "invalid_request", "hello: protocols absent or empty");
+            return;
+        }
+        if (!protocols_accept(params)) {
+            ec_entity_unref(params);
+            outcome_err(out, 400, "incompatible_protocol", NULL);
             return;
         }
         /* issue a fresh CSPRNG 32-byte nonce, bound to THIS connection (F12: a clock-
@@ -854,7 +945,19 @@ static void h_connect(ec_peer *p, ec_conn *conn, const ec_envelope *env,
         ec_entity_unref(sig);
         return;
     }
-    outcome_err(out, 501, "unsupported_operation", op);
+    /* §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+     * 400 invalid_request, not the 501 every other handler answers. The table
+     * separates a STATE conflict from an UNKNOWN operation because they select
+     * different remedies — "an unknown connect operation is not out of order at all;
+     * it exists in no state", so connection_sequence_error would point the caller at
+     * its ORDERING when the defect is its OPERATION NAME. Row 10 is scoped "in any
+     * state", so this arm covers pre-handshake AND established; the genuine sequence
+     * cases are refused in the two branches above, with 409.
+     *
+     * SCOPED TO THIS HANDLER DELIBERATELY. The generic registered-handler rule
+     * (§3.3's 501 row, §6.2) is a different contract and is separately gated; moving
+     * the other handlers' 501 would trade one green check for another. */
+    outcome_err(out, 400, "invalid_request", op);
 }
 
 /* ── tree handler (§6.3) ─────────────────────────────────────────────────────── */

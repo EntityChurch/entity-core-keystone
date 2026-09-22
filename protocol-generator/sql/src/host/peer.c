@@ -246,7 +246,13 @@ static int emit_error(int fd, const char *rid, unsigned status, const char *code
  * inbound dispatch-outbound request (rid) that spawned it; when its EXECUTE_RESPONSE arrives on
  * the same fd we emit the dispatch-outbound response for rid. Non-blocking → the single-fd loop
  * handles many concurrent pipelined reentries (the host correlation-map tax, per the profile). */
+/* `hello_peer` is §4.7 row 8's SECOND input: the identity this connection GREETED as.
+ * Deriving peer_id from public_key at authenticate proves the identity is
+ * SELF-CONSISTENT and says nothing about whether it is the one we have been
+ * negotiating with, so without this a caller may greet as one peer and authenticate
+ * as another and every seed-policy lookup after it resolves against the second. */
 typedef struct { int established; unsigned char nonce[32]; int nonce_set;
+    char hello_peer[128];
     struct { char orid[48]; char rid[64]; } pend[128]; int npend; } conn_state;
 
 /* §4.5 does the hello's advertised list for `key` (an array of text under params.data) EXCLUDE
@@ -258,16 +264,71 @@ static int advertised_excludes(const unsigned char *buf, size_t len, size_t pdat
     return 1;   /* list present, non-empty, want not found → disjoint */
 }
 
+/* §4.5 does `key` carry at least one text entry under params.data? Separates the
+ * MALFORMED case (absent, empty, or not an array of text) from the
+ * we-compared-and-disagreed case, which take different §4.7 codes. advertised_excludes
+ * deliberately conflates the two — absent means "no constraint" there — so `protocols`,
+ * which is Required with NO default, needs this asked first. */
+static int advertises_any_text(const unsigned char *buf, size_t len, size_t pdata_pos, const char *key) {
+    cbor_rd lf; if (!cbor_map_find(buf,len,pdata_pos,key,&lf)) return 0;
+    cbor_rd a=lf; int am; uint64_t ac; if (cbor_head(&a,&am,&ac)!=0||am!=4||ac==0) return 0;
+    for (uint64_t i=0;i<ac;i++){ char v[64]={0}; cbor_rd vv=a; if(cbor_get_text(&vv,v,sizeof v)==0 && v[0]) return 1; if(cbor_skip(&a))break; }
+    return 0;
+}
+
 /* §4.4 hello EXECUTE_RESPONSE: status 200, result = connect/hello {nonce,peer_id,protocols,ts}. */
 static int handle_hello(int fd, const char *rid, conn_state *cs, const unsigned char *buf, size_t len) {
     /* §4.5 negotiation: reject a hello whose advertised hash_formats / key_types exclude our floor. */
+    /* §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a HALF-OPEN
+     * connection (hello done, authenticate not yet) is an operation we implement arriving
+     * in a state that forbids it — the same class as connection_already_established at the
+     * dispatch site, taking the same 409. A half-open connection is NOT established, so
+     * that guard cannot reach it; §4.7 names this gap explicitly because two adjacent
+     * rules each look like they cover it and neither does. */
+    if (cs->nonce_set) return emit_error(fd,rid,409,"connection_sequence_error");
+    char greeted[128] = {0};
     { cbor_rd root,rdata,params,pdata;
       if (cbor_map_find(buf,len,0,"root",&root) && cbor_map_find(buf,len,root.pos,"data",&rdata)
           && cbor_map_find(buf,len,rdata.pos,"params",&params) && cbor_map_find(buf,len,params.pos,"data",&pdata)) {
+        cbor_rd pf;
+        if (cbor_map_find(buf,len,pdata.pos,"peer_id",&pf)) (void)cbor_get_text(&pf,greeted,sizeof greeted);
         if (advertised_excludes(buf,len,pdata.pos,"hash_formats","ecfv1-sha256")) return emit_error(fd,rid,400,"incompatible_hash_format");
         if (advertised_excludes(buf,len,pdata.pos,"key_types","ed25519")) return emit_error(fd,rid,400,"unsupported_key_type");
+        /* §4.5 mutual verifiability, the direction that is NOT the array. `key_types` is
+         * an ACCEPT-SET; the initiator's OWN key_type is not in it — it rides in its
+         * `peer_id` — so a hello may advertise a perfectly good accept-set and still name
+         * an identity we cannot verify. An UNPARSEABLE peer_id is left alone: a malformed
+         * field, not a key_type we lack, and authenticate already refuses it.
+         *
+         * ORDERED BEFORE THE protocols COMPARISON, DELIBERATELY: AGILITY-UNKNOWN-1 sends
+         * key_type 0xfd AND protocols ["entity-core/v7"] in one hello, so whichever check
+         * runs first decides the code (F56). */
+        if (greeted[0]) { uint64_t kt=0,ht=0; unsigned char dg[64]; size_t dl=0;
+          if (ec_peerid_parse((const unsigned char*)greeted,strlen(greeted),&kt,&ht,dg,&dl)==EC_OK && kt!=1)
+              return emit_error(fd,rid,400,"unsupported_key_type"); }
+        /* §4.5 `protocols` — the one negotiated field Required with NO default, so there
+         * is no floor to fall back to, and its two failure modes carry different codes on
+         * purpose (§4.5 table row / §4.7 row 1):
+         *
+         *   absent or empty     -> 400 invalid_request       (a malformed hello)
+         *   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+         *
+         * "a caller that named no version cannot be told the comparison failed" — the
+         * remedies differ (send the field vs change the version) and §4.7 exists so the
+         * code selects the remedy. advertised_excludes answers 0 for BOTH an absent list
+         * and an empty one, so advertises_any_text is what separates them. */
+        if (!advertises_any_text(buf,len,pdata.pos,"protocols"))
+            return emit_error(fd,rid,400,"invalid_request");
+        if (advertised_excludes(buf,len,pdata.pos,"protocols","entity-core/1.0"))
+            return emit_error(fd,rid,400,"incompatible_protocol");
+      } else {
+        /* No params at all is a hello with no `protocols`: malformed, not out of order. */
+        return emit_error(fd,rid,400,"invalid_request");
       }
     }
+    /* The hello is accepted from here on, so the greeted identity is recorded only now —
+     * a refused hello must not leave state on the connection. */
+    snprintf(cs->hello_peer, sizeof cs->hello_peer, "%s", greeted);
     unsigned char np[EC_ED25519_PRIV_LEN], nonce[EC_ED25519_PUB_LEN];
     if (ec_ed25519_keygen(np,nonce)!=EC_OK) memset(nonce,0,sizeof nonce);
     memcpy(cs->nonce, nonce, 32); cs->nonce_set = 1;
@@ -331,6 +392,12 @@ static int handle_authenticate(int fd, const char *rid, conn_state *cs,
     if (ec_peerid_format(1,0,apub,32,(uint8_t*)derived,sizeof derived-1,&olen)!=EC_OK || olen>=sizeof derived) return emit_error(fd, rid, 500, "internal_error");
     derived[olen]=0;
     if (strcmp(derived,apeer)!=0) return emit_error(fd, rid, 401, "identity_mismatch");
+    /* §4.7 row 8, the OTHER input on the same row: the derivation above proves the claimed
+     * peer_id is self-consistent with its public_key and says nothing about whether it is
+     * the identity this connection GREETED as. Both are identity_mismatch; only this one
+     * is about the CONNECTION. A hello that named no peer_id binds nothing. */
+    if (cs->hello_peer[0] && strcmp(cs->hello_peer, apeer)!=0)
+        return emit_error(fd, rid, 401, "identity_mismatch");
 
     /* §4.4 authenticate response: result = system/capability/grant {token: <cap_hash>}, with the
      * token/granter-peer/signature in included. A minimal SHOULD-floor grant, self-signed by this
@@ -883,10 +950,24 @@ static void dispatch_frame(int fd, conn_state *cs, const unsigned char *buf, siz
             if (!cs->nonce_set) { (void)emit_error(fd,rid,401,"invalid_nonce"); return; }
             (void)handle_authenticate(fd, rid, cs, buf, len); return;
         }
-        (void)emit_error(fd, rid, 400, "connection_sequence_error"); return;
+        /* §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+         * 400 invalid_request — not the connection_sequence_error this line used to
+         * carry. The table separates a STATE conflict from an UNKNOWN operation because
+         * they select different remedies: an unknown connect operation is not out of
+         * order at all, it exists in no state, so connection_sequence_error points the
+         * caller at its ORDERING when the defect is its OPERATION NAME. Row 10 is scoped
+         * "in any state", so this covers pre-handshake AND established.
+         *
+         * SCOPED TO THE CONNECT BRANCH DELIBERATELY: the generic §3.3/§6.2 501 row is a
+         * different contract, gated below. */
+        (void)emit_error(fd, rid, 400, "invalid_request"); return;
     }
 
-    if (!cs->established) { (void)emit_error(fd, rid, 403, "capability_denied"); return; }
+    /* §4.7: a non-connect EXECUTE arriving BEFORE the handshake completes is refused
+     * 401 authentication_failed. `capability_denied` is authorization-class and names a
+     * remedy that does not apply: the caller's remedy is to finish the handshake, not to
+     * present authority. */
+    if (!cs->established) { (void)emit_error(fd, rid, 401, "authentication_failed"); return; }
 
     /* §1.4 normalize the dispatch URI: strip the entity:// scheme → an absolute /{peer}/... path
      * (the wire uri is entity://{peer}/rest; handler registration paths + resolve.sql are /{peer}/…). */
@@ -905,7 +986,7 @@ static void dispatch_frame(int fd, conn_state *cs, const unsigned char *buf, siz
      * is specified as 400, and it ALLOWS the request outright whenever the
      * presented grant happens to carry a matching `peers` scope — a foreign-
      * namespace privilege escalation. Measured here before the gate existed:
-     * (404, "not_found"), reached by resolution miss rather than by address. */
+     * (404, "handler_not_found"), reached by resolution miss rather than by address. */
     {
         const char *seg = nuri + 1;                 /* nuri is always "/{peer}/…" */
         const char *end = strchr(seg, '/');
@@ -923,7 +1004,10 @@ static void dispatch_frame(int fd, conn_state *cs, const unsigned char *buf, siz
 
     /* verdict = ok → run the resolved handler body. */
     char pattern[512];
-    if (!resolve_handler(nuri,pattern,sizeof pattern)) { (void)emit_error(fd, rid, 404, "not_found"); return; }
+    /* §3.3's 404 row (0.8.2.7) names the code `handler_not_found`. `not_found` is the
+     * code for a bound-path miss INSIDE a handler (tree get); this is the RESOLUTION
+     * step failing, a different row and a different remedy. */
+    if (!resolve_handler(nuri,pattern,sizeof pattern)) { (void)emit_error(fd, rid, 404, "handler_not_found"); return; }
     dispatch_body(fd, cs, rid, pattern, nuri, op, buf, len, rdata.pos);
 }
 

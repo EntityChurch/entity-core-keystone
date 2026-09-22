@@ -25,6 +25,17 @@ create conn-fd        MAX-CONNS cells allot
 create conn-estab     MAX-CONNS cells allot
 create conn-nonce     MAX-CONNS 32 * allot      \ 32-byte issued nonce per conn
 create conn-has-nonce MAX-CONNS cells allot
+\ §4.7 row 8, second input: the initiator peer_id this connection GREETED as. Deriving
+\ peer_id from public_key at authenticate proves the identity is SELF-CONSISTENT and says
+\ nothing about whether it is the identity this connection has been negotiating with, so a
+\ caller could greet as one peer and authenticate as another and every seed-policy lookup
+\ after it would resolve against the second. 128 bytes is well past a Base58 Ed25519
+\ peer_id (~52 chars); a longer one is truncated to the cap rather than overrunning the
+\ slot, and a truncated value still cannot EQUAL a different full peer_id, so the check
+\ stays conservative. Length 0 = no peer_id greeted (nothing to bind).
+128 constant MAX-HELLO-PID
+create conn-hello-pid     MAX-CONNS MAX-HELLO-PID * allot
+create conn-hello-pid-len MAX-CONNS cells allot
 create conn-outctr    MAX-CONNS cells allot
 variable conn-count
 : conn-reset ( -- )  0 conn-count ! ;
@@ -44,6 +55,7 @@ conn-reset
   conn-slot dup 0< if exit then { i }
   fd conn-fd i cells + !
   0 conn-estab i cells + !  0 conn-has-nonce i cells + !  0 conn-outctr i cells + !
+  0 conn-hello-pid-len i cells + !
   i ;
 \ conn-drop ( idx -- )  tombstone a connection slot (its fd is already closed). The slot is
 \ then reusable by conn-new; gather-fds skips a -1 fd.
@@ -52,6 +64,13 @@ conn-reset
 : conn-estab@ ( idx -- flag )  cells conn-estab + @ ;
 : conn-set-estab ( idx -- )  1 swap cells conn-estab + ! ;
 : conn-nonce-addr ( idx -- addr )  32 * conn-nonce + ;
+: conn-hello-pid-addr ( idx -- addr )  MAX-HELLO-PID * conn-hello-pid + ;
+: conn-hello-pid-len@ ( idx -- u )  cells conn-hello-pid-len + @ ;
+\ conn-set-hello-pid ( idx addr u -- )  record the greeted peer_id, truncating at the cap.
+: conn-set-hello-pid { idx addr u -- }
+  u MAX-HELLO-PID min { n }
+  addr  idx conn-hello-pid-addr  n  move
+  n idx cells conn-hello-pid-len + ! ;
 : conn-next-out ( idx -- n )  dup cells conn-outctr + dup @ 1+ dup rot ! ;
 
 \ ── a fresh 32-byte nonce (deterministic-ish: SHA256 of a counter + our id_hash; the smoke
@@ -293,6 +312,16 @@ create ifr-buf 512 allot
   atv c@ [char] a <> if false exit then          \ present but not an array: not our concern
   atv saddr su tv-array-has 0= ;                  \ present array without our value -> disjoint
 
+\ protocols-present? ( params-eaddr|0 -- flag )  §4.5: true iff params carry `protocols`
+\ as a non-empty array. Separates the MALFORMED-hello case from the we-compared-and-
+\ disagreed case, which take different §4.7 codes -- negotiation-disjoint conflates the
+\ two (absent -> no constraint), so `protocols`, Required with NO default, needs this.
+: protocols-present? { p -- flag }
+  p 0= if false exit then
+  p s" protocols" ent-field dup 0= if drop false exit then { atv }
+  atv c@ [char] a <> if false exit then
+  atv tv-count 0<> ;
+
 \ hello-keytype-bad? ( params-eaddr|0 -- flag )  true iff params carry a peer_id whose
 \ multihash key_type prefix is present and NOT ed25519 (0x01). Parses in an isolated arena
 \ frame (peerid-parse appends the base58 decode; we rewind) and swallows a parse THROW
@@ -315,12 +344,37 @@ create ifr-buf 512 allot
   conn conn-estab@ if
     409  s" connection_already_established" 0 0 error-result exit
   then
+  \ §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a HALF-OPEN
+  \ connection (hello done, authenticate not yet) is an operation we implement arriving
+  \ in a state that forbids it -- the same class as connection_already_established
+  \ above, taking the same 409. A half-open connection is NOT established, so the guard
+  \ above cannot reach it; §4.7 names this gap explicitly because two adjacent rules
+  \ each look like they cover it and neither does.
+  conn cells conn-has-nonce + @ 0<> if
+    409  s" connection_sequence_error" 0 0 error-result exit
+  then
   exec params-of { hp }
   hp s" hash_formats" s" ecfv1-sha256" negotiation-disjoint
     if 400 s" incompatible_hash_format" 0 0 error-result exit then
   hp s" key_types" s" ed25519" negotiation-disjoint
     if 400 s" unsupported_key_type" 0 0 error-result exit then
   hp hello-keytype-bad? if 400 s" unsupported_key_type" 0 0 error-result exit then
+  \ §4.5 `protocols` -- the one negotiated field Required with NO default, so there is
+  \ no floor to fall back to, and its two failure modes carry different codes on purpose
+  \ (§4.5 table row / §4.7 row 1):
+  \   absent or empty     -> 400 invalid_request       (a malformed hello)
+  \   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+  \ The remedies differ (send the field vs change the version) and §4.7 exists so the
+  \ code selects the remedy. ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY:
+  \ §4.5 states no precedence, but the choice is OBSERVABLE and the reference peer
+  \ refuses key_types first; checking protocols first makes AGILITY-UNKNOWN-1 answer
+  \ incompatible_protocol (F56).
+  hp protocols-present? 0= if 400 s" invalid_request" 0 0 error-result exit then
+  hp s" protocols" s" entity-core/1.0" negotiation-disjoint
+    if 400 s" incompatible_protocol" 0 0 error-result exit then
+  \ The hello is accepted from here on, so record the identity this connection is
+  \ negotiating with (§4.7 row 8, second input). A refused hello leaves no state.
+  hp if hp s" peer_id" ent-text dup if conn -rot conn-set-hello-pid else 2drop then then
   conn mint-nonce
   am-mark { mk }
   [char] m b,  6 4 >be
@@ -362,6 +416,14 @@ create ifr-buf 512 allot
     tv-payload { claimu } { claimaddr }
   pkaddr pku id-peerid-of-pub  claimaddr claimu compare 0<>
     if 401 s" identity_mismatch" 0 0 error-result exit then
+  \ §4.7 row 8, the OTHER input on the same row: the derivation above proves the claimed
+  \ peer_id is self-consistent with its public_key and says nothing about whether it is the
+  \ identity this connection greeted as. Both are identity_mismatch; only this one is about
+  \ the CONNECTION. A hello that named no peer_id binds nothing (len 0).
+  conn conn-hello-pid-len@ dup 0<> if
+    conn conn-hello-pid-addr swap  claimaddr claimu  compare 0<>
+      if 401 s" identity_mismatch" 0 0 error-result exit then
+  else drop then
   \ SUCCESS: derive the authenticating peer's id_hash, mint a seed token, sign it, and put
   \ the token + granter (us) + signature into the response included set. Establish conn.
   \ grantee id_hash = content_hash(system/peer{public_key,key_type}) of the auth'd peer.
@@ -391,7 +453,16 @@ create ifr-buf 512 allot
 : hnd-connect { conn exec arr lens nvar -- status result-eaddr result-eu }
   exec s" hello" op-eq if conn exec arr lens nvar hnd-connect-hello exit then
   exec s" authenticate" op-eq if conn exec arr lens nvar hnd-connect-auth exit then
-  400 s" connection_sequence_error" 0 0 error-result ;
+  \ §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+  \ 400 invalid_request -- not the 501 every other handler answers, AND NOT the
+  \ connection_sequence_error this line used to carry. The table separates a STATE
+  \ conflict from an UNKNOWN operation because they select different remedies: an
+  \ unknown connect operation is not out of order at all, it exists in no state, so
+  \ connection_sequence_error points the caller at its ORDERING when the defect is its
+  \ OPERATION NAME. Row 10 is scoped "in any state", so this covers pre-handshake AND
+  \ established; the genuine sequence cases are refused inside the two words above.
+  \ SCOPED HERE DELIBERATELY: the generic §3.3/§6.2 501 row is a different contract.
+  400 s" invalid_request" 0 0 error-result ;
 
 \ ── the tree handler (§6.3): get an entity by path, or list a directory prefix ──
 \ tree-canon ( path-a path-u -- ca cu )  a bare path is peer-rooted "/<local>/<path>"; an

@@ -964,10 +964,20 @@ impl Peer {
                 if conn.established {
                     return err_out(409, "connection_already_established");
                 }
-                if let Some(params) = exec.entity_field("params") {
-                    if let Some(pid) = params.text_field("peer_id") {
-                        conn.hello_peer_id = Some(pid.to_string());
-                    }
+                // §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on
+                // a HALF-OPEN connection (hello done, authenticate not yet) is an
+                // operation we implement arriving in a state that forbids it — the same
+                // class as connection_already_established above, taking the same 409. A
+                // half-open connection is NOT established, so the guard above cannot
+                // reach it; §4.7 names this gap explicitly because two adjacent rules
+                // each look like they cover it and neither does.
+                if conn.issued_nonce.is_some() {
+                    return err_out(409, "connection_sequence_error");
+                }
+                let params = exec.entity_field("params");
+                let mut hello_pid: Option<String> = None;
+                if let Some(params) = &params {
+                    hello_pid = params.text_field("peer_id").map(str::to_string);
                     // §4.5 negotiation: a non-empty advertisement with no overlap is a
                     // hard reject. hash_formats must overlap our supported set; the
                     // key_types accept-set must include our own signing key_type.
@@ -983,7 +993,56 @@ impl Peer {
                     if !kts.is_empty() && !kts.iter().any(|k| k == LOCAL_KEY_TYPE) {
                         return err_out(400, "unsupported_key_type");
                     }
+                    // §4.5 mutual verifiability, the direction that is NOT the array.
+                    // `key_types` is an ACCEPT-SET; the initiator's OWN key_type is not
+                    // in it — it rides in its `peer_id` — so a hello may advertise a
+                    // perfectly good accept-set and still name an identity we cannot
+                    // verify. Checking only the array leaves that MUST unenforced at
+                    // hello, which is where §4.5 wants it; authenticate catches it one
+                    // leg later, which is conformant but non-canonical.
+                    //
+                    // An UNPARSEABLE peer_id is deliberately left alone: that is a
+                    // malformed field, not a key_type we lack, and authenticate already
+                    // refuses it.
+                    if let Some(pid) = &hello_pid {
+                        if let Ok((kt, _ht, _d)) = crate::codec_ffi::peerid_parse(pid) {
+                            if kt != 1 {
+                                return err_out(400, "unsupported_key_type");
+                            }
+                        }
+                    }
                 }
+                // §4.5 `protocols` — the one negotiated field Required with NO default,
+                // so there is no floor to fall back to, and its two failure modes carry
+                // different codes on purpose (§4.5 table row / §4.7 row 1):
+                //
+                //   absent or empty     -> 400 invalid_request       (a malformed hello)
+                //   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+                //
+                // "a caller that named no version cannot be told the comparison failed"
+                // — the remedies differ (send the field vs change the version) and §4.7
+                // exists so the code selects the remedy. The vocabulary is §8.4's
+                // protocol version identifiers, today the single entity-core/1.0.
+                //
+                // ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY. §4.5 states no
+                // precedence between the three, so a hello disjoint in more than one
+                // dimension may be refused on any of them — but the choice is
+                // OBSERVABLE, and the reference peer refuses key_types first. Checking
+                // protocols first is equally spec-legal and makes AGILITY-UNKNOWN-1
+                // answer incompatible_protocol, because that probe's own hello carries
+                // protocols ["entity-core/v7"] — a spec-line name, not a §8.4
+                // identifier (F56).
+                let protos = params
+                    .as_ref()
+                    .map(|p| text_list(p.field("protocols")))
+                    .unwrap_or_default();
+                if protos.is_empty() {
+                    return err_out(400, "invalid_request");
+                }
+                if !protos.iter().any(|p| p == "entity-core/1.0") {
+                    return err_out(400, "incompatible_protocol");
+                }
+                conn.hello_peer_id = hello_pid;
                 let nonce = random_nonce();
                 conn.issued_nonce = Some(nonce);
                 ok(Entity::make(
@@ -1072,7 +1131,21 @@ impl Peer {
             }
             op => {
                 let _ = op;
-                err_out(501, "unsupported_operation")
+                // §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+                // 400 invalid_request, not the 501 every other handler answers. The
+                // table separates a STATE conflict from an UNKNOWN operation because
+                // they select different remedies — "an unknown connect operation is not
+                // out of order at all; it exists in no state", so
+                // connection_sequence_error would point the caller at its ORDERING when
+                // the defect is its OPERATION NAME. Row 10 is scoped "in any state", so
+                // this arm covers pre-handshake AND established; the genuine sequence
+                // cases are refused in the two arms above, with 409.
+                //
+                // SCOPED TO THIS MATCH DELIBERATELY. The generic registered-handler rule
+                // (§3.3's 501 row, §6.2) is a different contract and is separately
+                // gated; moving the other handlers' 501 would trade one green check for
+                // another.
+                err_out(400, "invalid_request")
             }
         }
     }
@@ -2054,18 +2127,88 @@ mod tests {
             .store
             .get_at(&format!("/{}/system/protocol/connect", p.local_peer))
             .is_some());
+        let hello = |protocols: Option<&str>| {
+            let params = match protocols {
+                None => empty_params(),
+                Some(v) => Entity::make(
+                    "primitive/any",
+                    cbor_host::map(vec![("protocols", cbor_host::text_array(&[v]))]),
+                ),
+            };
+            crate::host::make_execute(crate::host::ExecuteFields {
+                request_id: "r1",
+                uri: "system/protocol/connect",
+                operation: "hello",
+                params,
+                resource: None,
+                author: None,
+                capability: None,
+            })
+        };
+        let code = |r: &Envelope| {
+            r.root
+                .entity_field("result")
+                .and_then(|x| x.text_field("code").map(String::from))
+        };
+
+        // The ACCEPT direction, and it is the one that validates the FIXTURE: §4.5
+        // makes `protocols` Required with NO default, so this is what a well-formed
+        // hello looks like and every deny case below differs in exactly one field.
         let mut conn = Conn::new();
-        let exec = crate::host::make_execute(crate::host::ExecuteFields {
-            request_id: "r1",
-            uri: "system/protocol/connect",
-            operation: "hello",
-            params: empty_params(),
-            resource: None,
-            author: None,
-            capability: None,
-        });
-        let resp = p.dispatch(&mut conn, &Envelope::new(exec)).unwrap();
+        let resp = p
+            .dispatch(&mut conn, &Envelope::new(hello(Some("entity-core/1.0"))))
+            .unwrap();
         assert_eq!(resp.root.uint_field("status"), Some(200));
         assert!(conn.issued_nonce.is_some());
+
+        // §4.7 out-of-order / 0.8.2.8 half-open: the connection is now half-open
+        // (nonce issued, not established), so a SECOND hello is 409 — the guard
+        // `established` alone cannot reach.
+        let resp = p
+            .dispatch(&mut conn, &Envelope::new(hello(Some("entity-core/1.0"))))
+            .unwrap();
+        assert_eq!(resp.root.uint_field("status"), Some(409));
+
+        // §4.5 / §4.7 row 1: absent `protocols` is a MALFORMED hello
+        // (invalid_request), not a failed comparison (incompatible_protocol). The two
+        // select different remedies, so the CODE is asserted — 400 alone cannot tell
+        // them apart.
+        let mut conn = Conn::new();
+        let resp = p.dispatch(&mut conn, &Envelope::new(hello(None))).unwrap();
+        assert_eq!(resp.root.uint_field("status"), Some(400));
+        assert_eq!(code(&resp), Some("invalid_request".to_string()));
+        assert!(conn.issued_nonce.is_none());
+
+        let mut conn = Conn::new();
+        let resp = p
+            .dispatch(&mut conn, &Envelope::new(hello(Some("entity-core/9.9"))))
+            .unwrap();
+        assert_eq!(resp.root.uint_field("status"), Some(400));
+        assert_eq!(code(&resp), Some("incompatible_protocol".to_string()));
+
+        // §4.7 row 10 and its DIFFERENTIAL, in one instrument: an unknown operation on
+        // the CONNECT handler is 400 invalid_request, and the same unknown operation on
+        // any other registered handler stays 501 unsupported_operation (§3.3's 501 row).
+        // A peer can satisfy row 10 by making every unknown operation 400, which trades
+        // one contract for another and looks exactly like a fix.
+        let unknown = |uri: &str| {
+            crate::host::make_execute(crate::host::ExecuteFields {
+                request_id: "r2",
+                uri,
+                operation: "no_such_operation",
+                params: empty_params(),
+                resource: None,
+                author: None,
+                capability: None,
+            })
+        };
+        let mut conn = Conn::new();
+        let env = Envelope::new(unknown("system/protocol/connect"));
+        let out = p.connect_handler(&mut conn, &env.root, &env);
+        assert_eq!(out.status, 400);
+        assert_eq!(out.result.text_field("code"), Some("invalid_request"));
+        let out = p.tree_handler(&unknown("system/tree"));
+        assert_eq!(out.status, 501);
+        assert_eq!(out.result.text_field("code"), Some("unsupported_operation"));
     }
 }

@@ -58,7 +58,11 @@ doHello := [
 	params := EcEntity type: 'system/protocol/connect/hello' data: (EcVal map: {
 		'peer_id' -> (EcVal text: ident peerId).
 		'nonce' -> (EcVal bytes: (ByteArray new: 32 withAll: 16r33)).
-		'protocols' -> (EcVal array: { EcVal text: 'entity-core/0.8' }).
+		"§8.4's protocol version identifier, and it must be one the responder accepts:
+		 'entity-core/0.8' is a SPEC-LINE name, not an identifier, and §4.5's
+		 negotiation answers 400 incompatible_protocol for it. This read as green only
+		 while nothing compared the field (F56 is the same confusion from the probe side)."
+		'protocols' -> (EcVal array: { EcVal text: 'entity-core/1.0' }).
 		'timestamp' -> (EcVal uint: 0) }).
 	exec := EcWire execRequestId: nextRid value uri: 'system/protocol/connect'
 		operation: 'hello' params: params author: nil capability: nil.

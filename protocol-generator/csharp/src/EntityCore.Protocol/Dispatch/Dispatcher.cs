@@ -115,6 +115,14 @@ internal sealed class Dispatcher
         // §3.3 two-level model splits the two: a missing author is an authentication-class
         // failure (can't establish who is asking) → 401; a missing capability is an
         // authorization-class failure (no authority presented) → 403.
+        // §4.7: a non-connect EXECUTE arriving BEFORE the handshake completes is refused
+        // 401 authentication_failed. `missing_author` is the right code for an ESTABLISHED
+        // connection that omits `author`, and the wrong one here: the caller's remedy is
+        // to finish the handshake, not to sign this frame.
+        if (!conn.Established)
+        {
+            return ErrorEnvelope(requestId, Status.Unauthorized, "authentication_failed", "connection not established");
+        }
         if (execute.Author is null)
         {
             return ErrorEnvelope(requestId, Status.Unauthorized, "missing_author", "author required");
@@ -138,7 +146,10 @@ internal sealed class Dispatcher
         HandlerRegistry.Resolution? resolved = _registry.Resolve(path);
         if (resolved is null)
         {
-            return ErrorEnvelope(requestId, Status.NotFound, "not_found", $"no handler resolves {path}");
+            // §3.3's 404 row (0.8.2.7) names the code `handler_not_found`. `not_found` is
+            // the code for a bound-path miss INSIDE a handler (tree get); this is the
+            // resolution step failing, which is a different row and a different remedy.
+            return ErrorEnvelope(requestId, Status.NotFound, "handler_not_found", $"no handler resolves {path}");
         }
         HandlerRegistry.Resolution res = resolved.Value;
 

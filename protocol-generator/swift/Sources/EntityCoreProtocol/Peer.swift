@@ -243,6 +243,16 @@ public actor Peer {
             if operation == "authenticate" {
                 return (try? errorResponse(requestID: reqID, status: 401, code: "invalid_nonce")) ?? fallbackError()
             }
+            // §4.7 row 10 (0.8.2.4) is scoped "in ANY state", and this arm is the
+            // established state — so an UNKNOWN connect operation must not be
+            // absorbed by the state-conflict answer below it. The table separates
+            // the two precisely because they select different remedies: 409
+            // connection_already_established tells a caller its ORDERING is wrong,
+            // which is useless advice about an operation that "exists in no state".
+            // Only the operations this handler implements can be out of order.
+            if operation != "hello" {
+                return (try? errorResponse(requestID: reqID, status: 400, code: "invalid_request")) ?? fallbackError()
+            }
             return (try? errorResponse(requestID: reqID, status: 409, code: "connection_already_established")) ?? fallbackError()
         }
 

@@ -52,6 +52,11 @@ host_run :-
     % emits have a consumer present (the bus runs with zero consumers fine, but a
     % present consumer exercises the emit path the way the smoke does).
     register_tree_consumer(StoreId, host_on_tree_event),
+    % Wire the transport's connection-teardown event to the peer's per-connection
+    % handshake state. ec_peer keys that state on the transport's ConnId and cannot
+    % import ec_transport (the dependency runs the other way), so the host — which
+    % imports both — is where the two meet.
+    register_conn_close_hook(ec_peer:conn_forget),
     start_listener(serve_goal(Peer), Port, _Sock-BoundPort),
     format("LISTENING 127.0.0.1:~d peer ~w~n", [BoundPort, PeerId]),
     flush_output,

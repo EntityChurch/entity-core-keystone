@@ -48,9 +48,32 @@ ecPeer compile: 'params: aParamsEntity disjointOn: aKey supported: aValue
 "── the connect handler (§4.1): hello then authenticate. Ordering (§4.2): hello before
     authenticate; an unknown op is a sequence error. ──"
 ecPeer compile: 'handleConnect: ctx
+	"§4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+	 400 invalid_request, not the 501 every other handler answers AND NOT the
+	 connection_sequence_error this line used to carry. The table separates a STATE
+	 conflict from an UNKNOWN operation because they select different remedies -- an
+	 unknown connect operation is not out of order at all, it exists in no state, so
+	 connection_sequence_error points the caller at its ORDERING when the defect is its
+	 OPERATION NAME. Row 10 is scoped in any state, so this covers pre-handshake AND
+	 established; the genuine sequence cases are refused in handleHello: and
+	 handleAuthenticate:, with 409.
+
+	 SCOPED TO THIS METHOD DELIBERATELY. The generic registered-handler rule (§3.3 501
+	 row, §6.2) is a different contract and is separately gated."
 	ctx operation = ''hello'' ifTrue: [ ^ self handleHello: ctx ].
 	ctx operation = ''authenticate'' ifTrue: [ ^ self handleAuthenticate: ctx ].
-	^ EcHandlerResult error: 400 code: ''connection_sequence_error'' message: ''unknown connect op'''.
+	^ EcHandlerResult error: 400 code: ''invalid_request'' message: ''connect: unknown operation'''.
+
+"── §4.5: does `key` name a params array carrying at least one text? Separates the
+    MALFORMED case from the we-compared-and-disagreed case, which take different §4.7
+    codes. `disjointOn:supported:` deliberately conflates the two (absent -> no
+    constraint), so `protocols`, Required with NO default, needs this asked first. ──"
+ecPeer compile: 'params: aParamsEntity anyTextAt: aKey
+	| v |
+	aParamsEntity isNil ifTrue: [ ^ false ].
+	v := aParamsEntity field: aKey.
+	(v isKindOf: EcArray) ifFalse: [ ^ false ].
+	^ v items anySatisfy: [ :e | e isKindOf: EcTextString ]'.
 
 "handleHello: — §4.5 negotiation, issue a nonce, answer the responder hello."
 ecPeer compile: 'handleHello: ctx
@@ -58,6 +81,14 @@ ecPeer compile: 'handleHello: ctx
 	conn := ctx connection.
 	conn isEstablished ifTrue: [
 		^ EcHandlerResult error: 409 code: ''connection_already_established'' message: nil ].
+	"§4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a HALF-OPEN
+	 connection (hello done, authenticate not yet) is an operation we implement arriving
+	 in a state that forbids it -- the same class as connection_already_established
+	 above, taking the same 409. A half-open connection is NOT established, so the guard
+	 above cannot reach it; §4.7 names this gap explicitly because two adjacent rules
+	 each look like they cover it and neither does."
+	conn issuedNonce isNil ifFalse: [
+		^ EcHandlerResult error: 409 code: ''connection_sequence_error'' message: nil ].
 	params := ctx params.
 	(self params: params disjointOn: ''hash_formats'' supported: ''ecfv1-sha256'')
 		ifTrue: [ ^ EcHandlerResult error: 400 code: ''incompatible_hash_format'' message: nil ].
@@ -65,6 +96,33 @@ ecPeer compile: 'handleHello: ctx
 		ifTrue: [ ^ EcHandlerResult error: 400 code: ''unsupported_key_type'' message: nil ].
 	(self helloKeyTypeBad: params)
 		ifTrue: [ ^ EcHandlerResult error: 400 code: ''unsupported_key_type'' message: nil ].
+	"§4.5 `protocols` -- the one negotiated field Required with NO default, so there is no
+	 floor to fall back to, and its two failure modes carry different codes on purpose
+	 (§4.5 table row / §4.7 row 1):
+
+	   absent or empty     -> 400 invalid_request       (a malformed hello)
+	   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+
+	 A caller that named no version cannot be told the comparison failed -- the remedies
+	 differ (send the field vs change the version) and §4.7 exists so the code selects
+	 the remedy. The vocabulary is §8.4 protocol version identifiers, today the single
+	 entity-core/1.0.
+
+	 ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY. §4.5 states no precedence
+	 between the three, so a hello disjoint in more than one dimension may be refused on
+	 any of them -- but the choice is OBSERVABLE, and the reference peer refuses
+	 key_types first. Checking protocols first makes AGILITY-UNKNOWN-1 answer
+	 incompatible_protocol, because that probe hello carries entity-core/v7 -- a
+	 spec-line name, not a §8.4 identifier (F56)."
+	(self params: params anyTextAt: ''protocols'')
+		ifFalse: [ ^ EcHandlerResult error: 400 code: ''invalid_request'' message: ''hello: protocols absent or empty'' ].
+	(self params: params disjointOn: ''protocols'' supported: ''entity-core/1.0'')
+		ifTrue: [ ^ EcHandlerResult error: 400 code: ''incompatible_protocol'' message: nil ].
+	"§4.7 row 8, second input: remember the identity this connection is negotiating with,
+	 so authenticate can check that the identity it PROVES is the identity it GREETED as.
+	 Without this a caller may greet as one peer and authenticate as another, and every
+	 seed-policy lookup after it resolves against the second."
+	conn helloPeerId: (params isNil ifTrue: [ nil ] ifFalse: [ params textAt: ''peer_id'' ]).
 	nonce := self mintNonceFor: conn.
 	result := EcEntity type: ''system/protocol/connect/hello'' data: (EcVal map: {
 		''peer_id'' -> (EcVal text: identity peerId).
@@ -106,6 +164,12 @@ ecPeer compile: 'handleAuthenticate: ctx
 	"identity binding: claimed peer_id == peer_id derived from public_key"
 	claimedPeerId := params textAt: ''peer_id''.
 	(claimedPeerId isNil or: [ claimedPeerId ~= (EcIdentity peerIdForPubkey: pubkey) ]) ifTrue: [
+		^ EcHandlerResult error: 401 code: ''identity_mismatch'' message: nil ].
+	"§4.7 row 8, the OTHER input on the same row: the derivation above proves the claimed
+	 peer_id is self-consistent with its public_key and says nothing about whether it is the
+	 identity this connection greeted as. Both are identity_mismatch; only this one is about
+	 the CONNECTION."
+	(conn helloPeerId notNil and: [ conn helloPeerId ~= claimedPeerId ]) ifTrue: [
 		^ EcHandlerResult error: 401 code: ''identity_mismatch'' message: nil ].
 	"SUCCESS: the grantee id_hash = content_hash(system/peer{public_key,key_type}) of the auth''d peer."
 	granteePeer := EcEntity type: ''system/peer'' data: (EcVal map: {

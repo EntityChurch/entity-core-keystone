@@ -162,13 +162,59 @@ function connect_handler(p::Peer_t, conn::Conn, exec::Entity, env::Envelope)::Ha
     op = textfield(exec, "operation"); op = op === nothing ? "" : op
     if op == "hello"
         conn.established && return err(409, "connection_already_established")
+        # §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a
+        # HALF-OPEN connection (hello done, authenticate not yet) is an operation we
+        # implement arriving in a state that forbids it — the same class as
+        # connection_already_established above, taking the same 409. A half-open
+        # connection is NOT established, so the guard above cannot reach it; §4.7
+        # names this gap explicitly because two adjacent rules each look like they
+        # cover it and neither does.
+        conn.issued_nonce !== nothing && return err(409, "connection_sequence_error")
         params = entityfield(exec, "params")
+        hello_pid = nothing
         if params !== nothing
             negotiation_reject(params, "hash_formats", "ecfv1-sha256") && return err(400, "incompatible_hash_format")
             negotiation_reject(params, "key_types", "ed25519") && return err(400, "unsupported_key_type")
-            pid = textfield(params, "peer_id")
-            pid !== nothing && (conn.hello_peer_id = pid)
+            hello_pid = textfield(params, "peer_id")
+            # §4.5 mutual verifiability, the direction that is NOT the array.
+            # `key_types` is an ACCEPT-SET; the initiator's OWN key_type is not in it
+            # — it rides in its `peer_id` — so a hello may advertise a perfectly good
+            # accept-set and still name an identity we cannot verify. Checking only
+            # the array leaves that MUST unenforced at hello, which is where §4.5
+            # wants it; authenticate catches it one leg later, which is conformant
+            # but non-canonical.
+            #
+            # An UNPARSEABLE peer_id is deliberately left alone: that is a malformed
+            # field, not a key_type we lack, and authenticate already refuses it.
+            if hello_pid !== nothing
+                hp = try; peerid_parse(hello_pid); catch; nothing; end
+                (hp !== nothing && hp.key_type != 1) && return err(400, "unsupported_key_type")
+            end
         end
+        # §4.5 `protocols` — the one negotiated field Required with NO default, so
+        # there is no floor to fall back to, and its two failure modes carry
+        # different codes on purpose (§4.5 table row / §4.7 row 1):
+        #
+        #   absent or empty     -> 400 invalid_request       (a malformed hello)
+        #   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+        #
+        # "a caller that named no version cannot be told the comparison failed" —
+        # the remedies differ (send the field vs change the version) and §4.7 exists
+        # so the code selects the remedy. The vocabulary is §8.4's protocol version
+        # identifiers, today the single entity-core/1.0.
+        #
+        # ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY. §4.5 states no
+        # precedence between the three, so a hello disjoint in more than one
+        # dimension may be refused on any of them — but the choice is OBSERVABLE, and
+        # the reference peer refuses key_types first. Checking protocols first is
+        # equally spec-legal and makes AGILITY-UNKNOWN-1 answer incompatible_protocol,
+        # because that probe's own hello carries protocols ["entity-core/v7"] — a
+        # spec-line name, not a §8.4 identifier (F56).
+        protos = params === nothing ? nothing : efield(params, "protocols")
+        protol = protos isa AbstractVector ? [x for x in protos if x isa AbstractString] : String[]
+        isempty(protol) && return err(400, "invalid_request", "hello: protocols absent or empty")
+        ("entity-core/1.0" in protol) || return err(400, "incompatible_protocol")
+        hello_pid !== nothing && (conn.hello_peer_id = hello_pid)
         nonce = rand(UInt8, 32)
         conn.issued_nonce = nonce
         hello = make_entity("system/protocol/connect/hello",
@@ -222,7 +268,19 @@ function connect_handler(p::Peer_t, conn::Conn, exec::Entity, env::Envelope)::Ha
                   token_sig.hash => token_sig]
         return okr(grant, inc)
     end
-    return err(501, "unsupported_operation")
+    # §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+    # 400 invalid_request, not the 501 every other handler answers. The table
+    # separates a STATE conflict from an UNKNOWN operation because they select
+    # different remedies — "an unknown connect operation is not out of order at all;
+    # it exists in no state", so connection_sequence_error would point the caller at
+    # its ORDERING when the defect is its OPERATION NAME. Row 10 is scoped "in any
+    # state", so this arm covers pre-handshake AND established; the genuine sequence
+    # cases are refused in the two branches above, with 409.
+    #
+    # SCOPED TO THIS HANDLER DELIBERATELY. The generic registered-handler rule
+    # (§3.3's 501 row, §6.2) is a different contract and is separately gated; moving
+    # the other handlers' 501 would trade one green check for another.
+    return err(400, "invalid_request", "connect: unknown operation " * op)
 end
 
 # §4.5 negotiation: present-but-disjoint list → reject.

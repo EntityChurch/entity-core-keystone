@@ -34,7 +34,18 @@ internal static class Handshake
         byte[] remoteNonce = Ecf.RequireBytes(remoteHello.Data, "nonce");
         state.RemotePeerId = remotePeerId;
 
-        return await AuthenticateAsync(conn, local, remoteNonce, remotePeerId, timeout, ct).ConfigureAwait(false);
+        PeerSession session = await AuthenticateAsync(conn, local, remoteNonce, remotePeerId, timeout, ct)
+            .ConfigureAwait(false);
+        // §4.2's "established" is a property of the CONNECTION, not of which side ran the
+        // handshake. Only the RESPONDER's connect handler used to set this flag, so an
+        // initiator's own state stayed Established = false for the life of a fully
+        // authenticated connection — invisible until something read the flag. The §4.7
+        // pre-establishment refusal in the dispatcher does read it, and the §6.11 REENTRY
+        // direction (the target originating an EXECUTE back at the caller on the same
+        // connection) is inbound traffic on the initiator's side: without this the caller
+        // refuses the reentry 401 authentication_failed on a connection it authenticated.
+        state.Established = true;
+        return session;
     }
 
     /// <summary>

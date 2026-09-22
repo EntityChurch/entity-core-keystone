@@ -25,7 +25,10 @@ internal sealed class TreeHandler : IHandler
         {
             "get" => Get(ctx),
             "put" => Put(ctx),
-            _ => Errors.Error(Status.NotSupported, "operation_not_supported", $"tree handler has no '{ctx.Operation}'"),
+            // §3.3's 501 slot is spelled `unsupported_operation` — the same code every
+            // other handler in this peer already uses; `operation_not_supported` is a
+            // minted synonym and §3.3's (code, status) pair is a MUST-emit contract.
+            _ => Errors.Error(Status.NotSupported, "unsupported_operation", $"tree handler has no '{ctx.Operation}'"),
         });
 
     private static HandlerResult Get(HandlerContext ctx)

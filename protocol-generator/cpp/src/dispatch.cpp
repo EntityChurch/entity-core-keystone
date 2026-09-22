@@ -105,6 +105,21 @@ EcfValue owner_grants(const std::string& local) {
 
 // §4.5 negotiation: does the advertised text-array `key` overlap with `want`? Absent/empty =
 // no constraint (accept). Non-empty + no overlap = disjoint → reject.
+/// §4.5: does `key` carry at least one text entry? Separates the MALFORMED case
+/// (absent, empty, or not an array of text) from the we-compared-and-disagreed case,
+/// which take different §4.7 codes. `advertised_excludes` deliberately conflates the
+/// two — absent means "no constraint" there — so `protocols`, which is Required with
+/// no default, needs this second question asked first.
+bool advertises_any_text(const Entity* params, std::string_view key) {
+    if (!params) return false;
+    const auto* arr = params->field(key);
+    if (!arr || !arr->is<ecf::Array>()) return false;
+    for (const auto& box : std::get<ecf::Array>(arr->as_variant())) {
+        if (std::get_if<ecf::Text>(&box->as_variant())) return true;
+    }
+    return false;
+}
+
 bool advertised_excludes(const Entity* params, std::string_view key, std::string_view want) {
     if (!params) return false;
     const auto* arr = params->field(key);
@@ -310,6 +325,14 @@ void Peer::h_connect(Connection& conn, const Envelope& env, const Entity& exec,
                      const Entity* /*caller_cap*/, const std::string& op, Outcome& o) {
     if (op == "hello") {
         if (conn.established) { err(o, 409, "connection_already_established"); return; }
+        // §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a
+        // HALF-OPEN connection (hello done, authenticate not yet) is an operation we
+        // implement arriving in a state that forbids it — the same class as
+        // connection_already_established above, taking the same 409. A half-open
+        // connection is NOT established, so the guard above cannot reach it; §4.7
+        // names this gap explicitly because two adjacent rules each look like they
+        // cover it and neither does.
+        if (conn.have_nonce) { err(o, 409, "connection_sequence_error"); return; }
         auto params = exec.entity_field("params");
         const Entity* p = params.get();
         std::optional<std::string> initiator = p ? p->text("peer_id") : std::nullopt;
@@ -318,6 +341,47 @@ void Peer::h_connect(Connection& conn, const Envelope& env, const Entity& exec,
         }
         if (advertised_excludes(p, "key_types", "ed25519")) {
             err(o, 400, "unsupported_key_type"); return;
+        }
+        // §4.5 mutual verifiability, the direction that is NOT the array. `key_types`
+        // is an ACCEPT-SET; the initiator's OWN key_type is not in it — it rides in its
+        // `peer_id` — so a hello may advertise a perfectly good accept-set and still
+        // name an identity we cannot verify. Checking only the array leaves that MUST
+        // unenforced at hello, which is where §4.5 wants it; authenticate catches it
+        // one leg later, which is conformant but non-canonical.
+        //
+        // An UNPARSEABLE peer_id is deliberately left alone: that is a malformed field,
+        // not a key_type we lack, and authenticate already refuses it.
+        if (initiator) {
+            if (auto parts = identity::peer_id_parse(*initiator)) {
+                if (parts->key_type != identity::kKeyTypeEd25519) {
+                    err(o, 400, "unsupported_key_type"); return;
+                }
+            }
+        }
+        // §4.5 `protocols` — the one negotiated field Required with NO default, so
+        // there is no floor to fall back to, and its two failure modes carry different
+        // codes on purpose (§4.5 table row / §4.7 row 1):
+        //
+        //   absent or empty     -> 400 invalid_request       (a malformed hello)
+        //   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+        //
+        // "a caller that named no version cannot be told the comparison failed" — the
+        // remedies differ (send the field vs change the version) and §4.7 exists so the
+        // code selects the remedy. The vocabulary is §8.4's protocol version
+        // identifiers, today the single entity-core/1.0.
+        //
+        // ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY. §4.5 states no
+        // precedence between the three, so a hello disjoint in more than one dimension
+        // may be refused on any of them — but the choice is OBSERVABLE, and the
+        // reference peer refuses key_types first. Checking protocols first is equally
+        // spec-legal and makes AGILITY-UNKNOWN-1 answer incompatible_protocol, because
+        // that probe's own hello carries protocols ["entity-core/v7"] — a spec-line
+        // name, not a §8.4 identifier (F56).
+        if (!advertises_any_text(p, "protocols")) {
+            err(o, 400, "invalid_request", "hello: protocols absent or empty"); return;
+        }
+        if (advertised_excludes(p, "protocols", "entity-core/1.0")) {
+            err(o, 400, "incompatible_protocol"); return;
         }
         // fresh CSPRNG nonce bound to THIS connection (F12: per-connection unique nonce
         // defeats the §4.6 cross-connection authenticate replay).
@@ -414,7 +478,19 @@ void Peer::h_connect(Connection& conn, const Envelope& env, const Entity& exec,
         }
         return;
     }
-    err(o, 501, "unsupported_operation", op);
+    // §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+    // 400 invalid_request, not the 501 every other handler answers. The table
+    // separates a STATE conflict from an UNKNOWN operation because they select
+    // different remedies — "an unknown connect operation is not out of order at all;
+    // it exists in no state", so connection_sequence_error would point the caller at
+    // its ORDERING when the defect is its OPERATION NAME. Row 10 is scoped "in any
+    // state", so this arm covers pre-handshake AND established; the genuine sequence
+    // cases are refused in the two branches above, with 409.
+    //
+    // SCOPED TO THIS HANDLER DELIBERATELY. The generic registered-handler rule
+    // (§3.3's 501 row, §6.2) is a different contract and is separately gated; moving
+    // the other handlers' 501 would trade one green check for another.
+    err(o, 400, "invalid_request", op);
 }
 
 // ── tree handler (§6.3) ────────────────────────────────────────────────────────────

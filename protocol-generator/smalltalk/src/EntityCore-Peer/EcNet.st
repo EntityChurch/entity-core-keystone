@@ -74,16 +74,22 @@ net class compile: 'dial: aPort
 
 "── EcConnection — one socket + framing state. ──"
 conn := ((Object << #EcConnection) slots: {
-	#socket. #established. #issuedNonce. #outCounter }; package: pkg; install).
+	#socket. #established. #issuedNonce. #helloPeerId. #outCounter }; package: pkg; install).
 
 conn class compile: 'on: aSocket  ^ self new setSocket: aSocket'.
 conn compile: 'setSocket: aSocket
-	socket := aSocket. established := false. issuedNonce := nil. outCounter := 0. ^ self'.
+	socket := aSocket. established := false. issuedNonce := nil. helloPeerId := nil.
+	outCounter := 0. ^ self'.
 conn compile: 'socket  ^ socket'.
 conn compile: 'isEstablished  ^ established'.
 conn compile: 'establish  established := true'.
 conn compile: 'issuedNonce  ^ issuedNonce'.
 conn compile: 'issuedNonce: aByteArray  issuedNonce := aByteArray'.
+"§4.7 row 8 names TWO inputs on one row, and the second needs the hello leg remembered:
+ deriving peer_id from public_key proves the identity is SELF-CONSISTENT and says nothing
+ about whether it is the identity this connection has been negotiating with."
+conn compile: 'helloPeerId  ^ helloPeerId'.
+conn compile: 'helloPeerId: aString  helloPeerId := aString'.
 conn compile: 'nextOut  outCounter := outCounter + 1. ^ outCounter'.
 conn compile: 'isOpen  ^ socket notNil and: [ socket isConnected ]'.
 conn compile: 'dataAvailable  ^ socket dataAvailable'.

@@ -473,8 +473,41 @@ contains
     type(outcome_t) :: oc
     if (operation == 'hello') then; oc = connect_hello(slot, env)
     else if (operation == 'authenticate') then; oc = connect_authenticate(slot, env)
-    else; oc = out_err(501, 'unsupported_operation', operation); end if
+    ! §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+    ! 400 invalid_request, not the 501 every other handler answers. The table separates
+    ! a STATE conflict from an UNKNOWN operation because they select different remedies
+    ! — "an unknown connect operation is not out of order at all; it exists in no
+    ! state", so connection_sequence_error would point the caller at its ORDERING when
+    ! the defect is its OPERATION NAME. Row 10 is scoped "in any state", so this arm
+    ! covers pre-handshake AND established; the genuine sequence cases are refused
+    ! inside connect_hello/connect_authenticate, with 409.
+    !
+    ! SCOPED TO THIS FUNCTION DELIBERATELY. The generic registered-handler rule (§3.3's
+    ! 501 row, §6.2) is a different contract and is separately gated; moving the other
+    ! handlers' 501 would trade one green check for another.
+    else; oc = out_err(400, 'invalid_request', 'connect: unknown operation ' // operation); end if
   end function hnd_connect
+
+  ! §4.5: does `key` carry at least one text entry? Separates the MALFORMED case
+  ! (absent, empty, or not an array of text) from the we-compared-and-disagreed case,
+  ! which take different §4.7 codes. negotiation_disjoint deliberately conflates the two
+  ! — absent means "no constraint" there — so `protocols`, which is Required with no
+  ! default, needs this second question asked first.
+  logical function protocols_present(params)
+    type(entity_t), intent(in) :: params
+    type(ecf_value_t) :: d, arr
+    integer :: i
+    protocols_present = .false.
+    if (.not. params%present) return
+    d = ent_data_map(params)
+    if (.not. m_has(d, 'protocols')) return
+    arr = m_array(d, 'protocols')
+    do i = 1, arr_count(arr)
+      if (len(val_text(arr_item(arr, i))) > 0) then
+        protocols_present = .true.; return
+      end if
+    end do
+  end function protocols_present
 
   ! §4.5: is a declared negotiation list PRESENT and DISJOINT from our single supported
   ! value? A present-but-EMPTY array rejects; an ABSENT field defaults to include (skip).
@@ -503,6 +536,13 @@ contains
     integer(int8) :: nonce(32)
     exec = env%root
     if (c_estab(slot)) then; oc = out_err(409, 'connection_already_established', ''); return; end if
+    ! §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a HALF-OPEN
+    ! connection (hello done, authenticate not yet) is an operation we implement arriving
+    ! in a state that forbids it — the same class as connection_already_established
+    ! above, taking the same 409. A half-open connection is NOT established, so the guard
+    ! above cannot reach it; §4.7 names this gap explicitly because two adjacent rules
+    ! each look like they cover it and neither does.
+    if (c_has_nonce(slot)) then; oc = out_err(409, 'connection_sequence_error', ''); return; end if
     params = ent_entity_field(exec, 'params')
     ! §4.5 negotiation: reject a hello with no common hash format / no mutually-verifiable
     ! key type at the canonical earliest reject point (hello), per §4.7.
@@ -511,6 +551,51 @@ contains
     end if
     if (negotiation_disjoint(params, 'key_types', 'ed25519')) then
       oc = out_err(400, 'unsupported_key_type', ''); return
+    end if
+    ! §4.5 mutual verifiability, the direction that is NOT the array. `key_types` is an
+    ! ACCEPT-SET; the initiator's OWN key_type is not in it — it rides in its `peer_id` —
+    ! so a hello may advertise a perfectly good accept-set and still name an identity we
+    ! cannot verify. Checking only the array leaves that MUST unenforced at hello, which
+    ! is where §4.5 wants it; authenticate catches it one leg later, which is conformant
+    ! but non-canonical. An UNPARSEABLE peer_id is left alone (peer_id_key_type answers
+    ! < 0): that is a malformed field, not a key_type we lack.
+    if (params%present) then
+      block
+        character(len=:), allocatable :: hpid
+        integer(int64) :: hello_kt
+        hpid = ent_text(params, 'peer_id')
+        if (len(hpid) > 0) then
+          hello_kt = peer_id_key_type(hpid)
+          if (hello_kt >= 0 .and. hello_kt /= 1_int64) then
+            oc = out_err(400, 'unsupported_key_type', ''); return
+          end if
+        end if
+      end block
+    end if
+    ! §4.5 `protocols` — the one negotiated field Required with NO default, so there is
+    ! no floor to fall back to, and its two failure modes carry different codes on
+    ! purpose (§4.5 table row / §4.7 row 1):
+    !
+    !   absent or empty     -> 400 invalid_request       (a malformed hello)
+    !   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+    !
+    ! "a caller that named no version cannot be told the comparison failed" — the
+    ! remedies differ (send the field vs change the version) and §4.7 exists so the code
+    ! selects the remedy. The vocabulary is §8.4's protocol version identifiers, today
+    ! the single entity-core/1.0.
+    !
+    ! ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY. §4.5 states no precedence
+    ! between the three, so a hello disjoint in more than one dimension may be refused on
+    ! any of them — but the choice is OBSERVABLE, and the reference peer refuses
+    ! key_types first. Checking protocols first is equally spec-legal and makes
+    ! AGILITY-UNKNOWN-1 answer incompatible_protocol, because that probe's own hello
+    ! carries protocols ["entity-core/v7"] — a spec-line name, not a §8.4 identifier
+    ! (F56).
+    if (.not. protocols_present(params)) then
+      oc = out_err(400, 'invalid_request', 'hello: protocols absent or empty'); return
+    end if
+    if (negotiation_disjoint(params, 'protocols', 'entity-core/1.0')) then
+      oc = out_err(400, 'incompatible_protocol', ''); return
     end if
     if (params%present) c_hello_pid(slot) = ent_text(params, 'peer_id')
     nonce = peer_random_bytes(32)

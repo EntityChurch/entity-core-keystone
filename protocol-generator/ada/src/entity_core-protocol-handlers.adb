@@ -453,6 +453,16 @@ package body Entity_Core.Protocol.Handlers is
       if Conn.Established then
          return Err (409, "connection_already_established");
       end if;
+      --  §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on
+      --  a HALF-OPEN connection (hello done, authenticate not yet) is an
+      --  operation we implement arriving in a state that forbids it — the same
+      --  class as connection_already_established above, taking the same 409. A
+      --  half-open connection is NOT established, so the guard above cannot
+      --  reach it; §4.7 names this gap explicitly because two adjacent rules
+      --  each look like they cover it and neither does.
+      if Conn.Has_Nonce then
+         return Err (409, "connection_sequence_error");
+      end if;
       --  §4.7 AGILITY-UNKNOWN-1: a peer_id carrying an unsupported key_type
       --  (only ed25519 = 16#01# is supported) MUST be rejected at handshake
       --  with 400 unsupported_key_type — earliest natural surface is hello.
@@ -499,6 +509,53 @@ package body Entity_Core.Protocol.Handlers is
          end if;
          if not List_Has (KT, "ed25519") then
             return Err (400, "unsupported_key_type");
+         end if;
+      end;
+      --  §4.5 `protocols` — the one negotiated field Required with NO default,
+      --  so there is no floor to fall back to, and its two failure modes carry
+      --  different codes on purpose (§4.5 table row / §4.7 row 1):
+      --
+      --    absent or empty     -> 400 invalid_request       (a malformed hello)
+      --    non-empty, disjoint -> 400 incompatible_protocol (we compared)
+      --
+      --  "a caller that named no version cannot be told the comparison failed"
+      --  — the remedies differ (send the field vs change the version) and §4.7
+      --  exists so the code selects the remedy. The vocabulary is §8.4's
+      --  protocol version identifiers, today the single entity-core/1.0.
+      --
+      --  ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY. §4.5 states no
+      --  precedence between the three, so a hello disjoint in more than one
+      --  dimension may be refused on any of them — but the choice is
+      --  OBSERVABLE, and the reference peer refuses key_types first. Checking
+      --  protocols first is equally spec-legal and makes AGILITY-UNKNOWN-1
+      --  answer incompatible_protocol, because that probe's own hello carries
+      --  protocols ["entity-core/v7"] — a spec-line name, not a §8.4
+      --  identifier (F56).
+      declare
+         PV      : constant Ecf_Value := Field (Data (Params), "protocols");
+         Present : Boolean := False;
+         Accepts : Boolean := False;
+      begin
+         if Kind (PV) = K_Array then
+            for I in 1 .. Array_Length (PV) loop
+               declare
+                  E : constant Ecf_Value := Array_Element (PV, I);
+               begin
+                  if Kind (E) = K_Text then
+                     Present := True;
+                     if As_Text (E) = "entity-core/1.0" then
+                        Accepts := True;
+                     end if;
+                  end if;
+               end;
+            end loop;
+         end if;
+         if not Present then
+            return Err (400, "invalid_request",
+                        "hello: protocols absent or empty");
+         end if;
+         if not Accepts then
+            return Err (400, "incompatible_protocol");
          end if;
       end;
       --  Issue a per-connection nonce (§4.6 SHOULD ≥32-byte). F12 replay
@@ -1453,7 +1510,23 @@ package body Entity_Core.Protocol.Handlers is
          elsif Operation = "authenticate" then
             return Handle_Authenticate (Peer, Conn, Exec, Env);
          else
-            return Err (501, "unsupported_operation", Operation);
+            --  §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown
+            --  operation is 400 invalid_request, not the 501 every other
+            --  handler answers. The table separates a STATE conflict from an
+            --  UNKNOWN operation because they select different remedies — "an
+            --  unknown connect operation is not out of order at all; it exists
+            --  in no state", so connection_sequence_error would point the
+            --  caller at its ORDERING when the defect is its OPERATION NAME.
+            --  Row 10 is scoped "in any state", so this arm covers
+            --  pre-handshake AND established; the genuine sequence cases are
+            --  refused inside Handle_Hello/Handle_Authenticate, with 409.
+            --
+            --  SCOPED TO THIS BRANCH DELIBERATELY. The generic
+            --  registered-handler rule (§3.3's 501 row, §6.2) is a different
+            --  contract and is separately gated below; moving the shared 501
+            --  would trade one green check for another.
+            return Err (400, "invalid_request",
+                        "connect: unknown operation " & Operation);
          end if;
       end if;
 

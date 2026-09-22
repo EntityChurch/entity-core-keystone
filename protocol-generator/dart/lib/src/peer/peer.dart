@@ -174,6 +174,16 @@ final class Peer {
     final conn = ctx.conn;
     final exec = ctx.exec;
     if (conn.established) return Outcome.err(409, 'connection_already_established');
+    // §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a
+    // HALF-OPEN connection (hello done, authenticate not yet) is an operation we
+    // implement arriving in a state that forbids it — the same class as
+    // connection_already_established above, taking the same 409. A half-open
+    // connection is NOT established, so the guard above cannot reach it; §4.7
+    // names this gap explicitly because two adjacent rules each look like they
+    // cover it and neither does.
+    if (conn.issuedNonce != null) {
+      return Outcome.err(409, 'connection_sequence_error');
+    }
     // §4.5 negotiation: reject disjoint hash_formats / key_types up front.
     final hf = _strArray(exec, 'hash_formats');
     final kt = _strArray(exec, 'key_types');
@@ -184,7 +194,53 @@ final class Peer {
       return Outcome.err(400, 'unsupported_key_type');
     }
     final params = exec.entityField('params');
-    conn.helloPeerId = params?.text('peer_id');
+    final helloPid = params?.text('peer_id');
+    // §4.5 mutual verifiability, the direction that is NOT the array. `key_types`
+    // is an ACCEPT-SET; the initiator's OWN key_type is not in it — it rides in its
+    // `peer_id` — so a hello may advertise a perfectly good accept-set and still
+    // name an identity we cannot verify. Checking only the array leaves that MUST
+    // unenforced at hello, which is where §4.5 wants it; authenticate catches it
+    // one leg later, which is conformant but non-canonical.
+    //
+    // An UNPARSEABLE peer_id is deliberately left alone: that is a malformed field,
+    // not a key_type we lack, and authenticate already refuses it.
+    if (helloPid != null) {
+      var badKt = false;
+      try {
+        badKt = PeerId.parse(helloPid).keyType != PeerId.keyTypeEd25519;
+      } catch (_) {
+        badKt = false;
+      }
+      if (badKt) return Outcome.err(400, 'unsupported_key_type');
+    }
+    // §4.5 `protocols` — the one negotiated field Required with NO default, so
+    // there is no floor to fall back to, and its two failure modes carry different
+    // codes on purpose (§4.5 table row / §4.7 row 1):
+    //
+    //   absent or empty     -> 400 invalid_request       (a malformed hello)
+    //   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+    //
+    // "a caller that named no version cannot be told the comparison failed" — the
+    // remedies differ (send the field vs change the version) and §4.7 exists so the
+    // code selects the remedy. The vocabulary is §8.4's protocol version
+    // identifiers, today the single entity-core/1.0.
+    //
+    // ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY. §4.5 states no
+    // precedence between the three, so a hello disjoint in more than one dimension
+    // may be refused on any of them — but the choice is OBSERVABLE, and the
+    // reference peer refuses key_types first. Checking protocols first is equally
+    // spec-legal and makes AGILITY-UNKNOWN-1 answer incompatible_protocol, because
+    // that probe's own hello carries protocols ["entity-core/v7"] — a spec-line
+    // name, not a §8.4 identifier (F56).
+    final protos = _strArray(exec, 'protocols');
+    if (protos == null || protos.isEmpty) {
+      return Outcome.err(
+          400, 'invalid_request', 'hello: protocols absent or empty');
+    }
+    if (!protos.contains('entity-core/1.0')) {
+      return Outcome.err(400, 'incompatible_protocol');
+    }
+    conn.helloPeerId = helloPid;
     final nonce = _randomBytes(32);
     conn.issuedNonce = nonce;
     return Outcome.ok(Entity.make(
@@ -960,7 +1016,8 @@ final class Peer {
           ]),
       _HandlerSpec(
           'system/protocol/connect',
-          _OpsHandler({'hello': _hello, 'authenticate': _authenticate}),
+          _OpsHandler({'hello': _hello, 'authenticate': _authenticate},
+              unknownOpIsInvalidRequest: true),
           'Connect',
           [['hello', null, null], ['authenticate', null, null]]),
     ];
@@ -1096,14 +1153,32 @@ final class _HandlerSpec {
 /// ladder is the table lookup, with the "unknown op → 501" arm as the absent-key
 /// fallthrough — the Dart-idiomatic shape for the §6.2 handler op routing.
 final class _OpsHandler implements Handler {
-  const _OpsHandler(this._ops);
+  const _OpsHandler(this._ops, {this.unknownOpIsInvalidRequest = false});
   final Map<String, Future<Outcome> Function(HandlerContext)> _ops;
+
+  /// §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+  /// 400 invalid_request, not the 501 every other handler answers. The table
+  /// separates a STATE conflict from an UNKNOWN operation because they select
+  /// different remedies — "an unknown connect operation is not out of order at
+  /// all; it exists in no state", so connection_sequence_error would point the
+  /// caller at its ORDERING when the defect is its OPERATION NAME. Row 10 is
+  /// scoped "in any state", so this arm covers pre-handshake AND established;
+  /// the genuine sequence cases are refused in _hello/_authenticate, with 409.
+  ///
+  /// A FLAG ON THE SHARED TABLE RATHER THAN A CHANGE TO IT. The generic
+  /// registered-handler rule (§3.3's 501 row, §6.2) is a different contract and
+  /// is separately gated; moving the shared 501 would trade one green check for
+  /// another, so exactly one construction site sets this.
+  final bool unknownOpIsInvalidRequest;
 
   @override
   Future<Outcome> handle(String operation, HandlerContext ctx) {
     final fn = _ops[operation];
     if (fn == null) {
-      return Future.value(Outcome.err(501, 'unsupported_operation', operation));
+      return Future.value(unknownOpIsInvalidRequest
+          ? Outcome.err(
+              400, 'invalid_request', 'connect: unknown operation $operation')
+          : Outcome.err(501, 'unsupported_operation', operation));
     }
     return fn(ctx);
   }

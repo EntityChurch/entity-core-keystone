@@ -261,7 +261,20 @@ proc initiate*(local: Peer; io: Io; conn: Conn): Future[Session] {.async.} =
   ## (the reverse authenticate) is OPTIONAL + deferred (§4.1) — a client-style
   ## initiator completes via legs 1–2 alone.
   # 1. hello
-  let r1 = await sendConnect(io, conn, "hello", emptyParams(), @[])
+  #
+  # §4.5 makes `protocols` Required with NO default, so a hello that omits it is a
+  # MALFORMED hello and a conforming responder answers 400 invalid_request. This
+  # dialer sent `emptyParams()` and it worked only because no peer enforced the
+  # rule — the moment the responder side landed, the peer could not complete a
+  # handshake with itself. THE ORACLE CANNOT SEE THIS: its origination check reuses
+  # the INBOUND connection and never makes us dial.
+  let helloParams = makeEntity("primitive/any", mapV(@[
+    EcPair(key: textV("peer_id"), val: textV(local.localPeer)),
+    EcPair(key: textV("protocols"), val: arrV(@[textV(ProtocolVersion)])),
+    EcPair(key: textV("hash_formats"), val: arrV(@[textV("ecfv1-sha256")])),
+    EcPair(key: textV("key_types"), val: arrV(@[textV("ed25519")])),
+  ]))
+  let r1 = await sendConnect(io, conn, "hello", helloParams, @[])
   if r1.root.uintField("status").get(0'u64) != 200:
     raise newException(IOError, "hello rejected")
   let remoteHello = r1.root.entityField("result").get

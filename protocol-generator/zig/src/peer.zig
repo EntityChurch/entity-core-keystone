@@ -270,11 +270,63 @@ fn connectHandler(p: *Peer, a: std.mem.Allocator, conn: *Conn, exec: Entity, env
     const op = exec.textField("operation") orelse "";
     if (std.mem.eql(u8, op, "hello")) {
         if (conn.established) return errOut(a, 409, "connection_already_established", null);
+        // §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a
+        // HALF-OPEN connection (hello done, authenticate not yet) is an operation we
+        // implement arriving in a state that forbids it — the same class as
+        // connection_already_established above, taking the same 409. A half-open
+        // connection is NOT established, so the guard above cannot reach it; §4.7
+        // names this gap explicitly because two adjacent rules each look like they
+        // cover it and neither does.
+        if (conn.issued_nonce != null) return errOut(a, 409, "connection_sequence_error", null);
         const params = try exec.entityField(a, "params");
         // §4.5 negotiation: reject disjoint hash_formats / key_types up front.
         if (params) |pe| {
             if (negotiationReject(pe, "hash_formats", "ecfv1-sha256")) return errOut(a, 400, "incompatible_hash_format", null);
             if (negotiationReject(pe, "key_types", "ed25519")) return errOut(a, 400, "unsupported_key_type", null);
+            // §4.5 mutual verifiability, the direction that is NOT the array.
+            // `key_types` is an ACCEPT-SET; the initiator's OWN key_type is not in it
+            // — it rides in its `peer_id` — so a hello may advertise a perfectly good
+            // accept-set and still name an identity we cannot verify. Checking only
+            // the array leaves that MUST unenforced at hello, which is where §4.5
+            // wants it; authenticate catches it one leg later, which is conformant
+            // but non-canonical.
+            //
+            // An UNPARSEABLE peer_id is deliberately left alone: that is a malformed
+            // field, not a key_type we lack, and authenticate already refuses it.
+            if (pe.textField("peer_id")) |pid| {
+                const parsed = peer_id.parse(a, pid) catch null;
+                if (parsed) |pp| {
+                    defer pp.deinit(a);
+                    if (pp.key_type != 0x01) return errOut(a, 400, "unsupported_key_type", null);
+                }
+            }
+        }
+        // §4.5 `protocols` — the one negotiated field Required with NO default, so
+        // there is no floor to fall back to, and its two failure modes carry
+        // different codes on purpose (§4.5 table row / §4.7 row 1):
+        //
+        //   absent or empty     -> 400 invalid_request       (a malformed hello)
+        //   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+        //
+        // "a caller that named no version cannot be told the comparison failed" —
+        // the remedies differ (send the field vs change the version) and §4.7 exists
+        // so the code selects the remedy. The vocabulary is §8.4's protocol version
+        // identifiers, today the single entity-core/1.0.
+        //
+        // ORDERED LAST AMONG THE NEGOTIATED FIELDS, DELIBERATELY. §4.5 states no
+        // precedence between the three, so a hello disjoint in more than one
+        // dimension may be refused on any of them — but the choice is OBSERVABLE, and
+        // the reference peer refuses key_types first. Checking protocols first is
+        // equally spec-legal and makes AGILITY-UNKNOWN-1 answer incompatible_protocol,
+        // because that probe's own hello carries protocols ["entity-core/v7"] — a
+        // spec-line name, not a §8.4 identifier (F56).
+        if (!helloProtocolOk(params)) {
+            if (helloProtocolsPresent(params)) return errOut(a, 400, "incompatible_protocol", null);
+            return errOut(a, 400, "invalid_request", "hello: protocols absent or empty");
+        }
+        // The hello is accepted from here on, so the initiator's peer_id is recorded
+        // only now — a refused hello must not leave state on the connection.
+        if (params) |pe| {
             if (pe.textField("peer_id")) |pid| {
                 if (conn.hello_peer_id) |old| p.gpa.free(old);
                 conn.hello_peer_id = try p.gpa.dupe(u8, pid);
@@ -350,7 +402,49 @@ fn connectHandler(p: *Peer, a: std.mem.Allocator, conn: *Conn, exec: Entity, env
         inc[2] = .{ .key = minted.signature.hash, .entity = minted.signature };
         return okInc(grant_result, inc);
     }
-    return errOut(a, 501, "unsupported_operation", op);
+    // §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+    // 400 invalid_request, not the 501 every other handler answers. The table
+    // separates a STATE conflict from an UNKNOWN operation because they select
+    // different remedies — "an unknown connect operation is not out of order at all;
+    // it exists in no state", so connection_sequence_error would point the caller at
+    // its ORDERING when the defect is its OPERATION NAME. Row 10 is scoped "in any
+    // state", so this arm covers pre-handshake AND established; the genuine sequence
+    // cases are refused in the two branches above, with 409.
+    //
+    // SCOPED TO THIS HANDLER DELIBERATELY. The generic registered-handler rule
+    // (§3.3's 501 row, §6.2) is a different contract and is separately gated; moving
+    // the other handlers' 501 would trade one green check for another.
+    return errOut(a, 400, "invalid_request", "connect: unknown operation");
+}
+
+/// §4.5: is `protocols` present at all (a non-empty text array)? Separates the
+/// malformed-hello case from the we-compared-and-disagreed case, which take
+/// different §4.7 codes.
+fn helloProtocolsPresent(params: ?Entity) bool {
+    const pe = params orelse return false;
+    const arr = switch (pe.field("protocols") orelse return false) {
+        .array => |x| x,
+        else => return false,
+    };
+    for (arr) |it| switch (it) {
+        .text => return true,
+        else => {},
+    };
+    return false;
+}
+
+/// §4.5: does `protocols` name a version we speak?
+fn helloProtocolOk(params: ?Entity) bool {
+    const pe = params orelse return false;
+    const arr = switch (pe.field("protocols") orelse return false) {
+        .array => |x| x,
+        else => return false,
+    };
+    for (arr) |it| switch (it) {
+        .text => |s| if (std.mem.eql(u8, s, "entity-core/1.0")) return true,
+        else => {},
+    };
+    return false;
 }
 
 fn negotiationReject(params: Entity, key: []const u8, required: []const u8) bool {
@@ -1233,20 +1327,96 @@ test "peer bootstrap leak-clean + tree entries seeded" {
     try testing.expect(p.store.getAt(connect_path) != null);
 }
 
-test "dispatch hello returns a hello response" {
+/// Build a hello params entity naming `version` in `protocols`, or an empty params
+/// entity when `version` is null — the two shapes §4.5 distinguishes.
+fn testHelloParams(gpa: std.mem.Allocator, version: ?[]const u8) !Entity {
+    const v = version orelse return wire.emptyParams(gpa);
+    var list: std.ArrayList(Value.Pair) = .empty;
+    const protos = try gpa.alloc(Value, 1);
+    protos[0] = try model.textVal(gpa, v);
+    try list.append(gpa, .{ .key = try model.textVal(gpa, "protocols"), .value = .{ .array = protos } });
+    return Entity.make(gpa, "primitive/any", .{ .map = try list.toOwnedSlice(gpa) });
+}
+
+/// Dispatch one connect operation and return (status, code). `code` is empty on 200.
+fn testConnect(gpa: std.mem.Allocator, p: *Peer, conn: *Conn, op: []const u8, params: Entity) !struct { status: u64, code: []const u8 } {
+    const exec = try wire.makeExecute(gpa, .{ .request_id = "r1", .uri = "system/protocol/connect", .operation = op, .params = params });
+    const env = Envelope{ .root = exec, .included = try gpa.alloc(model.Included, 0) };
+    defer env.deinit(gpa);
+    const resp = (try dispatch(p, conn, env)).?;
+    defer resp.deinit(gpa);
+    const status = resp.root.uintField("status").?;
+    const result = try resp.root.entityField(gpa, "result");
+    var code: []const u8 = "";
+    if (result) |r| {
+        defer r.deinit(gpa);
+        if (r.textField("code")) |c| code = try gpa.dupe(u8, c);
+    }
+    return .{ .status = status, .code = code };
+}
+
+test "hello: the accept case, and the three §4.5/§4.7 refusals beside it" {
     const gpa = testing.allocator;
     var p = try create(gpa, .{ .seed = [_]u8{5} ** 32 });
     defer p.deinit();
+
+    // The ACCEPT direction, and it is the one that validates the FIXTURE: a hello
+    // MUST carry `protocols` (§4.5 — Required, no default), so this is what a
+    // well-formed hello looks like and every deny case differs in exactly one field.
     var conn = Conn{};
     defer conn.deinit(gpa);
-    // build a connect/hello EXECUTE envelope
-    const params = try wire.emptyParams(gpa);
-    const exec = try wire.makeExecute(gpa, .{ .request_id = "r1", .uri = "system/protocol/connect", .operation = "hello", .params = params });
-    const env = Envelope{ .root = exec, .included = try gpa.alloc(model.Included, 0) };
-    defer env.deinit(gpa);
-    const resp = (try dispatch(&p, &conn, env)).?;
-    defer resp.deinit(gpa);
-    try testing.expectEqual(@as(u64, 200), resp.root.uintField("status").?);
+    const r1 = try testConnect(gpa, &p, &conn, "hello", try testHelloParams(gpa, "entity-core/1.0"));
+    defer gpa.free(r1.code);
+    try testing.expectEqual(@as(u64, 200), r1.status);
+
+    // §4.7 out-of-order / 0.8.2.8 half-open: the connection is now half-open (nonce
+    // issued, not established), so a SECOND hello is 409 — the guard `established`
+    // alone cannot reach.
+    const r2 = try testConnect(gpa, &p, &conn, "hello", try testHelloParams(gpa, "entity-core/1.0"));
+    defer gpa.free(r2.code);
+    try testing.expectEqual(@as(u64, 409), r2.status);
+
+    // §4.5 / §4.7 row 1: absent `protocols` is a malformed hello (invalid_request),
+    // NOT a failed comparison (incompatible_protocol). The two select different
+    // remedies, so the CODE is asserted — 400 alone cannot tell them apart.
+    var conn2 = Conn{};
+    defer conn2.deinit(gpa);
+    const r3 = try testConnect(gpa, &p, &conn2, "hello", try testHelloParams(gpa, null));
+    defer gpa.free(r3.code);
+    try testing.expectEqual(@as(u64, 400), r3.status);
+    try testing.expectEqualStrings("invalid_request", r3.code);
+    try testing.expect(conn2.issued_nonce == null);
+
+    var conn3 = Conn{};
+    defer conn3.deinit(gpa);
+    const r4 = try testConnect(gpa, &p, &conn3, "hello", try testHelloParams(gpa, "entity-core/9.9"));
+    defer gpa.free(r4.code);
+    try testing.expectEqual(@as(u64, 400), r4.status);
+    try testing.expectEqualStrings("incompatible_protocol", r4.code);
+}
+
+test "§4.7 row 10: unknown connect op is 400, unknown op elsewhere stays 501" {
+    const gpa = testing.allocator;
+    var p = try create(gpa, .{ .seed = [_]u8{7} ** 32 });
+    defer p.deinit();
+    var conn = Conn{};
+    defer conn.deinit(gpa);
+    const r = try testConnect(gpa, &p, &conn, "no_such_operation", try wire.emptyParams(gpa));
+    defer gpa.free(r.code);
+    try testing.expectEqual(@as(u64, 400), r.status);
+    try testing.expectEqualStrings("invalid_request", r.code);
+
+    // The differential. §4.7 row 10 and §3.3's 501 row are adjacent and opposite: a
+    // peer can satisfy row 10 by making EVERY unknown operation 400, which trades one
+    // contract for another and looks exactly like a fix. Measured together the trade
+    // is visible; measured apart it is not.
+    var arena_inst = std.heap.ArenaAllocator.init(gpa);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+    const exec = try wire.makeExecute(a, .{ .request_id = "r2", .uri = "system/tree", .operation = "no_such_operation", .params = try wire.emptyParams(a) });
+    const out = try treeHandler(&p, a, exec);
+    try testing.expectEqual(@as(u64, 501), out.status);
+    try testing.expectEqualStrings("unsupported_operation", out.result.textField("code").?);
 }
 
 test "deletion-marker is omitted from listings (CORE-TREE-DELETE-1)" {

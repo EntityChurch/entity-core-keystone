@@ -26,7 +26,10 @@ export class TreeHandler implements Handler {
       case "put":
         return this.#put(ctx);
       default:
-        return errorResult(Status.NotSupported, "operation_not_supported", `tree handler has no '${ctx.operation}'`);
+        // §3.3's 501 slot is spelled `unsupported_operation` — the same code every
+        // other handler in this peer already used; `operation_not_supported` is a
+        // minted synonym, and §3.3's (code, status) pair is a MUST-emit contract.
+        return errorResult(Status.NotSupported, "unsupported_operation", `tree handler has no '${ctx.operation}'`);
     }
   }
 

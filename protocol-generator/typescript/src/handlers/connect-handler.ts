@@ -34,7 +34,18 @@ export class ConnectHandler implements Handler {
       case "authenticate":
         return this.#authenticate(ctx, conn);
       default:
-        return errorEntity(Status.BadRequest, "connection_sequence_error", `unknown connect operation '${ctx.operation}'`);
+        // §4.7 row 10 (0.8.2.4): on the CONNECT handler an unknown operation is
+        // 400 invalid_request — not the 501 every other handler answers, and NOT
+        // the connection_sequence_error this arm used to carry. The table separates
+        // a STATE conflict from an UNKNOWN operation because they select different
+        // remedies: "an unknown connect operation is not out of order at all; it
+        // exists in no state", so connection_sequence_error points the caller at
+        // its ORDERING when the defect is its OPERATION NAME. Row 10 is scoped "in
+        // any state", so this arm covers pre-handshake AND established.
+        //
+        // SCOPED TO THIS HANDLER DELIBERATELY. The generic registered-handler rule
+        // (§3.3's 501 row, §6.2) is a different contract and is separately gated.
+        return errorEntity(Status.BadRequest, "invalid_request", `unknown connect operation '${ctx.operation}'`);
     }
   }
 
@@ -46,6 +57,17 @@ export class ConnectHandler implements Handler {
     // keeps the general 409 here.
     if (conn.established) {
       return errorEntity(Status.Conflict, "connection_already_established", "connection already established");
+    }
+
+    // §4.7 out-of-order row + the 0.8.2.8 half-open note: a second hello on a
+    // HALF-OPEN connection (hello done, authenticate not yet) is an operation we
+    // implement arriving in a state that forbids it — the same class as
+    // connection_already_established above, taking the same 409. A half-open
+    // connection is NOT established, so the guard above cannot reach it; §4.7 names
+    // this gap explicitly because two adjacent rules each look like they cover it
+    // and neither does.
+    if (conn.helloReceived) {
+      return errorEntity(Status.Conflict, "connection_sequence_error", "hello already received on this connection");
     }
 
     const hello = ctx.params;
@@ -76,8 +98,24 @@ export class ConnectHandler implements Handler {
       }
     }
 
-    // Negotiation (§4.5): protocols intersection must be non-empty.
-    const protocols = Ecf.asArray(Ecf.require(hello.data, "protocols")).map((p) => Ecf.asText(p));
+    // Negotiation (§4.5). `protocols` is the one negotiated field Required with NO
+    // default, so there is no floor to fall back to, and its two failure modes carry
+    // different codes on purpose (§4.5 table row / §4.7 row 1):
+    //
+    //   absent or empty     -> 400 invalid_request       (a malformed hello)
+    //   non-empty, disjoint -> 400 incompatible_protocol (we compared)
+    //
+    // "a caller that named no version cannot be told the comparison failed" — the
+    // remedies differ (send the field vs change the version) and §4.7 exists so the
+    // code selects the remedy. This peer had the comparison and not the distinction,
+    // so an EMPTY set was answered incompatible_protocol: the right status reached by
+    // a check that was never asked.
+    const protocolsField = Ecf.field(hello.data, "protocols");
+    const protocols =
+      protocolsField === null ? [] : Ecf.asArray(protocolsField).map((p) => Ecf.asText(p));
+    if (protocols.length === 0) {
+      return errorEntity(Status.BadRequest, "invalid_request", "hello: protocols absent or empty");
+    }
     if (!protocols.includes(Protocols.Version)) {
       return errorEntity(Status.BadRequest, "incompatible_protocol", "no common protocol version");
     }
@@ -171,7 +209,22 @@ export class ConnectHandler implements Handler {
       !hashEqual(signatureSigner(signature), remotePeer.contentHash) ||
       !verifySignature(signature, remotePeer)
     ) {
-      return errorEntity(Status.Unauthorized, "invalid_signature", "authenticate signature invalid");
+      // §4.7 row 7: a non-verifying authenticate signature is
+      // 401 authentication_failed. `invalid_signature` is a minted spelling — the
+      // (code, status) pair is a normative MUST-emit contract, and a caller told
+      // "invalid_signature" is pointed at the same remedy under a name no other
+      // implementation answers.
+      return errorEntity(Status.Unauthorized, "authentication_failed", "authenticate signature invalid");
+    }
+
+    // §4.7 row 8, the OTHER input on the same row: the derivation above proves the
+    // claimed peer_id is self-consistent with its public_key and says nothing about
+    // whether it is the identity this connection GREETED as. Without this a caller
+    // may greet as one peer and authenticate as another, and every seed-policy
+    // lookup after it resolves against the second. `conn.remotePeerId` is set by
+    // #hello, so it holds the greeted identity at this point.
+    if (conn.remotePeerId !== null && conn.remotePeerId !== claimedPeerId) {
+      return errorEntity(Status.Unauthorized, "identity_mismatch", "authenticate peer_id differs from the hello's peer_id");
     }
 
     conn.remotePeerEntity = remotePeer;

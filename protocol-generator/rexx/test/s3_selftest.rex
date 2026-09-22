@@ -117,8 +117,16 @@ BumpEmit: procedure expose EC.
   EC.!EMIT = EC.!EMIT + 1
   return
 
+/* Every case below builds its hello through here, and `protocols` is added to ALL of
+ * them because §4.5 makes it Required with NO default: a hello that omits it is
+ * MALFORMED (400 invalid_request) whatever its hash_formats say, so without this the
+ * two ACCEPT cases stop measuring negotiation and start measuring the fixture. They
+ * are also the two that caught it -- the three DENY cases pass either way, which is
+ * the standing rule that a predicate test built only from deny cases cannot tell a
+ * working check from a broken fixture. */
 Hello_Status: procedure expose EC.
   parse arg peer, fields
+  fields = Ecf_MapPut(fields, 'protocols', Ecf_TextArray(_pl('entity-core/1.0')))
   hello = Ent_Make('system/protocol/connect/hello', fields)
   exec = Wire_MakeExecute('rq', 'system/protocol/connect', 'hello', hello, '', '', '')
   conn = Conn_New()
