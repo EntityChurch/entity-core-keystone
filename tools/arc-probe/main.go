@@ -536,6 +536,24 @@ var cases = []caseSpec{
 			return s.do(exec{tag: "e1", uri: "system/tree", op: "get", params: emptyParams(),
 				targets: []string{qA}, capHash: h, capMat: m})
 		}},
+	{"E2_matchable_grant_exclude", "E", "measurement",
+		"403 — the grant's own exclude covers the very target requested",
+		"THE CONTROL E1 DOES NOT HAVE, and a measurement in its own right. E1's exclude is " +
+			"UNMATCHABLE, so a peer that never consults grant excludes AT ALL answers it exactly " +
+			"as a peer that does consult them and finds the sentinel carves out nothing — the two " +
+			"are indistinguishable from E1 alone. This case excludes the very target being " +
+			"requested, which any exclude-reading peer must refuse. A 200 here is not 0.8.2.21's " +
+			"defect; it is a strictly larger one: the exclude dimension is not read on the " +
+			"dispatch path.",
+		func(s *session, st *runState) (map[string]interface{}, error) {
+			h, m, code, msg := s.mint("e2mint", treeGetGrant(pathScope, idScope, pathScope,
+				[]string{qA}))
+			if len(h) == 0 {
+				return nil, fmt.Errorf("mint refused (%d %s) — recorded", code, msg)
+			}
+			return s.do(exec{tag: "e2", uri: "system/tree", op: "get", params: emptyParams(),
+				targets: []string{qA}, capHash: h, capMat: m})
+		}},
 }
 
 // ---------- reading a response ----------
@@ -706,6 +724,17 @@ func verdictFor(c caseSpec, r caseResult, st *runState) string {
 			return "no — the declared type was not read"
 		}
 		return "partial — refused " + fmt.Sprintf("%d %s", r.Status, r.Code) + ", not 403"
+	case "E2_matchable_grant_exclude":
+		switch {
+		case r.Status == 403:
+			return "yes — the grant exclude denied its own target"
+		case r.Status == 200:
+			return "no — GRANT EXCLUDES ARE NOT READ ON THE DISPATCH PATH: the grant " +
+				"excludes exactly the target it was asked for and the request succeeded"
+		case r.Status == 0:
+			return "unclassified — no response"
+		}
+		return "partial — refused " + fmt.Sprintf("%d %s", r.Status, r.Code) + ", not the 403 §5.2 pins"
 	case "E1_unmatchable_grant_exclude":
 		if st.mintBadSt != 0 && st.mintBadSt != 200 {
 			return "yes — refused at MINT (" + fmt.Sprintf("%d %s", st.mintBadSt, st.mintBadCod) + ")"
@@ -938,9 +967,18 @@ func main() {
 
 	famC := "C (§5.2/§5.6 scope typing, 0.8.2.22 clause 2): operations-mistyped=" + c1.Conforms +
 		" · resources-mistyped=" + c2.Conforms + " · untyped-control=" + c3.Conforms
-	famE := "E (§5.2 unmatchable grant exclude, 0.8.2.21): " + e1.Conforms
+	e2 := get("E2_matchable_grant_exclude")
+	famE := "E (§5.2 grant exclude, 0.8.2.21): unmatchable=" + e1.Conforms +
+		" · matchable-control=" + e2.Conforms
+	// E1 is only READABLE as a 0.8.2.21 result when the peer reads grant excludes at
+	// all. Where E2 says it does not, E1's disposition carries no information about
+	// the sentinel — the same answer follows from never looking.
+	if e2.Status == 200 {
+		famE += " | ⛔ E1 IS UNREADABLE ON THIS PEER: the exclude dimension is not consulted " +
+			"at dispatch, so its answer to the sentinel is not a reading about the sentinel"
+	}
 	if get("E0_control_minted_cap_works").Conforms != "yes" {
-		famE = "E (§5.2 unmatchable grant exclude, 0.8.2.21): VOID — the mint control failed (" +
+		famE = "E (§5.2 grant exclude, 0.8.2.21): VOID — the mint control failed (" +
 			fmt.Sprintf("mint %d %s", state.mintOKSt, state.mintOKCod) + ")"
 	}
 	r.Families = []string{famA, famB, famC, famE}

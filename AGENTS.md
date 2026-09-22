@@ -2886,6 +2886,83 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   the SELECTION and let the count follow — implementers code the primitive, because it is three branches
   and a pseudocode block can express it.** The tell to look for: a ruling whose two halves would be
   implemented by different people in different files, where only one of them is load-bearing.
+- **A PROBE WHOSE SUBJECT IS AN *UNMATCHABLE* VALUE CANNOT TELL "THE VALUE WAS READ AND MATCHED
+  NOTHING" FROM "THE FIELD WAS NEVER READ" — EVERY SENTINEL-SHAPED CHECK NEEDS A MATCHABLE-VALUE
+  CONTROL BESIDE IT.** RATIFIED 2026-09-14 (`tools/arc-probe` `E2`), and it is the standing
+  *"a wire probe fails in the direction of the answer it is looking for"* rule reaching a case
+  where the probe was **right about its own question and silent about a bigger one**. `E1` mints a
+  capability whose `resources.exclude` is `../nope` — the §5.4 sentinel — and asks whether the peer
+  honours the grant anyway. A peer that reads grant excludes and finds the sentinel carves out
+  nothing answers `200`; **a peer that never reads the exclude field at all answers `200`.** Same
+  status, same code, two defects an order of magnitude apart, and the report's own prose
+  (*"the exclude carved out nothing"*) asserted the half it could not see.
+  **The control is one case and it is obvious once stated: exclude the VERY TARGET being requested**,
+  which any exclude-reading peer must refuse. Measured: **40 of 44 answer `403`; four answer `200` —
+  `asm-arm64` `asm-x86_64` `riscv64` `wasm-wat` — and on those four a capability's `exclude` has no
+  effect at dispatch on ANY dimension**, so an attenuated capability is honoured as if unattenuated.
+  `grant_scope_ok` tests `include` for all four dimensions and the string `exclude` does not occur in
+  it. **They are exactly the four HAND-AUTHORED peers**, which is this file's own rule that a cohort
+  defect about EFFORT distributes by authoring cost rather than by substrate — the same four that
+  deferred the §5.5 chain walk.
+  **Enforcement: for any check whose input is a value chosen because it matches NOTHING, a sibling
+  case must supply a value chosen because it matches EVERYTHING the subject covers, and the family
+  verdict must say outright when the first is unreadable because of the second.** Generalize past
+  excludes: the same hole exists for any probe built on an empty set, a no-op pattern, or an absent
+  optional — *"the peer processed it and it did nothing"* and *"the peer never looked"* are the same
+  observation without a positive twin.
+  *(And the measurement was blocked first by a SETUP question worth recording: seven peers reported
+  the whole family VOID because they refuse `system/capability:request` under the §6.9a discovery
+  floor, so nothing could be minted to test with. The probe runner removes `--debug-open-grants` for
+  a reason that is about the **caller's** grant — under `default → *` there is nothing to bypass —
+  and **that reasoning does not transfer to a family whose subject is a token the probe MINTS during
+  the run**: widening the caller's floor decides only whether the mint is permitted, and cannot make
+  a narrowed cap's own exclude look enforced when it is not. `tools/arc-probe/run-mint-floor.sh`
+  drives the peer's UNMODIFIED harness and says in its header that only that family may be read out
+  of it. **Before concluding a family is unmeasurable, ask whether the precondition that blocks it is
+  a property of the SUBJECT or of the setup** — five of the seven were the setup.)*
+- **A MATCHER THAT IS ALSO A PROOF SURFACE TAKES A WRAPPER, NOT A NEW CLAUSE; AND A PEER WITH NO
+  CANONICAL STRING TAKES A PREDICATE, NOT A SENTINEL.** Candidate (2026-09-14, from landing one rule
+  in 45 languages — the value is in the two peers where the uniform transcription would have been
+  wrong). `lean`'s `matchesSeg` is not only the running matcher, it is the **T5a proof surface**: a
+  transitivity theorem plus five `rfl`-level arm-characterization lemmas depend on its exact clause
+  order, so adding a first arm would re-derive all six to prove a property that is not about pattern
+  matching. The guard went in `matchesSegNM` and `lake build EntityCoreProofs` still completes on
+  `propext`/`Classical.choice`/`Quot.sound` alone — **which is the check that says the decision was
+  right rather than merely cautious.** `pd` never materializes a canonical ABSOLUTE form for local
+  grants (its matchers work peer-relatively), so there is no string for a sentinel to ride on; what
+  the sentinel EXISTS FOR is two observable properties — *an unresolvable form never matches, in
+  either operand* and *such a form in an EXCLUDE denies* — and both are implementable directly as a
+  predicate on the pattern. **Rule: transcribe the PROPERTY, and let the representation be the
+  peer's. Writing a literal `/never-match` into a peer with no canonical form to put it in is cargo,
+  not conformance** — and say which you did, at the site, because the next reader will otherwise
+  file the deviation as an omission.
+- **WHEN A PEER ALREADY HAS A FAILURE FLAG, ITS FAILURE SET IS NOT THE SPEC'S — mapping the whole
+  flag to a new sentinel imports every refusal the peer happens to bundle into it.** Candidate
+  (first occurrence, 2026-09-14, `apl`, and the census is the only thing that caught it). Landing
+  §5.4's total `canonicalize` meant making a matcher wrapper return `NEVER_MATCH` where it had been
+  ignoring an existing `invalid`/`ok`/`Option` failure. On five peers that flag carries exactly the
+  three reserved prefixes and the obvious mapping is correct. **On `apl` it does not**:
+  `CapCanonicalize` also refuses a null byte, an empty segment, and — the one that bit — **an
+  absolute path whose first segment is not a peer_id**, which is §5.4's `validate_absolute_path` and
+  which §5.4 says explicitly is *"NOT called on patterns"*. Mapping the flag turned every `/*/…`
+  peer-wildcard pattern unmatchable: **6 FAILs, every foreign-namespace check and three id-scope
+  ones.** **Enforcement: enumerate the arms of the existing flag before reusing it, and map only the
+  ones the spec's own function names.** The tell is that the wrapper reads as a one-line change and
+  the peers where it is wrong look identical to the peers where it is right — only a per-check census
+  diff separates them, which is why a cohort sweep of a matcher is not done without one.
+- **A READ-LOOP FIX IS NOT INHERITED BY A PEER THAT REIMPLEMENTS THE READ LOOP — and depending on
+  the crate that holds the fix looks exactly like inheriting it.** RATIFIED 2026-09-14 (the §6.3
+  silent-refusal sweep reaching `rust-wasm`, `rust-wasm-wasmtime` and `node-red`), and it is the
+  standing *"an inheriting peer takes its parent's fix by rebuilding"* rule with its limit found.
+  Rebuilding genuinely propagates a fix in the parent's **codec, model or capability** modules — that
+  is how all three took the §5.4 sentinel, verified on the wire rather than assumed. It does **not**
+  propagate a fix in the parent's `read_loop`, because a thin transport seam's whole reason to exist
+  is that it *owns* the read loop. The August §6.3 sweep landed `reject_non_canonical` in
+  `peer/transport.rs`; these three kept `Err(_) => continue` and answered a refused frame with
+  silence for four months, and `ingest_rejects_unrepresentable_expiry` was WARN on all three saying
+  so. **Enforcement: when a fix lands in a parent, classify it by MODULE — a change below the seam
+  propagates by rebuild, a change AT the seam must be made in each seam — and the cheap tell is that
+  the inheriting peer's own source contains a function with the same job as the one you just fixed.**
 - **A CONTROL MUST ASSERT THE PRECONDITION THE MEASUREMENT RESTS ON, NOT MERELY THAT THE STEP
   COMPLETED — and the cohort, not the peer, is what separates "your instrument is wrong" from "this
   peer is."** RATIFIED 2026-09-09, building `tools/host-seam-probe` for the H1 dispatch census

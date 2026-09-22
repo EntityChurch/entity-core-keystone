@@ -9,6 +9,47 @@ denominator of every count here.**
 
 ---
 
+> ## ⛔ UPDATE 2026-09-14 — TWO OF THE FOUR FAMILIES ARE CLOSED, AND THE THIRD TURNED UP SOMETHING BIGGER
+>
+> Everything below is the measurement **as taken**, and it is left standing: a dated
+> measurement that gets back-edited stops being evidence of anything. This box says what
+> has moved since, and **§7 is new**.
+>
+> - **§3 `K1` — CLOSED at 12 of 12.** All seven peers on which the forgery reproduced now
+>   bind the included key at the single read site every caller goes through; all seven
+>   answer `401 authentication_failed` on the author arm and `403 capability_denied` on the
+>   capability arm, which is `io`'s answer and was already graded conformant. The five that
+>   refused by dropping the connection now answer `400 non_canonical_ecf`. **`0 of 740`
+>   severities moved on the seven; exactly `1` moved on each of the five, and that one is
+>   `ingest_rejects_unrepresentable_expiry` WARN → PASS** — CAP-6a had been scoring those
+>   silent drops all along and its own detail said so.
+> - **§4 the sentinel — CLOSED at 39 of 44 measurable**, including all 13 that answered
+>   `500`. `canonicalize` is total, `matches_pattern` refuses either operand being the
+>   sentinel, and both exclude-reading sites deny. Four peers are **deliberately not swept**
+>   and one class of two is unmeasurable — see §7.
+> - **§2 the ladder — UNCHANGED and still owed.** Held behind vectors on purpose; the
+>   reasoning in §6 has not changed.
+> - **§7 is new and is the largest single finding of the whole exercise**: four peers do not
+>   read a grant `exclude` at dispatch at all, which §4's own probe case is structurally
+>   unable to see.
+>
+> **Closing verification, with its one wrinkle stated rather than smoothed:** the cohort was
+> re-censused whole, **46 of 46 at `778 · 0F`**, every peer on the identical check set, and
+> **3 of 34 040 severities different** from the committed reports — all three
+> `t1_1_concurrent_demux`, two against and one for, which is the same signature and the same
+> count this repo recorded at the last pin flip. None banked.
+> **The FIRST full census returned `ocaml` and `common-lisp` at `1F` each** —
+> `t2_1_sustained_load` and `t1_2_concurrent_reentry`, both load-shaped. Re-run in isolation:
+> **0 of 3 each.** Re-run as a full census: **0 of 1.** So the rate is *2 peer-runs of 92
+> across two full censuses, 0 of 6 isolated* — a load-dependent intermittent of the class
+> `AGENTS.md` already records for `t1_2_concurrent_reentry` on `go` with this exact signature
+> (fails once under cohort load, passes isolated, not root-caused). **It is recorded as a rate
+> and not as an adjective, and it is NOT attributed to this sweep** — the checks are in a
+> family none of these changes touch, and both peers were individually censused at `0F` with
+> `0 of 740` moved when their own change landed.
+
+---
+
 ## 0. Why this was taken, and what it is not
 
 Twelve spec revisions landed while this seat reviewed them, and none had been measured. The
@@ -298,21 +339,127 @@ Printed in every report, because a count with no stated surface grows while its 
 3. **Nothing is asked about §2 or §4** — the ladder and the sentinel are landed text and the cohort
    simply has not implemented them. They are ours.
 
-**Ours, in the order the measurement puts them:**
+**Ours, in the order the measurement puts them.** *(Dispositions added 2026-09-14; the list
+itself is as written.)*
 
-1. **`K1` resolution integrity on the 7** — `asm-arm64` `asm-x86_64` `cobol` `pd` `riscv64` `sql`
+1. ✅ **`K1` resolution integrity on the 7** — `asm-arm64` `asm-x86_64` `cobol` `pd` `riscv64` `sql`
    `wasm-wat`. A security defect, one shape (`included_find_by_key` and its four siblings), and the
    fix is the §3.1 bind at the point the map is read or the ingest-time equivalent.
-2. **The 5 transport-drop refusals** — `datalog` `node-red` `rust-wasm` `rust-wasm-wasmtime` `smalltalk`.
+   **CLOSED. One shape in seven substrates, `0 of 740` severities moved on every one.**
+2. ✅ **The 5 transport-drop refusals** — `datalog` `node-red` `rust-wasm` `rust-wasm-wasmtime` `smalltalk`.
+   **CLOSED, and it moved a published number:** `ingest_rejects_unrepresentable_expiry`
+   WARN → PASS on all five. **Three of the five are thin seams over a parent that was already
+   fixed — a read-loop fix is not inherited by a peer that REIMPLEMENTS the read loop, and
+   depending on the crate that holds it looks exactly like inheriting it.**
 3. **The §3.3 ladder** — 45 peers, four rows, one authored shape propagated. `nim`'s partial
-   implementation is the reference for the `>1` arm.
-4. **`canonicalize` totality** — 13 peers, a three-line edit each, and the 5 admission-refusing
+   implementation is the reference for the `>1` arm. **UNCHANGED and still owed** — see the
+   sequencing note, which has not moved.
+4. ✅ **`canonicalize` totality** — 13 peers, a three-line edit each, and the 5 admission-refusing
    peers are already conformant and must not be swept with them.
-5. **The `0.8.2.21` grant-exclude arm** — 20 peers silently widen a grant.
+   **CLOSED on all 13, and the 5 were correctly left alone.**
+5. ⚠ **The `0.8.2.21` grant-exclude arm** — 20 peers silently widen a grant.
+   **CLOSED on 39 of 44 measurable. FOUR are deliberately NOT swept** — `asm-arm64`
+   `asm-x86_64` `riscv64` `wasm-wat` do not read a grant exclude at dispatch **at all** (§7),
+   so adding a sentinel guard to a dimension that is never consulted would be papering; the
+   repair they need is the dimension. **Two are unmeasurable** — `forth` and `smalltalk` mint
+   a capability and then deny it on use, which is its own question.
 6. **Decide what to do about `turbowarp`** — the one peer this instrument cannot reach.
+   **Partly answered by accident:** it is reachable through its own unmodified harness, so §7's
+   `E2` measured it (`403`, conforming). The A and B families remain out of reach, because those
+   need the one-flag edit and its grants live in a Scratch project rather than behind a flag.
+7. ⛔ **NEW — the grant-exclude dimension on the four** (§7). Larger than item 5 and ahead of it
+   in sequence.
 
 **Sequencing:** none of this gates the current pin, and the re-pin still waits on `go`'s vectors.
 The ladder and the sentinel are the two items where implementing before the vectors exist would
 mean writing 43 versions of a rule nothing can check — which is exactly the position this
 measurement was taken to get out of, and the reason `F73`'s cell table wants adopting before the
 next revision rather than after it.
+
+**That argument held for the ladder and it did NOT hold for the sentinel, which is worth
+recording rather than smoothing over.** The sentinel was swept anyway because `arc-probe`'s
+`A5`/`E1` rows *are* a gate on it — our own instrument, graded per peer, with controls — and
+because 13 peers were answering a remotely reachable `500` on ordinary wire input, which is not
+a thing to hold behind anyone's vectors. The ladder has no such instrument row and no such
+acute failure, so it stays sequenced. **The test is not "are there vectors", it is "is there
+something that can tell me I got it wrong".**
+
+---
+
+## 7. ⛔ The control §4 never had: four peers do not read a grant `exclude` at dispatch at all
+
+**Added 2026-09-14, after the sweep.** This is the finding the arc's own instrument was
+structurally unable to make, and it was found by trying to close §4 on the peers that
+report it `VOID`.
+
+### 7a. Why §4's `E1` cannot see it
+
+`E1` mints a capability whose `resources.exclude` is `../nope` — an **unmatchable** value.
+Two completely different peers answer it identically:
+
+| peer reads grant excludes | what it does with `../nope` | answer |
+|---|---|---|
+| yes | canonicalizes it, matches nothing, carves out nothing | `200` |
+| **no** | never looks at the field | `200` |
+
+So every `200` in §4's grant table is ambiguous between *0.8.2.21's defect* and *a strictly
+larger one*. The report said `no — minted AND honoured; the exclude carved out nothing`,
+and on four peers the second half of that sentence was not true.
+
+**The general form, and it is the reusable half: a probe whose subject is an UNMATCHABLE
+value cannot distinguish "the value was read and carved nothing" from "the field was never
+read." Every sentinel-shaped check needs a matchable-value control beside it.**
+
+### 7b. The control, and the measurement
+
+`E2` mints a capability whose `resources.exclude` is **`qA` — the very target the request
+then asks for**. Any peer that consults grant excludes at all must refuse it. `E0` (the
+same mint and the same use, minus the exclude) is the positive control and is green on
+every row counted.
+
+| answer | reading | peers |
+|---|---|---:|
+| `403 capability_denied` | the grant exclude denied its own target | **40** |
+| **`200`** | **the exclude dimension is not read on the dispatch path** | **4 — `asm-arm64` `asm-x86_64` `riscv64` `wasm-wat`** |
+| VOID (`E0` control failed) | — | 2 — `forth` `smalltalk` |
+
+On those four, **a capability's `exclude` has no effect at dispatch on any dimension** —
+not `resources`, not `operations`, not `handlers`, not `peers`. An attenuated capability is
+honoured as if it were not attenuated.
+
+**Source-corroborated after the measurement, not before it:** `grant_scope_ok`
+(`asm-x86_64` `src/dispatch.s:7734` onward) tests `include` for all four dimensions and the
+string `exclude` does not occur in it; `ka_exclude` is referenced only from the
+chain-attenuation path, which is a different surface. The read was a hypothesis and the
+`200` is the finding — `go`, `java` and `sql` were driven as controls first.
+
+### 7c. Two things this says beyond the four peers
+
+- **They are exactly the four HAND-AUTHORED peers.** That is this repo's own standing rule
+  paying out again: when a cohort defect is about *effort*, its distribution follows
+  authoring cost rather than language family. The exclude arm is the laborious half of
+  §5.2 to write by hand, so it is the half that was deferred — in assembly and in WAT
+  alike, exactly as the §5.5 chain walk was.
+- **`forth` and `smalltalk` are VOID for a PEER reason, not a floor reason**, and that is
+  worth separating. Both mint a narrowed capability successfully (`200`) and then deny it
+  on use (`403`) — including the `E0` control, which carries no exclude at all. A peer that
+  issues a capability it will not honour is its own question and it is not this one.
+
+### 7d. What made it measurable, and why that is a second setup rather than a flag
+
+Seven peers report family E `VOID` under `run.sh` because they refuse
+`system/capability:request` under the §6.9a discovery floor, so nothing can be minted to
+test with. `run.sh` removes `--debug-open-grants` for a reason that is about the **caller's**
+grant — under the degenerate `default → *` policy the F68 composition has nothing to bypass
+— and that reasoning **does not transfer to family E**, whose subject is a capability the
+probe *mints during the run* and whose value under test is that minted token's own
+`resources.exclude`. Widening the caller's floor decides only whether the mint is
+permitted; it cannot make a narrowed cap's exclude look enforced when it is not, and `E0`
+rides along to prove the arm is live.
+
+`tools/arc-probe/run-mint-floor.sh` encodes that, with the reasoning in its header rather
+than in someone's memory, and says in the same place that **only the E family may be read
+out of it** — the A and B rows in those reports are measured under open grants and are not
+comparable with `run.sh`'s. Five of the seven become measurable; the other two are §7c.
+
+---

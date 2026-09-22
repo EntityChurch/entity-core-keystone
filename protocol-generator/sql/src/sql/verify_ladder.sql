@@ -63,9 +63,18 @@ chain(hash, granter, grantee, parent, created_at, expires_at, not_before,
 -- (dispatch-time resource match, chain attenuation, handler-internal re-check); the
 -- handlers dimension is not among them. Same defect swift carried (ded3e07), reached
 -- from check_permission rather than from grantSubset.
+-- §5.4's canonicalize is TOTAL (0.8.2.20): its return domain is "a canonical path OR
+-- NEVER_MATCH". The sentinel '/never-match' is unreachable as a canonical path by
+-- CONSTRUCTION -- its only segment cannot be a peer_id, which needs >= 46 Base58
+-- characters, and '-' is outside the Base58 alphabet. The reserved arm is FIRST and
+-- deliberately NOT conditioned on `dim`, transcribing §5.2's loop, whose NEVER_MATCH
+-- guard sits outside the scope-type dispatch.
 sc AS (
   SELECT cap_hash, grant_idx, dim, kind,
-         CASE WHEN dim='resources' AND pattern NOT LIKE '/%'
+         CASE WHEN substr(pattern,1,2)='./' OR substr(pattern,1,3)='../'
+                OR substr(pattern,1,2)='*/'
+              THEN '/never-match'                              -- §5.4 reserved (0.8.2.20)
+              WHEN dim='resources' AND pattern NOT LIKE '/%'
               THEN '/' || granter_peer_id || '/' || pattern    -- §5.5a: GRANTER frame
               WHEN dim='handlers'  AND pattern NOT LIKE '/%'
               THEN '/' || (SELECT local_peer_id FROM req) || '/' || pattern  -- verifier frame
@@ -78,6 +87,16 @@ perm AS (
   SELECT g.grant_idx
   FROM cap_grant g, req
   WHERE g.cap_hash = req.capability
+    -- AN UNMATCHABLE EXCLUDE EXCLUDES EVERYTHING (0.8.2.21). The sentinel is fail-CLOSED
+    -- in an include (covers nothing -> the grant grants nothing, which GLOB already
+    -- gives) and fail-OPEN in an exclude (carves out nothing -> the grant is SILENTLY
+    -- WIDER than its author wrote). Same value, same matcher, opposite safety direction,
+    -- so the reading is chosen HERE, where the position is known. FIRST, because every
+    -- dimension test below is correct in isolation and is simply never reached on a
+    -- sentinel: '/never-match' is a GLOB with no metacharacter, so it matches only the
+    -- literal string, and no canonical path is that string.
+    AND NOT EXISTS (SELECT 1 FROM sc WHERE sc.cap_hash=g.cap_hash AND sc.grant_idx=g.grant_idx
+                    AND sc.kind='exclude' AND sc.canon='/never-match')
     -- operation dimension (§5.4 id-scope)
     AND     EXISTS (SELECT 1 FROM sc WHERE sc.cap_hash=g.cap_hash AND sc.grant_idx=g.grant_idx
                     AND sc.dim='operations' AND sc.kind='include' AND req.operation GLOB sc.canon)
