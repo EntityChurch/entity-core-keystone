@@ -920,10 +920,37 @@ let types_handler (_t : t) (exec : Model.entity) : outcome =
 
 (* ── dispatcher-level signature ingestion (§6.5) ──────────────────────────── *)
 
+(* Scoped to HANDLER-DISCOVERABLE signatures. The EXECUTE's own request signature — the one
+   whose `target` is the root EXECUTE's content hash — is consumed inline by verify_request and
+   is never looked up after dispatch, so binding one per request grows this peer's in-memory
+   store by a unique entity PER REQUEST. Third occurrence of the class in this cohort (Io
+   A-IO-022, Rexx A-RX-014; the rule is in AGENTS.md).
+
+   HERE IT IS A CORRECTNESS DEFECT AND NOT ONLY GROWTH, which is why the scoping is load-bearing
+   rather than tidiness. `Store` is a plain `Hashtbl` with no mutex and `transport.ml` spawns a
+   thread per inbound EXECUTE. OCaml 5.2.1's `Hashtbl.resize` assigns the new, EMPTY bucket array
+   into `h.data` BEFORE repopulating it (verified in the pinned toolchain, not inferred from
+   another version), and `insert_all_buckets`' first act is another large allocation — a poll
+   point, i.e. a preemption opportunity at the instant the table reads as empty. A concurrent
+   `find_opt` in that window misses a key that is present, and a `tree get` answers 404. Unscoped
+   ingestion is what drove the table across those thresholds: t2_1 alone inserts 10 000 unique
+   keys. Measured: 2 of 40 `--profile core` runs failed concurrency/t2_1_sustained_load before
+   this change.
+
+   Cap / identity / handshake signatures are still ingested — they are reused, so their insertion
+   is idempotent and does not track request volume. Signatures that are legitimately PUBLISHED
+   still arrive via tree.put. *)
 let ingest_signatures (t : t) (env : Model.envelope) : unit =
+  let exec_hash = env.Model.root.Model.hash in
   List.iter
     (fun (_, e) ->
-      if String.equal e.Model.typ "system/signature" then begin
+      (* target == the root EXECUTE hash ⇒ the transient per-request signature *)
+      let transient_request_sig =
+        match Model.bytes_field e "target" with
+        | Some target -> String.equal target exec_hash
+        | None -> false
+      in
+      if String.equal e.Model.typ "system/signature" && not transient_request_sig then begin
         Store.put_entity t.store e;
         match Model.bytes_field e "signer" with
         | Some signer_h ->

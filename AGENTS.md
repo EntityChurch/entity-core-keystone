@@ -319,6 +319,25 @@ Two conformance **oracles** are ground truth (built from `entity-core-go`, see B
   exits, and after two of them are running, `pgrep` stops answering the question you are asking.
   Discriminate on something the watcher cannot contain — the log's completion marker, or a
   podman-process count.)*
+  **AND THE SECOND MEASUREMENT CAN BE THE SAME RUN: `CONCURRENCY` IS A KNOB ON THE CENSUS ITSELF,
+  ITS DEFAULT IS 1 FOR THIS EXACT RACE, AND RAISING IT COST A REPORT IN THE RUN THAT CLOSED THE
+  0.8.2.25 SWEEP.** 2026-09-16. Every entry above is about two DIFFERENT runners colliding, and the
+  holder guard each now carries is blind by construction to a single runner racing itself — the
+  guard asks *"does another container hold this repo"*, and the census's own workers are not
+  another container, they are this one. Measured: the 46-peer closing census completed in **19
+  minutes**, where the serial 45-peer refresh the next morning took **~50**; `rexx` died `rc=1` with
+  `Error creating /work/output/scratch/census/rexx.json: permission denied` — the `:Z` relabel race,
+  named in `run-cohort-census.sh`'s own header as the reason the default is 1 — and left its
+  PREVIOUS run's JSON on disk, well-formed, six hours stale, carrying no run identity. Re-measured
+  serially it is `778 · 334P/337W/0F/107S`, exactly its published row: **the peer was never the
+  problem and a reader of that directory could not have known.**
+  **What saved it is worth as much as the lesson: the census's freshness guards fired on the same
+  run.** The stale-JSON check refused to report a file the run did not write, and the roster stamp —
+  hardened in a previous session from `[ -f ]` to an mtime test against the run's start, for this
+  very peer — declined to record `rexx` as measured. So the damage was one missing row rather than a
+  fabricated one. **Rule: the concurrency default of a measurement runner is part of the
+  measurement. Do not raise it to make a census fit an attention span** — and if you do, the run is
+  not comparable until every peer that lost a write is re-measured serially.
   **RATIFIED 2026-09-15 — THE GUARD LANDED IN THE CENSUS AND NOWHERE ELSE, AND THE 41 HARNESSES IT
   WAS NOT PORTED TO ARE THE ONES THAT PRODUCED THE NEXT OUTAGE.** `b91046c4` added the
   refuse-to-start holder check to `run-cohort-census.sh` on 2026-09-15 at 10:06, for the `:Z`
@@ -1338,6 +1357,35 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   identity / handshake signatures (reused → idempotent), skip the transient request sig. Two peers hit
   this independently (Io A-IO-022, Rexx A-RX-014) — an implementation discipline, not a spec gap (spec
   §6.5 is fine); pair it with a §4.10 connection-admission cap for the full resilience story.
+  **RATIFIED, THIRD OCCURRENCE (`ocaml`, 2026-09-16) — AND THE CONSEQUENCE IS NOT ALWAYS A TIMEOUT.
+  ON A THREAD-PER-REQUEST PEER OVER AN UNSYNCHRONIZED HASH TABLE IT IS A WRONG ANSWER: A `tree get`
+  RETURNING 404 FOR AN ENTITY THE PEER HOLDS.** Both prior instances present as *slowness* (GC thrash,
+  timeouts), so the class reads as a performance discipline and gets deprioritised. It is not.
+  `ocaml`'s `Store` is two plain `Hashtbl`s with no mutex and `transport.ml` spawns a thread per
+  connection and another per inbound EXECUTE. **OCaml 5.2.1's `Hashtbl.resize` assigns the new, EMPTY
+  bucket array into `h.data` BEFORE repopulating it, and `insert_all_buckets` opens with another large
+  allocation — a poll point, i.e. a preemption opportunity at the instant the table is observable as
+  empty.** A concurrent `find_opt` there misses a present key. Unscoped ingestion is what drove the
+  table across those thresholds: `t2_1_sustained_load` inserts 10 000 unique keys in one check.
+  **THE MEASUREMENT IS THE METHOD, AND ITS MIDDLE ROW IS THE LESSON AGAIN:** `baseline 2 of 40 ·
+  scoping the ingestion 0 of 80 · + a store mutex 0 of 40`. **Stopping at the middle row ships a peer
+  whose store is still racy** — the scoping removes the DRIVER, not the defect, and any concurrent
+  `tree.put` can still grow the table while `listing` iterates it. That is the `zig` pattern
+  (`3/5 → 1/6 → 0/22`) in a second language: one fix masked the remaining exposure, and only naming
+  what each one addresses tells them apart.
+  **Two implementation notes for the mutex, because both are ways to turn a race into a deadlock.**
+  §6.10 delivery is sync-inline and a consumer is third-party code that may call back into the store,
+  so **events are computed under the lock and fired after it is released**; and `bind` must hold ONE
+  critical section across the Store step and the Bind step, or a reader sees a path bound to an entity
+  the content store does not hold yet (which needs an internal `*_locked` helper, since a non-recursive
+  mutex cannot re-enter `put_entity`).
+  **Enforcement, and it is the cheap direction: for every peer, name the store's concurrency model and
+  the thing that enforces it.** `git grep -n 'Thread.create\|pthread_create\|spawn' <peer>/src` against
+  a store with no lock, no actor and no single-thread guarantee is the defect — and note the standing
+  §7b taxonomy already answers it for most of the cohort (actor-isolation, STM, single-thread event
+  loop, dataflow), so the peers to check are the raw-thread ones. **Verified per-check after both
+  changes: 0 of 778 severities moved** — a fix to a data race should be invisible in the verdicts, and
+  when it is not, the race was not what you fixed.
 - **Type registry: render natively, don't ingest bytes.** A peer publishes `system/type/*`
   via its language's reflection over its *own* data model + an override table for entity-type
   pins — single source of truth in code, with the Go-rendered vectors as a byte-exact
@@ -1490,6 +1538,31 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   the comment's own terminator.** `*/` `;` `,` `'` `"""` are the ones this cohort has hit. Spell it
   in prose (*"a bare star, a slash, then apply"*) or escape it; `//` comments are unaffected, and
   preferring them for anything quoting a pattern is cheap insurance.
+  **AND THE SMALLTALK CASE NOW HAS AN INSTRUMENT, because the obvious check is useless there.**
+  2026-09-15: four comments added to `smalltalk` carried ordinary English apostrophes (*"the
+  caller's own exclude"*) inside `compile: '…'` bodies, which terminates the method literal
+  mid-sentence. **A per-line quote-parity scan cannot find it** — every `compile: '` opener is
+  legitimately odd, so the file reports 86 "suspect" lines and the four real ones are invisible in
+  the noise. What works is to walk each `compile: '` literal under the `''`-escape rule and assert
+  the character after its close is `.`:
+  `re.finditer(r"compile: '")` → scan forward, `''` consumes two, first lone `'` closes → check the
+  next char. **44 and 57 sites examined across two files, 4 suspect, all four mine, 0 after; 428
+  across the peer.** Print the SITE COUNT and assert it non-zero, because a scanner that matched no
+  sites reports exactly the same word as one that matched a hundred. Kept at
+  `protocol-generator/shared/diagnostics/st-compile-string-check.py`.
+  **AND THE ASSERT BELONGS TO THE RUN, NOT TO EACH FILE — the per-file form made the instrument exit
+  1 on a CLEAN tree, which is how a check gets switched off.** Corrected 2026-09-16, before the
+  instrument's first commit. A chunk-format tree legitimately contains files with no `compile:` at
+  all — scripts (`load.st`, `bin/peer.st`, the test drivers) and class-definition-only files
+  (`EcErrors.st`, `EcPeerErrors.st`) — so asserting per file reddens **seven of 40** on a tree with
+  nothing wrong with it, and the real signal sits under a wall of ERRORs that are all false. Zero
+  across the WHOLE invocation is the case that means the idiom moved; per-file zero means a script.
+  **The general rule: an examined-zero-things assert is scoped to the unit the SCANNER ranges over,
+  never to a member of it** — the same distinction as a census gate that must not fail a peer for
+  having no report when the roster is what it ranges over. Three arms exercised before the commit
+  (clean → 0 · zero-sites-only → 1 · a planted `caller's` inside a body → 1, naming the site, the
+  closing line and the offending next character), because a gate with no regression suite is a
+  script that has not been wrong yet.
 - **A GATE'S OWN TIGHTENING CAN GO BLIND, IN THE DIRECTION NOBODY RE-CHECKS — DIFF THE HIT LIST
   ACROSS EVERY CHANGE TO A DETECTOR.** Candidate (2026-09-14, `tools/ascii-wire-gate.py`, and the
   defect was authored by the same session that wrote the gate). The first cut returned 34 hits of
@@ -2828,6 +2901,29 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   and produced false positives on dated history, and the narrow list that fixed that had to be widened
   again — `pinned snapshot`, `NNN-check pin` — because the two real defects used forms the first list
   did not contain. A phrase list is a survey keyed on words you wrote down, so measure what it sees.
+- **ONE FILE, FIVE PARSERS, AND THE ONE THAT CANNOT READ THE FORMAT BLAMES A DIFFERENT ARTIFACT —
+  AUDIT EVERY READER BEFORE EDITING A MACHINE-CONSUMED VALUE, INCLUDING A COMMENT ON IT.** Candidate
+  (first occurrence, 2026-09-16, `tools/oracle-pin.env`; enforcement exact, and it was caught before
+  the edit rather than by it). `oracle-pin.env` records a check count beside every **retired**
+  executed digest (`# 740 checks`, `# 755 checks`, …) and **none beside the live one** — so the file
+  that is authoritative for what the pin IS cannot answer how many checks it is, while it answers for
+  all six pins it has retired. `check-set-gate.py` even PRINTS the canonical line for a new pin with
+  exactly that trailing comment attached, i.e. the format is intended and the live entry is the
+  outlier. Closing that asymmetry is a one-character-class edit to a value five tools parse.
+  **Four of the five tolerate a trailing comment and one does not.** `check-set-gate` and `pin-gate`
+  take `.split("=",1)[1].split()[0]`, `peer-contract/report.py` strips `#` first, `coherence-gate`
+  matches a 64-hex regex — all safe. **`status-banner.py`'s `pin_values()` took the whole right-hand
+  side**, so the digest-plus-comment compares unequal to the recomputed digest and the tool **refuses
+  to write all 46 banners**, printing *"REFUSED — report is at check set … (re-measure, do not
+  hand-edit)"* — **an accusation against the reports for a defect in the pin parser.** Measured both
+  ways before relying on either: old parser on a commented line returns the digest with
+  `'   # 778 checks (78db4a9)'` appended; new parser returns the digest, 21 keys either way.
+  **Two rules.** (a) **Before editing a value another tool reads, enumerate the readers and check each
+  one's EXTRACTION, not merely that it reads the file** — `grep -rn <filename>` finds the readers and
+  says nothing about how they parse. (b) **When one tool emits a format a sibling cannot consume, that
+  is a defect in the pair, not in whoever next writes the format** — the same two-copies-of-one-
+  convention drift this file records for lockfiles and dependency pins, in a 10-line config. Verified
+  no value in the file legitimately contains `#` before making comment-stripping general.
 
 - **A GATE THAT EXAMINES ZERO THINGS PRINTS THE SAME WORD AS ONE THAT EXAMINES FORTY-SIX —
   always print the COUNT, and assert on it in the regression suite.** RATIFIED 2026-08-30
@@ -3256,6 +3352,98 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   ones the spec's own function names.** The tell is that the wrapper reads as a one-line change and
   the peers where it is wrong look identical to the peers where it is right — only a per-check census
   diff separates them, which is why a cohort sweep of a matcher is not done without one.
+  **THE SAME QUESTION HAS A POSITIVE ANSWER AND IT IS WORTH ASKING FIRST: WHEN A PEER ALREADY
+  SEPARATES THE CAUSES, READ ITS EXISTING CODES BEFORE WRITING A CLASSIFIER.** 2026-09-15, `forth`.
+  §4.11 assigns four pre-admission causes three different codes, and the peer answered
+  `non_canonical_ecf` to all of them — while its decoder was ALREADY throwing `E-TAG-REJECTED`,
+  `E-NON-CANONICAL-ECF`, `E-TRUNCATED-INPUT` and `E-INCLUDED-KEY-MISMATCH` as distinct values, and
+  `serve-conn` was discarding the code with `2drop drop` before `reject-frame` could see it. The
+  arms mapped 1:1 onto the section's causes and the whole fix was to stop dropping the code — no
+  strict walker, no second pass. **Ask what the peer's existing failure set already distinguishes
+  before deciding it distinguishes nothing**; the `apl` direction (the flag carries MORE than the
+  spec's arms) and this one (it carries EXACTLY them, unread) are the same enumeration.
+- **RATIFIED, SECOND AND THIRD OCCURRENCE AND A NEW SHAPE — A PREDICATE WRITTEN FOR ONE SPELLING OF
+  AN ADDRESS IS NOT REUSABLE BY A CALLER WITH ANOTHER, AND ON AN AUTHORIZATION DIMENSION IT DENIES
+  EVERY CALLER-SUPPLIED GRANT WHILE THE SHIPPED CONFIGURATION HIDES IT.** The first occurrence was
+  `asm-x86_64`'s `derive_handler` reused for §4.7 row 10 (recorded above, a ROUTING miss that
+  answered 501). 2026-09-15 found it twice more, on `smalltalk` and `forth`, INDEPENDENTLY, with
+  the same cause and a far worse blast radius: `execHandlerPath:` / `exec-handler-path` dropped the
+  leading URI segment UNCONDITIONALLY, on the assumption that a URI always begins with a peer_id.
+  §1.4 admits three spellings of one address — `system/tree`, `/{peer}/system/tree`,
+  `entity://{peer}/system/tree` — and for the PEER-RELATIVE one, which is what validate-peer and
+  every wire probe send, the first segment is `system`, so the handlers dimension compared
+  `/{local}/tree` against a grant naming `system/tree` and missed.
+  **THE CONSEQUENCE IS THE PART TO REMEMBER: A SELF-MINTED TOKEN PRESENTED STRAIGHT BACK TO THE PEER
+  COULD NOT AUTHORIZE ANYTHING.** Mint over `system/capability:request` → 200; present it on the
+  next request → 403. Any grant written the way §3.7 and §6.2 write them was unusable.
+  **It survived because the shipped seed policy and the oracle's own caps grant handlers as `*`,
+  which is VACUOUS OVER THE VALUE** — the dimension passed for a reason unrelated to what it
+  compares, so no census could see it and both peers were `778 · 0F` throughout.
+  **Two enforcement points, and the second is the one that generalises past addresses.**
+  (a) For each peer, find the handler-path derivation and check it against the peer-id predicate
+  `extract_peer` already uses — `isPeerIdSeg:` / `seg-is-peerid?` / `is_peer_id` are in every peer,
+  one method away, and the two call sites must SHARE the predicate rather than each carrying an
+  assumption about the path form. (b) **A dimension whose deployed grants are all `*` is untested by
+  construction; to measure it you need a caller-supplied grant that names a value.** That is what
+  `arc-probe`'s mint-then-use families do, and it is why they found this and 778 checks did not.
+  **AND THE `forth` COPY IS THE SHARPEST VERSION: THE CORRECT WORD WAS ALREADY IN THE TREE, 400
+  LINES AWAY, WITH A COMMENT EXPLAINING THE EXACT HAZARD.** `dispatch.fs`'s `uri->handler-path`
+  carries an `addressed` flag and says in as many words that stripping a bare path's first segment
+  *"would turn system/protocol/connect into protocol/connect"*. The two could not share code because
+  Forth resolves names at compile time and `capauthz.fs` loads first — **so the duplicate was
+  STRUCTURAL, and the duplicate is the one that drifted.** Where a load order or a module boundary
+  forces a forward reference, the answer is the substrate's indirection (`defer` … `is` in Forth, a
+  hook, an interface) and never a second copy: this tranche used `defer` for exactly that, following
+  the peer's own `req-grants-bounded?` precedent.
+- **RATIFIED — THE VOID IS THE FINDING, AND ITS CAUSE IS USUALLY NOT IN THE FAMILY'S OWN SUBJECT.**
+  2026-09-15, four peers in one tranche, four different causes, every one presenting as the same
+  word. `arc-probe` grades a family whose control failed as VOID rather than owed — correctly, since
+  unmeasured is its own state — and the temptation is to read VOID as "nothing to do here yet."
+  Every one of the four was a live defect ONE LAYER UP from what the family measures:
+  - `smalltalk` and `forth`, 7 VOID each — the handler-path predicate above. Families E, F and G all
+    begin by MINTING, so a peer that cannot use its own minted token voids all three at once.
+  - `cobol`, 3 VOID — §5.2's `peers` default read as an absence, so every mint carrying an explicit
+    `peers` dimension was refused at MINT.
+  - `wasm-wat`, 10 VOID — the peer refuses `system/capability:request` under the §6.9a discovery
+    floor, which is a LAUNCH-CONFIGURATION question and not a defect: `run-mint-floor.sh` is the
+    right instrument and the rows then read normally.
+  **Enforcement: diagnose the CONTROL before reading a single row of its family, and expect the
+  cause to be outside the family's subject.** The count of VOID rows is a measure of how much one
+  upstream defect is hiding, not of how much is owed — `smalltalk` went from "4 owed + 7 VOID" to
+  0 of 15 on one predicate.
+- **A DEFAULT IS A VALUE, NOT AN ABSENCE — a subset or attenuation check that reads an omitted
+  dimension as "covers nothing" refuses the shape every SDK writes.** Candidate (first occurrence,
+  2026-09-15, `cobol`; enforcement exact). §5.2 says an omitted `peers` scope MEANS
+  `{include: [local_peer_id]}`. `cap-dim-subset` read the parent's absence as covering nothing, so a
+  CHILD that spells the default out explicitly exceeded a parent granting exactly the same thing:
+  403 `scope_exceeds_authority` at MINT, and the whole dimension unmeasurable on that peer.
+  **Enforcement: for every dimension with a spec-stated default, MATERIALIZE the default on BOTH
+  sides of the comparison, and check BOTH asymmetric cases rather than only the measured one.** The
+  unmeasured direction here (child omits, parent names) was vacuously a subset, so a parent whose
+  `peers` EXCLUDES this peer could have been escaped by a child that simply left the dimension out —
+  an over-grant that no wire row drives, found only by asking the question in both directions.
+- **A THROW OUT OF A MATCHER IS A CONTROL-FLOW ANSWER TO A QUESTION THAT HAS A VALUE ANSWER, AND IT
+  SURFACES AS `500 internal_error`.** Candidate (first occurrence, 2026-09-15, `forth`). §5.4's
+  canonicalize was written to THROW on the three reserved prefixes; §5.4 at 0.8.2.20 makes it TOTAL,
+  answering a sentinel. The difference is invisible until an unmatchable pattern reaches it from a
+  GRANT EXCLUDE, at which point the throw unwinds past every authority rung to the dispatch
+  boundary's catch-all and the peer answers 500 where §5.2 pins 403 — a wrong CLASS, not a wrong
+  code, and one that reads as a peer bug rather than an authority verdict. **Enforcement: a function
+  whose callers are matchers returns a value for every input; if the substrate's idiom is to raise,
+  the raise belongs at the ADMISSION boundary where a caller can answer it, not inside the matcher.**
+  The retired throw codes are kept in place with a dated `retired` marker rather than deleted, so the
+  next reader who greps for them finds why nothing raises them.
+- **ONE NARROWING SEAM, READ BY BOTH SIDES — a dispatch check and a handler that each derive the
+  subject independently are a gap §6.3 cannot close.** RATIFIED 2026-09-15 across all nine peers of
+  this tranche, and it is `F84`'s empty cell answered rather than restated. §5.2 evaluates the
+  EFFECTIVE target set and the handler acts on one entry of it; if the two derivations are separate
+  code, the check can authorize `targets[0]` while the handler acts on a different entry, and §6.3's
+  handler-level check is then guarding a hole that its own inputs cannot see. Every peer here got a
+  single `effective_target` and BOTH sides read it. **Enforcement: grep each peer for the places
+  `resource.targets` is reduced to a subject; more than one is the defect, whatever each one does.**
+  *(And where the ladder's refusals live matters: an effective list that is EMPTY or AMBIGUOUS is not
+  an authorization question, so the dispatch stage neither authorizes nor refuses it — the handler
+  answers it with the code the request's SHAPE earns, `path_required` or `ambiguous_resource`.)*
 - **A READ-LOOP FIX IS NOT INHERITED BY A PEER THAT REIMPLEMENTS THE READ LOOP — and depending on
   the crate that holds the fix looks exactly like inheriting it.** RATIFIED 2026-09-14 (the §6.3
   silent-refusal sweep reaching `rust-wasm`, `rust-wasm-wasmtime` and `node-red`), and it is the
@@ -3865,6 +4053,11 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
     documents. A `^"$ORACLE"` pattern skipped all five. **The peers that do not match your template
     are the ones that had a reason not to, so a template-shaped pattern misses them systematically,
     not randomly** — and five reads as "a few odd peers" rather than as a broken pattern.
+    *(And the count in this very bullet is SIX — `prolog` holds the exit code as `|| RC=$?` / `exit
+    "$RC"`, a second spelling of the same deviation, which the enumeration above missed for the same
+    reason the regex did. Measured 2026-09-16; see the candidate-oracle entry below. A bullet warning
+    that a template-shaped pattern misses the deviants, itself keyed on one spelling of the
+    deviation.)*
   **Enforcement, and it is the postcondition rule again: gate the PROPERTY, not the edit.**
   `tools/fold-reference-peer.py --check` (ninth `make lint` gate) re-parses every harness for the
   four properties independently of how they got there, and **prints the count** — 46 of 46 — because
@@ -4511,11 +4704,23 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   auto-allowlisted … 1 skip(s) count as FAIL` and ends `Result: FAIL (un-allowlisted skips)` with
   a JSON summary of `0 failed`. **`go` does this too**, which is what makes it upstream's and not
   ours — and checking `go` first is the whole diagnostic, one run against the reference peer
-  instead of an investigation into the peer in hand. The blast radius is the five harnesses that
-  propagate the oracle's exit code rather than `|| true`-ing it (`io pd python ruby sql`): those
+  instead of an investigation into the peer in hand. The blast radius is the harnesses that
+  propagate the oracle's exit code rather than `|| true`-ing it: those
   will exit 1 on a green run the moment the pin flips. **Route it with the re-pin; do not raise it
   as a peer finding, and do not paper over it by adding a `|| true` — the harnesses that hold the
   exit code hold it deliberately.**
+  **CORRECTED 2026-09-16 — THE SET IS SIX, NOT FIVE: `io pd python prolog ruby sql`. IT WAS COUNTED
+  BY MEMORY OF THE PEERS THAT HAD BITTEN US, AND `prolog` SPELLS THE SAME THING DIFFERENTLY.** This
+  entry, and the `run-s4.sh` argv entry above it, both said five and named the same five. Measured on
+  the wire at the 778-check pin, the 46-peer refresh returned rc=1 on **six**: the missing one writes
+  `"$ORACLE" … || RC=$?` and `exit "$RC"` where the others write `rc=0; … || rc=$?`, so a survey keyed
+  on the first spelling cannot see it. **That is the standing false-negative family — a count
+  inheriting the shape of the search that produced it — and the fix is the standing one: derive the
+  set STRUCTURALLY, from what each harness does with the exit code, never from a list of names.**
+  `grep -LE '\|\| true' protocol-generator/*/run-s4.sh` is the wrong test too (every harness contains
+  that string in a comment); read each `"$ORACLE"` invocation's own continuation. The measured
+  discriminator, and it needs no grep at all: **run the cohort and list the peers that exit non-zero
+  on a 0-FAIL report** — six, every one for this same un-allowlisted skip.
 - **A PER-PEER ENTRY POINT ONLY WORKS THE WAY ITS AUTHOR HAPPENED TO INVOKE IT, AND NOTHING FINDS
   THAT UNTIL SOMETHING INVOKES IT DIFFERENTLY — this one class was 15 of the 21 failures across two
   axes.** RATIFIED 2026-09-02, and it is the third and largest occurrence of the shape already

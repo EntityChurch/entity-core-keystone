@@ -241,16 +241,20 @@ lint:
 	@# Regression suite: `python3 tools/harness-gate.py --self-test`.
 	@python3 tools/harness-gate.py --quiet
 	@echo "lint: gating the B-role reference peer in every harness (read-only)…"
-	@# The ninth gate. `--profile core` alone executes 756 checks; with -reference-peer
-	@# it executes 758, and the three it adds are the WHOLE origination axis. The census
+	@# The ninth gate. `--profile core` WITH -reference-peer executes the pinned set
+	@# (tools/oracle-pin.env `core_executed_check_set_digest` — name it, never restate
+	@# the count here: this comment said "756 … 758" for three pins after it stopped
+	@# being true, which is the same rot footnote 6 of CONFORMANCE-MATRIX.md records).
+	@# Without the flag the run is THREE checks short and they are the WHOLE origination
+	@# axis, landing instead as one `origination: skipped` placeholder. The census
 	@# never passed the flag, which is the only reason a separate run-origination-core.sh
 	@# existed on 31 peers and was ABSENT on 15 — an axis that was a workaround for an
 	@# unpassed flag, and 15 peers with no coverage of it at all.
 	@# This gates the property rather than the edit: each harness must source the shared
 	@# helper, bring the reference up, pass $$REFPEER_FLAG to the oracle, and reap it from
-	@# its existing teardown. A peer that regresses any of the four drops back to 756 and
-	@# its number stops being comparable — silently, which is the failure mode this whole
-	@# fold exists to end.
+	@# its existing teardown. A peer that regresses any of the four drops the origination
+	@# axis and its number stops being comparable — silently, which is the failure mode
+	@# this whole fold exists to end.
 	@python3 tools/fold-reference-peer.py --check
 	@echo "lint: gating skip provenance — every SKIP explained (read-only)…"
 	@python3 tools/skip-provenance-gate.py

@@ -1,24 +1,40 @@
 # entity-core-keystone — status
 
-_Updated: 2026-09-15 · oracle pin: the 778-check set `7aa6f3de…` · spec snapshot **`v0.8.2.25`** (vendored 2026-09-15)_
+_Updated: 2026-09-16 · oracle pin: the 778-check set `7aa6f3de…` · spec snapshot **`v0.8.2.25`** (vendored 2026-09-15)_
 
-## ⭐ In flight: the `0.8.2.25` sweep — **37 of 46 peers**, and the cohort is at MIXED SPEC REVISIONS
+## ⭐ CLOSED: the `0.8.2.25` sweep — **46 of 46 peers**, and every tracked report re-measured
 
-**This is the first thing to know and it qualifies every per-peer number below.** The spec moved
-fourteen revisions under a cohort pinned at `v0.8.2.11`, and the peers are being brought forward a
-tranche at a time. **The oracle pin has NOT moved** — every row is still measured on the 778-check
-set `7aa6f3de…`, so the conformance numbers remain comparable with each other. What differs across
-the cohort is which SPEC REVISION each peer implements.
+**The cohort is at a single spec revision again.** The spec had moved fourteen revisions under a
+cohort pinned at `v0.8.2.11`; the peers were brought forward a tranche at a time and the last nine
+— `asm-arm64` `asm-x86_64` `riscv64` `wasm-wat` `cobol` `forth` `oz` `pd` `smalltalk` — landed on
+2026-09-15. **The oracle pin did NOT move**: every row is still measured on the 778-check set
+`7aa6f3de…`, so the numbers stay comparable with each other and with the pre-sweep tree.
 
-| | count | peers |
-|---|---:|---|
-| at `0.8.2.25` | **37** | everything not listed below |
-| **not yet swept** | **9** | `asm-arm64` `asm-x86_64` `riscv64` `wasm-wat` `cobol` `forth` `oz` `pd` `smalltalk` |
+**What the whole sweep moved at this check set: ONE check.** All 46 tracked reports were re-measured
+(`run-cohort-census.sh --to-status`, serially — a measurement, never a copy), and a per-check diff
+against the pre-refresh tree compared **35 788 checks and found 3 severities moved**:
 
-Two of the nine have had **§4.11 only** (`oz`, `smalltalk`) and still owe the §5 rules; they are
-counted as unswept because a rule set is not partially done. `smalltalk` carries one **disclosed
-gap** rather than a pass — Pharo cannot write a half-closed socket, so §4.11's truncation refusal
-is detected and undeliverable (`A-ST-018`, traced).
+| peer | check | | why |
+|---|---|---|---|
+| `turbowarp` | `capability/ingest_rejects_unrepresentable_expiry` | WARN → **PASS** | the only real one — §4.11 made it answer a coded frame where it had dropped the connection, and CAP-6a scores a transport drop as WARN because a drop is a refusal but not the §5.2 disposition |
+| `dart` | `concurrency/t1_1_concurrent_demux` | PASS → WARN | the timing ratio; a WARN, never a FAIL — `CONFORMANCE-MATRIX.md` footnote ¹¹ |
+| `typescript` | `concurrency/t1_1_concurrent_demux` | PASS → WARN | as above |
+
+**That is the honest shape of this arc and it is worth stating plainly: the rules the sweep landed
+are almost entirely ungated by the executed check set.** Conformance-green did not and could not
+measure them, which is why `tools/pa-probe` (§4.11, six arms + two controls) and `tools/arc-probe`
+(the §5 scope algebra, 15 rows) exist and why neither ever enters a published number. `smalltalk`
+carries one **disclosed gap** rather than a pass — Pharo cannot write a half-closed socket, so
+§4.11's truncation refusal is detected and undeliverable (`A-ST-018`, traced).
+
+**One peer was fixed in the closing measurement and it was not a sweep regression.** `ocaml` came
+back `778 · 1F` on `concurrency/t2_1_sustained_load` — *"4/10000 sustained requests dropped (first
+error: tree get status 404)"*. Root-caused to a data race present since the peer's initial release:
+an unsynchronized `Hashtbl` store under thread-per-EXECUTE dispatch, driven across resize thresholds
+by unscoped §6.5 signature ingestion (the third occurrence of a class this repo has ratified twice —
+Io `A-IO-022`, Rexx `A-RX-014` — and the first where the consequence is a wrong answer rather than a
+timeout). Measured **2 of 40 → 0 of 80 → 0 of 40** as the driver and then the race itself were
+closed; `0 of 778` severities moved. M1 is 5/5 current and 0-FAIL.
 
 **The headline rule of the arc is §4.11 (pre-admission refusal):** a peer that refuses a frame
 before it becomes an admitted request MUST put a **coded** `EXECUTE_RESPONSE` on the wire, and the
@@ -29,11 +45,14 @@ to requests the peer *admits* and reaches none of those inputs, which is why §4
 `tools/pa-probe` — six arms, two controls, per-peer JSON, and it never enters a published number.
 Baseline when the nine were measured: **5 or 6 of 6 arms owed on every one of them.**
 
-**A note for anyone measuring this cohort:** a run taken today crosses a mixed-pin cohort, so a
-verdict is only a measurement if it records the peer's spec revision per row. That field does not
-exist yet and is being designed with `entity-system-conformance`
+**A note for anyone measuring this cohort:** the cohort is uniform at `v0.8.2.25` as of 2026-09-16,
+so a run taken today does **not** cross a mixed-pin cohort — but that is a fact about today, not a
+property of the tree, and it will stop being true the next time the spec moves under us. **A verdict
+is only a measurement if it records the peer's spec revision per row, and that field still does not
+exist**; it is being designed with `entity-system-conformance`
 (`docs/status/TRACKER-entity-system-conformance.md`, `Y-2`). Until it does, the git log is
-authoritative for which peer is at which revision.
+authoritative for which peer is at which revision — which is exactly the gap `Y-2` closes, and the
+reason this ask does not go away now that the count happens to be 46.
 
 > **For where this is going — the seats keystone sits between, the state of every verification
 > axis, the measured size of the queued work and what freeze looks like — see

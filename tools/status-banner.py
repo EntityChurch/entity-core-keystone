@@ -46,10 +46,19 @@ MARKER = "<!-- current-pin-banner:"
 
 
 def pin_values():
+    # A TRAILING COMMENT IS PART OF THE FORMAT, and this parser was the one that could not
+    # read it. `oracle-pin.env` records a check count beside every digest -- six retired
+    # ones carry `# 740 checks` and the like, and `check-set-gate.py` PRINTS the canonical
+    # line for a new pin with exactly that comment attached. Four of the five parsers of
+    # this file already tolerate it (two take `.split()[0]`, one strips `#` first, one is a
+    # 64-hex regex); this one took the whole right-hand side, so a digest with its count
+    # appended would compare unequal to the recomputed digest and REFUSE every banner --
+    # blaming the report ("re-measure, do not hand-edit") for a defect in the pin parser.
+    # Verified before relying on it: no value in the file legitimately contains `#`.
     out = {}
     for line in PIN.read_text().splitlines():
-        line = line.strip()
-        if line.startswith("#") or "=" not in line:
+        line = line.split("#", 1)[0].strip() if not line.lstrip().startswith("#") else ""
+        if not line or "=" not in line:
             continue
         k, v = line.split("=", 1)
         out[k.strip()] = v.strip()
