@@ -168,70 +168,45 @@ standing `apl` lesson.
 
 ## What's next
 
-**Two live items, both measured. Everything below them is closed and kept for the record.**
+**Four live items, all measured. Everything below them is closed and kept for the record.**
 
-**A. The `0.8.2.11` catch-up — bounded on the emit side, UNMEASURED on the accept side.** Our
-snapshot is `v0.8.2.3`; the protocol is at **`0.8.2.11`** — **eight** fourth-component bumps — and
-arch has consolidated the whole arc into **one vendor step**. No flag day for the code-slot half.
-Measured 2026-09-06 rather than guessed: **all 3** normative files moved (`+117/−24` together); the
-go oracle grew **+26 declared checks, 0 removed**, of which **19 land in core categories** —
-11 + 2 in `catConnectivity` and **6 in `catTreeOps`** — attributed by mapping each check to its file
-and each file's category const against `coreProfileCategories`, never by name.
-`core_gate_fingerprint` is **byte-identical across the pin** (`8261a033fe1af56b…`), so it will not
-warn us, **for the sixth time in this exact shape**. The candidate declared digest at go HEAD is
-recorded in `docs/status/HANDOFF-2026-09-06` rather than here: it anchors a sibling commit that moved
-four times on 2026-09-06, so it is a measurement and not yet a pin, and this file publishes.
+**A. Seven peers cannot route a request to a handler they just registered (F62).** §6.6 makes
+index-equivalence with the tree walk a **MUST**; `asm-arm64` `asm-x86_64` `cobol` `forth` `fortran`
+`riscv64` `smalltalk` answer `404 handler_not_found` at a pattern where a `system/handler` entity
+provably exists — the oracle's own `core_register_handler_at_path` writes it and asserts its type on
+all 46. **No check catches it**: `core_register_*` is nine checks that prove every WRITE and never
+dispatch at the pattern they just proved exists. **It is two repairs, not one.** `smalltalk` has a
+container dispatch already reads and only the wire register does not reach it — the cheapest of the
+seven. The other six resolve through a static op ladder, a pattern ladder or a bootstrap-only table
+and need a container before they can have an index; on the ISA trio, `cobol`, `forth` and `fortran`
+that is real work. The §6.13(a) evaluator none of the seven has is a **separate** item after it, and
+is the honest `501` rather than a defect. Disclosed in `CONFORMANCE-MATRIX.md` §1 and routed as F62.
 
-**The `0.8.2.11` fold is the first ACCEPT-side rule of the arc, and it is why this row is no longer
-just a catch-up.** §6.3 adds a `put` admission ladder — structure, then hash — governing what a peer
-**accepts** rather than what it emits. A submitted entity must be a map with non-empty text `type`,
-present `data`, and a well-formed `content_hash`; any failure is `400 invalid_request`, a hash
-disagreement is `400 hash_mismatch`, and **a peer MUST NOT compute a missing `content_hash` on the
-submitter's behalf** — accepting the two-key `{type, data}` form leaves the peer holding an entity
-under a hash nobody agreed to. **The `tree:put` admission of all 46 peers has never been driven**;
-the row did not exist until `EXTENSION-TREE` v4.4 and had no predicate until v4.5. Arch's instruction
-is explicit and is followed here: *do not size this from the assumption that the cohort is
-conformant.*
+**B. The extension-host track — H1 measured, the repairs sized, Track A closed.** All 46 profiles
+carry an `[extension_host]` block whose `h1_status` is **measured on the wire**, not read from
+source: **26 of 46 peers dispatch a third-party-installed body, 20 do not.** None of that is a
+conformance failure — §6.13(a) is an extension surface — but two of the three failure shapes report
+success for a registration that can never be dispatched, and one of them turned out to be item A.
+Read `host` precisely: the entity-native path works, **not** that a language-native callable can be
+installed in-process. H2/H6/H7 are traced, not measured; a wire probe cannot reach an in-process API.
 
-**MEASURED 2026-09-06, and it is the maximum.** `tools/put-probe` drives the ladder over the wire on
-every peer. Of the **40 peers it could be measured on, ZERO implement any row**. **37 of 40 accept
-the two-key `{type, data}` form and 36 of them STORE it** — the peer authors a hash the submitter
-never supplied. **40 of 40 accept an empty-string `type`.** **10 of 40 accept an entity whose
-`content_hash` does not match its own content**, which is a §1.8 validate-before-trust failure
-independent of the code table. The strings `invalid_request`, `hash_mismatch` and
-`unsupported_content_hash_format` are emitted by **no peer, on any input, on this surface**. Five
-peers are **unmeasurable** (they refuse or drop even a valid `put`; the probe's own self-check is
-clean on all five, so this is reported as an observation about them and not as a probe fault) and
-`turbowarp` is unbuildable — coverage is stated as **40 measured / 5 unmeasurable / 1 unbuildable**.
-**So this is not a re-vendor and not a code-spelling sweep**: two of the three defect classes sit
-outside the code table entirely. Detail:
-`protocol-generator/shared/findings/put-admission-wire-census.md`.
+**C. The architecture backlog — seventeen items, consolidated and routed.** One front door rather
+than seventeen packets, grouped by the kind of answer each needs. The four worth taking first are
+**F62** (a core MUST unmet behind seven green rows), **F59** (the oracle exits non-zero on a fully
+green run, including against `go`), **F61** (0.8.2.13 withdrew a requirement two core checks still
+gate) and **F49** (an id-scope pin that landed in the prose and not in the pseudocode the generator
+reads). Nothing in the set blocks a release. Register:
+`research/stewardship/SPEC-FINDINGS-LOG.md`.
 
-The ordering question §6.3 raises — step 1 strictly precedes step 2, and no single-fault vector can
-discriminate it — is reported **INDETERMINATE cohort-wide** rather than inferred: every peer accepts
-the step-1-only input, so there is no refusal for a step-2 refusal to be ordered against.
 
-**The figures in the rest of this paragraph are the previous pin's and are a FLOOR.** They were taken
-at `0.8.2.7` against go `c42bbf3`; the delta above supersedes their scope but the per-defect detail
-still holds.
-Probed on three peers of three lineages (`go`, `rust`, `python`) against an oracle built to scratch —
-a diagnostic, not a census — all three returned an **identical** `772 · 324P/336W/5F/107S`, with all
-five failures among the new connect-path checks and nothing else moving. **Five failures are three
-defects:** §4.5's `protocols` field is not enforced at all, the connect op ladder answers an unknown
-operation as a handler `501` where `0.8.2.4` pins `400 invalid_request`, and the second-hello state
-check misses mid-handshake (`409`). Separately, four peers (`asm-x86_64` `asm-arm64` `riscv64` `pd`)
-emit `not_implemented` at 501 where the **slot** rule retires it — remedy is one word. Separately, the
-**404 slot** diverges on up to 8 peers (five confirmed emitting `not_found` where §3.3 pins
-`handler_not_found`), which is new and is ours. One authored
-fix propagated 46 times, the shape of the §5.6 sweep, then re-pin and re-census.
+**D. The keystone specification layer — one document landed, one owed.** `SPEC-KEYSTONE-PEER` v1.0
+is written, digest-pinned and gated in `make lint`: the obligations that bind *our* peers and nobody
+else's, which is why nobody upstream will write them and why arch accepted the boundary rather than
+absorbing it. **`SPEC-KEYSTONE-PROFILE` is the one still owed**, and it is better authored now than
+it was a week ago — Track A was its field research, so the schema is derivable from what 46 peers
+actually carry rather than from what we imagined they would.
 
-**B. The keystone specification layer — unblocked and not started.** Three digest-pinned documents
-under `docs/spec/` covering obligations that bind *our* peers and nobody else's, which is why nobody
-upstream will write them. Arch has accepted the boundary. The cheapest real progress is the
-library-surface sweep: of four peers nominated as satisfying the host contract **from source reads**,
-three were wrong, each at a different packaging boundary, and `typescript` is the only verified host.
-
-*(Detail and sizing for both: [`docs/PROGRAM.md`](PROGRAM.md) §3.)*
+*(Detail and sizing for all four: [`docs/PROGRAM.md`](PROGRAM.md) §3.)*
 
 ---
 
@@ -448,6 +423,25 @@ immediately: 13 published banners were still anchored on a dead `dev` commit eig
 tool that prevents that shipped. **It does not retire the hand-walk**, and notably does not catch
 the `§5` defect that motivated half of it — there is no way to distinguish "§5 of this file" from
 "§5 of the spec".
+
+**Closed 2026-09-08 — the `0.8.2.11` catch-up and the §6.3 put-admission ladder, together.** Both
+anchors moved in one step: spec snapshot `v0.8.2.3` → **`v0.8.2.11`**, executed set `758` → **`778`**
+(`c34abcae…` → `7aa6f3de…`), nineteen new core checks of which thirteen are `catConnectivity`. All 46
+peers are 0-FAIL on the larger set and every tracked report was **re-measured**, not copied.
+
+**The put ladder is the part worth remembering, because it was the arc's first ACCEPT-side rule and
+the measurement was the maximum bad case.** §6.3 governs what a peer *accepts*: a submitted entity
+must be a map with non-empty text `type`, present `data` and a well-formed `content_hash`, and a peer
+**MUST NOT** compute a missing `content_hash` on the submitter's behalf. Arch's instruction was
+explicit — *do not size this from the assumption that the cohort is conformant* — and it was right:
+**0 of 46 implemented any row**, **36 accepted a two-key `{type, data}` submission and STORED it**
+(holding an entity under a hash nobody supplied), and **10 bound a path to content that did not hash
+to the hash they were given**, a §1.8 failure the code table does not even reach. Closed at 46 of 46,
+6 of 6 on `tools/put-probe`, `+4,201 / −128` across 56 files — one ladder authored from the spec and
+propagated. **It moved no conformance check**, verified per-check rather than by summary: the pinned
+oracle carries no vector on that surface, so the ladder is additive at this check set and the re-pin
+that will gate it is a separate step.
+
 
 **Closed 2026-08-30 — the cohort. `cobol` and the three ISA peers reached `755 · 0F`, and two of
 the four had been misdiagnosed.** `cobol`'s 30F was 24 cascade + 5 real + 1: an unchecked copy of

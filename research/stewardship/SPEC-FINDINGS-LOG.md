@@ -64,7 +64,22 @@ Cross-language register of findings surfaced by keystone work. Per-language spec
 > that it is *not* the out-of-order row (0.8.2.8, L1925 of the `v0.8.2.11` snapshot); the oracle grew
 > `connectivity/connect_prehello_authenticate`, and it is **PASS on 46 of 46** at the 778-check pin —
 > verified per-check across the committed reports rather than inferred from the fold. The six
-> divergent peers were swept in the `0.8.2.3`/`v0.8.2.11` arcs. **This row sat OPEN here, and
+> divergent peers were swept in the `0.8.2.3`/`v0.8.2.11` arcs — `5a53b75c` specifically, which is
+> the commit the re-measurement below traces them to.
+> **RE-MEASURED ON THE WIRE 2026-09-09 rather than left as a source claim: 46 of 46 answer
+> `401 invalid_nonce`**, positive control `200` on every peer, the independent probe agreeing with
+> the gate peer-for-peer. `csharp` — the one row the 2026-08-30 census could not build offline
+> (**FM-1k**) — is measured and answers `401 invalid_nonce`; its pre-sweep source answered
+> `400 connection_sequence_error`, so formalization's source read of it was correct for the source
+> they read and their census stands at **35 of 35 resolved peers, zero disagreements**.
+> **The probe is retired on its own stated terms** — *"if architecture rules, the ruling belongs in
+> `validate-peer` as a vector, at which point this probe should be deleted, not kept as a second
+> source of truth"* — so `tools/p47-run.sh` is deleted and `tools/p47-probe/` is no longer
+> maintained. Deleting the wrapper also removes the cross-repo hazard flagged to arch on 2026-09-09:
+> it wrote over `output/s4-oracles/validate-peer`, which `entity-system-generator` invokes by path,
+> and the harnesses that made the swap necessary were fixed at source on 2026-09-06 — measured by
+> driving the whole roster through the plain `--probe` route, 46 of 46 probe-shaped outputs.
+> **This row sat OPEN here, and
 > `CONFORMANCE-MATRIX.md` published "Blocked on architecture", for nine days after the ruling
 > landed — nobody re-read the register against the sibling's HEAD. That is the standing
 > "an exclusion is a claim with an expiry date" rule reaching a FINDING rather than a peer.**

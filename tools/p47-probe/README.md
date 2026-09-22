@@ -52,13 +52,34 @@ at all, they reach the nonce check and find nothing to match. So a 38–6 "major
 *decided* and 38 that got one reading for free. **When a census counts implementations agreeing,
 check whether the agreeing ones decided; an answer reached by fall-through is not a vote.**
 
+## RETIRED 2026-09-09 — the question it measured is ruled and gated
+
+Arch folded **FM-1** on 2026-08-31 (0.8.2.1): a pre-hello `authenticate` is **401
+`invalid_nonce`**, and §4.7's out-of-order row stops naming it. The cohort was swept at
+`5a53b75c`, and the pinned oracle carries **`connect_prehello_authenticate`**, PASS on all 46. A
+re-measurement on 2026-09-09 found the 38/6/1 split gone: **46 of 46 `401 invalid_nonce`**, agreeing
+with the gate peer-for-peer.
+
+So this probe is a **second source of truth for a settled question** and is no longer maintained.
+It is kept because its controls are the worked example the census rule cites, not because its
+number is needed. Full closure:
+`protocol-generator/shared/findings/prehello-authenticate-wire-census.md`.
+
 ## Running it
 
 ```
-tools/build-probes.sh p47-probe                  # → output/s4-oracles/p47-probe
-tools/p47-run.sh                                 # single peer
-tools/run-cohort-census.sh --probe p47-probe     # all 46 → output/scratch/p47-probe/
+tools/build-probes.sh p47-probe                        # → output/s4-oracles/p47-probe
+tools/run-cohort-census.sh --probe p47-probe           # all 46 → output/scratch/p47-probe/
+tools/run-cohort-census.sh --probe p47-probe go swift  # named peers
 ```
+
+**`tools/p47-run.sh` is deleted (2026-09-09) and nothing replaces it.** It installed this probe
+*over* `output/s4-oracles/validate-peer` — a binary `entity-system-generator` invokes **by path**
+from its own tree — to defeat harnesses that dropped an `ORACLE` override at their container
+boundary. Those eight harnesses were fixed at source on 2026-09-06, so the plain `--probe` route
+above reaches all 46; measured, not assumed, by running the whole roster through it. Its
+documented per-peer form (`p47-run.sh go swift`) had also never worked: `--probe` takes an
+optional NAME, so the first peer was consumed as the probe name.
 
 Per-peer JSON is gitignored: re-run rather than cite a copy. A conformance report appearing in
 `output/scratch/p47-probe/` means the `ORACLE` override was **dropped** at a container boundary and

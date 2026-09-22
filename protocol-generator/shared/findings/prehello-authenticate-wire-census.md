@@ -3,7 +3,85 @@
 **Date:** 2026-08-30
 **Repo:** `entity-core-keystone`
 **Responds to:** `entity-core-formalization` `ROUTING-2026-08-30-PREHELLO-AUTHENTICATE`
-**Status:** measurement complete; the normative question is architecture's and is untouched here.
+**Status:** ~~measurement complete; the normative question is architecture's and is untouched
+here.~~ → **CLOSED 2026-09-09. The question was ruled the day after this was written, the cohort
+converged, and the probe is superseded by a conformance vector.**
+
+---
+
+## CLOSED — re-measured 2026-09-09: the split is gone, 46 of 46
+
+**Everything below this section is the 2026-08-30 measurement and is kept verbatim as the record
+of a cohort that no longer exists.** Read the table below as history; this section is the current
+disposition.
+
+| | 2026-08-30 | 2026-09-09 |
+|---|---|---|
+| `401 invalid_nonce` | 38 | **46** |
+| `400 connection_sequence_error` | 6 | 0 |
+| `401 authentication_failed` | 1 (`prolog`) | 0 |
+| not measured | 1 (`csharp`) | 0 |
+
+**Nothing drifted. The spec answered, and the cohort was swept.** The sequence is worth stating
+in order, because "a published measurement went stale" and "a measurement was superseded by the
+ruling it asked for" look identical from the table alone:
+
+1. **2026-08-30** — arch *proposed* a ruling (`entity-core-protocol` `804876e`, *"§4.7 answers one
+   input twice — eight sites, five wire behaviours, and the ruling"*). This document was written
+   the same day, against a vendored `v0.8.2` that predates it, and correctly said the normative
+   question was open. It was.
+2. **2026-08-31** — arch *folded* it: **0.8.2.1, FM-1** (`76dbd87`). A pre-hello `authenticate` is
+   **401 `invalid_nonce`**; §4.7's out-of-order row explicitly stops naming it. Our own vendored
+   `v0.8.2.11` carries the ruling in four places — §4.2 (line 1666), §4.7 row 10's *"**Not** a
+   pre-hello `authenticate`"* (1910), the paragraph at 1925, and the §9.0 conformance bullet
+   (4259) whose wording is *"never `connection_sequence_error`"*.
+3. **2026-09-01** — vendored at `v0.8.2.3` and swept: `5a53b75c`, *"sweep(0.8.2.3): PD-1 and FM-1
+   across the cohort"*. That commit is what moved the six.
+4. **2026-09-09** — re-measured all 46 on the wire. Uniform `401 invalid_nonce`, positive control
+   `200` on every peer, and `sequence_distinguished` now false on 45 of 46.
+
+**`csharp` is measured, and it is a corroboration rather than a correction.** It answers **`401
+invalid_nonce`**, trusted, which is *not* the `400 connection_sequence_error` formalization read
+from its source — because they read it before the sweep. `git show 5a53b75c` on that file is a
+one-line diff: `400 connection_sequence_error` → `401 invalid_nonce`, same message string. So
+their source census stands at **35 of 35 resolved peers with zero disagreements**, and the one
+row that looked like it might break the streak is the sweep, not a miss. Closes **FM-1k**.
+
+**`prolog` was the one genuine third answer and it is gone too** — `401 authentication_failed` →
+`401 invalid_nonce`. It is also now the *only* peer left that is sequence-distinguished, and in
+the opposite direction from 2026-08-30: it answers `invalid_nonce` pre-hello and
+`authentication_failed` *after* a hello with a wrong nonce. That post-hello answer is a separate
+question this probe was never pointed at and is not asserted here.
+
+### The probe is retired, on this document's own terms
+
+The closing section below pre-committed to it: *"If architecture rules, the ruling belongs in
+`validate-peer` as a vector — at which point this probe should be deleted, not kept as a second
+source of truth."* Architecture ruled, and the vector exists: **`connect_prehello_authenticate`**
+is in the pinned oracle (`78db4a9`, `probePreHelloAuthenticate`) and is **PASS on all 46**
+committed reports, read per-check rather than inferred from the category. The independent probe
+and the gate now agree peer-for-peer, which is the condition for retiring the probe rather than
+the reason to keep it.
+
+**`tools/p47-run.sh` is deleted; `tools/p47-probe/` is kept, retired, and is no longer a
+maintained instrument.** The wrapper is deleted rather than fixed because *what it did* was the
+hazard: it installed the probe **over** `output/s4-oracles/validate-peer`, a binary
+`entity-system-generator` invokes **by path from its own tree**. That is gone, and it did not
+need to exist by 2026-09-06 — the eight harnesses that silently dropped an `ORACLE` override were
+fixed at source that day, which is the entire justification the wrapper's header gives for
+swapping. **Measured today rather than assumed:** the whole roster ran through the plain
+`--probe` route and **46 of 46 produced probe-shaped output**, with `forth` (self-relaunching),
+`prolog` (a hand-written census branch) and `smalltalk` driven first as the two failure classes
+the swap existed for. A control on `prolog` through *both* routes returned the same answer, so
+the route is not the variable in the table above.
+
+*(Two defects in the wrapper surfaced while establishing that, and both are the standing
+never-executed-guard class. Its documented per-peer form — `p47-run.sh go swift`, printed in the
+Reproducing section below — **had never worked**: `--probe` takes an optional NAME, so the first
+peer name was consumed as the probe name and the census refused with `no probe BINARY at
+output/s4-oracles/<peer>`. Only the no-args form had ever been run. And its holder guard is
+start-only, which is adequate for a two-minute single-peer run and not for the ~90-minute roster
+run this closure needed.)*
 
 ---
 
@@ -136,18 +214,27 @@ Two things follow for whoever does rule:
 
 ## Reproducing
 
+**The gate is the reproduction now.** `connect_prehello_authenticate` runs in every
+`--profile core` census; there is nothing to drive separately:
+
 ```
-tools/p47-run.sh                 # all peers; results in output/scratch/p47/
-tools/p47-run.sh go swift        # named peers
+tools/run-cohort-census.sh                       # the gated answer, all 46
 ```
 
-`p47-run.sh` installs the probe at the path every harness defaults to and **restores the real
-validator on exit, verified by SHA-256**, refusing to start if a previous run left a backup
-behind. Eight peers re-exec into their own container forwarding only a couple of env vars, so an
-`ORACLE=` override is silently dropped at that boundary and the inner run falls back to the real
-validator — producing a valid conformance report where a probe report was expected, exit 0, no
-warning. That is why the swap exists rather than an env override.
+The retired probe still runs, through the ordinary census route and **without touching the shared
+validator**:
 
-**This probe is deliberately not in the conformance suite.** The correct answer is undecided, so
-there is nothing to gate on. If architecture rules, the ruling belongs in `validate-peer` as a
-vector — at which point this probe should be deleted, not kept as a second source of truth.
+```
+tools/run-cohort-census.sh --probe p47-probe             # all peers -> output/scratch/p47-probe/
+tools/run-cohort-census.sh --probe p47-probe go swift    # named peers
+```
+
+~~`tools/p47-run.sh` installs the probe at the path every harness defaults to…~~ **Deleted
+2026-09-09** — see the closing section at the top. The env-override route it was written to work
+around was fixed at source on 2026-09-06, and the swap it used instead was a write over a binary
+a sibling repo invokes by path.
+
+**This probe was deliberately not in the conformance suite.** The correct answer was undecided,
+so there was nothing to gate on. ~~If architecture rules, the ruling belongs in `validate-peer` as
+a vector — at which point this probe should be deleted, not kept as a second source of truth.~~
+**It ruled; the vector exists; the probe is retired on exactly those terms.**

@@ -2139,6 +2139,43 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   *(Both were then planted — revert the context at the write site, reassert — and each plant
   reddened exactly its own test while leaving the companion control green. Two plants on disjoint
   checks is what says the arms are independently measured rather than one carrying the other.)*
+- **A GATE THAT PROVES EVERY WRITE AND NEVER READS BACK THROUGH THE SURFACE UNDER TEST HAS MEASURED
+  HALF A FEATURE — and the missing half is the half the feature is FOR.** RATIFIED 2026-09-09 (F62),
+  and it is FM-1g's *"a MUST with roughly no gate"* reached from the coverage side rather than the
+  spec side. `core_register_*` is **nine** checks: op status, op result, manifest at path, handler at
+  path (asserting the entity's TYPE), grant at path, grant-signature at the invariant path, and the
+  unregister teardown. Every one is a write. **Not one then dispatches at the pattern it just proved
+  exists** — so seven peers score `778 · 0F` while answering `404 handler_not_found` at a path where
+  a `system/handler` entity is provably present, which §6.6 makes a **MUST** (*"the index MUST produce
+  equivalent results to the tree walk"*). The two neighbouring checks that look like they cover it are
+  pointed elsewhere, verified rather than assumed: `unsupported_operation_on_registered_handler`
+  targets `system/tree`, a **bootstrap** handler, and `validate_echo_dispatch` drives a built-in.
+  **Enforcement, and it is a question to ask of any gate family rather than a grep: list what the
+  checks ASSERT and sort them into writes and reads. A family that is all writes is a family that has
+  never used the thing it built.** The read-back is usually one line at the end of the gate that
+  already holds the pattern, the grant and the connection.
+- **THE COHORT IS THE INSTRUMENT THAT SEPARATES TWO CAUSES ONE PEER CANNOT DISTINGUISH — 404 AND 501
+  AT THE SAME STEP ARE DIFFERENT DEFECTS, AND ONLY THE SPLIT SAYS SO.** Same finding, and it is the
+  standing *"where a single peer cannot distinguish 'this peer is broken' from 'our request was', the
+  verdict must defer to the cohort"* rule earning a second, sharper form. From one peer, a dispatch
+  that fails after a successful register is just a failure. Across 46: **26 answer 200** (resolution +
+  evaluation), **12 answer 501** — which *proves resolution succeeded* and the body could not run —
+  and **7 answer 404**, which proves resolution never found what register wrote. The 501 group is what
+  makes the 404 group a **§6.6 core** finding rather than a **§6.13(a) extension** one, and no amount
+  of staring at any single peer produces that distinction. **Rule: before classifying a failure, ask
+  what the OTHER answer to the same step would have meant, and check whether any peer gives it.**
+- **A SOURCE TRACE ACROSS SEVEN PEERS PRODUCED A CONFIDENT WRONG CONCLUSION, AND THE SPEC SECTION THAT
+  OWNS THE BEHAVIOUR REVERSED IT IN ONE READ.** Same session, and it is the F51 rule paying out in the
+  *positive* direction for once. Tracing all seven `NOT-RESOLVED` peers showed dispatch resolving
+  through a static op ladder, a pattern ladder or a bootstrap-only table, and **none of the seven
+  mentions `expression_path` anywhere in its source** — from which the obvious conclusion is *"a
+  missing extension feature, not a defect; the previous session's ranking was wrong."* That was drafted.
+  Then §6.6 was actually opened: the walk is the definition, the index is the optimisation, and
+  equivalence is a MUST. **The peers are failing a core requirement, the previous session's ranking was
+  RIGHT, and the draft was one section away from publishing the opposite.** The cost of reading it was
+  one `awk`. **Rule, and it is the cheap direction of the F51 lesson: before concluding that a measured
+  behaviour is permitted, read the section that OWNS it — not the section your hypothesis is phrased
+  in.** A source trace tells you what the code does; only the spec says whether it may.
 - **A SHARED BUILD ARTIFACT IS NOT YOURS TO SWAP — AND `Text file busy` IS LUCK, NOT AN INTERLOCK.**
   Candidate (first occurrence, 2026-09-09, `tools/p47-run.sh`; enforcement exact). The p47 wrapper
   installs its probe **over** `output/s4-oracles/validate-peer` for the duration of a run, backs the
@@ -2158,7 +2195,26 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   not a holder, which is the standing `pgrep -f` trap (the pattern is in the watcher's own command
   line) reached from a second direction. Both directions exercised: the guard names the holding pid
   while a sibling's run is live, reports nothing for a path nobody holds, and does not match the
-  watcher. **Generalize: before a tool mutates a file under `output/`, ask which OTHER repos reference
+  watcher.
+  **SUPERSEDED THE NEXT DAY BY THE BETTER FIX, AND THE ORDER IS THE LESSON: A GUARD ON A HAZARDOUS
+  MECHANISM IS NOT THE SAME QUESTION AS WHETHER THE MECHANISM IS STILL NEEDED, AND NOBODY ASKS THE
+  SECOND ONE AFTER SHIPPING THE FIRST.** `tools/p47-run.sh` is **deleted** (2026-09-09). The swap
+  existed for one reason, stated in its own header: eight harnesses dropped an `ORACLE=` override at
+  their container boundary. **Those eight were fixed at source on 2026-09-06** — recorded in this
+  file, in the entry above — so the wrapper had been unnecessary for three days when the guard was
+  written for it, and the guard is a careful control on a mechanism that no longer had a reason to
+  exist. Measured before deleting, never assumed: the whole 46-peer roster driven through the plain
+  `--probe` route produced **46 of 46 probe-shaped outputs**, with the two failure classes the swap
+  was built for (`forth` self-relaunching, `prolog` a hand-written census branch) driven first, and a
+  both-routes control on one peer confirming the route does not change the answer. **Ask whether the
+  dangerous step is still load-bearing before you harden it** — the fix that removes a hazard beats
+  the fix that guards it, and a header explaining *why* a mechanism exists is the thing to re-read
+  when its justification has been repaired elsewhere.
+  *(Two more defects fell out of retiring it, both the never-executed class: its documented per-peer
+  form `p47-run.sh <peer>` had **never worked** — `--probe` takes an optional NAME, so the peer name
+  was consumed as the probe name — and the holder guard is **start-only**, fine for the two-minute
+  single-peer run it was tested on and not for the ~90-minute roster run. A guard that samples once
+  at t=0 is not a lock, and the run length is what decides whether that matters.)* **Generalize: before a tool mutates a file under `output/`, ask which OTHER repos reference
   that path** — `git grep` in the siblings, not in your own tree — because the cross-repo consumer is
   invisible to every check you run locally.
 - **A PIN IS A CLAIM, AND THE SENTENCE THAT STATES IT ROTS WHILE EVERY GATED NUMBER STAYS CORRECT.**
