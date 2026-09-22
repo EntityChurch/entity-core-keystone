@@ -36,6 +36,13 @@ CREATE TABLE cap (
   parent      BLOB,               -- delegation parent cap hash; NULL = root (§3.6 optional-field default)
   created_at  INTEGER,            -- ms since epoch (§3.6; ms precision — A-PD-016)
   expires_at  INTEGER,            -- ms; NULL = no expiration
+  -- §6.2 CAP-6a: 1 iff SOME temporal field (expires_at / not_before / created_at) is
+  -- PRESENT on the received token but NOT representable as a uint64 (negative, bignum,
+  -- non-integer). The three columns above cannot carry that state: an unrepresentable
+  -- field projects as NULL, which is byte-identical to ABSENT -- and absent is legal.
+  -- Collapsing the two is the CAP-6a fail-open, so the distinction gets its own column
+  -- rather than a sentinel value in expires_at.
+  temporal_malformed INTEGER DEFAULT 0,
   not_before  INTEGER,            -- ms; NULL = immediately valid
   is_multi    INTEGER NOT NULL DEFAULT 0,   -- 1 = granter is a system/capability/multi-granter (K-of-N root, M1/M2)
   multi_threshold INTEGER,        -- K (multi-sig only)
@@ -73,6 +80,26 @@ CREATE TABLE grant_scope (
 
 -- ── domain-specific narrowing/expanding maps (§5.6 constraints/allowances). Opaque bytes; the
 --    core only checks key-retention + byte-equality across a delegation link. ──
+-- ── the grants a `system/capability` request/delegate ASKS FOR (§6.2 mint-bound). Same
+--    shape as cap_grant/grant_scope so one projection walk serves both, and the §6.2
+--    rung is a subset query between two tables rather than a second matcher. Cleared and
+--    re-projected per request like every other request fact. Both frames are LOCAL here:
+--    the mint is self-issued, so §5.5a's granter frame is the local peer on BOTH sides --
+--    passing the caller's frame to either side is the swift over-scoping bug (ded3e07).
+CREATE TABLE requested_grant (
+  cap_hash    BLOB,               -- the EXECUTE's content_hash (the request's identity)
+  grant_idx   INTEGER
+);
+
+CREATE TABLE requested_scope (
+  cap_hash        BLOB,
+  grant_idx       INTEGER,
+  dim             TEXT,
+  kind            TEXT,
+  pattern         TEXT,
+  granter_peer_id TEXT
+);
+
 CREATE TABLE grant_kv (
   cap_hash    BLOB,
   grant_idx   INTEGER,

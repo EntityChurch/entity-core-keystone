@@ -29,15 +29,24 @@
 -- only a "/*/specific" middle-wildcard would need segment-anchoring (a recursive-CTE tokenizer
 -- or an app-defined matches_pattern). Named, bounded — the finding, not a blocker.
 --
--- Bind: :value (the path/operation/peer to test), :cap_hash, :grant_idx, :dim.
+-- Bind: :value (the path/operation/peer to test), :cap_hash, :grant_idx, :dim,
+--       :local_peer_id (the verifier frame for the handlers dimension).
 -- Returns 1 iff :value is matched by the (cap,grant,dim) scope.
 
 WITH canon(kind, pattern) AS (
   SELECT kind,
-         -- A-SQL-008: canonicalize PATH-scope dims (handlers/resources) against the GRANTER frame
-         -- (§5.5a); ID-scope dims (operations/peers) and already-absolute patterns match RAW.
-         CASE WHEN :dim IN ('handlers','resources') AND pattern NOT LIKE '/%'
+         -- A-SQL-008, CORRECTED 2026-08-28: §5.5a's granter frame scopes the RESOURCE
+         -- dimension ONLY. This read `:dim IN ('handlers','resources')`, which is
+         -- byte-identical to the correct form whenever child and parent share a granter
+         -- (every self-issued path) and wrong the moment a DELEGATED cap arrives -- see
+         -- the note on `sc` in verify_ladder.sql for the measured symptom. The handlers
+         -- dimension is matched against the §6.6-resolved handler path, which is always
+         -- LOCAL, so it canonicalizes against the verifier. ID-scope dims (operations,
+         -- peers) and already-absolute patterns match RAW.
+         CASE WHEN :dim = 'resources' AND pattern NOT LIKE '/%'
               THEN '/' || granter_peer_id || '/' || pattern
+              WHEN :dim = 'handlers' AND pattern NOT LIKE '/%'
+              THEN '/' || :local_peer_id || '/' || pattern
               ELSE pattern
          END
   FROM grant_scope

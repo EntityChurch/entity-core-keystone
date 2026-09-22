@@ -174,15 +174,39 @@ static void build_listing(int fd, const char *rid, const char *path) {
 
 /* ── mint a capability token granting `grants_bytes` (an ECF array) to `grantee`, self-signed;
  *    emit result system/capability/grant{token} + included{token,my-peer,my-sig}. ── */
-static void emit_grant(int fd, const char *rid, const unsigned char grantee[33],
-                       const unsigned char *grants_bytes, size_t grants_len, const unsigned char *parent) {
-    uint64_t created = wall_ms();
+/* §5.6 rule 1: convert a DURATION term (ttl_ms) to an absolute timestamp relative to
+ * `created`. Rule 3: a conversion that is not representable is treated as ABSENT
+ * exactly as a null term is -- it MUST NOT wrap and MUST NOT saturate to a
+ * representable maximum, since saturation manufactures expires_at == 2^64-1, a finite
+ * bound no reader can distinguish from a deliberate one.
+ *
+ * ttl == 0 is NOT a special case and deliberately so: rule 2 makes 0 a DEFINED value
+ * yielding `created` (expire immediately). The absent field is the only "no bound"
+ * spelling, and falling out of the arithmetic is what keeps the two from collapsing. */
+static int add_ttl(uint64_t created, uint64_t ttl, uint64_t *out) {
+    uint64_t sum = created + ttl;
+    if (sum < created) return 0;      /* uint64 wrap => not representable => drop */
+    *out = sum; return 1;
+}
+
+/* Fold one DEFINED term into the running §5.6 MIN_DEFINED ceiling. */
+static void min_defined(int defined, uint64_t v, uint64_t *acc, int *have) {
+    if (!defined) return;
+    if (!*have || v < *acc) { *acc = v; *have = 1; }
+}
+
+static void emit_grant_at(int fd, const char *rid, uint64_t created,
+                          const unsigned char grantee[33],
+                          const unsigned char *grants_bytes, size_t grants_len,
+                          const unsigned char *parent,
+                          uint64_t expires, int has_expires) {
     wbuf gpeerd={0}; my_peer_data(&gpeerd);
     unsigned char granter_hash[33]; ec_entity_hash("system/peer",gpeerd.p,gpeerd.len,granter_hash);
-    /* cap data — canonical key order: grants(6)<grantee(7)<granter(7)<parent(6)? length-then-lex:
-       grants(6),parent(6),grantee(7),granter(7),created_at(10). */
+    /* cap data — canonical key order is length-then-lex over the ENCODED key bytes:
+       grants(6),parent(6),grantee(7),granter(7),created_at(10),expires_at(10). At equal
+       length the tie breaks byte-lexicographically, so created_at precedes expires_at. */
     wbuf capd={0};
-    int n = parent?5:4;
+    int n = 4 + (parent?1:0) + (has_expires?1:0);
     int bad = wb_head(&capd,5,(uint64_t)n)
         || wb_text(&capd,"grants") || wb_raw(&capd,grants_bytes,grants_len);
     if (parent) bad = bad || wb_text(&capd,"parent") || wb_bytes(&capd,parent,33);
@@ -190,6 +214,7 @@ static void emit_grant(int fd, const char *rid, const unsigned char grantee[33],
         || wb_text(&capd,"grantee") || wb_bytes(&capd,grantee,33)
         || wb_text(&capd,"granter") || wb_bytes(&capd,granter_hash,33)
         || wb_text(&capd,"created_at") || wb_head(&capd,0,created);
+    if (has_expires) bad = bad || wb_text(&capd,"expires_at") || wb_head(&capd,0,expires);
     unsigned char caph[33]; if (bad || ec_entity_hash("system/capability/token",capd.p,capd.len,caph)) { free(gpeerd.p);free(capd.p); (void)emit_error(fd,rid,500,"internal_error"); return; }
     unsigned char csig[64]; int sbad = ec_ed25519_sign(g_priv,caph,33,csig)!=EC_OK;
     wbuf sigd={0};
@@ -212,7 +237,34 @@ static void emit_grant(int fd, const char *rid, const unsigned char grantee[33],
     else (void)emit_response(fd, rid, 200, "system/capability/grant", gr.p, gr.len, inc.p, inc.len);
     free(gpeerd.p);free(capd.p);free(sigd.p);free(te.p);free(pe.p);free(se.p);free(inc.p);free(gr.p);
 }
-/* default open grant array (one grant-entry; all dims include star, resources adds all-peers). */
+
+
+/* §5.6 MIN_DEFINED, with the DURATION term converted against the SAME created_at that
+ * lands in the token. Sampling the clock twice -- once to convert ttl_ms, once inside
+ * the mint -- skews the emitted created_at from the expiry computed off it, which is
+ * the defect nim shipped. `created` is therefore sampled HERE and threaded in.
+ *
+ * The absolute terms (caller-cap expiry, parent expiry) are folded by the caller and
+ * arrive already shaped; only the duration needs the instant. */
+static void emit_grant_bounded(int fd, const char *rid, const unsigned char grantee[33],
+                               const unsigned char *grants_bytes, size_t grants_len,
+                               const unsigned char *parent,
+                               uint64_t abs_ceiling, int has_abs,
+                               uint64_t ttl, int has_ttl) {
+    uint64_t created = wall_ms();
+    uint64_t ceiling = abs_ceiling; int have = has_abs;
+    /* The term lands in its own local BEFORE the fold. Writing this as
+     * `min_defined(add_ttl(created, ttl, &t), t, ...)` reads and writes `t` in one
+     * unsequenced argument list -- undefined behaviour that compiles clean under
+     * -Wall -Wextra and, measured here, folded a garbage term so the caller-cap
+     * expiry won and ttl_ms:0 minted the caller's expiry instead of created_at. */
+    if (has_ttl) {
+        uint64_t t = 0;
+        int ok = add_ttl(created, ttl, &t);
+        min_defined(ok, t, &ceiling, &have);
+    }
+    emit_grant_at(fd, rid, created, grantee, grants_bytes, grants_len, parent, ceiling, have);
+}/* default open grant array (one grant-entry; all dims include star, resources adds all-peers). */
 static int build_open_grants(wbuf *w) {
     return wb_head(w,4,1)
         || wb_head(w,5,3)
@@ -473,13 +525,56 @@ static void dispatch_body(int fd, conn_state *cs, const char *rid, const char *p
                 cbor_rd ph; size_t phl=0; if (pd && cbor_map_find(pd,pl,0,"parent",&ph) && cbor_get_bytes(&ph,pbuf,sizeof pbuf,&phl)==0 && phl==33) parent=pbuf;
                 else { (void)emit_error(fd,rid,400,"unexpected_params"); return; }
             }
+            /* §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6).
+             *
+             * Note what this is NOT: an authorization decision. An over-long ttl_ms from
+             * a bounded caller MINTS a clamped token and returns 200 -- "rejecting it is
+             * non-conformant" (§5.6). The bound exists because `request` mints a ROOT
+             * token (parent: null), so §5.6's parent-child attenuation never reaches it;
+             * without this clamp, temporal attenuation is the one dimension a requester
+             * could escape, and policy withdrawal would have no bounded latency.
+             *
+             * created_at is sampled inside emit_grant, so the ttl term is converted
+             * there too -- passing an already-absolute value computed here would skew it
+             * against the created_at that actually lands in the token. */
+            uint64_t ceiling = 0; int has_ceiling = 0;
+            {   /* caller cap's absolute expiry (§5.6, ABSOLUTE term) */
+                unsigned char capbuf[33]; size_t chl=0; cbor_rd cf;
+                if (cbor_map_find(buf,len,rdata_pos,"capability",&cf)
+                    && cbor_get_bytes(&cf,capbuf,sizeof capbuf,&chl)==0 && chl==33) {
+                    char ch[80]; hexof(capbuf,33,ch);
+                    char q[160]; snprintf(q,sizeof q,"SELECT expires_at FROM cap WHERE hash=X'%s'",ch);
+                    sqlite3_stmt *st;
+                    if (sqlite3_prepare_v2(g_db,q,-1,&st,NULL)==SQLITE_OK) {
+                        if (sqlite3_step(st)==SQLITE_ROW && sqlite3_column_type(st,0)!=SQLITE_NULL)
+                            min_defined(1,(uint64_t)sqlite3_column_int64(st,0),&ceiling,&has_ceiling);
+                        sqlite3_finalize(st);
+                    }
+                }
+            }
+            /* the parent link's absolute expiry, for the delegate path */
+            if (parent) {
+                char ph2[80]; hexof(parent,33,ph2);
+                char q[160]; snprintf(q,sizeof q,"SELECT expires_at FROM cap WHERE hash=X'%s'",ph2);
+                sqlite3_stmt *st;
+                if (sqlite3_prepare_v2(g_db,q,-1,&st,NULL)==SQLITE_OK) {
+                    if (sqlite3_step(st)==SQLITE_ROW && sqlite3_column_type(st,0)!=SQLITE_NULL)
+                        min_defined(1,(uint64_t)sqlite3_column_int64(st,0),&ceiling,&has_ceiling);
+                    sqlite3_finalize(st);
+                }
+            }
+            /* request ttl_ms (§5.6, DURATION term) */
+            uint64_t ttl = 0; int has_ttl = 0;
+            if (pd) { cbor_rd tf; int m; uint64_t v; if (cbor_map_find(pd,pl,0,"ttl_ms",&tf)) {
+                cbor_rd t=tf; if (cbor_head(&t,&m,&v)==0 && m==0) { ttl=v; has_ttl=1; } } }
+
             /* requested grants (verbatim slice) or default open */
             cbor_rd gf; const unsigned char *gp; size_t gl;
             if (pd && cbor_map_find(pd,pl,0,"grants",&gf) && cbor_value_slice(pd,pl,gf.pos,&gp,&gl)==0) {
-                emit_grant(fd,rid,author,gp,gl,parent);
+                emit_grant_bounded(fd,rid,author,gp,gl,parent,ceiling,has_ceiling,ttl,has_ttl);
             } else {
                 wbuf og={0}; if (build_open_grants(&og)){ free(og.p); (void)emit_error(fd,rid,500,"internal_error"); return; }
-                emit_grant(fd,rid,author,og.p,og.len,parent); free(og.p);
+                emit_grant_bounded(fd,rid,author,og.p,og.len,parent,ceiling,has_ceiling,ttl,has_ttl); free(og.p);
             }
             return;
         }

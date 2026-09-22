@@ -652,9 +652,15 @@ static void project_sig(const unsigned char *data, size_t dlen) {
     execf(g_db,"INSERT INTO signature(target,signer,algorithm,sig) VALUES(X'%s',X'%s','ed25519',X'%s');",th,sh,gh);
 }
 /* project one grant-entry (array element of grants[]) into cap_grant + grant_scope rows. */
-static void project_grant(const unsigned char *buf, size_t len, size_t gpos, const char *cap_hh,
-                          int gidx, const char *granter_pid) {
-    execf(g_db,"INSERT OR IGNORE INTO cap_grant(cap_hash,grant_idx) VALUES(X'%s',%d);",cap_hh,gidx);
+/* Project one grant map into a (grant, scope) table pair. The pair is parameterised so
+ * the SAME projection serves a capability's own grants (cap_grant/grant_scope) and the
+ * grants a `capability/request` ASKS FOR (requested_grant/requested_scope) -- the §6.2
+ * mint-bound rung compares the two, and a second copy of this walk is how the two
+ * shapes would drift apart. */
+static void project_grant_into(const unsigned char *buf, size_t len, size_t gpos,
+                               const char *gtab, const char *stab, const char *cap_hh,
+                               int gidx, const char *granter_pid) {
+    execf(g_db,"INSERT OR IGNORE INTO %s(cap_hash,grant_idx) VALUES(X'%s',%d);",gtab,cap_hh,gidx);
     const char *dims[]={"handlers","resources","operations","peers",NULL};
     const char *kinds[]={"include","exclude",NULL};
     for (int di=0;dims[di];di++) {
@@ -670,14 +676,20 @@ static void project_grant(const unsigned char *buf, size_t len, size_t gpos, con
                 if (cbor_get_text(&pv,pat,sizeof pat)==0) {
                     /* escape single quotes defensively */
                     char esc[512]; size_t e=0; for (char *c=pat; *c && e<sizeof esc-2; c++){ if(*c=='\''){esc[e++]='\'';} esc[e++]=*c; } esc[e]=0;
-                    execf(g_db,"INSERT INTO grant_scope(cap_hash,grant_idx,dim,kind,pattern,granter_peer_id) "
-                               "VALUES(X'%s',%d,'%s','%s','%s','%s');",cap_hh,gidx,dims[di],kinds[ki],esc,granter_pid);
+                    execf(g_db,"INSERT INTO %s(cap_hash,grant_idx,dim,kind,pattern,granter_peer_id) "
+                               "VALUES(X'%s',%d,'%s','%s','%s','%s');",stab,cap_hh,gidx,dims[di],kinds[ki],esc,granter_pid);
                 }
                 if (cbor_skip(&a)) break;
             }
         }
     }
 }
+
+static void project_grant(const unsigned char *buf, size_t len, size_t gpos, const char *cap_hh,
+                          int gidx, const char *granter_pid) {
+    project_grant_into(buf,len,gpos,"cap_grant","grant_scope",cap_hh,gidx,granter_pid);
+}
+
 /* project a system/capability/token entity (keyed by hash) into cap + grants + multi_signer. */
 static void project_cap(const unsigned char *hash33, const unsigned char *buf, size_t len, size_t dpos) {
     cbor_rd f; char cap_hh[80]; hexof(hash33,33,cap_hh);
@@ -701,19 +713,25 @@ static void project_cap(const unsigned char *hash33, const unsigned char *buf, s
             }
         }
     }
-    long long created=0, expires=-1, notbefore=-1;
-    if (cbor_map_find(buf,len,dpos,"created_at",&f)) { int m;uint64_t v;cbor_rd t=f; if(cbor_head(&t,&m,&v)==0&&m==0) created=(long long)v; }
-    if (cbor_map_find(buf,len,dpos,"expires_at",&f)) { int m;uint64_t v;cbor_rd t=f; if(cbor_head(&t,&m,&v)==0&&m==0) expires=(long long)v; }
-    if (cbor_map_find(buf,len,dpos,"not_before",&f)) { int m;uint64_t v;cbor_rd t=f; if(cbor_head(&t,&m,&v)==0&&m==0) notbefore=(long long)v; }
+    /* §6.2 CAP-6a: a temporal field that is PRESENT but not uint64-representable is
+     * MALFORMED, and MUST NOT be treated as absent. Reading it with the
+     * `if (present && major==0)` idiom below silently drops it, leaving the column NULL
+     * -- which is exactly the "no expiry" spelling -- so a hostile expires_at:-1 became
+     * a never-expiring capability. The malformed case is recorded separately and denied
+     * by its own ladder rung, before the range comparisons it defeats. */
+    long long created=0, expires=-1, notbefore=-1; int temporal_bad=0;
+    if (cbor_map_find(buf,len,dpos,"created_at",&f)) { int m;uint64_t v;cbor_rd t=f; if(cbor_head(&t,&m,&v)==0&&m==0) created=(long long)v; else temporal_bad=1; }
+    if (cbor_map_find(buf,len,dpos,"expires_at",&f)) { int m;uint64_t v;cbor_rd t=f; if(cbor_head(&t,&m,&v)==0&&m==0) expires=(long long)v; else temporal_bad=1; }
+    if (cbor_map_find(buf,len,dpos,"not_before",&f)) { int m;uint64_t v;cbor_rd t=f; if(cbor_head(&t,&m,&v)==0&&m==0) notbefore=(long long)v; else temporal_bad=1; }
     char exp[32],nb[32]; if(expires<0) snprintf(exp,sizeof exp,"NULL"); else snprintf(exp,sizeof exp,"%lld",expires);
     if(notbefore<0) snprintf(nb,sizeof nb,"NULL"); else snprintf(nb,sizeof nb,"%lld",notbefore);
-    execf(g_db,"INSERT OR IGNORE INTO cap(hash,grantee,granter,parent,created_at,expires_at,not_before,is_multi,multi_threshold) "
-               "VALUES(X'%s',%s%s%s,%s%s%s,%s%s%s,%lld,%s,%s,%d,%lld);",
+    execf(g_db,"INSERT OR IGNORE INTO cap(hash,grantee,granter,parent,created_at,expires_at,not_before,is_multi,multi_threshold,temporal_malformed) "
+               "VALUES(X'%s',%s%s%s,%s%s%s,%s%s%s,%lld,%s,%s,%d,%lld,%d);",
           cap_hh,
           grantee_hh[0]?"X'":"", grantee_hh[0]?grantee_hh:"NULL", grantee_hh[0]?"'":"",
           granter_hh[0]?"X'":"", granter_hh[0]?granter_hh:"NULL", granter_hh[0]?"'":"",
           parent_hh[0]?"X'":"",  parent_hh[0]?parent_hh:"NULL",   parent_hh[0]?"'":"",
-          created, exp, nb, is_multi, threshold);
+          created, exp, nb, is_multi, threshold, temporal_bad);
     /* resolve granter's peer_id for the §5.5a canonicalization frame (fallback = local) */
     char granter_pid[128]; snprintf(granter_pid,sizeof granter_pid,"%s",g_peer_id);
     if (granter_hh[0]) {
@@ -759,12 +777,18 @@ static void project_included(const unsigned char *buf, size_t len, size_t inc_ma
     }
 }
 
+/* Defined in handlers.inc.c, which is textually included below the projection: the
+ * §6.2 mint-bound rung needs the params slice at PROJECTION time, not at handler time. */
+static int exec_params_data(const unsigned char *buf, size_t len, size_t rdata_pos,
+                            const unsigned char **dp, size_t *dl);
+
 /* Project the full request + authority chain and run verify_ladder.sql → (status, code). */
 static void project_and_verify(const unsigned char *buf, size_t len, size_t root_pos, size_t rdata_pos,
                                const char *uri, const char *op, char *status, char *code) {
     execf(g_db,"DELETE FROM peer;DELETE FROM cap;DELETE FROM multi_signer;DELETE FROM cap_grant;"
                "DELETE FROM grant_scope;DELETE FROM signature;DELETE FROM revocation;"
-               "DELETE FROM request;DELETE FROM request_resource;");
+               "DELETE FROM request;DELETE FROM request_resource;"
+               "DELETE FROM requested_grant;DELETE FROM requested_scope;");
     seed_auth_handlers();
     /* always project my own peer identity (the granter frame for the seed cap) */
     { wbuf pd={0}; if(!my_peer_data(&pd)){ char hh[80],pkh[160]; hexof(g_id_hash,33,hh); hexof(g_pub,32,pkh);
@@ -777,6 +801,24 @@ static void project_and_verify(const unsigned char *buf, size_t len, size_t root
     { cbor_rd cf; if (cbor_map_find(buf,len,root_pos,"content_hash",&cf) && cbor_get_bytes(&cf,rootch,sizeof rootch,&rchl)==0 && rchl==33) hexof(rootch,33,rootch_hh); }
     { cbor_rd af; unsigned char b[33]; size_t bl=0; if (cbor_map_find(buf,len,rdata_pos,"author",&af) && cbor_get_bytes(&af,b,sizeof b,&bl)==0 && bl==33) hexof(b,33,author_hh); }
     { cbor_rd cf; unsigned char b[33]; size_t bl=0; if (cbor_map_find(buf,len,rdata_pos,"capability",&cf) && cbor_get_bytes(&cf,b,sizeof b,&bl)==0 && bl==33) hexof(b,33,cap_hh); }
+    /* §6.2 mint-bound: project the grants a capability request/delegate ASKS FOR, so the
+     * ladder can check them against the presented caller cap as a subset query. Both
+     * frames are LOCAL -- the mint is self-issued, so passing the caller's granter frame
+     * to either side is the §5.5a over-scoping bug. */
+    if (!strcmp(op,"request") || !strcmp(op,"delegate")) {
+        const unsigned char *pd=NULL; size_t pl=0;
+        exec_params_data(buf,len,rdata_pos,&pd,&pl);
+        cbor_rd gr;
+        if (pd && rootch_hh[0] && cbor_map_find(pd,pl,0,"grants",&gr)) {
+            cbor_rd a=gr; int am; uint64_t ac;
+            if (cbor_head(&a,&am,&ac)==0 && am==4)
+                for (uint64_t j=0;j<ac;j++){
+                    project_grant_into(pd,pl,a.pos,"requested_grant","requested_scope",
+                                       rootch_hh,(int)j,g_peer_id);
+                    if(cbor_skip(&a))break;
+                }
+        }
+    }
     /* resource-target(s) → request_resource. `resource` is a bare map {targets:[...],exclude?:[...]}. */
     { cbor_rd rf; if (cbor_map_find(buf,len,rdata_pos,"resource",&rf)) {
             cbor_rd tf; if (cbor_map_find(buf,len,rf.pos,"targets",&tf)) {

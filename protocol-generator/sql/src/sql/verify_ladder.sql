@@ -46,11 +46,30 @@ chain(hash, granter, grantee, parent, created_at, expires_at, not_before,
 --    two scope TYPES the spec gives (path-scope vs id-scope, §3.6) map cleanly onto two SQL
 --    match strategies — a place the relational encoding makes the distinction sharper than the
 --    prose's single uniform matches_scope(canonicalize(value), canonicalize(pattern)). ──
+-- §5.5a's per-link granter frame scopes the RESOURCE dimension ONLY. This used to read
+-- `dim IN ('handlers','resources')`, and the two are byte-identical whenever child and
+-- parent share a granter -- i.e. on every self-issued path -- which is why 753 of 755
+-- checks passed with it wrong. It breaks for exactly one case: a DELEGATED cap whose
+-- granter is the caller. Measured 2026-08-28: the CAP-5 probe presents a cap granted by
+-- the oracle whose handlers scope is `system/capability`; under the granter frame that
+-- canonicalized to `/{oracle}/system/capability` while the §6.6-resolved handler path is
+-- `/{local}/system/capability`, so the GLOB could never match, `perm` was empty, and the
+-- ladder's last rung returned 403 capability_denied. It reads as a mint bug (the oracle
+-- reports "over-long ttl_ms rejected instead of clamping") and is an authz bug.
+--
+-- The HANDLERS dimension is matched against the §6.6-resolved handler path, which is
+-- always LOCAL -- so it canonicalizes against the verifier, never the granter. §5.5a
+-- names its three surfaces explicitly and all three are resource-pattern surfaces
+-- (dispatch-time resource match, chain attenuation, handler-internal re-check); the
+-- handlers dimension is not among them. Same defect swift carried (ded3e07), reached
+-- from check_permission rather than from grantSubset.
 sc AS (
   SELECT cap_hash, grant_idx, dim, kind,
-         CASE WHEN dim IN ('handlers','resources') AND pattern NOT LIKE '/%'
-              THEN '/' || granter_peer_id || '/' || pattern    -- path-scope: canonicalize (granter frame, §5.5a)
-              ELSE pattern END AS canon                        -- id-scope + absolute paths: raw
+         CASE WHEN dim='resources' AND pattern NOT LIKE '/%'
+              THEN '/' || granter_peer_id || '/' || pattern    -- §5.5a: GRANTER frame
+              WHEN dim='handlers'  AND pattern NOT LIKE '/%'
+              THEN '/' || (SELECT local_peer_id FROM req) || '/' || pattern  -- verifier frame
+              ELSE pattern END AS canon                        -- id-scope + absolute: raw
   FROM grant_scope
 ),
 
@@ -158,6 +177,56 @@ perm AS (
   WHEN EXISTS (SELECT 1 FROM chain c JOIN chain pc ON pc.hash=c.parent
                WHERE c.is_multi=0 AND (pc.grantee IS NOT c.granter)) THEN 'capability_denied'
 
+  --   (f) §5.5 / §5.5a SURFACE 2 — per-link RESOURCE attenuation, each side
+  --       canonicalized against THAT LINK'S OWN granter frame.
+  --
+  --       This rung did not exist. Until 2026-08-28 the ladder walked signatures and
+  --       linkage but never checked that a child's authority is a SUBSET of its
+  --       parent's, and the three AUTHZ-ATTENUATION-FOREIGN-GRANTER-* vectors passed
+  --       anyway -- because the `sc` CTE was over-canonicalizing the HANDLERS dimension
+  --       against the granter frame, so a foreign-granted cap failed check_permission
+  --       and was denied for the wrong reason. Fixing the frame bug is what exposed
+  --       this: the three security vectors went 200-ACCEPTED, which is what they had
+  --       always been testing for and never caught. A wrong denial had been standing in
+  --       for a missing check.
+  --
+  --       Subset arithmetic: a child include is covered iff its CANONICALIZED pattern
+  --       matches some parent include pattern as a GLOB (pattern-as-value). That is
+  --       exact for the pattern classes the core gate exercises -- `*`, `/*/*`, an exact
+  --       path, and a trailing subtree -- and is the same shape the imperative cohort
+  --       uses in grant_subset. The per-side frames are what make it a §5.5a check
+  --       rather than a string comparison: a foreign-granted bare `*` canonicalizes to
+  --       `/{granter}/*` and therefore cannot cover a leaf naming `/{verifier}/...`,
+  --       which is precisely the escalation the vectors probe.
+  --
+  --       A child grant with NO resources include contributes no resource authority and
+  --       is not an escalation, so it is skipped rather than denied.
+  WHEN EXISTS (
+    SELECT 1
+    FROM chain c
+    JOIN chain pc ON pc.hash = c.parent
+    JOIN cap_grant cg ON cg.cap_hash = c.hash
+    JOIN sc cs ON cs.cap_hash = c.hash AND cs.grant_idx = cg.grant_idx
+              AND cs.dim = 'resources' AND cs.kind = 'include'
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM cap_grant pg
+      JOIN sc ps ON ps.cap_hash = pc.hash AND ps.grant_idx = pg.grant_idx
+                AND ps.dim = 'resources' AND ps.kind = 'include'
+      WHERE pg.cap_hash = pc.hash
+        AND cs.canon GLOB ps.canon))
+       THEN 'capability_denied'
+
+  -- §6.2 CAP-6a: a RECEIVED token carrying a temporal field that is present but not
+  -- uint64-representable is MALFORMED and MUST be refused. This rung MUST precede the
+  -- range comparison below, because the range comparison is what the ambiguity defeats:
+  -- an unrepresentable field projects as NULL, NULL is the "no expiry" spelling, and
+  -- `expires_at IS NOT NULL AND expires_at < now` therefore never fires. The peer
+  -- honored a hostile expires_at:-1 with 200. §6.2: "A verifier MUST refuse it and MUST
+  -- NOT treat the unrepresentable field as absent."
+  WHEN EXISTS (SELECT 1 FROM chain c JOIN cap k ON k.hash=c.hash WHERE k.temporal_malformed=1)
+       THEN 'capability_denied'
+
   -- §5.2 temporal validity (t sampled once — §5.10): expired or not-yet-valid → 403
   WHEN EXISTS (SELECT 1 FROM chain c WHERE
                  (c.not_before IS NOT NULL AND (SELECT now_ms FROM req) < c.not_before)
@@ -178,6 +247,47 @@ perm AS (
   -- §5.2 check_permission: no single grant covers op+handler+peer(+resource) → 403
   WHEN NOT EXISTS (SELECT 1 FROM perm) THEN 'capability_denied'
 
+  -- §6.2 MINT-BOUND: a `capability` request/delegate MUST NOT issue authority the
+  -- PRESENTED capability does not already carry. Distinct code (403
+  -- scope_exceeds_authority), not capability_denied -- the request is authorized, the
+  -- SCOPE it asks for is not.
+  --
+  -- This rung did not exist either. Like the attenuation rung above, it was masked: the
+  -- handlers over-scoping in `sc` denied the widening request for the wrong reason, so
+  -- request_rejects_scope_widening and AUTHZ-SCOPE-EXCEEDS-1 both read as passing. The
+  -- handler passed the requested grants through VERBATIM -- there was no subset check
+  -- anywhere in the peer.
+  --
+  -- Both sides canonicalize on the LOCAL frame (child = parent = local), because the
+  -- mint is SELF-ISSUED: the granter is this peer on both sides. Note that this rung
+  -- therefore reads `grant_scope` directly rather than the `sc` CTE -- `sc` carries the
+  -- §5.5a GRANTER frame, which is right for dispatch-time resource matching and WRONG
+  -- here. Measured: using `sc` for the parent side denied the CAP-5 probe outright,
+  -- because the presented cap's `resources: ["*"]` canonicalized to `/{caller}/*` while
+  -- the identical requested pattern canonicalized to `/{local}/*`. That is the swift bug
+  -- (ded3e07) at the mint site rather than the dispatch site, in the direction that
+  -- refuses legitimate requests rather than admitting illegitimate ones.
+  WHEN EXISTS (
+    SELECT 1
+    FROM requested_grant rg, req
+    JOIN requested_scope rs ON rs.cap_hash = rg.cap_hash AND rs.grant_idx = rg.grant_idx
+                           AND rs.kind = 'include'
+    WHERE rg.cap_hash = req.content_hash
+      AND NOT EXISTS (
+        SELECT 1
+        FROM cap_grant pg
+        JOIN grant_scope ps ON ps.cap_hash = pg.cap_hash AND ps.grant_idx = pg.grant_idx
+                           AND ps.dim = rs.dim AND ps.kind = 'include'
+        WHERE pg.cap_hash = req.capability
+          AND (CASE WHEN rs.dim IN ('handlers','resources') AND rs.pattern NOT LIKE '/%'
+                    THEN '/' || req.local_peer_id || '/' || rs.pattern
+                    ELSE rs.pattern END)
+              GLOB
+              (CASE WHEN ps.dim IN ('handlers','resources') AND ps.pattern NOT LIKE '/%'
+                    THEN '/' || req.local_peer_id || '/' || ps.pattern
+                    ELSE ps.pattern END)))
+       THEN 'scope_exceeds_authority'
+
   ELSE 'ok'
   END AS code
 )
@@ -188,6 +298,7 @@ SELECT
     WHEN 'authentication_failed'  THEN '401'   -- §5.2 step-2 auth-class
     WHEN 'unresolvable_grantee'   THEN '401'   -- §5.5 PR-3 authz carve-out
     WHEN 'not_found'              THEN '404'   -- §6.6 no handler resolved
+    WHEN 'scope_exceeds_authority' THEN '403'  -- §6.2 mint-bound (authz, distinct code)
     WHEN 'ok'                     THEN '200'
     ELSE                               '403'   -- capability_denied / capability_revoked (authz)
   END AS status,
