@@ -43,6 +43,41 @@ if [ -e "$BACKUP" ]; then
   exit 2
 fi
 
+# THE VALIDATOR IS A SHARED ARTIFACT ACROSS REPOS, NOT OURS ALONE — and this swap assumed
+# sole ownership. Measured 2026-09-09: `entity-system-generator` invokes
+# `<keystone>/output/s4-oracles/validate-peer` BY PATH from its own tree, and one of its runs
+# was live when this script tried to install the probe over it. What stopped it was `cp`
+# reporting `Text file busy` — Linux refusing to write a RUNNING executable — which is luck,
+# not an interlock: had that seat been BETWEEN invocations, the copy would have succeeded and
+# their next run would have silently executed our probe and written a probe report where a
+# conformance report was expected. That is precisely the defect this file's own header
+# describes, inflicted on another repo, where nobody would think to look for it.
+#
+# So: refuse to start while ANY process holds the binary. /proc, not `fuser`/`lsof`, because
+# neither is guaranteed present in every environment this runs in.
+# ARGV[0] ONLY, and read through `tr` because /proc/PID/cmdline is NUL-separated. A shell
+# wrapper whose command line merely CONTAINS the path is not a holder — that is the
+# `pgrep -f` trap (the pattern is in the watcher's own command line), which this repo has
+# already been bitten by once in a watcher loop. A process that exits mid-scan is skipped
+# rather than fatal: the read races the thing it is looking for by construction.
+holder=""
+for c in /proc/[0-9]*/cmdline; do
+  argv0="$(tr '\0' '\n' < "$c" 2>/dev/null | head -1)" || continue
+  case "$argv0" in
+    */output/s4-oracles/validate-peer)
+      pid="${c#/proc/}"
+      holder="$holder ${pid%/cmdline}"
+      ;;
+  esac
+done
+if [ -n "$holder" ]; then
+  echo "p47-run: REFUSING TO START — the validator is in use by pid(s):$holder" >&2
+  echo "  It is a SHARED artifact: sibling repos invoke it by path from this tree." >&2
+  echo "  Installing the probe over it now would make another seat's in-flight run" >&2
+  echo "  execute this probe and report success. Wait for that run, then re-run." >&2
+  exit 2
+fi
+
 REAL_SUM="$(sha256sum "$ORACLE_BIN" | cut -d' ' -f1)"
 cp -p "$ORACLE_BIN" "$BACKUP" || exit 2
 

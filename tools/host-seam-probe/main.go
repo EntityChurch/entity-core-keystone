@@ -889,6 +889,10 @@ type report struct {
 	// cannot quote the verdict without also seeing what licenses it.
 	RegisterStatus int    `json:"register_status"`
 	Landed         string `json:"register_landed"`
+	// The TYPE of the entity register wrote at the pattern. `system/handler` is what makes
+	// a 404 at that pattern a §6.6 index-equivalence violation rather than a correct refusal
+	// — see the comment at the landed-control decode.
+	LandedType string `json:"register_landed_type,omitempty"`
 	DispatchStatus int    `json:"dispatch_status"`
 	DispatchCode   string `json:"dispatch_code,omitempty"`
 	ResultType     string `json:"dispatch_result_type,omitempty"`
@@ -1131,8 +1135,20 @@ func main() {
 		r.Landed = "inconclusive: " + err.Error()
 	case landedSt == 200:
 		hasExpr := false
+		// THE TYPE IS A SECOND FIELD THE MEASUREMENT DEPENDS ON, AND THIS CONTROL DID NOT
+		// ASSERT IT. §6.6's tree walk is type-directed: it returns the first entity at a
+		// prefix whose type is `system/handler`, and an entity stored under any other type
+		// is CORRECTLY skipped. So "bound WITH expression_path" alone cannot tell a §6.6
+		// resolution defect (the entity is a handler and the index missed it) from a
+		// register defect (the entity is not a handler, and 404 is the right answer).
+		// Recording the type makes each peer's row self-contained instead of leaning on the
+		// oracle's `core_register_handler_at_path`, which asserts exactly this and passes on
+		// all 46 — a cross-check worth having, not a substitute.
 		if d := rootData(env); d != nil {
 			if res, ok := d["result"].(map[string]interface{}); ok {
+				if t, ok := res["type"].(string); ok {
+					r.LandedType = t
+				}
 				if rd, ok := res["data"].(map[string]interface{}); ok {
 					if v, ok := rd["expression_path"].(string); ok && v != "" {
 						hasExpr = true

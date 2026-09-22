@@ -69,13 +69,13 @@ Correcting that is queued below, not done.
 
 | | |
 |---|---|
-| Peers at `758 · 0F` | **46 of 46**, zero FAILs anywhere |
-| Modal row | `317P/336W/0F/105S` — **29 peers share it exactly** |
-| Oracle pin | executed check-set digest `c34abcae…` (758 checks) |
-| Spec snapshot | `v0.8.2.3` |
+| Peers at `778 · 0F` | **46 of 46**, zero FAILs anywhere |
+| Modal row | `335P/336W/0F/107S` — **27 peers share it exactly** |
+| Oracle pin | executed check-set digest `7aa6f3de…` (778 checks) |
+| Spec snapshot | `v0.8.2.11` (vendored; no peer regenerated against it yet) |
 | Committed reports at the pinned set | **46 / 46**, 0 stale |
-| Disclosed gaps behind a 0-FAIL row | **none** — the skip-provenance allowlist is empty |
-| `make lint` | green across **9** gates |
+| Disclosed gaps behind a 0-FAIL row | **one, 46 entries** — `connectivity/connect_ping_before_hello` is allowlisted on every peer against **F59**, an upstream gate defect the reference peer reproduces. The entries come out when the §9.0 carve-out lands. *(This row read "none — the allowlist is empty" from 2026-09-03 until 2026-09-09, one day past the entries going in.)* |
+| `make lint` | green across **13** gates + 5 gate self-tests |
 
 **The verification axes.** Every axis a number is published on needs a cohort runner *and* a gate;
 an axis with neither is an exclusion nobody declared.

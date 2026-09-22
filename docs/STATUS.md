@@ -1,6 +1,6 @@
 # entity-core-keystone — status
 
-_Updated: 2026-09-06 · oracle pin: the 758-check set `c34abcae…` · spec snapshot **`v0.8.2.11`** (vendored; no peer regenerated against it yet)_
+_Updated: 2026-09-09 · oracle pin: the 778-check set `7aa6f3de…` · spec snapshot **`v0.8.2.11`** (vendored; no peer regenerated against it yet)_
 
 > **For where this is going — the seats keystone sits between, the state of every verification
 > axis, the measured size of the queued work and what freeze looks like — see
@@ -29,16 +29,22 @@ evolving as spec amendments run through the generator.
 
 ## Conformance state
 
-**46 peers in the tree · 46 measured · all 46 at one pin — the 758-check set
-`c34abcae…` (2026-09-03).** The pin is a content digest, not a commit; `CONFORMANCE-MATRIX.md`
+**46 peers in the tree · 46 measured · all 46 at one pin — the 778-check set
+`7aa6f3de…` (2026-09-08).** The pin is a content digest, not a commit; `CONFORMANCE-MATRIX.md`
 §"The pin" carries the full anchor set and why. Nothing is carried forward from an earlier pin.
+The modal row is `335P/336W/0F/107S`, shared exactly by 27 peers.
 
 | State | Count | Peers |
 |---|---:|---|
 | **0-FAIL** — publishable | **46** | M1 5/5 · M2 8/8 · M3 13/13 · probe 18/18 · exploratory 2/2 |
 | Not measured | 0 | — |
 
-**The headline changed on 2026-09-03 and it changed in the honest direction.** The census now passes
+**The set moved again on 2026-09-08: `758 → 778`, against spec snapshot `v0.8.2.11`.** Nineteen
+core checks landed, thirteen of them in the core `connectivity` category, and the cohort took the
+§4.7 address-table row with them — 46 of 46 at 0-FAIL on the larger set. **`758` and `778` are not
+comparable and no row may be diffed across that boundary either.**
+
+**The 2026-09-03 flip, kept because the reasoning is the reusable part.** The census now passes
 `-reference-peer`, so the executed set went **756 → 758** and three `origination` checks run for all
 46 peers rather than the 31 that happened to have a separate harness. Forty-five peers are at 0-FAIL
 on the larger set. **`io` briefly was not** — the new coverage exposed a real §4.9(c) silent drop in
@@ -94,7 +100,7 @@ worse than having none — it minted tokens that outlived their own authority by
 still returned `200`.
 
 **Publication rule is unchanged: "no green report → no publish."** Today it withholds nothing — all
-forty-six peers have a green report at the 758-check pin. Per [ADR-0012] they are **cohort-consistent, not independent
+forty-six peers have a green report at the 778-check pin. Per [ADR-0012] they are **cohort-consistent, not independent
 convergence** — they share a generation lineage and, for the FFI-hybrid peers, one codec `.so`.
 
 ## The verification axes

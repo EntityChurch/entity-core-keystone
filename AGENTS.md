@@ -1584,8 +1584,10 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
 - **A score is only a score if every peer was measured on the same checks — and that is now
   ENFORCED, not assumed.** `tools/check-set-gate.py` requires every report in a census to have
   executed the identical check set, pinned as `core_executed_check_set_digest` in
-  `tools/oracle-pin.env` (**`95edd774…` = 755 checks @ `c1b0708`**; was `8537d875…` = 740 @
-  `de8f807` — the two are NOT comparable, so never diff a row across a re-pin), and hard-fails on any
+  `tools/oracle-pin.env` (**`7aa6f3de…` = 778 checks @ `78db4a9`**; the retired values are recorded
+  as `retired_core_executed_check_set_digest*` in that same file — **no two are comparable, so never
+  diff a row across a re-pin**. This sentence itself named the 755-check set as current for three
+  flips; `coherence-gate` check 6 now gates the class and found it here), and hard-fails on any
   `budget_exhausted` category; `tools/run-cohort-census.sh` runs it automatically and **exits
   non-zero when a census is not comparable**. Note the distinction from the neighbouring pin:
   `check_set_digest` is what the oracle SOURCE declares, `core_executed_check_set_digest` is
@@ -2137,6 +2139,56 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   *(Both were then planted — revert the context at the write site, reassert — and each plant
   reddened exactly its own test while leaving the companion control green. Two plants on disjoint
   checks is what says the arms are independently measured rather than one carrying the other.)*
+- **A SHARED BUILD ARTIFACT IS NOT YOURS TO SWAP — AND `Text file busy` IS LUCK, NOT AN INTERLOCK.**
+  Candidate (first occurrence, 2026-09-09, `tools/p47-run.sh`; enforcement exact). The p47 wrapper
+  installs its probe **over** `output/s4-oracles/validate-peer` for the duration of a run, backs the
+  real binary up, restores it on trap and verifies by hash — careful, documented, and built on one
+  unstated assumption: that this repo is the only consumer of that path. It is not.
+  **`entity-system-generator` invokes `<keystone>/output/s4-oracles/validate-peer` BY PATH from its
+  own tree**, and one of its `--profile core` runs was live when the swap was attempted. What stopped
+  it was `cp` answering **`Text file busy`** — the kernel refusing to write a *running* executable.
+  **Had that seat been BETWEEN invocations, the copy would have succeeded**, their next run would have
+  executed our probe, and it would have written a probe report where a conformance report was expected
+  — the exact defect `p47-run.sh`'s own header describes, inflicted on a repo whose owners have no
+  reason to look for it. The failure was also invisible from our side: the trap reported *"validator
+  restored and hash-verified"*, which was TRUE (nothing was ever overwritten) while the restore's own
+  `cp` had failed the same way and left the backup in place as a poison pill for the next run.
+  **Enforcement: refuse to start while any process holds the artifact**, scanning `/proc/*/cmdline`
+  and matching **`argv[0]` only** — a shell wrapper whose command line merely *contains* the path is
+  not a holder, which is the standing `pgrep -f` trap (the pattern is in the watcher's own command
+  line) reached from a second direction. Both directions exercised: the guard names the holding pid
+  while a sibling's run is live, reports nothing for a path nobody holds, and does not match the
+  watcher. **Generalize: before a tool mutates a file under `output/`, ask which OTHER repos reference
+  that path** — `git grep` in the siblings, not in your own tree — because the cross-repo consumer is
+  invisible to every check you run locally.
+- **A PIN IS A CLAIM, AND THE SENTENCE THAT STATES IT ROTS WHILE EVERY GATED NUMBER STAYS CORRECT.**
+  RATIFIED 2026-09-09 (fifth occurrence of the stale-input class, and the first where the stale thing
+  is the *anchor statement* rather than a report, an overlay or a build artifact). With **thirteen
+  gates green**, five live sites in four published files named a RETIRED `core_executed_check_set_digest`
+  in the present tense: **`README.md` twice — the front door, two flips stale**; `CONFORMANCE-MATRIX.md`
+  footnote ², which defines what every cell in §1 MEANS, **three** flips behind; `docs/STATUS.md`;
+  `docs/PROGRAM.md`; plus `AGENTS.md` itself and, worst, `PROGRAM.md`'s *"Disclosed gaps behind a
+  0-FAIL row: **none** — the skip-provenance allowlist is empty"* published **one day after 46 F59
+  entries went into that allowlist**. §1's 46 rows and the 46 per-peer banners were correct throughout,
+  **which is precisely why nothing caught it** — `coherence-gate` is scoped to exactly those two
+  surfaces.
+  **The rule: for every number you gate, gate the sentence that says WHICH PIN it was measured at.**
+  `coherence-gate` check 6 does it — in a live PARAGRAPH carrying a pin phrase, every digest and every
+  `NNN-check` total must be the current one from `oracle-pin.env` — with four escape hatches so naming
+  a retired pin stays cheap (a date within 80 characters, a `retired`/`superseded`/`then-current`/
+  `first closed` marker, a `"quotation"` of former text, or a struck/✅ line).
+  **Two method notes, both of which cost time here.** (a) **PER-LINE IS THE WRONG UNIT, for the fourth
+  time in this file.** The clause that retires a pin *wraps*, so a per-line scan reads the marker and
+  the value it governs as unrelated and fires on a correct sentence. Scan paragraphs and recover the
+  line number from the offset — but **break the paragraph at list items, table rows and headings**, or
+  one bullet naming the current pin puts the whole list in scope and a bullet nine items down
+  recounting a 2026-08-28 measurement fires. Moving from lines to paragraphs took the check from 95 to
+  **114** statements examined and the 19 it gained held two real defects. (b) **Assert the count, then
+  distrust it in both directions**: an over-broad phrase list (`pinned\b`) took it to 776 statements
+  and produced false positives on dated history, and the narrow list that fixed that had to be widened
+  again — `pinned snapshot`, `NNN-check pin` — because the two real defects used forms the first list
+  did not contain. A phrase list is a survey keyed on words you wrote down, so measure what it sees.
+
 - **A GATE THAT EXAMINES ZERO THINGS PRINTS THE SAME WORD AS ONE THAT EXAMINES FORTY-SIX —
   always print the COUNT, and assert on it in the regression suite.** RATIFIED 2026-08-30
   (second occurrence of the vacuous-control class after `check-set-gate`'s `Path.stem`

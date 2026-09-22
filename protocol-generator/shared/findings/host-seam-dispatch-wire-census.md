@@ -43,6 +43,17 @@ Verified against the pinned oracle rather than assumed:
 So a peer can bind all four §11.6.1 writes, score `778 · 0F`, and have nowhere for a body to run.
 That is the state 20 of 46 peers are in, and no published number says so.
 
+> ⚠️ **CORRECTED 2026-09-09 — the sentence below about none of this being a conformance failure is
+> WRONG for the seven `NOT-RESOLVED` peers, and the correction makes our own reading worse.**
+> §6.13(a) is an extension surface and that framing holds for `BOUND-NOT-EVALUATED` and
+> `REGISTER-DROPPED-EXPRESSION-PATH`. It does not hold for `NOT-RESOLVED`: those peers 404 at a
+> pattern where a `system/handler` entity provably exists, and **§6.6 makes index-equivalence with
+> the tree walk a MUST** — a CORE requirement, not an extension one. The discriminator is that the
+> other twelve non-evaluating peers answer **501**, which proves resolution succeeded. Routed as
+> **F62**; chain in [`handler-resolution-index-equivalence.md`](handler-resolution-index-equivalence.md).
+> The verdict names and the measurement in this document are unchanged and correct — what was wrong
+> is the conformance framing laid over them.
+
 ## The three ways to fail are different problems
 
 The split is the part a source read could not have produced, and each row is a different repair:

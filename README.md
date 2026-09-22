@@ -158,7 +158,7 @@ architecture, never patched here. They are gitignored local tools, not committed
   **`--profile core` is the gating profile.**
 
 Every published number is **anchored on a content digest with its full breakdown** — the `go` peer
-reads `756 · 0F — 314P/336W/0F/106S @ d30c3dd0…` — never a bare percentage, and never a commit hash ([ADR-0012]
+reads `778 · 0F — 335P/336W/0F/107S @ 7aa6f3de…` — never a bare percentage, and never a commit hash ([ADR-0012]
 Amendment 1: published commits are authored fresh at the release boundary, so a hash from our
 internal history resolves for no outside reader, while a digest of the oracle's own check set
 survives it — `CONFORMANCE-MATRIX.md` §"The pin" carries the full anchor set). A skip counts as a failure. A peer measured on a different set of
@@ -228,13 +228,14 @@ target, not a normative pin, and says so in its own changelog.
 
 ## Conformance state, honestly
 
-The whole cohort is measured at **one** pin — the 756-check set `d30c3dd0…`, spec snapshot
-`v0.8.2.3` — with every row a fresh measurement at that pin:
+The whole cohort is measured at **one** pin — the 778-check set `7aa6f3de…`, spec snapshot
+`v0.8.2.11` — with every row a fresh measurement at that pin:
 
-- **All 46 peers pass `--profile core` 0-FAIL** (2026-09-01, re-measured at the 756-check set).
+- **All 46 peers pass `--profile core` 0-FAIL** (2026-09-08, re-measured at the 778-check set).
   Tiers M1 (5/5), M2 (8/8), M3 (13/13), probes 18/18, exploratory 2/2 — every peer in the tree,
   with no exclusions, and every committed per-peer report at the same pin the matrix publishes.
-- **The 756th check is a privilege escalation, and five peers were live to it.** An inbound EXECUTE
+- **The 756th check — added at the pin two flips before this one — was a privilege escalation, and
+  five peers were live to it.** An inbound EXECUTE
   naming *another* peer's namespace must be refused on the address, before any handler is resolved
   (§1.4 / §6.5 step 3). Four peers instead stripped the foreign peer id, resolved their own handler
   at what was left, and let the caller's grant authorize it — status **200**. A fifth refused, but

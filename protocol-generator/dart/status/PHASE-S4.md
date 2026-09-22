@@ -90,7 +90,7 @@ already in place — no from-zero S4 transport rewrite, the trap OCaml/COBOL hit
 ## Exact reproduction (orchestrator re-verify)
 
 ```bash
-# from the worktree root (cd [internal]/projects/keystone-worktrees/dart):
+# from the worktree root:
 
 # the gate (665 total, 0 FAIL):
 podman run --rm --network=none -v "$PWD":/work:Z \

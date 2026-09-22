@@ -121,7 +121,7 @@ block. Ed448/SHA-384 agility higher-bar remains deferred (floor first).
 
 ```bash
 # oracle (pinned ref e8524ed; needs network ONCE for go mod download)
-GO_REPO=~/projects/[internal]/[internal]/entity-core-go tools/oracle-bootstrap.sh
+GO_REPO=/path/to/entity-core-go tools/oracle-bootstrap.sh
 
 # the core gate (sealed-offline, --network=none)
 ./protocol-generator/kotlin/run-s4.sh

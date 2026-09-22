@@ -43,6 +43,27 @@ WHAT IT CHECKS
      is a top-level section this file DEFINES, but where `X` itself is not defined —
      e.g. `§1e` in a file with `§1a`–`§1d`, or `§2a` where §2 has no lettered parts.
 
+  6. **A RETIRED PIN PRESENTED AS THE CURRENT ONE (GATING).** Checks 1–3 gate §1's rows and the
+     46 per-peer banners; nothing gated the sentences that tell a reader WHICH PIN those rows
+     were measured at. Measured 2026-09-09, with all thirteen gates green: **five live sites in
+     four published files** named a retired executed-check-set digest in the present tense —
+     `README.md` twice (the front door, two flips stale), `docs/STATUS.md`, `docs/PROGRAM.md`,
+     and `CONFORMANCE-MATRIX.md`'s own footnotes ² and ⁶, one of which defines what every cell
+     in §1 means and was **three** flips behind. §1 was correct throughout, which is exactly why
+     nothing caught it.
+     The rule: in a live PARAGRAPH carrying a **pin phrase** (`the pin`, `Oracle pin`,
+     `pinned as/set/snapshot`, `pinned NNN-check`, `NNN-check pin`, `fresh measurement at`,
+     `required to execute`, `at one pin`), every check-set digest and every `NNN-check` total
+     must be the CURRENT one from `tools/oracle-pin.env`.
+     **Four escape hatches, because naming a retired pin in live prose is legitimate and must
+     stay cheap:** put a DATE within 80 characters of it; introduce it with `retired` /
+     `superseded` / `then-current` / `first closed`; put it inside a `"quotation"` of former
+     text; or strike the line (`~~`) / mark it `✅`. Dated `>` blocks are skipped as everywhere
+     else in this gate. **The count of pin statements examined is printed and asserted
+     non-zero**, because a phrase list that matches nothing reports the same word as one that
+     matches everything — this check went 95 → 114 statements when it moved from lines to
+     paragraphs, and the 19 it gained included two real defects.
+
 DEFERENCE: dated `>` note blocks are skipped everywhere. They are a build log, and this repo
 holds that a build log which gets back-edited stops being evidence of anything.
 
@@ -96,6 +117,7 @@ HEADLINE = re.compile(r"(\d{3})\s*·\s*\**(\d+)F")
 SECREF = re.compile(r"§(\d+)([a-z])?(?![0-9.(])")
 # `## 1a. ...` / `## 3. ...`
 HEADING = re.compile(r"^#{1,6}\s+(\d+)([a-z])?\.\s", re.M)
+
 
 # Display names in §1 that do not normalize to their directory.
 ALIASES = {
@@ -274,6 +296,158 @@ def check_stale(reports):
 SECREF_FILES = ("CONFORMANCE-MATRIX.md", "README.md", "docs/STATUS.md")
 
 
+# ---- check 6 ----------------------------------------------------------------
+# A sentence that tells a reader which pin a number was measured at. Deliberately a SHORT
+# list of present-tense forms: widening it to bare "check set" matches the historical prose
+# this repo keeps on purpose, and a check that cannot separate its signal from its noise is
+# broken rather than weak.
+PIN_PHRASE = re.compile(
+    r"(the pin\b|Oracle pin|oracle pin:|pinned as\b|pinned set\b|pinned snapshot\b"
+    r"|pinned \d{3}-check|\d{3}-check pin\b|fresh measurement at\b"
+    r"|required to execute\b|at one pin\b|at \*\*one\*\* pin\b)",
+    re.I,
+)
+# `7aa6f3de…`, `7aa6f3de...`, or the full 64-hex value.
+DIGEST_TOK = re.compile(r"\b([0-9a-f]{8})(?:[0-9a-f]{56}\b|…|\.\.\.)")
+# `778-check`, `(778 checks)`, `the 778 checks`
+CHECKSET_TOTAL = re.compile(r"\b(\d{3})[- ]check(?:s)?\b")
+
+
+def pin_facts():
+    """(current_digest8, current_total, {retired_digest8}) from tools/oracle-pin.env."""
+    env = (REPO / "tools" / "oracle-pin.env").read_text(encoding="utf-8")
+    cur = re.search(r"^core_executed_check_set_digest\s*=\s*([0-9a-f]{64})", env, re.M)
+    if not cur:
+        raise SystemExit("coherence-gate: oracle-pin.env has no core_executed_check_set_digest")
+    retired = {
+        m.group(1)[:8]
+        for m in re.finditer(
+            r"^retired_core_executed_check_set_digest\w*\s*=\s*([0-9a-f]{64})", env, re.M
+        )
+    }
+    # The current TOTAL is not a field — it is a property of the committed reports, which
+    # check-set-gate has already proved are all at the pinned digest. Deriving it from them
+    # rather than from a hand-typed number is the same discipline this check enforces.
+    totals = set()
+    for d in sorted((REPO / "protocol-generator").iterdir()):
+        f = d / "status" / "CONFORMANCE-REPORT.json"
+        if f.is_file():
+            try:
+                totals.add(json.loads(f.read_text(encoding="utf-8"))["summary"]["total"])
+            except (OSError, ValueError, KeyError):
+                pass
+    if len(totals) != 1:
+        raise SystemExit(f"coherence-gate: committed reports disagree on total: {sorted(totals)}")
+    return cur.group(1)[:8], totals.pop(), retired
+
+
+# CHANGELOG is an append-only record of what each release WAS measured at; spec-data is a
+# frozen boundary; the findings / syntheses / evaluations / diagnostics trees are DATED research
+# outputs that carry their date in their own header — this repo holds that a dated record which
+# gets back-edited stops being evidence of anything. All of them legitimately name retired pins.
+PIN_EXEMPT = (
+    "docs/status/",
+    "docs/archive/",
+    "CHANGELOG.md",
+    "protocol-generator/shared/spec-data/",
+    "protocol-generator/shared/findings/",
+    "protocol-generator/shared/syntheses/",
+    "protocol-generator/shared/evaluations/",
+    "protocol-generator/shared/diagnostics/",
+    "research/",
+)
+# A struck-through or ✅-marked line is a CLOSED-ITEM record, not a live instruction — the same
+# discriminator `link-gate` uses. And a digest introduced by the word "retired"/"superseded" is
+# being enumerated as retired, which is the one sentence that must be able to name them all.
+HIST_LINE = ("~~", "✅")
+HIST_WINDOW = re.compile(r"retired|superseded|no longer|formerly|then-current|then current"
+                         r"|first closed", re.I)
+# A pin named BESIDE A DATE is a record of what was true on that date. This is the escape
+# hatch an author needs, and it is deliberately the cheapest one to reach for: to name a
+# retired pin in live prose, put its date next to it or call it "then-current".
+DATE_NEAR = re.compile(r"20\d\d-\d\d-\d\d")
+
+
+def live_paragraphs(text):
+    """(first_lineno, joined_text) for each run of consecutive non-blank live lines.
+
+    PER-LINE IS THE WRONG UNIT and this repo has paid for it four times: a backtick span,
+    a cited path, and now a retirement clause can all WRAP, so the marker sits on one line
+    and the value it governs on the next. Joining the paragraph and recovering the line
+    number from the match offset is the fix `link-gate` already uses.
+    """
+    buf, first = [], None
+    for n, line in enumerate(text.splitlines(), 1):
+        stripped = line.lstrip()
+        if stripped.startswith(">") or not line.strip():
+            if buf:
+                yield first, " ".join(buf)
+                buf, first = [], None
+            continue
+        # A LIST ITEM, TABLE ROW OR HEADING STARTS A NEW UNIT. Joining a whole bullet list
+        # into one paragraph puts every bullet in scope the moment any one of them carries a
+        # pin phrase — measured on `README.md`, where bullet 1 names the current pin and
+        # bullet 9 recounts a 2026-08-28 measurement at a retired one. Continuation lines of
+        # a wrapped bullet stay attached, which is the case the joining exists for.
+        if buf and (stripped.startswith(("- ", "* ", "| ", "#"))
+                    or re.match(r"\d+[.)]\s", stripped)):
+            yield first, " ".join(buf)
+            buf, first = [], None
+        if first is None:
+            first = n
+        buf.append(line)
+    if buf:
+        yield first, " ".join(buf)
+
+
+def check_pin_statements():
+    """Check 6. Returns (errors, n_paragraphs_examined)."""
+    cur8, cur_total, retired = pin_facts()
+    errors, n = [], 0
+    for rel in tracked_md():
+        if rel.startswith(PIN_EXEMPT):
+            continue
+        try:
+            text = (REPO / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for lineno, para in live_paragraphs(text):
+            if not PIN_PHRASE.search(para):
+                continue
+            if any(mark in para for mark in HIST_LINE):
+                continue
+            n += 1
+            # A value inside a QUOTATION of former text is a record of what this file used
+            # to say, not a claim about the pin. This repo corrects prose by quoting the
+            # wrong version verbatim beside the right one; that habit must not be gated away.
+            quoted, pos = [], 0
+            for k, seg in enumerate(para.split('"')):
+                if k % 2 == 1:
+                    quoted.append((pos, pos + len(seg)))
+                pos += len(seg) + 1
+
+            def historical(start, _para=para, _quoted=quoted):
+                if any(a <= start < b for a, b in _quoted):
+                    return True
+                if DATE_NEAR.search(_para[max(0, start - 80):start + 80]):
+                    return True
+                return bool(HIST_WINDOW.search(_para[:start]))
+
+            for m in DIGEST_TOK.finditer(para):
+                if m.group(1) in retired and not historical(m.start()):
+                    errors.append(
+                        f"{rel}:{lineno}  pin statement names the RETIRED executed-check-set "
+                        f"digest `{m.group(1)}…` (current is `{cur8}…`)"
+                    )
+            for m in CHECKSET_TOTAL.finditer(para):
+                if int(m.group(1)) != cur_total and not historical(m.start()):
+                    errors.append(
+                        f"{rel}:{lineno}  pin statement names `{m.group(0)}` "
+                        f"(current set is {cur_total} checks)"
+                    )
+    return errors, n
+
+
 def check_secrefs():
     """Check 5 — a bare §X whose base section this file defines, but X does not exist."""
     errors = []
@@ -310,9 +484,18 @@ def run(quiet=False):
     row_errs, n_rows = check_rows(reports, matrix_text)
     ban_errs, n_ban = check_banners(reports)
     sec_errs = check_secrefs()
+    pin_errs, n_pin = check_pin_statements()
     stale = check_stale(reports)
 
-    errors = row_errs + ban_errs + sec_errs
+    if n_pin == 0:
+        # A phrase list that matches nothing reports the same word as one that matches
+        # everything. This is the assertion, not the empty error list.
+        pin_errs = pin_errs + [
+            "check 6 examined ZERO pin statements — PIN_PHRASE matches nothing, so the "
+            "check is vacuous. Fix the pattern, do not delete the check."
+        ]
+
+    errors = row_errs + ban_errs + sec_errs + pin_errs
     if errors:
         print(f"coherence-gate: {len(errors)} COHERENCE FAILURE(S):", file=sys.stderr)
         for e in errors:
@@ -328,7 +511,7 @@ def run(quiet=False):
     if not quiet:
         print(
             f"coherence-gate: OK — {n_rows} §1 rows and {n_ban} peer banners agree with their "
-            "committed reports"
+            f"committed reports; {n_pin} pin statement(s) name the current pin"
         )
         if stale:
             print(
@@ -475,6 +658,53 @@ def self_test():
     try:
         tmp.write_text(bad, encoding="utf-8")
         expect("external §9z not flagged", len([e for e in check_secrefs() if "§9z" in e]), 0)
+    finally:
+        tmp.write_text(orig, encoding="utf-8")
+
+    # 8–11. check 6 — a retired pin presented as current. Both plants are DERIVED from
+    # oracle-pin.env, never hardcoded, for the reason plants 1–2 record: a suite that needs a
+    # hand edit on every re-pin is one nobody runs.
+    cur8, cur_total, retired = pin_facts()
+    _ret8 = sorted(retired)[0]
+    base_errs, base_n = check_pin_statements()
+    expect("clean tree, pin statements", len(base_errs), 0)
+    expect("pin statements actually examined (not 0)", 0 if base_n > 0 else 1, 0)
+    print(f"         ({base_n} pin statements checked)")
+
+    try:
+        tmp.write_text(
+            matrix_text + f"\n\nEvery row here is at the pinned {cur_total - 3}-check set "
+            f"`{_ret8}…`.\n",
+            encoding="utf-8",
+        )
+        errs, _ = check_pin_statements()
+        # Two independent claims on one line — the digest and the total — so two errors.
+        expect("planted: retired pin presented as current", len(errs), 2)
+    finally:
+        tmp.write_text(orig, encoding="utf-8")
+
+    # 9. the same values ENUMERATED as retired must NOT fire — this is the sentence that has
+    # to be able to name every retired pin, and gating it would make the record unwritable.
+    try:
+        tmp.write_text(
+            matrix_text + f"\n\nThe retired pins are the {cur_total - 3}-check set "
+            f"`{_ret8}…` and its predecessors; the pin is `{cur8}…`.\n",
+            encoding="utf-8",
+        )
+        errs, _ = check_pin_statements()
+        expect("enumerated-as-retired not flagged", len(errs), 0)
+    finally:
+        tmp.write_text(orig, encoding="utf-8")
+
+    # 10. a dated `>` block naming a retired pin must NOT fire — same deference as check 1.
+    try:
+        tmp.write_text(
+            matrix_text + f"\n\n> Measured at the pinned {cur_total - 3}-check set "
+            f"`{_ret8}…`.\n",
+            encoding="utf-8",
+        )
+        errs, _ = check_pin_statements()
+        expect("dated `>` block exempt from check 6", len(errs), 0)
     finally:
         tmp.write_text(orig, encoding="utf-8")
 

@@ -1,5 +1,5 @@
 # Canonical-docs declaration — the publishable doc surface for the keystone domain
-# ([internal] CANONICAL-DOCS-FORMAT.md).
+# (schema: the release pipeline's CANONICAL-DOCS-FORMAT).
 #
 # ** THIS IS A KEEP-LIST, NOT A SCRUB-LIST. Read that before adding or removing. **
 # `canon-filter` (entity-core-devops release-builder, `internal/canon`) deletes every

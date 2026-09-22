@@ -17,8 +17,8 @@ REG := entity-core-keystone
 TOOLCHAINS := $(sort $(notdir $(patsubst %/Containerfile,%,$(wildcard containers/*/Containerfile))))
 
 # ============================================================================
-# Podman resource caps — entity-systems standard ([internal]/docs/
-# release-readiness/RESOURCE-CAPS.md). Per-container ceilings so a build can't
+# Podman resource caps — the ecosystem standard, restated for this repo in
+# RESOURCE-CAPS.md. Per-container ceilings so a build can't
 # take the host down. Tune the COMMITTED defaults for THIS project; override
 # per-machine WITHOUT editing this file via env vars or an untracked
 # caps.local.mk.

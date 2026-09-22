@@ -99,7 +99,7 @@ the reference). Without `--validate` this probe honest-SKIPs (which is why the s
 ## Oracle build isolation (hard rule, followed)
 
 Vendored the committed snapshot **`e8524ed`** via
-`git -C ~/projects/[internal]/[internal]/entity-core-go archive e8524ed
+`git -C /path/to/entity-core-go archive e8524ed
 | tar -x -C $(mktemp -d /tmp/oracle-vendor-rust.XXXXXX)` into a temp dir **OUTSIDE**
 `entity-core-go`; removed the vendored `mise.toml` (host go shim trips on it); built
 `validate-peer` + `entity-peer` from that temp tree (multi-module go.work — cmd/core/ext)

@@ -63,8 +63,8 @@ transport rewrite, the trap OCaml/COBOL hit).
 ## Exact reproduction (orchestrator re-verify)
 
 ```bash
-# from the worktree root (cd [internal]/projects/keystone-worktrees/cpp):
-GO_REPO=~/projects/[internal]/[internal]/entity-core-go tools/oracle-bootstrap.sh
+# from the worktree root:
+GO_REPO=/path/to/entity-core-go tools/oracle-bootstrap.sh
 # -> builds output/s4-oracles/{validate-peer,entity-peer}; confirm core_gate_sha256 == oracle-pin.env
 
 # the gate (665 total, 0 FAIL):

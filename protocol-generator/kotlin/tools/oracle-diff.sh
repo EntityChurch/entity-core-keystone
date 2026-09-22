@@ -21,7 +21,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"          # protocol-gene
 WORKTREE="$(cd "$HERE/../.." && pwd)"                             # repo root (worktree)
 . "$WORKTREE/tools/podman-caps.sh"
 VEC="$WORKTREE/protocol-generator/shared/test-vectors/ecf-conformance"
-GO_REPO="${GO_REPO:-$HOME/projects/[internal]/[internal]/entity-core-go}"
+GO_REPO="${GO_REPO:-$WORKTREE/../entity-core-go}"   # same default as tools/oracle-bootstrap.sh
 GO_IMAGE="${GO_IMAGE:-localhost/entity-core-keystone/go:latest}"
 KT_IMAGE="${KT_IMAGE:-entity-core-keystone/kotlin-toolchain:latest}"
 
