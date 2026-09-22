@@ -159,8 +159,34 @@ F64Fields←{s←⌊⍵[1]÷128 ⋄ e11←(16×128|⍵[1])+⌊⍵[2]÷16 ⋄ m52
 ⍝ rc). Runs the recursive major-type-6 tag REJECT (N2) and rejects indefinite /
 ⍝ reserved additional-info.
 ∇Z←CborDecode buf;v
- gBuf←buf ⋄ gPos←1 ⋄ gRc←EC_OK
+ gBuf←buf ⋄ gPos←1 ⋄ gRc←EC_OK ⋄ gSalvage←0
  v←DecOne 0
+ Z←v(gPos-1)gRc
+∇
+
+⍝ §6.3 SALVAGE decode — identical to CborDecode except that a major-type-6 tag is
+⍝ UNWRAPPED instead of rejected.
+⍝
+⍝ §6.3 says an implementation MUST reject a frame carrying a tag in a data field
+⍝ AND that "Rejection returns 400 non_canonical_ecf". The second half needs a
+⍝ request_id, and the request_id can only be read by decoding far enough to reach
+⍝ it — which the strict decoder, correctly, will not do. This exists solely so
+⍝ WirePeek can recover that id; the frame is still judged by the STRICT decode in
+⍝ WireEnvelopeOfFrame, which is byte-unchanged, so no entity is ever built from a
+⍝ salvaged value, nothing is stored, and the tag is never interpreted. §6.3's
+⍝ MUST-NOT-strip / preserve / interpret all still hold, and the tag_reject
+⍝ wire-conformance vectors keep their meaning because the ingestion path never
+⍝ sees the flag.
+⍝
+⍝ The flag is a GLOBAL rather than a threaded parameter because this peer is a
+⍝ single-threaded event loop: one frame is fully decoded before the next is read,
+⍝ so there is no reader that could observe another's flag. Both entry points
+⍝ (CborDecode above, CborScanLen below) clear it, or a strict decode could
+⍝ inherit a stale 1.
+∇Z←CborDecodeSalvage buf;v
+ gBuf←buf ⋄ gPos←1 ⋄ gRc←EC_OK ⋄ gSalvage←1
+ v←DecOne 0
+ gSalvage←0
  Z←v(gPos-1)gRc
 ∇
 
@@ -192,7 +218,14 @@ F64Fields←{s←⌊⍵[1]÷128 ⋄ e11←(16×128|⍵[1])+⌊⍵[2]÷16 ⋄ m52
  m5lp:→(i≥2×n)/m5done ⋄ kids←kids,⊂DecOne depth+1 ⋄ →(gRc≠EC_OK)/0 ⋄ i←i+1 ⋄ →m5lp
  m5done:Z←EV_MAP kids ⋄ →0
  dsimple:Z←DecSimple ai ⋄ →0
- dtag:gRc←EC_TAG_REJECTED ⋄ →0
+ dtag:→(~gSalvage)/dtagr
+⍝ §6.3 salvage: consume the tag head and decode the tagged item in its place, so
+⍝ the envelope decodes far enough for WirePeek to reach request_id. Only ever
+⍝ reached from CborDecodeSalvage; the ingestion path rejects below.
+ arg←ReadArg ai
+ →(gRc≠EC_OK)/0
+ Z←DecOne depth+1 ⋄ →0
+ dtagr:gRc←EC_TAG_REJECTED ⋄ →0
  dtrunc:gRc←EC_TRUNCATED_INPUT ⋄ →0
  derr:gRc←EC_NON_CANONICAL_ECF ⋄ →0
 ∇
@@ -316,7 +349,7 @@ F64Fields←{s←⌊⍵[1]÷128 ⋄ e11←(16×128|⍵[1])+⌊⍵[2]÷16 ⋄ m52
 ⍝ entity-fidelity primitive (N4): a peer forwards the ORIGINAL span, never a
 ⍝ re-encode. Also runs the N2 tag reject. ⍵ = (buf)(pos). Returns (length rc).
 ∇Z←CborScanLen bp;start
- gBuf←1⊃bp ⋄ gPos←2⊃bp ⋄ gRc←EC_OK ⋄ start←gPos
+ gBuf←1⊃bp ⋄ gPos←2⊃bp ⋄ gRc←EC_OK ⋄ gSalvage←0 ⋄ start←gPos
  ScanOne 0
  Z←(gPos-start)gRc
 ∇

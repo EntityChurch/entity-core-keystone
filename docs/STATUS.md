@@ -1,6 +1,6 @@
 # entity-core-keystone — status
 
-_Updated: 2026-08-29 · oracle pin: the 755-check set `95edd774…` · spec snapshot `v0.8.2`_
+_Updated: 2026-08-30 · oracle pin: the 755-check set `95edd774…` · spec snapshot `v0.8.2`_
 
 > **`CONFORMANCE-MATRIX.md` is authoritative for every per-peer number.** This file is a
 > short orientation note, deliberately kept thin. When the two disagree, the matrix wins.
@@ -24,25 +24,42 @@ evolving as spec amendments run through the generator.
 
 ## Conformance state
 
-**46 peers in the tree · 45 measured · all 45 measured at one pin — the 755-check set
+**46 peers in the tree · 46 measured · all 46 at one pin — the 755-check set
 `95edd774…` (2026-08-21).** The pin is a content digest, not a commit; `CONFORMANCE-MATRIX.md`
 §"The pin" carries the full anchor set and why. Nothing is carried forward from an earlier pin.
 
 | State | Count | Peers |
 |---|---:|---|
-| **0-FAIL** — publishable | **41** | M1 5/5 · M2 8/8 · M3 12/13 · probe 14/18 · exploratory 2/2 |
-| Standing defect + the CAP trio | 1 | `cobol` (30F = 3 + its standing 27) |
-| **INVALID MEASUREMENT** — not scores | 3 | `asm-x86_64` · `asm-arm64` · `riscv64` |
-| Not measured | 1 | `apl` — upstream-blocked |
+| **0-FAIL** — publishable | **46** | M1 5/5 · M2 8/8 · M3 13/13 · probe 18/18 · exploratory 2/2 |
+| Not measured | 0 | — |
 
-**The headline is one sentence: the CAP propagation is complete, and what remains is four
-separate problems rather than one.** `--profile core` gained three `capability` checks at the
-2026-08-21 re-pin; every unfixed peer failed exactly those three, and that uniformity held all
-the way through the cohort. **None of the four peers still outstanding is failing on the mint
-ceiling** — say it that way, because "four peers still fail" invites the reader to assume a
-shared debt that is not there.
+**The headline is one sentence: every peer in the cohort is at 0-FAIL, with no exclusions and no
+unmeasured row.** `--profile core` gained three `capability` checks
+at the 2026-08-21 re-pin; every unfixed peer failed exactly those three, and that uniformity
+held all the way through the cohort.
 
-**The fix shape did not vary across thirty-six languages** — roughly 200 lines over five or six
+**Read the 46 as a statement about the wire, not about the peers.** They share a generation
+lineage and pass one author's vectors at one pinned check set: **cohort-consistent, not
+independent convergence**. Three of the four defects closed on 2026-08-30 had been *passing*
+checks for months for reasons unrelated to what those checks test — and one of the four peers
+was quarantined that whole time under a diagnosis that turned out to be wrong. Two rows carry a
+disclosed gap behind a green verdict (the ISA trio's type-registry over-publication; `cobol`'s
+two unreachable concurrency payloads); both are named in `CONFORMANCE-MATRIX.md` §1a and its
+footnotes rather than left to be discovered.
+
+**The last five peers, 2026-08-30.** `cobol` 30F → 0F: 24 of the 30 were a cascade behind one
+unchecked copy of wire data into a fixed field, which hardened libc turned into a process kill.
+`asm-x86_64`, `asm-arm64` and `riscv64` INVALID → 0F: the "connection-pressure family" they were
+quarantined for was a §4.9(c) silent drop — an op-routing ladder that dispatches on length
+answered *nothing* for `ping`, which collides with `echo` at 4 bytes, so every connection cost
+the caller a full 20 s timeout and the suite's budget expired with nine categories never run.
+All three also gained the §5.5 delegation chain, ported from `wasm-wat`. And `apl` — carried as
+"unmeasurable, upstream-blocked" — turned out to be measurable all along: the container had built
+on 2026-08-28 and nobody re-ran the peer, GNU had *reorganized* rather than deleted the 1.9
+tarball, and the census hard-coded a skip that made the exclusion self-perpetuating. One run,
+109 s, 8 real FAILs, all closed the same session (§1d).
+
+**The fix shape did not vary across thirty-seven languages** — roughly 200 lines over five or six
 files, in the same five places every time (capability mint, codec salvage decode, wire `400`,
 read loop, policy lookup). That invariance is the strongest evidence the spec reading is right,
 rather than merely that the tests pass.
@@ -55,34 +72,49 @@ defect. `nim` was the only peer that already *had* a §5.6 ceiling, and having a
 worse than having none — it minted tokens that outlived their own authority by ten years and
 still returned `200`.
 
-**Publication rule is unchanged: "no green report → no publish."** Today that means those
-forty-one peers, and only those. Per [ADR-0012] they are **cohort-consistent, not independent
+**Publication rule is unchanged: "no green report → no publish."** Today it withholds nothing —
+all forty-six peers have a green report. Per [ADR-0012] they are **cohort-consistent, not independent
 convergence** — they share a generation lineage and, for the FFI-hybrid peers, one codec `.so`.
 
 ## What's next
 
-1. **§5.5 delegation chains, in the three ISA ports** (`asm-x86_64`, `asm-arm64`, `riscv64`).
-   Each requires a presented capability's granter to be itself and refuses everything else, so a
-   delegated capability is refused before the mint is reached, and roughly ten `security` chain
-   vectors pass *because* of that refusal — every chain vector in the category is reject-direction,
-   so a peer that refuses all chains answers them all correctly for an unrelated reason. **The
-   reference now exists**: `wasm-wat` was the fourth peer with this gap and took the full
-   implementation on 2026-08-29 (chain walk, §5.5a canonicalization on both surfaces, §5.6
-   attenuation with constraints/allowances, delegation caveats, §3.6 K-of-N). The three ports are
-   the same work in three assembly languages.
-2. **The asm/ISA trio's connection-pressure family** (§1a) — one check, `t2_2_connection_churn`,
-   consumes the whole 10-minute budget and is why these three are INVALID MEASUREMENTS rather
-   than low scores. Three named defects were fixed on 2026-08-29 (leaked listen fd, unbounded
-   child read, missing §4.10(c) admission bound) plus a fourth found in the spec rather than the
-   check (the oversize path buffered the entire declared body before refusing). **The family did
-   not move**, and the peer is now measurably healthy at the moment of failure — so the remaining
-   cause is not accumulation, which is what the August characterisation assumed.
-3. **`cobol`'s standing 27-FAIL cascade** — read once on 2026-08-29 and it is *one* defect, not
-   27: the peer stops accepting during `concurrency` and every later check reports
-   `connection refused`. A separate investigation, but a smaller one than the number suggests.
-4. **`apl`** — upstream-blocked and unmeasured. GNU deleted the pinned 1.9 tarball when 2.0
-   shipped; the toolchain bump is its own piece of work.
-5. **Package-registry publish** and **Ed448/SHA-384 agility** stay demand-driven.
+1. **`authz_peers_target_from_uri`** — WARNs on 39 of 46 peers, and the "inconclusive by design,
+   needs a two-peer harness" label it carried since 2026-08-16 is **withdrawn**. Six peers PASS it
+   with a real three-row verdict, so a standalone peer can decide it; `go` WARNs because all three
+   rows return `404 handler_not_found` — unrouted, not undecidable. Read a PASS peer against `go`
+   and find out whether the 39 share one defect.
+2. **The ISA trio's type-registry over-publication** (`CONFORMANCE-MATRIX.md` §1a.4). `typestore.s`
+   publishes ~200 entries including whole standard-extension vocabularies, which the oracle scores
+   *matched-if-present* — so 283 `type_system` checks that WARN for every other peer PASS for these
+   three. That is the whole reason they read `594-595P/53-55W` against the cohort-standard
+   `312P/337W`. **Their reaching 0-FAIL did not retire this**; if anything it makes it easier to
+   miss, because no FAIL count draws the eye there any more.
+3. **Port `asm-x86_64`'s four `host.s` hardenings to `asm-arm64` and `riscv64`** — the inherited
+   listen fd, the idle read deadline, the §4.10(c) admission bound and the §4.10(a) oversize path.
+   Worth doing for ISA parity, but **not** because those two rows are behind the cohort: measured
+   2026-08-30, `r3_connection_flood` WARNs on **44 of 46 peers** and only `asm-x86_64` and `pd`
+   self-bound admission. §4.10(c) is a SHOULD that most peers delegate to the supervisor, so this
+   never gates — and describing it as something two ISA peers owe a third had it backwards.
+4. **`cobol`'s 8192-byte per-entity ceiling**, if a peer that can hold larger entities is wanted.
+   Two concurrency probes stage 256 KiB and 16 KiB payloads; the first cannot fit its 65535-byte
+   frame cap at all, and the second is refused with `413`. Raising the ceiling means raising every
+   reader's buffer in lockstep — the store hands `lk-len` bytes back to a caller's fixed buffer —
+   and missing one reintroduces exactly the overflow class that was just closed.
+5. **Regenerate the cohort against the `v0.8.2` spec snapshot.** Every peer in the tree was
+   generated against `v0.8.0`; the snapshot has been pinned since 2026-08-21 and no peer has moved
+   to it. Tracked, not overlooked.
+6. **Package-registry publish** and **Ed448/SHA-384 agility** stay demand-driven.
+
+**Closed 2026-08-30 — the cohort. `cobol` and the three ISA peers reached `755 · 0F`, and two of
+the four had been misdiagnosed.** `cobol`'s 30F was 24 cascade + 5 real + 1: an unchecked copy of
+wire data into a fixed 8192-byte field let a 16 KiB `tree.put` trip glibc's fortify check and kill
+the process, after which every check reported connection-refused. The ISA trio's "connection-
+pressure family" was a §4.9(c) silent drop — an op ladder that dispatches on length answered
+*nothing* for `ping`, which collides with `echo` at 4 bytes, so every connection cost the caller a
+full 20 s timeout until the budget expired. Both diagnoses had survived multiple investigations
+because a silent drop bills the caller and a fortify abort leaves no trace. The trio also took the
+§5.5 delegation chain, ported from `wasm-wat`. `CONFORMANCE-MATRIX.md` §1a carries the retraction
+with the superseded measurements left intact.
 
 **Closed 2026-08-29 — `wasm-wat` got a real §5.5 delegation chain and is `755 · 0F`.** Its three
 remaining failures were never the mint ceiling: the peer had no chain walk at all, so CAP-5, CAP-6

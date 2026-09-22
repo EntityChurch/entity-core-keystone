@@ -110,13 +110,24 @@ distinction is stated precisely or not at all.
     `sysroot-aarch64-fc43-glibc` is **noarch**; `rust` → `rust-std-static-wasm32-wasip1` is
     noarch. The hardcode turns a present package into a 404 that, again, reads exactly like a
     rotted NVR. Now tries both arches and says which it found.
-  - **An upstream tarball can be DELETED, not merely superseded.** GNU **removed**
-    `apl-1.9.tar.gz` when 2.0 shipped — verified 404 across six mirrors and `ftp.gnu.org`, with
-    the `apl/` directory listing exactly one file. The pin was not stale, it was *unfetchable*,
-    so that image had been unbuildable since June with nothing watching. A distro archive
-    (Koji, snapshot.debian.org) keeps everything; **an upstream project's own download
-    directory does not** — treat any `curl` of a project tarball as a rot risk equal to a dnf
-    pin, and record the digest so any mirror can serve it.
+  - **An upstream tarball can become UNFETCHABLE AT ITS RECORDED URL — but "deleted" is a
+    conclusion, and ours was wrong. CORRECTED 2026-08-30.** This bullet used to read: *"GNU
+    **removed** `apl-1.9.tar.gz` when 2.0 shipped — verified 404 across six mirrors and
+    `ftp.gnu.org`, with the `apl/` directory listing exactly one file."* **GNU did not remove it.
+    It REORGANIZED `gnu/apl/` into per-version subdirectories**, and
+    `https://ftp.gnu.org/gnu/apl/apl-1.9/apl-1.9.tar.gz` answers **HTTP 200** (checked
+    2026-08-30, `.sig` and Debian source alongside it). The 404s were real and the inference from
+    them was not.
+    **The methodological error is the durable half, and it is not about GNU: SIX MIRRORS OF ONE
+    ARCHIVE ARE ONE OBSERVATION, NOT SIX.** Mirrors replicate layout, so checking more of them
+    raises confidence without adding evidence — every one reproduced the same reorganization. A
+    path change and a deletion are **indistinguishable from a single URL**, and the check that
+    separates them is to `ls` the parent directory, which costs one request and was never run.
+    **Before concluding an artifact is gone, list the directory above it.**
+    The operational conclusion is unchanged and still correct: a distro archive (Koji,
+    snapshot.debian.org) keeps everything at a stable path; **an upstream project's own download
+    directory reorganizes without notice** — treat any `curl` of a project tarball as a rot risk
+    equal to a dnf pin, and record the digest so any mirror, or any layout, can serve it.
   - **A mirror REDIRECTOR is not a mirror.** `ftpmirror.gnu.org` picks a different host per
     request and hands out ones that do not carry the project at all (measured: it 302'd to a
     host that 404'd while other mirrors served the file). Name the mirrors explicitly, in
@@ -684,6 +695,95 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   a feature that is not the one broken. Trace the refusal to its gate before implementing what the
   check is named after — on `wasm-wat` that was one instrumented build and it invalidated a
   documented scope estimate ("an arity + data-segment edit … neither is hard").
+  **FIFTH OCCURRENCE, 2026-08-30, and it is the other polarity: a wrong denial can hide a missing
+  ANSWER, not only a missing check.** Landing the §5.5 chain walk on `asm-x86_64` let a `request`
+  reach code that had been unreachable for as long as the capability gate refused every delegated
+  cap two stages earlier — and four early-outs there (`author` / `params` / `params.data` /
+  `params.data.grants` absent) fell off the end of the function answering NOTHING. Same shape on
+  all three ISA peers and on `cobol`. **Add §4.9(c) to the list of things a blanket refusal can be
+  concealing:** when a denial is removed, the newly-reachable code is untested by construction, and
+  the first thing to check is not whether it decides correctly but whether it *replies at all*.
+- **AN OP LADDER THAT DISPATCHES ON LENGTH MUST FALL THROUGH TO THE UNKNOWN-OP ANSWER, NEVER TO
+  `return` — and a §4.9(c) silent drop bills the CALLER, so it presents as the peer being slow or
+  under-resourced rather than wrong.** RATIFIED 2026-08-30 (two distinct shapes in one session; the
+  second is the entry above). The three ISA peers route an operation by comparing its LENGTH first
+  and only then its bytes. A length collision with an op they do route — `ping` against `echo`, both
+  4 — failed the byte compare and jumped to the function's return with no frame written: not 501,
+  not 400, nothing. `hello` (5) and `authenticate` (12) had the same hole.
+  **What it cost, and why it was not found for months: every churn cycle ends with a `ping`, so
+  every connection burned the caller's full 20 s read deadline.** `t2_2_connection_churn` reached
+  cycle 29 of 100 inside the 10-minute budget, consumed all of it, and starved nine categories
+  including three core ones — so all three peers were quarantined as INVALID MEASUREMENTS with a
+  documented "connection-pressure family". **`CONFORMANCE-MATRIX.md` §1a's accumulation theory was
+  wrong, and the 2026-08-29 measurement that ruled it out (peer healthy at the moment of failure,
+  fds flat, children reaped) was right and pointed nowhere.** After the fix: `concurrency` 6/6 in
+  1.1 s against 599 s, and the whole 755-check set runs.
+  **The diagnostic that found it generalizes and the one that did not is worth naming too.** Reading
+  the ladder finds nothing — the branch is three lines and looks like every other one. What found it
+  in one build: set a flag in the frame WRITER, clear it at the top of dispatch, and print which
+  operation returned WITHOUT having written. That question — *which dispatch answered nothing* — is
+  cheap on any peer and is the direct form of §4.9(c). Sampling `/proc` and counting live children
+  answered "the peer is healthy", which was true and useless.
+  **Enforcement: in any length-then-bytes dispatch ladder, every byte-compare failure must target
+  the unknown-op label.** Grep the ladder for a compare-failure branch whose target is the function
+  epilogue rather than the next candidate or the 501 answer. Note the collisions are invisible to a
+  reader who checks only the ops the peer implements — the defect is entirely about the ops it does
+  NOT.
+- **A FIXED BUFFER FILLED FROM WIRE DATA WITHOUT A SIZE TEST IS A REMOTELY-TRIGGERABLE PROCESS KILL,
+  AND HARDENED libc MAKES IT LOOK LIKE A CRASH WITH NO CAUSE.** RATIFIED 2026-08-30 (`cobol`; three
+  independent instances in one peer, which is the second shape rather than one bug). `tree-handler`
+  did `compute nentlen = endo - eoff` then `move lk-env(eoff:nentlen) to nent(1:nentlen)` where
+  `nent` is a fixed 8192-byte field. A 16 KiB `tree.put` — the oracle's own t1_4 staging payload —
+  overflowed it, glibc's `_FORTIFY_SOURCE` aborted with `*** buffer overflow detected ***` and no
+  backtrace, and **every check after that point failed with connection-refused: 24 of the peer's 30
+  FAILs were one unchecked MOVE.** `store-put`/`store-bind` had it into a 4096-byte slot (so any
+  entity over 4 KiB corrupted the store tables) and `cap-resolve` into an 8192-byte one.
+  **The trap that cost the most time: the OVERSIZE path was correct and the IN-RANGE path was not.**
+  The peer drains a frame past its 65535-byte cap exactly as §4.10(a) asks, and `resource_bounds`
+  passes — so "oversize frames are handled" reads as evidence and is not. The trace showed a 264 109-
+  byte frame drained across four reads without incident and then a perfectly ordinary 18 354-byte
+  frame killing the process. **A payload bound is only a bound where the copy happens.**
+  **Enforcement, and it is the same rule the AGENTS.md `nent`/`store` fix applies: the size test goes
+  BEFORE the copy and produces a STATUS, not after it and not as a bigger buffer.** Grep any peer
+  with fixed-extent fields for a copy whose length is computed from wire offsets
+  (`endo - eoff`, `have - 4`, `end - start`) and check for a guard between the two. Raising the
+  buffer instead of guarding just moves the threshold, and on a substrate where the store hands
+  `lk-len` bytes back to the CALLER's fixed buffer it also creates a matching overflow on the read
+  path — which is why `cobol`'s per-entity ceiling was left at 8192 and disclosed rather than raised.
+- **OVER-CANONICALIZING AN ID-SCOPE DIMENSION FAILS IN BOTH DIRECTIONS AT ONCE — it overgrants AND
+  over-denies, and one of the two is what a reviewer is not looking for.** RATIFIED 2026-08-30
+  (`cobol`; the swift/sql §5.5a frame over-scoping reached from the F40 side, which makes it the
+  same defect in a third dress). `cap-scope-match` canonicalized BOTH the value and the patterns
+  against the local peer for handlers, operations and peers. §5.2/F40 makes those three ID-scope:
+  matched literally, no frame. Measured simultaneously: an operations include of `/{local}/get`
+  AUTHORIZED the bare operation `get` (`f40_id_scope_include_no_overgrant`), and an exclude of
+  `/*/get` DENIED it (`f40_id_scope_exclude_literal`). Canonicalization turns a non-matching literal
+  into a match, and "a match" is a grant on the include side and a refusal on the exclude side.
+  **And fixing the matcher immediately exposed that the VALUE was wrong too** — the handlers
+  dimension was being compared as the ABSOLUTE resolved path `/{peer}/system/capability` against
+  grants that name handlers relatively, which only ever worked because the matcher canonicalized
+  both sides. Removing the canonicalization took CAP-5/CAP-6 to 403; passing the bare handler id
+  fixed both. **Two defects held each other up, and neither is visible while both are present.**
+  Enforcement: for each scope dimension, ask what KIND of thing the value is. An id is compared
+  literally; only a path takes §5.5a. If a matcher takes a frame parameter it must be reachable only
+  from the resources dimension — a frame argument on an id-scope call site is the defect.
+- **A `created_at` THAT IS A COMPILE-TIME CONSTANT IS A-PD-016 WITH THE CLOCK REMOVED ALTOGETHER.**
+  Candidate (`cobol` 2026-08-30, first occurrence, but it is the standing content-addressed-aliasing
+  rule at its limit). `mint-token` declared `01 created pic 9(18) comp-5 value 1700000000000.` and
+  never assigned it, so every mint with the same grants and grantee hashed identically forever — and
+  it silently makes any §5.6 ceiling meaningless, since the expiry would be derived from an instant
+  in 2023. Enforcement: grep the mint path for a `created_at` that is not read from the clock, and
+  sample that clock ONCE in the caller so the emitted birth instant and the expiry derived from it
+  are the same value (the nim lesson, from the other end).
+- **A RULE EXPRESSED IN TERMS OF A CPU FLAG IS NOT PORTABLE — restate it as a value comparison
+  before porting it.** Candidate (`riscv64` 2026-08-30). §5.6 rule 3's "the term is DROPPED if it
+  does not fit" is an overflow test; x86-64 reads the carry flag after `add`, aarch64 after `adds`,
+  and **RISC-V has no condition-flags register at all**, so the port has to detect the wrap the way
+  the ISA intends — the sum wrapped iff it is less than either operand. Getting this wrong compiles
+  clean and passes every check that does not overflow; it silently saturates instead of dropping,
+  which is exactly the CAP-6 defect the rule exists to prevent. The same shape appears on any
+  bignum substrate from the other direction (§5.6 rule 3 is a DELIBERATE range check there, not an
+  overflow trap) — the invariant is the value, never the mechanism.
 - **A PARTIAL IMPLEMENTATION OF A NEW RULE IS WORSE THAN ITS ABSENCE — it produces a plausible value
   and reads as done.** Candidate (first occurrence, `nim` 2026-08-28, but the enforcement point is
   exact). `nim` was the only peer in the cohort that ALREADY had a §5.6 ceiling, and it was wrong
@@ -777,6 +877,12 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   structurally unlike the cohort's, diff the per-check severities before believing the
   headline number — a peer can look *better* than its siblings by doing something it
   shouldn't. (Detail: `CONFORMANCE-MATRIX.md` §1a.)
+  **STILL OPEN as of 2026-08-30, and now the ONLY thing keeping those three off the cohort-standard
+  row.** The trio reached `755 · 0F` that day, at **594-595P/53-55W** against the cohort's
+  `312P/337W` — the whole gap is this violation, and their `type_system` reads `395P/51W` where the
+  cohort reads `~307P/327W`. **A 0-FAIL row does not retire an over-publication finding**; if
+  anything it makes it easier to miss, because there is no longer a FAIL count drawing the eye to
+  those peers. The grep is unchanged and still returns all three.
 - **FFI shared-lib gotchas** (every `entity-core-codec-ffi-<lang>` + any dual-impl
   differential): with a verbatim header + linker version-script, do **not** use
   `-fvisibility=hidden` (hidden symbols can't be promoted by `global:` → zero exports; let
@@ -1268,6 +1374,86 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
   overlay, same file naming. **Enforcement, and it is the cheap one this repo already prescribes:
   when `tier-status.py` and `check-set-gate.py --tracked` disagree about which peers are green,
   suspect the INPUT before the peers.** They disagreed here, and the tracked gate was right.
+  **CLOSED 2026-08-30 — every peer in the cohort is at `755 · 0F`. 46 of 46, no exclusions.** The
+  last five landed in one pass: `asm-x86_64`, `asm-arm64`, `riscv64` (INVALID → 0F), `cobol`
+  (30F → 0F) and `apl` (excluded → 0F).
+  **This paragraph said "45 of 45" and "`apl` remains unmeasurable and upstream-blocked — that is a
+  toolchain fact, not a conformance one" for several hours, and every clause of that was false.**
+  The toolchain had been fixed three days earlier, the upstream tarball was never deleted, and the
+  exclusion was enforced by the census itself. See the exclusion entry above; it is the more
+  important lesson of the two, because the wrong number was *published* and no gate could see it.
+  **Say what this is and what it is not.** It is 46 peers passing one author's vectors at one pinned
+  check set: **cohort-consistent, not independent convergence**, and the ISA trio is one lineage
+  ported twice on top of that. It is not a claim that the peers are correct — three of the four
+  defects closed here had been PASSING checks for months for reasons unrelated to what those checks
+  test.
+  **Three things the last four peers taught, all of them about how a defect DISGUISES itself:**
+  - **The connection-pressure family never existed.** Three peers were quarantined for a "shared
+    connection-pressure defect" and the actual cause was a §4.9(c) silent drop on a length-colliding
+    op name — a correctness bug billed entirely to the caller's timeout, so it read as slowness.
+    §1a's accumulation theory is retracted; the 2026-08-29 measurement that disproved it was correct
+    and pointed nowhere, because it was answering "is the peer unhealthy" and the peer was fine.
+  - **`cobol`'s 30 FAILs were 24 cascade + 5 real + 1.** One unchecked `MOVE` of wire data into a
+    fixed field killed the process; every check after it reported connection-refused. **Count the
+    cascade before budgeting the work** — the standing "first FAIL in RUN ORDER, last check before
+    the first transport error" diagnostic gives the real number in one read of the census JSON.
+  - **Two of the four peers had defects that were holding each other up.** `cobol`'s id-scope
+    over-canonicalization and its absolute-handler-value were individually invisible; fixing either
+    alone makes the peer worse. When a fix moves a number the WRONG way, the second defect is the
+    finding — this is the standing "a fix that raises the FAIL count is a finding" rule with the two
+    halves inside one dimension.
+  **Owed, and named rather than quietly carried:** the ISA trio still over-publishes extension type
+  vocabularies (the standing `system/type/compute/apply` grep), which is why they read 594-595P/
+  53-55W against the cohort-standard 312P/337W — a higher pass count that means a scope violation.
+  `asm-arm64`/`riscv64` never received b6371d7's four `host.s` hardenings (they WARN on
+  `r3_connection_flood`; §4.10(c) is a SHOULD). `cobol` skips two concurrency checks its 65535-byte
+  frame cap and 8192-byte entity ceiling make unreachable.
+- **AN EXCLUSION IS A CLAIM WITH AN EXPIRY DATE — and the one that hides longest is enforced by
+  the tool that would disprove it.** RATIFIED 2026-08-30 (`apl`; second occurrence of the
+  stale-input class in the shape where the *gate itself* is the stale input, after
+  `check-set-gate`'s unconditional reverify overlay). `apl` was carried for months as
+  `UNMEASURABLE — upstream-blocked; excluded from census by standing policy`, and the published
+  headline read `45 of 45 measurable` on the strength of it. **All three clauses were false**, and
+  the peer measured `755 · 0F` on the first attempt in 109 s:
+  - the *upstream* claim was a bad inference (see the tarball bullet above — GNU reorganized, it did
+    not delete);
+  - the *toolchain* claim had been repaired three days earlier and nobody re-checked — the image was
+    force-bumped to APL 2.0 on 2026-08-27 and **built successfully on 2026-08-28**, so the label
+    outlived its own cause;
+  - the *policy* clause was a hard-coded `apl) ... rc=125` in `run-cohort-census.sh` plus an
+    `$1 == "apl" { next }` in `roster_peers()`, so **the one peer nobody could measure was the one
+    peer the census would not attempt.** An exclusion that suppresses its own falsifier is
+    permanent by construction, and it degrades silently: nothing errors, nothing warns, the tier
+    report just says `NO-REPORT` next to a note explaining why that is fine.
+  **What makes this worse than an ordinary stale fact is what it does to a NUMBER.** "45 of 45
+  measurable" reads as a complete measurement and was one unrun command away from "46 of 46" — the
+  word *measurable* is doing load-bearing work that no gate checks, because a peer that is not
+  measured produces no report to be found non-comparable. `check-set-gate` and `tier-status` were
+  both green throughout; they can only audit reports that exist.
+  **Enforcement, and it is structural rather than a grep: no per-peer exclusion may live in the
+  measurement tooling.** `run-cohort-census.sh` now carries none, and `roster_peers()` no longer
+  filters — every peer in `tools/peer-tiers.tsv` is measured, so a peer can leave the census ONLY
+  by leaving the roster, where `tier-status.py` reports its absence as backlog. **Generalize: when
+  you must skip something, encode the skip where it is VISIBLE as a gap, never where it is
+  invisible as a policy** — and wire every exclusion to a re-check of the condition that justifies
+  it, or delete it. *(Sub-lesson worth its own line: the peer had sat out THREE cohort-wide
+  propagation passes because of the label — 7 of its 8 FAILs were defect classes closed elsewhere,
+  including the §6.2 register guard that reached 44 of 45 peers on 2026-08-17 with `apl` the sole
+  omission. **An excluded peer does not hold still; it accumulates every debt the cohort pays
+  down**, so the cost of an exclusion grows with exactly the thing that makes it feel safe to keep.)*
+- **A REFUSAL THAT EXISTS BUT CANNOT BE REACHED IS A §4.9(c) SILENT DROP — check that the answer
+  path is REACHABLE, not just present.** Candidate (`apl` 2026-08-30, but it is the third time in
+  three days that a §4.9(c) drop has been the finding, after the ISA op-ladder and `cobol`). `apl`
+  already had a correct `400 non_canonical_ecf` branch in `OnFrame`, written and committed. It was
+  dead code: the `WirePeek` that recovers the `request_id` used the **strict** decoder, so a frame
+  carrying a major-type-6 tag returned `ok=0` two lines earlier and was dropped on the floor. The
+  peer scored CAP-6a **WARN** — *"3 capability_denied, 3 transport-drop"* — while reading, in source,
+  as if it answered. **Grepping for the status code finds this code and clears the peer.** What
+  finds it is asking which decode the answer path depends on. The cohort-standard salvage decode
+  (strict decoder byte-unchanged; salvage used ONLY to recover the id) took CAP-6a to PASS on all
+  six variants **and cut the run from 149 s to 89 s**, because each dropped frame had been billing
+  its caller a full timeout — the same "presents as slow, is actually wrong" signature as the ISA
+  trio's op ladder.
 - **MAINTENANCE TIERS ARE ACTIVE — do not run a 45-peer census for a re-pin.** (Turned on
   2026-08-17; the policy existed as prose since ~15 peers and was never honoured, because §4
   named 17 peers of a 46-peer cohort so "re-run Tier-1" was undefined for the other 29.) The

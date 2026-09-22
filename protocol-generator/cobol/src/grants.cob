@@ -137,7 +137,8 @@ working-storage section.
 01 n7      pic 9(9) comp-5 value 7.
 01 n10     pic 9(9) comp-5 value 10.
 01 n33     pic 9(9) comp-5 value 33.
-01 created pic 9(18) comp-5 value 1700000000000.
+01 k-ex    pic x(10) value "expires_at".
+01 nfields pic 9(18) comp-5.
 01 st      pic s9(9) comp-5.
 linkage section.
 01 lk-grantee pic x(33).
@@ -149,12 +150,24 @@ linkage section.
 01 lk-sig     pic x(8192).
 01 lk-sig-len pic 9(9) comp-5.
 01 lk-sig-hash pic x(33).
+01 lk-created pic 9(18) comp-5.
+01 lk-hasexp  pic 9(1).
+01 lk-exp     pic 9(18) comp-5.
 procedure division using lk-grantee lk-grants lk-grants-len
                         lk-tok lk-tok-len lk-tok-hash
-                        lk-sig lk-sig-len lk-sig-hash.
+                        lk-sig lk-sig-len lk-sig-hash
+                        lk-created lk-hasexp lk-exp.
     call "ps-idhash" using idhash
+    *> created_at used to be a COMPILE-TIME CONSTANT (1700000000000) declared right
+    *> here. Two mints with the same grants and grantee therefore hashed identically
+    *> forever — the content-addressed aliasing A-PD-016 describes, with the clock
+    *> removed entirely — and it also made any §5.6 ceiling meaningless, since the
+    *> expiry would be derived from an instant in 2023. It is now the CALLER's, so
+    *> the birth instant and the expiry derived from it are the same sample.
+    move 4 to nfields
+    if lk-hasexp = 1 then add 1 to nfields end-if
     move 0 to nd-len
-    call "b-map"   using nd nd-len n4
+    call "b-map"   using nd nd-len nfields
     call "b-text"  using nd nd-len k-grr n7
     call "b-bytes" using nd nd-len idhash one n33
     call "b-text"  using nd nd-len k-gre n7
@@ -162,7 +175,11 @@ procedure division using lk-grantee lk-grants lk-grants-len
     call "b-text"  using nd nd-len k-grants n6
     call "b-raw"   using nd nd-len lk-grants one lk-grants-len
     call "b-text"  using nd nd-len k-ca n10
-    call "b-uint"  using nd nd-len created
+    call "b-uint"  using nd nd-len lk-created
+    if lk-hasexp = 1
+        call "b-text" using nd nd-len k-ex n10
+        call "b-uint" using nd nd-len lk-exp
+    end-if
     call "b-entity" using t-tok t-tok-len nd nd-len
         lk-tok lk-tok-len lk-tok-hash st
     *> sign the token

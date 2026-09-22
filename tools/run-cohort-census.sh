@@ -41,7 +41,7 @@
 # --tracked` gates the tracked reports against the pinned check set.
 #
 # Usage:
-#   tools/run-cohort-census.sh                 # every peer except apl (blocked, see AGENTS.md §8)
+#   tools/run-cohort-census.sh                 # every peer on the roster (all 46)
 #   tools/run-cohort-census.sh go rust python   # a subset
 #   tools/run-cohort-census.sh --to-status go rust   # refresh TRACKED status reports
 #   tools/run-cohort-census.sh --to-status --tier M1,M2
@@ -214,7 +214,7 @@ census_one() {
     zig)
       run_podman "$peer" entity-core-keystone/zig-toolchain:latest --network=none >>"$log" 2>&1; rc=$? ;;
     apl)
-      echo "SKIP: apl blocked pending the 1.9->2.0 cool-down decision (AGENTS.md §8)" >>"$log"; rc=125 ;;
+      run_podman "$peer" entity-core-keystone/apl-toolchain:latest --network=none >>"$log" 2>&1; rc=$? ;;
     *)
       echo "unknown peer: $peer" >>"$log"; rc=127 ;;
   esac
@@ -243,12 +243,19 @@ export REPO_ROOT OUT LOGS PODMAN_RUN_CAPS DEST
 #   tools/run-cohort-census.sh                  # everything, unchanged
 #
 # The roster is tools/peer-tiers.tsv — the single canonical home for the
-# assignment. `apl` is excluded everywhere (upstream-blocked, standing policy).
+# assignment. Every peer on it is measured; there are no standing exclusions.
+#
+# `apl` used to be excluded here, and the exclusion outlived its reason by three
+# days. It was added when the peer's image could not be built, then kept as
+# "upstream-blocked, standing policy" after the toolchain was fixed on
+# 2026-08-27 — so the one peer nobody could measure was also the one peer the
+# census would not try. Re-running it on 2026-08-30 took ~90 s and produced a
+# valid 755-check measurement on the first attempt. An exclusion is a claim with
+# an expiry date; wire it to the thing that justifies it, or delete it.
 # ---------------------------------------------------------------------------
 roster_peers() {  # $1 = comma-separated tier list, or "" for all; "--stale" handled by caller
   awk -F'\t' -v want="$1" -v ref="$2" '
     /^#/ || /^peer\t/ || NF < 3 { next }
-    $1 == "apl" { next }
     {
       if (want != "") { ok=0; n=split(want, T, ","); for (i=1;i<=n;i++) if ($2==T[i]) ok=1; if (!ok) next }
       if (ref != "" && $3 == ref) next        # --stale: skip peers already at the pin

@@ -264,6 +264,17 @@ do-chain.
     end-if
     call "resolve-handler" using path pathlen pat patlen hfound
     if hfound = 0 then perform resp-404  exit paragraph end-if
+    *> Strip "/{local}/" to the bare handler id BEFORE the permission check.
+    *> §5.2 F40 makes the handlers dimension ID-scope, matched literally against
+    *> the grant's patterns — and every grant this peer writes names handlers
+    *> relatively ("system/tree", "system/capability"). Comparing the ABSOLUTE
+    *> resolved path against those only worked while the matcher canonicalized
+    *> both sides, which is precisely the frame-on-an-id-scope-dimension defect
+    *> F40 exists to catch; with literal matching the value has to be the id.
+    compute pfx = locallen + 2
+    compute splen = patlen - pfx
+    move spaces to spat
+    if splen > 0 then move pat(pfx + 1:splen) to spat(1:splen) end-if
     *> resolve caller capability
     call "ent-field" using lk-env root-off k-cap k-cap-len voff f
     if f = 0 then perform resp-403  exit paragraph end-if
@@ -273,13 +284,10 @@ do-chain.
     *> §PR-8 granter frame
     call "cap-granter-peer" using lk-env inc-off inc-fnd capbuf granter granterlen
     *> §5.2 check_permission
-    call "cap-check-perm" using lk-env root-off capbuf pat patlen
+    call "cap-check-perm" using lk-env root-off capbuf spat splen
         granter granterlen perm
     if perm = 0 then perform resp-403  exit paragraph end-if
-    *> route by stripped pattern
-    compute pfx = locallen + 2
-    compute splen = patlen - pfx
-    if splen > 0 then move pat(pfx + 1:splen) to spat(1:splen) end-if
+    *> route by the same stripped pattern
     evaluate true
         when splen = 11 and spat(1:11) = "system/tree"
             call "tree-handler" using lk-env root-off rstatus

@@ -45,19 +45,36 @@ NullHash←⍬
  fin:Z←m
 ∇
 
-⍝ mint a capability token -> (token sig). ⍵=(granteeHash grants parent).
-∇Z←MintToken a;gh;grants;parent;tm;tok;sig
- gh←1⊃a ⋄ grants←2⊃a ⋄ parent←3⊃a
+⍝ mint a capability token at a CALLER-PINNED created_at, with an optional §5.6
+⍝ temporal ceiling -> (token sig). ⍵=(createdAt granteeHash grants parent expiry),
+⍝ where `expiry` is a (value present) pair.
+⍝
+⍝ created_at is supplied by the caller and deliberately NOT re-sampled here: the
+⍝ emitted birth instant and the expiry derived from it must be the SAME instant,
+⍝ or the token carries a ceiling computed against a moment it does not claim to
+⍝ have been born at.
+∇Z←MintTokenAt a;createdAt;gh;grants;parent;expiry;tm;tok;sig
+ createdAt←1⊃a ⋄ gh←2⊃a ⋄ grants←3⊃a ⋄ parent←4⊃a ⋄ expiry←5⊃a
  tm←VMapEmpty
  tm←tm VmPut('granter')(VBytes IdHash gIdent)
  tm←tm VmPut('grantee')(VBytes gh)
  tm←tm VmPut('grants')grants
- tm←tm VmPut('created_at')(VUint CapNowMs)
+ tm←tm VmPut('created_at')(VUint createdAt)
  →(0=≢parent)/np
  tm←tm VmPut('parent')(VBytes parent)
- np:tok←'system/capability/token'EntMake tm
+ np:→(~2⊃expiry)/ne
+ tm←tm VmPut('expires_at')(VUint 1⊃expiry)
+ ne:tok←'system/capability/token'EntMake tm
  sig←gIdent IdSign tok
  Z←tok sig
+∇
+
+⍝ mint with no §5.6 ceiling and a locally-sampled created_at -> (token sig).
+⍝ ⍵=(granteeHash grants parent). The bootstrap/owner/handler-grant mints are
+⍝ self-issued by this peer to itself and carry no caller capability to be bounded
+⍝ by; the §5.6 ceiling applies to the request/delegate path (CapMintBounded).
+∇Z←MintToken a
+ Z←MintTokenAt(CapNowMs)(1⊃a)(2⊃a)(3⊃a)(0 0)
 ∇
 
 ⍝ the included bundle for a minted grant: (token localPeer capSig).
@@ -226,6 +243,11 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  →(~(gLocal CapExtractPeer path)≡gLocal)/eNotLocal
  pattern←ResolveHandler path
  →(0=≢pattern)/eNoHandler
+⍝ the BARE handler id, assigned here rather than after the granter branch below:
+⍝ `gp:` is a jump target, so an assignment placed between the branch and the
+⍝ label runs only on the fallback path. §5.2's handlers dimension is id-scope and
+⍝ takes this relative form, never the absolute resolved `pattern`.
+ stripped←StripLocal pattern
  capH←exec EntBytes'capability'
  callerCap←EntAbsent
  →(0=≢capH)/eDeny
@@ -234,8 +256,7 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  granterPeer←(EnvInc env)CapResolveGranterPeerId callerCap
  →(0<≢granterPeer)/gp
  granterPeer←gLocal
- gp:→(~CapCheckPermission gLocal granterPeer exec callerCap pattern)/eDeny
- stripped←StripLocal pattern
+ gp:→(~CapCheckPermission gLocal granterPeer exec callerCap stripped)/eDeny
  routine←HandlerRoutine stripped
  →(routine=0)/eNoHandler
  Z←fd CallHandler(routine)(op)(env)(callerCap)(granterPeer)(pattern) ⋄ →0
@@ -325,12 +346,31 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
 ∇Z←fd ConnectAuthenticate env;exec;idx;auth;kt;pub;claimed;ckt;echoed;issued;sgn;sb;sp;sigOk;helloPid;remotePeer;grants;m;gm
  exec←EnvRoot env
  idx←ConnSlot fd
- →(~idx⊃gConnEstab)/ok
- Z←OutErr(409)('connection_already_established')('') ⋄ →0
- ok:→(idx⊃gConnHasNonce)/nn
+ auth←exec EntEntityField'params'
+⍝ §4.6 RT-6: the handshake nonce is SINGLE USE, and that check outranks the
+⍝ already-established gate.
+⍝
+⍝ A second authenticate REPLAYING the consumed nonce is a NONCE failure, and
+⍝ RT-6 pins it to 401 invalid_nonce. Answering 409 connection_already_established
+⍝ first is wrong-but-safe — the replay is still refused — but the oracle scores
+⍝ it rt6_class=wrong-status, which is a FAIL, because a state-conflict code does
+⍝ not say the nonce was rejected. The established gate below still answers every
+⍝ OTHER second authenticate; only the replay is reclassified.
+⍝
+⍝ The issued nonce is deliberately RETAINED past establishment rather than
+⍝ zeroed: keeping it is what lets the replay be recognised as a replay instead of
+⍝ collapsing into "no nonce outstanding".
+ →(~idx⊃gConnEstab)/fresh
+ →(~EntPresent auth)/estab
+ echoed←auth EntBytes'nonce'
+ issued←idx⊃gConnNonce
+ →(~(32=≢echoed)∧(32=≢issued))/estab
+ →(~∧/echoed=issued)/estab
  Z←OutErr(401)('invalid_nonce')('') ⋄ →0
- nn:auth←exec EntEntityField'params'
- →(EntPresent auth)/ha
+ estab:Z←OutErr(409)('connection_already_established')('') ⋄ →0
+ fresh:→(idx⊃gConnHasNonce)/nn
+ Z←OutErr(401)('invalid_nonce')('') ⋄ →0
+ nn:→(EntPresent auth)/ha
  Z←OutErr(401)('authentication_failed')('') ⋄ →0
  ha:kt←auth EntText'key_type'
  →((0=≢kt)∨kt≡'ed25519')/k2
@@ -487,12 +527,25 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  amb:Z←OutErr(400)('ambiguous_resource')('register/unregister require exactly one resource target')
 ∇
 
+⍝ §6.2: 1 iff `pattern` is exactly 'system' or begins 'system/'. User-installed
+⍝ handlers MUST NOT register at a reserved system path — a register there is
+⍝ refused with 403 forbidden_pattern, and (the negative half the oracle also
+⍝ checks) MUST publish nothing: the refusal returns before any StoreBind runs.
+∇Z←ReservedPattern pattern
+ Z←1
+ →(pattern≡'system')/0
+ →(pattern StartsWith'system/')/0
+ Z←0
+∇
+
 ∇Z←HandlersRegister env;exec;pattern;req;manifest;name;ops;hp;im;m;rm;gscope
  exec←EnvRoot env
  pattern←RegisterPattern exec
  →(0<≢pattern)/ok
  Z←RegisterPatternError exec ⋄ →0
- ok:req←exec EntEntityField'params'
+ ok:→(~ReservedPattern pattern)/np
+ Z←OutErr(403)('forbidden_pattern')('section 6.2: user-installed handlers MUST NOT register at system/* paths: ',pattern) ⋄ →0
+ np:req←exec EntEntityField'params'
  →(EntPresent req)/hp0
  Z←OutErr(400)('unexpected_params')('register: missing params') ⋄ →0
  hp0:→('system/handler/register-request'≡EntType req)/hp1
@@ -597,7 +650,7 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  author←(EnvRoot env)EntBytes'author'
  →(0<≢author)/ok
  Z←OutErr(403)('capability_denied')('') ⋄ →0
- ok:Z←CapMintBounded callerCap(ReqGrants params)(author)(NullHash)
+ ok:Z←CapMintBounded callerCap(ReqGrants params)(author)(NullHash)(params)(EnvInc env)
 ∇
 
 ∇Z←env CapDelegate callerCap;params;author;ph
@@ -610,11 +663,11 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  Z←OutErr(400)('unexpected_params')('delegate: zero parent') ⋄ →0
  nz:→((0<≢author)∧(IdHash gIdent)HashEq author)/same
  Z←OutErr(501)('unsupported_operation')('delegate: same-peer-only in v1') ⋄ →0
- same:Z←CapMintBounded callerCap(ReqGrants params)(author)(ph)
+ same:Z←CapMintBounded callerCap(ReqGrants params)(author)(ph)(params)(EnvInc env)
 ∇
 
-∇Z←CapMintBounded a;callerCap;rg;grantee;parent;bounded;pg;i;j;c;covered;m;gm
- callerCap←1⊃a ⋄ rg←2⊃a ⋄ grantee←3⊃a ⋄ parent←4⊃a
+∇Z←CapMintBounded a;callerCap;rg;grantee;parent;params;inc;bounded;pg;i;j;c;covered;m;gm;createdAt;expiry
+ callerCap←1⊃a ⋄ rg←2⊃a ⋄ grantee←3⊃a ⋄ parent←4⊃a ⋄ params←5⊃a ⋄ inc←6⊃a
  bounded←0
  →(~EntPresent callerCap)/chk
  pg←CapGrantsOfToken callerCap ⋄ bounded←1 ⋄ i←0
@@ -627,7 +680,18 @@ OutOk←{(200)(1⊃⍵)(2⊃⍵)}
  bounded←0
  chk:→(bounded)/mint
  Z←OutErr(403)('scope_exceeds_authority')('') ⋄ →0
- mint:m←MintToken(grantee)(rg)(parent)
+⍝ §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6). created_at is sampled ONCE
+⍝ here and the duration terms are converted against that same instant.
+⍝
+⍝ Note what this is NOT: an authorization decision. An over-long ttl_ms from a
+⍝ bounded caller MINTS a clamped token and returns 200 — "rejecting it is
+⍝ non-conformant" (§5.6). The bound exists because `request` mints a ROOT token
+⍝ (parent: null), so §5.6's parent-child attenuation never reaches it; without
+⍝ this clamp, temporal attenuation is the one dimension a requester could escape
+⍝ and policy withdrawal would have no bounded latency.
+ mint:createdAt←CapNowMs
+ expiry←MinDefinedExpiry(inc ParentExpiryTerm parent)(CallerCapExpiryTerm callerCap)(createdAt DurationTerm params 'ttl_ms')
+ m←MintTokenAt(createdAt)(grantee)(rg)(parent)(expiry)
  gm←VMapEmpty VmPut('token')(VBytes EntHash 1⊃m)
  Z←OutOk('system/capability/grant'EntMake gm)(CapIncluded m)
 ∇

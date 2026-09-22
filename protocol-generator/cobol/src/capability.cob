@@ -229,9 +229,61 @@ procedure division using lk-buf lk-arroff lk-cv lk-cvlen lk-frame lk-framelen lk
     goback.
 end program cap-arr-covers.
 
-*> ---- cap-scope-match : matches_scope (include covered & not exclude) -
-*> lk-scopeoff -> a scope map {include:[...], exclude:[...]}; value + patterns
-*> both canonicalize with lk-frame (= local frame for op/handler/peer dims).
+*> ---- cap-id-covers : exists pattern in array covering an ID-SCOPE value ----
+*> Identical to cap-arr-covers except that NOTHING is canonicalized — neither the
+*> value nor the patterns. §5.2 / F40: handlers, operations and peers are
+*> ID-scope, matched literally (bare "*", leading "/*/", trailing "/*", exact);
+*> only resources are PATH-scope and take §5.5a canonicalization.
+identification division.
+program-id. cap-id-covers.
+data division.
+working-storage section.
+01 cur   pic 9(9) comp-5.
+01 maj   pic 9(2) comp-5.
+01 addl  pic 9(2) comp-5.
+01 arg   pic 9(18) comp-5.
+01 cnt   pic 9(9) comp-5.
+01 i     pic 9(9) comp-5.
+01 plen  pic 9(9) comp-5.
+01 st    pic s9(9) comp-5.
+01 pat   pic x(900).
+01 m     pic 9(1).
+linkage section.
+01 lk-buf    pic x(65535).
+01 lk-arroff pic 9(9) comp-5.
+01 lk-cv     pic x(900).
+01 lk-cvlen  pic 9(9) comp-5.
+01 lk-res    pic 9(1).
+procedure division using lk-buf lk-arroff lk-cv lk-cvlen lk-res.
+    move 0 to lk-res
+    move lk-arroff to cur
+    call "cbor-read-head" using lk-buf cur maj addl arg st
+    if maj not = 4 then goback end-if
+    move arg to cnt
+    perform varying i from 1 by 1 until i > cnt
+        call "cbor-read-head" using lk-buf cur maj addl arg st
+        move arg to plen
+        move spaces to pat
+        if plen > 0 and plen <= 900 then move lk-buf(cur:plen) to pat(1:plen) end-if
+        add plen to cur
+        call "cap-match" using lk-cv lk-cvlen pat plen m
+        if m = 1 then move 1 to lk-res  goback end-if
+    end-perform
+    goback.
+end program cap-id-covers.
+
+*> ---- cap-scope-match : matches_scope for an ID-SCOPE dimension -------
+*> lk-scopeoff -> a scope map {include:[...], exclude:[...]}.
+*>
+*> Both sides used to be canonicalized against the local peer frame, which is the
+*> §5.5a frame applied to a dimension that has none. §5.2 F40 makes handlers,
+*> operations and peers ID-scope: an operations include of "/{local}/get" is a
+*> LITERAL that must not authorize the bare operation `get` (canonicalizing the
+*> value turns it into an overgrant), and an exclude of "/*/get" must not deny
+*> `get` (canonicalizing turns a non-matching literal into a denial). Both
+*> directions were measured: include_no_overgrant allowed what it should refuse,
+*> exclude_literal refused what it should allow. Same defect as over-applying the
+*> §5.5a frame in the attenuation path, reached from the dispatch side.
 identification division.
 program-id. cap-scope-match.
 data division.
@@ -253,20 +305,16 @@ linkage section.
 01 lk-scopeoff pic 9(9) comp-5.
 01 lk-val    pic x(900).
 01 lk-vallen pic 9(9) comp-5.
-01 lk-frame  pic x(128).
-01 lk-framelen pic 9(9) comp-5.
 01 lk-res    pic 9(1).
-procedure division using lk-buf lk-scopeoff lk-val lk-vallen
-                        lk-frame lk-framelen lk-res.
+procedure division using lk-buf lk-scopeoff lk-val lk-vallen lk-res.
     move 0 to lk-res
-    call "cap-canon" using lk-val lk-vallen lk-frame lk-framelen cv cvlen
     call "cbor-find-key" using lk-buf lk-scopeoff k-incl k-incl-len ioff ifnd st
     if ifnd = 0 then goback end-if
-    call "cap-arr-covers" using lk-buf ioff cv cvlen lk-frame lk-framelen cov
+    call "cap-id-covers" using lk-buf ioff lk-val lk-vallen cov
     if cov = 0 then goback end-if
     call "cbor-find-key" using lk-buf lk-scopeoff k-excl k-excl-len eoff efnd st
     if efnd = 1
-        call "cap-arr-covers" using lk-buf eoff cv cvlen lk-frame lk-framelen cov
+        call "cap-id-covers" using lk-buf eoff lk-val lk-vallen cov
         if cov = 1 then goback end-if
     end-if
     move 1 to lk-res
@@ -320,6 +368,7 @@ program-id. cap-resolve.
 data division.
 working-storage section.
 01 eoff  pic 9(9) comp-5.
+01 cap-entmax pic 9(9) comp-5 value 8192.
 01 endo  pic 9(9) comp-5.
 01 f     pic 9(1).
 01 st    pic s9(9) comp-5.
@@ -340,8 +389,18 @@ procedure division using lk-env lk-incoff lk-incfnd lk-hash
             move eoff to endo
             call "cbor-skip" using lk-env endo st
             compute lk-outlen = endo - eoff
-            if lk-outlen > 0 then move lk-env(eoff:lk-outlen) to lk-out(1:lk-outlen) end-if
-            move 1 to lk-found
+            *> Same unchecked-copy shape as tree-handler's do-put, on the capability
+            *> path: `lk-out` is a fixed 8192-byte field and the included entity comes
+            *> straight off the wire. Over capacity is answered as NOT RESOLVED (fail
+            *> closed) rather than copied — a capability whose token cannot be read is
+            *> not a capability that has been verified.
+            if lk-outlen > 0 and lk-outlen <= cap-entmax
+                move lk-env(eoff:lk-outlen) to lk-out(1:lk-outlen)
+                move 1 to lk-found
+                goback
+            end-if
+            move 0 to lk-outlen
+            move 0 to lk-found
             goback
         end-if
     end-if
@@ -578,20 +637,20 @@ procedure division using lk-env lk-rootoff lk-tbuf lk-hpat lk-hlen
 
 grant-ok.
     move 0 to ok
-    *> operations (local frame)
+    *> operations (id-scope: literal, no frame)
     call "cbor-find-key" using lk-tbuf gmap k-ops k-ops-len soff sf st
     if sf = 0 then exit paragraph end-if
-    call "cap-scope-match" using lk-tbuf soff op oplen local locallen r
+    call "cap-scope-match" using lk-tbuf soff op oplen r
     if r = 0 then exit paragraph end-if
-    *> handlers (local frame)
+    *> handlers (id-scope: literal, no frame)
     call "cbor-find-key" using lk-tbuf gmap k-hdl k-hdl-len soff sf st
     if sf = 0 then exit paragraph end-if
-    call "cap-scope-match" using lk-tbuf soff lk-hpat lk-hlen local locallen r
+    call "cap-scope-match" using lk-tbuf soff lk-hpat lk-hlen r
     if r = 0 then exit paragraph end-if
     *> peers (optional; default {include:[local]})
     call "cbor-find-key" using lk-tbuf gmap k-peers k-peers-len soff sf st
     if sf = 1
-        call "cap-scope-match" using lk-tbuf soff tp tplen local locallen r
+        call "cap-scope-match" using lk-tbuf soff tp tplen r
         if r = 0 then exit paragraph end-if
     else
         if not (tplen = locallen and tp(1:tplen) = local(1:locallen))
@@ -793,6 +852,10 @@ working-storage section.
 01 k-nb-len pic 9(9) comp-5 value 10.
 01 k-ex   pic x(10) value "expires_at".
 01 k-ex-len pic 9(9) comp-5 value 10.
+01 k-ca   pic x(10) value "created_at".
+01 k-ca-len pic 9(9) comp-5 value 10.
+01 ca     pic 9(18) comp-5.
+01 tok-ck pic 9(1).
 linkage section.
 01 lk-env    pic x(65535).
 01 lk-incoff pic 9(9) comp-5.
@@ -887,16 +950,31 @@ procedure division using lk-env lk-incoff lk-incfnd lk-cap lk-caplen
         call "read-bytes" using ws-ce-buf(k) voff gee gel
         call "cap-resolve" using lk-env lk-incoff lk-incfnd gee tmp tmplen found
         if found = 0 then move 1 to lk-unres  goback end-if
-        *> temporal
+        *> temporal, per link. §6.2 CAP-6a: representability is tested FIRST and on
+        *> ALL THREE fields — created_at is the one an audit shaped around expiry
+        *> checks misses. A field that is present but not a representable uint is
+        *> MALFORMED, not absent, and absent means "no bound"; collapsing the two
+        *> honours a capability whose expiry is a bignum or a negative number.
+        call "ent-field" using ws-ce-buf(k) one k-ca k-ca-len voff f
+        if f = 1
+            call "read-uint-ck" using ws-ce-buf(k) voff ca tok-ck
+            if tok-ck = 0 then goback end-if
+        end-if
         call "ent-field" using ws-ce-buf(k) one k-nb k-nb-len voff f
         if f = 1
-            call "read-uint" using ws-ce-buf(k) voff nb
+            call "read-uint-ck" using ws-ce-buf(k) voff nb tok-ck
+            if tok-ck = 0 then goback end-if
             if ws-now < nb then goback end-if
         end-if
         call "ent-field" using ws-ce-buf(k) one k-ex k-ex-len voff f
         if f = 1
-            call "read-uint" using ws-ce-buf(k) voff ex
-            if ex < ws-now then goback end-if
+            call "read-uint-ck" using ws-ce-buf(k) voff ex tok-ck
+            if tok-ck = 0 then goback end-if
+            *> §5.6 CAP-6: expiry is an EXCLUSIVE upper bound — expired at
+            *> now >= expires_at. This pairs with ttl_ms:0 minting
+            *> expires_at == created_at, which must be expired at every
+            *> observable instant rather than valid for one and racing.
+            if ex <= ws-now then goback end-if
         end-if
         *> delegation linkage: parent.grantee == current.granter
         if k < ws-n

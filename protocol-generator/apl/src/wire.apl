@@ -94,7 +94,14 @@ WireFrameOfEnvelope←{CborEncode EnvToCbor ⍵}    ⍝ envelope -> canonical-EC
 ⍝ demux needs only these. Returns (rootType requestId isResponse ok).
 ∇Z←WirePeek payload;d;v;rootv;rt;datav;rid
  Z←('' '' 0 0)
- d←CborDecode payload
+⍝ SALVAGE decode, deliberately: a frame carrying a major-type-6 tag in a data
+⍝ field is rejected — but §6.3 requires the rejection to be a 400
+⍝ non_canonical_ecf RESPONSE, and answering needs the request_id. Peeking with
+⍝ the strict decoder returned ok=0 here, so OnFrame dropped the frame on the
+⍝ floor and its existing 400 branch was unreachable: the sender then blocked
+⍝ until its own timeout, making a refusal indistinguishable from a dead peer.
+⍝ The frame is still rejected — WireEnvelopeOfFrame below is strict and unchanged.
+ d←CborDecodeSalvage payload
  →(EC_OK≠3⊃d)/0
  v←1⊃d
  →(EV_MAP≠1⊃v)/0

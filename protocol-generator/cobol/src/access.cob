@@ -194,3 +194,73 @@ procedure division using lk-buf lk-voff lk-val.
     move rarg to lk-val
     goback.
 end program read-uint.
+
+*> ---- read-uint-ck --------------------------------------------------
+*> CAP-6a: read an unsigned integer AND say whether it is representable.
+*>
+*> `read-uint` answers a value for any head it is pointed at — a negative
+*> integer (major 1) yields its encoded magnitude, and an 8-byte argument past
+*> this substrate's 9(18) range silently truncates in cbor-read-head's
+*> accumulate. Both come back looking like ordinary numbers, so a caller that
+*> compares them against `now` gets a plausible answer to a question it should
+*> have refused: an accessor whose "value" conflates REPRESENTABLE with
+*> MALFORMED is the temporal fail-open §6.2 CAP-6a names, and on a temporal
+*> field it fails OPEN. Absence stays the caller's business (ent-field already
+*> answers it); this answers "usable", never "present".
+identification division.
+program-id. read-uint-ck.
+data division.
+working-storage section.
+01 ws-bc.
+   05 ws-byte    pic x.
+01 ws-bn redefines ws-bc pic 9(2) comp-x.
+01 ws-i      pic 9(4) comp-5.
+01 ws-nbytes pic 9(2) comp-5.
+01 ws-major  pic 9(2) comp-5.
+01 ws-addl   pic 9(2) comp-5.
+01 ws-acc    pic 9(18) comp-5.
+01 ws-off    pic 9(9) comp-5.
+*> (10^18 - 1 - 255) / 256, the largest accumulator that can still absorb one
+*> more byte without leaving 9(18). Past it the value is out of range for this
+*> peer and MUST be refused rather than truncated.
+01 ws-safe   pic 9(18) comp-5 value 3906249999999999.
+linkage section.
+01 lk-buf pic x(65535).
+01 lk-voff pic 9(9) comp-5.
+01 lk-val pic 9(18) comp-5.
+01 lk-ok  pic 9(1).
+procedure division using lk-buf lk-voff lk-val lk-ok.
+    move 0 to lk-val
+    move 0 to lk-ok
+    move lk-voff to ws-off
+    move lk-buf(ws-off:1) to ws-byte
+    divide ws-bn by 32 giving ws-major
+    compute ws-addl = function mod(ws-bn 32)
+    if ws-major not = 0 then goback end-if
+    add 1 to ws-off
+    move 0 to ws-acc
+    evaluate true
+        when ws-addl <= 23
+            move ws-addl to ws-acc
+            move 0 to ws-nbytes
+        when ws-addl = 24
+            move 1 to ws-nbytes
+        when ws-addl = 25
+            move 2 to ws-nbytes
+        when ws-addl = 26
+            move 4 to ws-nbytes
+        when ws-addl = 27
+            move 8 to ws-nbytes
+        when other
+            goback
+    end-evaluate
+    perform varying ws-i from 1 by 1 until ws-i > ws-nbytes
+        move lk-buf(ws-off:1) to ws-byte
+        if ws-acc > ws-safe then goback end-if
+        compute ws-acc = ws-acc * 256 + ws-bn
+        add 1 to ws-off
+    end-perform
+    move ws-acc to lk-val
+    move 1 to lk-ok
+    goback.
+end program read-uint-ck.

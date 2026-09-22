@@ -80,6 +80,39 @@ Canon←{1⊃⍺ CapCanonicalize ⍵}                   ⍝ invalid-ignoring for
  Z←1 ⋄ →0
 ∇
 
+⍝ is `v` covered by any pattern in pats, matched LITERALLY (no peer frame)?
+⍝ ⍵=(pats v). The id-scope twin of `Covered` above.
+∇Z←CoveredLiteral pv;pats;v;i
+ pats←1⊃pv ⋄ v←2⊃pv ⋄ Z←0 ⋄ i←0
+ lp:→(i≥≢pats)/0
+ i←i+1
+ →(~v CapMatchesPattern(i⊃pats))/lp
+ Z←1 ⋄ →0
+∇
+
+⍝ ⍵=(value scope). does `value` match the include/exclude scope, LITERALLY?
+⍝
+⍝ §5.2 / F40: the handlers, operations and peers dimensions are ID-SCOPE. Their
+⍝ values are IDENTIFIERS, not paths, so they are compared literally and are never
+⍝ canonicalized against a peer frame. Only `resources` takes §5.5a framing —
+⍝ a frame argument on an id-scope call site IS the defect.
+⍝
+⍝ Over-canonicalizing an id-scope dimension fails in BOTH directions at once, and
+⍝ one of the two is not what a reviewer is looking for: canonicalization turns a
+⍝ non-matching literal into a match, and "a match" is a GRANT on the include side
+⍝ and a REFUSAL on the exclude side. Measured on this peer before the fix, in one
+⍝ run: an operations include of only "/{local}/get" AUTHORIZED the bare operation
+⍝ `get` (f40_id_scope_include_no_overgrant), while an exclude of "/*/get" DENIED
+⍝ it (f40_id_scope_exclude_literal).
+∇Z←CapMatchesIdScope vs;value;scope;incl;excl
+ value←1⊃vs ⋄ scope←2⊃vs
+ incl←TextList scope MArray'include'
+ →(~CoveredLiteral incl value)/no
+ excl←TextList scope MArray'exclude'
+ Z←~CoveredLiteral excl value ⋄ →0
+ no:Z←0
+∇
+
 ⍝ ⍺=local ; ⍵=(value scope). does `value` match the include/exclude scope?
 ∇Z←local CapMatchesScope vs;value;scope;cv;incl;excl
  value←1⊃vs ⋄ scope←2⊃vs
@@ -178,12 +211,18 @@ CapGrantsOfToken←{(EntDataMap ⍵)MArray'grants'}
  garr←CapGrantsOfToken token ⋄ n←ArrCount garr ⋄ i←0
  lp:→(i≥n)/0
  i←i+1 ⋄ g←garr ArrItem i
- ok←(local CapMatchesScope op(g MSubmap'operations'))∧(local CapMatchesScope hp(g MSubmap'handlers'))
+⍝ handlers / operations / peers are ID-SCOPE (§5.2, F40) — literal, unframed.
+⍝ `hp` arrives as the BARE handler id ("system/capability"), not the absolute
+⍝ resolved path: grants name handlers relatively, and comparing the absolute form
+⍝ only ever worked because the matcher canonicalized both sides. Removing the
+⍝ canonicalization without also fixing the value takes every CAP check to 403 —
+⍝ the two defects were holding each other up, and neither is visible alone.
+ ok←(CapMatchesIdScope op(g MSubmap'operations'))∧(CapMatchesIdScope hp(g MSubmap'handlers'))
  →(~ok)/lp
  peers←g MSubmap'peers'
  →(EV_MAP=1⊃peers)/pk
  ok←tp≡local ⋄ →rc
- pk:ok←local CapMatchesScope tp peers
+ pk:ok←CapMatchesIdScope tp peers
  rc:→(~ok)/lp
  →(EV_MAP≠1⊃resource)/allw
  ok←CheckResourceScope local gp resource(g MSubmap'resources')
@@ -379,6 +418,7 @@ SlHas←{∨/(⊂⍺)≡¨⍵}                                ⍝ ⍺=string ⍵
  i←i+1 ⋄ →(~local≡inc PeerIdOfSigner i⊃signers)/ll
  lin←1
  lchk:→(~lin)/0
+ →(~TemporalRepresentable cap)/0    ⍝ §6.2 CAP-6a — BEFORE the range checks below
  now←CapNowMs
  nb←cap EntUint'not_before' ⋄ pnb←2⊃nb ⋄ →(pnb∧now<1⊃nb)/0
  ex←cap EntUint'expires_at' ⋄ pex←2⊃ex ⋄ →(pex∧(1⊃ex)<now)/0
@@ -404,6 +444,115 @@ SlHas←{∨/(⊂⍺)≡¨⍵}                                ⍝ ⍺=string ⍵
  →(~(j⊃inc)IdVerifySignature sp)/fsl
  valid←valid,⊂i⊃signers ⋄ →vl
  count:Z←(≢valid)≥threshold
+∇
+
+⍝ ── §6.2 CAP-6a: unrepresentable temporal fields on INGEST ──────────────────
+⍝ 1 iff every temporal field on `cap` is either ABSENT or a representable uint64.
+⍝
+⍝ §6.2 CAP-6a: a verifier "MUST NOT treat the unrepresentable field as absent".
+⍝ EntUint answers present←0 for BOTH an absent field and a present NEGATIVE one,
+⍝ so `→(pex∧...)` below would silently skip the expiry comparison for
+⍝ expires_at:¯1 and honour a hostile token with 200 — a fail-OPEN, and the whole
+⍝ point of the rule. This MUST run BEFORE the range checks, because the range
+⍝ checks are exactly what the ambiguity defeats.
+⍝
+⍝ All THREE temporal fields are tested, not just expires_at: the oracle probes
+⍝ created_at too, and a guard covering only the two obvious ones reads as correct
+⍝ while leaving a third way in.
+⍝
+⍝ (The >2^64 half of CAP-6a cannot reach here at all: a bignum can only arrive as
+⍝ a major-type-6 tag, which the decoder rejects outright per §6.3.)
+∇Z←TemporalRepresentable cap
+ Z←0
+ →(0>cap EntUintState'expires_at')/0
+ →(0>cap EntUintState'not_before')/0
+ →(0>cap EntUintState'created_at')/0
+ Z←1
+∇
+
+⍝ ── §5.6 MIN_DEFINED temporal ceiling (CAP-5 / CAP-6) ───────────────────────
+⍝ Every term below is a (value present) pair — the same shape EntUint answers in.
+
+⍝ §5.6 rule 3 as an exact VALUE test.
+⍝
+⍝ A term whose conversion created_at+ttl_ms is not representable as uint64 is
+⍝ treated as ABSENT, exactly as a null term is. It MUST NOT wrap and MUST NOT
+⍝ saturate to a representable maximum — a saturated 2^64-1 is a finite bound no
+⍝ reader can distinguish from a deliberate one.
+⍝
+⍝ GNU APL has no fixed-width integer to overflow: past 2^53 its integers promote
+⍝ to FLOAT, so the carry-flag test a C or asm peer writes here would silently
+⍝ lose precision and answer "representable" for a value that is not. The test is
+⍝ therefore done in the 8-octet base-256 carrier the value model already uses,
+⍝ where it is exact — the sum overflows iff it carries out of the top octet.
+⍝ The invariant is the VALUE, never the mechanism.
+⍝
+⍝ ttl_ms == 0 is NOT special-cased, deliberately: §5.6 rule 2 makes 0 a DEFINED
+⍝ term yielding created_at (expire immediately), and an ABSENT field is the only
+⍝ "no bound" spelling. Letting 0 fall out of the arithmetic is what stops the two
+⍝ collapsing into each other.
+∇Z←createdAt AddTtlOct ttlOct;s;c;i;d;x
+ x←(8⍴256)⊤createdAt
+ s←8⍴0 ⋄ c←0 ⋄ i←9
+ al:→(i≤1)/done
+ i←i-1
+ d←(i⊃x)+(i⊃ttlOct)+c
+ s[i]←256|d ⋄ c←⌊d÷256
+ →al
+ done:Z←0 0
+ →(0≠c)/0
+ Z←(256⊥s)1
+∇
+
+⍝ MIN over the DEFINED terms only; no expiry at all when no term is defined.
+⍝
+⍝ This is a value reached by CONSTRUCTION, not a bound verified by COMPARISON.
+⍝ The oracle's own CAP-5 message makes the distinction: "a `<= caller_exp` check
+⍝ would pass this; CAP-5 requires the exact clamped value" — so an implementation
+⍝ that merely verifies the minted expiry is within the caller's satisfies a
+⍝ strictly weaker test than the one being run.
+∇Z←MinDefinedExpiry terms;i;t
+ Z←0 0 ⋄ i←0
+ ml:→(i≥≢terms)/0
+ i←i+1 ⋄ t←i⊃terms
+ →(~2⊃t)/ml
+ →((2⊃Z)∧(1⊃Z)≤1⊃t)/ml
+ Z←(1⊃t)1
+ →ml
+∇
+
+⍝ the absolute caller_capability.expires_at term. A request presenting no
+⍝ capability contributes no term.
+∇Z←CallerCapExpiryTerm cap
+ Z←0 0
+ →(~EntPresent cap)/0
+ Z←cap EntUint'expires_at'
+∇
+
+⍝ the absolute parent.expires_at term, for the delegate path. `request` mints a
+⍝ ROOT token (parent nil) and contributes no term here — which is exactly why the
+⍝ caller-cap term above has to carry the ceiling.
+∇Z←inc ParentExpiryTerm parent;tok
+ Z←0 0
+ →(0=≢parent)/0
+ →(HashZero parent)/0
+ tok←inc CapResolve parent
+ →(~EntPresent tok)/0
+ Z←tok EntUint'expires_at'
+∇
+
+⍝ read a DURATION field (ttl_ms) off `e` and convert it to an absolute timestamp
+⍝ against createdAt, per §5.6 rule 1. No term when the field is absent; no term
+⍝ when the conversion is unrepresentable (rule 3). Mixing a duration in
+⍝ UNCONVERTED would yield a timestamp near the epoch and clamp every token to
+⍝ already-expired — the failure mode §5.6 names.
+∇Z←createdAt DurationTerm a;e;key;r
+ e←1⊃a ⋄ key←2⊃a
+ Z←0 0
+ →(~EntPresent e)/0
+ r←(EntDataMap e)MUintOct key
+ →(~2⊃r)/0
+ Z←createdAt AddTtlOct 1⊃r
 ∇
 
 ⍝ ── §5.5 chain verification -> CV_ALLOW / CV_AUTHZ_DENY; sets unresolvable (-> 401). ──
@@ -448,7 +597,9 @@ SlHas←{∨/(⊂⍺)≡¨⍵}                                ⍝ ⍺=string ⍵
  →(~EntPresent ge)/unresmark
  →temporal
  unresmark:Z←CV_AUTHZ_DENY 1 ⋄ →0
- temporal:now←CapNowMs
+ temporal:→(TemporalRepresentable current)/e0    ⍝ §6.2 CAP-6a — BEFORE the range checks
+ good←0 ⋄ →wl
+ e0:now←CapNowMs
  nb←current EntUint'not_before' ⋄ pnb←2⊃nb ⋄ →(~(pnb∧now<1⊃nb))/e2 ⋄ good←0
  e2:ex←current EntUint'expires_at' ⋄ pex←2⊃ex ⋄ →(~(pex∧(1⊃ex)<now))/link ⋄ good←0
  link:→(i≥nn)/wl

@@ -43,7 +43,7 @@ rust	M2	c1b0708	clean-room; compile-enforced store safety
 typescript	M2	c1b0708	major ecosystem
 ada	M3	c1b0708	structural store-safety via protected objects
 c	M3	c1b0708	ubiquitous; found A-C-009
-cobol	M3	c1b0708	FFI-hybrid; standing 27-FAIL liveness cascade
+cobol	M3	c1b0708	FFI-hybrid; 755 · 0F
 cpp	M3	c1b0708	reach peer
 crystal	M3	c1b0708	CSP fibers; fixed-width int
 dart	M3	c1b0708	sealed-Result + Future; BigInt-web
@@ -54,7 +54,7 @@ php	M3	c1b0708	event-loop store-safety
 prolog	M3	c1b0708	logic substrate; found A-PL-006
 ruby	M3	c1b0708	dynamic; native agility
 zig	M3	c1b0708	lightest supply chain
-apl	probe	none	UNMEASURABLE — upstream-blocked (1.9->2.0 cool-down); excluded from census by standing policy
+apl	probe	c1b0708	array value-model; 755 · 0F — was carried as UNMEASURABLE for a toolchain claim that was false
 asm-arm64	probe	c1b0708	ISA port; 755 · 0F
 asm-x86_64	probe	c1b0708	lowest-level substrate; 755 · 0F
 datalog	probe	c1b0708	authority-as-query (Ascent); closes the logic frontier

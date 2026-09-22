@@ -101,6 +101,25 @@ ArrCount←{(EV_ARRAY=1⊃⍵)×≢2⊃⍵}                  ⍝ #elements (0 if
  Z←(256⊥1⊃r)(2⊃r)
 ∇
 
+⍝ TRI-STATE read of a uint field -> 0 absent · 1 present-and-uint64 · ¯1 present-
+⍝ but-unrepresentable.
+⍝
+⍝ MUint/MUintOct above answer `present←0` for BOTH an absent field and a present
+⍝ non-uint one (a negative int arrives as EV_NINT, text as EV_TEXT, ...), which
+⍝ is correct for a field where "unusable" and "missing" mean the same thing and
+⍝ is a FAIL-OPEN on a security-relevant one: §6.2 CAP-6a says a verifier "MUST
+⍝ NOT treat the unrepresentable field as absent", and an `if present` guard over
+⍝ a temporal field silently SKIPS the check a hostile value was meant to defeat.
+⍝ Callers that care about the distinction read this, never MUint's second cell.
+∇Z←m MUintState key;v
+ v←m MGet key
+ Z←0
+ →(EV_ABSENT=1⊃v)/0
+ Z←1
+ →(EV_UINT=1⊃v)/0
+ Z←¯1
+∇
+
 ⍝ bool field (0/1); 0 if absent or not bool.
 ∇Z←m MBool key;v
  Z←0

@@ -64,6 +64,9 @@ EntAbsent←0 '' (EV_ABSENT ⍬)(⍬)
 ∇Z←e EntUint key            ⍝ -> (value present)
  Z←(EntDataMap e)MUint key
 ∇
+∇Z←e EntUintState key       ⍝ -> 0 absent · 1 uint64 · ¯1 present-but-unrepresentable
+ Z←(EntDataMap e)MUintState key
+∇
 ∇Z←e EntFieldV key          ⍝ raw value at key
  Z←(EntDataMap e)MGet key
 ∇

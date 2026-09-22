@@ -22,13 +22,23 @@ working-storage section.
    05 ws-c occurs 8192.
       10 ws-c-hash  pic x(33).
       10 ws-c-len   pic 9(9) comp-5.
-      10 ws-c-bytes pic x(4096).
+      10 ws-c-bytes pic x(8192).
 01 ws-tree.
    05 ws-t occurs 8192.
       10 ws-t-plen  pic 9(9) comp-5.
       10 ws-t-path  pic x(700).
       10 ws-t-hash  pic x(33).
 01 ws-cmax     pic 9(9) comp-5 value 8192.
+*> Per-entity capacity of ws-c-bytes, in bytes. Every caller of store-put /
+*> store-bind / store-get-* passes an 8192-byte buffer, so this is the one
+*> number that has to agree across the whole store surface — and it is checked
+*> BEFORE each copy rather than assumed. An entity larger than this used to be
+*> memcpy'd into the 4096-byte slot regardless: glibc's _FORTIFY_SOURCE caught
+*> it and killed the process, so ONE oversized (but under-frame-cap) tree.put
+*> from any caller terminated the peer. Callers reject over-capacity entities
+*> at the handler, where a status can be returned; this guard is the backstop
+*> that makes the buffer size stop being load-bearing for memory safety.
+01 ws-entmax   pic 9(9) comp-5 value 8192.
 01 ws-i        pic 9(9) comp-5.
 01 ws-idx      pic 9(9) comp-5.
 01 ws-found    pic 9(1).
@@ -53,7 +63,7 @@ working-storage section.
       10 ws-l-child   pic 9(1).
 linkage section.
 01 lk-hash     pic x(33).
-01 lk-ent      pic x(4096).
+01 lk-ent      pic x(8192).
 01 lk-len      pic 9(9) comp-5.
 01 lk-path     pic x(700).
 01 lk-plen     pic 9(9) comp-5.
@@ -81,6 +91,7 @@ entry "store-init".
 *> Bounded: silently drop past the table cap rather than write OOB (which would
 *> corrupt the tables and cascade into resolution failures over a long run).
 entry "store-put" using lk-ent lk-len lk-hash.
+    if lk-len > ws-entmax then goback end-if
     perform find-content
     if ws-found = 0 and ws-cn < ws-cmax
         add 1 to ws-cn
@@ -92,6 +103,7 @@ entry "store-put" using lk-ent lk-len lk-hash.
 
 *> ---- store-bind : put + set tree[path] = hash ----------------------
 entry "store-bind" using lk-path lk-plen lk-ent lk-len lk-hash.
+    if lk-len > ws-entmax then goback end-if
     perform find-content
     if ws-found = 0 and ws-cn < ws-cmax
         add 1 to ws-cn

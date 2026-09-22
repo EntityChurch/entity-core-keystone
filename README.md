@@ -223,21 +223,37 @@ Both are verbatim, byte-for-byte, SHA-256-pinned snapshots with provenance in th
 The whole cohort is measured at **one** pin — the 755-check set `95edd774…`, spec snapshot
 `v0.8.2` — with every row a fresh measurement at that pin:
 
-- **41 of the 45 measurable peers pass `--profile core` 0-FAIL.** Tiers M1 (5/5) and M2 (8/8) since
-  2026-08-22; M3 12/13 since 2026-08-28; the probes 14/18 and exploratory 2/2 since 2026-08-29. The maintenance-tier gate is green.
-- **`cobol` 30F** — the CAP trio plus its standing 27-FAIL liveness cascade, a separate
-  investigation.
-- **3 peers produce INVALID MEASUREMENTS** (`asm-x86_64`, `asm-arm64`, `riscv64`) — starved runs
-  that executed fewer checks than the pinned set. They are quarantined, not scored. A run measured
-  on a different set of checks is not a worse score; it is not a score.
+- **All 46 peers pass `--profile core` 0-FAIL** (2026-08-30). Tiers M1 (5/5), M2 (8/8), M3 (13/13),
+  probes 18/18, exploratory 2/2. The cohort check-set gate exits 0 for the first time since the
+  755-check re-pin, over every peer in the tree with no exclusions.
+- **`cobol` was 30F, and 24 of those were a cascade behind one memory-safety defect** — an unchecked
+  copy of wire data into a fixed field, which hardened libc turned into a process kill. The peer
+  died on a 16 KiB `tree.put` and every later check reported connection-refused. Bounding the three
+  such copies, then fixing the five real defects underneath, took it to 0-FAIL.
+- **The three ISA peers were quarantined as INVALID MEASUREMENTS for a diagnosis that was wrong.**
+  Filed for months under a "connection-pressure family", the actual cause was a §4.9(c) silent drop:
+  the op-routing ladder compares an operation's *length* before its bytes, `ping` collides with
+  `echo` at length 4, and that branch answered nothing at all. Every connection-churn cycle ends
+  with a `ping`, so every cycle burned the caller's full 20 s read deadline until the suite's budget
+  expired and nine categories never ran. `concurrency` went from 599 s to 1.1 s. **A silent drop is
+  billed to the caller, so it presents as the peer being slow rather than wrong** — which is why
+  five investigations of the peer's health all found a healthy peer.
 - **`wasm-wat`** was the last peer the propagation had not reached, and its failures turned out not
   to be the CAP feature at all: the hand-authored WebAssembly peer had **no §5.5 delegation chain**,
   so a delegated capability was refused two gates before the mint was reached, and about ten
   `security` chain vectors were passing *because* of that refusal rather than because of anything
   they test. The chain walk, §5.5a canonicalization, §5.6 attenuation, delegation caveats and §3.6
-  K-of-N landed 2026-08-29; it is 0-FAIL. *(`turbowarp`, the block-interpreter probe, took the
-  ordinary CAP fix the same day.)*
-- `apl` remains upstream-blocked and unmeasured.
+  K-of-N landed 2026-08-29; it is 0-FAIL. It then became the reference for the same gap in all three
+  ISA peers. *(`turbowarp`, the block-interpreter probe, took the ordinary CAP fix the same day.)*
+- **`apl` was never unmeasurable, and the label had outlived its reason by three days.** It was
+  carried as "upstream-blocked" on the claim that GNU had deleted `apl-1.9.tar.gz`. GNU had
+  *reorganized* the download tree into per-version subdirectories; the tarball answers HTTP 200
+  today. The container had already been moved to APL 2.0 and **built successfully on 2026-08-28** —
+  nobody re-ran the peer against it. One harness invocation produced a valid 755-check measurement
+  in 109 s. The 8 failures it exposed were closed the same session, and **seven of the eight were
+  cohort defect classes this peer had sat out** — including the §6.2 register guard that had reached
+  44 of 45 peers on 2026-08-17. An exclusion is a claim with an expiry date; this one was enforced
+  by the very tool that would have disproved it.
 
 **The failures were never regressions — they were a feature nobody had implemented.** §5.6's
 MIN_DEFINED temporal ceiling (a minted capability's lifetime must be clamped by the caller's expiry
@@ -246,19 +262,21 @@ conformance vector exercised it until this pin. Fixing M1 also turned up a **fai
 `go`/`haskell`/`ocaml` *honored* a capability whose `expires_at` was negative — and a §6.3 rule every
 peer was breaking: a rejected frame is owed a `400 non_canonical_ecf`, not silence.
 
-**The fix shape did not vary across thirty-six languages** — roughly 200 lines over five or six
+**The fix shape did not vary across thirty-seven languages** — roughly 200 lines over five or six
 files, in the same five places every time — and that invariance is the strongest evidence the spec
 reading is right, rather than merely that the tests pass. Two peers turned out to be carrying more
 than the CAP trio, and both were found the same way: **fixing a wrong denial made the FAIL count go
 UP, and the new failures were the truth.** `sql` went 2F → 7F → 0F once a scope-canonicalization bug
 stopped standing in for two authorization checks it had never implemented.
 
-> **The honest one-line summary: 41 of 45 measured peers are publishable today.** "No green report →
-> no publish" is unchanged, and it now withholds the other **4** — plus the unmeasured `apl`, which
-> has no green report either, so 5 of the 46 in the tree. (Written as a subtraction on purpose: two
-> numbers in one sentence that must sum to a third is a shape that rots silently, and this one has
-> been wrong before.) `CONFORMANCE-MATRIX.md` is authoritative — its banner carries the full
-> accounting, §1a the invalid measurements, §1b the cascade.
+> **The honest one-line summary: all 46 peers in the tree are publishable today.** "No green report
+> → no publish" is unchanged and now withholds nothing. **Read that as a statement about the wire,
+> not about the peers.** These 46 share a generation lineage and pass one author's vectors at one pinned check
+> set: cohort-consistent, not independent convergence. Two rows carry a disclosed gap behind their
+> 0-FAIL verdict — the ISA trio still over-publishes extension type vocabularies, and `cobol` cannot
+> accept two of the concurrency probes' payloads — both named in `CONFORMANCE-MATRIX.md` rather than
+> left to be found. That file is authoritative: its banner carries the full accounting, §1a the
+> retracted invalid-measurement diagnosis, §1b the cascade.
 
 ### On the word "independent"
 

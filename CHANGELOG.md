@@ -11,6 +11,98 @@ Work since the initial public research-preview. No release has been cut; this se
 running record, not a version claim. **`CONFORMANCE-MATRIX.md` is the authoritative per-peer
 state** — the entries here are a summary of what moved and why, and they defer to it on numbers.
 
+### `apl` was never unmeasurable (2026-08-30) — **45 → 46 of 46, the cohort closes for real**
+
+Filed hours after the entry below, which claimed the cohort was closed at 45 with `apl` excluded
+"for an upstream toolchain reason." That claim was wrong in three independent ways, and each was
+checkable in under a minute:
+
+- **GNU did not delete `apl-1.9.tar.gz`.** It reorganized `gnu/apl/` into per-version
+  subdirectories when 2.0 shipped. `ftp.gnu.org/gnu/apl/apl-1.9/apl-1.9.tar.gz` answers **HTTP
+  200**. The 2026-08-27 investigation checked six mirrors, found the *flat* path 404 on all of
+  them, and read that as deletion — but every mirror carries the same reorganization, so six
+  agreeing sources were six copies of one observation. **A path change and a deletion look
+  identical from a single URL, and mirroring does not make the sample independent.**
+- **The image was not unbuildable.** It had been moved to APL 2.0 on 2026-08-27 and **built
+  successfully on 2026-08-28**. Nobody ran the peer against it.
+- **The census hard-coded `apl) ... rc=125`**, so the one peer nobody could measure was the one
+  peer the census would not attempt. The exclusion removed the only thing that could falsify it.
+
+One harness invocation produced a valid 755-check measurement in 109 s. Final:
+**`755 · 0F — 311P/338W/0F/106S` at digest `95edd774…`**, measured twice by two destinations of the
+same tool and agreeing byte-for-byte. `check-set-gate.py --tracked` reads **46 / 46**.
+
+**Seven of the 8 failures were cohort classes this peer had sat out**, including the §6.2
+reserved-pattern register guard that reached 44 of 45 peers on 2026-08-17 — `apl` was the sole
+omission, and the label is why. Two are worth naming:
+
+- **The F40 id-scope pair reproduced `cobol`'s two-defects-holding-each-other-up shape exactly.**
+  `handlers`, `operations` and `peers` are ID-scope (§5.2/F40) and must match literally; all three
+  were being canonicalized, so an include of `/{local}/get` authorized the bare `get` while an
+  exclude of `/*/get` denied it. Removing the canonicalization alone takes every CAP check to 403,
+  because the handlers dimension was separately compared as the *absolute resolved path* against
+  grants that name handlers relatively. Neither defect is visible while the other stands.
+- **The §6.3 400 branch existed and was unreachable.** `OnFrame` had the
+  `400 non_canonical_ecf` response ready, but the `WirePeek` that recovers the `request_id` used the
+  strict decoder, so a tagged frame bailed two lines earlier and was dropped on the floor. The
+  cohort-standard salvage decode took CAP-6a from WARN to PASS on all six variants and cut the run
+  from 149 s to 89 s — the dropped frames had been billing each caller a full timeout. **A refusal
+  that exists but cannot be reached is a §4.9(c) silent drop.**
+
+**The rule, ratcheted in `AGENTS.md`: an exclusion is a claim with an expiry date.** This one
+asserted a fact about someone else's web server, was never re-checked, survived the repair of its
+own cause, and was enforced by the tool that would have disproved it — while silently converting a
+published headline from a measurement into an assumption. `run-cohort-census.sh` now carries no
+per-peer exclusion at all; a peer can only leave the census by leaving the roster, where
+`tier-status.py` reports it.
+
+*Also corrected here: `AGENTS.md`'s ratified lesson "an upstream tarball can be DELETED, not merely
+superseded" rested on this false premise. The conclusion — record the digest, prefer an archive —
+survives; the evidence for it does not, and the entry now says so.*
+
+### The cohort closes (2026-08-30) — 41 publishable peers → **45 of 45 measurable**
+
+*(Superseded the same day by the entry above: it was 46 of 46, and `apl` was measurable. Left in
+place because the four peers below are accurate and the wrong premise is the more useful record.)*
+
+The last four peers reached `755 · 0F` at the pinned check set. `apl` remains unmeasurable for an
+upstream toolchain reason (GNU deleted the pinned tarball), which is not a conformance state.
+
+**Two of the four had been misdiagnosed, and saying so is the point of this entry.**
+
+- **`cobol` 30F → 0F — 24 of the 30 were a cascade.** `tree-handler` copied the wire entity into a
+  fixed 8192-byte field with the length computed from wire offsets and no test between the two. A
+  16 KiB `tree.put` — the oracle's own staging payload — overflowed it, glibc's `_FORTIFY_SOURCE`
+  **terminated the peer**, and every check after that reported connection-refused. Two more copies
+  of the same shape were reachable from the wire. All three now bound before the copy and answer a
+  status. **The peer's oversize-frame path was correct throughout**, which is exactly why the defect
+  survived: `resource_bounds` passes, so "oversize frames are handled" reads as evidence. The
+  in-range path was the one without a guard. Underneath sat five real defects, including a
+  `created_at` that was a compile-time constant and an id-scope dimension that was being
+  canonicalized — which overgranted *and* over-denied at the same time.
+- **`asm-x86_64` · `asm-arm64` · `riscv64` INVALID → 0F — the "connection-pressure family" never
+  existed.** These three were quarantined for months as starved runs. The cause was a §4.9(c) silent
+  drop: the op-routing ladder compares an operation's *length* before its bytes, `ping` collides
+  with `echo` at length 4, and that branch returned without writing any frame. Every
+  connection-churn cycle ends with a `ping`, so every cycle burned the caller's full 20 s read
+  deadline; the suite's 10-minute budget expired at cycle 29 of 100 with nine categories never run.
+  `concurrency`: 599 s → 1.1 s, 6/6. **A silent drop is billed to the caller, so it presents as the
+  peer being slow rather than wrong** — five separate investigations of the peer's health all
+  correctly found a healthy peer. `CONFORMANCE-MATRIX.md` §1a carries the retraction with the
+  superseded measurements left intact.
+- **All three ISA peers also gained the full §5.5 delegation chain**, §5.6 attenuation, §5.5a
+  framing, §3.6 K-of-N and the §6.2 mint ceiling, ported from `wasm-wat`. Their CAP-5/CAP-6 failures
+  were never the mint: both checks present a *delegated* capability and were refused two gates
+  earlier by a fail-closed root-trust placeholder. `asm-arm64` and `riscv64` came back
+  severity-identical on all 755 checks.
+
+**Disclosed rather than closed.** The ISA trio still over-publishes extension type vocabularies, so
+their `594-595P/53-55W` is a scope violation and not better conformance than the cohort-standard
+`312P/337W`; `asm-arm64`/`riscv64` never received `asm-x86_64`'s §4.10(c) admission bound (a SHOULD,
+scored WARN); `cobol` cannot accept two concurrency probes' payloads and now refuses them with `413`
+instead of crashing. **45 of 45 is cohort-consistency, not independent convergence** — one
+generation lineage, one author's vectors, one pinned check set.
+
 ### The CAP propagation (2026-08-28) — 13 publishable peers → 39 of 45
 
 One unimplemented spec feature, measured across the cohort, now closed everywhere it could be

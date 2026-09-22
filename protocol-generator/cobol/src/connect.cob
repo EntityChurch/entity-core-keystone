@@ -75,6 +75,9 @@ identification division.
 program-id. connect-handler.
 data division.
 working-storage section.
+01 mint-now  pic 9(18) comp-5.
+01 no-exp    pic 9(1) value 0.
+01 no-expv   pic 9(18) comp-5 value 0.
 01 op       pic x(32).
 01 op-len   pic 9(9) comp-5.
 01 k-op     pic x(9) value "operation".
@@ -359,8 +362,10 @@ do-auth.
     call "ps-flags" using openf conff
     move 0 to grants-len
     call "build-grants" using grants grants-len openf
+    call "ec_now_ms" using mint-now
     call "mint-token" using ridhash grants grants-len
         token token-len token-hash csig csig-len csig-hash
+        mint-now no-exp no-expv
     move 1 to c-estab
     *> result = system/capability/grant {token: bytes token-hash}
     move 0 to nd-len

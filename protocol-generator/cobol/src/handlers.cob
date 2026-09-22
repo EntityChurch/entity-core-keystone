@@ -432,6 +432,7 @@ working-storage section.
 01 endo   pic 9(9) comp-5.
 01 nent   pic x(8192).
 01 nentlen pic 9(9) comp-5.
+01 entmax pic 9(9) comp-5 value 8192.
 01 nhash  pic x(33).
 01 exph   pic x(33).
 01 expl   pic 9(9) comp-5.
@@ -567,6 +568,20 @@ do-put.
     move eoff to endo
     call "cbor-skip" using lk-env endo st
     compute nentlen = endo - eoff
+    *> §9.1 payload bound, checked BEFORE the copy. `nent` is a fixed 8192-byte
+    *> field and the entity comes straight off the wire, so an entity larger than
+    *> the field used to be copied into it anyway — glibc's _FORTIFY_SOURCE caught
+    *> the overflow and TERMINATED the peer. One 16 KiB tree.put (t1_4's staging
+    *> payload) killed it, and everything after that check in the run failed with
+    *> connection-refused: 24 cascade FAILs from one unchecked MOVE. A payload the
+    *> peer cannot store is refused with a status, which is what §4.10(a) asks for
+    *> and what leaves the connection usable.
+    if nentlen > entmax
+        move 413 to lk-status
+        move "payload_too_large" to errc move 17 to errcl
+        call "error-result" using errc errcl lk-res lk-reslen lk-reshash
+        exit paragraph
+    end-if
     move lk-env(eoff:nentlen) to nent(1:nentlen)
     call "ent-hash" using nent one nhash
     *> expected_hash (optional)
@@ -626,6 +641,18 @@ identification division.
 program-id. capability-handler.
 data division.
 working-storage section.
+01 mintnow  pic 9(18) comp-5.
+01 hasexp   pic 9(1).
+01 expv     pic 9(18) comp-5.
+01 cexp     pic 9(18) comp-5.
+01 ttlv     pic 9(18) comp-5.
+01 ttlterm  pic 9(18) comp-5.
+01 okv      pic 9(1).
+01 ttlmax   pic 9(18) comp-5 value 999999999999999999.
+01 k-ex     pic x(10) value "expires_at".
+01 k-ex-len pic 9(9) comp-5 value 10.
+01 k-ttl    pic x(6) value "ttl_ms".
+01 k-ttl-len pic 9(9) comp-5 value 6.
 01 op     pic x(32).
 01 oplen  pic 9(9) comp-5.
 01 voff   pic 9(9) comp-5.
@@ -818,8 +845,60 @@ do-request.
             call "cbor-skip" using lk-env reqcur st
         end-perform
     end-if
+    *> ---- §6.2 CAP-5 / §5.6 MIN_DEFINED mint ceiling ----
+    *>
+    *>   expires_at = MIN_DEFINED( caller_capability.expires_at,   <- ABSOLUTE
+    *>                             created_at + request.ttl_ms )   <- DURATION
+    *>
+    *> `request` mints a ROOT token (no parent), so §5.6's parent-child attenuation
+    *> never reaches it; without this clamp, temporal attenuation is the one
+    *> dimension a requester could escape and policy withdrawal would have no
+    *> bounded latency. This is NOT an authorization decision — an over-long ttl_ms
+    *> from a bounded caller MINTS the clamped value and returns 200, and refusing
+    *> it is non-conformant. The value is reached BY CONSTRUCTION: a
+    *> `<= caller_exp` comparison satisfies a strictly weaker test than the one the
+    *> oracle runs, so there is deliberately no such comparison here.
+    *>
+    *> §5.6's third term, created_at + policy_entry.ttl_ms, is structurally absent
+    *> on this peer: it writes policy entries (configure) but never reads one back
+    *> on the request path. That is a missing TERM, not a missing rule.
+    call "ec_now_ms" using mintnow
+    move 0 to hasexp
+    move 0 to expv
+    call "ent-field" using capbuf one k-ex k-ex-len voff vf
+    if vf = 1
+        call "read-uint-ck" using capbuf voff cexp okv
+        if okv = 1
+            move cexp to expv
+            move 1 to hasexp
+        end-if
+    end-if
+    if pfd = 1
+        call "ent-field" using lk-env poff k-ttl k-ttl-len voff vf
+        if vf = 1
+            call "read-uint-ck" using lk-env voff ttlv okv
+            *> §5.6 rule 3: a term that does not fit is DROPPED — never wrapped,
+            *> never saturated. read-uint-ck refuses anything outside this
+            *> substrate's 9(18) range, and the sum is range-checked the same way
+            *> rather than allowed to truncate. ttl_ms = 0 is NOT special-cased
+            *> (rule 2): it falls out as created_at, which is what keeps "expire
+            *> immediately" from collapsing into the absent / "no bound" spelling.
+            if okv = 1 and ttlv <= ttlmax and mintnow <= ttlmax
+                compute ttlterm = mintnow + ttlv
+                if ttlterm <= ttlmax
+                    if hasexp = 0
+                        move ttlterm to expv
+                        move 1 to hasexp
+                    else
+                        if ttlterm < expv then move ttlterm to expv end-if
+                    end-if
+                end-if
+            end-if
+        end-if
+    end-if
     call "mint-token" using author grants grantslen
         token token-len token-hash csig csig-len csig-hash
+        mintnow hasexp expv
     *> result = system/capability/grant { token: bytes token-hash }
     move 0 to nd-len
     call "b-map"   using nd nd-len n1
@@ -1013,6 +1092,9 @@ identification division.
 program-id. do-register.
 data division.
 working-storage section.
+01 mint-now  pic 9(18) comp-5.
+01 no-exp    pic 9(1) value 0.
+01 no-expv   pic 9(18) comp-5 value 0.
 01 pat    pic x(64).
 01 patlen pic 9(9) comp-5.
 01 ok     pic 9(1).
@@ -1260,8 +1342,10 @@ procedure division using lk-env lk-rootoff lk-status lk-res lk-reslen lk-reshash
 
     *> ---- (3) self-signed grant token ----
     call "ps-idhash" using idhash
+    call "ec_now_ms" using mint-now
     call "mint-token" using idhash gscope gslen
         token token-len token-hash csig csig-len csig-hash
+        mint-now no-exp no-expv
     move s-grants to rel(1:25)
     move pat(1:patlen) to rel(26:patlen)
     compute rellen = 25 + patlen

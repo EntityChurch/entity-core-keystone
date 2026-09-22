@@ -18,7 +18,8 @@
 #     localhost/entity-core-keystone/cobol-toolchain:latest \
 #     sh /work/protocol-generator/cobol/run-s4.sh [validate-peer-args...]
 #
-# Default args: -profile core. ORACLE/PORT/NOBUILD/VALIDATE env overrides.
+# Default args: -profile core. ORACLE/PORT/NOBUILD/VALIDATE env overrides
+# (VALIDATE defaults to 1).
 
 set -eu
 PORT="${PORT:-7777}"
@@ -50,7 +51,11 @@ if [ "${NOBUILD:-0}" != "1" ]; then
   make host >/tmp/cobol-build.log 2>&1 || { cat /tmp/cobol-build.log; exit 1; }
 fi
 
-VALIDATE_FLAG=""; [ "${VALIDATE:-0}" = "1" ] && VALIDATE_FLAG="--validate"
+# --validate ON by default, as every other peer's harness has it. It gates the
+# system/validate/* conformance handlers, and without them four concurrency
+# checks (t1_2 reentry, t1_3, t1_4, t2_1) SKIP rather than run — a coverage gap
+# that reads as a clean report. Set VALIDATE=0 to reproduce the old measurement.
+VALIDATE_FLAG=""; [ "${VALIDATE:-1}" = "1" ] && VALIDATE_FLAG="--validate"
 
 # Provision the standard on-disk identity so the multisig accept-path probe can
 # co-sign as the peer. Seed 0x11x32 (base64 "ERER…") == host default => peer_id
