@@ -34,3 +34,124 @@
 # what", docs/STATUS.md "where does it stand" — all four declared canonical and written
 # for that reader.
 docs/status
+
+# ── 2026-09 — the origination axis is retired: 31 `run-origination-core.sh` ──────
+#
+# WHAT A CALLER LOSES: the command. `protocol-generator/<lang>/run-origination-core.sh`
+# is gone from all 31 peers that had one, with no shim and no replacement at that path.
+# If you invoke it from CI, a wrapper, or habit, it will not be found.
+#
+# WHAT A CALLER DOES NOT LOSE: the coverage. The axis carried three checks — the §6.11
+# dispatch-outbound-reentry probes against the reference peer — and they were only ever
+# run for the 31 peers that happened to have a harness. They now run for ALL 46 peers
+# inside the ordinary conformance census, `protocol-generator/<lang>/run-s4.sh`, which
+# every caller already runs. That is why the axis was retired rather than deprecated:
+# a second entry point for checks the main one now performs is a second answer to the
+# same question, and the two can drift.
+#
+# ⚠ THE READER-FACING RESIDUE, STATED RATHER THAN IMPLIED. Deleting the script did not
+# delete the sentences that name it. 24 peer `README.md` files still print it as a
+# runnable command, and the per-peer `status/` reports cite it in their measurement
+# records. The reports are dated evidence of what was run on a day and are correct as
+# written; the READMEs are wrong and are being corrected as a separate pass, because a
+# 119-file mechanical rewrite landing inside a release cut is the shape that has already
+# damaged pinned files in this tree once. **If a README tells you to run it, the command
+# you want is that peer's `run-s4.sh`.**
+#
+# ENUMERATED, NOT DECLARED BY PREFIX — and this is the opposite call to the one below.
+# There is no directory here that was retired; the 31 files sit one per language tree
+# beside everything those trees still publish, so the only prefix that would cover them
+# is `protocol-generator` itself — every peer, every corpus, every source file. That is
+# not a declaration, it is an exemption. The list is also CLOSED: the axis is gone, so
+# no future peer can add a line to it. A list that is complete and cannot grow is worth
+# writing out; a prefix that covers a product directory forever is not.
+protocol-generator/ada/run-origination-core.sh
+protocol-generator/c/run-origination-core.sh
+protocol-generator/common-lisp/run-origination-core.sh
+protocol-generator/cpp/run-origination-core.sh
+protocol-generator/csharp/run-origination-core.sh
+protocol-generator/dart/run-origination-core.sh
+protocol-generator/datalog/run-origination-core.sh
+protocol-generator/elixir/run-origination-core.sh
+protocol-generator/forth/run-origination-core.sh
+protocol-generator/go/run-origination-core.sh
+protocol-generator/haskell/run-origination-core.sh
+protocol-generator/io/run-origination-core.sh
+protocol-generator/java/run-origination-core.sh
+protocol-generator/julia/run-origination-core.sh
+protocol-generator/kotlin/run-origination-core.sh
+protocol-generator/nim/run-origination-core.sh
+protocol-generator/ocaml/run-origination-core.sh
+protocol-generator/oz/run-origination-core.sh
+protocol-generator/pd/run-origination-core.sh
+protocol-generator/php/run-origination-core.sh
+protocol-generator/prolog/run-origination-core.sh
+protocol-generator/python/run-origination-core.sh
+protocol-generator/rexx/run-origination-core.sh
+protocol-generator/ruby/run-origination-core.sh
+protocol-generator/rust/run-origination-core.sh
+protocol-generator/smalltalk/run-origination-core.sh
+protocol-generator/sql/run-origination-core.sh
+protocol-generator/swift/run-origination-core.sh
+protocol-generator/typescript/run-origination-core.sh
+protocol-generator/unison/run-origination-core.sh
+protocol-generator/zig/run-origination-core.sh
+
+# ── 2026-09 — the smoke harness is named for the axis it belongs to ──────────────
+#
+# `protocol-generator/{julia,nim}/run-smoke.sh` → `run-s3.sh`. Same script, same
+# behaviour, new name. Every other peer already called its loopback smoke harness
+# `run-s3.sh`, and these two did not, so the sweep that runs that axis across the
+# cohort silently skipped them — a harness with a private name is a harness nothing
+# can find. If you called `run-smoke.sh`, call `run-s3.sh`.
+protocol-generator/julia/run-smoke.sh
+protocol-generator/nim/run-smoke.sh
+
+# ── 2026-09 — the test-vector corpora are de-versioned ───────────────────────────
+#
+# `protocol-generator/shared/test-vectors/v0.8.0/` is gone, all nine files with it.
+# A corpus is identified by its NAME and its own `CHANGELOG.md`, never by a
+# spec-revision stamp in its path or an artifact version in its filename — a stamped
+# path claims a correspondence to a spec revision that nothing maintains. The nine are
+# replaced by name-identified corpora:
+#
+#   v0.8.0/conformance-vectors-v1.{cbor,diag}  →  ecf-conformance/conformance-vectors.{cbor,diag}
+#   v0.8.0/agility-vectors-v1.{cbor,diag}      →  crypto-agility/agility-vectors.{cbor,diag}
+#   v0.8.0/agility-SEEDS.md                    →  crypto-agility/SEEDS.md
+#   v0.8.0/type-registry-vectors-v1.{cbor,diag},  →  type-registry/…
+#     type-registry-shapes.json
+#   v0.8.0/MANIFEST.md                         →  shared/test-vectors/README.md, which
+#                                                 records the vendor pins and every
+#                                                 RETIRED digest
+#
+# ⚠ IF YOU PINNED THE OLD AGILITY PATH, YOU PINNED RETRACTED BYTES, AND THIS IS NOT A
+# RENAME. `v0.8.0/agility-vectors-v1.cbor` was a second, SUPERSEDED copy of the
+# crypto-agility corpus — the correctly-vendored one was already published beside it
+# under `crypto-agility/`, and the two did not agree. The old copy pinned a re-hash
+# construction that the current specification requires a peer to REFUSE, and one case
+# asserted the wrong content hash for the same reason. Nothing failed while both copies
+# existed, because every consumer reading the old path got the old bytes and agreed with
+# them. Four peers were measured across the change and they split by how they consume the
+# corpus, not by language: the two that LOAD it began failing the moment the duplicate
+# went — real defects in those peers, now fixed — and the two that TRANSCRIBE it had been
+# passing while carrying the identical defect, because peer and test were wrong in the
+# same direction. Repointing at `crypto-agility/` is therefore a correctness fix, not a
+# path change.
+#
+# A PREFIX, and here it is the right shape: the directory itself is what was retired,
+# and a directory cannot lose a file to this without losing all of them.
+protocol-generator/shared/test-vectors/v0.8.0
+
+# ── 2026-09 — the Dart prefetch layer no longer carries its own dependency pins ──
+#
+# `containers/dart-toolchain/prefetch/` held a second, throwaway `pubspec.yaml` that
+# pinned the peer's three direct dependencies exactly and let every transitive
+# dependency float. AN EXACT PIN ON THE DIRECT DEPENDENCIES IS NOT A PIN ON WHAT LANDS
+# IN THE CACHE: on the next image rebuild the transitives re-resolved upstream and the
+# cache drifted out from under a lockfile that had not moved, so the peer would not
+# start at all. The prefetch now seeds from the Dart peer's OWN `pubspec.lock`, so the
+# cache is that lockfile's closure by construction and the two cannot drift; a lockfile
+# that stops resolving now fails the image build, which is the right place to find out.
+# The second copy of the pins is deleted rather than re-synced — two copies of a pin set
+# is the defect, not the fix. Nothing outside the build image read this file.
+containers/dart-toolchain/prefetch

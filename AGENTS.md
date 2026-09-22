@@ -22,6 +22,32 @@ stacks consume it; native-codec languages cross-check against it.
 Out of scope: standard-extension implementations (TREE, CONTENT, IDENTITY, ATTESTATION,
 QUORUM, REGISTRY, RELAY). Community installs those atop the generated peer.
 
+## The public surface — what a release of this repo promises to keep
+
+**This repo's public surface is the generated peers' exported APIs, the codec C-ABI contract
+(`ffi-generator/c-abi/spec/`), the `/entity-rosetta` skill's inputs and outputs, the
+per-peer harness entry points (`run-s2.sh` · `run-s3.sh` · `run-s4.sh`), and — because this
+is the conformance anchor — the SHARED CORPUS PATHS under
+`protocol-generator/shared/{spec-data,test-vectors}/`, each corpus identified by its NAME
+and its own `CHANGELOG.md`.**
+
+**The corpus paths are the sharp part, so it is answered rather than left implied: they ARE
+public surface.** Anything else in the ecosystem is free to pin
+`shared/test-vectors/<corpus>/<artifact>` by path and by digest, and several things do.
+Moving, renaming or re-versioning one of those directories is a **breaking change to this
+repo** even though no code and no wire byte moved, and it is declared in
+`.release-removals` and given a breaking verdict in `CHANGELOG.md` like any other break.
+That is the whole reason a corpus is identified by its name: a name can be promised, and a
+spec-revision stamp in a path cannot.
+
+**Explicitly OUT, and may change in any release without a verdict:** a generated peer's
+`internal/`, `src/internal/` or equivalent non-exported tree; the generator's own
+templates and profile internals; container recipes under `containers/`; the measurement
+and gate tooling under `tools/`; everything under `docs/status/` and `research/stewardship/`.
+**Also out: every generated peer's own version number** — those are claims to their
+language's package ecosystem, they sit on their own axis, and `.version-scope` at the repo
+root is the declaration of which files those are.
+
 ## How we work here — tier **CORE**
 
 This repo runs the entity-OS methodology at the **Core** tier — the framework is
@@ -85,8 +111,8 @@ distinction is stated precisely or not at all.
   before any release and whenever `containers/` changes.
   → [`memory/CONTAINERS-AND-BUILD.md`](docs/agents/memory/CONTAINERS-AND-BUILD.md)
 - **Per-language worktree model:** each target lives under `protocol-generator/<lang>/`
-  (generated `src/`, `profile.toml`, `templates/`, `status/`, `reference/`, `run-s4.sh`,
-  `run-origination-core.sh`). Shared, language-agnostic inputs are in
+  (generated `src/`, `profile.toml`, `templates/`, `status/`, `reference/`, `run-s2.sh`,
+  `run-s3.sh`, `run-s4.sh`). Shared, language-agnostic inputs are in
   `protocol-generator/shared/`.
 - **Three-arm split** — each arm owns its own status; cross-arm coordination flows through
   `research/`:
@@ -180,8 +206,15 @@ Two conformance **oracles** are ground truth (built from `entity-core-go`, see B
   identity + peer-manager interop. `--validate` enables the `system/validate/*` conformance
   handlers, **off by default** (`dispatch-outbound` is a standing dialer, never live in
   production). `--debug-open-grants` is the degenerate seed policy `default→*`, deprecated.
-- **Origination-core probes are reference-peer-gated** — a single-peer `run-s4` honest-SKIPs
-  them; run them via `run-origination-core.sh`.
+- **Origination-core probes are reference-peer-gated, and they run inside `run-s4.sh`.**
+  ⛔ **The separate `run-origination-core.sh` axis is RETIRED — the script is deleted on all
+  31 peers that had one and there is no shim.** It existed for 31 of 46 peers, so the three
+  §6.11 reentry checks were only ever asked of the peers that happened to have a harness;
+  they are now part of the ordinary census for all 46. Without the reference peer up, a
+  single-peer `run-s4` honest-SKIPs them — and a skip counts as a failure.
+  ⚠ **24 peer `README.md` files still print the deleted command**, along with the per-peer
+  `status/` reports. The reports are dated evidence and are correct as written; the READMEs
+  are a live wrong instruction and are owed a corrective pass.
 
 **No green report → no publish** (the shared standard's conformance gate).
 
@@ -189,8 +222,8 @@ Two conformance **oracles** are ground truth (built from `entity-core-go`, see B
 
 Per-language layout under `protocol-generator/<lang>/`: `src/` (generated source),
 `profile.toml`, `templates/`, `status/` (`PHASE-S*.md`, `CONFORMANCE-REPORT.{md,json}`,
-`SPEC-AMBIGUITY-LOG.md`), `reference/` (golden drift files), `run-s4.sh`,
-`run-origination-core.sh`.
+`SPEC-AMBIGUITY-LOG.md`), `reference/` (golden drift files), `run-s2.sh`, `run-s3.sh`,
+`run-s4.sh`.
 
 Shared, language-agnostic — `protocol-generator/shared/`: `spec-data/<version>/` (pinned
 spec snapshot — **`v0.8.2.31` is the newest vendored**, and what the cohort IMPLEMENTS is

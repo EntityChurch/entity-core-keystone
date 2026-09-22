@@ -181,7 +181,7 @@ side a refusal and a silence are indistinguishable.
 `docs/status/TRACKER-<counterpart>.md`:
 
 ```markdown
-_Last read `<counterpart>`'s outbox through 2026-09-16, at `dev` @ `9f1c3ab`._
+_Last read `<counterpart>`'s outbox through `<date>`, at `dev` @ `<short-sha>`._
 ```
 
 Fetch their repo, list their `docs/outbox/` for a filename dated after your watermark, read

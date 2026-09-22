@@ -72,13 +72,13 @@ on the exported surfaces today.
 ## 4. Packaging notes specific to Go
 
 - **No central registry.** Go has no crates.io/npm/NuGet equivalent. A package is a git repo;
-  consumers `go get github.com/entity-core/entity-core-protocol-go@vX.Y.Z`, the version is a SemVer
+  consumers would `go get <module>@<tag>`, the version is a SemVer
   git tag, and the checksum is recorded in *their* `go.sum` + the public `sum.golang.org` transparency
   log. Decentralized + checksum-pinned **by design** — a supply-chain-friendly property. No publish
   command, no index submission.
 - **The module-path / tag nuance (document, don't act).** Go resolves a module path to a repo **+ the
   in-repo directory where `go.mod` lives.** Today `go.mod` is at `protocol-generator/go/src/` inside
-  the keystone monorepo. A clean `go get module@v0.1.0-pre` wants `go.mod` at a repo *root* (the
+  the keystone monorepo. A clean `go get module@<tag>` wants `go.mod` at a repo *root* (the
   standalone-repo lift, Option 2 in ARCHITECTURE-REVIEW §B.1) — otherwise the module path must encode
   the subdir and tags must be subdir-prefixed per Go's sub-module tagging rule. **Recommendation:
   do NOT git-tag for `0.1.0-pre`** — `-pre` is parked pending arch sign-off + a first consumer;

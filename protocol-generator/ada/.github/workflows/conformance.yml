@@ -90,8 +90,6 @@ jobs:
               print("::error::validate-peer core has FAILs — gate not green"); sys.exit(1)
           PY
 
-      # Gate 4 — origination-core (§6.11 reentry over real two-peer TCP, Go entity-peer): 3/3.
-      - name: origination-core (reentry 3/3)
-        run: |
-          podman run --rm --network=none -v "$PWD":/work:Z \
-            "$IMAGE" sh /work/protocol-generator/ada/run-origination-core.sh
+      # The §6.11 origination-core reentry probes used to run here as a separate gate.
+      # The axis is retired: those three checks are part of the `run-s4.sh` census above,
+      # for every peer rather than only the ones that had their own harness.

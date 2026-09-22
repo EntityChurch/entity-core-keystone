@@ -1,0 +1,66 @@
+# .version-scope — the version-bearing paths that are NOT on this repo's release axis.
+#
+# One path or glob per line; `#` comments allowed. A release requires every version-bearing
+# file in the tree to carry the release version, and is refused when one disagrees. The
+# paths listed here are declared to be on a DIFFERENT axis, so a number that differs from
+# the repo's release version is the correct state, not drift.
+#
+# IT IS A SCOPE DECLARATION, NOT A MUTE SWITCH. A path listed here still has a version and
+# still has an owner; what is declared is only that the owner is not `VERSION`. A file that
+# is NOT listed here and disagrees still refuses the cut, and that is the point.
+#
+# ── Why these are a different axis ──
+#
+# This repo's `VERSION` identifies the KEYSTONE — the generator, the shared corpora, the
+# conformance oracle pinning, the peer-contract suite, the matrix. Its release number says
+# what the anchor is, and it is the number a reader of CONFORMANCE-MATRIX.md is holding.
+#
+# The paths below are PACKAGE MANIFESTS OF GENERATED PEERS and of build-side helpers. A peer
+# under `protocol-generator/<lang>/` is an artifact this repo emits, not a part of what this
+# repo releases; its manifest version is a claim made to THAT language's package ecosystem —
+# a `go get`, a `cargo add`, an `npm install` — about the maturity of that peer. They sit at
+# `0.1.0` / `0.1.0-pre` because that is an honest statement of it: `-pre` is parked pending
+# architecture sign-off and a first consumer, per each peer's own `status/PHASE-S5.md`.
+#
+# Forcing them to the keystone's number would be the overclaim the honesty disciplines exist
+# to prevent. It would tell every one of those package ecosystems that a peer parked pending
+# its first consumer is a 0.9.0 artifact, on no evidence but a sibling file's number. The
+# peers are cohort-consistent, not independently converged, and their manifests must not say
+# otherwise.
+#
+# This is the same distinction `AGENTS.md` draws in "The public surface": a generated peer's
+# own version number is explicitly OUT of what a release of this repository promises. The
+# corpus paths those peers read are IN. The two axes are separate because the promises are.
+#
+# ── Enumerated, deliberately, rather than declared by prefix ──
+#
+# `protocol-generator/` as a single prefix line would cover all eleven below and read more
+# cleanly. It is not used, because a prefix also covers every manifest that does not exist
+# yet: peer #47 would inherit this exclusion silently, and the first time a peer SHOULD track
+# the keystone's number, nothing would say so. This repo's standing rule is that an allowlist
+# entry which outlives its reason is the silent carve-out a gate exists to prevent, so the
+# cost of a new peer needing one deliberate line here is the cost being paid on purpose.
+# Re-read this list when a peer is added; a refusal here is the check working.
+
+# ── Generated peers — versioned for their own language ecosystem ──
+protocol-generator/python/pyproject.toml
+protocol-generator/rust/Cargo.toml
+protocol-generator/typescript/package.json
+protocol-generator/datalog/Cargo.toml
+protocol-generator/node-red/src/package.json
+protocol-generator/turbowarp/src/package.json
+protocol-generator/rust-wasm/Cargo.toml
+protocol-generator/rust-wasm-wasmtime/Cargo.toml
+
+# ── Peer-contract fixture hosts — test scaffolding built against a peer, versioned with it ──
+# Specified byte-for-byte in protocol-generator/shared/peer-contract/FIXTURE-HOST.md; these
+# are the per-language `run_host(argv, install_fixtures)` packages, never shipped to a user.
+protocol-generator/python/contract/host/pyproject.toml
+protocol-generator/rust/contract/host/Cargo.toml
+protocol-generator/typescript/contract/host/package.json
+
+# ── Build-side helpers — internal to an image or a generator shape, never released ──
+# gogate is a helper compiled inside the datalog toolchain image; the FFI crate is an OUTPUT
+# of ffi-generator, whose contract version is the C-ABI spec's, not this repo's.
+containers/datalog-toolchain/gogate/Cargo.toml
+ffi-generator/c-abi/entity-core-codec-ffi-rust/Cargo.toml

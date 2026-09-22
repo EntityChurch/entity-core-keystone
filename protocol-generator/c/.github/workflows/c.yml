@@ -77,7 +77,6 @@ jobs:
               print("::error::validate-peer core has FAILs — gate not green"); sys.exit(1)
           PY
 
-      # Gate 3 — §6.11 origination-core reentry over real two-peer TCP (3/3) against the Go
-      # entity-peer reference. Sealed offline.
-      - name: origination-core reentry (3/3)
-        run: sh protocol-generator/c/run-origination-core.sh
+      # The §6.11 origination-core reentry probes used to run here as a separate gate.
+      # The axis is retired: those three checks are part of the `run-s4.sh` census above,
+      # for every peer rather than only the ones that had their own harness.

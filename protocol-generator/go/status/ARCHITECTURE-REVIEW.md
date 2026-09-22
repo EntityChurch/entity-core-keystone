@@ -226,10 +226,20 @@ same-language peers (recommendation: no — the cross-check is a one-time win, n
 
 ---
 
-## PART B — Publishing options (operator-decides)
+## PART B — Publishing options (undecided)
 
 `/entity-rosetta` does not publish (lifecycle §Publishing). This is the decision surface; the
 recommendation is at the end. **No action is taken on it.**
+
+> ⛔ **NOTHING IN PART B IS A RUNNABLE INSTRUCTION. DO NOT COPY A COMMAND OUT OF IT.**
+> It weighs two options and takes neither. In particular: **the standalone repository
+> `entity-core-protocol-go` does not exist**, no tag has ever been cut for this peer in any
+> repository, and a `go get` against either is a 404 — not a mistake in the command, an
+> absence of the thing. Where a version string is needed to make an option concrete this
+> section writes **`vX.Y.Z-EXAMPLE`**, which is deliberately not a valid SemVer tag so that
+> it cannot be mistaken for one. The peer's actual version line is `0.1.0-pre`, it lives in
+> `CHANGELOG.md` and the `go.mod` header comment, and §B.2's standing recommendation is that
+> it stay there untagged.
 
 ### B.1 In-repo vs standalone repo
 
@@ -243,13 +253,14 @@ monorepo today.
     resolve to a repo where `go.mod` sits at a path the proxy can fetch. Today `go.mod` is at
     `protocol-generator/go/src/go.mod` inside the monorepo — `go get` against the monorepo root
     would need the module path to encode that subdirectory, OR a tag scheme
-    (`protocol-generator/go/src/v0.1.0-pre`) the Go tooling supports for sub-module repos but which
+    (`protocol-generator/go/src/vX.Y.Z-EXAMPLE`) the Go tooling supports for sub-module repos but which
     is awkward. **This is the go.mod-path nuance** (see B.2) and is the main reason a standalone
     repo is cleaner for Go than for Zig.
 
 **Option 2 — lift to a standalone `entity-core-protocol-go` repo (S10).**
   - *For:* `go.mod` at the repo root → the module path `github.com/entity-core/entity-core-protocol-go`
-    resolves directly, tags are plain `v0.1.0-pre`, `go get module@v0.1.0-pre` just works; a clean
+    would resolve directly, tags would be plain (`vX.Y.Z-EXAMPLE`) and `go get module@vX.Y.Z-EXAMPLE`
+    would just work; a clean
     minimal fetch surface; a natural home for the CI workflow; `repository_url` becomes concrete.
   - *Against:* the lift must vendor or submodule `shared/spec-data` + `test-vectors` + the oracle
     (the peer can't conform without them); spec bumps then need a cross-repo sync; it is an S10 step
@@ -262,16 +273,16 @@ Go has **no central package-upload registry** (no crates.io/npm/NuGet equivalent
   - **(a) A git tag the consumer `go get`s by module path + checksum (the Go-idiomatic path).** The
     import path *is* the repo URL; the version *is* a SemVer git tag; the checksum is recorded in the
     consumer's `go.sum` + the public `sum.golang.org` transparency log. A consumer adds
-    `require github.com/entity-core/entity-core-protocol-go v0.1.0-pre` and `go get` fetches +
+    `require github.com/entity-core/entity-core-protocol-go vX.Y.Z-EXAMPLE` and `go get` fetches +
     checksum-pins. **Decentralized + checksum-pinned by design** — supply-chain-friendly. No publish
     command, no index submission.
   - **The module-path / tag nuance (document, don't necessarily act):** Go resolves a module path to
     a repo + an *in-repo directory where go.mod lives.* For the **standalone-repo** case (Option 2)
-    `go.mod` is at root → tags are plain `v0.1.0-pre`, trivial. For the **in-repo monorepo** case
+    `go.mod` would be at root → tags plain (`vX.Y.Z-EXAMPLE`), trivial. For the **in-repo monorepo** case
     (Option 1), `go.mod` is at `protocol-generator/go/src/`, so the module would either need its path
     to encode that subdir (and tags prefixed with the subdir per Go's
     [sub-module tagging](https://go.dev/ref/mod#vcs-version) rule), or — cleaner — the standalone-repo
-    lift. **Recommendation: do not git-tag at all for v0.1.0-pre.** A `-pre` release is parked pending
+    lift. **Recommendation: do not git-tag at all for `0.1.0-pre`.** A `-pre` release is parked pending
     arch sign-off + a first consumer; tagging is the operator's deliberate final step (lifecycle
     §"no auto-tag"), and is cleanest *after* the in-repo-vs-standalone decision is made, because that
     decision determines the tag form. The version line lives in `CHANGELOG.md` + a `go.mod` comment

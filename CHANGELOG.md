@@ -7,9 +7,60 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
-Work since the initial public research-preview. No release has been cut; this section is a
-running record, not a version claim. **`CONFORMANCE-MATRIX.md` is the authoritative per-peer
-state** — the entries here are a summary of what moved and why, and they defer to it on numbers.
+A running record, not a version claim. **`CONFORMANCE-MATRIX.md` is the authoritative
+per-peer state** — the entries here are a summary of what moved and why, and they defer to
+it on numbers.
+
+### Which of these you already have
+
+This section used to open *"no release has been cut."* That was wrong when it was written
+and it is corrected here. **Two releases have been published: `0.8.0`, the initial public
+research preview, and `0.8.2`, published 2026-08-24** — the release in which the research
+corpus became readable, and the one that took the published tree from 1,368 to 2,720 files.
+Neither was ever given a heading in this file, so every entry below has been sitting under
+*Unreleased* whether or not you already downloaded it.
+
+**The boundary is exact: everything from *Release readiness (2026-08-23)* downward is what
+`0.8.2` shipped. Everything above it is new since.** `VERSION` is corrected to `0.8.2` in
+the same change, having been left at `0.8.0` through that release.
+
+### Changed in ways that can break an existing caller
+
+**No published conformance number moves and no peer's on-wire behaviour changed.** The
+cohort stands at **46 of 46 · 778 · 0F**. The breaks below are to *harness and corpus
+paths* — files that were on public `master` and are not in this tree any more — and
+anything that pinned one of those paths stops working. `.release-removals` at the repo root
+records each of them with where it went.
+
+- **The origination axis is retired. Its 31 `protocol-generator/<lang>/run-origination-core.sh`
+  entry points are gone**, with no shim. The three §6.11 reentry checks it carried did not go
+  anywhere: they run for **all 46 peers** inside the ordinary census — that peer's
+  `run-s4.sh` — instead of for the 31 that happened to have a harness. **If something told
+  you to run `run-origination-core.sh`, run `run-s4.sh` instead.** ⚠ That includes 24 peer
+  `README.md` files in this tree that still print the old command; they are wrong and are
+  being corrected as a separate pass. The per-peer `status/` reports that cite it are dated
+  records of what was run on a day, and those are correct as written.
+- **The test-vector corpora are de-versioned: `protocol-generator/shared/test-vectors/v0.8.0/`
+  no longer exists.** Its nine files are replaced by name-identified corpora under
+  `shared/test-vectors/{ecf-conformance,crypto-agility,type-registry}/`, each carrying its
+  own `CHANGELOG.md` in place of a version integer. **This one is not a pure rename and a
+  repointing consumer should know why.** `v0.8.0/agility-vectors-v1.cbor` was a *superseded
+  duplicate* of the crypto-agility corpus that was already correctly vendored beside it, and
+  the two did not agree: the old copy pinned a re-hash construction the current specification
+  requires a peer to **refuse**. Nothing failed while both copies existed, because every
+  consumer reading the old path got the old bytes and agreed with them. **If you pinned the
+  old path, you pinned retracted bytes** — repointing is a correctness fix, not a path change.
+- **`protocol-generator/{julia,nim}/run-smoke.sh` are renamed `run-s3.sh`**, matching every
+  other peer. Same script, same behaviour.
+- **Four peer CI workflows lose their `origination-core` step**, which invoked the deleted
+  script. The coverage is already in the `run-s4.sh` step above it in the same workflow.
+- **`containers/dart-toolchain/prefetch/pubspec.yaml` is gone.** It was a second copy of the
+  Dart peer's dependency pins; the prefetch layer now seeds from the peer's own
+  `pubspec.lock`. Nothing outside the build image read it.
+
+**Not breaking:** the `/entity-rosetta` skill surface, the codec C-ABI contract, the
+`--profile core` gate, the peer startup conventions, and every generated peer's exported
+API are unchanged.
 
 ### Agent docs restructured to the 2026-09 doc standard (2026-09-17)
 

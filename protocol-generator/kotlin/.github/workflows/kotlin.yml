@@ -86,9 +86,6 @@ jobs:
               print("::error::validate-peer core has FAILs — gate not green"); sys.exit(1)
           PY
 
-      # Gate 4 — §10.2 origination-core (reference-peer-gated): 3/3 incl dispatch_outbound_reentry
-      # over real two-peer TCP (Kotlin A-role, Go entity-peer --open-access B-role, shared loopback).
-      - name: origination-core (3/3, dispatch_outbound_reentry)
-        run: |
-          podman run --rm --network=none -v "$PWD":/work:Z \
-            "$IMAGE" sh /work/protocol-generator/kotlin/run-origination-core.sh
+      # The §6.11 origination-core reentry probes used to run here as a separate gate.
+      # The axis is retired: those three checks are part of the `run-s4.sh` census above,
+      # for every peer rather than only the ones that had their own harness.
