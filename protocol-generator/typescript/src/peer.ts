@@ -5,6 +5,7 @@ import {
   CapabilityHandler,
   ConnectHandler,
   ConnectionState,
+  type ExpressionEvaluator,
   type Handler,
   HandlerRegistry,
   HandlersHandler,
@@ -18,7 +19,7 @@ import { EmitBus } from "./emit/index.js";
 import { Entity, Ecf, TypeNames, hashHex } from "./model/index.js";
 import { Dispatcher } from "./dispatch/index.js";
 import { seedCoreTypes } from "./types/index.js";
-import { PeerConnection, type PeerSession, initiate } from "./transport/index.js";
+import { DEFAULT_MAX_FRAME_BYTES, PeerConnection, type PeerSession, initiate } from "./transport/index.js";
 
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
@@ -38,6 +39,7 @@ export class Peer implements PeerServices {
   readonly #dispatcher: Dispatcher;
   readonly #connections = new Set<PeerConnection>();
   readonly #seedPolicy: SeedPolicy;
+  readonly #maxFrameBytes: number;
   #server: net.Server | null = null;
   #port = 0;
 
@@ -64,9 +66,17 @@ export class Peer implements PeerServices {
        * live in production. Surfaced as the host `--validate` switch.
        */
       conformanceHandlers?: boolean;
+      /**
+       * The frame budget (§1.6) applied to connections this peer opens or accepts, in
+       * bytes. Defaults to {@link DEFAULT_MAX_FRAME_BYTES}. Surfaced to handler bodies
+       * through `HandlerContext.frameBudget()` so a body sizes its response against the
+       * limit its response is actually measured against.
+       */
+      maxFrameBytes?: number;
     } = {},
   ) {
     this.#identity = options.identity ?? PeerIdentity.generate();
+    this.#maxFrameBytes = options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
     this.#seedPolicy = options.seedPolicy ?? (options.debugOpenGrants ? SeedPolicy.debugOpen() : SeedPolicy.standard());
     this.#emit = new EmitBus();
     this.#store = new ContentStore(this.#emit);
@@ -105,6 +115,11 @@ export class Peer implements PeerServices {
 
   get nowMs(): bigint {
     return BigInt(Date.now());
+  }
+
+  /** The peer's configured default frame budget (§1.6), in bytes. */
+  get maxFrameBytes(): number {
+    return this.#maxFrameBytes;
   }
 
   /** The port the listener is bound to (valid after {@link listen}). */
@@ -174,6 +189,24 @@ export class Peer implements PeerServices {
     this.#registry.register(handler);
   }
 
+  /**
+   * Install (or clear, with `null`) the evaluator for §6.13(a) entity-native handler
+   * bodies — the seam a compute extension occupies.
+   *
+   * The built-in `compute/literal` fast path is unaffected and still answers first; an
+   * installed evaluator receives only the bodies the core peer would otherwise refuse
+   * with `501 unsupported_expression`, and may itself decline (`null`) to leave that
+   * `501` in place. A peer with no evaluator installed behaves exactly as before.
+   */
+  setExpressionEvaluator(evaluator: ExpressionEvaluator | null): void {
+    this.#dispatcher.setExpressionEvaluator(evaluator);
+  }
+
+  /** The installed §6.13(a) body evaluator, or `null` when none is installed. */
+  get expressionEvaluator(): ExpressionEvaluator | null {
+    return this.#dispatcher.expressionEvaluator;
+  }
+
   /** Begin listening on loopback at `port` (0 = auto-assign). Resolves with the bound port. */
   listen(port = 0): Promise<number> {
     return new Promise<number>((resolve, reject) => {
@@ -191,7 +224,7 @@ export class Peer implements PeerServices {
   #onInbound(socket: net.Socket): void {
     socket.setNoDelay(true);
     const state = new ConnectionState();
-    const conn = new PeerConnection(socket, this.#dispatcher, state);
+    const conn = new PeerConnection(socket, this.#dispatcher, state, this.#maxFrameBytes);
     this.#connections.add(conn);
     conn.start();
 
@@ -217,7 +250,7 @@ export class Peer implements PeerServices {
       const socket = net.connect({ host, port }, () => {
         socket.setNoDelay(true);
         const state = new ConnectionState();
-        const conn = new PeerConnection(socket, this.#dispatcher, state);
+        const conn = new PeerConnection(socket, this.#dispatcher, state, this.#maxFrameBytes);
         this.#connections.add(conn);
         conn.start();
         initiate(conn, this.#identity, state, timeoutMs).then(resolve, reject);

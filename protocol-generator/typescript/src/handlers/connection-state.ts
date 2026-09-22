@@ -1,4 +1,5 @@
 import { type Entity } from "../model/index.js";
+import { DEFAULT_MAX_FRAME_BYTES } from "../transport/frame-codec.js";
 
 /** The remote peer's hello data (id + nonce) learned from an inbound hello (§3.8). */
 export interface RemoteHelloInfo {
@@ -57,6 +58,19 @@ export class Deferred<T> {
 export class ConnectionState {
   /** True once a valid `hello` has been processed on this connection. */
   helloReceived = false;
+
+  /**
+   * The frame budget in force on THIS connection (§1.6), written by the
+   * {@link PeerConnection} that owns it so the two can never disagree.
+   *
+   * Read by a handler body at response-construction time via
+   * `HandlerContext.frameBudget()`: a handler whose ideal response would exceed the
+   * budget must return a partial set rather than a frame the connection will reject.
+   * The budget is per-connection because a peer may negotiate differently per
+   * connection — a body that hardcodes a literal is wrong even when the literal
+   * matches today's default.
+   */
+  maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES;
 
   /** True once authentication completed and the initial capability was issued. */
   established = false;

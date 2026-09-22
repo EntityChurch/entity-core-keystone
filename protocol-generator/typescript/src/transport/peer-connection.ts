@@ -33,6 +33,11 @@ export class PeerConnection {
     this.#dispatcher = dispatcher;
     this.#state = state;
     this.#maxFrameBytes = maxFrameBytes;
+    // Publish the budget on the connection state so a handler body can read the limit
+    // its response will actually be measured against. Written here rather than passed
+    // to `ConnectionState`'s constructor because this is the only object that knows
+    // the effective value.
+    this.#state.maxFrameBytes = maxFrameBytes;
   }
 
   get state(): ConnectionState {

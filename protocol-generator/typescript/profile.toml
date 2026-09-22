@@ -142,3 +142,52 @@ embed_full_peer_v1       = true              # the TS deliverable IS a peer (Nod
 [spec]
 v7_version_pinned = "7.72"                   # spec-data/v7.72/ — adds §9.0 core profile + §9.5 53-type floor. Codec corpus byte-identical to 7.71.
 conformance_profile = "core"                 # runs validate-peer --profile core from day one (oracle at output/s4-oracles/, post-F21/F22)
+
+[extension_host]
+# The keystone HOST CONTRACT bindings (H1-H7) for this language: what a third party
+# calls to install into a constructed peer, and where dispatch READS what they installed.
+#
+# The block is `extension_host`, not `host`: `[host]` is already taken by the FFI/hybrid
+# peers for *the language hosting the seam* (see datalog/profile.toml, `language = "rust"`),
+# and every hybrid peer will want that sense. This block is the peer's capacity to host an
+# EXTENSION, which is a different subject.
+#
+# `dispatch_read_site` is the load-bearing field and it is why this block is not just a
+# list of entry points: a profile naming only the registration call cannot distinguish a
+# working host from `julia`, whose exported `register_handler!` writes a typed, doc-
+# commented container that NOTHING READS. Name the line that consults it.
+status                  = "host"             # host | not-yet | declined | unknown. MEASURED, not read -- see verified_by.
+verified_by             = "protocol-generator/shared/diagnostics/host-seam-probe-typescript.mjs + test/host-seam.test.ts"
+
+# H1 -- a handler installed after construction is reachable by dispatch.
+handler_register_call   = "Peer.registerHandler(handler: Handler)"           # src/peer.ts
+handler_body_shape      = "interface Handler { pattern, name, operations, handle(ctx: HandlerContext): Promise<HandlerResult> }"
+dispatch_read_site      = "HandlerRegistry.resolve() -- src/handlers/handler-registry.ts; consumed at Dispatcher.dispatch, src/dispatch/dispatcher.ts"
+handle_lifecycle        = "absent"           # no handle/close object yet; unregister is the wire op (§11.6.2 is owed)
+
+# H2 -- an emit-pathway consumer can be registered after construction.
+consumer_register_call  = "EmitBus.registerConsumer(consumer: EmitConsumer)  -- reachable as ctx.peer.emit / Peer.emit"
+consumer_body_shape     = "interface EmitConsumer { name, onTreeChange(ev), onContentStore(ev) }"
+consumer_ordering       = "registration order"                               # SYSTEM-COMPOSITION §1.2 / §2.2
+
+# H4 -- both consumption modes. The library mode is what the probe exercises.
+packaging_unit          = "npm package"
+package_name            = "entity-core-protocol-typescript"
+packaging_boundary      = "package.json exports map"                         # NOT class or module visibility -- the boundary is the manifest
+library_entry_point     = "exports[\".\"] -> dist/src/index.js  (types: dist/src/index.d.ts)"
+library_subpath_exports = "exports[\"./codec\"] -> dist/src/codec/index.js  -- where ecfPreEncoded lives; also reachable as the `codec` namespace off the root"
+# No `bin` in package.json: the standalone host is a build output driven by run-s4.sh,
+# not an installed console script. Recorded as it IS, not as the convention would suggest.
+standalone_entry_point  = "node dist/test/host.js --port N [--name NAME] [--validate]"
+
+# H6 -- the frame budget in force for the request is readable by the body.
+frame_budget_accessor   = "HandlerContext.frameBudget()"                     # connection value, peer default as fallback
+frame_budget_per_connection = "ConnectionState.maxFrameBytes"                # the normative one (§6.2 says *the connection's*)
+frame_budget_configurable   = "new Peer({ maxFrameBytes })"
+
+# H7 -- entity-native (§6.13(a)) dispatch is delegable to an installed evaluator.
+evaluator_install_call  = "Peer.setExpressionEvaluator(e: ExpressionEvaluator | null)"
+evaluator_body_shape    = "interface ExpressionEvaluator { evaluate(req: ExpressionRequest): Promise<HandlerResult | null> | HandlerResult | null }"
+evaluator_read_site     = "Dispatcher.#runEntityNative -- src/dispatch/dispatcher.ts, after the built-in compute/literal path and before the 501"
+evaluator_builtin_floor = "compute/literal"  # answered in-process, FIRST, unaffected by any installed evaluator
+evaluator_decline       = "return null -- the peer's own 501 unsupported_expression stands, so evaluators compose"

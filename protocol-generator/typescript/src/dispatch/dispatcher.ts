@@ -15,6 +15,7 @@ import { peerEntityId, signatureSigner, signatureTarget, verifySignature } from 
 import { CapabilityToken, ChainVerifier, Paths, Permissions } from "../capability/index.js";
 import {
   type ConnectionState,
+  type ExpressionEvaluator,
   type Handler,
   HandlerContext,
   type HandlerRegistry,
@@ -33,10 +34,25 @@ import { OutboundDispatchImpl } from "./outbound-dispatch.js";
 export class Dispatcher {
   readonly #peer: PeerServices;
   readonly #registry: HandlerRegistry;
+  #expressionEvaluator: ExpressionEvaluator | null = null;
 
   constructor(peer: PeerServices, registry: HandlerRegistry) {
     this.#peer = peer;
     this.#registry = registry;
+  }
+
+  /**
+   * Install (or clear, with `null`) the §6.13(a) entity-native body evaluator. Read on
+   * every entity-native dispatch that the built-in `compute/literal` path does not
+   * answer.
+   */
+  setExpressionEvaluator(evaluator: ExpressionEvaluator | null): void {
+    this.#expressionEvaluator = evaluator;
+  }
+
+  /** The installed evaluator, or `null` when the peer evaluates only `compute/literal`. */
+  get expressionEvaluator(): ExpressionEvaluator | null {
+    return this.#expressionEvaluator;
   }
 
   /**
@@ -172,10 +188,15 @@ export class Dispatcher {
    * Dispatch a dynamically-registered (entity-native) handler by evaluating the body at
    * its `expression_path` (v7.74 §6.13(a)). The core peer's body-binding seam (impl-private
    * per §9.4) evaluates the minimal `compute/literal` shape and returns a `compute/result`,
-   * which is what the §10.1 register round-trip exercises. Richer bodies need the compute
-   * extension (501). See A-011.
+   * which is what the §10.1 register round-trip exercises. See A-011.
+   *
+   * Richer bodies need a compute extension, and the order below is the whole of that
+   * contract: the built-in `compute/literal` fast path answers FIRST and is unaffected
+   * by anything installed, then an installed evaluator is consulted, then the `501`. A
+   * peer with no evaluator behaves exactly as it did before the seam existed — which is
+   * why installing one cannot move a conformance result.
    */
-  #runEntityNative(handlerEntity: Entity, execute: Execute): Envelope {
+  async #runEntityNative(handlerEntity: Entity, execute: Execute): Promise<Envelope> {
     const exprPath = Ecf.optText(handlerEntity.data, "expression_path");
     if (exprPath === null) {
       return errorEnvelope(execute.requestId, Status.NotSupported, "no_handler_body", "registered handler has neither a native body nor an expression_path");
@@ -192,6 +213,26 @@ export class Dispatcher {
       const result = Entity.create(TypeNames.ComputeResult, Ecf.map(["value", value], ["expression", Ecf.bytes(expr.contentHash)]));
       const response = ExecuteResponse.build(execute.requestId, Status.Ok, result);
       return new Envelope(response.entity, []);
+    }
+
+    const evaluator = this.#expressionEvaluator;
+    if (evaluator !== null) {
+      try {
+        const outcome = await evaluator.evaluate({ expressionPath: absExpr, expression: expr, execute });
+        // `null` is "not mine" — the evaluator declines and the peer's own 501 stands,
+        // so evaluators compose instead of having to claim every body shape.
+        if (outcome !== null) {
+          const response = ExecuteResponse.build(execute.requestId, outcome.status, outcome.result);
+          return new Envelope(response.entity, outcome.included);
+        }
+      } catch (e) {
+        // An installed evaluator is third-party code on the dispatch path: a throw must
+        // become a status, never a hung request (§4.9(c) deliver-or-signal).
+        if (e instanceof EntityProtocolError) {
+          return errorEnvelope(execute.requestId, e.status, "handler_error", e.message);
+        }
+        return errorEnvelope(execute.requestId, Status.InternalError, "internal_error", errorMessage(e));
+      }
     }
 
     return errorEnvelope(execute.requestId, Status.NotSupported, "unsupported_expression", "core peer evaluates only compute/literal bodies (the entity-native seam); richer bodies need the compute extension");

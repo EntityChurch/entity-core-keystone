@@ -48,6 +48,13 @@ export interface PeerServices {
   readonly emit: EmitBus;
   /** Current time, ms since epoch (the clock used for temporal checks). */
   readonly nowMs: bigint;
+  /**
+   * The peer's configured default frame budget (§1.6). This is the fallback for a
+   * dispatch with no connection; the budget a handler should actually size its
+   * response against is {@link HandlerContext.frameBudget}, which prefers the
+   * *connection's* value.
+   */
+  readonly maxFrameBytes: number;
 }
 
 /**
@@ -148,6 +155,50 @@ export class HandlerContext {
   get localPeerId(): string {
     return this.peer.localPeerId;
   }
+
+  /**
+   * The frame budget in force for THIS request, in bytes — the connection's configured
+   * budget when the request arrived over a connection, the peer's default otherwise (an
+   * in-process dispatch has no connection, and a body still needs a defined number).
+   *
+   * A handler whose ideal response would exceed this MUST return a partial result
+   * rather than a frame the transport will refuse. Consult it at response-construction
+   * time; a hardcoded literal is wrong even when it happens to equal the default,
+   * because a peer may configure or negotiate the budget per connection.
+   */
+  frameBudget(): number {
+    return this.connection?.maxFrameBytes ?? this.peer.maxFrameBytes;
+  }
+}
+
+/**
+ * The body a §6.13(a) entity-native handler was registered with, plus the EXECUTE
+ * being dispatched against it — the input to an {@link ExpressionEvaluator}.
+ */
+export interface ExpressionRequest {
+  /** Absolute canonical path the handler's `expression_path` resolved to. */
+  readonly expressionPath: string;
+  /** The entity bound at that path: the handler's body. */
+  readonly expression: Entity;
+  /** The EXECUTE being dispatched. */
+  readonly execute: Execute;
+}
+
+/**
+ * The evaluator seam for entity-native handler bodies (V7 §6.13(a); §9.4 leaves the
+ * mechanism impl-private, so what is contracted here is that a mechanism *exists*).
+ *
+ * A core peer evaluates the minimal `compute/literal` shape in-process and answers
+ * `501 unsupported_expression` to anything richer. Installing an evaluator through
+ * `Peer.setExpressionEvaluator` is what lets a community ship its own compute
+ * semantics: without one the peer's answer is unchanged, and with one every body the
+ * built-in path cannot evaluate is routed here instead of refused.
+ *
+ * Return `null` for a body this evaluator does not recognise — the peer then answers
+ * its own `501`, so evaluators compose rather than having to claim every shape.
+ */
+export interface ExpressionEvaluator {
+  evaluate(request: ExpressionRequest): Promise<HandlerResult | null> | HandlerResult | null;
 }
 
 /** A registered handler's executable contract (V7 §6.1). The dispatch target. */

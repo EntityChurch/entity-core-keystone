@@ -126,9 +126,14 @@ regenerate on our own schedule, no flag day, no divergence unit.
 3. **The second-hello state check covers `established` but not mid-handshake** — `409
    connection_sequence_error`.
 
+**The control that makes this actionable: go's own reference peer at HEAD passes 13 of 13.** These
+are our defects, not oracle artifacts.
+
 Plus, separately and already confirmed in our tree: **the 501 slot.** Four peers emit
 `not_implemented` — `asm-x86_64`, `asm-arm64`, `riscv64`, `pd`. The remedy is one word,
-`unsupported_operation`. Zero `unknown_operation` cohort-wide.
+`unsupported_operation`. Zero `unknown_operation` cohort-wide. The **500** row is satisfied by a
+**source audit**, not a check: `0.8.2.7` rules that a conformant peer cannot be made to fail
+internally on demand, so no conformance client can drive it.
 
 **This is not a regeneration.** It is the shape of the §5.6 mint-ceiling sweep that went across 36
 languages: author once, propagate, re-census. Order: vendor `v0.8.2.7` → fix → re-pin the oracle
@@ -141,10 +146,26 @@ Three documents under `docs/spec/`, declared and digest-pinned: the peer host co
 accepted the boundary (`12f478c`: *"keystone accepted the host contract; the track opens and D1 was
 never blocking"*). Blocks on nothing.
 
-**H4 — the library-surface sweep — blocks on nothing and is the cheapest real progress available.**
-Note the standing measurement: of four peers nominated as satisfying the host contract from source
-reads, **three were wrong**, each at a different packaging boundary. `typescript` is the only verified
-host. A capability claim about a peer reads `unknown` until a harness executes it.
+**What is already proven, so nobody re-measures it.** The cohort-wide unknown is *not* "does this
+peer have an extension seam." Decomposing the host contract against conformance data we already own:
+
+| Property | Measured by | Result |
+|---|---|---|
+| A runtime-mutable dispatch container exists and **dispatch reads it** | wire `register` → `core_register_body_binding` + the four §11.6.1 path writes | **46 / 46 PASS, by execution** |
+| Reserved-pattern refusal | `core_register_reserved_refused` · `_publishes_nothing` | **46 / 46 PASS** |
+| A handler body resolves and dispatches | `validate_echo_dispatch` | **46 / 46 PASS** |
+| **A third party in a separate compilation unit, depending only on the published package, constructs a peer and installs a language-native body** | one host program per language | **1 / 46** |
+
+The oracle's own source says why the last row is different: *"the default body-binding seam is
+entity-native compute"* — the wire path installs a **declarative** body, never a language-native
+callable. **So the open question is the packaging boundary and the native body, not the seam.**
+
+**And it is the question source reading is worst at.** Of four peers nominated as satisfying the
+contract from source reads, **three were wrong**, each at a different boundary — class scope in C++,
+assembly scope in C#, and in `julia` a live exported entry point onto a container **nothing reads**.
+`typescript` is the only verified host; 42 peers are `unknown` and stay that way until a harness
+executes. **26 of 46 ship a packaging unit at all**; the other 20 structurally *decline* H4 today,
+which is a legitimate profile value rather than a failure.
 
 ### 3c. Standing, lower priority
 
