@@ -189,6 +189,31 @@ ec_invalid_path:      .asciz "invalid_path"
 	.lcomm g_ms_local,   8
 	.lcomm g_ms_sigptr,  8
 	.lcomm g_ms_sigs,    256          # up to 32 signer-hash pointers
+	# ---- §5.5 delegation-chain walk + §5.5a canonicalization frames ----
+	# A frame is a granter's peer_id (base58, <=128 bytes), derived from its system/peer
+	# entity in `included` — it is not on the wire. `c` = the link nearer the leaf, `p` =
+	# the link nearer the root; `s`/`q` are the sub/super sides of whichever comparison is
+	# running, so the exclude direction can be reversed without copying a frame.
+	.lcomm g_cfr,      128
+	.lcomm g_cfrlen,   8
+	.lcomm g_pfr,      128
+	.lcomm g_pfrlen,   8
+	.lcomm g_sfr_ptr,  8
+	.lcomm g_sfr_len,  8
+	.lcomm g_qfr_ptr,  8
+	.lcomm g_qfr_len,  8
+	.lcomm g_dfr,      128            # dispatch-surface frame (the presented cap's granter)
+	.lcomm g_dfrlen,   8
+	.lcomm b_canon_a,  1024           # canonicalized child / request-target
+	.lcomm b_canon_b,  1024           # canonicalized parent / grant pattern
+	.lcomm g_pgee,     48             # child link's granter hash, carried across one hop
+	.lcomm g_now,      8              # §5.5 `t` — sampled ONCE per verdict, never per link
+	.lcomm g_link_ch,  64             # recomputed content hash of the link under test
+	# ---- §6.2 CAP-5 / §5.6 MIN_DEFINED mint ceiling ----
+	.lcomm g_caller_td,  8            # the caller capability's token data (the bounding term)
+	.lcomm g_params_data, 8           # request params.data (carries ttl_ms)
+	.lcomm g_exp_have,   8
+	.lcomm g_expv,       8
 	# ---- revoke scratch ----
 	.lcomm b_revoke_data, 512
 	.lcomm revoke_ch,    64
@@ -392,7 +417,18 @@ dispatch:
 	jz   .Ld_ret
 	mov  %rax, %rdi
 	call get_text                    # rax=opptr, rdx=oplen
-	# route: save op (ptr in rax, len in rdx) then compare
+	# route: save op (ptr in rax, len in rdx) then compare.
+	#
+	# Every branch below dispatches on LENGTH first and only then compares bytes, so a
+	# length collision with an op we do route is the case to get right: a byte mismatch
+	# must fall through to .Ld_unknown (→ 501 unsupported_operation), never to .Ld_ret.
+	# Falling to .Ld_ret answers NOTHING, and §4.9(c) deliver-or-signal makes that the
+	# one outcome a peer may not produce — the caller cannot tell it from a dead peer and
+	# waits out its own timeout. Measured 2026-08-30: `ping` collides with `echo` at
+	# length 4 and was dropped on exactly this branch. It costs the caller a full 20 s
+	# read deadline EVERY connection, which is why t2_2_connection_churn consumed the
+	# entire 10-minute budget across 29 of its 100 cycles and starved nine categories —
+	# a §4.9(c) violation presenting as a connection-pressure failure.
 	mov  %rax, %r8                   # op ptr
 	mov  %rdx, %r9                   # op len
 	# op == "hello"?
@@ -403,7 +439,7 @@ dispatch:
 	mov  $5, %rcx
 	call memeq
 	test %rax, %rax
-	jz   .Ld_ret
+	jz   .Ld_unknown                 # len 5 but not "hello" → 501, never a silent drop
 	# §4.5 negotiation: reject a hello whose advertised hash_formats/key_types are
 	# disjoint from ours (400) before building the happy-path response.
 	mov  %rbx, %rdi                  # exec data map
@@ -421,7 +457,7 @@ dispatch:
 	mov  $12, %rcx
 	call memeq
 	test %rax, %rax
-	jz   .Ld_ret
+	jz   .Ld_unknown                 # len 12 but not "authenticate" → 501
 	mov  %rbx, %rdi                  # exec data map ptr
 	call build_authenticate_response
 	jmp  .Ld_ret
@@ -434,7 +470,7 @@ dispatch:
 	mov  $4, %rcx
 	call memeq
 	test %rax, %rax
-	jz   .Ld_ret
+	jz   .Ld_unknown                 # len 4 but not "echo" — e.g. "ping" — → 501
 	mov  %rbx, %rdi
 	call build_echo_response
 	jmp  .Ld_ret
@@ -894,6 +930,15 @@ ec_chain_depth: .asciz "chain_depth_exceeded"
 ka_parent:   .asciz "parent"
 ka_threshold: .asciz "threshold"
 ka_signers:  .asciz "signers"
+# ---- §5.5 delegation-chain / §5.6 attenuation vocabulary ----
+ka_exclude:  .asciz "exclude"
+ka_constraints: .asciz "constraints"
+ka_allowances: .asciz "allowances"
+ka_deleg_caveats: .asciz "delegation_caveats"
+ka_no_delegation: .asciz "no_delegation"
+ka_max_deleg_depth: .asciz "max_delegation_depth"
+ka_max_deleg_ttl: .asciz "max_delegation_ttl"
+ka_ttl_ms:   .asciz "ttl_ms"
 
 	.bss
 	# Sized for the full 16 MiB entity cap: a get now serves store-written entities of
@@ -1593,13 +1638,17 @@ build_request_response:
 	call verify_get_cap
 	test %rax, %rax
 	jnz  .Lrq_ret
+	mov  %r12, %rdi
+	call verify_op_scope
+	test %rax, %rax
+	jnz  .Lrq_ret
 	# grantee = request author (33) → g_grantee
 	mov  %r12, %rdi
 	lea  k_author(%rip), %rsi
 	mov  $6, %rdx
 	call map_find
 	test %rax, %rax
-	jz   .Lrq_ret
+	jz   .Lrq_malformed
 	mov  %rax, %rdi
 	call get_text
 	lea  g_grantee(%rip), %rdi
@@ -1612,19 +1661,20 @@ build_request_response:
 	mov  $6, %rdx
 	call map_find
 	test %rax, %rax
-	jz   .Lrq_ret
+	jz   .Lrq_malformed
 	mov  %rax, %rdi
 	lea  k_data(%rip), %rsi
 	mov  $4, %rdx
 	call map_find
 	test %rax, %rax
-	jz   .Lrq_ret
+	jz   .Lrq_malformed
+	mov  %rax, g_params_data(%rip)   # params.data — the §5.6 ttl_ms term lives here
 	mov  %rax, %rdi
 	lea  ka_grants(%rip), %rsi
 	mov  $6, %rdx
 	call map_find
 	test %rax, %rax
-	jz   .Lrq_ret
+	jz   .Lrq_malformed
 	mov  %rax, %r13                  # grants value ptr
 	mov  %rax, %rdi
 	call skip_value                  # rax = end of grants value
@@ -1661,6 +1711,7 @@ build_request_response:
 	test %rax, %rax
 	jz   .Lrq_denied
 	mov  %rax, %rsi                  # caller token data
+	mov  %rax, g_caller_td(%rip)
 	mov  %r13, %rdi                  # requested grants array value
 	call grants_attenuated
 	test %rax, %rax
@@ -1671,12 +1722,83 @@ build_request_response:
 	call send_error
 	jmp  .Lrq_ret
 .Lrq_atten_ok:
-	# created_at
+	# created_at — sampled ONCE. The duration term below is converted against this same
+	# instant; sampling again there emits a token whose stated birth and derived expiry are
+	# two different instants.
 	call now_ms
 	mov  %rax, g_created(%rip)
-	# ---- token data {grants:<raw>, grantee, granter, created_at} ----
+	# ---- §6.2 CAP-5 / §5.6 MIN_DEFINED mint ceiling ----
+	#
+	#   expires_at = MIN_DEFINED( caller_capability.expires_at,   ; ABSOLUTE, enters directly
+	#                             created_at + request.ttl_ms )   ; DURATION, converted first
+	#
+	# `request` mints a ROOT token (parent: null), so §5.6's parent-child attenuation never
+	# reaches it — without this clamp, temporal attenuation is the one dimension a requester
+	# could escape and policy withdrawal would have no bounded latency. This is NOT an
+	# authorization decision: an over-long ttl_ms from a bounded caller MINTS the clamped
+	# value and returns 200, and refusing it is non-conformant.
+	#
+	# The value is reached BY CONSTRUCTION, not by comparison. A `<= caller_exp` check
+	# satisfies a strictly weaker test than the one being run — the oracle says so in its own
+	# failure text — so there is deliberately no comparison against the caller's expiry here.
+	#
+	# §5.6's third term, `created_at + policy_entry.ttl_ms`, is structurally absent on this
+	# peer: it writes policy entries (§6.2 configure) but never reads one back on the request
+	# path, so there is no policy entry in scope to take a ttl from. That is a missing TERM,
+	# not a missing rule — MIN_DEFINED over the terms that exist is exactly what it computes.
+	movq $0, g_exp_have(%rip)
+	movq $0, g_expv(%rip)
+	mov  g_caller_td(%rip), %rdi
+	test %rdi, %rdi
+	jz   .Lrq_ttl
+	lea  ka_expires(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lrq_ttl
+	mov  %rax, %rdi
+	call read_head
+	test %rcx, %rcx                  # not a uint64 → unusable, not a term
+	jnz  .Lrq_ttl
+	mov  %rdx, g_expv(%rip)
+	movq $1, g_exp_have(%rip)
+.Lrq_ttl:
+	mov  g_params_data(%rip), %rdi
+	test %rdi, %rdi
+	jz   .Lrq_mint
+	lea  ka_ttl_ms(%rip), %rsi
+	mov  $6, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lrq_mint
+	mov  %rax, %rdi
+	call read_head
+	test %rcx, %rcx
+	jnz  .Lrq_mint
+	mov  g_created(%rip), %rax
+	add  %rdx, %rax
+	# §5.6 rule 3: a term that does not fit is DROPPED — never wrapped, never saturated.
+	# Saturation would manufacture expires_at == 2^64-1, a finite bound no reader can tell
+	# from a deliberate one. ttl_ms == 0 is NOT special-cased (rule 2): it falls out as
+	# created_at, which is what keeps "expire immediately" from collapsing into the
+	# absent / "no bound" spelling.
+	jc   .Lrq_mint
+	cmpq $0, g_exp_have(%rip)
+	jne  .Lrq_ttl_min
+	mov  %rax, g_expv(%rip)
+	movq $1, g_exp_have(%rip)
+	jmp  .Lrq_mint
+.Lrq_ttl_min:
+	cmp  g_expv(%rip), %rax
+	jae  .Lrq_mint
+	mov  %rax, g_expv(%rip)
+.Lrq_mint:
+	# ---- token data {grants:<raw>, grantee, granter, created_at[, expires_at]} ----
+	# Canonical key order is length-then-lex, so expires_at sorts AFTER created_at (same
+	# length, c < e) and appends cleanly at the end.
 	lea  b_tokdata(%rip), %r15
-	mov  $4, %sil
+	mov  $4, %esi
+	add  g_exp_have(%rip), %rsi
 	call w_map
 	lea  ka_grants(%rip), %rdi
 	call w_cstr
@@ -1697,12 +1819,31 @@ build_request_response:
 	call w_cstr
 	mov  g_created(%rip), %rsi
 	call w_uint
+	cmpq $0, g_exp_have(%rip)
+	je   .Lrq_tokdone
+	lea  ka_expires(%rip), %rdi
+	call w_cstr
+	mov  g_expv(%rip), %rsi
+	call w_uint
+.Lrq_tokdone:
 	lea  b_tokdata(%rip), %rax
 	mov  %r15, %rdx
 	sub  %rax, %rdx
 	mov  %rdx, g_toklen(%rip)
 	# shared tail: hash+sign the token, build the grant, emit the 200 response.
 	call mint_finish
+	jmp  .Lrq_ret
+.Lrq_malformed:
+	# §4.9(c) deliver-or-signal: a `request` missing author / params / params.data /
+	# params.data.grants used to fall off the end of this function and answer NOTHING,
+	# leaving the caller to wait out its own timeout — indistinguishable from a dead peer.
+	# The branch was unreachable for as long as the capability gate refused every delegated
+	# capability two stages earlier; implementing the §5.5 chain walk is what let a request
+	# get this far, which is the standing lesson in the other direction — a wrong denial can
+	# also hide a missing ANSWER, not just a missing check.
+	mov  $400, %rdi
+	lea  ec_invalid_params(%rip), %rsi
+	call send_error
 .Lrq_ret:
 	pop  %r15
 	pop  %r14
@@ -5153,13 +5294,904 @@ verify_get_auth:
 	ret
 
 # =====================================================================
-# verify_get_cap(rdi = exec data map) -> rax = 0 authorized, 1 rejected (403 sent).
-# §5.2 capability-class (403) basic stage, run after verify_get_auth: the request must carry
-# a `capability` whose token is in `included`, whose `grantee` == author, and which is validly
-# signed by its `granter` (granter's system/peer in `included`, its Ed25519 signature over the
-# token's 33-byte content_hash present + verifying). Missing capability / token / grantee
-# mismatch / forged-or-unsigned token → 403 capability_denied. (Grant-scope pattern matching,
-# expiry, and delegation-chain walking are further stages, not yet implemented.)
+# §5.5a canonicalization + §5.6 attenuation — the delegation-chain interior.
+# =====================================================================
+#
+# peerid_of(rdi = included, rsi = hash33, rdx = out ptr, rcx = out_len ptr) -> rax = 1|0.
+# The §5.5a canonicalization FRAME for a link is its granter's peer_id, which is NOT on the
+# wire: it is derived from the granter's system/peer entity in `included` — the same entity
+# the link's signature is verified against — by re-running the base58 peer-id format over its
+# public_key.
+	.type peerid_of, @function
+peerid_of:
+	push %rbx
+	push %r12
+	push %r13
+	push %r14
+	push %r15                        # 5 (odd) → 16B-align the ec_peerid_format call
+	mov  %rdx, %r13                  # out
+	mov  %rcx, %r14                  # out_len ptr
+	call included_find_by_key        # rdi = included, rsi = hash33
+	test %rax, %rax
+	jz   .Lpio_no
+	mov  %rax, %rdi
+	lea  k_data(%rip), %rsi
+	mov  $4, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lpio_no
+	mov  %rax, %rdi
+	lea  ka_pubkey(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lpio_no
+	mov  %rax, %rdi
+	call get_text                    # rax = pubkey ptr, rdx = len
+	cmp  $32, %rdx
+	jne  .Lpio_no
+	mov  %rax, %r15
+	mov  $1, %edi                    # key_type = ed25519
+	xor  %esi, %esi                  # hash_type = 0 (identity)
+	mov  %r15, %rdx
+	mov  $32, %rcx
+	mov  %r13, %r8
+	mov  $128, %r9
+	sub  $16, %rsp                   # arg7 at [rsp] + 8 pad, alignment preserved
+	mov  %r14, (%rsp)
+	call ec_peerid_format
+	add  $16, %rsp
+	test %eax, %eax
+	jnz  .Lpio_no
+	mov  $1, %eax
+	jmp  .Lpio_ret
+.Lpio_no:
+	xor  %eax, %eax
+.Lpio_ret:
+	pop  %r15
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	ret
+
+# canon(rdi = pattern, rsi = len, rdx = frame, rcx = frame len, r8 = out) -> rax = out len.
+# §5.5a: a leading "/" means the pattern already names a peer position — copy verbatim;
+# anything else is peer-RELATIVE and becomes "/" + frame + "/" + pattern.
+# Bare "*" gets NO special case and deliberately must not: it falls out of the general rule
+# as "/{frame}/*", which is exactly what §5.5a says it means — the granter's own namespace,
+# never a universal cross-peer wildcard. Special-casing it is how the bare-star-is-universal
+# defect (A-PD-017, and swift/sql's frame over-scoping) gets built.
+	.type canon, @function
+canon:
+	push %rbx
+	push %r12
+	push %r13
+	push %r14
+	push %r15
+	mov  %rdi, %r12                  # pattern
+	mov  %rsi, %r13                  # pattern len
+	mov  %rdx, %r14                  # frame
+	mov  %rcx, %r15                  # frame len
+	mov  %r8,  %rbx                  # out
+	test %r13, %r13
+	jz   .Lcn_rel
+	cmpb $0x2f, (%r12)
+	jne  .Lcn_rel
+	mov  %rbx, %rdi
+	mov  %r12, %rsi
+	mov  %r13, %rdx
+	call mcpy
+	mov  %r13, %rax
+	jmp  .Lcn_ret
+.Lcn_rel:
+	movb $0x2f, (%rbx)
+	lea  1(%rbx), %rdi
+	mov  %r14, %rsi
+	mov  %r15, %rdx
+	call mcpy                        # rax = dst + frame len
+	movb $0x2f, (%rax)
+	lea  1(%rax), %rdi
+	mov  %r12, %rsi
+	mov  %r13, %rdx
+	call mcpy
+	sub  %rbx, %rax                  # total canonical length
+.Lcn_ret:
+	pop  %r15
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	ret
+
+# pat_covers(rdi = child pat, rsi = child len, rdx = parent pat, rcx = parent len) -> rax=1|0.
+# Both canonical, both absolute. Segment-wise:
+#   parent "*" as the LAST segment → covers everything remaining
+#   parent "*" mid-pattern         → covers exactly one child segment, whatever it is
+#   parent literal                 → the child segment must be that literal; a child "*" here
+#                                    is BROADER than the parent and is refused
+# Both exhausted together → covered; either alone → not covered.
+	.type pat_covers, @function
+pat_covers:
+	push %rbx
+	push %rbp
+	push %r12
+	push %r13
+	push %r14
+	push %r15
+	sub  $40, %rsp                   # [0]=ps [8]=pl [16]=cs [24]=cl  (+8 pad → 16B-aligned)
+	mov  %rdi, %r12                  # child ptr
+	mov  %rsi, %r13                  # child len
+	mov  %rdx, %r14                  # parent ptr
+	mov  %rcx, %r15                  # parent len
+	test %r13, %r13
+	jz   .Lpc_no
+	test %r15, %r15
+	jz   .Lpc_no
+	cmpb $0x2f, (%r12)
+	jne  .Lpc_no
+	cmpb $0x2f, (%r14)
+	jne  .Lpc_no
+	mov  $1, %rbx                    # ci
+	mov  $1, %rbp                    # pi
+.Lpc_loop:
+	cmp  %r15, %rbp
+	jb   .Lpc_pseg
+	cmp  %r13, %rbx                  # parent exhausted → covered iff child is too
+	jae  .Lpc_yes
+	jmp  .Lpc_no
+.Lpc_pseg:
+	# Read the PARENT segment BEFORE testing whether the child is exhausted: a trailing "*"
+	# covers the remainder INCLUDING the empty one. "/{peer}/*" authorizes that peer's
+	# namespace, and listing the namespace's own root ("/{peer}/") is inside it, not above
+	# it. Testing child-exhaustion first refuses every root listing while every deeper path
+	# still works, which reads as a permissions bug rather than a matcher bug.
+	lea  (%r14,%rbp), %rax
+	mov  %rax, (%rsp)                # ps
+	xor  %rcx, %rcx                  # pl
+.Lpc_pscan:
+	lea  (%rbp,%rcx), %rax
+	cmp  %r15, %rax
+	jae  .Lpc_pdone
+	mov  (%rsp), %rdx
+	cmpb $0x2f, (%rdx,%rcx)
+	je   .Lpc_pdone
+	inc  %rcx
+	jmp  .Lpc_pscan
+.Lpc_pdone:
+	mov  %rcx, 8(%rsp)               # pl
+	cmp  $1, %rcx
+	jne  .Lpc_child
+	mov  (%rsp), %rdx
+	cmpb $0x2a, (%rdx)
+	jne  .Lpc_child
+	lea  (%rbp,%rcx), %rax
+	cmp  %r15, %rax
+	jae  .Lpc_yes                    # trailing "*" — covers the rest, empty included
+.Lpc_child:
+	cmp  %r13, %rbx
+	jae  .Lpc_no                     # child exhausted under a non-trailing-star parent
+	lea  (%r12,%rbx), %rax
+	mov  %rax, 16(%rsp)              # cs
+	xor  %rcx, %rcx                  # cl
+.Lpc_cscan:
+	lea  (%rbx,%rcx), %rax
+	cmp  %r13, %rax
+	jae  .Lpc_cdone
+	mov  16(%rsp), %rdx
+	cmpb $0x2f, (%rdx,%rcx)
+	je   .Lpc_cdone
+	inc  %rcx
+	jmp  .Lpc_cscan
+.Lpc_cdone:
+	mov  %rcx, 24(%rsp)              # cl
+	cmpq $1, 8(%rsp)
+	jne  .Lpc_literal
+	mov  (%rsp), %rdx
+	cmpb $0x2a, (%rdx)
+	je   .Lpc_advance                # mid-pattern "*" — matches this one child segment
+.Lpc_literal:
+	cmpq $1, 24(%rsp)
+	jne  .Lpc_cmp
+	mov  16(%rsp), %rdx
+	cmpb $0x2a, (%rdx)
+	je   .Lpc_no                     # a "*" child under a literal parent is BROADER
+.Lpc_cmp:
+	mov  24(%rsp), %rax
+	cmp  8(%rsp), %rax
+	jne  .Lpc_no
+	mov  16(%rsp), %rdi
+	mov  (%rsp), %rsi
+	mov  %rax, %rcx
+	call memeq
+	test %rax, %rax
+	jz   .Lpc_no
+.Lpc_advance:
+	mov  24(%rsp), %rax
+	lea  1(%rbx,%rax), %rbx
+	mov  8(%rsp), %rax
+	lea  1(%rbp,%rax), %rbp
+	jmp  .Lpc_loop
+.Lpc_yes:
+	mov  $1, %eax
+	jmp  .Lpc_ret
+.Lpc_no:
+	xor  %eax, %eax
+.Lpc_ret:
+	add  $40, %rsp
+	pop  %r15
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbp
+	pop  %rbx
+	ret
+
+# arr_subset_framed(rdi = sub array, rsi = super array) -> rax = 1 if every element of `sub`
+# is covered by some element of `super` under §5.5a framing. The two sides canonicalize
+# against DIFFERENT frames — g_sfr_ptr/len for `sub`, g_qfr_ptr/len for `super` — which the
+# caller sets, so the exclude direction reverses them without copying a frame.
+	.type arr_subset_framed, @function
+arr_subset_framed:
+	push %rbx
+	push %rbp
+	push %r12
+	push %r13
+	push %r14
+	push %r15
+	sub  $40, %rsp                   # [0]=sub cursor [8]=sub n [16]=super array [24]=clen
+	mov  %rsi, 16(%rsp)
+	call read_head                   # rdi = sub array
+	cmp  $4, %rcx
+	jne  .Lasf_no
+	mov  %rax, (%rsp)
+	mov  %rdx, 8(%rsp)
+.Lasf_outer:
+	cmpq $0, 8(%rsp)
+	jz   .Lasf_yes
+	mov  (%rsp), %rdi
+	call read_head                   # rax = elem bytes, rdx = elem len
+	mov  %rax, %r12
+	mov  %rdx, %r13
+	lea  (%rax,%rdx), %rax
+	mov  %rax, (%rsp)
+	decq 8(%rsp)
+	mov  %r12, %rdi
+	mov  %r13, %rsi
+	mov  g_sfr_ptr(%rip), %rdx
+	mov  g_sfr_len(%rip), %rcx
+	lea  b_canon_a(%rip), %r8
+	call canon
+	mov  %rax, 24(%rsp)              # canonical child length
+	mov  16(%rsp), %rdi
+	call read_head
+	cmp  $4, %rcx
+	jne  .Lasf_no
+	mov  %rax, %r14                  # super cursor
+	mov  %rdx, %r15                  # super remaining
+.Lasf_inner:
+	test %r15, %r15
+	jz   .Lasf_no                    # no super element covers this sub element
+	mov  %r14, %rdi
+	call read_head
+	mov  %rax, %rbx
+	mov  %rdx, %rbp
+	lea  (%rax,%rdx), %r14
+	dec  %r15
+	mov  %rbx, %rdi
+	mov  %rbp, %rsi
+	mov  g_qfr_ptr(%rip), %rdx
+	mov  g_qfr_len(%rip), %rcx
+	lea  b_canon_b(%rip), %r8
+	call canon
+	mov  %rax, %rcx
+	lea  b_canon_a(%rip), %rdi
+	mov  24(%rsp), %rsi
+	lea  b_canon_b(%rip), %rdx
+	call pat_covers
+	test %rax, %rax
+	jnz  .Lasf_outer
+	jmp  .Lasf_inner
+.Lasf_yes:
+	mov  $1, %eax
+	jmp  .Lasf_ret
+.Lasf_no:
+	xor  %eax, %eax
+.Lasf_ret:
+	add  $40, %rsp
+	pop  %r15
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbp
+	pop  %rbx
+	ret
+
+# dim_subset(rdi = child scope map, rsi = parent scope map, rdx = framed) -> rax = 1|0.
+# One scope dimension, child ⊆ parent. `framed` selects §5.5a canonicalization, which scopes
+# the RESOURCE dimension ONLY — handlers/operations/peers are id-scope and take no frame.
+# Over-applying the frame is the swift/sql defect: a universal parent grant stops covering
+# any child grant the moment the two have different granters, and every delegated cap 403s.
+# Both halves of the spec's scope_subset are here: child includes covered by parent includes,
+# AND every parent exclude inherited by some child exclude.
+	.type dim_subset, @function
+dim_subset:
+	push %rbx
+	push %r12
+	push %r13
+	push %r14
+	push %r15
+	mov  %rdi, %rbx                  # child scope
+	mov  %rsi, %r12                  # parent scope
+	mov  %rdx, %r13                  # framed
+	mov  %rbx, %rdi
+	lea  ka_include(%rip), %rsi
+	mov  $7, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lds_no
+	mov  %rax, %r14                  # child include
+	mov  %r12, %rdi
+	lea  ka_include(%rip), %rsi
+	mov  $7, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lds_no
+	mov  %rax, %r15                  # parent include
+	test %r13, %r13
+	jz   .Lds_inc_plain
+	call set_frames_cp               # sub ← child frame, super ← parent frame
+	mov  %r14, %rdi
+	mov  %r15, %rsi
+	call arr_subset_framed
+	jmp  .Lds_inc_done
+.Lds_inc_plain:
+	mov  %r14, %rdi
+	mov  %r15, %rsi
+	call array_subset_star
+.Lds_inc_done:
+	test %rax, %rax
+	jz   .Lds_no
+	# Exclude inheritance runs in the REVERSE direction from includes: each PARENT exclude
+	# must be covered by some CHILD exclude, because the child must exclude at least as much
+	# as its parent did. A child that simply drops the parent's exclude widens itself.
+	mov  %r12, %rdi
+	lea  ka_exclude(%rip), %rsi
+	mov  $7, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lds_yes                    # parent excludes nothing → nothing to inherit
+	mov  %rax, %r15                  # parent exclude
+	mov  %rbx, %rdi
+	lea  ka_exclude(%rip), %rsi
+	mov  $7, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lds_no                     # parent excluded, child does not → widened
+	mov  %rax, %r14                  # child exclude
+	test %r13, %r13
+	jz   .Lds_exc_plain
+	call set_frames_pc               # sub ← parent frame, super ← child frame
+	mov  %r15, %rdi
+	mov  %r14, %rsi
+	call arr_subset_framed
+	jmp  .Lds_ret
+.Lds_exc_plain:
+	mov  %r15, %rdi
+	mov  %r14, %rsi
+	call array_subset_star
+	jmp  .Lds_ret
+.Lds_yes:
+	mov  $1, %eax
+	jmp  .Lds_ret
+.Lds_no:
+	xor  %eax, %eax
+.Lds_ret:
+	pop  %r15
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	ret
+
+# set_frames_cp / set_frames_pc — point the sub/super frame pair at the child/parent frames
+# in the given order. Clobbers rax only.
+	.type set_frames_cp, @function
+set_frames_cp:
+	lea  g_cfr(%rip), %rax
+	mov  %rax, g_sfr_ptr(%rip)
+	mov  g_cfrlen(%rip), %rax
+	mov  %rax, g_sfr_len(%rip)
+	lea  g_pfr(%rip), %rax
+	mov  %rax, g_qfr_ptr(%rip)
+	mov  g_pfrlen(%rip), %rax
+	mov  %rax, g_qfr_len(%rip)
+	ret
+	.type set_frames_pc, @function
+set_frames_pc:
+	lea  g_pfr(%rip), %rax
+	mov  %rax, g_sfr_ptr(%rip)
+	mov  g_pfrlen(%rip), %rax
+	mov  %rax, g_sfr_len(%rip)
+	lea  g_cfr(%rip), %rax
+	mov  %rax, g_qfr_ptr(%rip)
+	mov  g_cfrlen(%rip), %rax
+	mov  %rax, g_qfr_len(%rip)
+	ret
+
+# map_attenuated(rdi = from map | 0, rsi = to map | 0) -> rax = 1|0.
+# Every key of `from` must appear in `to` with a byte-identical value. Used twice, in
+# opposite directions: CONSTRAINTS (every parent key must survive on the child — a dropped
+# key widens it) and ALLOWANCES (every child key must already exist on the parent — an added
+# key widens it). Absent `from` → vacuously attenuated.
+	.type map_attenuated, @function
+map_attenuated:
+	push %rbx
+	push %r12
+	push %r13
+	push %r14
+	push %r15
+	sub  $16, %rsp                   # [0] = child value length
+	test %rdi, %rdi
+	jz   .Lma_yes
+	mov  %rsi, %r15                  # to
+	call read_head                   # rdi = from
+	cmp  $5, %rcx
+	jne  .Lma_no
+	mov  %rax, %r12                  # cursor
+	mov  %rdx, %rbx                  # pair count
+	test %rbx, %rbx
+	jz   .Lma_yes
+	test %r15, %r15
+	jz   .Lma_no
+.Lma_loop:
+	test %rbx, %rbx
+	jz   .Lma_yes
+	mov  %r12, %rdi
+	call read_head                   # rax = key bytes, rdx = key len
+	mov  %rax, %r13
+	mov  %rdx, %r14
+	lea  (%rax,%rdx), %r12           # value ptr
+	mov  %r15, %rdi
+	mov  %r13, %rsi
+	mov  %r14, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lma_no
+	mov  %rax, %r13                  # the counterpart value
+	mov  %r12, %rdi
+	call skip_value
+	mov  %rax, %r14                  # next pair
+	sub  %r12, %rax
+	mov  %rax, (%rsp)                # this value's byte length
+	mov  %r13, %rdi
+	call skip_value
+	sub  %r13, %rax
+	cmp  (%rsp), %rax
+	jne  .Lma_no
+	mov  %r12, %rdi
+	mov  %r13, %rsi
+	mov  %rax, %rcx
+	call memeq
+	test %rax, %rax
+	jz   .Lma_no
+	mov  %r14, %r12
+	dec  %rbx
+	jmp  .Lma_loop
+.Lma_yes:
+	mov  $1, %eax
+	jmp  .Lma_ret
+.Lma_no:
+	xor  %eax, %eax
+.Lma_ret:
+	add  $16, %rsp
+	pop  %r15
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	ret
+
+# grant_subset_framed(rdi = child grant, rsi = parent grant) -> rax = 1|0.
+# All four §5.6 scope dimensions plus constraints and allowances. Only RESOURCES is framed.
+	.type grant_subset_framed, @function
+grant_subset_framed:
+	push %rbx
+	push %r12
+	push %r13
+	mov  %rdi, %rbx                  # child grant
+	mov  %rsi, %r12                  # parent grant
+	# handlers — id-scope, no frame
+	mov  %rbx, %rdi
+	lea  ka_handlers(%rip), %rsi
+	mov  $8, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lgsf_no
+	mov  %rax, %r13
+	mov  %r12, %rdi
+	lea  ka_handlers(%rip), %rsi
+	mov  $8, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lgsf_no
+	mov  %r13, %rdi
+	mov  %rax, %rsi
+	xor  %edx, %edx
+	call dim_subset
+	test %rax, %rax
+	jz   .Lgsf_no
+	# operations — id-scope, no frame
+	mov  %rbx, %rdi
+	lea  ka_operations(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lgsf_no
+	mov  %rax, %r13
+	mov  %r12, %rdi
+	lea  ka_operations(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lgsf_no
+	mov  %r13, %rdi
+	mov  %rax, %rsi
+	xor  %edx, %edx
+	call dim_subset
+	test %rax, %rax
+	jz   .Lgsf_no
+	# resources — THE framed dimension, and the only one
+	mov  %rbx, %rdi
+	lea  ka_resources(%rip), %rsi
+	mov  $9, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lgsf_peers                 # child names no resources → nothing to bound
+	mov  %rax, %r13
+	mov  %r12, %rdi
+	lea  ka_resources(%rip), %rsi
+	mov  $9, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lgsf_no
+	mov  %r13, %rdi
+	mov  %rax, %rsi
+	mov  $1, %edx
+	call dim_subset
+	test %rax, %rax
+	jz   .Lgsf_no
+.Lgsf_peers:
+	# peers — id-scope; absent defaults to {include:[local_peer_id]} on BOTH sides, so an
+	# absent-vs-absent pair is trivially a subset and needs no synthesised map.
+	mov  %rbx, %rdi
+	lea  ka_peers(%rip), %rsi
+	mov  $5, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lgsf_maps
+	mov  %rax, %r13
+	mov  %r12, %rdi
+	lea  ka_peers(%rip), %rsi
+	mov  $5, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lgsf_no
+	mov  %r13, %rdi
+	mov  %rax, %rsi
+	xor  %edx, %edx
+	call dim_subset
+	test %rax, %rax
+	jz   .Lgsf_no
+.Lgsf_maps:
+	# constraints: every parent key retained on the child, byte-equal
+	mov  %r12, %rdi
+	lea  ka_constraints(%rip), %rsi
+	mov  $11, %rdx
+	call map_find
+	mov  %rax, %r13
+	mov  %rbx, %rdi
+	lea  ka_constraints(%rip), %rsi
+	mov  $11, %rdx
+	call map_find
+	mov  %r13, %rdi
+	mov  %rax, %rsi
+	call map_attenuated
+	test %rax, %rax
+	jz   .Lgsf_no
+	# allowances: every child key pre-existing on the parent, byte-equal
+	mov  %rbx, %rdi
+	lea  ka_allowances(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	mov  %rax, %r13
+	mov  %r12, %rdi
+	lea  ka_allowances(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	mov  %r13, %rdi
+	mov  %rax, %rsi
+	call map_attenuated
+	jmp  .Lgsf_ret
+.Lgsf_no:
+	xor  %eax, %eax
+.Lgsf_ret:
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	ret
+
+# is_attenuated(rdi = child token data, rsi = parent token data) -> rax = 1|0.
+# §5.6 with the per-link §5.5a frames already in g_cfr / g_pfr: every child grant covered by
+# some parent grant, then the expiration rule.
+	.type is_attenuated, @function
+is_attenuated:
+	push %rbx
+	push %r12
+	push %r13
+	push %r14
+	push %r15
+	sub  $16, %rsp                   # [0] = parent grants array, [8] = child grants remaining
+	mov  %rdi, %r14                  # child token data
+	mov  %rsi, %r15                  # parent token data
+	mov  %r14, %rdi
+	lea  ka_grants(%rip), %rsi
+	mov  $6, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lia_no
+	mov  %rax, %r12                  # child grants array
+	mov  %r15, %rdi
+	lea  ka_grants(%rip), %rsi
+	mov  $6, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lia_no
+	mov  %rax, (%rsp)
+	mov  %r12, %rdi
+	call read_head
+	cmp  $4, %rcx
+	jne  .Lia_no
+	mov  %rax, %r12                  # child grant cursor
+	mov  %rdx, 8(%rsp)               # child grants remaining
+.Lia_child:
+	cmpq $0, 8(%rsp)
+	jz   .Lia_expiry
+	mov  (%rsp), %rdi
+	call read_head
+	cmp  $4, %rcx
+	jne  .Lia_no
+	mov  %rax, %rbx                  # parent cursor
+	mov  %rdx, %r13                  # parent grants remaining
+.Lia_parent:
+	test %r13, %r13
+	jz   .Lia_no                     # this child grant is covered by no parent grant
+	mov  %r12, %rdi
+	mov  %rbx, %rsi
+	call grant_subset_framed
+	test %rax, %rax
+	jnz  .Lia_covered
+	mov  %rbx, %rdi
+	call skip_value
+	mov  %rax, %rbx
+	dec  %r13
+	jmp  .Lia_parent
+.Lia_covered:
+	mov  %r12, %rdi
+	call skip_value
+	mov  %rax, %r12
+	decq 8(%rsp)
+	jmp  .Lia_child
+.Lia_expiry:
+	# §5.6 expiration, nil-vs-finite: a child with NO expires_at is INFINITE, and infinite
+	# exceeds any finite parent. The permissive reading — treat the absent child field as
+	# "inherits the parent's" — is the one a reader reaches by accident and is explicitly
+	# non-conformant.
+	mov  %r15, %rdi
+	lea  ka_expires(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lia_yes                    # parent never expires → nothing to bound
+	mov  %rax, %rdi
+	call read_head
+	test %rcx, %rcx
+	jnz  .Lia_no                     # not a uint64 → unusable, never "absent"
+	mov  %rdx, %rbx                  # parent expiry
+	mov  %r14, %rdi
+	lea  ka_expires(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lia_no                     # infinite child under a finite parent
+	mov  %rax, %rdi
+	call read_head
+	test %rcx, %rcx
+	jnz  .Lia_no
+	cmp  %rbx, %rdx
+	ja   .Lia_no
+.Lia_yes:
+	mov  $1, %eax
+	jmp  .Lia_ret
+.Lia_no:
+	xor  %eax, %eax
+.Lia_ret:
+	add  $16, %rsp
+	pop  %r15
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	ret
+
+# caveats_ok(rdi = parent token data, rsi = child token data, rdx = depth) -> rax = 1|0.
+# §5.5 check_delegation_caveats. An absent block means there is nothing to enforce.
+	.type caveats_ok, @function
+caveats_ok:
+	push %rbx
+	push %r12
+	push %r13
+	push %r14
+	push %r15
+	mov  %rsi, %r14                  # child token data
+	mov  %rdx, %r15                  # depth
+	lea  ka_deleg_caveats(%rip), %rsi
+	mov  $18, %rdx
+	call map_find                    # rdi = parent token data
+	test %rax, %rax
+	jz   .Lco_yes
+	mov  %rax, %r12                  # caveats map
+	# no_delegation
+	mov  %r12, %rdi
+	lea  ka_no_delegation(%rip), %rsi
+	mov  $13, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lco_depth
+	cmpb $0xf5, (%rax)               # CBOR true
+	je   .Lco_no
+.Lco_depth:
+	# max_delegation_depth — denied when depth >= limit
+	mov  %r12, %rdi
+	lea  ka_max_deleg_depth(%rip), %rsi
+	mov  $20, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lco_ttl
+	mov  %rax, %rdi
+	call read_head
+	test %rcx, %rcx
+	jnz  .Lco_no
+	cmp  %rdx, %r15
+	jae  .Lco_no
+.Lco_ttl:
+	# max_delegation_ttl — an infinite child exceeds any finite limit
+	mov  %r12, %rdi
+	lea  ka_max_deleg_ttl(%rip), %rsi
+	mov  $18, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lco_yes
+	mov  %rax, %rdi
+	call read_head
+	test %rcx, %rcx
+	jnz  .Lco_no
+	mov  %rdx, %rbx                  # limit
+	mov  %r14, %rdi
+	lea  ka_expires(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lco_no                     # child never expires → unbounded ttl
+	mov  %rax, %rdi
+	call read_head
+	test %rcx, %rcx
+	jnz  .Lco_no
+	mov  %rdx, %r13                  # child expires_at
+	mov  %r14, %rdi
+	lea  ka_created(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lco_no
+	mov  %rax, %rdi
+	call read_head
+	test %rcx, %rcx
+	jnz  .Lco_no
+	cmp  %rdx, %r13
+	jb   .Lco_yes                    # already expired at birth — bounded by anything
+	sub  %rdx, %r13
+	cmp  %rbx, %r13
+	ja   .Lco_no
+.Lco_yes:
+	mov  $1, %eax
+	jmp  .Lco_ret
+.Lco_no:
+	xor  %eax, %eax
+.Lco_ret:
+	pop  %r15
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	ret
+
+# link_temporal_ok(rdi = token data) -> rax = 1|0, against g_now (§5.5 `t`, sampled once).
+#
+# The CAP-6a REPRESENTABILITY test runs FIRST and is the whole point: an accessor that
+# answers "nothing" for both an ABSENT field and a PRESENT-but-not-uint64 one collapses
+# MALFORMED into ABSENT — and absent means "no expiry", so that reading hands an immortal
+# capability to whoever sent the malformed value. Here the two are distinguishable by
+# construction: map_find answers ABSENT, read_head's major answers REPRESENTABLE. CAP-6a
+# covers THREE fields, and created_at is the one an audit shaped around expiry checks
+# misses. (A bignum can only reach a peer as a major-type-6 tag and is refused at decode;
+# what arrives here is the negative form, major type 1.)
+	.type link_temporal_ok, @function
+link_temporal_ok:
+	push %rbx
+	push %r12
+	mov  %rdi, %r12
+	lea  ka_created(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Llt_nb
+	mov  %rax, %rdi
+	call read_head
+	test %rcx, %rcx
+	jnz  .Llt_no
+.Llt_nb:
+	mov  %r12, %rdi
+	lea  ka_notbefore(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Llt_exp
+	mov  %rax, %rdi
+	call read_head
+	test %rcx, %rcx
+	jnz  .Llt_no
+	cmp  %rdx, g_now(%rip)
+	jb   .Llt_no                     # now < not_before
+.Llt_exp:
+	mov  %r12, %rdi
+	lea  ka_expires(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Llt_yes
+	mov  %rax, %rdi
+	call read_head
+	test %rcx, %rcx
+	jnz  .Llt_no
+	# §5.6 CAP-6: expiry is an EXCLUSIVE upper bound — expired when now >= expires_at. This
+	# pairs with ttl_ms:0 minting expires_at == created_at, which must be expired at every
+	# observable instant rather than valid for one and racing.
+	cmp  %rdx, g_now(%rip)
+	jae  .Llt_no
+.Llt_yes:
+	mov  $1, %eax
+	jmp  .Llt_ret
+.Llt_no:
+	xor  %eax, %eax
+.Llt_ret:
+	pop  %r12
+	pop  %rbx
+	ret
+
+# =====================================================================
+# verify_get_cap(rdi = exec data map) -> rax = 0 authorized, 1 rejected (403/401 sent).
+# §5.2 capability-class + §5.5 delegation-chain verification.
+#
+# Walks capability → parent → … → root, validating EVERY link: content-hash integrity,
+# revocation, grantee resolution, temporal validity (CAP-6a representability first), and the
+# granter's signature. For every non-root link it additionally checks the parent linkage
+# (parent.grantee == child.granter), §5.6 attenuation under §5.5a per-link granter frames,
+# and the parent's delegation caveats. The ROOT's granter must be this peer — that check has
+# not gone away, it has moved to the END of the walk where it belongs instead of standing in
+# for the walk. A fail-closed root-trust gate answers about ten reject-direction chain
+# vectors correctly for a reason unrelated to what they test, and refuses CAP-5/CAP-6/CAP-6a
+# two gates before the mint they are named after.
 # verify_multisig_granter(rdi = granter map, rsi = cap_hash ptr, rdx = included) -> rax = 0
 # accept / 1 reject. §5.5 M3/M4/M6: threshold ≥ 2, N ≥ 2, 2 ≤ threshold ≤ N, parent null,
 # signers distinct, THIS peer ∈ signers, and ≥ threshold distinct signers each hold a valid
@@ -5185,16 +6217,9 @@ verify_multisig_granter:
 	mov  %rdx, g_ms_thresh(%rip)
 	cmp  $2, %rdx
 	jb   .Lvms_reject                # threshold < 2
-	# parent must be absent or null
-	mov  %rbx, %rdi
-	lea  ka_parent(%rip), %rsi
-	mov  $6, %rdx
-	call map_find
-	test %rax, %rax
-	jz   .Lvms_parent_ok
-	cmpb $0xf6, (%rax)               # CBOR null
-	jne  .Lvms_reject
-.Lvms_parent_ok:
+	# (M3's root-only rule is enforced by the caller, against the TOKEN's `parent` field —
+	# testing the GRANTER map for a `parent` key is vacuous, since {signers, threshold}
+	# never carries one.)
 	# signers array
 	mov  %rbx, %rdi
 	lea  ka_signers(%rip), %rsi
@@ -5333,6 +6358,7 @@ verify_get_cap:
 	push %r13
 	push %r14
 	push %r15                        # 5 pushes (odd) → align send_error/FFI calls
+	sub  $48, %rsp                   # [0]=included [8]=author [16]=cur hash [24]=depth [32]=ctd
 	mov  %rdi, %r15                  # exec data map
 	# capability present?
 	mov  %r15, %rdi
@@ -5343,7 +6369,9 @@ verify_get_cap:
 	jz   .Lvgc_403
 	mov  %rax, %rdi
 	call get_text                    # rax = cap_hash ptr (33)
-	mov  %rax, %rbx                  # cap_hash
+	cmp  $33, %rdx
+	jne  .Lvgc_403
+	mov  %rax, 16(%rsp)              # cur = the presented capability hash
 	# author (verify_get_auth already ensured present)
 	mov  %r15, %rdi
 	lea  k_author(%rip), %rsi
@@ -5353,7 +6381,7 @@ verify_get_cap:
 	jz   .Lvgc_403
 	mov  %rax, %rdi
 	call get_text
-	mov  %rax, %r13                  # author ptr
+	mov  %rax, 8(%rsp)               # author ptr
 	# included
 	lea  b_req(%rip), %rdi
 	lea  ka_included(%rip), %rsi
@@ -5361,10 +6389,17 @@ verify_get_cap:
 	call map_find
 	test %rax, %rax
 	jz   .Lvgc_403
-	mov  %rax, %r12                  # included
-	# token = included_find_by_key(included, cap_hash)
-	mov  %r12, %rdi
-	mov  %rbx, %rsi
+	mov  %rax, (%rsp)                # included
+	movq $0, 24(%rsp)                # depth
+	movq $0, 32(%rsp)                # child token data (none yet)
+	# §5.5 v7.76: `t` is sampled ONCE per verdict and never re-sampled per link — otherwise
+	# the verdict depends on wall-clock drift within a single walk.
+	call now_ms
+	mov  %rax, g_now(%rip)
+# ---------------------------------------------------------------- the walk
+.Lvgc_walk:
+	mov  (%rsp), %rdi
+	mov  16(%rsp), %rsi
 	call included_find_by_key
 	test %rax, %rax
 	jz   .Lvgc_403                   # capability_not_in_included
@@ -5374,32 +6409,32 @@ verify_get_cap:
 	call map_find
 	test %rax, %rax
 	jz   .Lvgc_403
-	mov  %rax, %r15                  # token data map
-	# content-hash substitution: recompute content_hash(system/capability/token, data) and
-	# require it to equal the capability hash the request presented (the `included` key).
-	# A token whose bytes were altered after signing no longer hashes to its key → 403.
-	mov  %r15, %rdi
-	call skip_value                  # rax = end of data map
-	sub  %r15, %rax                  # rax = data byte length
+	mov  %rax, %r12                  # td — this link's token data map
+	# integrity: the link's data must hash to the hash we followed to reach it. A token whose
+	# bytes were altered after signing no longer hashes to its key → 403.
+	mov  %r12, %rdi
+	call skip_value
+	sub  %r12, %rax                  # data byte length
 	lea  ta_token(%rip), %rdi
 	mov  $23, %rsi
-	mov  %r15, %rdx
+	mov  %r12, %rdx
 	mov  %rax, %rcx
-	lea  tok_recompute_ch(%rip), %r8
+	lea  g_link_ch(%rip), %r8
 	call ec_content_hash
-	lea  tok_recompute_ch(%rip), %rdi
-	mov  %rbx, %rsi                  # cap_hash (the presented key)
+	lea  g_link_ch(%rip), %rdi
+	mov  16(%rsp), %rsi
 	mov  $33, %rcx
 	call memeq
 	test %rax, %rax
-	jz   .Lvgc_403                   # recomputed hash ≠ presented key → substituted
-	# §6.9a — a revoked token is denied on use (revocation marker present in the store).
-	mov  %rbx, %rdi                  # cap_hash
+	jz   .Lvgc_403                   # recomputed hash ≠ the key we followed → substituted
+	# §6.9a — revocation is PER LINK: revoking an intermediate kills everything under it.
+	mov  16(%rsp), %rdi
 	call is_revoked
 	test %rax, %rax
 	jnz  .Lvgc_403
-	# grantee present + must resolve to a system/peer entity (§5.2) then equal the author.
-	mov  %r15, %rdi
+	# grantee present, 33 bytes, and resolving to a present system/peer — per link, not just
+	# at the leaf. An unresolvable grantee is the §5.2 / PR-3 single-401 carve-out, NOT 403.
+	mov  %r12, %rdi
 	lea  ka_grantee(%rip), %rsi
 	mov  $7, %rdx
 	call map_find
@@ -5409,11 +6444,9 @@ verify_get_cap:
 	call get_text
 	cmp  $33, %rdx
 	jne  .Lvgc_403
-	mov  %rax, %r14                  # grantee ptr (r14 becomes granter below)
-	# grantee must resolve to a system/peer in included — else 401 unresolvable_grantee
-	# (the §5.2 / PR-3 single-401 carve-out, NOT 403).
-	mov  %r12, %rdi                  # included
-	mov  %r14, %rsi
+	mov  %rax, %r13                  # grantee ptr
+	mov  (%rsp), %rdi
+	mov  %r13, %rsi
 	call included_find_by_key
 	test %rax, %rax
 	jz   .Lvgc_grantee_401
@@ -5433,53 +6466,72 @@ verify_get_cap:
 	call memeq
 	test %rax, %rax
 	jz   .Lvgc_grantee_401
-	# grantee == author?
-	mov  %r14, %rdi
-	mov  %r13, %rsi
+	# linkage: the LEAF is granted to the request author; every parent is granted to the
+	# granter of the link below it (g_pgee carries that hash across the hop).
+	mov  %r13, %rdi
+	cmpq $0, 24(%rsp)
+	jne  .Lvgc_link_parent
+	mov  8(%rsp), %rsi               # author
+	jmp  .Lvgc_link_cmp
+.Lvgc_link_parent:
+	lea  g_pgee(%rip), %rsi
+.Lvgc_link_cmp:
 	mov  $33, %rcx
 	call memeq
 	test %rax, %rax
-	jz   .Lvgc_403                   # grantee_author_mismatch
+	jz   .Lvgc_403                   # grantee_author_mismatch / broken chain linkage
+	# temporal validity of THIS link (CAP-6a representability first)
+	mov  %r12, %rdi
+	call link_temporal_ok
+	test %rax, %rax
+	jz   .Lvgc_403
 	# granter
-	mov  %r15, %rdi
+	mov  %r12, %rdi
 	lea  ka_granter(%rip), %rsi
 	mov  $7, %rdx
 	call map_find
 	test %rax, %rax
 	jz   .Lvgc_403
-	mov  %rax, %r14                  # granter value ptr
-	# multisig (§5.5): a granter that is a MAP is a {signers, threshold} quorum — verify the
-	# co-signed token instead of the single-granter root-trust path.
-	mov  %r14, %rdi
+	mov  %rax, %r13                  # granter value ptr
+	mov  %r13, %rdi
 	call read_head                   # rcx = major type
 	cmp  $5, %rcx
 	jne  .Lvgc_single_granter
-	mov  %r14, %rdi
-	mov  %rbx, %rsi                  # cap_hash
-	mov  %r12, %rdx                  # included
+	# §3.6 K-of-N multi-granter. M3 structural validity runs BEFORE any signature check, so a
+	# violation surfaces as 403 capability_denied rather than as a signature failure.
+	# Multi-sig is ROOT-ONLY: a multi-granter link carrying a parent is structurally invalid.
+	mov  %r12, %rdi
+	lea  ka_parent(%rip), %rsi
+	mov  $6, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lvgc_ms_root
+	cmpb $0xf6, (%rax)               # CBOR null is "no parent"
+	jne  .Lvgc_403
+.Lvgc_ms_root:
+	# A quorum root has no single granter peer_id, so §5.5a has no frame to canonicalize its
+	# resource patterns against. Rather than invent one, a K-of-N root is accepted only when
+	# it is the capability actually PRESENTED (depth 0), where no attenuation comparison is
+	# needed. A chain whose ROOT is K-of-N is refused, and that limit is written here rather
+	# than left to be discovered.
+	cmpq $0, 24(%rsp)
+	jne  .Lvgc_403
+	mov  %r13, %rdi
+	mov  16(%rsp), %rsi
+	mov  (%rsp), %rdx
 	call verify_multisig_granter
 	test %rax, %rax
 	jnz  .Lvgc_403
-	xor  %eax, %eax                  # authorized (quorum met)
-	jmp  .Lvgc_ret
+	jmp  .Lvgc_ok                    # quorum met — the chain terminates here
 .Lvgc_single_granter:
-	mov  %r14, %rdi
-	call get_text                    # rax = granter ptr (33)
-	mov  %rax, %r14                  # granter
-	# root-trust: a directly-presented token MUST be granted by THIS peer (we minted it at
-	# authenticate). A forged root claims a granter we never signed as; a delegated child's
-	# granter is some intermediate, not us. Either way — until the delegation-chain walk
-	# exists, fail closed: granter ≠ our identity_hash → 403. (Closes forged_root_capability
-	# and the chain-* reject probes, which all require denial.)
-	mov  %r14, %rdi
-	lea  g_identity_hash(%rip), %rsi
-	mov  $33, %rcx
-	call memeq
-	test %rax, %rax
-	jz   .Lvgc_403
-	# granter's public_key (its system/peer in included)
-	mov  %r12, %rdi
-	mov  %r14, %rsi
+	mov  %r13, %rdi
+	call get_text
+	cmp  $33, %rdx
+	jne  .Lvgc_403
+	mov  %rax, %r13                  # granter hash
+	# signature over THIS link, by THIS link's granter
+	mov  (%rsp), %rdi
+	mov  %r13, %rsi
 	call included_find_by_key
 	test %rax, %rax
 	jz   .Lvgc_403
@@ -5497,22 +6549,87 @@ verify_get_cap:
 	jz   .Lvgc_403
 	mov  %rax, %rdi
 	call get_text
-	mov  %rax, %r15                  # granter pubkey ptr (survives find_req_sig)
-	# token signature: signer==granter, target==cap_hash
-	mov  %r12, %rdi
-	mov  %r14, %rsi
-	mov  %rbx, %rdx
+	mov  %rax, %r14                  # granter pubkey (survives find_req_sig)
+	mov  (%rsp), %rdi
+	mov  %r13, %rsi
+	mov  16(%rsp), %rdx
 	call find_req_sig                # rax = 64-byte sig ptr | 0
 	test %rax, %rax
 	jz   .Lvgc_403                   # unsigned / forged
-	# Ed25519 verify(granter_pubkey, cap_hash, 33, sig)
-	mov  %r15, %rdi
-	mov  %rbx, %rsi
+	mov  %r14, %rdi
+	mov  16(%rsp), %rsi
 	mov  $33, %rdx
 	mov  %rax, %rcx
 	call ec_ed25519_verify
 	test %eax, %eax
 	jnz  .Lvgc_403
+	# this link's §5.5a frame = its granter's peer_id
+	mov  (%rsp), %rdi
+	mov  %r13, %rsi
+	lea  g_pfr(%rip), %rdx
+	lea  g_pfrlen(%rip), %rcx
+	call peerid_of
+	test %rax, %rax
+	jz   .Lvgc_403
+	# attenuation + caveats against the child we arrived from
+	cmpq $0, 24(%rsp)
+	je   .Lvgc_rootcheck
+	mov  32(%rsp), %rdi              # ctd
+	mov  %r12, %rsi
+	call is_attenuated
+	test %rax, %rax
+	jz   .Lvgc_403
+	mov  %r12, %rdi
+	mov  32(%rsp), %rsi
+	mov  24(%rsp), %rdx
+	dec  %rdx
+	call caveats_ok
+	test %rax, %rax
+	jz   .Lvgc_403
+.Lvgc_rootcheck:
+	mov  %r12, %rdi
+	lea  ka_parent(%rip), %rsi
+	mov  $6, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lvgc_root
+	cmpb $0xf6, (%rax)               # an explicit null parent is a root
+	je   .Lvgc_root
+	mov  %rax, %r14                  # parent hash value ptr
+	# carry the child state across the hop: its data, its granter, and its frame
+	mov  %r12, 32(%rsp)              # ctd = this link
+	lea  g_pgee(%rip), %rdi
+	mov  %r13, %rsi
+	mov  $33, %rdx
+	call mcpy
+	lea  g_cfr(%rip), %rdi
+	lea  g_pfr(%rip), %rsi
+	mov  $128, %rdx
+	call mcpy
+	mov  g_pfrlen(%rip), %rax
+	mov  %rax, g_cfrlen(%rip)
+	mov  %r14, %rdi
+	call get_text
+	cmp  $33, %rdx
+	jne  .Lvgc_403
+	mov  %rax, 16(%rsp)              # cur = parent
+	incq 24(%rsp)
+	# §5.5 collect_authority_chain bounds depth at 64. chain_depth_check already answers 400
+	# chain_depth_exceeded ahead of this walk, so this is the belt to that braces — it exists
+	# so the loop cannot run unbounded if the walk is ever reached by another path.
+	cmpq $64, 24(%rsp)
+	ja   .Lvgc_403
+	jmp  .Lvgc_walk
+.Lvgc_root:
+	# §5.5 root trust: the chain must terminate at a capability THIS peer granted. The check
+	# has not gone away — it is here, at the end of the walk, instead of standing in for it.
+	mov  %r13, %rdi
+	lea  g_identity_hash(%rip), %rsi
+	mov  $33, %rcx
+	call memeq
+	test %rax, %rax
+	jz   .Lvgc_403
+.Lvgc_ok:
 	xor  %eax, %eax                  # authorized
 	jmp  .Lvgc_ret
 .Lvgc_403:
@@ -5527,6 +6644,7 @@ verify_get_cap:
 	call send_error
 	mov  $1, %eax
 .Lvgc_ret:
+	add  $48, %rsp
 	pop  %r15
 	pop  %r14
 	pop  %r13
@@ -5708,6 +6826,50 @@ verify_get_scope:
 	test %rax, %rax
 	jz   .Lvgsc_ok
 	mov  %rax, %r14                  # token data map
+	# ---- §5.5a frame for the DISPATCH surface: the presented cap's own granter ----
+	# Derived here rather than assumed to be the local peer — they are byte-identical for
+	# every self-issued capability, which is exactly why framing against the verifier stays
+	# latent until a foreign-granted cap arrives.
+	mov  %r14, %rdi
+	lea  ka_granter(%rip), %rsi
+	mov  $7, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lvgsc_403
+	mov  %rax, %r12
+	mov  %r12, %rdi
+	call read_head
+	cmp  $5, %rcx
+	jne  .Lvgsc_single_frame
+	# §3.6 K-of-N root: there is no single granter, so §5.5a has no granter peer_id to frame
+	# against. The local peer is the CORRECT frame here and not a fallback — M6 already
+	# required that the local peer be in the signer set AND have signed, and §5.5 says a
+	# quorum cap's "subsequent use is locally rooted". The quorum authorized issuance; the
+	# namespace its patterns name is this peer's.
+	lea  g_dfr(%rip), %rdi
+	lea  g_peerid(%rip), %rsi
+	mov  g_peerid_len(%rip), %rdx
+	mov  %rdx, g_dfrlen(%rip)
+	call mcpy
+	jmp  .Lvgsc_frame_ok
+.Lvgsc_single_frame:
+	mov  %r12, %rdi
+	call get_text
+	mov  %rax, %r12                  # granter hash
+	lea  b_req(%rip), %rdi
+	lea  ka_included(%rip), %rsi
+	mov  $8, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lvgsc_403
+	mov  %rax, %rdi
+	mov  %r12, %rsi
+	lea  g_dfr(%rip), %rdx
+	lea  g_dfrlen(%rip), %rcx
+	call peerid_of
+	test %rax, %rax
+	jz   .Lvgsc_403
+.Lvgsc_frame_ok:
 	# ---- token temporal validity (only fires if the fields are present) ----
 	call now_ms                      # rax = wall-clock ms
 	mov  %rax, %r12                  # now
@@ -5906,7 +7068,7 @@ grant_scope_ok:
 	mov  %rax, %rdi
 	mov  %r13, %rsi
 	mov  %r14, %rdx
-	call resource_matches
+	call resources_cover_target
 	test %rax, %rax
 	jnz  .Lgs_yes
 .Lgs_next:
@@ -5922,6 +7084,198 @@ grant_scope_ok:
 	xor  %eax, %eax
 .Lgs_ret:
 	pop  %rbp
+	pop  %r15
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	ret
+
+# op_scope_ok(rdi = token data, rsi = op ptr, rdx = op len) -> rax = 1 if some grant permits
+# (operation ∈ operations.include) ∧ (handler ∈ handlers.include) ∧ (target peer ∈ peers).
+# The RESOURCE dimension is absent by construction: these are the capability-vocabulary ops
+# that carry no resource.targets, so there is no target to match and asking for one would
+# deny every one of them.
+	.type op_scope_ok, @function
+op_scope_ok:
+	push %rbx
+	push %r12
+	push %r13
+	push %r14
+	push %r15
+	mov  %rsi, %r14                  # op ptr
+	mov  %rdx, %r15                  # op len
+	lea  ka_grants(%rip), %rsi
+	mov  $6, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Los_no
+	mov  %rax, %rdi
+	call read_head
+	cmp  $4, %rcx
+	jne  .Los_no
+	mov  %rax, %r12                  # grant cursor
+	mov  %rdx, %rbx                  # grant count
+.Los_loop:
+	test %rbx, %rbx
+	jz   .Los_no
+	mov  %r12, %rdi
+	lea  ka_operations(%rip), %rsi
+	mov  $10, %rdx
+	call get_include
+	test %rax, %rax
+	jz   .Los_next
+	mov  %rax, %rdi
+	mov  %r14, %rsi
+	mov  %r15, %rdx
+	call array_contains_star
+	test %rax, %rax
+	jz   .Los_next
+	mov  %r12, %rdi
+	lea  ka_handlers(%rip), %rsi
+	mov  $8, %rdx
+	call get_include
+	test %rax, %rax
+	jz   .Los_next
+	mov  %rax, %rdi
+	mov  g_handler_ptr(%rip), %rsi
+	mov  g_handler_len(%rip), %rdx
+	call array_contains_star
+	test %rax, %rax
+	jz   .Los_next
+	mov  %r12, %rdi
+	lea  ka_peers(%rip), %rsi
+	mov  $5, %rdx
+	call get_include
+	test %rax, %rax
+	jz   .Los_peers_default
+	mov  %rax, %rdi
+	mov  g_target_peer_ptr(%rip), %rsi
+	mov  g_target_peer_len(%rip), %rdx
+	call array_contains_star
+	test %rax, %rax
+	jz   .Los_next
+	jmp  .Los_yes
+.Los_peers_default:
+	mov  g_target_peer_len(%rip), %rax
+	cmp  g_peerid_len(%rip), %rax
+	jne  .Los_next
+	mov  g_target_peer_ptr(%rip), %rdi
+	lea  g_peerid(%rip), %rsi
+	mov  %rax, %rcx
+	call memeq
+	test %rax, %rax
+	jz   .Los_next
+	jmp  .Los_yes
+.Los_next:
+	mov  %r12, %rdi
+	call skip_value
+	mov  %rax, %r12
+	dec  %rbx
+	jmp  .Los_loop
+.Los_yes:
+	mov  $1, %eax
+	jmp  .Los_ret
+.Los_no:
+	xor  %eax, %eax
+.Los_ret:
+	pop  %r15
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbx
+	ret
+
+# verify_op_scope(rdi = exec data map) -> rax = 0 authorized, 1 rejected (403 sent).
+# §5.2 operation-scope gate for a capability-vocabulary op with no resource.targets. Without
+# it a peer that authenticates a caller then routes straight into the handler never asks
+# whether the presented capability covers this op on this handler at all — and a floor cap
+# (capability:request only) would reach configure/revoke unchecked.
+	.type verify_op_scope, @function
+verify_op_scope:
+	push %rbx
+	push %r12
+	push %r13
+	push %r14
+	push %r15                        # 5 (odd) → align send_error
+	mov  %rdi, %r15                  # exec
+	call derive_handler              # rdi = exec (→ g_handler_ptr/len, g_target_peer_*)
+	mov  %r15, %rdi
+	lea  k_capability(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lvos_403
+	mov  %rax, %rdi
+	call get_text
+	mov  %rax, %rbx                  # cap hash
+	lea  b_req(%rip), %rdi
+	lea  ka_included(%rip), %rsi
+	mov  $8, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lvos_403
+	mov  %rax, %rdi
+	mov  %rbx, %rsi
+	call included_find_by_key
+	test %rax, %rax
+	jz   .Lvos_403
+	mov  %rax, %rdi
+	lea  k_data(%rip), %rsi
+	mov  $4, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lvos_403
+	mov  %rax, %r14                  # token data
+	call now_ms
+	mov  %rax, %r12                  # now
+	mov  %r14, %rdi
+	lea  ka_expires(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lvos_nb
+	mov  %rax, %rdi
+	call read_head
+	cmp  %rdx, %r12
+	ja   .Lvos_403                   # now > expires_at
+.Lvos_nb:
+	mov  %r14, %rdi
+	lea  ka_notbefore(%rip), %rsi
+	mov  $10, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lvos_op
+	mov  %rax, %rdi
+	call read_head
+	cmp  %rdx, %r12
+	jb   .Lvos_403                   # now < not_before
+.Lvos_op:
+	mov  %r15, %rdi
+	lea  k_op(%rip), %rsi
+	mov  $9, %rdx
+	call map_find
+	test %rax, %rax
+	jz   .Lvos_403
+	mov  %rax, %rdi
+	call get_text
+	mov  %rax, %r12
+	mov  %rdx, %r13
+	mov  %r14, %rdi
+	mov  %r12, %rsi
+	mov  %r13, %rdx
+	call op_scope_ok
+	test %rax, %rax
+	jnz  .Lvos_ok
+.Lvos_403:
+	mov  $403, %rdi
+	lea  ec_cap_denied(%rip), %rsi
+	call send_error
+	mov  $1, %eax
+	jmp  .Lvos_ret
+.Lvos_ok:
+	xor  %eax, %eax
+.Lvos_ret:
 	pop  %r15
 	pop  %r14
 	pop  %r13
@@ -5960,9 +7314,81 @@ array_contains_star:
 	pop  %rbx
 	ret
 
+# resources_cover_target(rdi = resources.include array, rsi = target ptr, rdx = target len)
+#   -> rax = 1 if some pattern covers the request target under §5.5a.
+#
+# §5.5a surface 1, the DISPATCH boundary. The two sides canonicalize against DIFFERENT
+# frames, and that asymmetry is the rule: a cap's resource patterns are the GRANTER's to
+# write, so they canonicalize against the granter's peer_id (g_dfr, derived in
+# verify_get_scope); the request target is a path into THIS peer's namespace, so it
+# canonicalizes against the local peer_id. Frame both against the local peer and a
+# foreign-granted bare "*" silently becomes "/{verifier}/*" and authorizes the verifier's
+# own namespace — which is what captok_form_dispatch_minted_pl_presented_xpeer exists to
+# catch, and which stays invisible for as long as the peer refuses foreign-granted caps
+# outright (a vacuous pass that the chain walk converts into a real one).
+	.type resources_cover_target, @function
+resources_cover_target:
+	push %rbx
+	push %rbp
+	push %r12
+	push %r13
+	push %r14
+	push %r15
+	sub  $40, %rsp                   # [0] = canonical target length
+	mov  %rdi, %r12                  # include array
+	mov  %rsi, %rdi
+	mov  %rdx, %rsi
+	lea  g_peerid(%rip), %rdx
+	mov  g_peerid_len(%rip), %rcx
+	lea  b_canon_a(%rip), %r8
+	call canon
+	mov  %rax, (%rsp)
+	mov  %r12, %rdi
+	call read_head
+	cmp  $4, %rcx
+	jne  .Lrct_no
+	mov  %rax, %r14                  # pattern cursor
+	mov  %rdx, %r15                  # remaining
+.Lrct_loop:
+	test %r15, %r15
+	jz   .Lrct_no
+	mov  %r14, %rdi
+	call read_head                   # rax = pattern bytes, rdx = len
+	mov  %rax, %rbx
+	mov  %rdx, %rbp
+	lea  (%rax,%rdx), %r14
+	dec  %r15
+	mov  %rbx, %rdi
+	mov  %rbp, %rsi
+	lea  g_dfr(%rip), %rdx
+	mov  g_dfrlen(%rip), %rcx
+	lea  b_canon_b(%rip), %r8
+	call canon
+	mov  %rax, %rcx
+	lea  b_canon_a(%rip), %rdi
+	mov  (%rsp), %rsi
+	lea  b_canon_b(%rip), %rdx
+	call pat_covers
+	test %rax, %rax
+	jz   .Lrct_loop
+	mov  $1, %eax
+	jmp  .Lrct_ret
+.Lrct_no:
+	xor  %eax, %eax
+.Lrct_ret:
+	add  $40, %rsp
+	pop  %r15
+	pop  %r14
+	pop  %r13
+	pop  %r12
+	pop  %rbp
+	pop  %rbx
+	ret
+
 # resource_matches(rdi=include array, rsi=target ptr, rdx=target len) -> rax = 1 if any
 # pattern matches. Patterns: bare "*" (any); trailing "/*" (prefix match on everything up to
-# and including the slash); otherwise an exact match.
+# and including the slash); otherwise an exact match. Used for the §6.2 mint-time subset,
+# where both sides are the LOCAL peer's and no frame translation applies.
 	.type resource_matches, @function
 resource_matches:
 	push %rbx
@@ -6587,3 +8013,4 @@ build_echo_response:
 	.section .note.GNU-stack,"",@progbits
 
 	.section .note.GNU-stack,"",@progbits
+

@@ -191,6 +191,31 @@ ec_invalid_path:      .asciz "invalid_path"
 	.lcomm g_ms_local,   8
 	.lcomm g_ms_sigptr,  8
 	.lcomm g_ms_sigs,    256          # up to 32 signer-hash pointers
+	# ---- §5.5 delegation-chain walk + §5.5a canonicalization frames ----
+	# A frame is a granter's peer_id (base58, <=128 bytes), derived from its system/peer
+	# entity in `included` — it is not on the wire. `c` = the link nearer the leaf, `p` =
+	# the link nearer the root; `s`/`q` are the sub/super sides of whichever comparison is
+	# running, so the exclude direction can be reversed without copying a frame.
+	.lcomm g_cfr,      128
+	.lcomm g_cfrlen,   8
+	.lcomm g_pfr,      128
+	.lcomm g_pfrlen,   8
+	.lcomm g_sfr_ptr,  8
+	.lcomm g_sfr_len,  8
+	.lcomm g_qfr_ptr,  8
+	.lcomm g_qfr_len,  8
+	.lcomm g_dfr,      128            # dispatch-surface frame (the presented cap's granter)
+	.lcomm g_dfrlen,   8
+	.lcomm b_canon_a,  1024           # canonicalized child / request-target
+	.lcomm b_canon_b,  1024           # canonicalized parent / grant pattern
+	.lcomm g_pgee,     48             # child link's granter hash, carried across one hop
+	.lcomm g_now,      8              # §5.5 `t` — sampled ONCE per verdict, never per link
+	.lcomm g_link_ch,  64             # recomputed content hash of the link under test
+	# ---- §6.2 CAP-5 / §5.6 MIN_DEFINED mint ceiling ----
+	.lcomm g_caller_td,  8            # the caller capability's token data (the bounding term)
+	.lcomm g_params_data, 8           # request params.data (carries ttl_ms)
+	.lcomm g_exp_have,   8
+	.lcomm g_expv,       8
 	# ---- revoke scratch ----
 	.lcomm b_revoke_data, 512
 	.lcomm revoke_ch,    64
@@ -425,6 +450,16 @@ dispatch:
 	# route: save op (ptr in a0, len in a2) then compare
 	mv   s2, a0                     # op ptr
 	mv   s3, a2                     # op len
+	# Every branch below dispatches on LENGTH first and only then compares bytes, so a
+	# length collision with an op we do route is the case to get right: a byte mismatch
+	# must fall through to .Ld_unknown (→ 501 unsupported_operation), never to .Ld_ret.
+	# Falling to .Ld_ret answers NOTHING, and §4.9(c) deliver-or-signal makes that the
+	# one outcome a peer may not produce — the caller cannot tell it from a dead peer and
+	# waits out its own timeout. Measured 2026-08-30 on asm-x86_64: `ping` collides with
+	# `echo` at length 4 and was dropped on exactly this branch. It costs the caller a
+	# full 20 s read deadline EVERY connection, which is why t2_2_connection_churn
+	# consumed the entire 10-minute budget across 29 of its 100 cycles and starved nine
+	# categories — a §4.9(c) violation presenting as a connection-pressure failure.
 	# op == "hello"?
 	li   t0, 5
 	bne  s3, t0, .Ld_try_auth
@@ -432,7 +467,7 @@ dispatch:
 	lla  a0, v_hello
 	li   a2, 5
 	call memeq
-	beqz a0, .Ld_ret
+	beqz a0, .Ld_unknown             # len 5 but not "hello" → 501, never a silent drop
 	# §4.5 negotiation: reject a hello whose advertised hash_formats/key_types are
 	# disjoint from ours (400) before building the happy-path response.
 	mv   a0, s1                     # exec data map
@@ -448,7 +483,7 @@ dispatch:
 	lla  a0, va_authenticate
 	li   a2, 12
 	call memeq
-	beqz a0, .Ld_ret
+	beqz a0, .Ld_unknown             # len 12 but not "authenticate" → 501
 	mv   a0, s1                     # exec data map ptr
 	call build_authenticate_response
 	j    .Ld_ret
@@ -460,7 +495,7 @@ dispatch:
 	lla  a0, va_echo
 	li   a2, 4
 	call memeq
-	beqz a0, .Ld_ret
+	beqz a0, .Ld_unknown             # len 4 but not "echo" — e.g. "ping" — → 501
 	mv   a0, s1
 	call build_echo_response
 	j    .Ld_ret
@@ -917,6 +952,15 @@ ec_chain_depth: .asciz "chain_depth_exceeded"
 ka_parent:   .asciz "parent"
 ka_threshold: .asciz "threshold"
 ka_signers:  .asciz "signers"
+# ---- §5.5 delegation-chain / §5.6 attenuation vocabulary ----
+ka_exclude:  .asciz "exclude"
+ka_constraints: .asciz "constraints"
+ka_allowances: .asciz "allowances"
+ka_deleg_caveats: .asciz "delegation_caveats"
+ka_no_delegation: .asciz "no_delegation"
+ka_max_deleg_depth: .asciz "max_delegation_depth"
+ka_max_deleg_ttl: .asciz "max_delegation_ttl"
+ka_ttl_ms:   .asciz "ttl_ms"
 
 	.bss
 	# Sized for the full 16 MiB entity cap: a get now serves store-written entities of
@@ -1680,12 +1724,15 @@ build_request_response:
 	mv   a0, s3
 	call verify_get_cap
 	bnez a0, .Lrq_ret
+	mv   a0, s3
+	call verify_op_scope
+	bnez a0, .Lrq_ret
 	# grantee = request author (33) → g_grantee
 	mv   a0, s3
 	lla  a1, k_author
 	li   a2, 6
 	call map_find
-	beqz a0, .Lrq_ret
+	beqz a0, .Lrq_malformed
 	call get_text
 	# mcpy(a0=dst, a1=src, a2=len): get_text returns bytes ptr in a0, so route it as src.
 	mv   t0, a0                     # src (get_text bytes ptr)
@@ -1698,15 +1745,17 @@ build_request_response:
 	lla  a1, ka_params
 	li   a2, 6
 	call map_find
-	beqz a0, .Lrq_ret
+	beqz a0, .Lrq_malformed
 	lla  a1, k_data
 	li   a2, 4
 	call map_find
-	beqz a0, .Lrq_ret
+	beqz a0, .Lrq_malformed
+	lla  t0, g_params_data          # params.data — the §5.6 ttl_ms term lives here
+	sd   a0, 0(t0)
 	lla  a1, ka_grants
 	li   a2, 6
 	call map_find
-	beqz a0, .Lrq_ret
+	beqz a0, .Lrq_malformed
 	mv   s4, a0                     # grants value ptr
 	call skip_value                  # a0 = end of grants value
 	sub  a0, a0, s4                 # grants byte length
@@ -1737,6 +1786,8 @@ build_request_response:
 	call map_find
 	beqz a0, .Lrq_denied
 	mv   a1, a0                     # caller token data
+	lla  t0, g_caller_td
+	sd   a1, 0(t0)
 	mv   a0, s4                     # requested grants array value
 	call grants_attenuated
 	bnez a0, .Lrq_atten_ok
@@ -1746,13 +1797,91 @@ build_request_response:
 	call send_error
 	j    .Lrq_ret
 .Lrq_atten_ok:
-	# created_at
+	# created_at — sampled ONCE. The duration term below is converted against this same
+	# instant; sampling again there emits a token whose stated birth and derived expiry are
+	# two different instants.
 	call now_ms
 	lla  t0, g_created
 	sd   a0, 0(t0)
-	# ---- token data {grants:<raw>, grantee, granter, created_at} ----
+	# ---- §6.2 CAP-5 / §5.6 MIN_DEFINED mint ceiling ----
+	#
+	#   expires_at = MIN_DEFINED( caller_capability.expires_at,   ; ABSOLUTE, enters directly
+	#                             created_at + request.ttl_ms )   ; DURATION, converted first
+	#
+	# `request` mints a ROOT token (parent: null), so §5.6's parent-child attenuation never
+	# reaches it — without this clamp, temporal attenuation is the one dimension a requester
+	# could escape and policy withdrawal would have no bounded latency. This is NOT an
+	# authorization decision: an over-long ttl_ms from a bounded caller MINTS the clamped
+	# value and returns 200, and refusing it is non-conformant.
+	#
+	# The value is reached BY CONSTRUCTION, not by comparison. A `<= caller_exp` check
+	# satisfies a strictly weaker test than the one being run — the oracle says so in its own
+	# failure text — so there is deliberately no comparison against the caller's expiry here.
+	#
+	# §5.6's third term, `created_at + policy_entry.ttl_ms`, is structurally absent on this
+	# peer: it writes policy entries (§6.2 configure) but never reads one back on the request
+	# path, so there is no policy entry in scope to take a ttl from. That is a missing TERM,
+	# not a missing rule — MIN_DEFINED over the terms that exist is exactly what it computes.
+	lla  t0, g_exp_have
+	sd   zero, 0(t0)
+	lla  t0, g_expv
+	sd   zero, 0(t0)
+	lla  t0, g_caller_td
+	ld   a0, 0(t0)
+	beqz a0, .Lrq_ttl
+	lla  a1, ka_expires
+	li   a2, 10
+	call map_find
+	beqz a0, .Lrq_ttl
+	call read_head
+	bnez a1, .Lrq_ttl               # not a uint64 → unusable, not a term
+	lla  t0, g_expv
+	sd   a2, 0(t0)
+	li   t1, 1
+	lla  t0, g_exp_have
+	sd   t1, 0(t0)
+.Lrq_ttl:
+	lla  t0, g_params_data
+	ld   a0, 0(t0)
+	beqz a0, .Lrq_mint
+	lla  a1, ka_ttl_ms
+	li   a2, 6
+	call map_find
+	beqz a0, .Lrq_mint
+	call read_head
+	bnez a1, .Lrq_mint
+	lla  t0, g_created
+	ld   t0, 0(t0)
+	add  t1, t0, a2                 # created_at + ttl_ms
+	# §5.6 rule 3: a term that does not fit is DROPPED — never wrapped, never saturated.
+	# Saturation would manufacture expires_at == 2^64-1, a finite bound no reader can tell
+	# from a deliberate one. RISC-V has no carry flag, so unsigned overflow is detected the
+	# way the ISA intends: the sum wrapped iff it is less than either operand.
+	# ttl_ms == 0 is NOT special-cased (rule 2): it falls out as created_at, which is what
+	# keeps "expire immediately" from collapsing into the absent / "no bound" spelling.
+	bltu t1, t0, .Lrq_mint
+	lla  t2, g_exp_have
+	ld   t2, 0(t2)
+	bnez t2, .Lrq_ttl_min
+	lla  t0, g_expv
+	sd   t1, 0(t0)
+	li   t2, 1
+	lla  t0, g_exp_have
+	sd   t2, 0(t0)
+	j    .Lrq_mint
+.Lrq_ttl_min:
+	lla  t0, g_expv
+	ld   t2, 0(t0)
+	bgeu t1, t2, .Lrq_mint
+	sd   t1, 0(t0)
+.Lrq_mint:
+	# ---- token data {grants:<raw>, grantee, granter, created_at[, expires_at]} ----
+	# Canonical key order is length-then-lex, so expires_at sorts AFTER created_at (same
+	# length, c < e) and appends cleanly at the end.
 	lla  s6, b_tokdata
-	li   a1, 4
+	lla  t0, g_exp_have
+	ld   a1, 0(t0)
+	addi a1, a1, 4
 	call w_map
 	lla  a0, ka_grants
 	call w_cstr
@@ -1776,12 +1905,33 @@ build_request_response:
 	lla  t0, g_created
 	ld   a1, 0(t0)
 	call w_uint
+	lla  t0, g_exp_have
+	ld   t0, 0(t0)
+	beqz t0, .Lrq_tokdone
+	lla  a0, ka_expires
+	call w_cstr
+	lla  t0, g_expv
+	ld   a1, 0(t0)
+	call w_uint
+.Lrq_tokdone:
 	lla  t0, b_tokdata
 	sub  a2, s6, t0                 # token data len
 	lla  t0, g_toklen
 	sd   a2, 0(t0)
 	# shared tail: hash+sign the token, build the grant, emit the 200 response.
 	call mint_finish
+	j    .Lrq_ret
+.Lrq_malformed:
+	# §4.9(c) deliver-or-signal: a `request` missing author / params / params.data /
+	# params.data.grants used to fall off the end of this function and answer NOTHING,
+	# leaving the caller to wait out its own timeout — indistinguishable from a dead peer.
+	# The branch was unreachable for as long as the capability gate refused every delegated
+	# capability two stages earlier; implementing the §5.5 chain walk is what let a request
+	# get this far, which is the standing lesson in the other direction — a wrong denial can
+	# also hide a missing ANSWER, not just a missing check.
+	li   a0, 400
+	lla  a1, ec_invalid_params
+	call send_error
 .Lrq_ret:
 	ld   s6, 40(sp)
 	ld   s5, 32(sp)
@@ -5451,16 +5601,9 @@ verify_multisig_granter:
 	sd   a2, 0(t0)
 	li   t0, 2
 	bltu a2, t0, .Lvms_reject       # threshold < 2
-	# parent must be absent or null
-	mv   a0, s1
-	adr_l a1, ka_parent
-	li   a2, 6
-	call map_find
-	beqz a0, .Lvms_parent_ok
-	lbu  t0, 0(a0)                   # CBOR null?
-	li   t1, 0xf6
-	bne  t0, t1, .Lvms_reject
-.Lvms_parent_ok:
+	# (M3's root-only rule is enforced by the caller, against the TOKEN's `parent` field —
+	# testing the GRANTER map for a `parent` key is vacuous, since {signers, threshold}
+	# never carries one.)
 	# signers array
 	mv   a0, s1
 	adr_l a1, ka_signers
@@ -5599,74 +5742,992 @@ verify_multisig_granter:
 	ret
 
 # =====================================================================
-# verify_get_cap(a0 = exec data map) -> a0 = 0 authorized, 1 rejected (403 sent).
-# §5.2 capability-class (403) basic stage, run after verify_get_auth.
-	.type verify_get_cap, @function
-verify_get_cap:
+# §5.5a canonicalization + §5.6 attenuation — the delegation-chain interior.
+# (Port of asm-arm64/src/dispatch.s; same protocol logic, RV64 LP64D registers.)
+# =====================================================================
+#
+# peerid_of(a0 = included, a1 = hash33, a2 = out ptr, a3 = out_len ptr) -> a0 = 1|0.
+# The §5.5a canonicalization FRAME for a link is its granter's peer_id, which is NOT on
+# the wire: it is derived from the granter's system/peer entity in `included` — the same
+# entity the link's signature is verified against — by re-running the base58 peer-id
+# format over its public_key.
+	.type peerid_of, @function
+peerid_of:
+	addi sp, sp, -48
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	mv   s0, sp
+	mv   s1, a2                      # out
+	mv   s2, a3                      # out_len ptr
+	call included_find_by_key
+	beqz a0, .Lpio_no
+	adr_l a1, k_data
+	li   a2, 4
+	call map_find
+	beqz a0, .Lpio_no
+	adr_l a1, ka_pubkey
+	li   a2, 10
+	call map_find
+	beqz a0, .Lpio_no
+	call get_text                    # a0 = pubkey ptr, a2 = len
+	li   t0, 32
+	bne  a2, t0, .Lpio_no
+	mv   s3, a0
+	li   a0, 1                       # key_type = ed25519
+	li   a1, 0                       # hash_type = 0 (identity)
+	mv   a2, s3
+	li   a3, 32
+	mv   a4, s1
+	li   a5, 128
+	mv   a6, s2
+	call ec_peerid_format
+	bnez a0, .Lpio_no
+	li   a0, 1
+	j    .Lpio_ret
+.Lpio_no:
+	li   a0, 0
+.Lpio_ret:
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 48
+	ret
+
+# canon(a0 = pattern, a1 = len, a2 = frame, a3 = frame len, a4 = out) -> a0 = out len.
+# §5.5a: a leading "/" means the pattern already names a peer position — copy verbatim;
+# anything else is peer-RELATIVE and becomes "/" + frame + "/" + pattern.
+# Bare "*" gets NO special case and deliberately must not: it falls out of the general rule
+# as "/{frame}/*", which is exactly what §5.5a says it means — the granter's own namespace,
+# never a universal cross-peer wildcard. Special-casing it is how the bare-star-is-universal
+# defect (A-PD-017, and swift/sql's frame over-scoping) gets built.
+	.type canon, @function
+canon:
 	addi sp, sp, -64
 	sd   s0, 0(sp)
 	sd   ra, 8(sp)
-	sd   s1, 16(sp)                 # s1=cap_hash(rbx), s2=included(r12)
+	sd   s1, 16(sp)
 	sd   s2, 24(sp)
-	sd   s3, 32(sp)                 # s3=author(r13), s4=grantee/granter(r14)
+	sd   s3, 32(sp)
 	sd   s4, 40(sp)
-	sd   s6, 48(sp)                 # s6=exec/token data(r15) — preserve cursor slot
+	sd   s5, 48(sp)
 	mv   s0, sp
-	mv   s6, a0                     # exec data map
+	mv   s1, a0                      # pattern
+	mv   s2, a1                      # pattern len
+	mv   s3, a2                      # frame
+	mv   s4, a3                      # frame len
+	mv   s5, a4                      # out
+	beqz s2, .Lcn_rel
+	lbu  t0, 0(s1)
+	li   t1, 0x2f
+	bne  t0, t1, .Lcn_rel
+	mv   a0, s5
+	mv   a1, s1
+	mv   a2, s2
+	call mcpy
+	mv   a0, s2
+	j    .Lcn_ret
+.Lcn_rel:
+	li   t0, 0x2f
+	sb   t0, 0(s5)
+	addi a0, s5, 1
+	mv   a1, s3
+	mv   a2, s4
+	call mcpy                        # a0 = dst + frame len
+	li   t0, 0x2f
+	sb   t0, 0(a0)
+	addi a0, a0, 1
+	mv   a1, s1
+	mv   a2, s2
+	call mcpy
+	sub  a0, a0, s5                  # total canonical length
+.Lcn_ret:
+	ld   s5, 48(sp)
+	ld   s4, 40(sp)
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 64
+	ret
+
+# pat_covers(a0 = child pat, a1 = child len, a2 = parent pat, a3 = parent len) -> a0 = 1|0.
+# Both canonical, both absolute. Segment-wise:
+#   parent "*" as the LAST segment → covers everything remaining
+#   parent "*" mid-pattern         → covers exactly one child segment, whatever it is
+#   parent literal                 → the child segment must be that literal; a child "*"
+#                                    here is BROADER than the parent and is refused
+# Both exhausted together → covered; either alone → not covered.
+	.type pat_covers, @function
+# s1=child ptr s2=child len s3=parent ptr s4=parent len s5=ci s7=pi s8=ps s9=pl s10=cs s11=cl
+pat_covers:
+	addi sp, sp, -96
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	sd   s4, 40(sp)
+	sd   s5, 48(sp)
+	sd   s7, 56(sp)
+	sd   s8, 64(sp)
+	sd   s9, 72(sp)
+	sd   s10, 80(sp)
+	sd   s11, 88(sp)
+	mv   s0, sp
+	mv   s1, a0                      # child ptr
+	mv   s2, a1                      # child len
+	mv   s3, a2                      # parent ptr
+	mv   s4, a3                      # parent len
+	beqz s2, .Lpc_no
+	beqz s4, .Lpc_no
+	li   t1, 0x2f
+	lbu  t0, 0(s1)
+	bne  t0, t1, .Lpc_no
+	lbu  t0, 0(s3)
+	bne  t0, t1, .Lpc_no
+	li   s5, 1                       # ci
+	li   s7, 1                       # pi
+.Lpc_loop:
+	bltu s7, s4, .Lpc_pseg
+	bgeu s5, s2, .Lpc_yes            # parent exhausted → covered iff child is too
+	j    .Lpc_no
+.Lpc_pseg:
+	# Read the PARENT segment BEFORE testing whether the child is exhausted: a trailing "*"
+	# covers the remainder INCLUDING the empty one. "/{peer}/*" authorizes that peer's
+	# namespace, and listing the namespace's own root ("/{peer}/") is inside it, not above
+	# it. Testing child-exhaustion first refuses every root listing while every deeper path
+	# still works, which reads as a permissions bug rather than a matcher bug.
+	add  s8, s3, s7                  # ps
+	li   s9, 0                       # pl
+.Lpc_pscan:
+	add  t0, s7, s9
+	bgeu t0, s4, .Lpc_pdone
+	add  t1, s8, s9
+	lbu  t2, 0(t1)
+	li   t3, 0x2f
+	beq  t2, t3, .Lpc_pdone
+	addi s9, s9, 1
+	j    .Lpc_pscan
+.Lpc_pdone:
+	li   t0, 1
+	bne  s9, t0, .Lpc_child
+	lbu  t1, 0(s8)
+	li   t2, 0x2a
+	bne  t1, t2, .Lpc_child
+	add  t0, s7, s9
+	bgeu t0, s4, .Lpc_yes            # trailing "*" — covers the rest, empty included
+.Lpc_child:
+	bgeu s5, s2, .Lpc_no             # child exhausted under a non-trailing-star parent
+	add  s10, s1, s5                 # cs
+	li   s11, 0                      # cl
+.Lpc_cscan:
+	add  t0, s5, s11
+	bgeu t0, s2, .Lpc_cdone
+	add  t1, s10, s11
+	lbu  t2, 0(t1)
+	li   t3, 0x2f
+	beq  t2, t3, .Lpc_cdone
+	addi s11, s11, 1
+	j    .Lpc_cscan
+.Lpc_cdone:
+	li   t0, 1
+	bne  s9, t0, .Lpc_literal
+	lbu  t1, 0(s8)
+	li   t2, 0x2a
+	beq  t1, t2, .Lpc_advance        # mid-pattern "*" — matches this one child segment
+.Lpc_literal:
+	li   t0, 1
+	bne  s11, t0, .Lpc_cmp
+	lbu  t1, 0(s10)
+	li   t2, 0x2a
+	beq  t1, t2, .Lpc_no             # a "*" child under a literal parent is BROADER
+.Lpc_cmp:
+	bne  s11, s9, .Lpc_no
+	mv   a0, s10
+	mv   a1, s8
+	mv   a2, s11
+	call memeq
+	beqz a0, .Lpc_no
+.Lpc_advance:
+	add  s5, s5, s11
+	addi s5, s5, 1
+	add  s7, s7, s9
+	addi s7, s7, 1
+	j    .Lpc_loop
+.Lpc_yes:
+	li   a0, 1
+	j    .Lpc_ret
+.Lpc_no:
+	li   a0, 0
+.Lpc_ret:
+	ld   s11, 88(sp)
+	ld   s10, 80(sp)
+	ld   s9, 72(sp)
+	ld   s8, 64(sp)
+	ld   s7, 56(sp)
+	ld   s5, 48(sp)
+	ld   s4, 40(sp)
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 96
+	ret
+
+# arr_subset_framed(a0 = sub array, a1 = super array) -> a0 = 1 if every element of `sub`
+# is covered by some element of `super` under §5.5a framing. The two sides canonicalize
+# against DIFFERENT frames — g_sfr_ptr/len for `sub`, g_qfr_ptr/len for `super` — which the
+# caller sets, so the exclude direction reverses them without copying a frame.
+	.type arr_subset_framed, @function
+arr_subset_framed:
+	addi sp, sp, -96
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	sd   s4, 40(sp)
+	sd   s5, 48(sp)
+	sd   s7, 56(sp)
+	sd   s8, 64(sp)
+	sd   s9, 72(sp)
+	sd   s10, 80(sp)
+	mv   s0, sp
+	mv   s7, a1                      # super array
+	call read_head                   # a0 = sub array
+	li   t0, 4
+	bne  a1, t0, .Lasf_no
+	mv   s1, a0                      # sub cursor
+	mv   s2, a2                      # sub remaining
+.Lasf_outer:
+	beqz s2, .Lasf_yes
+	mv   a0, s1
+	call read_head                   # a0 = elem bytes, a2 = elem len
+	mv   s3, a0
+	mv   s4, a2
+	add  s1, a0, a2
+	addi s2, s2, -1
+	mv   a0, s3
+	mv   a1, s4
+	adr_l t0, g_sfr_ptr
+	ld   a2, 0(t0)
+	adr_l t0, g_sfr_len
+	ld   a3, 0(t0)
+	adr_l a4, b_canon_a
+	call canon
+	mv   s5, a0                      # canonical child length
+	mv   a0, s7
+	call read_head
+	li   t0, 4
+	bne  a1, t0, .Lasf_no
+	mv   s8, a0                      # super cursor
+	mv   s9, a2                      # super remaining
+.Lasf_inner:
+	beqz s9, .Lasf_no                # no super element covers this sub element
+	mv   a0, s8
+	call read_head
+	mv   s10, a0
+	mv   t1, a2
+	add  s8, a0, a2
+	addi s9, s9, -1
+	mv   a0, s10
+	mv   a1, t1
+	adr_l t0, g_qfr_ptr
+	ld   a2, 0(t0)
+	adr_l t0, g_qfr_len
+	ld   a3, 0(t0)
+	adr_l a4, b_canon_b
+	call canon
+	mv   a3, a0
+	adr_l a0, b_canon_a
+	mv   a1, s5
+	adr_l a2, b_canon_b
+	call pat_covers
+	bnez a0, .Lasf_outer
+	j    .Lasf_inner
+.Lasf_yes:
+	li   a0, 1
+	j    .Lasf_ret
+.Lasf_no:
+	li   a0, 0
+.Lasf_ret:
+	ld   s10, 80(sp)
+	ld   s9, 72(sp)
+	ld   s8, 64(sp)
+	ld   s7, 56(sp)
+	ld   s5, 48(sp)
+	ld   s4, 40(sp)
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 96
+	ret
+
+# set_frames_cp / set_frames_pc — point the sub/super frame pair at the child/parent frames
+# in the given order. Clobbers t0/t1 only.
+	.type set_frames_cp, @function
+set_frames_cp:
+	adr_l t0, g_cfr
+	adr_l t1, g_sfr_ptr
+	sd   t0, 0(t1)
+	adr_l t0, g_cfrlen
+	ld   t0, 0(t0)
+	adr_l t1, g_sfr_len
+	sd   t0, 0(t1)
+	adr_l t0, g_pfr
+	adr_l t1, g_qfr_ptr
+	sd   t0, 0(t1)
+	adr_l t0, g_pfrlen
+	ld   t0, 0(t0)
+	adr_l t1, g_qfr_len
+	sd   t0, 0(t1)
+	ret
+	.type set_frames_pc, @function
+set_frames_pc:
+	adr_l t0, g_pfr
+	adr_l t1, g_sfr_ptr
+	sd   t0, 0(t1)
+	adr_l t0, g_pfrlen
+	ld   t0, 0(t0)
+	adr_l t1, g_sfr_len
+	sd   t0, 0(t1)
+	adr_l t0, g_cfr
+	adr_l t1, g_qfr_ptr
+	sd   t0, 0(t1)
+	adr_l t0, g_cfrlen
+	ld   t0, 0(t0)
+	adr_l t1, g_qfr_len
+	sd   t0, 0(t1)
+	ret
+
+# dim_subset(a0 = child scope map, a1 = parent scope map, a2 = framed) -> a0 = 1|0.
+# One scope dimension, child ⊆ parent. `framed` selects §5.5a canonicalization, which scopes
+# the RESOURCE dimension ONLY — handlers/operations/peers are id-scope and take no frame.
+# Over-applying the frame is the swift/sql defect: a universal parent grant stops covering
+# any child grant the moment the two have different granters, and every delegated cap 403s.
+# Both halves of the spec's scope_subset are here: child includes covered by parent includes,
+# AND every parent exclude inherited by some child exclude.
+	.type dim_subset, @function
+dim_subset:
+	addi sp, sp, -64
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	sd   s4, 40(sp)
+	sd   s5, 48(sp)
+	mv   s0, sp
+	mv   s1, a0                      # child scope
+	mv   s2, a1                      # parent scope
+	mv   s3, a2                      # framed
+	mv   a0, s1
+	adr_l a1, ka_include
+	li   a2, 7
+	call map_find
+	beqz a0, .Lds_no
+	mv   s4, a0                      # child include
+	mv   a0, s2
+	adr_l a1, ka_include
+	li   a2, 7
+	call map_find
+	beqz a0, .Lds_no
+	mv   s5, a0                      # parent include
+	beqz s3, .Lds_inc_plain
+	call set_frames_cp               # sub ← child frame, super ← parent frame
+	mv   a0, s4
+	mv   a1, s5
+	call arr_subset_framed
+	j    .Lds_inc_done
+.Lds_inc_plain:
+	mv   a0, s4
+	mv   a1, s5
+	call array_subset_star
+.Lds_inc_done:
+	beqz a0, .Lds_no
+	# Exclude inheritance runs in the REVERSE direction from includes: each PARENT exclude
+	# must be covered by some CHILD exclude, because the child must exclude at least as much
+	# as its parent did. A child that simply drops the parent's exclude widens itself.
+	mv   a0, s2
+	adr_l a1, ka_exclude
+	li   a2, 7
+	call map_find
+	beqz a0, .Lds_yes                # parent excludes nothing → nothing to inherit
+	mv   s5, a0                      # parent exclude
+	mv   a0, s1
+	adr_l a1, ka_exclude
+	li   a2, 7
+	call map_find
+	beqz a0, .Lds_no                 # parent excluded, child does not → widened
+	mv   s4, a0                      # child exclude
+	beqz s3, .Lds_exc_plain
+	call set_frames_pc               # sub ← parent frame, super ← child frame
+	mv   a0, s5
+	mv   a1, s4
+	call arr_subset_framed
+	j    .Lds_ret
+.Lds_exc_plain:
+	mv   a0, s5
+	mv   a1, s4
+	call array_subset_star
+	j    .Lds_ret
+.Lds_yes:
+	li   a0, 1
+	j    .Lds_ret
+.Lds_no:
+	li   a0, 0
+.Lds_ret:
+	ld   s5, 48(sp)
+	ld   s4, 40(sp)
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 64
+	ret
+
+# map_attenuated(a0 = from map | 0, a1 = to map | 0) -> a0 = 1|0.
+# Every key of `from` must appear in `to` with a byte-identical value. Used twice, in
+# opposite directions: CONSTRAINTS (every parent key must survive on the child — a dropped
+# key widens it) and ALLOWANCES (every child key must already exist on the parent — an added
+# key widens it). Absent `from` → vacuously attenuated.
+	.type map_attenuated, @function
+map_attenuated:
+	addi sp, sp, -80
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	sd   s4, 40(sp)
+	sd   s5, 48(sp)
+	sd   s7, 56(sp)
+	mv   s0, sp
+	beqz a0, .Lma_yes
+	mv   s7, a1                      # to
+	call read_head                   # a0 = from
+	li   t0, 5
+	bne  a1, t0, .Lma_no
+	mv   s1, a0                      # cursor
+	mv   s2, a2                      # pair count
+	beqz s2, .Lma_yes
+	beqz s7, .Lma_no
+.Lma_loop:
+	beqz s2, .Lma_yes
+	mv   a0, s1
+	call read_head                   # a0 = key bytes, a2 = key len
+	mv   s3, a0
+	mv   s4, a2
+	add  s1, a0, a2                  # value ptr
+	mv   a0, s7
+	mv   a1, s3
+	mv   a2, s4
+	call map_find
+	beqz a0, .Lma_no
+	mv   s3, a0                      # the counterpart value
+	mv   a0, s1
+	call skip_value
+	mv   s4, a0                      # next pair
+	sub  s5, a0, s1                  # this value's byte length
+	mv   a0, s3
+	call skip_value
+	sub  a0, a0, s3                  # counterpart length
+	bne  a0, s5, .Lma_no
+	mv   a2, s5
+	mv   a0, s1
+	mv   a1, s3
+	call memeq
+	beqz a0, .Lma_no
+	mv   s1, s4
+	addi s2, s2, -1
+	j    .Lma_loop
+.Lma_yes:
+	li   a0, 1
+	j    .Lma_ret
+.Lma_no:
+	li   a0, 0
+.Lma_ret:
+	ld   s7, 56(sp)
+	ld   s5, 48(sp)
+	ld   s4, 40(sp)
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 80
+	ret
+
+# grant_subset_framed(a0 = child grant, a1 = parent grant) -> a0 = 1|0.
+# All four §5.6 scope dimensions plus constraints and allowances. Only RESOURCES is framed.
+	.type grant_subset_framed, @function
+grant_subset_framed:
+	addi sp, sp, -48
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	mv   s0, sp
+	mv   s1, a0                      # child grant
+	mv   s2, a1                      # parent grant
+	# handlers — id-scope, no frame
+	mv   a0, s1
+	adr_l a1, ka_handlers
+	li   a2, 8
+	call map_find
+	beqz a0, .Lgsf_no
+	mv   s3, a0
+	mv   a0, s2
+	adr_l a1, ka_handlers
+	li   a2, 8
+	call map_find
+	beqz a0, .Lgsf_no
+	mv   a1, a0
+	mv   a0, s3
+	li   a2, 0
+	call dim_subset
+	beqz a0, .Lgsf_no
+	# operations — id-scope, no frame
+	mv   a0, s1
+	adr_l a1, ka_operations
+	li   a2, 10
+	call map_find
+	beqz a0, .Lgsf_no
+	mv   s3, a0
+	mv   a0, s2
+	adr_l a1, ka_operations
+	li   a2, 10
+	call map_find
+	beqz a0, .Lgsf_no
+	mv   a1, a0
+	mv   a0, s3
+	li   a2, 0
+	call dim_subset
+	beqz a0, .Lgsf_no
+	# resources — THE framed dimension, and the only one
+	mv   a0, s1
+	adr_l a1, ka_resources
+	li   a2, 9
+	call map_find
+	beqz a0, .Lgsf_peers             # child names no resources → nothing to bound
+	mv   s3, a0
+	mv   a0, s2
+	adr_l a1, ka_resources
+	li   a2, 9
+	call map_find
+	beqz a0, .Lgsf_no
+	mv   a1, a0
+	mv   a0, s3
+	li   a2, 1
+	call dim_subset
+	beqz a0, .Lgsf_no
+.Lgsf_peers:
+	# peers — id-scope; absent defaults to {include:[local_peer_id]} on BOTH sides, so an
+	# absent-vs-absent pair is trivially a subset and needs no synthesised map.
+	mv   a0, s1
+	adr_l a1, ka_peers
+	li   a2, 5
+	call map_find
+	beqz a0, .Lgsf_maps
+	mv   s3, a0
+	mv   a0, s2
+	adr_l a1, ka_peers
+	li   a2, 5
+	call map_find
+	beqz a0, .Lgsf_no
+	mv   a1, a0
+	mv   a0, s3
+	li   a2, 0
+	call dim_subset
+	beqz a0, .Lgsf_no
+.Lgsf_maps:
+	# constraints: every parent key retained on the child, byte-equal
+	mv   a0, s2
+	adr_l a1, ka_constraints
+	li   a2, 11
+	call map_find
+	mv   s3, a0
+	mv   a0, s1
+	adr_l a1, ka_constraints
+	li   a2, 11
+	call map_find
+	mv   a1, a0
+	mv   a0, s3
+	call map_attenuated
+	beqz a0, .Lgsf_no
+	# allowances: every child key pre-existing on the parent, byte-equal
+	mv   a0, s1
+	adr_l a1, ka_allowances
+	li   a2, 10
+	call map_find
+	mv   s3, a0
+	mv   a0, s2
+	adr_l a1, ka_allowances
+	li   a2, 10
+	call map_find
+	mv   a1, a0
+	mv   a0, s3
+	call map_attenuated
+	j    .Lgsf_ret
+.Lgsf_no:
+	li   a0, 0
+.Lgsf_ret:
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 48
+	ret
+
+# is_attenuated(a0 = child token data, a1 = parent token data) -> a0 = 1|0.
+# §5.6 with the per-link §5.5a frames already in g_cfr / g_pfr: every child grant covered by
+# some parent grant, then the expiration rule.
+	.type is_attenuated, @function
+is_attenuated:
+	addi sp, sp, -80
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	sd   s4, 40(sp)
+	sd   s5, 48(sp)
+	sd   s7, 56(sp)
+	sd   s8, 64(sp)
+	mv   s0, sp
+	mv   s1, a0                      # child token data
+	mv   s2, a1                      # parent token data
+	adr_l a1, ka_grants
+	li   a2, 6
+	call map_find
+	beqz a0, .Lia_no
+	mv   s3, a0                      # child grants array
+	mv   a0, s2
+	adr_l a1, ka_grants
+	li   a2, 6
+	call map_find
+	beqz a0, .Lia_no
+	mv   s4, a0                      # parent grants array
+	mv   a0, s3
+	call read_head
+	li   t0, 4
+	bne  a1, t0, .Lia_no
+	mv   s3, a0                      # child grant cursor
+	mv   s5, a2                      # child grants remaining
+.Lia_child:
+	beqz s5, .Lia_expiry
+	mv   a0, s4
+	call read_head
+	li   t0, 4
+	bne  a1, t0, .Lia_no
+	mv   s7, a0                      # parent cursor
+	mv   s8, a2                      # parent grants remaining
+.Lia_parent:
+	beqz s8, .Lia_no                 # this child grant is covered by no parent grant
+	mv   a0, s3
+	mv   a1, s7
+	call grant_subset_framed
+	bnez a0, .Lia_covered
+	mv   a0, s7
+	call skip_value
+	mv   s7, a0
+	addi s8, s8, -1
+	j    .Lia_parent
+.Lia_covered:
+	mv   a0, s3
+	call skip_value
+	mv   s3, a0
+	addi s5, s5, -1
+	j    .Lia_child
+.Lia_expiry:
+	# §5.6 expiration, nil-vs-finite: a child with NO expires_at is INFINITE, and infinite
+	# exceeds any finite parent. The permissive reading — treat the absent child field as
+	# "inherits the parent's" — is the one a reader reaches by accident and is explicitly
+	# non-conformant.
+	mv   a0, s2
+	adr_l a1, ka_expires
+	li   a2, 10
+	call map_find
+	beqz a0, .Lia_yes                # parent never expires → nothing to bound
+	call read_head
+	bnez a1, .Lia_no                 # not a uint64 → unusable, never "absent"
+	mv   s8, a2                      # parent expiry
+	mv   a0, s1
+	adr_l a1, ka_expires
+	li   a2, 10
+	call map_find
+	beqz a0, .Lia_no                 # infinite child under a finite parent
+	call read_head
+	bnez a1, .Lia_no
+	bgtu a2, s8, .Lia_no
+.Lia_yes:
+	li   a0, 1
+	j    .Lia_ret
+.Lia_no:
+	li   a0, 0
+.Lia_ret:
+	ld   s8, 64(sp)
+	ld   s7, 56(sp)
+	ld   s5, 48(sp)
+	ld   s4, 40(sp)
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 80
+	ret
+
+# caveats_ok(a0 = parent token data, a1 = child token data, a2 = depth) -> a0 = 1|0.
+# §5.5 check_delegation_caveats. An absent block means there is nothing to enforce.
+	.type caveats_ok, @function
+caveats_ok:
+	addi sp, sp, -64
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	sd   s4, 40(sp)
+	sd   s5, 48(sp)
+	mv   s0, sp
+	mv   s1, a1                      # child token data
+	mv   s2, a2                      # depth
+	adr_l a1, ka_deleg_caveats
+	li   a2, 18
+	call map_find                    # a0 = parent token data
+	beqz a0, .Lco_yes
+	mv   s3, a0                      # caveats map
+	# no_delegation
+	mv   a0, s3
+	adr_l a1, ka_no_delegation
+	li   a2, 13
+	call map_find
+	beqz a0, .Lco_depth
+	lbu  t0, 0(a0)
+	li   t1, 0xf5                    # CBOR true
+	beq  t0, t1, .Lco_no
+.Lco_depth:
+	# max_delegation_depth — denied when depth >= limit
+	mv   a0, s3
+	adr_l a1, ka_max_deleg_depth
+	li   a2, 20
+	call map_find
+	beqz a0, .Lco_ttl
+	call read_head
+	bnez a1, .Lco_no
+	bgeu s2, a2, .Lco_no
+.Lco_ttl:
+	# max_delegation_ttl — an infinite child exceeds any finite limit
+	mv   a0, s3
+	adr_l a1, ka_max_deleg_ttl
+	li   a2, 18
+	call map_find
+	beqz a0, .Lco_yes
+	call read_head
+	bnez a1, .Lco_no
+	mv   s4, a2                      # limit
+	mv   a0, s1
+	adr_l a1, ka_expires
+	li   a2, 10
+	call map_find
+	beqz a0, .Lco_no                 # child never expires → unbounded ttl
+	call read_head
+	bnez a1, .Lco_no
+	mv   s5, a2                      # child expires_at
+	mv   a0, s1
+	adr_l a1, ka_created
+	li   a2, 10
+	call map_find
+	beqz a0, .Lco_no
+	call read_head
+	bnez a1, .Lco_no
+	bltu s5, a2, .Lco_yes            # already expired at birth — bounded by anything
+	sub  s5, s5, a2
+	bgtu s5, s4, .Lco_no
+.Lco_yes:
+	li   a0, 1
+	j    .Lco_ret
+.Lco_no:
+	li   a0, 0
+.Lco_ret:
+	ld   s5, 48(sp)
+	ld   s4, 40(sp)
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 64
+	ret
+
+# link_temporal_ok(a0 = token data) -> a0 = 1|0, against g_now (§5.5 `t`, sampled once).
+#
+# The CAP-6a REPRESENTABILITY test runs FIRST and is the whole point: an accessor that
+# answers "nothing" for both an ABSENT field and a PRESENT-but-not-uint64 one collapses
+# MALFORMED into ABSENT — and absent means "no expiry", so that reading hands an immortal
+# capability to whoever sent the malformed value. Here the two are distinguishable by
+# construction: map_find answers ABSENT, read_head's major answers REPRESENTABLE. CAP-6a
+# covers THREE fields, and created_at is the one an audit shaped around expiry checks
+# misses. (A bignum can only reach a peer as a major-type-6 tag and is refused at decode;
+# what arrives here is the negative form, major type 1.)
+	.type link_temporal_ok, @function
+link_temporal_ok:
+	addi sp, sp, -32
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	mv   s0, sp
+	mv   s1, a0
+	adr_l a1, ka_created
+	li   a2, 10
+	call map_find
+	beqz a0, .Llt_nb
+	call read_head
+	bnez a1, .Llt_no
+.Llt_nb:
+	mv   a0, s1
+	adr_l a1, ka_notbefore
+	li   a2, 10
+	call map_find
+	beqz a0, .Llt_exp
+	call read_head
+	bnez a1, .Llt_no
+	adr_l t0, g_now
+	ld   t0, 0(t0)
+	bltu t0, a2, .Llt_no             # now < not_before
+.Llt_exp:
+	mv   a0, s1
+	adr_l a1, ka_expires
+	li   a2, 10
+	call map_find
+	beqz a0, .Llt_yes
+	call read_head
+	bnez a1, .Llt_no
+	# §5.6 CAP-6: expiry is an EXCLUSIVE upper bound — expired when now >= expires_at. This
+	# pairs with ttl_ms:0 minting expires_at == created_at, which must be expired at every
+	# observable instant rather than valid for one and racing.
+	adr_l t0, g_now
+	ld   t0, 0(t0)
+	bgeu t0, a2, .Llt_no
+.Llt_yes:
+	li   a0, 1
+	j    .Llt_ret
+.Llt_no:
+	li   a0, 0
+.Llt_ret:
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 32
+	ret
+
+# =====================================================================
+# verify_get_cap(a0 = exec data map) -> a0 = 0 authorized, 1 rejected (403/401 sent).
+# §5.2 capability-class + §5.5 delegation-chain verification.
+#
+# Walks capability → parent → … → root, validating EVERY link: content-hash integrity,
+# revocation, grantee resolution, temporal validity (CAP-6a representability first), and the
+# granter's signature. For every non-root link it additionally checks the parent linkage
+# (parent.grantee == child.granter), §5.6 attenuation under §5.5a per-link granter frames,
+# and the parent's delegation caveats. The ROOT's granter must be this peer — that check has
+# not gone away, it has moved to the END of the walk where it belongs instead of standing in
+# for the walk. A fail-closed root-trust gate answers about ten reject-direction chain
+# vectors correctly for a reason unrelated to what they test, and refuses CAP-5/CAP-6/CAP-6a
+# two gates before the mint they are named after.
+	.type verify_get_cap, @function
+# s1=included s2=author s3=cur hash s4=depth s5=child token data (ctd) s7=this link's td
+# s8=this link's granter s9=scratch s10=exec. s6 is the global CBOR cursor, untouched.
+verify_get_cap:
+	addi sp, sp, -96
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	sd   s4, 40(sp)
+	sd   s5, 48(sp)
+	sd   s7, 56(sp)
+	sd   s8, 64(sp)
+	sd   s9, 72(sp)
+	sd   s10, 80(sp)
+	mv   s0, sp
+	mv   s10, a0                     # exec data map
 	# capability present?
-	mv   a0, s6
 	adr_l a1, k_capability
 	li   a2, 10
 	call map_find
 	beqz a0, .Lvgc_403
-	call get_text                   # a0 = cap_hash ptr (33)
-	mv   s1, a0                     # cap_hash
+	call get_text                    # a0 = cap_hash ptr, a2 = len
+	li   t0, 33
+	bne  a2, t0, .Lvgc_403
+	mv   s3, a0                      # cur = the presented capability hash
 	# author (verify_get_auth already ensured present)
-	mv   a0, s6
+	mv   a0, s10
 	adr_l a1, k_author
 	li   a2, 6
 	call map_find
 	beqz a0, .Lvgc_403
 	call get_text
-	mv   s3, a0                     # author ptr
+	mv   s2, a0                      # author ptr
 	# included
 	adr_l a0, b_req
 	adr_l a1, ka_included
 	li   a2, 8
 	call map_find
 	beqz a0, .Lvgc_403
-	mv   s2, a0                     # included
-	# token = included_find_by_key(included, cap_hash)
-	mv   a0, s2
-	mv   a1, s1
+	mv   s1, a0                      # included
+	li   s4, 0                       # depth
+	li   s5, 0                       # child token data (none yet)
+	# §5.5 v7.76: `t` is sampled ONCE per verdict and never re-sampled per link — otherwise
+	# the verdict depends on wall-clock drift within a single walk.
+	call now_ms
+	adr_l t0, g_now
+	sd   a0, 0(t0)
+# ---------------------------------------------------------------- the walk
+.Lvgc_walk:
+	mv   a0, s1
+	mv   a1, s3
 	call included_find_by_key
-	beqz a0, .Lvgc_403             # capability_not_in_included
+	beqz a0, .Lvgc_403               # capability_not_in_included
 	adr_l a1, k_data
 	li   a2, 4
 	call map_find
 	beqz a0, .Lvgc_403
-	mv   s6, a0                     # token data map
-	# content-hash substitution: recompute content_hash(system/capability/token, data) and
-	# require it to equal the capability hash the request presented (the `included` key).
-	mv   a0, s6
-	call skip_value                 # a0 = end of data map
-	sub  a3, a0, s6                # a3 = data byte length (arg4)
+	mv   s7, a0                      # td — this link's token data map
+	# integrity: the link's data must hash to the hash we followed to reach it. A token whose
+	# bytes were altered after signing no longer hashes to its key → 403.
+	call skip_value
+	sub  a3, a0, s7                  # data byte length (arg4)
 	adr_l a0, ta_token
 	li   a1, 23
-	mv   a2, s6                    # data ptr (arg3)
-	adr_l a4, tok_recompute_ch
+	mv   a2, s7
+	adr_l a4, g_link_ch
 	call ec_content_hash
-	adr_l a0, tok_recompute_ch
-	mv   a1, s1                    # cap_hash (the presented key)
+	adr_l a0, g_link_ch
+	mv   a1, s3
 	li   a2, 33
 	call memeq
-	beqz a0, .Lvgc_403            # recomputed hash ≠ presented key → substituted
-	# §6.9a — a revoked token is denied on use (revocation marker present in the store).
-	mv   a0, s1                    # cap_hash
+	beqz a0, .Lvgc_403               # recomputed hash ≠ the key we followed → substituted
+	# §6.9a — revocation is PER LINK: revoking an intermediate kills everything under it.
+	mv   a0, s3
 	call is_revoked
 	bnez a0, .Lvgc_403
-	# grantee present + must resolve to a system/peer entity (§5.2) then equal the author.
-	mv   a0, s6
+	# grantee present, 33 bytes, and resolving to a present system/peer — per link, not just
+	# at the leaf. An unresolvable grantee is the §5.2 / PR-3 single-401 carve-out, NOT 403.
+	mv   a0, s7
 	adr_l a1, ka_grantee
 	li   a2, 7
 	call map_find
@@ -5674,10 +6735,9 @@ verify_get_cap:
 	call get_text
 	li   t0, 33
 	bne  a2, t0, .Lvgc_403
-	mv   s4, a0                    # grantee ptr (s4 becomes granter below)
-	# grantee must resolve to a system/peer in included — else 401 unresolvable_grantee.
-	mv   a0, s2                    # included
-	mv   a1, s4
+	mv   s8, a0                      # grantee ptr (s8 becomes the granter below)
+	mv   a0, s1
+	mv   a1, s8
 	call included_find_by_key
 	beqz a0, .Lvgc_grantee_401
 	adr_l a1, k_type
@@ -5691,45 +6751,65 @@ verify_get_cap:
 	li   a2, 11
 	call memeq
 	beqz a0, .Lvgc_grantee_401
-	# grantee == author?
-	mv   a0, s4
-	mv   a1, s3
+	# linkage: the LEAF is granted to the request author; every parent is granted to the
+	# granter of the link below it (g_pgee carries that hash across the hop).
+	mv   a0, s8
+	beqz s4, .Lvgc_link_leaf
+	adr_l a1, g_pgee
+	j    .Lvgc_link_cmp
+.Lvgc_link_leaf:
+	mv   a1, s2                      # author
+.Lvgc_link_cmp:
 	li   a2, 33
 	call memeq
-	beqz a0, .Lvgc_403            # grantee_author_mismatch
+	beqz a0, .Lvgc_403               # grantee_author_mismatch / broken chain linkage
+	# temporal validity of THIS link (CAP-6a representability first)
+	mv   a0, s7
+	call link_temporal_ok
+	beqz a0, .Lvgc_403
 	# granter
-	mv   a0, s6
+	mv   a0, s7
 	adr_l a1, ka_granter
 	li   a2, 7
 	call map_find
 	beqz a0, .Lvgc_403
-	mv   s4, a0                    # granter value ptr
-	# multisig (§5.5): a granter that is a MAP is a {signers, threshold} quorum.
-	mv   a0, s4
-	call read_head                  # a1 = major type
+	mv   s8, a0                      # granter value ptr
+	call read_head                   # a1 = major type
 	li   t0, 5
 	bne  a1, t0, .Lvgc_single_granter
-	mv   a0, s4
-	mv   a1, s1                    # cap_hash
-	mv   a2, s2                    # included
+	# §3.6 K-of-N multi-granter. M3 structural validity runs BEFORE any signature check, so a
+	# violation surfaces as 403 capability_denied rather than as a signature failure.
+	# Multi-sig is ROOT-ONLY: a multi-granter link carrying a parent is structurally invalid.
+	mv   a0, s7
+	adr_l a1, ka_parent
+	li   a2, 6
+	call map_find
+	beqz a0, .Lvgc_ms_root
+	lbu  t0, 0(a0)                   # CBOR null is "no parent"
+	li   t1, 0xf6
+	bne  t0, t1, .Lvgc_403
+.Lvgc_ms_root:
+	# A quorum root has no single granter peer_id, so §5.5a has no frame to canonicalize its
+	# resource patterns against. Rather than invent one, a K-of-N root is accepted only when
+	# it is the capability actually PRESENTED (depth 0), where no attenuation comparison is
+	# needed. A chain whose ROOT is K-of-N is refused, and that limit is written here rather
+	# than left to be discovered.
+	bnez s4, .Lvgc_403
+	mv   a0, s8
+	mv   a1, s3
+	mv   a2, s1
 	call verify_multisig_granter
 	bnez a0, .Lvgc_403
-	li   a0, 0                     # authorized (quorum met)
-	j    .Lvgc_ret
+	j    .Lvgc_ok                    # quorum met — the chain terminates here
 .Lvgc_single_granter:
-	mv   a0, s4
-	call get_text                   # a0 = granter ptr (33)
-	mv   s4, a0                    # granter
-	# root-trust: a directly-presented token MUST be granted by THIS peer. granter ≠
-	# our identity_hash → 403 (fail closed).
-	mv   a0, s4
-	adr_l a1, g_identity_hash
-	li   a2, 33
-	call memeq
-	beqz a0, .Lvgc_403
-	# granter's public_key (its system/peer in included)
-	mv   a0, s2
-	mv   a1, s4
+	mv   a0, s8
+	call get_text
+	li   t0, 33
+	bne  a2, t0, .Lvgc_403
+	mv   s8, a0                      # granter hash
+	# signature over THIS link, by THIS link's granter
+	mv   a0, s1
+	mv   a1, s8
 	call included_find_by_key
 	beqz a0, .Lvgc_403
 	adr_l a1, k_data
@@ -5741,21 +6821,82 @@ verify_get_cap:
 	call map_find
 	beqz a0, .Lvgc_403
 	call get_text
-	mv   s6, a0                    # granter pubkey ptr (survives find_req_sig)
-	# token signature: signer==granter, target==cap_hash
-	mv   a0, s2
-	mv   a1, s4
-	mv   a2, s1
-	call find_req_sig               # a0 = 64-byte sig ptr | 0
-	beqz a0, .Lvgc_403            # unsigned / forged
-	# Ed25519 verify(granter_pubkey, cap_hash, 33, sig)
-	mv   a3, a0                    # signature
-	mv   a0, s6                    # granter pubkey
-	mv   a1, s1                    # cap_hash
+	mv   s9, a0                      # granter pubkey (survives find_req_sig)
+	mv   a0, s1
+	mv   a1, s8
+	mv   a2, s3
+	call find_req_sig                # a0 = 64-byte sig ptr | 0
+	beqz a0, .Lvgc_403               # unsigned / forged
+	mv   a3, a0
+	mv   a0, s9
+	mv   a1, s3
 	li   a2, 33
 	call ec_ed25519_verify
 	bnez a0, .Lvgc_403
-	li   a0, 0                     # authorized
+	# this link's §5.5a frame = its granter's peer_id
+	mv   a0, s1
+	mv   a1, s8
+	adr_l a2, g_pfr
+	adr_l a3, g_pfrlen
+	call peerid_of
+	beqz a0, .Lvgc_403
+	# attenuation + caveats against the child we arrived from
+	beqz s4, .Lvgc_rootcheck
+	mv   a0, s5                      # ctd
+	mv   a1, s7
+	call is_attenuated
+	beqz a0, .Lvgc_403
+	mv   a0, s7
+	mv   a1, s5
+	addi a2, s4, -1
+	call caveats_ok
+	beqz a0, .Lvgc_403
+.Lvgc_rootcheck:
+	mv   a0, s7
+	adr_l a1, ka_parent
+	li   a2, 6
+	call map_find
+	beqz a0, .Lvgc_root
+	lbu  t0, 0(a0)                   # an explicit null parent is a root
+	li   t1, 0xf6
+	beq  t0, t1, .Lvgc_root
+	mv   s9, a0                      # parent hash value ptr
+	# carry the child state across the hop: its data, its granter, and its frame
+	mv   s5, s7                      # ctd = this link
+	adr_l a0, g_pgee
+	mv   a1, s8
+	li   a2, 33
+	call mcpy
+	adr_l a0, g_cfr
+	adr_l a1, g_pfr
+	li   a2, 128
+	call mcpy
+	adr_l t0, g_pfrlen
+	ld   t0, 0(t0)
+	adr_l t1, g_cfrlen
+	sd   t0, 0(t1)
+	mv   a0, s9
+	call get_text
+	li   t0, 33
+	bne  a2, t0, .Lvgc_403
+	mv   s3, a0                      # cur = parent
+	addi s4, s4, 1
+	# §5.5 collect_authority_chain bounds depth at 64. chain_depth_check already answers 400
+	# chain_depth_exceeded ahead of this walk, so this is the belt to that braces — it exists
+	# so the loop cannot run unbounded if the walk is ever reached by another path.
+	li   t0, 64
+	bgtu s4, t0, .Lvgc_403
+	j    .Lvgc_walk
+.Lvgc_root:
+	# §5.5 root trust: the chain must terminate at a capability THIS peer granted. The check
+	# has not gone away — it is here, at the end of the walk, instead of standing in for it.
+	mv   a0, s8
+	adr_l a1, g_identity_hash
+	li   a2, 33
+	call memeq
+	beqz a0, .Lvgc_403
+.Lvgc_ok:
+	li   a0, 0                       # authorized
 	j    .Lvgc_ret
 .Lvgc_403:
 	li   a0, 403
@@ -5769,14 +6910,18 @@ verify_get_cap:
 	call send_error
 	li   a0, 1
 .Lvgc_ret:
-	ld   s6, 48(sp)
+	ld   s10, 80(sp)
+	ld   s9, 72(sp)
+	ld   s8, 64(sp)
+	ld   s7, 56(sp)
+	ld   s5, 48(sp)
 	ld   s4, 40(sp)
 	ld   s3, 32(sp)
 	ld   s2, 24(sp)
 	ld   s1, 16(sp)
 	ld   ra, 8(sp)
 	ld   s0, 0(sp)
-	addi sp, sp, 64
+	addi sp, sp, 96
 	ret
 
 # =====================================================================
@@ -5970,6 +7115,47 @@ verify_get_scope:
 	call map_find
 	beqz a0, .Lvgsc_ok
 	mv   s4, a0                     # token data map
+	# ---- §5.5a frame for the DISPATCH surface: the presented cap's own granter ----
+	# Derived here rather than assumed to be the local peer — they are byte-identical for
+	# every self-issued capability, which is exactly why framing against the verifier stays
+	# latent until a foreign-granted cap arrives.
+	mv   a0, s4
+	adr_l a1, ka_granter
+	li   a2, 7
+	call map_find
+	beqz a0, .Lvgsc_403
+	mv   s2, a0
+	call read_head                  # a1 = major type
+	li   t0, 5
+	bne  a1, t0, .Lvgsc_single_frame
+	# §3.6 K-of-N root: there is no single granter, so §5.5a has no granter peer_id to frame
+	# against. The local peer is the CORRECT frame here and not a fallback — M6 already
+	# required that the local peer be in the signer set AND have signed, and §5.5 says a
+	# quorum cap's "subsequent use is locally rooted". The quorum authorized issuance; the
+	# namespace its patterns name is this peer's.
+	adr_l t0, g_peerid_len
+	ld   a2, 0(t0)
+	adr_l t0, g_dfrlen
+	sd   a2, 0(t0)
+	adr_l a0, g_dfr
+	adr_l a1, g_peerid
+	call mcpy
+	j    .Lvgsc_frame_ok
+.Lvgsc_single_frame:
+	mv   a0, s2
+	call get_text
+	mv   s2, a0                     # granter hash
+	adr_l a0, b_req
+	adr_l a1, ka_included
+	li   a2, 8
+	call map_find
+	beqz a0, .Lvgsc_403
+	mv   a1, s2
+	adr_l a2, g_dfr
+	adr_l a3, g_dfrlen
+	call peerid_of
+	beqz a0, .Lvgsc_403
+.Lvgsc_frame_ok:
 	# ---- token temporal validity (only fires if the fields are present) ----
 	call now_ms                      # a0 = wall-clock ms
 	mv   s3, a0                     # now
@@ -6149,7 +7335,7 @@ grant_scope_ok:
 	beqz a0, .Lgs_next
 	mv   a1, s4                      # target ptr
 	mv   a2, s5                      # target len
-	call resource_matches
+	call resources_cover_target
 	bnez a0, .Lgs_yes
 .Lgs_next:
 	mv   a0, s2
@@ -6164,6 +7350,260 @@ grant_scope_ok:
 	li   a0, 0
 .Lgs_ret:
 	ld   s8, 64(sp)
+	ld   s7, 56(sp)
+	ld   s5, 48(sp)
+	ld   s4, 40(sp)
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 80
+	ret
+
+# op_scope_ok(a0 = token data, a1 = op ptr, a2 = op len) -> a0 = 1 if some grant permits
+# (operation ∈ operations.include) ∧ (handler ∈ handlers.include) ∧ (target peer ∈ peers).
+# The RESOURCE dimension is absent by construction: these are the capability-vocabulary ops
+# that carry no resource.targets, so there is no target to match and asking for one would
+# deny every one of them.
+	.type op_scope_ok, @function
+op_scope_ok:
+	addi sp, sp, -64
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	sd   s4, 40(sp)
+	mv   s0, sp
+	mv   s3, a1                      # op ptr
+	mv   s4, a2                      # op len
+	adr_l a1, ka_grants
+	li   a2, 6
+	call map_find
+	beqz a0, .Los_no
+	call read_head
+	li   t0, 4
+	bne  a1, t0, .Los_no
+	mv   s2, a0                      # grant cursor
+	mv   s1, a2                      # grant count
+.Los_loop:
+	beqz s1, .Los_no
+	mv   a0, s2
+	adr_l a1, ka_operations
+	li   a2, 10
+	call get_include
+	beqz a0, .Los_next
+	mv   a1, s3
+	mv   a2, s4
+	call array_contains_star
+	beqz a0, .Los_next
+	mv   a0, s2
+	adr_l a1, ka_handlers
+	li   a2, 8
+	call get_include
+	beqz a0, .Los_next
+	adr_l t0, g_handler_ptr
+	ld   a1, 0(t0)
+	adr_l t0, g_handler_len
+	ld   a2, 0(t0)
+	call array_contains_star
+	beqz a0, .Los_next
+	mv   a0, s2
+	adr_l a1, ka_peers
+	li   a2, 5
+	call get_include
+	beqz a0, .Los_peers_default
+	adr_l t0, g_target_peer_ptr
+	ld   a1, 0(t0)
+	adr_l t0, g_target_peer_len
+	ld   a2, 0(t0)
+	call array_contains_star
+	beqz a0, .Los_next
+	j    .Los_yes
+.Los_peers_default:
+	adr_l t0, g_target_peer_len
+	ld   t1, 0(t0)
+	adr_l t0, g_peerid_len
+	ld   t0, 0(t0)
+	bne  t1, t0, .Los_next
+	mv   a2, t0
+	adr_l t0, g_target_peer_ptr
+	ld   a0, 0(t0)
+	adr_l a1, g_peerid
+	call memeq
+	beqz a0, .Los_next
+	j    .Los_yes
+.Los_next:
+	mv   a0, s2
+	call skip_value
+	mv   s2, a0
+	addi s1, s1, -1
+	j    .Los_loop
+.Los_yes:
+	li   a0, 1
+	j    .Los_ret
+.Los_no:
+	li   a0, 0
+.Los_ret:
+	ld   s4, 40(sp)
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 64
+	ret
+
+# verify_op_scope(a0 = exec data map) -> a0 = 0 authorized, 1 rejected (403 sent).
+# §5.2 operation-scope gate for a capability-vocabulary op with no resource.targets. Without
+# it a peer that authenticates a caller then routes straight into the handler never asks
+# whether the presented capability covers this op on this handler at all — and a floor cap
+# (capability:request only) would reach configure/revoke unchecked.
+	.type verify_op_scope, @function
+verify_op_scope:
+	addi sp, sp, -64
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	sd   s4, 40(sp)
+	mv   s0, sp
+	mv   s4, a0                      # exec
+	call derive_handler              # a0 = exec (→ g_handler_ptr/len, g_target_peer_*)
+	mv   a0, s4
+	adr_l a1, k_capability
+	li   a2, 10
+	call map_find
+	beqz a0, .Lvos_403
+	call get_text
+	mv   s1, a0                      # cap hash
+	adr_l a0, b_req
+	adr_l a1, ka_included
+	li   a2, 8
+	call map_find
+	beqz a0, .Lvos_403
+	mv   a1, s1
+	call included_find_by_key
+	beqz a0, .Lvos_403
+	adr_l a1, k_data
+	li   a2, 4
+	call map_find
+	beqz a0, .Lvos_403
+	mv   s3, a0                      # token data
+	call now_ms
+	mv   s2, a0                      # now
+	mv   a0, s3
+	adr_l a1, ka_expires
+	li   a2, 10
+	call map_find
+	beqz a0, .Lvos_nb
+	call read_head
+	bgtu s2, a2, .Lvos_403           # now > expires_at
+.Lvos_nb:
+	mv   a0, s3
+	adr_l a1, ka_notbefore
+	li   a2, 10
+	call map_find
+	beqz a0, .Lvos_op
+	call read_head
+	bltu s2, a2, .Lvos_403           # now < not_before
+.Lvos_op:
+	mv   a0, s4
+	adr_l a1, k_op
+	li   a2, 9
+	call map_find
+	beqz a0, .Lvos_403
+	call get_text
+	mv   a1, a0                      # op ptr
+	mv   a0, s3                      # token data
+	# a2 already = op len
+	call op_scope_ok
+	bnez a0, .Lvos_ok
+.Lvos_403:
+	li   a0, 403
+	adr_l a1, ec_cap_denied
+	call send_error
+	li   a0, 1
+	j    .Lvos_ret
+.Lvos_ok:
+	li   a0, 0
+.Lvos_ret:
+	ld   s4, 40(sp)
+	ld   s3, 32(sp)
+	ld   s2, 24(sp)
+	ld   s1, 16(sp)
+	ld   ra, 8(sp)
+	ld   s0, 0(sp)
+	addi sp, sp, 64
+	ret
+
+# resources_cover_target(a0 = resources.include array, a1 = target ptr, a2 = target len)
+#   -> a0 = 1 if some pattern covers the request target under §5.5a.
+#
+# §5.5a surface 1, the DISPATCH boundary. The two sides canonicalize against DIFFERENT
+# frames, and that asymmetry is the rule: a cap's resource patterns are the GRANTER's to
+# write, so they canonicalize against the granter's peer_id (g_dfr, derived in
+# verify_get_scope); the request target is a path into THIS peer's namespace, so it
+# canonicalizes against the local peer_id. Frame both against the local peer and a
+# foreign-granted bare "*" silently becomes "/{verifier}/*" and authorizes the verifier's
+# own namespace — which is what captok_form_dispatch_minted_pl_presented_xpeer exists to
+# catch, and which stays invisible for as long as the peer refuses foreign-granted caps
+# outright (a vacuous pass that the chain walk converts into a real one).
+	.type resources_cover_target, @function
+resources_cover_target:
+	addi sp, sp, -80
+	sd   s0, 0(sp)
+	sd   ra, 8(sp)
+	sd   s1, 16(sp)
+	sd   s2, 24(sp)
+	sd   s3, 32(sp)
+	sd   s4, 40(sp)
+	sd   s5, 48(sp)
+	sd   s7, 56(sp)
+	mv   s0, sp
+	mv   s1, a0                      # include array
+	mv   a0, a1
+	mv   a1, a2
+	adr_l a2, g_peerid
+	adr_l t0, g_peerid_len
+	ld   a3, 0(t0)
+	adr_l a4, b_canon_a
+	call canon
+	mv   s2, a0                      # canonical target length
+	mv   a0, s1
+	call read_head
+	li   t0, 4
+	bne  a1, t0, .Lrct_no
+	mv   s3, a0                      # pattern cursor
+	mv   s4, a2                      # remaining
+.Lrct_loop:
+	beqz s4, .Lrct_no
+	mv   a0, s3
+	call read_head                   # a0 = pattern bytes, a2 = len
+	mv   s5, a0
+	mv   s7, a2
+	add  s3, a0, a2
+	addi s4, s4, -1
+	mv   a0, s5
+	mv   a1, s7
+	adr_l a2, g_dfr
+	adr_l t0, g_dfrlen
+	ld   a3, 0(t0)
+	adr_l a4, b_canon_b
+	call canon
+	mv   a3, a0
+	adr_l a0, b_canon_a
+	mv   a1, s2
+	adr_l a2, b_canon_b
+	call pat_covers
+	beqz a0, .Lrct_loop
+	li   a0, 1
+	j    .Lrct_ret
+.Lrct_no:
+	li   a0, 0
+.Lrct_ret:
 	ld   s7, 56(sp)
 	ld   s5, 48(sp)
 	ld   s4, 40(sp)

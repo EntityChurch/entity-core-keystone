@@ -55,8 +55,8 @@ prolog	M3	c1b0708	logic substrate; found A-PL-006
 ruby	M3	c1b0708	dynamic; native agility
 zig	M3	c1b0708	lightest supply chain
 apl	probe	none	UNMEASURABLE — upstream-blocked (1.9->2.0 cool-down); excluded from census by standing policy
-asm-arm64	probe	c1b0708	ISA port; INVALID MEASUREMENT — 699/740 checks, >=3 core FAILs (§1a)
-asm-x86_64	probe	c1b0708	lowest-level substrate; INVALID MEASUREMENT — 699/740 checks, >=3 core FAILs (§1a)
+asm-arm64	probe	c1b0708	ISA port; 755 · 0F
+asm-x86_64	probe	c1b0708	lowest-level substrate; 755 · 0F
 datalog	probe	c1b0708	authority-as-query (Ascent); closes the logic frontier
 forth	probe	c1b0708	stack-machine/typeless generator stress
 fortran	probe	c1b0708	fixed-width signed-only integer model
@@ -64,7 +64,7 @@ io	probe	c1b0708	pure-prototype OO; single-thread event loop
 oz	probe	c1b0708	dataflow-variable concurrency
 pd	probe	c1b0708	Pure Data — only visual probe to clear the full core gate
 rexx	probe	c1b0708	native-decimal number model
-riscv64	probe	c1b0708	ISA port; INVALID MEASUREMENT — 699/740 checks, >=3 core FAILs (§1a)
+riscv64	probe	c1b0708	ISA port; 755 · 0F
 rust-wasm	probe	c1b0708	compiled wasm32-wasip1, WasmEdge JIT
 rust-wasm-wasmtime	probe	c1b0708	same module under wasmtime AOT
 smalltalk	probe	c1b0708	pure-object/live-image message passing
