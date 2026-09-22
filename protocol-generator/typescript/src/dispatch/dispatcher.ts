@@ -19,10 +19,26 @@ import {
   type Handler,
   HandlerContext,
   type HandlerRegistry,
+  HandlerResult,
   type PeerServices,
 } from "../handlers/index.js";
+import { errorResult } from "../handlers/errors.js";
+import { SpecRegistration } from "../handlers/spec-registration.js";
 import { type ReentrantSender } from "../transport/reentrant-sender.js";
 import { OutboundDispatchImpl } from "./outbound-dispatch.js";
+import {
+  type DispatchContext,
+  type DispatchContextState,
+  type LocalExecute,
+  MAX_LOCAL_DISPATCH_DEPTH,
+  claimDispatchContextFactory,
+} from "./dispatch-context.js";
+
+/**
+ * The ONE constructing function for {@link DispatchContext}, claimed as this module
+ * loads. Nothing else in the package can build a context (`context.unforgeable`).
+ */
+const makeDispatchContext: (state: DispatchContextState) => DispatchContext = claimDispatchContextFactory();
 
 /**
  * The dispatch chain (V7 §6.5): decode → integrity verify → handler resolution →
@@ -35,6 +51,7 @@ export class Dispatcher {
   readonly #peer: PeerServices;
   readonly #registry: HandlerRegistry;
   #expressionEvaluator: ExpressionEvaluator | null = null;
+  #localDispatchCounter = 0;
 
   constructor(peer: PeerServices, registry: HandlerRegistry) {
     this.#peer = peer;
@@ -160,6 +177,26 @@ export class Dispatcher {
       return errorEnvelope(requestId, verify.status, verify.code!, verify.message);
     }
 
+    return this.#route(execute, request, conn, verify.capability!, sender, path, 0);
+  }
+
+  /**
+   * §6.6 resolution → §5.2 `check_permission` → §6.8 handler-grant validation → body
+   * selection, for a request whose integrity and capability are already established:
+   * a wire EXECUTE after `verify_request`, or a local dispatch after its admissibility
+   * check ({@link DispatchContext.dispatchExecute}). One path, so a local dispatch cannot
+   * reach a body a wire EXECUTE with the same capability could not.
+   */
+  async #route(
+    execute: Execute,
+    request: Envelope,
+    conn: ConnectionState | null,
+    capability: CapabilityToken,
+    sender: ReentrantSender | null,
+    path: string,
+    depth: number,
+  ): Promise<Envelope> {
+    const requestId = execute.requestId;
     // Resolve handler by tree walk (§6.6). No match → 404.
     const res = this.#registry.resolve(path);
     if (res === null) {
@@ -173,7 +210,6 @@ export class Dispatcher {
     // once here; its grant resource patterns canonicalize against that frame. Register/
     // unregister ride this same boundary (B1 / V2.0/L1) — the EXECUTE.resource install
     // path is the authorization target.
-    const capability = verify.capability!;
     const granterPeerId = Permissions.resolveGranterPeerId(capability, request, this.#peer.localPeerId);
     if (!Permissions.checkPermission(execute, capability, res.pattern, this.#peer.localPeerId, granterPeerId)) {
       return errorEnvelope(requestId, Status.Forbidden, "capability_denied", "capability does not grant the operation");
@@ -188,6 +224,9 @@ export class Dispatcher {
 
     // Bootstrap handler (in-process body) vs dynamically-registered handler (entity-native
     // body at expression_path, v7.74 §6.13(a)).
+    if (res.native instanceof SpecRegistration) {
+      return this.#runSpecBody(res.native, execute, request, conn, capability, handlerGrant, res.pattern, res.suffix, sender, depth);
+    }
     if (res.native !== null) {
       return this.#runHandler(res.native, execute, request, conn, capability, handlerGrant, res.pattern, res.suffix, sender);
     }
@@ -248,11 +287,141 @@ export class Dispatcher {
     return errorEnvelope(execute.requestId, Status.NotSupported, "unsupported_expression", "core peer evaluates only compute/literal bodies (the entity-native seam); richer bodies need the compute extension");
   }
 
+  /**
+   * Run a `Peer.registerHandler(spec, body)` body with a dispatcher-built
+   * {@link DispatchContext}. A throw becomes a status, never a hung request.
+   */
+  async #runSpecBody(
+    registration: SpecRegistration,
+    execute: Execute,
+    request: Envelope,
+    conn: ConnectionState | null,
+    callerCapability: CapabilityToken,
+    handlerGrant: CapabilityToken,
+    pattern: string,
+    suffix: string,
+    sender: ReentrantSender | null,
+    depth: number,
+  ): Promise<Envelope> {
+    const outbound = sender === null ? null : new OutboundDispatchImpl(this.#peer.localIdentity, sender);
+    const state: DispatchContextState = {
+      peer: this.#peer,
+      execute,
+      envelope: request,
+      pattern,
+      suffix: suffix.replace(/^\/+/, ""),
+      callerCapability,
+      handlerGrant,
+      author: execute.author,
+      connection: conn,
+      outbound,
+      sender,
+      depth,
+      dispatchLocal: (local) => this.#dispatchLocal(state, local),
+    };
+    const context = makeDispatchContext(state);
+    try {
+      const result = await registration.body(context);
+      const response = ExecuteResponse.build(execute.requestId, result.status, result.result);
+      return new Envelope(response.entity, result.included);
+    } catch (e) {
+      if (e instanceof EntityProtocolError) {
+        return errorEnvelope(execute.requestId, e.status, "handler_error", e.message);
+      }
+      return errorEnvelope(execute.requestId, Status.InternalError, "internal_error", errorMessage(e));
+    }
+  }
+
+  /**
+   * `DispatchContext.dispatchExecute` — the authority and bounds rules are documented
+   * there; this is their implementation. The sub-dispatch rides {@link #route}.
+   */
+  async #dispatchLocal(parent: DispatchContextState, local: LocalExecute): Promise<HandlerResult> {
+    const depth = parent.depth + 1;
+    if (depth > MAX_LOCAL_DISPATCH_DEPTH) {
+      return errorResult(429, "bounds_exceeded", "local dispatch depth exceeds the peer's bound");
+    }
+    const capability = local.capability ?? parent.callerCapability;
+    if (capability === null) {
+      return errorResult(Status.Forbidden, "capability_denied", "no capability for local dispatch");
+    }
+    if (!this.#localCapabilityAdmissible(parent, capability)) {
+      return errorResult(
+        Status.Forbidden,
+        "capability_denied",
+        "local dispatch capability is not the caller's, the handler's grant, or a valid token this peer issued",
+      );
+    }
+    let path: string;
+    try {
+      path = Paths.dispatchPath(local.uri, this.#peer.localPeerId);
+    } catch (e) {
+      if (e instanceof EntityProtocolError) {
+        return errorResult(Status.BadRequest, "invalid_request", e.message);
+      }
+      throw e;
+    }
+    if (Paths.extractPeer(path, this.#peer.localPeerId) !== this.#peer.localPeerId) {
+      return errorResult(Status.BadRequest, "invalid_request", "local dispatch targets the local peer only; a foreign namespace is the outbound seam");
+    }
+    if (path === "/" + this.#peer.localPeerId + "/" + Protocols.ConnectPath) {
+      return errorResult(Status.BadRequest, "invalid_request", "the connect handler serves a connection, not a local dispatch");
+    }
+
+    const execute = Execute.build({
+      requestId: parent.execute.requestId + "/local-" + ++this.#localDispatchCounter,
+      uri: local.uri,
+      operation: local.operation,
+      params: local.params,
+      author: parent.author ?? this.#peer.localIdentity.identityHash,
+      capability: capability.contentHash,
+      resource: local.resource ?? null,
+    });
+    const envelope = await this.#route(execute, parent.envelope, parent.connection, capability, parent.sender, path, depth);
+    const response = new ExecuteResponse(envelope.root);
+    return HandlerResult.of(response.statusCode, response.result, [...envelope.included.values()]);
+  }
+
+  /**
+   * Which capabilities an in-process dispatch may run under: the caller's verified
+   * capability and the handler's own grant by identity; any other token only if THIS
+   * peer issued it, its signature verifies at the §3.5 pointer, it is inside its
+   * temporal bounds (CAP-6a: a present-but-unrepresentable field refuses), and it is
+   * not revoked.
+   */
+  #localCapabilityAdmissible(parent: DispatchContextState, c: CapabilityToken): boolean {
+    if (
+      (parent.callerCapability !== null && hashEqual(parent.callerCapability.contentHash, c.contentHash)) ||
+      (parent.handlerGrant !== null && hashEqual(parent.handlerGrant.contentHash, c.contentHash))
+    ) {
+      return true;
+    }
+    if (c.granter === null || !hashEqual(c.granter, this.#peer.localIdentity.identityHash)) {
+      return false;
+    }
+    const local = this.#peer.localPeerId;
+    const sig = this.#peer.tree.get("/" + local + "/system/signature/" + c.contentHashHex);
+    if (sig === undefined || !verifySignature(sig, this.#peer.localIdentity.peerEntity)) {
+      return false;
+    }
+    for (const field of ["expires_at", "not_before"]) {
+      const v = Ecf.field(c.entity.data, field);
+      if (v !== null && (v.kind !== "int" || v.negative)) {
+        return false;
+      }
+    }
+    const now = this.#peer.nowMs;
+    if ((c.notBefore !== null && now < c.notBefore) || (c.expiresAt !== null && c.expiresAt < now)) {
+      return false;
+    }
+    return this.#peer.tree.get("/" + local + "/system/capability/revocations/" + c.contentHashHex) === undefined;
+  }
+
   async #runHandler(
     handler: Handler,
     execute: Execute,
     request: Envelope,
-    conn: ConnectionState,
+    conn: ConnectionState | null,
     callerCapability: CapabilityToken | null,
     handlerGrant: CapabilityToken | null,
     pattern: string,

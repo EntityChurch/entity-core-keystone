@@ -64,6 +64,24 @@ export interface EmitConsumer {
   onTreeChange(ev: TreeChangeEvent): void;
 }
 
+/** A tree-change consumer callable (§6.10 Bind step). Invoked synchronously, in registration order. */
+export type TreeChangeConsumer = (ev: TreeChangeEvent) => void;
+
+/** A content-store consumer callable (§6.10 Store step). Invoked synchronously, in registration order. */
+export type ContentStoreConsumer = (ev: ContentStoreEvent) => void;
+
+/**
+ * The handle a consumer registration returns; pass it to {@link EmitBus.unregisterConsumer}.
+ * Opaque — compare, never compute.
+ */
+export type ConsumerId = number & { readonly __consumerId: unique symbol };
+
+interface ConsumerEntry {
+  readonly id: ConsumerId;
+  readonly onTree: TreeChangeConsumer | null;
+  readonly onContent: ContentStoreConsumer | null;
+}
+
 /**
  * The emit pathway (V7 §6.10 / v7.74 §6.13(c)). Tree writes produce events; this bus
  * delivers them to registered consumers. The hook is LIVE even with zero consumers —
@@ -71,13 +89,58 @@ export interface EmitConsumer {
  * ({@link EmitBus.registerConsumer}) without the peer being rebuilt. A core-only peer
  * registers zero consumers; the pathway is still reachable, which is the §6.13(c) MUST.
  * Delivery is sync-inline (impl-defined per §9.4).
+ *
+ * Consumers can be registered at any time — including after construction, which is
+ * when an extension installs — and removed again (keystone peer contract
+ * `install.consumer`; `SYSTEM-COMPOSITION` §1.2 names registration only "during peer
+ * initialization"). All consumers share ONE registration order whichever kind they are;
+ * a write's content-store event always precedes its tree-change event, because the Store
+ * step runs before the Bind step. Delivery iterates a snapshot, so a consumer that
+ * registers or unregisters during delivery affects the next event, not this one.
  */
 export class EmitBus {
-  readonly #consumers: EmitConsumer[] = [];
+  readonly #consumers: ConsumerEntry[] = [];
+  #nextId = 1;
 
-  /** Register an emit consumer (§6.10). Reachable at any time, incl. post-bootstrap. */
-  registerConsumer(consumer: EmitConsumer): void {
-    this.#consumers.push(consumer);
+  /**
+   * Register an emit consumer that receives both event kinds (§6.10). Reachable at any
+   * time, incl. post-bootstrap. Returns its {@link ConsumerId} (new; ignoring it — as
+   * every pre-existing caller does — is fine).
+   */
+  registerConsumer(consumer: EmitConsumer): ConsumerId {
+    return this.#add(
+      (ev) => consumer.onTreeChange(ev),
+      (ev) => consumer.onContentStore(ev),
+    );
+  }
+
+  /** Register a tree-change consumer (§6.10 Bind step). */
+  registerTreeConsumer(consumer: TreeChangeConsumer): ConsumerId {
+    return this.#add(consumer, null);
+  }
+
+  /** Register a content-store consumer (§6.10 Store step). */
+  registerContentConsumer(consumer: ContentStoreConsumer): ConsumerId {
+    return this.#add(null, consumer);
+  }
+
+  /**
+   * Stop delivering events to the consumer `id` names. Idempotent: `false` when it is
+   * not registered (already removed, or never was).
+   */
+  unregisterConsumer(id: ConsumerId): boolean {
+    const i = this.#consumers.findIndex((c) => c.id === id);
+    if (i < 0) {
+      return false;
+    }
+    this.#consumers.splice(i, 1);
+    return true;
+  }
+
+  #add(onTree: TreeChangeConsumer | null, onContent: ContentStoreConsumer | null): ConsumerId {
+    const id = this.#nextId++ as ConsumerId;
+    this.#consumers.push({ id, onTree, onContent });
+    return id;
   }
 
   get hasConsumers(): boolean {
@@ -90,8 +153,8 @@ export class EmitBus {
       return;
     }
     const ev: ContentStoreEvent = { hash: entity.contentHash, entity };
-    for (const c of this.#consumers) {
-      c.onContentStore(ev);
+    for (const c of [...this.#consumers]) {
+      c.onContent?.(ev);
     }
   }
 
@@ -112,8 +175,8 @@ export class EmitBus {
       previousHash,
       context,
     };
-    for (const c of this.#consumers) {
-      c.onTreeChange(ev);
+    for (const c of [...this.#consumers]) {
+      c.onTree?.(ev);
     }
   }
 }

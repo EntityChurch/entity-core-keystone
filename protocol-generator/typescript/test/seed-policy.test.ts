@@ -259,6 +259,18 @@ interface HostRun {
   stderr: string;
 }
 
+/**
+ * The host's one readiness line, `LISTENING <json>` (keystone peer contract `run.ready`,
+ * record `keystone-peer-ready/1`), parsed. Throws if stdout does not START with exactly that.
+ */
+function readiness(stdout: string): Record<string, unknown> {
+  const m = /^LISTENING (\{.*\})\n/.exec(stdout);
+  assert.ok(m, `no readiness line in ${JSON.stringify(stdout)}`);
+  const rec = JSON.parse(m[1]!) as Record<string, unknown>;
+  assert.equal(rec["record"], "keystone-peer-ready/1");
+  return rec;
+}
+
 /** Run the host; resolve once it exits or once it prints LISTENING (then SIGTERM it). */
 function runHost(args: readonly string[]): Promise<HostRun> {
   return new Promise((resolve, reject) => {
@@ -295,14 +307,21 @@ test("host: --seed-policy with an invalid file prints to stderr and exits 2 with
 
 test("host: --seed-policy loads, reports its counts, and wins over --debug-open-grants", async () => {
   const r = await runHost(["--seed-policy", join(EXAMPLES, "operator-admin.json"), "--debug-open-grants"]);
-  assert.match(r.stdout, /^LISTENING 127\.0\.0\.1:\d+ peer_id=\S+ open_grants=false validate=false\n/);
+  const rec = readiness(r.stdout);
+  assert.match(String(rec["addr"]), /^127\.0\.0\.1:\d+$/);
+  assert.equal(rec["posture"], "file", "a declared policy wins over --debug-open-grants");
+  assert.equal(rec["validate"], false);
   assert.match(r.stderr, /--debug-open-grants is DEPRECATED and is IGNORED because --seed-policy was given/);
   assert.match(r.stderr, /seed-policy: \S+operator-admin\.json \(default entry: 2 grant\(s\), 1 named entr\(ies\)\)/);
 });
 
 test("host: --debug-open-grants alone still works and still warns", async () => {
   const r = await runHost(["--debug-open-grants"]);
-  assert.match(r.stdout, /^LISTENING 127\.0\.0\.1:\d+ peer_id=\S+ open_grants=true validate=false\n/);
+  const rec = readiness(r.stdout);
+  assert.match(String(rec["addr"]), /^127\.0\.0\.1:\d+$/);
+  assert.equal(rec["posture"], "debug-open");
+  assert.equal(rec["posture_digest"], "debug-open");
+  assert.equal(rec["validate"], false);
   assert.match(r.stderr, /--debug-open-grants is DEPRECATED \(v7\.74/);
   assert.equal(r.stderr.includes("seed-policy:"), false);
 });

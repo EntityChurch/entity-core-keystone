@@ -21,3 +21,4 @@ export * from "./dispatch/index.js";
 export * from "./types/index.js";
 export * from "./transport/index.js";
 export * from "./peer.js";
+export * from "./host.js";

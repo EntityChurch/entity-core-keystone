@@ -14,3 +14,4 @@ export * from "./handlers-handler.js";
 export * from "./tree-handler.js";
 export * from "./capability-handler.js";
 export * from "./conformance-handlers.js";
+export * from "./handler-install.js";

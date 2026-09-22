@@ -1,0 +1,31 @@
+# The typescript peer's spelling of each keystone peer contract requirement (H5's platform
+# bindings, per requirement). DECLARED, not measured: tools/peer-contract/report.py echoes each
+# value into the requirement's row, and the row's verdict comes from the suite. A binding with no
+# measured `pass` beside it is a claim, and reads as one.
+package = "entity-core-protocol-typescript (npm, ESM; exports map '.' and './codec' only)"
+
+[bindings]
+"run.cli"                   = "parseHostArgs(argv) -> HostArgs (HostArgsError on anything else); bare host dist/test/host.js"
+"run.identity"              = "loadNamedSeed(name, home?) -> Uint8Array; PeerIdentity.fromSeed"
+"run.ready"                 = "readyRecord(peer, args, port, posture, digest, extra) (READY_RECORD = keystone-peer-ready/1); runHost writes --ready-file then one LISTENING <json> line"
+"run.serve"                 = "--bind ADDR -> Peer.listen(port, host)"
+"run.posture"               = "new Peer({ seedPolicy }) ; SeedPolicy::{standard, debugOpen, fromJson}; withSeedPolicyFromFile(path); runHost reports posture file|debug-open|standard and sha256 of the policy bytes"
+"run.limits"                = "new Peer({ maxFrameBytes }); Peer.maxFrameBytes; enforced per connection by readFrames"
+"run.stop"                  = "runHost resolves 0 on SIGTERM/SIGINT after Peer.dispose(), which releases the listener before closing connections"
+"embed.host_main"           = "runHost(argv, configure, { recordFields }) -> Promise<exit code>; bare host = runHost(argv, () => {})"
+"embed.package"             = "separate package: protocol-generator/typescript/contract/host (entity-core-protocol-typescript-contract-host), resolving the peer only through its exports map"
+"embed.data"                = "Peer.contentStore: ContentStore::{put(entity) -> boolean, get(hash)}; Peer.tree: EntityTree::{put(path, entity, context?) -> boolean, get(path), remove(path, context?) -> boolean}; paths absolute /{peer}/...; a write whose Entity.contentHashHolds() is false returns false and stores nothing; DispatchContext.emitContext() is the context to pass"
+"embed.create"              = "new Peer(options) -> Peer, any number per process; a Peer that never calls listen() has no listener"
+"install.handler"           = "Peer.registerHandler(spec: HandlerSpec, body: HandlerBody) -> HandlerHandle, throws RegisterError {status, code}; Peer.registerHandler(handler: Handler) (the pre-contract overload) is NOT this binding and is not certified"
+"install.remove"            = "HandlerHandle.close() -> boolean (idempotent; index entry first, then handler/interface/grant/grant-signature); HandlerHandle.closed"
+"install.grant"             = "HandlerSpec.internalScope: GrantEntry[] | null; null mints an empty-scope grant"
+"install.types"             = "HandlerSpec.types: Record<typeName, EcfValue>; bound at system/type/{name}, kept on close"
+"install.consumer"          = "Peer.emit: EmitBus::{registerTreeConsumer, registerContentConsumer, registerConsumer} -> ConsumerId; EmitBus.unregisterConsumer(ConsumerId) -> boolean"
+"install.evaluator"         = "Peer.setExpressionEvaluator(ExpressionEvaluator | null); the built-in compute/literal floor answers first"
+"context.contents"          = "DispatchContext::{operation, params, resource, pattern, suffix, author, callerCapability, handlerGrant, execute, envelope, peer, localPeerId, outbound, emitContext()}"
+"context.unforgeable"       = "RUNTIME TOKEN, not compile-time. DispatchContext's constructor requires a module-private symbol and throws ContextForgeryError otherwise; the only constructing function is handed out once, to the dispatcher module as it loads, and is not on the package surface; state is in an ES private field, so a prototype clone has none. Strength: holds against any in-process code holding only the package (constructor, Reflect.construct, subclassing, prototype cloning, deep import of the compiled module after the peer has loaded). Does NOT hold against code that can rewrite the peer's files on disk or runs under the inspector, and does not stop a body from leaking the genuine context it was handed."
+"context.dispatch"          = "DispatchContext.dispatchExecute(LocalExecute { uri, operation, params, resource?, capability? }) -> Promise<HandlerResult>; MAX_LOCAL_DISPATCH_DEPTH = 16"
+"context.frame_budget"      = "DispatchContext.frameBudget() -> number"
+"context.authority_chain"   = "DispatchContext.identityInAuthorityChain(capHash) -> boolean; ChainVerifier.identityInAuthorityChain(envelope, store, localPeerId, capHash, identityHash, nowMs)"
+"event.context"             = "TreeChangeEvent.context: EmitContext | null (author, callerCapability, handlerGrant, requestId, ...); carried through dispatchExecute sub-dispatches"
+"authority.path_permission" = "Permissions.checkPathPermission(operation, path, token, handlerPattern, localPeerId) -> boolean"

@@ -36,6 +36,29 @@ export class Entity {
   }
 
   /**
+   * Whether the hash this entity CARRIES is the §1.8 content hash of its own
+   * `{type, data}`, recomputed now under the format the carried hash declares.
+   *
+   * Every entity this module builds satisfies it by construction ({@link create}
+   * derives the hash, {@link decode} verifies it). It exists because TypeScript's
+   * `private constructor` and `readonly` fields are compile-time only: code holding the
+   * package can still build an object of this class whose `contentHash` names some
+   * OTHER entity, or reassign the field on one it was given. The store refuses such an
+   * entity rather than trusting the field — see `ContentStore.put` / `EntityTree.put`
+   * (keystone peer contract `embed.data`, core §3.1 content addressing). An unreadable or
+   * unsupported format code answers `false`, never a throw.
+   */
+  contentHashHolds(): boolean {
+    try {
+      const format = readFormatCode(this.contentHash);
+      const recomputed = contentHashForFormat(format, encodeEntity(this.type, encode(this.data)));
+      return hashEqual(recomputed, this.contentHash);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Build an entity from `{type, data}`: canonical-encode the hashable form,
    * derive the content hash under `contentHashFormat` (default `0x00` SHA-256 —
    * the §9.1 home format), and produce the full wire bytes. A non-default format

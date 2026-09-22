@@ -1,0 +1,327 @@
+{
+ "_comment": "Defects planted in a SCRATCH COPY of this peer by tools/peer-contract/plant.py. Each must turn every case in expect_fail (driver) / expect_local_fail (local tests) red; an unplanted run of the same copy must be all green first. Every control in requirements.toml has at least one plant naming it, and every local requirement has one. Anchors are exact source text; plant.py refuses a plant whose anchor is absent.",
+ "plants": [
+  {
+   "name": "unknown-flag-accepted",
+   "file": "src/entity_core/peer/host.py",
+   "anchor": "        else:\n            raise HostUsageError(f\"unknown argument {arg!r}\")",
+   "replacement": "        else:\n            pass",
+   "expect_fail": [
+    "run.cli/unknown-flag-refused"
+   ]
+  },
+  {
+   "name": "named-identity-ignored",
+   "file": "src/entity_core/peer/host.py",
+   "anchor": "            seed = load_named_seed(args.name)",
+   "replacement": "            seed = fixed_dev_seed()",
+   "expect_fail": [
+    "run.identity/peer-id-from-keypair",
+    "run.identity/handshake-peer-id-matches"
+   ]
+  },
+  {
+   "name": "ready-file-drifts",
+   "file": "src/entity_core/peer/host.py",
+   "anchor": "                fh.write(body + \"\\n\")",
+   "replacement": "                fh.write(\"{}\\n\")",
+   "expect_fail": [
+    "run.ready/ready-file-matches-line"
+   ]
+  },
+  {
+   "name": "bind-flag-ignored",
+   "file": "src/entity_core/peer/host.py",
+   "anchor": "        ln = listen(peer, args.port, host=args.bind)",
+   "replacement": "        ln = listen(peer, args.port)",
+   "expect_fail": [
+    "run.serve/bind-flag-honored"
+   ]
+  },
+  {
+   "name": "dispatch-ignores-handler-dimension",
+   "file": "src/entity_core/peer/capability.py",
+   "anchor": "        if not _matches_scope(local_peer, handler_pattern, g.handlers, \"path\"):\n            continue\n        peers = g.peers if g.peers is not None else Scope([local_peer], [])",
+   "replacement": "        peers = g.peers if g.peers is not None else Scope([local_peer], [])",
+   "expect_fail": [
+    "run.posture/narrow-identity-refused-elsewhere"
+   ]
+  },
+  {
+   "name": "discovery-floor-is-open",
+   "file": "src/entity_core/peer/peer.py",
+   "anchor": "        floor = _grants_cbor(*_discovery_floor())\n        if entry is None:",
+   "replacement": "        floor = _grants_cbor(*_open_grants_scope())\n        if entry is None:",
+   "expect_fail": [
+    "run.posture/stranger-refused"
+   ]
+  },
+  {
+   "name": "frame-budget-not-enforced",
+   "file": "src/entity_core/peer/transport.py",
+   "anchor": "                payload = read_frame(self.sock, self.max_frame_bytes)",
+   "replacement": "                payload = read_frame(self.sock)",
+   "expect_fail": [
+    "run.limits/over-budget-refused"
+   ]
+  },
+  {
+   "name": "sigterm-ignored",
+   "file": "src/entity_core/peer/host.py",
+   "anchor": "    signal.signal(signal.SIGTERM, lambda *_: stop.set())",
+   "replacement": "    signal.signal(signal.SIGTERM, lambda *_: None)",
+   "expect_fail": [
+    "run.stop/sigterm-releases-port"
+   ]
+  },
+  {
+   "name": "bare-host-is-a-different-program",
+   "file": "src/entity_core/host.py",
+   "anchor": "    return run_host(sys.argv[1:] if argv is None else argv, None)",
+   "replacement": "    return run_host(sys.argv[1:] if argv is None else argv, None, extra_record_fields={\"bare_only\": True})",
+   "expect_fail": [
+    "embed.host_main/bare-host-record-matches"
+   ]
+  },
+  {
+   "name": "contract-host-depends-beyond-the-peer",
+   "file": "contract/host/pyproject.toml",
+   "anchor": "dependencies = [\"entity-core-protocol-python\"]",
+   "replacement": "dependencies = [\"entity-core-protocol-python\", \"cryptography\"]",
+   "expect_fail": [
+    "embed.package/contract-host-is-a-separate-package"
+   ]
+  },
+  {
+   "name": "data-put-stores-nothing",
+   "file": "src/entity_core/peer/store.py",
+   "anchor": "            self._content[k] = e\n            consumers = [fn for _c, fn in self._content_consumers]",
+   "replacement": "            if e.type == \"contract/data-item\":\n                return True\n            self._content[k] = e\n            consumers = [fn for _c, fn in self._content_consumers]",
+   "expect_fail": [
+    "embed.data/get-by-hash"
+   ]
+  },
+  {
+   "name": "data-get-answers-absent",
+   "file": "src/entity_core/peer/store.py",
+   "anchor": "            return self._content.get(bytes(h).hex())",
+   "replacement": "            return self._content.get(bytes(h).hex()) or next((e for e in self._content.values() if e.type == \"contract/data-item\"), None)",
+   "expect_fail": [
+    "embed.data/get-absent-not-found"
+   ]
+  },
+  {
+   "name": "data-unbind-leaves-binding",
+   "file": "src/entity_core/peer/store.py",
+   "anchor": "            prev = self._tree.pop(path, \"\")",
+   "replacement": "            prev = self._tree.get(path, \"\")",
+   "expect_fail": [
+    "embed.data/unbind-removes"
+   ]
+  },
+  {
+   "name": "data-hash-trusted",
+   "file": "src/entity_core/peer/model.py",
+   "anchor": "        if format_code != FORMAT_ECFV1_SHA256:\n            return False\n",
+   "replacement": "        if format_code != FORMAT_ECFV1_SHA256:\n            return False\n        return True\n",
+   "expect_fail": [
+    "embed.data/forged-hash-not-filed"
+   ]
+  },
+  {
+   "name": "data-bind-drops-context",
+   "file": "src/entity_core/peer/store.py",
+   "anchor": "            ev = TreeEvent(_derive_event_type(prev, nxt), path, nxt, prev, context)",
+   "replacement": "            ev = TreeEvent(_derive_event_type(prev, nxt), path, nxt, prev, None)",
+   "expect_fail": [
+    "embed.data/bind-carries-context",
+    "event.context/author-is-remote-caller"
+   ]
+  },
+  {
+   "name": "data-unbind-drops-context",
+   "file": "src/entity_core/peer/store.py",
+   "anchor": "            ev = TreeEvent(\"deleted\", path, \"\", prev, context)",
+   "replacement": "            ev = TreeEvent(\"deleted\", path, \"\", prev, None)",
+   "expect_fail": [
+    "embed.data/unbind-carries-context"
+   ]
+  },
+  {
+   "name": "read-site-dead",
+   "file": "src/entity_core/peer/peer.py",
+   "anchor": "        if reg is not None:\n            ctx = self._handler_context(",
+   "replacement": "        if reg is not None and False:\n            ctx = self._handler_context(",
+   "expect_fail": [
+    "install.handler/witness",
+    "embed.host_main/composed-host-serves-fixtures"
+   ]
+  },
+  {
+   "name": "uninstalled-falls-back-to-a-builtin",
+   "file": "src/entity_core/peer/peer.py",
+   "anchor": "                return prefix\n        return None\n",
+   "replacement": "                return prefix\n        return \"/\" + self.local_peer + \"/system/tree\"\n",
+   "expect_fail": [
+    "install.handler/uninstalled-404"
+   ]
+  },
+  {
+   "name": "collision-unchecked",
+   "file": "src/entity_core/peer/peer.py",
+   "anchor": "            if (\n                pattern in self._registrations\n                or pattern in self.handlers\n                or (bound is not None and bound.type == \"system/handler\")\n            ):",
+   "replacement": "            if False:",
+   "expect_fail": [
+    "install.handler/collision-409",
+    "install.handler/builtin-collision-409"
+   ]
+  },
+  {
+   "name": "close-leaves-tree",
+   "file": "src/entity_core/peer/peer.py",
+   "anchor": "            del self._registrations[pattern]\n        self._unbind_handler_entities(pattern)\n        return True",
+   "replacement": "            del self._registrations[pattern]\n        return True",
+   "expect_fail": [
+    "install.remove/closed-404",
+    "install.remove/artifacts-gone"
+   ]
+  },
+  {
+   "name": "close-always-reports-removed",
+   "file": "src/entity_core/peer/extension.py",
+   "anchor": "        with self._lock:\n            if self._closed:\n                return False\n            self._closed = True\n        peer = self._peer()\n        if peer is None:\n            return False\n        return peer._close_registration(self._pattern, self._generation)",
+   "replacement": "        peer = self._peer()\n        if peer is not None:\n            peer._close_registration(self._pattern, self._generation)\n        return True",
+   "expect_fail": [
+    "install.remove/close-idempotent"
+   ]
+  },
+  {
+   "name": "close-removes-types",
+   "file": "src/entity_core/peer/peer.py",
+   "anchor": "            del self._registrations[pattern]\n        self._unbind_handler_entities(pattern)",
+   "replacement": "            del self._registrations[pattern]\n        for _t in reg[1].types:\n            self.store.unbind(\"/\" + self.local_peer + \"/system/type/\" + _t)\n        self._unbind_handler_entities(pattern)",
+   "expect_fail": [
+    "install.types/survive-close"
+   ]
+  },
+  {
+   "name": "internal-scope-ignored",
+   "file": "src/entity_core/peer/peer.py",
+   "anchor": "        token, sig = self.mint_token(self.identity.identity_hash, list(spec.internal_scope or []), None)",
+   "replacement": "        token, sig = self.mint_token(self.identity.identity_hash, _grants_cbor(*_open_grants_scope()), None)",
+   "expect_fail": [
+    "install.grant/outside-scope-refused",
+    "install.grant/null-scope-refused"
+   ]
+  },
+  {
+   "name": "consumer-order-reversed",
+   "file": "src/entity_core/peer/store.py",
+   "anchor": "            ev = TreeEvent(_derive_event_type(prev, nxt), path, nxt, prev, context)\n            for fn in consumers:",
+   "replacement": "            ev = TreeEvent(_derive_event_type(prev, nxt), path, nxt, prev, context)\n            for fn in reversed(consumers):",
+   "expect_fail": [
+    "install.consumer/registration-order"
+   ]
+  },
+  {
+   "name": "content-consumer-silent",
+   "file": "src/entity_core/peer/store.py",
+   "anchor": "        ev = ContentEvent(hash=e.hash, entity=e)\n        for fn in consumers:",
+   "replacement": "        ev = ContentEvent(hash=e.hash, entity=e)\n        for fn in []:",
+   "expect_fail": [
+    "install.consumer/content-before-tree"
+   ]
+  },
+  {
+   "name": "unregister-consumer-lies",
+   "file": "src/entity_core/peer/store.py",
+   "anchor": "                    if c == cid:\n                        del consumers[i]\n                        return True",
+   "replacement": "                    if c == cid:\n                        return True",
+   "expect_fail": [
+    "install.consumer/unregister-stops-delivery"
+   ]
+  },
+  {
+   "name": "evaluator-before-literal-floor",
+   "file": "src/entity_core/peer/peer.py",
+   "anchor": "        if expr.type == \"compute/literal\":\n            value = expr.field(\"value\")",
+   "replacement": "        if self._evaluator is not None and ctx is not None:\n            from .extension import ExpressionRequest\n            _early = self._evaluator(ExpressionRequest(expr_path, expr, he), ctx)\n            if isinstance(_early, Outcome):\n                return _early\n        if expr.type == \"compute/literal\":\n            value = expr.field(\"value\")",
+   "expect_fail": [
+    "install.evaluator/literal-floor-first"
+   ]
+  },
+  {
+   "name": "suffix-dropped",
+   "file": "src/entity_core/peer/peer.py",
+   "anchor": "            suffix=path[len(pattern):].lstrip(\"/\"), caller_capability=caller_cap,",
+   "replacement": "            suffix=\"\", caller_capability=caller_cap,",
+   "expect_fail": [
+    "context.contents/fields"
+   ]
+  },
+  {
+   "name": "local-dispatch-escalates-to-peer-authority",
+   "file": "src/entity_core/peer/peer.py",
+   "anchor": "        cap = capability if capability is not None else parent.caller_capability",
+   "replacement": "        cap = capability if capability is not None else self.store.get_at(\"/\" + self.local_peer + \"/system/capability/policy/\" + self.identity.identity_hash.hex())",
+   "expect_fail": [
+    "context.dispatch/no-escalation-refused"
+   ]
+  },
+  {
+   "name": "budget-is-a-literal",
+   "file": "src/entity_core/peer/extension.py",
+   "anchor": "        conn_budget = getattr(self._conn, \"max_frame_bytes\", None)\n        if isinstance(conn_budget, int) and conn_budget > 0:",
+   "replacement": "        return 16 * 1024 * 1024\n        conn_budget = getattr(self._conn, \"max_frame_bytes\", None)\n        if isinstance(conn_budget, int) and conn_budget > 0:",
+   "expect_fail": [
+    "context.frame_budget/by-value"
+   ]
+  },
+  {
+   "name": "tree-put-drops-context",
+   "file": "src/entity_core/peer/handlers.py",
+   "anchor": "        p.store.bind(path, entity, ctx.exec_context())",
+   "replacement": "        p.store.bind(path, entity)",
+   "expect_fail": [
+    "event.context/author-is-remote-caller",
+    "event.context/sub-dispatch-write-attributed-to-caller"
+   ]
+  },
+  {
+   "name": "path-permission-ignores-operation",
+   "file": "src/entity_core/peer/capability.py",
+   "anchor": "        if not _matches_scope(local_peer, operation, g.operations, \"id\"):\n            continue\n        if not _matches_scope(local_peer, path, g.resources, \"path\"):",
+   "replacement": "        if not _matches_scope(local_peer, path, g.resources, \"path\"):",
+   "expect_fail": [
+    "authority.path_permission/deny-operation"
+   ]
+  },
+  {
+   "name": "context-constructible-outside-the-peer",
+   "file": "src/entity_core/peer/extension.py",
+   "anchor": "        if token is not _DISPATCHER:\n            raise ContextForgeryError(",
+   "replacement": "        if False:\n            raise ContextForgeryError(",
+   "expect_local_fail": [
+    "context_unforgeable__constructing_a_context_outside_the_dispatcher_is_refused"
+   ]
+  },
+  {
+   "name": "authority-chain-always-true",
+   "file": "src/entity_core/peer/capability.py",
+   "anchor": "    return any(link.bytes_(\"granter\") == want for link in chain)",
+   "replacement": "    return True",
+   "expect_local_fail": [
+    "context_authority_chain__denies_an_identity_not_in_the_chain"
+   ]
+  },
+  {
+   "name": "peers-share-one-registration-index",
+   "file": "src/entity_core/peer/peer.py",
+   "anchor": "        self._registrations: dict[str, tuple[int, Any, Callable[..., Any]]] = {}",
+   "replacement": "        self._registrations = globals().setdefault(\"_SHARED_REGISTRATIONS\", {})",
+   "expect_local_fail": [
+    "embed_create__two_peers_in_one_process_are_independent"
+   ]
+  }
+ ]
+}

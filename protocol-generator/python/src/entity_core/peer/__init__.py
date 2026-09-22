@@ -19,7 +19,7 @@ from .identity import Identity, peer_id_of_public_key, verify_signature
 from .model import Entity, Envelope, Included
 from .peer import GrantSpec, Peer
 from .seed_policy import SeedPolicy, SeedPolicyEntry, SeedPolicyError
-from .store import ContentEvent, ExecContext, Store, TreeEvent
+from .store import ConsumerId, ContentEvent, ExecContext, Store, TreeEvent
 from .transport import (
     ClientConnection,
     HandshakeError,
@@ -27,6 +27,18 @@ from .transport import (
     dial,
     listen,
 )
+from .capability import check_path_permission, identity_in_authority_chain
+from .handlers import DispatchCtx, Outcome
+from .extension import (
+    ContextForgeryError,
+    ExpressionRequest,
+    HandlerContext,
+    HandlerHandle,
+    HandlerSpec,
+    OperationSpec,
+    RegisterError,
+)
+from .host import run_host
 from .wire import (
     MAX_FRAME,
     empty_params,
@@ -54,6 +66,20 @@ __all__ = [
     "TreeEvent",
     "ExecContext",
     "ContentEvent",
+    "ConsumerId",
+    "Outcome",
+    "DispatchCtx",
+    # keystone peer contract surfaces (additive)
+    "run_host",
+    "HandlerSpec",
+    "OperationSpec",
+    "HandlerHandle",
+    "HandlerContext",
+    "RegisterError",
+    "ContextForgeryError",
+    "ExpressionRequest",
+    "check_path_permission",
+    "identity_in_authority_chain",
     "Listener",
     "ClientConnection",
     "HandshakeError",

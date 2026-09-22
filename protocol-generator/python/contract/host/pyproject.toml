@@ -1,0 +1,26 @@
+# The keystone peer contract host for the python peer — a SEPARATE PACKAGE.
+#
+# It depends on the peer ONLY through the peer's distribution (`entity-core-protocol-python`),
+# and run-contract.sh builds BOTH as wheels and installs this one with `pip install --no-index`
+# into a clean container venv, so pip must resolve that one dependency from the peer's own wheel
+# and nothing else. That install, and the host importing only the installed `entity_core`, is the
+# `embed.package` observation: anything it reaches, a third party can reach. It is
+# `run_host(argv, install_fixtures)` and nothing else; the fixtures are specified exactly in
+# protocol-generator/shared/peer-contract/FIXTURE-HOST.md, and tools/peer-contract drives them.
+#
+# The build backend line is declarative only: the sealed toolchain image carries no hatchling,
+# so contract/wheel.py (stdlib) builds the wheel from this file's [project] table.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "entity-core-protocol-python-contract-host"
+version = "0.1.0"
+description = "Keystone peer contract host for entity-core-protocol-python (test fixture, not published)."
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = ["entity-core-protocol-python"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kpc_host"]

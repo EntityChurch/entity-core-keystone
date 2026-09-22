@@ -1,0 +1,400 @@
+{
+  "generated_by": "tools/peer-contract/plant.py",
+  "peer": "typescript",
+  "baseline_green": true,
+  "plants": [
+    {
+      "name": "unknown-flag-accepted",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "run.cli/unknown-flag-refused"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "run.cli/unknown-flag-refused"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "hello-names-another-peer",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "run.identity/handshake-peer-id-matches"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "run.identity/handshake-peer-id-matches"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "ready-file-drifts",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "run.ready/ready-file-matches-line"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "run.ready/ready-file-matches-line"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "bind-flag-ignored",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "run.serve/bind-flag-honored"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "run.serve/bind-flag-honored"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "dispatch-ignores-handlers-dimension",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "run.posture/narrow-identity-refused-elsewhere"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "run.posture/narrow-identity-refused-elsewhere"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "default-seed-entry-is-open",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "run.posture/stranger-refused"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "run.posture/stranger-refused"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "frame-limit-not-enforced",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "run.limits/over-budget-refused"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "run.limits/over-budget-refused"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "sigterm-ignored",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "run.stop/sigterm-releases-port"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "run.stop/sigterm-releases-port"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "bare-host-announces-a-contract-host",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "embed.host_main/bare-host-record-matches"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "embed.host_main/bare-host-record-matches"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "contract-host-is-the-peer-package",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "embed.package/contract-host-is-a-separate-package"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "embed.package/contract-host-is-a-separate-package"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "uninstalled-resolves-to-tree-handler",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "install.handler/uninstalled-404"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "embed.host_main/bare-host-record-matches",
+        "install.handler/uninstalled-404",
+        "install.remove/closed-404"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "close-leaves-handler-entity",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "install.remove/closed-404"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "install.remove/artifacts-gone",
+        "install.remove/closed-404"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "internal-scope-ignored",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "install.grant/null-scope-refused",
+        "install.grant/outside-scope-refused"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "install.grant/null-scope-refused",
+        "install.grant/outside-scope-refused"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "close-removes-types",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "install.types/survive-close"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "install.types/survive-close"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "unregister-keeps-delivering",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "install.consumer/unregister-stops-delivery"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "install.consumer/unregister-stops-delivery"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "evaluator-before-literal-floor",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "install.evaluator/literal-floor-first"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "install.evaluator/literal-floor-first"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "caller-capability-is-the-handler-grant",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "context.contents/fields"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "authority.path_permission/accept",
+        "context.contents/fields"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "local-dispatch-defaults-to-owner-capability",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "context.dispatch/no-escalation-refused"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "context.dispatch/no-escalation-refused"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "budget-is-a-literal",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "context.frame_budget/by-value"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "context.frame_budget/by-value"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "event-author-is-local-peer",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "event.context/author-is-remote-caller",
+        "event.context/sub-dispatch-write-attributed-to-caller"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "event.context/author-is-remote-caller",
+        "event.context/sub-dispatch-write-attributed-to-caller"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "path-permission-ignores-operation",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "authority.path_permission/deny-operation"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "authority.path_permission/deny-operation"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "data-get-answers-absent",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "embed.data/get-absent-not-found"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "embed.data/forged-hash-not-filed",
+        "embed.data/get-absent-not-found"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "data-unbind-leaves-binding",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "embed.data/unbind-removes"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "embed.data/unbind-removes",
+        "install.remove/artifacts-gone",
+        "install.remove/closed-404"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "data-hash-trusted",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [
+        "embed.data/forged-hash-not-filed"
+      ],
+      "expect_local_fail": [],
+      "red_cases": [
+        "embed.data/forged-hash-not-filed"
+      ],
+      "red_local_tests": [],
+      "run_exit": 0
+    },
+    {
+      "name": "peers-share-one-tree",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [],
+      "expect_local_fail": [
+        "embed_create__two_peers_in_one_process_and_a_listenerless_peer"
+      ],
+      "red_cases": [],
+      "red_local_tests": [
+        "H8 control: an autonomous write carries NO caller context",
+        "H8: a remote tree:put delivers an execution context attributing the REMOTE caller",
+        "embed_create__two_peers_in_one_process_and_a_listenerless_peer"
+      ],
+      "run_exit": 0
+    },
+    {
+      "name": "context-constructible-outside-the-peer",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [],
+      "expect_local_fail": [
+        "context_unforgeable__construction_outside_the_peer_is_refused"
+      ],
+      "red_cases": [],
+      "red_local_tests": [
+        "context_unforgeable__construction_outside_the_peer_is_refused"
+      ],
+      "run_exit": 0
+    },
+    {
+      "name": "authority-chain-ignores-identity",
+      "applied": true,
+      "caught": true,
+      "expect_fail": [],
+      "expect_local_fail": [
+        "context_authority_chain__in_chain_accepts_and_not_in_chain_denies"
+      ],
+      "red_cases": [],
+      "red_local_tests": [
+        "context_authority_chain__in_chain_accepts_and_not_in_chain_denies"
+      ],
+      "run_exit": 0
+    }
+  ],
+  "caught": 27,
+  "total": 27
+}

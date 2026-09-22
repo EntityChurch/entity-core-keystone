@@ -671,6 +671,32 @@ def check_path_permission(
     return False
 
 
+def identity_in_authority_chain(
+    included: dict, store: Store, local_peer: str, cap_hash: bytes | None, identity_hash: bytes | None
+) -> bool:
+    """``SDK-OPERATIONS`` §11.3 SEC-3: is ``identity_hash`` a GRANTER in the VERIFIED
+    authority chain of the capability ``cap_hash``?
+
+    The capability is resolved included-first then from the store, must be a
+    ``system/capability/token``, and its chain must verify under §5.5 exactly as a dispatch
+    would (signatures from ``included``) — an unverifiable chain answers ``False``, never
+    "in chain".  An unresolvable hash is never in chain.
+    """
+    if cap_hash is None or identity_hash is None:
+        return False
+    resolve = cap_resolve(included, store)
+    cap = resolve(bytes(cap_hash))
+    if cap is None or cap.type != "system/capability/token":
+        return False
+    if verify_capability_chain(local_peer, store, cap, included) != ALLOW:
+        return False
+    chain = collect_chain(cap, resolve)
+    if chain is None:
+        return False
+    want = bytes(identity_hash)
+    return any(link.bytes_("granter") == want for link in chain)
+
+
 # ── §5.2 verify-request (3-way verdict + carve-outs) ──────────────────────────
 def verify_request(local_peer: str, store: Store, env) -> Verdict:
     """§5.2 verdict over the request envelope."""

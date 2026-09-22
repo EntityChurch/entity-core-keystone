@@ -107,14 +107,25 @@ cd protocol-generator/python && ./run-origination-core.sh
 
 The standalone host is the conformance / oracle driver `validate-peer` dials. The installed
 wheel exposes it as the console-script **`entity-core-peer`**; offline (no wheel) it runs as
-`python -m entity_core.host`. Flags:
+`python -m entity_core.host`. It is `entity_core.peer.run_host(argv, no-op)` — a composing
+program calls `run_host(argv, configure)` with its own `configure` and gets exactly this host plus
+what it installs (keystone peer contract `embed.host_main`; `contract/bindings.toml` spells every
+contract requirement for this peer). Flags — exactly these; anything else exits 2 before listening:
 
 | Flag | Meaning |
 |---|---|
-| `--name NAME` | Load the Ed25519 identity from `~/.entity/peers/NAME/keypair` (entity-core PEM = base64 of a 32-byte seed) — gives a **stable cross-run peer_id**, which is what makes the multisig ACCEPT path (`valid_2of3_peer_signed_accepted`) exercisable rather than env-skipped. |
-| `--port N` | TCP port to listen on (`0` = auto-assign). Prints `LISTENING <port>` so a harness learns the bound port. |
-| `--seed HEX` | A 64-hex (32-byte) Ed25519 seed (alternative to `--name`). |
+| `--name NAME` | Load the Ed25519 identity from `~/.entity/peers/NAME/keypair` (entity-core PEM = base64 of a 32-byte seed) — gives a **stable cross-run peer_id**, which is what makes the multisig ACCEPT path (`valid_2of3_peer_signed_accepted`) exercisable rather than env-skipped. Without it the fixed dev seed `0x01 x 32` is used. |
+| `--port N` | TCP port to listen on (`0` = auto-assign). |
+| `--bind ADDR` | Listen address (default `127.0.0.1`). |
 | `--validate` | Bootstrap the §7a `system/validate/*` conformance handlers (the `validate-peer --validate` path). |
+| `--seed-policy PATH` | The §6.9a seed policy, in keystone's seed-policy JSON format. |
+| `--max-frame-bytes N` | The §4.10(a) inbound frame budget (default 16 MiB). |
+| `--ready-file PATH` | Also write the readiness record's JSON to `PATH`. |
+| `--debug-open-grants` | Deprecated: the degenerate `default -> *` policy; ignored when `--seed-policy` is given. |
+
+Once listening it prints one line, `LISTENING {"record":"keystone-peer-ready/1",...}` (the bound
+address, peer id, posture and its digest, limits, `validate`). The pre-contract `--seed HEX` flag is
+no longer accepted.
 
 ```bash
 entity-core-peer --name conformance --port 7778 --validate

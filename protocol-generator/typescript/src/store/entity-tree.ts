@@ -30,23 +30,37 @@ export class EntityTree {
    * tree-change event. A `tree_put` runs the §6.10 emit pathway: the Store step (via
    * {@link ContentStore.put}) then the Bind step (a tree-change event when the binding
    * actually changes — no event on a re-bind to the current hash). Core writes pass null.
+   *
+   * Returns `false` and binds nothing (no store write, no event) when the entity's
+   * carried hash is not its content hash — the same refusal as {@link ContentStore.put},
+   * so a path never resolves to an entity filed under a hash it does not have. An
+   * extension binding through this in-process surface passes its dispatch's
+   * `emitContext()` so a consumer sees the caller (keystone peer contract `embed.data`).
    */
-  put(path: string, entity: Entity, context: EmitContext | null = null): void {
-    this.contentStore.put(entity); // §6.10 Store step (fires a content-store event if new).
+  put(path: string, entity: Entity, context: EmitContext | null = null): boolean {
+    if (!this.contentStore.put(entity)) {
+      return false; // §6.10 Store step refused (fires a content-store event if new otherwise).
+    }
     const previous = this.#index.get(path) ?? null;
     const changed = previous === null || !hashEqual(previous, entity.contentHash);
     this.#index.set(path, entity.contentHash);
     if (changed) {
       this.#emit?.emitTreeChange(path, previous, entity.contentHash, context);
     }
+    return true;
   }
 
-  /** Remove the binding at `path`, firing a §6.10 `deleted` tree-change event when a binding existed. */
-  remove(path: string, context: EmitContext | null = null): void {
+  /**
+   * Remove the binding at `path`, firing a §6.10 `deleted` tree-change event (carrying
+   * `context`) when a binding existed. Returns whether one did.
+   */
+  remove(path: string, context: EmitContext | null = null): boolean {
     const previous = this.#index.get(path) ?? null;
     if (this.#index.delete(path)) {
       this.#emit?.emitTreeChange(path, previous, null, context);
+      return true;
     }
+    return false;
   }
 
   /** Get the entity bound at `path`; undefined if unbound. */
@@ -67,7 +81,8 @@ export class EntityTree {
   /**
    * Conditional bind (CAS, §3.9). `expectedHash` null = unconditional; zero =
    * create-only (must be unbound); non-zero = must match the current binding.
-   * Returns false on a CAS miss.
+   * Returns false on a CAS miss, and — like {@link put} — for an entity whose carried
+   * hash is not its content hash (nothing is stored or bound).
    */
   compareAndPut(
     path: string,
@@ -86,7 +101,9 @@ export class EntityTree {
       }
     }
     const previous = this.#index.get(path) ?? null;
-    this.contentStore.put(entity);
+    if (!this.contentStore.put(entity)) {
+      return false;
+    }
     const changed = previous === null || !hashEqual(previous, entity.contentHash);
     this.#index.set(path, entity.contentHash);
     if (changed) {

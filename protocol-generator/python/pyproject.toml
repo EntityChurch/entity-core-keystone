@@ -55,7 +55,7 @@ dev = [
 
 [project.scripts]
 # The standalone peer host / S4 conformance + oracle driver. `validate-peer`
-# dials it; flags --name / --port / --seed / --validate. This is the same entry
+# dials it; flags per entity_core.peer.host (the keystone contract CLI). The same entry
 # the offline core image runs as `python -m entity_core.host`.
 entity-core-peer = "entity_core.host:main"
 
@@ -71,6 +71,10 @@ exclude = ["output", "**/__pycache__", "**/*.pyc"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# The keystone peer contract's local tests are named with the requirement prefix
+# tools/peer-contract/report.py matches (`embed_create__…`), so pytest collects those names
+# too — in every run, not only the contract runner's, so the S2 gate runs them as well.
+python_functions = ["test_*", "embed_create__*", "context_unforgeable__*", "context_authority_chain__*"]
 
 [tool.ruff]
 line-length = 88

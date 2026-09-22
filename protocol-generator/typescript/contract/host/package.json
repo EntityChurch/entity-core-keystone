@@ -1,0 +1,14 @@
+{
+  "name": "entity-core-protocol-typescript-contract-host",
+  "version": "0.1.0",
+  "description": "The keystone peer contract host for entity-core-protocol-typescript: runHost(argv, installFixtures). A SEPARATE package that depends only on the peer package; the fixtures are specified in protocol-generator/shared/peer-contract/FIXTURE-HOST.md.",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "entity-core-protocol-typescript": "file:../.."
+  }
+}

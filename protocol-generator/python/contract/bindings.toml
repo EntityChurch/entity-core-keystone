@@ -1,0 +1,31 @@
+# The python peer's spelling of each keystone peer contract requirement (H5's platform bindings,
+# per requirement). DECLARED, not measured: tools/peer-contract/report.py echoes each value into the
+# requirement's row, and the row's verdict comes from the suite. A binding with no measured `pass`
+# beside it is a claim, and reads as one.
+package = "entity-core-protocol-python (distribution), import package entity_core"
+
+[bindings]
+"run.cli"                   = "entity_core.peer.host.parse_args (closed flag set; --seed is not accepted); bare host `python -m entity_core.host` = entity_core.host.main"
+"run.identity"              = "entity_core.peer.host.load_named_seed($HOME/.entity/peers/NAME/keypair); no --name -> the fixed dev seed 0x01 x 32"
+"run.ready"                 = "entity_core.peer.host.ready_record(...) -> dict (READY_RECORD = keystone-peer-ready/1); printed as `LISTENING <json>`, --ready-file writes the same JSON"
+"run.serve"                 = "--bind ADDR -> entity_core.peer.listen(peer, port, host=ADDR); the record's addr is read back from the bound socket (Listener.host/port), not echoed from the flag"
+"run.posture"               = "Peer(seed, seed_policy=SeedPolicy); SeedPolicy.{standard, debug_open, of, from_json, from_file}; posture_digest = sha256 of the --seed-policy file bytes"
+"run.limits"                = "Peer(seed, max_frame_bytes=N); Peer.max_frame_bytes; the transport refuses a frame over it (connection closed before the body is read)"
+"run.stop"                  = "run_host installs SIGTERM/SIGINT handlers, closes the listener (shutdown + close) and returns 0"
+"embed.host_main"           = "entity_core.peer.run_host(argv, configure, *, extra_record_fields=None) -> int; configure(peer) runs before listening, an exception refuses startup (exit 1)"
+"embed.package"             = "separate distribution: protocol-generator/python/contract/host (entity-core-protocol-python-contract-host, import package kpc_host), built as a wheel and pip-installed --no-index against the peer's wheel; it announces package/depends_on from its INSTALLED metadata and refuses to start from a source tree"
+"embed.data"                = "Peer.store: Store.{put_entity(e) -> bool, get_by_hash(h) -> Entity | None, bind(path, e, context=None) -> bool, get_at(path) -> Entity | None, unbind(path, context=None) -> bool}; paths are /<peer_id>/<rest>; context = HandlerContext.exec_context(); a write whose Entity.content_hash_holds() is False returns False and stores nothing"
+"embed.create"              = "Peer(seed, *, seed_policy=None, max_frame_bytes=MAX_FRAME, open_grants=False, conformance=False) — any number per process, listen() optional"
+"install.handler"           = "Peer.register_handler(HandlerSpec, body: Callable[[HandlerContext], Outcome]) -> HandlerHandle; raises RegisterError(status, code) — 409 pattern_collision / 400 invalid_handler_spec — before writing. The public Peer.handlers dict (handle_op(op, DispatchCtx), entities written by the caller) is NOT this binding and is not certified"
+"install.remove"            = "HandlerHandle.close() -> bool (idempotent; index first, then handler/interface/grant/signature); `with` closes on exit; a dropped handle does NOT close; Peer.unregister_handler(pattern) -> bool"
+"install.grant"             = "HandlerSpec(internal_scope=[grant-entry maps] | None); None mints an empty-scope grant (covers nothing); the grant's signature is bound at system/signature/{grant_hash}"
+"install.types"             = "HandlerSpec(types={name: definition}) -> system/type/{name}; left bound on close"
+"install.consumer"          = "Store.{register_tree_consumer, register_content_consumer}(fn) -> ConsumerId; Store.unregister_consumer(ConsumerId) -> bool; synchronous, registration order, content event before tree event"
+"install.evaluator"         = "Peer.set_expression_evaluator(evaluator | None) where evaluator(ExpressionRequest, HandlerContext) -> Outcome | None (None declines); the built-in compute/literal floor answers first"
+"context.contents"          = "HandlerContext.{operation, params, resource, pattern, suffix, author, caller_capability, handler_grant, envelope, execute, request_id, local_peer, peer, store, exec_context()}"
+"context.unforgeable"       = "RUNTIME TOKEN, NOT A BOUNDARY: HandlerContext.__init__ requires the module-private sentinel entity_core.peer.extension._DISPATCHER and raises ContextForgeryError otherwise; copy/deepcopy/pickle and attribute assignment also raise. It refuses calling the constructor and cloning a handed context; it does NOT resist deliberate introspection (importing the underscore name, object.__new__ + object.__setattr__). DispatchCtx (the handlers-dict context) remains a public dataclass anyone can construct and is not this binding"
+"context.dispatch"          = "HandlerContext.dispatch_execute(uri, operation, params, *, target=None, resource=None, capability=None) -> Outcome; capability defaults to the caller's; admissible: the caller's, the handler's grant, or a valid token this peer issued; depth bound MAX_LOCAL_DISPATCH_DEPTH = 16 (429 bounds_exceeded)"
+"context.frame_budget"      = "HandlerContext.frame_budget() -> int (the connection's bound; the peer's value off the serving path)"
+"context.authority_chain"   = "HandlerContext.identity_in_authority_chain(cap_hash) -> bool; entity_core.peer.identity_in_authority_chain(included, store, local_peer, cap_hash, identity_hash) -> bool"
+"event.context"             = "TreeEvent.context: ExecContext | None; Store.bind/unbind(path, ..., context); the built-in tree handler and local sub-dispatches pass the request's context"
+"authority.path_permission" = "entity_core.peer.check_path_permission(operation, path, token, handler_pattern, local_peer) -> bool"

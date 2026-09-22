@@ -7,6 +7,8 @@ import {
   type OperationSpec,
   type PeerServices,
 } from "./handler-abstractions.js";
+import { type HandlerBody, HandlerHandle, type HandlerSpec, RegisterError, handlerSpecProblem } from "./handler-install.js";
+import { SpecRegistration } from "./spec-registration.js";
 
 /**
  * A resolved dispatch target (§6.6): the peer-relative pattern, the URI suffix, and the
@@ -32,6 +34,7 @@ export interface Resolution {
 export class HandlerRegistry {
   readonly #handlers = new Map<string, Handler>();
   readonly #peer: PeerServices;
+  #nextGeneration = 1;
 
   constructor(peer: PeerServices) {
     this.#peer = peer;
@@ -78,6 +81,94 @@ export class HandlerRegistry {
     // Bind the grant's signature at the §3.5 invariant pointer so dispatch-time
     // grant validation (§6.8 step 3) can find and verify it by tree lookup.
     this.#peer.tree.put(this.#absolutePath("system/signature/" + grant.contentHashHex), grantSig);
+  }
+
+  /**
+   * `SDK-OPERATIONS` §11.6 / §11.6.1 — install a language-native body behind a spec and
+   * return its handle (keystone peer contract `install.handler`, `install.grant`,
+   * `install.types`). `Peer.registerHandler(spec, body)` is the public spelling.
+   *
+   * Refuses with {@link RegisterError} BEFORE writing anything: `400
+   * invalid_handler_spec` for an invalid spec, `409 pattern_collision` when a handler is
+   * already registered in this index (bootstrap or in-process) or a wire-registered
+   * `system/handler` entity is bound at the pattern. `system/*` is not refused.
+   *
+   * Then: the dispatch index entry, and the five core §6.13(a) writes in the wire
+   * register op's order — the `system/handler` entity at the pattern, the spec's types
+   * at `system/type/{name}`, the handler's self-issued grant minted with
+   * `internalScope` (EMPTY scope when null: a grant covering nothing), that grant's
+   * signature at the §3.5 pointer, and the interface entity.
+   */
+  install(spec: HandlerSpec, body: HandlerBody): HandlerHandle {
+    const problem = handlerSpecProblem(spec);
+    if (problem !== null) {
+      throw new RegisterError(400, "invalid_handler_spec", problem);
+    }
+    const pattern = spec.pattern;
+    const bound = this.#peer.tree.get(this.#absolutePath(pattern));
+    if (this.#handlers.has(pattern) || (bound !== undefined && bound.type === TypeNames.Handler)) {
+      throw new RegisterError(409, "pattern_collision", `a handler is already registered at '${pattern}'`);
+    }
+
+    const generation = this.#nextGeneration++;
+    this.#handlers.set(pattern, new SpecRegistration(spec, body, generation));
+
+    const internalScope = spec.internalScope ?? null;
+    const interfaceRelPath = "system/handler/" + pattern;
+    // (1) handler entity (dispatch target) at the pattern.
+    this.#peer.tree.put(
+      this.#absolutePath(pattern),
+      Entity.create(
+        TypeNames.Handler,
+        Ecf.map(
+          ["interface", Ecf.text(interfaceRelPath)],
+          ["internal_scope", internalScope === null ? null : Ecf.array(internalScope.map((g) => g.toEcf()))],
+        ),
+      ),
+    );
+    // (2) types.
+    for (const [typeName, definition] of Object.entries(spec.types ?? {})) {
+      this.#peer.tree.put(this.#absolutePath("system/type/" + typeName), Entity.create(TypeNames.Type, definition));
+    }
+    // (3)+(4) self-issued signed grant, scope = internal_scope (empty when null).
+    const { token: grant, signature: grantSig } = CapabilityToken.createRoot(
+      this.#peer.localIdentity,
+      this.#peer.localIdentity.identityHash,
+      internalScope ?? [],
+      this.#peer.nowMs,
+    );
+    this.#peer.tree.put(this.#absolutePath("system/capability/grants/" + pattern), grant.entity);
+    this.#peer.tree.put(this.#absolutePath("system/signature/" + grant.contentHashHex), grantSig);
+    // (5) interface (discovery index).
+    this.#peer.tree.put(
+      this.#absolutePath(interfaceRelPath),
+      Entity.create(
+        TypeNames.HandlerInterface,
+        Ecf.map(["pattern", Ecf.text(pattern)], ["name", Ecf.text(spec.name)], ["operations", operationsMap(spec.operations)]),
+      ),
+    );
+    return new HandlerHandle(pattern, () => this.#closeRegistration(pattern, generation));
+  }
+
+  /**
+   * §11.6.2 close: the dispatch index entry first, then the tree entries — only when the
+   * live registration at `pattern` is still the one `generation` names. Types stay.
+   */
+  #closeRegistration(pattern: string, generation: number): boolean {
+    const live = this.#handlers.get(pattern);
+    if (!(live instanceof SpecRegistration) || live.generation !== generation) {
+      return false;
+    }
+    this.#handlers.delete(pattern);
+    const grantPath = this.#absolutePath("system/capability/grants/" + pattern);
+    const grant = this.#peer.tree.get(grantPath);
+    if (grant !== undefined) {
+      this.#peer.tree.remove(this.#absolutePath("system/signature/" + grant.contentHashHex));
+      this.#peer.tree.remove(grantPath);
+    }
+    this.#peer.tree.remove(this.#absolutePath(pattern));
+    this.#peer.tree.remove(this.#absolutePath("system/handler/" + pattern));
+    return true;
   }
 
   get(pattern: string): Handler | null {

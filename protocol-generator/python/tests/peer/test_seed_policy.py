@@ -279,7 +279,14 @@ def test_host_policy_loads_reports_counts_and_wins_over_debug_open_grants():
     path = str(_EXAMPLES / "operator-admin.json")
     code, out, err = _run_host("--seed-policy", path, "--debug-open-grants")
     first = out.splitlines()[0]
-    assert first.startswith("LISTENING ") and first.split()[1].isdigit(), first
+    # The readiness line is the keystone-peer-ready/1 record (keystone peer contract
+    # run.ready); it used to be `LISTENING <port>`.  The declared policy wins, so the
+    # record names the file posture.
+    assert first.startswith("LISTENING "), first
+    record = json.loads(first[len("LISTENING "):])
+    assert record["record"] == "keystone-peer-ready/1", record
+    assert record["addr"].rsplit(":", 1)[1].isdigit(), record
+    assert record["posture"] == "file", record
     assert "--debug-open-grants is DEPRECATED and is IGNORED because --seed-policy was given" in err
     assert f"seed-policy: {path} (default entry: 2 grant(s), 1 named entr(ies))" in err
 

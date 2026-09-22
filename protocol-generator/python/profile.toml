@@ -300,8 +300,8 @@ oracle_commit     = "e8524ed"                     # recorded for S4 byte-validat
 # and `h1_verified_by` names it. `entity_native_*` is tools/host-seam-probe: a body
 # registered over the WIRE is dispatched and evaluated -- §6.13(a), which H1's own
 # Observation excludes. `dispatch_read_site` is the load-bearing descriptive field.
-h1_status               = "not-yet"
-h1_verified_by          = "entity-system-generator gates/host-seam/probe-seam.py reaches a body through the public `handlers` dict (executed), but the peer has no registration call, and H3: exposing the raw container does not satisfy H1"
+h1_status               = "host"
+h1_verified_by          = "the keystone peer contract driver, install.handler/witness (keystone, executed 2026-09-13: Peer.register_handler through the contract host, EXECUTE from a second identity over loopback, witness = driver nonce + request field; plant read-site-dead reddens it) -- protocol-generator/python/status/KEYSTONE-PEER-REPORT.json"
 entity_native_status    = "evaluates"
 entity_native_wire_verdict = "EVALUATES"
 entity_native_verified_by = "tools/host-seam-probe @ 2026-09-09, oracle 78db4a9 / executed set 7aa6f3de…, H1 v1.0 @ 62e1a1dd…"
@@ -310,45 +310,45 @@ entity_native_verified_by = "tools/host-seam-probe @ 2026-09-09, oracle 78db4a9 
 # same name in typescript/profile.toml for why it is `extension_host` and not `[host]`,
 # and why `dispatch_read_site` is the load-bearing field rather than the register call.
 #
-# What is distinctive here and costs an adapter: this peer has NO registration surface.
-# There is no `register_handler`, and that is a measured fact rather than an omission
-# from this file -- every §11.6.1 write is the caller's, through public entry points
-# (`store.bind`, `mint_token`, the `handlers` dict). A host program installs by writing
-# the entities and then binding the body; the peer offers no method that does both.
-status                  = "not-yet"          # host | not-yet | declined | unknown. MEASURED, not read -- see verified_by.
-# Was "host" until 2026-09-12. The generator's probe reaches a body through the public
-# `handlers` dict, and that measurement stands -- but H3 says exposing the raw container
-# does not satisfy H1, and this peer has no registration call. Tracked as G-2.
-verified_by             = "entity-system-generator gates/host-seam/probe-seam.py (4 controls: the dict IS reached) + tests/peer/test_frame_budget.py"
+# SUPERSEDED 2026-09-13 by the keystone peer contract: `contract/bindings.toml` is this
+# peer's spelling of every requirement, and `status/KEYSTONE-PEER-REPORT.json` is the verdict
+# (CONTRACT-DRAFT §7: the report replaces h1_status for a peer that has one). The fields below
+# are kept current, not authoritative.
+# Until 2026-09-13 this peer had NO registration surface (every §11.6.1 write was the caller's,
+# then `peer.handlers[pattern] = body`). It now has `Peer.register_handler`; the dict still
+# works exactly as before and is consulted after the registration index (G-2: closing it is a
+# decision with entity-system-generator, not taken here).
+status                  = "host"             # host | not-yet | declined | unknown. MEASURED, not read -- see verified_by.
+verified_by             = "the keystone peer contract report (install.handler, context.*, install.consumer, install.evaluator all pass; 35 plants caught) + entity-system-generator gates/host-seam/probe-seam.py (the dict IS reached)"
 
 # H1 -- a handler installed after construction is reachable by dispatch.
-handler_register_call   = "none -- peer.handlers[pattern] = body, after peer.store.bind of the §11.6.1 entities"
-handler_body_shape      = "any object with handle_op(operation: str, ctx: DispatchCtx) -> Outcome"
-dispatch_read_site      = "Peer._run_chain -- self.handlers.get(stripped), src/entity_core/peer/peer.py; the DICT is the consulted container, not the tree (probe control C: tree bound + dict unset -> 501 no_handler_body)"
-handle_lifecycle        = "absent"           # no handle/close object; unregister is the wire op
-ctx_carries_peer        = false              # DispatchCtx is exec/conn/included/caller_cap/has_cap/peer_max_frame -- a body reaches the store by registration-time capture
-ctx_carries_suffix      = false              # _resolve_handler matches the pattern and drops the remainder; the body re-derives it from the URI
+handler_register_call   = "Peer.register_handler(HandlerSpec, body) -> HandlerHandle; legacy: peer.handlers[pattern] = body after binding the §11.6.1 entities yourself"
+handler_body_shape      = "callable(HandlerContext) -> Outcome (register_handler); any object with handle_op(operation: str, ctx: DispatchCtx) -> Outcome (the dict)"
+dispatch_read_site      = "Peer._run_chain -- self._registrations.get(stripped) first, then self.handlers.get(stripped), src/entity_core/peer/peer.py"
+handle_lifecycle        = "HandlerHandle.close() -> bool, idempotent; usable as a context manager; NOT closed on garbage collection"
+ctx_carries_peer        = true               # HandlerContext.peer / .store (DispatchCtx, the dict's context, still does not)
+ctx_carries_suffix      = true               # HandlerContext.suffix (DispatchCtx still does not)
 
 # H2 -- an emit-pathway consumer can be registered after construction.
-consumer_register_call  = "Store.register_tree_consumer(fn) / Store.register_content_consumer(fn)"
+consumer_register_call  = "Store.register_tree_consumer(fn) / Store.register_content_consumer(fn) -> ConsumerId; Store.unregister_consumer(ConsumerId) -> bool"
 consumer_body_shape     = "callable(event) -- TreeEvent / ContentEvent"
-consumer_ordering       = "registration order"                               # SYSTEM-COMPOSITION §1.2 / §2.2 -- NOT yet measured here
+consumer_ordering       = "registration order"                               # measured: contract install.consumer/registration-order, content-before-tree
 
 # H4 -- both consumption modes.
 packaging_unit          = "PEP 517 src-layout project"                       # pyproject.toml; not published to PyPI
 package_name            = "entity-core-protocol-python"
 packaging_boundary      = "package import surface"                           # entity_core.peer.__all__ is the declared surface
 library_entry_point     = "from entity_core.peer import Peer, listen, dial"
-standalone_entry_point  = "python -m entity_core.host --port N [--name NAME] [--validate]"
+standalone_entry_point  = "python -m entity_core.host [--port N] [--bind ADDR] [--name NAME] [--validate] [--seed-policy PATH] [--max-frame-bytes N] [--ready-file PATH]; library: entity_core.peer.host.run_host(argv, configure)"
 
 # H6 -- the frame budget in force for the request is readable by the body.
-frame_budget_accessor   = "DispatchCtx.frame_budget()"                       # connection value, peer default as fallback
+frame_budget_accessor   = "HandlerContext.frame_budget() / DispatchCtx.frame_budget()"   # connection value, peer default as fallback
 frame_budget_per_connection = "Conn.max_frame_bytes"                         # stamped by the transport from the peer's value; the same number read_frame enforces
 frame_budget_configurable   = "Peer(seed, max_frame_bytes=N)"
 # wire.MAX_FRAME (16 MiB) is the informative DEFAULT and is deliberately not the
 # accessor's answer: it is the literal CONTENT §6.2 Amendment 1 names as wrong.
 
 # H7 -- entity-native (§6.13(a)) dispatch is delegable to an installed evaluator.
-evaluator_install_call  = "none"             # not-yet: _entity_native_dispatch evaluates compute/literal in-process and 501s the rest, with no injection point
+evaluator_install_call  = "Peer.set_expression_evaluator(fn(ExpressionRequest, HandlerContext) -> Outcome | None)"   # None declines; compute/literal answers first
 evaluator_read_site     = "Peer._entity_native_dispatch -- src/entity_core/peer/peer.py"
 evaluator_builtin_floor = "compute/literal"

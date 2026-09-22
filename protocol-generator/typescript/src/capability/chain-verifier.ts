@@ -16,6 +16,46 @@ import { checkDelegationCaveats, isAttenuated } from "./attenuation.js";
 
 const MAX_DEPTH = 64; // §5.5 collect_authority_chain default
 
+/** The §5.5 / §4.10(b) authority-chain depth bound this peer enforces (reported in the host's readiness record). */
+export const MAX_CHAIN_DEPTH = MAX_DEPTH;
+
+/**
+ * `SDK-OPERATIONS` §11.3 SEC-3: whether `identityHash` is a GRANTER in the verified
+ * authority chain of the capability `capHash` names.
+ *
+ * The capability is resolved from the envelope's `included` map, then from `store`; it
+ * must be a `system/capability/token` whose chain verifies against the envelope
+ * ({@link verifyCapabilityChain}) at `nowMs`. Anything unresolvable, malformed or
+ * unverifiable answers `false` — never "in chain". A multi-sig root has no single
+ * granter hash and never matches here.
+ *
+ * A handler asks this (through its dispatch context's `identityInAuthorityChain`)
+ * before persisting an entity that embeds a caller-supplied capability reference.
+ */
+export function identityInAuthorityChain(
+  envelope: Envelope,
+  store: { get(contentHash: Uint8Array): Entity | undefined } | null,
+  localPeerId: string,
+  capHash: Uint8Array,
+  identityHash: Uint8Array,
+  nowMs: bigint,
+): boolean {
+  const entity = envelope.find(capHash) ?? store?.get(capHash);
+  if (entity === undefined || entity.type !== TypeNames.CapabilityToken) {
+    return false;
+  }
+  try {
+    const cap = new CapabilityToken(entity);
+    if (!verifyCapabilityChain(cap, envelope, localPeerId, nowMs)) {
+      return false;
+    }
+    const chain = collectAuthorityChain(cap, envelope);
+    return chain !== null && chain.some((link) => link.granter !== null && hashEqual(link.granter, identityHash));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * §4.10(b) structural-bound pre-check: true if the authority chain rooted at `cap`
  * exceeds {@link MAX_DEPTH} links. Walks parent pointers in `included` without

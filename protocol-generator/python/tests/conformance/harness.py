@@ -46,12 +46,13 @@ CORPUS_VERSION = "v1"
 SPEC_VERSION = "1.5"
 IMPL = "core-python"
 
-# Default corpus location relative to the repo root (this file lives at
-# protocol-generator/python/tests/conformance/harness.py).
-_REPO_ROOT = Path(__file__).resolve().parents[4]
+# Default corpus location, reached through the peer's SIBLING `shared/` directory (this file
+# lives at protocol-generator/python/tests/conformance/harness.py, so parents[3] is
+# protocol-generator/). The other peer tests already resolve `../shared` this way; counting up
+# to the repo root instead broke in a relocated copy of the peer (tools/peer-contract/plant.py
+# runs one, and provides exactly that sibling).
 DEFAULT_CORPUS = (
-    _REPO_ROOT
-    / "protocol-generator"
+    Path(__file__).resolve().parents[3]
     / "shared"
     / "test-vectors"
     / "ecf-conformance"

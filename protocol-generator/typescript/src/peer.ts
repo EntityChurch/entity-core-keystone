@@ -8,7 +8,10 @@ import {
   ConnectionState,
   type ExpressionEvaluator,
   type Handler,
+  type HandlerBody,
+  type HandlerHandle,
   HandlerRegistry,
+  type HandlerSpec,
   HandlersHandler,
   type PeerServices,
   TreeHandler,
@@ -182,12 +185,36 @@ export class Peer implements PeerServices {
   }
 
   /**
+   * `SDK-OPERATIONS` §11.6 — install a language-native body behind a {@link HandlerSpec}
+   * and return its {@link HandlerHandle} (keystone peer contract `install.handler`,
+   * `install.remove`, `install.grant`, `install.types`). This is the certified
+   * registration surface.
+   *
+   * Performs the core §6.13(a) writes (types, `system/handler` entity, the handler's
+   * grant minted with `spec.internalScope` — a grant covering nothing when null — its
+   * signature, the interface) and binds the body in the dispatch index. Throws
+   * {@link RegisterError} before writing anything: `409 pattern_collision` for a bound
+   * pattern (including a bootstrap one), `400 invalid_handler_spec` for an invalid spec.
+   * Does not refuse `system/*`. The body receives a {@link DispatchContext}, which only
+   * the dispatcher constructs.
+   */
+  registerHandler(spec: HandlerSpec, body: HandlerBody): HandlerHandle;
+  /**
    * Install a native (in-process) handler post-bootstrap — the seam an SDK / native
    * extension uses to add a handler with a compiled body (complementing the wire
    * `register` of §6.13(a), which installs entity-native bodies).
+   *
+   * The pre-contract surface, kept as it was: it replaces whatever is installed at the
+   * pattern, refuses nothing, writes an empty-scope grant, and hands the body a
+   * {@link HandlerContext} anyone can construct. **Not a keystone peer contract binding,
+   * and not certified** — build on `registerHandler(spec, body)`.
    */
-  registerHandler(handler: Handler): void {
-    this.#registry.register(handler);
+  registerHandler(handler: Handler): void;
+  registerHandler(handlerOrSpec: Handler | HandlerSpec, body?: HandlerBody): HandlerHandle | void {
+    if (typeof body === "function") {
+      return this.#registry.install(handlerOrSpec as HandlerSpec, body);
+    }
+    this.#registry.register(handlerOrSpec as Handler);
   }
 
   /**
@@ -208,12 +235,15 @@ export class Peer implements PeerServices {
     return this.#dispatcher.expressionEvaluator;
   }
 
-  /** Begin listening on loopback at `port` (0 = auto-assign). Resolves with the bound port. */
-  listen(port = 0): Promise<number> {
+  /**
+   * Begin listening at `host:port` (0 = auto-assign; `host` defaults to loopback).
+   * Resolves with the bound port.
+   */
+  listen(port = 0, host = "127.0.0.1"): Promise<number> {
     return new Promise<number>((resolve, reject) => {
       const server = net.createServer((socket) => this.#onInbound(socket));
       server.once("error", reject);
-      server.listen(port, "127.0.0.1", () => {
+      server.listen(port, host, () => {
         const address = server.address();
         this.#port = typeof address === "object" && address !== null ? address.port : port;
         this.#server = server;
@@ -260,16 +290,24 @@ export class Peer implements PeerServices {
     });
   }
 
+  /**
+   * Stop listening and close every connection. The listening socket is released FIRST
+   * and synchronously: `server.close` stops accepting at once, but its callback waits for
+   * open connections to end, so awaiting it before destroying them could hold the process
+   * (and never release the peer) for as long as a client keeps a connection open.
+   */
   async dispose(): Promise<void> {
+    let closed: Promise<void> = Promise.resolve();
     if (this.#server !== null) {
       const server = this.#server;
       this.#server = null;
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      closed = new Promise<void>((resolve) => server.close(() => resolve()));
     }
     for (const conn of this.#connections) {
       await conn.dispose();
     }
     this.#connections.clear();
+    await closed;
   }
 }
 

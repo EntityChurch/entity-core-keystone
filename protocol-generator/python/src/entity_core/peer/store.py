@@ -81,6 +81,14 @@ class TreeEvent:
     context: ExecContext | None = None
 
 
+@dataclass(frozen=True, slots=True, order=True)
+class ConsumerId:
+    """The handle :meth:`Store.register_tree_consumer` / :meth:`Store.register_content_consumer`
+    return, for :meth:`Store.unregister_consumer`."""
+
+    value: int
+
+
 @dataclass(frozen=True, slots=True)
 class ContentEvent:
     """A content-store event (§6.10) — fired when an entity is new."""
@@ -113,30 +121,69 @@ class Store:
         self._lock = threading.Lock()
         self._content: dict[str, Entity] = {}  # hash-hex -> entity
         self._tree: dict[str, str] = {}  # path -> hash-hex
-        self._tree_consumers: list[Callable[[TreeEvent], None]] = []
-        self._content_consumers: list[Callable[[ContentEvent], None]] = []
+        # (id, consumer) in registration order; ids are never reused.
+        self._tree_consumers: list[tuple[ConsumerId, Callable[[TreeEvent], None]]] = []
+        self._content_consumers: list[tuple[ConsumerId, Callable[[ContentEvent], None]]] = []
+        self._next_consumer = 0
 
     # ── consumer registration (§6.10) ────────────────────────────────────────
-    def register_tree_consumer(self, fn: Callable[[TreeEvent], None]) -> None:
-        with self._lock:
-            self._tree_consumers.append(fn)
+    # SYSTEM-COMPOSITION §1.2 / §2.2: consumers run synchronously, in registration order,
+    # and a write's content-store event precedes its tree-change event.  Registration is
+    # open for the peer's whole life (not only during initialization) and returns a
+    # :class:`ConsumerId` that :meth:`unregister_consumer` takes — keystone peer contract
+    # ``install.consumer``.  An existing caller that ignored the (formerly ``None``)
+    # return value is unaffected.
+    def _new_consumer_id(self) -> "ConsumerId":
+        self._next_consumer += 1
+        return ConsumerId(self._next_consumer)
 
-    def register_content_consumer(self, fn: Callable[[ContentEvent], None]) -> None:
+    def register_tree_consumer(self, fn: Callable[[TreeEvent], None]) -> "ConsumerId":
         with self._lock:
-            self._content_consumers.append(fn)
+            cid = self._new_consumer_id()
+            self._tree_consumers.append((cid, fn))
+        return cid
+
+    def register_content_consumer(self, fn: Callable[[ContentEvent], None]) -> "ConsumerId":
+        with self._lock:
+            cid = self._new_consumer_id()
+            self._content_consumers.append((cid, fn))
+        return cid
+
+    def unregister_consumer(self, cid: "ConsumerId") -> bool:
+        """Stop delivering events to a consumer.  Idempotent: ``False`` when ``cid`` is not
+        registered (already removed, or never was)."""
+        with self._lock:
+            for consumers in (self._tree_consumers, self._content_consumers):
+                for i, (c, _fn) in enumerate(consumers):
+                    if c == cid:
+                        del consumers[i]
+                        return True
+        return False
 
     # ── content store ────────────────────────────────────────────────────────
-    def put_entity(self, e: Entity) -> None:
-        """Insert into the content store if new (a re-put fires nothing)."""
+    def put_entity(self, e: Entity) -> bool:
+        """Insert into the content store if new (a re-put fires nothing).
+
+        Returns ``True`` when the entity is in the store afterwards (stored now, or already
+        present), ``False`` when it was REFUSED: an entity whose carried ``hash`` is not its
+        content hash (:meth:`Entity.content_hash_holds`) is never filed, so nothing becomes
+        readable under a hash it does not have.  The store is keyed by content hash and the
+        authority path resolves grantees through it; trusting the carried hash would let
+        in-process code answer for another entity's address (keystone peer contract
+        ``embed.data``, §6 Q8).
+        """
+        if not e.content_hash_holds():
+            return False
         k = e.hash.hex()
         with self._lock:
             if k in self._content:
-                return
+                return True
             self._content[k] = e
-            consumers = list(self._content_consumers)
+            consumers = [fn for _c, fn in self._content_consumers]
         ev = ContentEvent(hash=e.hash, entity=e)
         for fn in consumers:
             fn(ev)
+        return True
 
     def get_by_hash(self, h: bytes | None) -> Entity | None:
         if h is None:
@@ -145,34 +192,43 @@ class Store:
             return self._content.get(bytes(h).hex())
 
     # ── tree ─────────────────────────────────────────────────────────────────
-    def bind(self, path: str, e: Entity, context: ExecContext | None = None) -> None:
+    def bind(self, path: str, e: Entity, context: ExecContext | None = None) -> bool:
         """Bind ``path`` to entity ``e`` (putting ``e`` in the content store).
 
         ``context`` is the §6.8a execution context of the dispatch that caused this
         write; omit it for an AUTONOMOUS write (bootstrap, seeding).  See
         :class:`TreeEvent` for why the distinction matters to a recorder.
+
+        Returns ``True`` when bound, ``False`` when refused — the same integrity rule as
+        :meth:`put_entity`: an entity whose carried hash is not its content hash binds
+        nothing and fires nothing.
         """
-        self.put_entity(e)
+        if not self.put_entity(e):
+            return False
         nxt = e.hash.hex()
         with self._lock:
             prev = self._tree.get(path, "")
             self._tree[path] = nxt
             changed = prev != nxt
-            consumers = list(self._tree_consumers)
+            consumers = [fn for _c, fn in self._tree_consumers]
         if changed:
             ev = TreeEvent(_derive_event_type(prev, nxt), path, nxt, prev, context)
             for fn in consumers:
                 fn(ev)
+        return True
 
-    def unbind(self, path: str, context: ExecContext | None = None) -> None:
+    def unbind(self, path: str, context: ExecContext | None = None) -> bool:
+        """Remove the binding at ``path``; ``True`` when one was removed.  ``context`` as for
+        :meth:`bind`."""
         with self._lock:
             prev = self._tree.pop(path, "")
             had = prev != ""
-            consumers = list(self._tree_consumers)
+            consumers = [fn for _c, fn in self._tree_consumers]
         if had:
             ev = TreeEvent("deleted", path, "", prev, context)
             for fn in consumers:
                 fn(ev)
+        return had
 
     def hash_at(self, path: str) -> str:
         with self._lock:

@@ -1,0 +1,259 @@
+{
+ "_comment": "Defects planted in a SCRATCH COPY of this peer by tools/peer-contract/plant.py. Each must turn every case in expect_fail (driver) and expect_local_fail (local tests) red; an unplanted run of the same copy must be all green first. There is at least one plant per control case in requirements.toml and one per local requirement. Anchors are exact source text and the plant tool refuses to run a plant whose anchor is absent.",
+ "plants": [
+  {
+   "name": "unknown-flag-accepted",
+   "file": "src/host.ts",
+   "anchor": "throw new HostArgsError(`unknown argument '${arg}'`);",
+   "replacement": "break;",
+   "expect_fail": [
+    "run.cli/unknown-flag-refused"
+   ]
+  },
+  {
+   "name": "hello-names-another-peer",
+   "file": "src/handlers/connect-handler.ts",
+   "anchor": "[\"peer_id\", Ecf.text(local.peerId)],",
+   "replacement": "[\"peer_id\", Ecf.text(local.peerId.slice(1))],",
+   "expect_fail": [
+    "run.identity/handshake-peer-id-matches"
+   ]
+  },
+  {
+   "name": "ready-file-drifts",
+   "file": "src/host.ts",
+   "anchor": "writeFileSync(args.readyFile, json + \"\\n\");",
+   "replacement": "writeFileSync(args.readyFile, \"{}\\n\");",
+   "expect_fail": [
+    "run.ready/ready-file-matches-line"
+   ]
+  },
+  {
+   "name": "bind-flag-ignored",
+   "file": "src/host.ts",
+   "anchor": "bind = value(++i, arg);",
+   "replacement": "value(++i, arg);",
+   "expect_fail": [
+    "run.serve/bind-flag-honored"
+   ]
+  },
+  {
+   "name": "dispatch-ignores-handlers-dimension",
+   "file": "src/capability/permissions.ts",
+   "anchor": "    if (!grant.operations.matches(operation, localPeerId, \"id\")) continue;\n    if (!grant.handlers.matches(handlerPattern, localPeerId, \"path\")) continue;\n    if (!grant.effectivePeers",
+   "replacement": "    if (!grant.operations.matches(operation, localPeerId, \"id\")) continue;\n    if (!grant.effectivePeers",
+   "expect_fail": [
+    "run.posture/narrow-identity-refused-elsewhere"
+   ]
+  },
+  {
+   "name": "default-seed-entry-is-open",
+   "file": "src/peer.ts",
+   "anchor": "policyEntryEntity(\"default\", this.#seedPolicy.defaultGrants)",
+   "replacement": "policyEntryEntity(\"default\", SeedPolicy.openGrants())",
+   "expect_fail": [
+    "run.posture/stranger-refused"
+   ]
+  },
+  {
+   "name": "frame-limit-not-enforced",
+   "file": "src/transport/frame-codec.ts",
+   "anchor": "if (length > maxFrameBytes) {",
+   "replacement": "if (length > maxFrameBytes * 64) {",
+   "expect_fail": [
+    "run.limits/over-budget-refused"
+   ]
+  },
+  {
+   "name": "sigterm-ignored",
+   "file": "src/host.ts",
+   "anchor": "const onSignal = (): void => stop();",
+   "replacement": "const onSignal = (): void => {};",
+   "expect_fail": [
+    "run.stop/sigterm-releases-port"
+   ]
+  },
+  {
+   "name": "bare-host-announces-a-contract-host",
+   "file": "test/host.ts",
+   "anchor": "runHost(process.argv.slice(2), () => {}).then(",
+   "replacement": "runHost(process.argv.slice(2), () => {}, { recordFields: { contract_host: { package: \"bare\", depends_on: \"none\" } } }).then(",
+   "expect_fail": [
+    "embed.host_main/bare-host-record-matches"
+   ]
+  },
+  {
+   "name": "contract-host-is-the-peer-package",
+   "file": "contract/host/package.json",
+   "anchor": "\"name\": \"entity-core-protocol-typescript-contract-host\",",
+   "replacement": "\"name\": \"entity-core-protocol-typescript\",",
+   "expect_fail": [
+    "embed.package/contract-host-is-a-separate-package"
+   ]
+  },
+  {
+   "name": "uninstalled-resolves-to-tree-handler",
+   "file": "src/dispatch/dispatcher.ts",
+   "anchor": "const res = this.#registry.resolve(path);",
+   "replacement": "const res = this.#registry.resolve(path) ?? this.#registry.resolve(\"/\" + this.#peer.localPeerId + \"/system/tree\");",
+   "expect_fail": [
+    "install.handler/uninstalled-404"
+   ]
+  },
+  {
+   "name": "close-leaves-handler-entity",
+   "file": "src/handlers/handler-registry.ts",
+   "anchor": "    this.#peer.tree.remove(this.#absolutePath(pattern));\n",
+   "replacement": "    // handler entity left bound\n",
+   "expect_fail": [
+    "install.remove/closed-404"
+   ]
+  },
+  {
+   "name": "internal-scope-ignored",
+   "edits": [
+    {
+     "file": "src/handlers/handler-registry.ts",
+     "anchor": "import { CapabilityToken } from \"../capability/index.js\";",
+     "replacement": "import { CapabilityToken, SeedPolicy } from \"../capability/index.js\";"
+    },
+    {
+     "file": "src/handlers/handler-registry.ts",
+     "anchor": "      internalScope ?? [],\n",
+     "replacement": "      SeedPolicy.openGrants(),\n"
+    }
+   ],
+   "expect_fail": [
+    "install.grant/outside-scope-refused",
+    "install.grant/null-scope-refused"
+   ]
+  },
+  {
+   "name": "close-removes-types",
+   "file": "src/handlers/handler-registry.ts",
+   "anchor": "return new HandlerHandle(pattern, () => this.#closeRegistration(pattern, generation));",
+   "replacement": "return new HandlerHandle(pattern, () => {\n      const removed = this.#closeRegistration(pattern, generation);\n      if (removed) {\n        for (const t of Object.keys(spec.types ?? {})) this.#peer.tree.remove(this.#absolutePath(\"system/type/\" + t));\n      }\n      return removed;\n    });",
+   "expect_fail": [
+    "install.types/survive-close"
+   ]
+  },
+  {
+   "name": "unregister-keeps-delivering",
+   "file": "src/emit/emit-bus.ts",
+   "anchor": "    this.#consumers.splice(i, 1);\n",
+   "replacement": "    void i;\n",
+   "expect_fail": [
+    "install.consumer/unregister-stops-delivery"
+   ]
+  },
+  {
+   "name": "evaluator-before-literal-floor",
+   "file": "src/dispatch/dispatcher.ts",
+   "anchor": "    if (expr.type === TypeNames.ComputeLiteral) {\n",
+   "replacement": "    if (this.#expressionEvaluator !== null) {\n      const early = await this.#expressionEvaluator.evaluate({ expressionPath: absExpr, expression: expr, execute });\n      if (early !== null) {\n        return new Envelope(ExecuteResponse.build(execute.requestId, early.status, early.result).entity, early.included);\n      }\n    }\n    if (expr.type === TypeNames.ComputeLiteral) {\n",
+   "expect_fail": [
+    "install.evaluator/literal-floor-first"
+   ]
+  },
+  {
+   "name": "caller-capability-is-the-handler-grant",
+   "file": "src/dispatch/dispatch-context.ts",
+   "anchor": "return this.#state.callerCapability;",
+   "replacement": "return this.#state.handlerGrant;",
+   "expect_fail": [
+    "context.contents/fields"
+   ]
+  },
+  {
+   "name": "local-dispatch-defaults-to-owner-capability",
+   "file": "src/dispatch/dispatcher.ts",
+   "anchor": "const capability = local.capability ?? parent.callerCapability;",
+   "replacement": "const capability = local.capability ?? new CapabilityToken(this.#peer.tree.get(\"/\" + this.#peer.localPeerId + \"/system/capability/policy/\" + hashHex(this.#peer.localIdentity.identityHash))!);",
+   "expect_fail": [
+    "context.dispatch/no-escalation-refused"
+   ]
+  },
+  {
+   "name": "budget-is-a-literal",
+   "file": "src/dispatch/dispatch-context.ts",
+   "anchor": "return this.#state.connection?.maxFrameBytes ?? this.#state.peer.maxFrameBytes;",
+   "replacement": "return 16 * 1024 * 1024;",
+   "expect_fail": [
+    "context.frame_budget/by-value"
+   ]
+  },
+  {
+   "name": "event-author-is-local-peer",
+   "file": "src/handlers/handler-abstractions.ts",
+   "anchor": "...(this.author !== null ? { author: this.author } : {}),",
+   "replacement": "author: this.peer.localIdentity.identityHash,",
+   "expect_fail": [
+    "event.context/author-is-remote-caller",
+    "event.context/sub-dispatch-write-attributed-to-caller"
+   ]
+  },
+  {
+   "name": "path-permission-ignores-operation",
+   "file": "src/capability/permissions.ts",
+   "anchor": "    if (!grant.operations.matches(operation, localPeerId, \"id\")) continue;\n    if (!grant.resources.matches(canonicalPath, localPeerId, \"path\")) continue;",
+   "replacement": "    if (!grant.resources.matches(canonicalPath, localPeerId, \"path\")) continue;",
+   "expect_fail": [
+    "authority.path_permission/deny-operation"
+   ]
+  },
+  {
+   "name": "data-get-answers-absent",
+   "file": "src/store/content-store.ts",
+   "anchor": "return this.#byHash.get(hashHex(contentHash));",
+   "replacement": "return this.#byHash.get(hashHex(contentHash)) ?? [...this.#byHash.values()].pop();",
+   "expect_fail": [
+    "embed.data/get-absent-not-found"
+   ]
+  },
+  {
+   "name": "data-unbind-leaves-binding",
+   "file": "src/store/entity-tree.ts",
+   "anchor": "if (this.#index.delete(path)) {",
+   "replacement": "if (this.#index.has(path)) {",
+   "expect_fail": [
+    "embed.data/unbind-removes"
+   ]
+  },
+  {
+   "name": "data-hash-trusted",
+   "file": "src/model/entity.ts",
+   "anchor": "return hashEqual(recomputed, this.contentHash);",
+   "replacement": "return recomputed.length > 0;",
+   "expect_fail": [
+    "embed.data/forged-hash-not-filed"
+   ]
+  },
+  {
+   "name": "peers-share-one-tree",
+   "file": "src/peer.ts",
+   "anchor": "this.#tree = new EntityTree(this.#store, this.#emit);",
+   "replacement": "this.#tree = ((globalThis as unknown as { __kpcSharedTree?: EntityTree }).__kpcSharedTree ??= new EntityTree(this.#store, this.#emit));",
+   "expect_local_fail": [
+    "embed_create__two_peers_in_one_process_and_a_listenerless_peer"
+   ]
+  },
+  {
+   "name": "context-constructible-outside-the-peer",
+   "file": "src/dispatch/dispatch-context.ts",
+   "anchor": "if (token !== TOKEN) {",
+   "replacement": "if (token !== TOKEN && state === undefined) {",
+   "expect_local_fail": [
+    "context_unforgeable__construction_outside_the_peer_is_refused"
+   ]
+  },
+  {
+   "name": "authority-chain-ignores-identity",
+   "file": "src/capability/chain-verifier.ts",
+   "anchor": "chain.some((link) => link.granter !== null && hashEqual(link.granter, identityHash))",
+   "replacement": "chain.some((link) => link.granter !== null)",
+   "expect_local_fail": [
+    "context_authority_chain__in_chain_accepts_and_not_in_chain_denies"
+   ]
+  }
+ ]
+}

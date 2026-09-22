@@ -5,7 +5,9 @@ bootstrap, the §6.11 reentrant-outbound seam, and per-connection state.
 
 from __future__ import annotations
 
+import itertools
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -15,6 +17,7 @@ from .capability import (
     AUTHZ_DENY,
     CHAIN_TOO_DEEP,
     UNRESOLVABLE_GRANTEE,
+    _temporal_fields_representable,
     cap_resolve,
     canonicalize,
     check_permission,
@@ -35,7 +38,7 @@ from .handlers import (
 )
 from .identity import Identity, peer_id_of_public_key, verify_signature
 from .model import Entity, Envelope
-from .store import Store
+from .store import ExecContext, Store
 from .typedefs import core_type_entities
 from .seed_policy import (
     GrantSpec,
@@ -46,6 +49,10 @@ from .seed_policy import (
     _scope_cbor,
 )
 from .wire import MAX_FRAME, error_result, make_execute, make_response
+
+#: Maximum nesting of ``HandlerContext.dispatch_execute`` within one wire request — the
+#: peer's own bound on an expression dispatching to a handler whose body dispatches again.
+MAX_LOCAL_DISPATCH_DEPTH = 16
 
 
 # ── per-connection state (§4.2) ───────────────────────────────────────────────
@@ -108,6 +115,14 @@ class Peer:
         #: handler body reads back is the number actually in force.
         self.max_frame_bytes = max_frame_bytes
         self.handlers: dict[str, Any] = {}
+        # ── keystone peer contract §4: the PRIVATE registration index behind
+        # register_handler (pattern -> (generation, spec, body)), the evaluator seam, and the
+        # local-dispatch request counter.  ``handlers`` above stays the public G-2 dict.
+        self._registrations: dict[str, tuple[int, Any, Callable[..., Any]]] = {}
+        self._registration_lock = threading.RLock()
+        self._generation = itertools.count(1)
+        self._local_counter = itertools.count(1)
+        self._evaluator: Callable[..., Any] | None = None
         self._bootstrap()
 
     # ── small utilities exposed to handlers ──────────────────────────────────
@@ -265,7 +280,7 @@ class Peer:
         return pattern
 
     # ── entity-native dispatch (§6.13(a)) ────────────────────────────────────
-    def _entity_native_dispatch(self, handler_path: str) -> Outcome:
+    def _entity_native_dispatch(self, handler_path: str, ctx: Any = None) -> Outcome:
         he = self.store.get_at(handler_path)
         if he is None:
             return Outcome.err(404, "handler_not_found", handler_path)
@@ -284,6 +299,18 @@ class Peer:
                     "expression": bytes(expr.hash),
                 }))
             return Outcome.err(400, "unexpected_params", "compute/literal missing value")
+        # install.evaluator: the built-in compute/literal floor above answers FIRST; an
+        # installed evaluator only ever sees a body the peer would otherwise refuse.
+        evaluator = self._evaluator
+        if evaluator is not None and ctx is not None:
+            from .extension import ExpressionRequest
+
+            try:
+                answered = evaluator(ExpressionRequest(expr_path, expr, he), ctx)
+            except Exception:  # noqa: BLE001 — third-party code: a status, never a crash
+                return Outcome.err(500, "internal_error", "expression evaluator raised")
+            if isinstance(answered, Outcome):
+                return answered
         return Outcome.err(501, "unsupported_expression", expr.type)
 
     # ── dispatch chain (§6.5) ────────────────────────────────────────────────
@@ -344,11 +371,21 @@ class Peer:
         # (The §1.4 / §6.5 step 3 address gate that used to sit here has moved ABOVE the
         # verdict — §4.7 0.8.2.6 orders it before authentication. Reaching this line at
         # all now means the path is local.)
+        cap_h = exec_e.bytes_("capability")
+        return self._route(c, env, exec_e, path, lambda: env.included.get_by_hash(cap_h), 0)
+
+    def _route(
+        self, c: Conn, env: Envelope, exec_e: Entity, path: str,
+        caller_cap_of: Callable[[], "Entity | None"], depth: int,
+    ) -> Outcome:
+        """§6.6 resolution -> §5.2 check_permission -> body selection.  The wire chain and
+        ``HandlerContext.dispatch_execute`` share it, so a local dispatch cannot take a
+        different path than a wire EXECUTE (``context.dispatch``)."""
+        operation = exec_e.text("operation") or ""
         pattern = self._resolve_handler(path)
         if pattern is None:
             return Outcome.err(404, "handler_not_found", path)
-        cap_h = exec_e.bytes_("capability")
-        caller_cap = env.included.get_by_hash(cap_h)
+        caller_cap = caller_cap_of()
         if caller_cap is None:
             return Outcome.err(403, "capability_denied")
         resolve = cap_resolve(env.included, self.store)
@@ -356,20 +393,264 @@ class Peer:
         if not check_permission(self.local_peer, granter_peer, exec_e, caller_cap, pattern):
             return Outcome.err(403, "capability_denied")
         stripped = self._strip_local(pattern)
+        # The handler's own grant (§6.8a): the second authority a write runs
+        # under, distinct from the caller's. Bound at bootstrap/registration.
+        handler_grant = self.store.get_at(
+            "/" + self.local_peer + "/system/capability/grants/" + stripped
+        )
+        # install.handler — THE READ SITE of the private registration index.  A pattern
+        # can only be here if register_handler found no handlers-dict entry for it, so
+        # every existing handlers-dict dispatch below is unchanged.
+        with self._registration_lock:
+            reg = self._registrations.get(stripped)
+        if reg is not None:
+            ctx = self._handler_context(c, env, exec_e, path, pattern, stripped,
+                                        caller_cap, handler_grant, depth)
+            try:
+                out = reg[2](ctx)
+            except Exception:  # noqa: BLE001 — third-party code: a status, never a crash
+                return Outcome.err(500, "internal_error", "handler body raised")
+            if not isinstance(out, Outcome):
+                return Outcome.err(500, "internal_error", "handler body returned no Outcome")
+            return out
         inst = self.handlers.get(stripped)
         if inst is not None:
-            # The handler's own grant (§6.8a): the second authority a write runs
-            # under, distinct from the caller's. Bound at bootstrap/registration.
-            handler_grant = self.store.get_at(
-                "/" + self.local_peer + "/system/capability/grants/" + stripped
-            )
             return inst.handle_op(operation, DispatchCtx(
                 exec=exec_e, conn=c, included=env.included,
                 caller_cap=caller_cap, has_cap=True,
                 handler_pattern=stripped, handler_grant=handler_grant,
                 peer_max_frame=self.max_frame_bytes,
             ))
-        return self._entity_native_dispatch(pattern)
+        ctx = self._handler_context(c, env, exec_e, path, pattern, stripped,
+                                    caller_cap, handler_grant, depth)
+        return self._entity_native_dispatch(pattern, ctx)
+
+    def _handler_context(
+        self, c: Conn, env: Envelope, exec_e: Entity, path: str, pattern: str, stripped: str,
+        caller_cap: Entity | None, handler_grant: Entity | None, depth: int,
+    ) -> Any:
+        from .extension import _DISPATCHER, HandlerContext
+
+        return HandlerContext(
+            _DISPATCHER, peer=self, envelope=env, exec_entity=exec_e, pattern=stripped,
+            suffix=path[len(pattern):].lstrip("/"), caller_capability=caller_cap,
+            handler_grant=handler_grant, conn=c, depth=depth,
+        )
+
+    def _exec_context(self, exec_e: Entity, handler_pattern: str) -> ExecContext:
+        """The §6.8a execution context of a request answered by ``handler_pattern``."""
+        grant = self.store.get_at(
+            "/" + self.local_peer + "/system/capability/grants/" + handler_pattern
+        )
+        return ExecContext(
+            request_id=exec_e.text("request_id") or "",
+            handler_pattern=handler_pattern,
+            operation=exec_e.text("operation") or "",
+            author=exec_e.bytes_("author"),
+            caller_capability=exec_e.bytes_("capability"),
+            handler_grant=bytes(grant.hash) if grant is not None else None,
+            chain_id=exec_e.text("chain_id"),
+            parent_chain_id=exec_e.text("parent_chain_id"),
+            cascade_depth=exec_e.uint("cascade_depth"),
+            bounds=exec_e.field("bounds"),
+        )
+
+    # ── context.dispatch — local EXECUTE under a given capability ─────────────
+    def _dispatch_local(
+        self, parent: Any, uri: str, operation: str, params: Entity,
+        resource: Any, capability: Entity | None,
+    ) -> Outcome:
+        depth = parent._depth + 1
+        if depth > MAX_LOCAL_DISPATCH_DEPTH:
+            return Outcome.err(429, "bounds_exceeded", "local dispatch depth exceeds the peer's bound")
+        cap = capability if capability is not None else parent.caller_capability
+        if cap is None:
+            return Outcome.err(403, "capability_denied", "no capability for local dispatch")
+        if not self._local_capability_admissible(parent, cap):
+            return Outcome.err(
+                403, "capability_denied",
+                "local dispatch capability is not the caller's, the handler's grant, "
+                "or a valid token this peer issued",
+            )
+        path = canonicalize(self.local_peer, normalize_uri(uri))
+        if path is None:
+            return Outcome.err(400, "invalid_path", uri)
+        if extract_peer(self.local_peer, path) != self.local_peer:
+            return Outcome.err(
+                400, "invalid_request",
+                "local dispatch targets the local peer only; a foreign namespace is the outbound seam",
+            )
+        if self._strip_local(path) == "system/protocol/connect":
+            return Outcome.err(400, "invalid_request", "the connect handler serves a connection, not a local dispatch")
+        request_id = f"{parent.request_id}/local-{next(self._local_counter)}"
+        author = parent.author if parent.author is not None else self.identity.identity_hash
+        exec_e = make_execute(
+            request_id, uri, operation, params,
+            author=author, capability=cap.hash, resource=resource,
+        )
+        pc = parent._conn
+        sub_conn = Conn(
+            established=True,
+            outbound=getattr(pc, "outbound", None),
+            max_frame_bytes=getattr(pc, "max_frame_bytes", None),
+        )
+        try:
+            return self._route(sub_conn, parent.envelope, exec_e, path, lambda: cap, depth)
+        except Exception:  # noqa: BLE001 — a status, never a crash
+            return Outcome.err(500, "internal_error", "local dispatch raised")
+
+    def _local_capability_admissible(self, parent: Any, cap: Entity) -> bool:
+        """The caller's verified capability and the handler's own grant are admissible by
+        identity; any other token must be one THIS peer issued, signed at the §3.5 pointer,
+        inside its temporal bounds (CAP-6a: unrepresentable is refused), and unrevoked."""
+        cc, hg = parent.caller_capability, parent.handler_grant
+        if (cc is not None and cc.hash == cap.hash) or (hg is not None and hg.hash == cap.hash):
+            return True
+        if cap.type != "system/capability/token" or cap.bytes_("granter") != self.identity.identity_hash:
+            return False
+        if not cap.content_hash_holds():
+            return False
+        sig = self.store.get_at("/" + self.local_peer + "/system/signature/" + cap.hash.hex())
+        if sig is None or not verify_signature(sig, self.identity.peer_entity):
+            return False
+        if not _temporal_fields_representable(cap):
+            return False
+        now = self.now_millis()
+        ex, nb = cap.uint("expires_at"), cap.uint("not_before")
+        if (ex is not None and now > ex) or (nb is not None and now < nb):
+            return False
+        revoked = "/" + self.local_peer + "/system/capability/revocations/" + cap.hash.hex()
+        return self.store.get_at(revoked) is None
+
+    # ── install.handler / install.remove / install.evaluator ──────────────────
+    def register_handler(self, spec: Any, body: Callable[..., Outcome]) -> Any:
+        """Install a language-native handler body (keystone peer contract ``install.handler``;
+        ``SDK-OPERATIONS`` §11.6, §11.6.1, §12.5).
+
+        Performs the core §6.13(a) writes — types at ``system/type/{name}``, the handler
+        entity at the pattern, the handler's grant (minted from ``spec.internal_scope``,
+        ``None`` -> a grant covering nothing) with its signature at the §3.5 pointer, and the
+        interface at ``system/handler/{pattern}`` — and binds ``body`` in the peer's private
+        registration index.  ``body(ctx: HandlerContext) -> Outcome``.
+
+        Raises :class:`~entity_core.peer.extension.RegisterError` BEFORE writing anything:
+        ``409 pattern_collision`` when a handler (built-in, ``handlers`` dict, registered,
+        or wire-registered) is already bound at the pattern; ``400 invalid_handler_spec``
+        for a non-concrete pattern, no operations, a bad operation/type name, a non-list
+        ``internal_scope`` or a non-callable body.  ``system/*`` is NOT refused
+        (``SDK-OPERATIONS`` v1.13).
+
+        Returns a :class:`~entity_core.peer.extension.HandlerHandle`; the ``handlers`` dict
+        is untouched.
+        """
+        from .extension import _DISPATCHER, HandlerHandle, HandlerSpec, RegisterError, is_concrete_pattern
+
+        def invalid(msg: str) -> RegisterError:
+            return RegisterError(400, "invalid_handler_spec", msg)
+
+        if not isinstance(spec, HandlerSpec):
+            raise invalid("spec is not a HandlerSpec")
+        pattern = spec.pattern
+        if not is_concrete_pattern(pattern):
+            raise invalid(f"pattern {pattern!r} is not a concrete peer-relative path")
+        if not callable(body):
+            raise invalid(f"{pattern!r}: body is not callable")
+        if not isinstance(spec.name, str):
+            raise invalid(f"{pattern!r}: name is not text")
+        ops = spec.operation_specs()
+        if not ops:
+            raise invalid(f"{pattern!r} declares no operations")
+        for o in ops:
+            if not isinstance(o.name, str) or o.name == "":
+                raise invalid(f"{pattern!r}: an operation has no name")
+        if spec.internal_scope is not None and not isinstance(spec.internal_scope, list):
+            raise invalid(f"{pattern!r}: internal_scope must be a list of grant entries or None")
+        types = spec.types or {}
+        if not isinstance(types, dict) or any(not isinstance(k, str) or k == "" for k in types):
+            raise invalid(f"{pattern!r}: types must map non-empty type names to definitions")
+
+        local = self.local_peer
+
+        def absp(rel: str) -> str:
+            return "/" + local + "/" + rel
+
+        with self._registration_lock:
+            bound = self.store.get_at(absp(pattern))
+            if (
+                pattern in self._registrations
+                or pattern in self.handlers
+                or (bound is not None and bound.type == "system/handler")
+            ):
+                raise RegisterError(409, "pattern_collision", pattern)
+            generation = next(self._generation)
+            self._registrations[pattern] = (generation, spec, body)
+
+        # Bound after claiming: until the handler entity exists the pattern does not
+        # resolve, so the claimed body is unreachable rather than half-installed.
+        interface_rel = "system/handler/" + pattern
+        handler_data: dict[str, Any] = {"interface": interface_rel}
+        if spec.internal_scope is not None:
+            handler_data["internal_scope"] = list(spec.internal_scope)
+        self.store.bind(absp(pattern), Entity.make("system/handler", handler_data))
+        for tname, tdef in types.items():
+            data = tdef if isinstance(tdef, dict) else {"def": tdef}
+            self.store.bind(absp("system/type/" + tname), Entity.make("system/type", data))
+        token, sig = self.mint_token(self.identity.identity_hash, list(spec.internal_scope or []), None)
+        self.store.bind(absp("system/capability/grants/" + pattern), token)
+        self.store.bind(absp("system/signature/" + token.hash.hex()), sig)
+        iface: dict[str, Any] = {
+            "pattern": pattern,
+            "name": spec.name,
+            "operations": {o.name: o.to_cbor() for o in ops},
+        }
+        if spec.description:
+            iface["description"] = spec.description
+        self.store.bind(absp(interface_rel), Entity.make("system/handler/interface", iface))
+        return HandlerHandle(_DISPATCHER, self, pattern, generation)
+
+    def _close_registration(self, pattern: str, generation: int) -> bool:
+        """§11.6.2: dispatch index first, tree second — only if the live registration at
+        ``pattern`` is still the one ``generation`` names."""
+        with self._registration_lock:
+            reg = self._registrations.get(pattern)
+            if reg is None or reg[0] != generation:
+                return False
+            del self._registrations[pattern]
+        self._unbind_handler_entities(pattern)
+        return True
+
+    def unregister_handler(self, pattern: str) -> bool:
+        """Remove whatever registered body is installed at ``pattern`` and the entities it
+        bound (types stay).  ``False`` when none was — a ``handlers``-dict or wire-registered
+        handler is not touched.  Prefer ``HandlerHandle.close``."""
+        with self._registration_lock:
+            if self._registrations.pop(pattern, None) is None:
+                return False
+        self._unbind_handler_entities(pattern)
+        return True
+
+    def has_registered_handler(self, pattern: str) -> bool:
+        """Whether a :meth:`register_handler` body is installed at ``pattern``."""
+        with self._registration_lock:
+            return pattern in self._registrations
+
+    def _unbind_handler_entities(self, pattern: str) -> None:
+        local = self.local_peer
+        grant_path = "/" + local + "/system/capability/grants/" + pattern
+        g = self.store.get_at(grant_path)
+        if g is not None:
+            self.store.unbind("/" + local + "/system/signature/" + g.hash.hex())
+            self.store.unbind(grant_path)
+        self.store.unbind("/" + local + "/" + pattern)
+        self.store.unbind("/" + local + "/system/handler/" + pattern)
+
+    def set_expression_evaluator(self, evaluator: Callable[..., Any] | None) -> None:
+        """``install.evaluator`` (MODULE): install, or clear with ``None``, the evaluator for
+        entity-native (§6.13(a)) handler bodies: ``evaluator(ExpressionRequest,
+        HandlerContext) -> Outcome | None``.  The built-in ``compute/literal`` floor answers
+        FIRST; the evaluator only sees bodies the peer would otherwise refuse with
+        ``501 unsupported_expression``, and ``None`` declines."""
+        self._evaluator = evaluator
 
     # ── bootstrap (§6.9 / §6.9a) ─────────────────────────────────────────────
     _CORE_SPECS = [

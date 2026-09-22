@@ -69,7 +69,10 @@ def main():
     src = REPO / "protocol-generator" / peer
     if tree.exists():
         shutil.rmtree(tree)
-    shutil.copytree(src, tree, ignore=shutil.ignore_patterns("target", "output"))
+    # symlinks=True: copy a link as a link. Followed, node_modules/.bin/tsc became a file whose
+    # relative require no longer resolved (a red baseline for a reason unrelated to the peer), and
+    # a link to an ancestor directory would recurse without end.
+    shutil.copytree(src, tree, symlinks=True, ignore=shutil.ignore_patterns("target", "output"))
     # Peer tests and build steps reach `../shared/` from the peer directory (seed-policy examples,
     # test vectors). The copy must see the same sibling, or the baseline is red for a reason that
     # has nothing to do with the peer.

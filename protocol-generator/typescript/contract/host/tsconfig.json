@@ -1,0 +1,21 @@
+{
+  // The contract host's own compile. It is built from a COPY of this directory under
+  // output/pkg/ whose node_modules/entity-core-protocol-typescript links the peer
+  // package (run-contract.sh) — so it resolves the peer only through that package's
+  // `exports` map, never through ../../src. Anything it imports, a third party can.
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2023"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"]
+}

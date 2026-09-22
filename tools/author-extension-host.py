@@ -248,10 +248,11 @@ H1_EVIDENCE = {
  "typescript": ("host",
           "protocol-generator/shared/diagnostics/host-seam-probe-typescript.mjs + "
           "protocol-generator/typescript/test/host-seam.test.ts (keystone, executed)"),
- "python": ("not-yet",
-          "entity-system-generator gates/host-seam/probe-seam.py reaches a body through the public "
-          "`handlers` dict (executed), but the peer has no registration call, and H3: exposing the "
-          "raw container does not satisfy H1"),
+ "python": ("host",
+          "the keystone peer contract driver, install.handler/witness (keystone, executed 2026-09-13: "
+          "Peer.register_handler through the contract host, EXECUTE from a second identity over "
+          "loopback, witness = driver nonce + request field; plant read-site-dead reddens it) -- "
+          "protocol-generator/python/status/KEYSTONE-PEER-REPORT.json"),
 }
 
 

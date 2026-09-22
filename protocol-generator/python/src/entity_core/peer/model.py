@@ -50,6 +50,36 @@ class Entity:
         h = content_hash(entity_type, data, FORMAT_ECFV1_SHA256)
         return Entity(type=entity_type, data=data, hash=h)
 
+    def content_hash_holds(self) -> bool:
+        """Whether ``hash`` IS this entity's content hash (§1.1 / §3.1).
+
+        ``Entity`` is a plain dataclass, so nothing stops a caller from building one whose
+        carried ``hash`` names another entity (``Entity(type, data, hash=other)``,
+        ``dataclasses.replace(e, hash=other)``), or from mutating ``data`` after
+        :meth:`make`.  The store refuses both (see :meth:`Store.put_entity`): it is keyed
+        by content hash and read by the authority path, so filing an entity under a hash
+        it does not have would let in-process code answer for someone else's grantee.
+
+        The hash is RECOMPUTED under the format code it declares; a code this peer cannot
+        compute (only ``0x00`` today), or a hash that is not a well-formed ``system/hash``,
+        does not hold.
+        """
+        from .._varint import decode_varint
+
+        h = self.hash
+        if not isinstance(h, (bytes, bytearray)) or len(h) == 0 or not isinstance(self.type, str):
+            return False
+        try:
+            format_code, _n = decode_varint(bytes(h))
+        except Exception:  # noqa: BLE001 — malformed prefix: it does not hold
+            return False
+        if format_code != FORMAT_ECFV1_SHA256:
+            return False
+        try:
+            return content_hash(self.type, self.data, format_code) == bytes(h)
+        except Exception:  # noqa: BLE001 — data that cannot be ECF-encoded has no hash
+            return False
+
     # ── data-map field accessors (data is an arbitrary ECF value) ────────────
     def field(self, key: str) -> Any:
         """Return the value at ``key`` in the data map, or ``None``."""

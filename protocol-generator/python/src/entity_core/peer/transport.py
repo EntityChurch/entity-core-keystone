@@ -181,13 +181,18 @@ class TransportIO:
 class Listener:
     """A running TCP listener for a peer."""
 
-    def __init__(self, peer: Peer, port: int) -> None:
+    def __init__(self, peer: Peer, port: int, host: str = "127.0.0.1") -> None:
         self.peer = peer
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.host = host
+        family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        self._sock = socket.socket(family, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._sock.bind(("127.0.0.1", port))
+        self._sock.bind((host, port))
         self._sock.listen(64)
-        self.port = self._sock.getsockname()[1]
+        #: What the socket is ACTUALLY bound to, read back from the kernel — not the
+        #: requested value — so a readiness record built from it cannot echo a flag the
+        #: listener ignored.
+        self.host, self.port = self._sock.getsockname()[:2]
         self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
         self._accept_thread.start()
 
@@ -229,15 +234,22 @@ class Listener:
         tio.close()
 
     def close(self) -> None:
+        # shutdown() first: close() alone does not wake a thread blocked in accept(), and
+        # the port must stop accepting when the listener is closed (run.stop).
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         try:
             self._sock.close()
         except OSError:
             pass
 
 
-def listen(peer: Peer, port: int = 0) -> Listener:
-    """Bind 127.0.0.1:port (0 = auto-assign) and start accepting."""
-    return Listener(peer, port)
+def listen(peer: Peer, port: int = 0, host: str = "127.0.0.1") -> Listener:
+    """Bind ``host:port`` (port 0 = auto-assign; host defaults to 127.0.0.1) and start
+    accepting."""
+    return Listener(peer, port, host)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
