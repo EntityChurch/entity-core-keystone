@@ -200,3 +200,11 @@ reads in Julia. Two of those wrong nominations were ours.
 
 **When adding a rule, name the layer before writing the enforcement.** A rule that cannot name one
 is either an unrouted spec finding (Layer 1, and it belongs upstream) or a preference.
+
+**And name the KIND before writing the artifact — `VERIFICATION-ARCHITECTURE.md`.** This file answers
+*which layer does this rule bind*. It does not answer *what is this check allowed to conclude*, and
+that gap is how `tools/put-probe` came to drive implementation across 46 peers while belonging to no
+declared category, no axis and no README. The sibling document names the three kinds a verification
+artifact can be — a census **probe**, a **transcription** of one normative reading, an **independent
+check** — with the obligations and the expiry rule for each, and the constraint that makes the third
+kind a second *measurement* rather than a second *authority*.

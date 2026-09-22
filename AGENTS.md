@@ -2025,6 +2025,32 @@ diary lives in `research/stewardship/`, not here). For the *synthesized* narrati
     `unsupported_content_hash_format` on different codes on different peers — which is the honest
     answer, and copying one peer's table across the cohort would have been a claim none of them
     could keep. This is §4.7's construction-vs-verification asymmetry as a per-peer fact.
+- **A PREDICATE TEST BUILT ONLY FROM DENY CASES IS INDISTINGUISHABLE FROM ONE ASSERTING
+  `False == False` — AND THE FIXTURE IS WHERE IT BREAKS, NOT THE PREDICATE.** Candidate
+  (2026-09-07, `python` H9; the examined-zero-things class reaching a *test* rather than a gate,
+  and the enforcement point is exact). `check_path_permission` shipped with one accept case and
+  three deny cases, one per scope dimension. The grant fixture wrapped each grant in
+  `Entity.make(...).to_cbor()` where `GrantRec` reads a **plain dict**, so every scope parsed
+  **empty**, the function denied everything, and **all three deny controls passed.** Only the
+  accept case saw it. **Rule: every authorization/predicate test needs at least one ACCEPT
+  assertion, and it is the one that validates the FIXTURE** — the deny cases validate only that
+  the function can say no, which a broken fixture guarantees for free. Corollary for the deny side:
+  one deny case per DIMENSION, because a single deny cannot distinguish "the predicate checks the
+  dimension I care about" from "the predicate denies".
+  **THE SAME SESSION'S SIBLING, and it is about the SHAPE OF THE HARNESS rather than the fixture:
+  a test of "whose identity is this" must be driven from a SECOND peer, or it passes against the
+  fabricated value.** H8's defect is that a tree-change event with no execution context is
+  indistinguishable from an AUTONOMOUS write, so a recorder fills in `EXTENSION-HISTORY` §2.1's
+  autonomous reading — author = the LOCAL peer — and attributes a remote caller's write to itself.
+  On a single-peer test the caller and the local peer **are the same identity**, so the fabricated
+  value and the correct value are the same bytes and every assertion passes. The test therefore
+  asserts `author == initiator.identityHash` **and** `author != responder.identityHash` over real
+  loopback. Generalise: **whenever the defect is a value being DEFAULTED to something plausible,
+  the control is an input for which the default and the truth differ** — and if your harness cannot
+  produce such an input, the harness is the thing to fix, not the assertion.
+  *(Both were then planted — revert the context at the write site, reassert — and each plant
+  reddened exactly its own test while leaving the companion control green. Two plants on disjoint
+  checks is what says the arms are independently measured rather than one carrying the other.)*
 - **A GATE THAT EXAMINES ZERO THINGS PRINTS THE SAME WORD AS ONE THAT EXAMINES FORTY-SIX —
   always print the COUNT, and assert on it in the regression suite.** RATIFIED 2026-08-30
   (second occurrence of the vacuous-control class after `check-set-gate`'s `Path.stem`

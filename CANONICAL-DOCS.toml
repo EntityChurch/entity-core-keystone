@@ -150,6 +150,16 @@ title = "Contract layers — what binds every peer, what binds a keystone peer, 
 blurb = "The boundary between core protocol conformance (binds every implementation), the keystone peer contract (binds only peers this repo generates), and this repo's own project discipline. States what a ground-up implementation does and does not owe."
 group = "Overview"
 
+# Declared for the same reason CONTRACT-LAYERS is: an adopter reading a conformance
+# number from this repo is entitled to know which verification artifacts we CONSUME
+# (the oracle, arch's corpora) and which we AUTHOR, and what an authored one is
+# allowed to conclude. Publishing the constraint is the anti-overclaim move.
+[[doc]]
+path  = "docs/VERIFICATION-ARCHITECTURE.md"
+title = "Verification architecture — what this repo may author, what it may conclude, and what it owes upstream"
+blurb = "The three kinds of verification artifact this repo produces — census probe, transcription of a normative reading, and independent check — with the obligations and the expiry rule for each. States why an authored check is a second measurement and never a second authority."
+group = "Overview"
+
 # ── Conformance ─────────────────────────────────────────────────────────────
 [[doc]]
 path  = "CONFORMANCE-MATRIX.md"

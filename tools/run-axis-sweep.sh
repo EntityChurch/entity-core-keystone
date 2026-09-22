@@ -147,6 +147,24 @@ while [ "$#" -gt 0 ]; do
       printf '%-14s %-46s authority: %s\n' '' '' 'entity-core-go ORACLE — validate-peer --profile core, pinned by content digest'
       printf '%-14s %-46s %s\n' 'ffi' 'ffi-generator/c-abi/run-ffi-gate.sh' 'codec C-ABI arm (not peer-scoped) — has its own runner'
       printf '%-14s %-46s authority: %s\n' '' '' 'ARCHITECTURE for the ECF corpus (C impl only); OURS for the C-ABI spec, the cross-impl differential and the leak gate'
+      # PROBES ARE LISTED THOUGH THEY ARE NOT AN AXIS, and the distinction is the
+      # point rather than a caveat. A probe MEASURES; it does not gate, it never
+      # enters a published number, and it EXPIRES when the oracle ships a vector on
+      # its surface (docs/VERIFICATION-ARCHITECTURE.md, Kind A). They are here
+      # because `tools/put-probe` drove implementation across 46 peers while sitting
+      # in no inventory, no axis and no README -- the standing rule is that a thing
+      # absent from the list is an exclusion nobody declared, and the fix for "it
+      # does not fit the table's shape" is a row saying where its runner lives.
+      printf '%-14s %-46s %s\n' 'probes' 'tools/<name>-probe/ (run-cohort-census.sh --probe)' 'one-off wire census instruments — NOT an axis, NOT a gate, NOT a conformance number'
+      printf '%-14s %-46s authority: %s\n' '' '' 'OURS (Kind A) — measures only; retired when the oracle ships a vector on the surface'
+      for p in "$REPO_ROOT"/tools/*-probe; do
+        [ -d "$p" ] || continue
+        n=$(basename "$p")
+        st='ACTIVE'
+        grep -qi '^## Status: RETIRED' "$p/README.md" 2>/dev/null && st='RETIRED'
+        [ -f "$p/README.md" ] || st="$st (NO README — undeclared)"
+        printf '%-14s %-46s %s\n' '' "  $n" "$st"
+      done
       exit 0 ;;
     --tier) TIER_SEL="$2"; shift 2 ;;
     --tier=*) TIER_SEL="${1#*=}"; shift ;;
