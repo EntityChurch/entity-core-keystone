@@ -5,6 +5,30 @@ All notable changes to this peer. Spec-version tracked literally per keystone li
 
 ## [Unreleased]
 
+### Changed — the keystone peer contract (v2.0-draft.1); rust is certified against it
+- **BREAKING: `Peer::register_handler` is the SDK shape now** (`SDK-OPERATIONS` §11.6):
+  `register_handler(self: &Arc<Peer>, HandlerSpec, body) -> Result<HandlerHandle, RegisterError>`.
+  `HandlerSpec` carries `internal_scope` (the handler's grant; `None` mints an empty-scope grant) and
+  `types` (bound at `system/type/*`, kept on close). **Dropping the handle unregisters** — dispatch
+  index first, then the tree entries; `close()` is idempotent; `detach()` keeps the handler for the
+  peer's life. The previous surface is **`Peer::install_handler(Arc<dyn Handler>)`** (renamed, `&Peer`).
+- **BREAKING: `RegisterError`** is `InvalidHandlerSpec` / `PatternCollision`, with `status()` and
+  `code()` returning §12.5's `400 invalid_handler_spec` / `409 pattern_collision`. A spec with no
+  operations is refused.
+- **`run_host(argv, configure)`** — the host is a library function; `entity-peer-host` is
+  `run_host(argv, no-op)`. New flags `--bind`, `--max-frame-bytes`, `--ready-file`. The readiness line
+  is `LISTENING {json}` (`keystone-peer-ready/1`: addr, peer_id, posture, posture_digest, limits).
+- **Consumers after construction:** `register_tree_consumer` returns a `ConsumerId`;
+  `register_content_consumer` (fires on new content, before the bind's tree event);
+  `unregister_consumer`. Consumers are copied out before invocation, so one may register another.
+- **`HandlerContext::identity_in_authority_chain`** (`SDK-OPERATIONS` §11.3 SEC-3).
+- **SECURITY: `Identity.seed` is private**, with a redacting `Debug`. It was readable by every
+  installed handler body through `HandlerContext::peer()`.
+- **Contract host** `contract/host/` (separate package) and `run-contract.sh`; report
+  `status/KEYSTONE-PEER-REPORT.json`, plants `status/KEYSTONE-PEER-PLANTS.json`.
+
+`--profile core` unchanged: `778 · 335P/336W/0F/107S`, 0 of 778 per-check severities moved.
+
 ### Added — the extension host surface
 - **Handler installation (H1/H3).** `Peer::register_handler(Arc<dyn Handler>)` installs a
   language-native body after construction, binding the same four §11.6.1 entities the wire

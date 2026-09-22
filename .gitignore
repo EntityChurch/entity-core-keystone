@@ -71,6 +71,7 @@ caps.local.sh
 # The generated Rust protocol peer is a binary-bearing deliverable — S11 requires
 # the full transitive closure committed (curve25519-dalek held at 4.1.3).
 !protocol-generator/rust/Cargo.lock
+!protocol-generator/rust/contract/host/Cargo.lock
 # The wasmtime-AOT wasm peer — same S11 rule; pins wasi 0.11.1 + the shared crypto closure.
 !protocol-generator/rust-wasm-wasmtime/Cargo.lock
 # The Datalog peer (Rust host + Ascent) — S11 requires the full ascent transitive

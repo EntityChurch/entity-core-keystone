@@ -1,0 +1,31 @@
+# The rust peer's spelling of each keystone peer contract requirement (H5's platform bindings,
+# per requirement). DECLARED, not measured: tools/peer-contract/report.py echoes each value into the
+# requirement's row, and the row's verdict comes from the suite. A binding with no measured `pass`
+# beside it is a claim, and reads as one.
+package = "entity-core-protocol-rust (crate), lib entity_core_protocol"
+
+[bindings]
+"run.cli"                   = "entity_core_protocol::peer::host::parse_args; bin entity-peer-host"
+"run.identity"              = "entity_core_protocol::peer::host::load_named_seed"
+"run.ready"                 = "entity_core_protocol::peer::host::ready_record (READY_RECORD = keystone-peer-ready/1)"
+"run.serve"                 = "--bind ADDR (run_host binds TcpListener on it)"
+"run.posture"               = "PeerConfig::seed_policy(SeedPolicy); SeedPolicy::{standard, debug_open, of, from_json, from_file}"
+"run.limits"                = "PeerConfig::max_frame_bytes(usize); Peer::max_frame_bytes()"
+"run.stop"                  = "process ends by signal on SIGTERM (crate forbids unsafe; no handler)"
+"embed.host_main"           = "entity_core_protocol::peer::{run_host(argv, configure), run_host_with(argv, extra_record_fields, configure)}"
+"embed.package"             = "separate package: protocol-generator/rust/contract/host (entity-core-protocol-rust-contract-host)"
+"embed.data"                = "Peer::store: Store::{put_entity -> bool, get_by_hash, bind_with_context -> bool, get_at, unbind_with_context}; Store::{bind, unbind} are the autonomous (no-context) forms; a write whose Entity::content_hash_holds() is false returns false and stores nothing"
+"embed.create"              = "Peer::create_with(CreateOptions, PeerConfig) -> Peer (wrap in Arc to install handlers)"
+"install.handler"           = "Peer::register_handler(self: &Arc<Peer>, HandlerSpec, Fn(&HandlerContext) -> HandlerResult) -> Result<HandlerHandle, RegisterError>; Peer::install_handler(Arc<dyn Handler>) is NOT this binding and is not certified"
+"install.remove"            = "HandlerHandle::close() -> bool (idempotent); Drop closes; HandlerHandle::detach() keeps it for the peer's life"
+"install.grant"             = "HandlerSpec::internal_scope(Vec<Value>); None mints an empty-scope grant"
+"install.types"             = "HandlerSpec::with_type(name, definition)"
+"install.consumer"          = "Store::{register_tree_consumer, register_content_consumer} -> ConsumerId; Store::unregister_consumer(ConsumerId) -> bool"
+"install.evaluator"         = "Peer::set_expression_evaluator(Option<Arc<dyn ExpressionEvaluator>>)"
+"context.contents"          = "HandlerContext::{operation, params, resource, pattern, suffix, author, caller_capability, handler_grant, envelope, exec_context}"
+"context.unforgeable"       = "HandlerContext fields are pub(crate); no public constructor (compile-time, E0451)"
+"context.dispatch"          = "HandlerContext::dispatch_execute(LocalExecute) -> HandlerResult"
+"context.frame_budget"      = "HandlerContext::frame_budget() -> usize"
+"context.authority_chain"   = "HandlerContext::identity_in_authority_chain(&[u8]) -> bool; capability::identity_in_authority_chain"
+"event.context"             = "TreeChangeEvent::context: Option<ExecContext>; Store::bind_with_context"
+"authority.path_permission" = "capability::check_path_permission(operation, path, token, handler_pattern, local_peer) -> bool"

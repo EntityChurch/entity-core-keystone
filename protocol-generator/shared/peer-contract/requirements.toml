@@ -1,0 +1,277 @@
+# The keystone peer contract — requirement registry (v2.0-draft.1).
+#
+# THIS FILE IS THE MACHINE TRUTH. `CONTRACT-DRAFT.md` is the prose; `tools/peer-contract/report.py --check`
+# requires the two to name exactly the same requirements. A report cites the contract by
+# `contract_digest` = sha256 over this file's bytes followed by CONTRACT-DRAFT.md's bytes and
+# FIXTURE-HOST.md's bytes — never by a commit.
+#
+# LEVELS
+#   REQUIRED  certification needs `pass`.
+#   MODULE    optional; the peer carries it (`pass`) or declares it (`declined`, with a reason in
+#             its contract manifest). Absent from both → `unknown` → not certified.
+#
+# EVIDENCE — where the verdict comes from
+#   driver    tools/peer-contract (one Go program for every language) drives the peer's contract
+#             host over the wire. Every listed case must pass, and at least one listed case must be
+#             a `control` that held in the same run.
+#   local     tests in the peer's own tree whose names start with the requirement's test prefix
+#             (`context.unforgeable` → `context_unforgeable__`). At least `min_tests` must run and
+#             every one must pass. Used ONLY for what the wire cannot observe.
+#
+# A requirement the suite does not yet measure is NOT in this file. It is listed under "Pending" in
+# CONTRACT-DRAFT.md, so a certification never implies coverage the suite does not have.
+
+contract = "keystone-peer-contract"
+version  = "2.0-draft.1"
+
+# ── which driver cases are CONTROLS ────────────────────────────────────────────────────────────
+# (Top-level, BEFORE the first [[requirement]]: in TOML a key written after an array-of-tables
+# belongs to the LAST table, so this list placed at the end of the file silently became a field of
+# `authority.path_permission` and every driver requirement read as control-less. report.py --check
+# caught it by refusing every one of them as possibly vacuous.)
+# A control is the case that goes red when the thing measured is absent: an uninstalled pattern, a
+# refused identity, a denied dimension. A requirement whose controls did not hold in the run is not
+# `pass`, whatever its measurement cases said — that is how a vacuous green is refused.
+controls = [
+  "run.cli/unknown-flag-refused",
+  "run.posture/narrow-identity-refused-elsewhere",
+  "run.posture/stranger-refused",
+  "run.limits/over-budget-refused",
+  "run.stop/sigterm-releases-port",
+  "embed.host_main/bare-host-record-matches",
+  "embed.package/contract-host-is-a-separate-package",
+  "embed.data/get-absent-not-found",
+  "embed.data/unbind-removes",
+  "embed.data/forged-hash-not-filed",
+  "run.identity/handshake-peer-id-matches",
+  "run.ready/ready-file-matches-line",
+  "run.serve/bind-flag-honored",
+  "install.handler/uninstalled-404",
+  "install.remove/closed-404",
+  "install.grant/outside-scope-refused",
+  "install.types/survive-close",
+  "install.consumer/unregister-stops-delivery",
+  "install.evaluator/literal-floor-first",
+  "context.contents/fields",
+  "context.dispatch/no-escalation-refused",
+  "context.frame_budget/by-value",
+  "event.context/author-is-remote-caller",
+  "authority.path_permission/deny-operation",
+]
+
+# ── run — the peer as a process ────────────────────────────────────────────────────────────────
+
+[[requirement]]
+name       = "run.cli"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "driver"
+cases      = ["run.cli/all-flags-start", "run.cli/unknown-flag-refused"]
+
+[[requirement]]
+name       = "run.identity"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "driver"
+cases      = ["run.identity/peer-id-from-keypair", "run.identity/handshake-peer-id-matches"]
+
+[[requirement]]
+name       = "run.ready"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "driver"
+cases      = ["run.ready/line-is-record", "run.ready/ready-file-matches-line"]
+
+[[requirement]]
+name       = "run.serve"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "driver"
+cases      = ["run.serve/bind-flag-honored"]
+
+[[requirement]]
+name       = "run.posture"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "driver"
+cases      = [
+  "run.posture/digest-is-file-sha256",
+  "run.posture/narrow-identity-reaches-its-handler",
+  "run.posture/narrow-identity-refused-elsewhere",
+  "run.posture/stranger-refused",
+]
+
+[[requirement]]
+name       = "run.limits"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "driver"
+cases      = ["run.limits/echoed", "run.limits/under-budget-accepted", "run.limits/over-budget-refused"]
+
+[[requirement]]
+name       = "run.stop"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "driver"
+cases      = ["run.stop/sigterm-releases-port"]
+
+# ── embed — the peer as a library ──────────────────────────────────────────────────────────────
+
+[[requirement]]
+name       = "embed.host_main"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "driver"
+cases      = ["embed.host_main/composed-host-serves-fixtures", "embed.host_main/bare-host-record-matches"]
+
+[[requirement]]
+name       = "embed.package"
+level      = "REQUIRED"
+supersedes = ["H4"]
+evidence   = "driver"
+# The contract host IS the separate unit: it is built as its own package depending only on the
+# peer's package, and the runner records that build. The case passes only when the host announces
+# (in its readiness record) that it was built that way — see FIXTURE-HOST.md §1.
+cases      = ["embed.package/contract-host-is-a-separate-package"]
+
+[[requirement]]
+name       = "embed.create"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "local"
+min_tests  = 1
+
+[[requirement]]
+name       = "embed.data"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "driver"
+# Provisional operation set (CONTRACT-DRAFT.md §3, §6 Q2). Three controls, each red on a different
+# absence: a get that answers for a hash never stored, an unbind that leaves the binding, and a
+# store that files an entity under a hash it does not have.
+cases      = [
+  "embed.data/put-hash-is-content-hash",
+  "embed.data/get-by-hash",
+  "embed.data/get-absent-not-found",
+  "embed.data/bind-visible-on-wire",
+  "embed.data/wire-write-visible-in-process",
+  "embed.data/bind-carries-context",
+  "embed.data/unbind-removes",
+  "embed.data/unbind-carries-context",
+  "embed.data/forged-hash-not-filed",
+]
+
+# ── extend — installing extensions ─────────────────────────────────────────────────────────────
+
+[[requirement]]
+name       = "install.handler"
+level      = "REQUIRED"
+supersedes = ["H1", "H3"]
+evidence   = "driver"
+cases      = [
+  "install.handler/witness",
+  "install.handler/uninstalled-404",
+  "install.handler/interface-bound",
+  "install.handler/collision-409",
+  "install.handler/builtin-collision-409",
+  "install.handler/invalid-spec-400",
+]
+
+[[requirement]]
+name       = "install.remove"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "driver"
+cases      = ["install.remove/close-idempotent", "install.remove/closed-404", "install.remove/artifacts-gone"]
+
+[[requirement]]
+name       = "install.grant"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "driver"
+cases      = ["install.grant/inside-scope-allowed", "install.grant/outside-scope-refused", "install.grant/null-scope-refused"]
+
+[[requirement]]
+name       = "install.types"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "driver"
+cases      = ["install.types/bound", "install.types/survive-close"]
+
+[[requirement]]
+name       = "install.consumer"
+level      = "REQUIRED"
+supersedes = ["H2"]
+evidence   = "driver"
+cases      = [
+  "install.consumer/registration-order",
+  "install.consumer/content-before-tree",
+  "install.consumer/unregister-stops-delivery",
+]
+
+[[requirement]]
+name       = "install.evaluator"
+level      = "MODULE"
+supersedes = ["H7"]
+evidence   = "driver"
+cases      = ["install.evaluator/fallback-answers", "install.evaluator/literal-floor-first"]
+
+# ── extend — what extension code receives ──────────────────────────────────────────────────────
+
+[[requirement]]
+name       = "context.contents"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "driver"
+cases      = ["context.contents/fields"]
+
+[[requirement]]
+name       = "context.unforgeable"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "local"
+# 2: the refusal (compile-fail pinned to its error code) AND its positive control (the type is
+# usable outside the peer), so the refusal cannot pass on an unrelated compile error.
+min_tests  = 2
+
+[[requirement]]
+name       = "context.dispatch"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "driver"
+cases      = ["context.dispatch/caller-authority-allowed", "context.dispatch/no-escalation-refused"]
+
+[[requirement]]
+name       = "context.frame_budget"
+level      = "REQUIRED"
+supersedes = ["H6"]
+evidence   = "driver"
+cases      = ["context.frame_budget/by-value"]
+
+[[requirement]]
+name       = "context.authority_chain"
+level      = "REQUIRED"
+supersedes = []
+evidence   = "local"
+min_tests  = 1
+
+# ── events and authority ───────────────────────────────────────────────────────────────────────
+
+[[requirement]]
+name       = "event.context"
+level      = "REQUIRED"
+supersedes = ["H8"]
+evidence   = "driver"
+cases      = ["event.context/author-is-remote-caller", "event.context/sub-dispatch-write-attributed-to-caller"]
+
+[[requirement]]
+name       = "authority.path_permission"
+level      = "REQUIRED"
+supersedes = ["H9"]
+evidence   = "driver"
+cases      = [
+  "authority.path_permission/accept",
+  "authority.path_permission/deny-operation",
+  "authority.path_permission/deny-path",
+  "authority.path_permission/deny-handler",
+]

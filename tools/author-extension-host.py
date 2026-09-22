@@ -66,7 +66,7 @@ T = {
  "go": ("none -- wire system/handler:register only; `handlers` is unexported and Peer exports only Identity/Store/LocalPeer",
         "entity-native: a system/handler entity with expression_path -> compute/literal",
         "Peer.dispatch -- p.handlers[stripped] for bootstrap bodies, else entityNativeDispatch via p.store.GetAt; src/peer/peer.go:426 and :317"),
- "rust": ("Peer::register_handler(Arc<dyn Handler>) -> Result<(), RegisterError> -- binds the same four §11.6.1 entities the wire register op binds, then the body; refuses invalid patterns and any pattern a handler is already bound at (H3); system/* is installable",
+ "rust": ("Peer::register_handler(self: &Arc<Peer>, HandlerSpec, body) -> Result<HandlerHandle, RegisterError> (SDK-OPERATIONS §11.6; Peer::install_handler(Arc<dyn Handler>) for the peer's lifetime) -- binds the core §6.13(a) entities, then the body; 400 invalid_handler_spec / 409 pattern_collision before any write (H3); system/* is installable. Contract report: status/KEYSTONE-PEER-REPORT.json",
         "impl Handler { fn handle(&self, &HandlerContext) -> HandlerResult } (FnHandler for closures); or entity-native expression_path, with Peer::set_expression_evaluator as the H7 fallback",
         "Peer::route -- self.native_handlers.read().get(&stripped) after the §6.6 walk (resolve_handler) and before entity_native_dispatch; src/peer/core.rs:801"),
  "python": (None, None, None),      # block already authored; only the H1 fields are added
@@ -215,7 +215,7 @@ CONSUMER = {
 }
 
 HANDLE_LIFECYCLE = {
- "rust": "Peer::unregister_handler(pattern) -> bool -- unbinds the entities it bound; the wire unregister op also removes a native body",
+ "rust": "HandlerHandle::close() -> bool (idempotent; Drop closes; detach() keeps) -- dispatch index first, then handler/interface/grant; types stay. Peer::unregister_handler(pattern) removes any native body",
 }
 
 FRAME_BUDGET = {"python": "DispatchCtx.frame_budget()", "typescript": "HandlerContext.frameBudget()",

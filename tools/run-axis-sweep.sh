@@ -147,6 +147,23 @@ while [ "$#" -gt 0 ]; do
       printf '%-14s %-46s authority: %s\n' '' '' 'entity-core-go ORACLE — validate-peer --profile core, pinned by content digest'
       printf '%-14s %-46s %s\n' 'ffi' 'ffi-generator/c-abi/run-ffi-gate.sh' 'codec C-ABI arm (not peer-scoped) — has its own runner'
       printf '%-14s %-46s authority: %s\n' '' '' 'ARCHITECTURE for the ECF corpus (C impl only); OURS for the C-ABI spec, the cross-impl differential and the leak gate'
+      # THE KEYSTONE PEER CONTRACT (v2.0-draft.1) is per peer ON REQUEST, not a cohort sweep: a peer is
+      # brought up to it when a consumer asks, and a peer with no run-contract.sh is simply not in it
+      # yet — which the loop below prints, so the gap is visible rather than implied.
+      printf '%-14s %-46s %s\n' 'contract' 'protocol-generator/*/run-contract.sh' 'keystone peer contract (run · embed · extend) — runner: tools/peer-contract/run.sh <peer>'
+      printf '%-14s %-46s authority: %s\n' '' '' 'OURS (Layer 2d) — the requirement set, one shared wire driver, per-peer plants; SDK-OPERATIONS/SYSTEM-COMPOSITION cited where they define the surface'
+      n_contract=0; n_peers=0
+      for d in "$REPO_ROOT"/protocol-generator/*/; do
+        [ -f "$d/profile.toml" ] || continue
+        n_peers=$((n_peers + 1))
+        if [ -x "$d/run-contract.sh" ]; then
+          n_contract=$((n_contract + 1))
+          st='brought up'
+          [ -f "$d/status/KEYSTONE-PEER-REPORT.json" ] && st="$st — report: $(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["verdict"])' "$d/status/KEYSTONE-PEER-REPORT.json" 2>/dev/null)"
+          printf '%-14s %-46s %s\n' '' "  $(basename "$d")" "$st"
+        fi
+      done
+      printf '%-14s %-46s %s\n' '' "  ($n_contract of $n_peers peers)" 'the rest are not brought up to the contract'
       # PROBES ARE LISTED THOUGH THEY ARE NOT AN AXIS, and the distinction is the
       # point rather than a caveat. A probe MEASURES; it does not gate, it never
       # enters a published number, and it EXPIRES when the oracle ships a vector on

@@ -1,0 +1,181 @@
+{
+ "_comment": "Defects planted in a SCRATCH COPY of this peer by tools/peer-contract/plant.py. Each must turn every case in expect_fail red; an unplanted run of the same copy must be all green first. This is what shows the suite can fail on this peer \u2014 a suite that has never gone red has measured nothing. Anchors are exact source text and the plant tool refuses to run a plant whose anchor is absent.",
+ "plants": [
+  {
+   "name": "read-site-dead",
+   "file": "src/peer/core.rs",
+   "anchor": ".get(&stripped)\n                    .map(|(_, h)| h.clone());",
+   "replacement": ".get(&stripped)\n                    .map(|(_, h)| h.clone())\n                    .filter(|_| false);",
+   "expect_fail": [
+    "install.handler/witness",
+    "embed.host_main/composed-host-serves-fixtures"
+   ]
+  },
+  {
+   "name": "collision-unchecked",
+   "file": "src/peer/core.rs",
+   "anchor": "if container.contains_key(&pattern)\n                || bound.is_some_and(|e| e.typ == \"system/handler\")",
+   "replacement": "if false && bound.is_some()",
+   "expect_fail": [
+    "install.handler/collision-409",
+    "install.handler/builtin-collision-409"
+   ]
+  },
+  {
+   "name": "close-leaves-tree",
+   "file": "src/peer/core.rs",
+   "anchor": "                _ => false,\n            }\n        };\n        if removed {\n            self.unbind_handler_entities(pattern);",
+   "replacement": "                _ => false,\n            }\n        };\n        if removed && false {\n            self.unbind_handler_entities(pattern);",
+   "expect_fail": [
+    "install.remove/artifacts-gone"
+   ]
+  },
+  {
+   "name": "internal-scope-ignored",
+   "file": "src/peer/core.rs",
+   "anchor": "let grants = spec.internal_scope.clone().unwrap_or_default();",
+   "replacement": "let grants = super::seed_policy::open_grants();",
+   "expect_fail": [
+    "install.grant/outside-scope-refused",
+    "install.grant/null-scope-refused"
+   ]
+  },
+  {
+   "name": "consumer-order-reversed",
+   "file": "src/peer/store.rs",
+   "anchor": "self.consumers.read().unwrap().iter().map(|(_, c)| c.clone()).collect();\n        for c in consumers {",
+   "replacement": "self.consumers.read().unwrap().iter().map(|(_, c)| c.clone()).collect();\n        for c in consumers.into_iter().rev() {",
+   "expect_fail": [
+    "install.consumer/registration-order"
+   ]
+  },
+  {
+   "name": "content-consumer-silent",
+   "file": "src/peer/store.rs",
+   "anchor": "if consumers.is_empty() {",
+   "replacement": "if true || consumers.is_empty() {",
+   "expect_fail": [
+    "install.consumer/content-before-tree"
+   ]
+  },
+  {
+   "name": "budget-is-a-literal",
+   "file": "src/peer/handler.rs",
+   "anchor": "if self.conn.max_frame_bytes > 0 {",
+   "replacement": "if true { return 16 * 1024 * 1024; }\n        if self.conn.max_frame_bytes > 0 {",
+   "expect_fail": [
+    "context.frame_budget/by-value"
+   ]
+  },
+  {
+   "name": "event-author-is-local-peer",
+   "file": "src/peer/core.rs",
+   "anchor": "author: exec.bytes_field(\"author\").map(|b| b.to_vec()),",
+   "replacement": "author: Some(self.identity.identity_hash.clone()),",
+   "expect_fail": [
+    "event.context/author-is-remote-caller",
+    "event.context/sub-dispatch-write-attributed-to-caller"
+   ]
+  },
+  {
+   "name": "path-permission-ignores-operation",
+   "file": "src/peer/capability.rs",
+   "anchor": "&& matches_scope(local_peer, operation, &g.operations, ScopeKind::Id)",
+   "replacement": "&& true",
+   "expect_fail": [
+    "authority.path_permission/deny-operation"
+   ]
+  },
+  {
+   "name": "evaluator-before-literal-floor",
+   "file": "src/peer/core.rs",
+   "anchor": "        if expr.typ == \"compute/literal\" {\n            let value = expr.field(\"value\")",
+   "replacement": "        if let Some(ev) = self.expression_evaluator() {\n            let request = ExpressionRequest { expression_path: &expr_path, expression: &expr, handler_entity };\n            if let Some(r) = ev.evaluate(&request, ctx) { return r; }\n        }\n        if expr.typ == \"compute/literal\" {\n            let value = expr.field(\"value\")",
+   "expect_fail": [
+    "install.evaluator/literal-floor-first"
+   ]
+  },
+  {
+   "name": "ready-file-drifts",
+   "file": "src/peer/host.rs",
+   "anchor": "std::fs::write(path, format!(\"{record}\\n\"))",
+   "replacement": "std::fs::write(path, \"{}\\n\")",
+   "expect_fail": [
+    "run.ready/ready-file-matches-line"
+   ]
+  },
+  {
+   "name": "unknown-flag-accepted",
+   "file": "src/peer/host.rs",
+   "anchor": "other => return Err(format!(\"unknown argument '{other}'\")),",
+   "replacement": "_ => {}",
+   "expect_fail": [
+    "run.cli/unknown-flag-refused"
+   ]
+  },
+  {
+   "name": "context-constructible-outside-the-peer",
+   "file": "src/peer/handler.rs",
+   "anchor": "pub struct HandlerContext<'a> {\n    pub(crate) peer: &'a Peer,\n    pub(crate) envelope: &'a Envelope,\n    pub(crate) execute: &'a Entity,\n    pub(crate) pattern: String,\n    pub(crate) suffix: String,\n    pub(crate) caller_capability: Option<&'a Entity>,\n    pub(crate) handler_grant: Option<Entity>,\n    pub(crate) conn: &'a Conn,\n    pub(crate) depth: u32,\n}",
+   "replacement": "pub struct HandlerContext<'a> {\n    pub peer: &'a Peer,\n    pub envelope: &'a Envelope,\n    pub execute: &'a Entity,\n    pub pattern: String,\n    pub suffix: String,\n    pub caller_capability: Option<&'a Entity>,\n    pub handler_grant: Option<Entity>,\n    pub conn: &'a Conn,\n    pub depth: u32,\n}",
+   "expect_local_fail": [
+    "context_unforgeable__a_consumer_cannot_construct_a_context"
+   ]
+  },
+  {
+   "name": "data-put-stores-nothing",
+   "file": "src/peer/store.rs",
+   "anchor": "            if inner.content.contains_key(&e.hash) {\n                false\n            } else {",
+   "replacement": "            if inner.content.contains_key(&e.hash) || e.typ == \"contract/data-item\" {\n                false\n            } else {",
+   "expect_fail": [
+    "embed.data/get-by-hash"
+   ]
+  },
+  {
+   "name": "data-get-answers-absent",
+   "file": "src/peer/store.rs",
+   "anchor": "        self.inner.read().unwrap().content.get(h).cloned()",
+   "replacement": "        let inner = self.inner.read().unwrap();\n        inner.content.get(h).cloned().or_else(|| inner.content.values().find(|e| e.typ == \"contract/data-item\").cloned())",
+   "expect_fail": [
+    "embed.data/get-absent-not-found"
+   ]
+  },
+  {
+   "name": "data-hash-trusted",
+   "file": "src/peer/model.rs",
+   "anchor": "Ok((format_code, _)) => content_hash(&self.typ, self.data.clone(), format_code) == self.hash,",
+   "replacement": "Ok((_format_code, _)) => true,",
+   "expect_fail": [
+    "embed.data/forged-hash-not-filed"
+   ]
+  },
+  {
+   "name": "data-unbind-leaves-binding",
+   "file": "src/peer/store.rs",
+   "anchor": "            inner.tree.remove(path)\n",
+   "replacement": "            inner.tree.get(path).cloned()\n",
+   "expect_fail": [
+    "embed.data/unbind-removes"
+   ]
+  },
+  {
+   "name": "data-bind-drops-context",
+   "file": "src/peer/store.rs",
+   "anchor": "                previous_hash: prev,\n                context,",
+   "replacement": "                previous_hash: prev,\n                context: None,",
+   "expect_fail": [
+    "embed.data/bind-carries-context",
+    "event.context/author-is-remote-caller"
+   ]
+  },
+  {
+   "name": "data-unbind-drops-context",
+   "file": "src/peer/store.rs",
+   "anchor": "                previous_hash: Some(prev_hash),\n                context,",
+   "replacement": "                previous_hash: Some(prev_hash),\n                context: None,",
+   "expect_fail": [
+    "embed.data/unbind-carries-context"
+   ]
+  }
+ ]
+}

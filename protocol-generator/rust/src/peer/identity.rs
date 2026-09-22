@@ -24,9 +24,12 @@ use crate::signature;
 use super::model::{self, Entity};
 
 /// A peer's identity material + derived entities.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Identity {
-    pub seed: [u8; 32],
+    /// The Ed25519 private seed. PRIVATE, and redacted from `Debug`: a `Peer` is handed to
+    /// every installed handler body (`HandlerContext::peer`), so a public seed was a
+    /// private key readable by any third-party extension. Sign through [`Identity::sign_entity`].
+    seed: [u8; 32],
     pub public_key: [u8; 32],
     /// Base58 canonical identity-multihash peer-id.
     pub peer_id: String,
@@ -34,6 +37,15 @@ pub struct Identity {
     pub peer_entity: Entity,
     /// content_hash of `peer_entity` (33 bytes).
     pub identity_hash: Vec<u8>,
+}
+
+impl std::fmt::Debug for Identity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Identity")
+            .field("seed", &"<redacted>")
+            .field("peer_id", &self.peer_id)
+            .finish()
+    }
 }
 
 impl Identity {

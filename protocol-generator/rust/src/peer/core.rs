@@ -21,8 +21,8 @@ use crate::value::{Key, Value};
 
 use super::capability as cap;
 use super::handler::{
-    ExpressionEvaluator, ExpressionRequest, Handler, HandlerContext, HandlerResult, LocalExecute,
-    OperationSpec, RegisterError, MAX_LOCAL_DISPATCH_DEPTH,
+    ExpressionEvaluator, ExpressionRequest, Handler, HandlerContext, HandlerHandle, HandlerResult,
+    HandlerSpec, LocalExecute, OperationSpec, RegisterError, SpecHandler, MAX_LOCAL_DISPATCH_DEPTH,
 };
 use super::identity::{self, Identity};
 use super::model::{self, hex, Entity, Envelope};
@@ -249,7 +249,9 @@ pub struct Peer {
     /// H1 — language-native handler bodies, keyed by peer-relative pattern. Private
     /// (H3): the only writers are `register_handler` / `unregister_handler` and the
     /// wire register/unregister ops, and the only reader is `route`.
-    native_handlers: RwLock<HashMap<String, Arc<dyn Handler>>>,
+    native_handlers: RwLock<HashMap<String, (u64, Arc<dyn Handler>)>>,
+    /// Monotonic registration generation, so a stale [`HandlerHandle`] closes nothing.
+    registration_generation: AtomicU64,
     /// H7 — the fallback evaluator for entity-native bodies.
     evaluator: RwLock<Option<Arc<dyn ExpressionEvaluator>>>,
     local_dispatch_counter: AtomicU64,
@@ -394,6 +396,7 @@ impl Peer {
             seed_policy,
             max_frame_bytes,
             native_handlers: RwLock::new(HashMap::new()),
+            registration_generation: AtomicU64::new(0),
             evaluator: RwLock::new(None),
             local_dispatch_counter: AtomicU64::new(0),
         };
@@ -472,28 +475,95 @@ impl Peer {
         self.max_frame_bytes
     }
 
-    /// H1 — install a language-native handler body at a pattern the peer was not
-    /// compiled with.
+    /// H1 / `SDK-OPERATIONS` §11.6 — install a language-native handler body at a pattern
+    /// the peer was not compiled with, and get back the handle that removes it.
     ///
-    /// Does the same work the wire `system/handler:register` op does — binds the
-    /// `system/handler` entity at the pattern, the interface entity, the handler's
-    /// self-issued signed grant and that grant's signature at the §3.5 pointer — so
-    /// §6.6 resolution finds it, and then puts the body in the container `route`
-    /// reads. Install at composition time, before the peer begins listening.
+    /// Does the same work the wire `system/handler:register` op does — the spec's types
+    /// at `system/type/*`, the `system/handler` entity at the pattern, the handler's
+    /// self-issued signed grant (scope = `internal_scope`, EMPTY when `None`) and that
+    /// grant's signature at the §3.5 pointer, the interface entity — so §6.6 resolution
+    /// finds it, and then puts the body in the container `route` reads. Install at
+    /// composition time, before the peer begins listening.
     ///
-    /// Refuses (H3) an invalid pattern and a pattern at which a handler — built-in, native
-    /// or wire-registered — is already bound. It does NOT refuse `system/*`: see the
-    /// module note in `handler.rs` (withdrawn at 0.8.2.13; SDK-OPERATIONS v1.12).
-    pub fn register_handler(&self, handler: Arc<dyn Handler>) -> Result<(), RegisterError> {
-        let pattern = handler.pattern().to_string();
+    /// Refuses (H3, §11.6.1, §12.5) an invalid spec with `400 invalid_handler_spec` and a
+    /// pattern at which a handler — built-in, native or wire-registered — is already bound
+    /// with `409 pattern_collision`, before writing anything. It does NOT refuse
+    /// `system/*` (§11.6 v1.13; see the module note in `handler.rs`).
+    ///
+    /// **The returned handle unregisters on drop.** Keep it, or `detach()` it.
+    pub fn register_handler<B>(
+        self: &Arc<Self>,
+        spec: HandlerSpec,
+        body: B,
+    ) -> Result<HandlerHandle, RegisterError>
+    where
+        B: Fn(&HandlerContext<'_>) -> HandlerResult + Send + Sync + 'static,
+    {
+        let pattern = spec.pattern.clone();
+        let generation = self.register_spec(spec, Arc::new(body))?;
+        Ok(HandlerHandle {
+            peer: Arc::downgrade(self),
+            pattern,
+            generation,
+            closed: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    /// [`Peer::register_handler`] for a body that carries its own spec as a [`Handler`], installed
+    /// for the life of the peer — no handle, so it needs only `&Peer`. Remove it with
+    /// [`Peer::unregister_handler`]. This is the pre-handle surface, renamed.
+    ///
+    /// **Not a keystone peer contract binding, and not certified.** `install.handler` measures
+    /// [`Peer::register_handler`]; no contract case reaches this function. It shares the install
+    /// (the same private `register_spec` writes and refusals) and differs in what it can express: a
+    /// [`Handler`] carries no types, and its `internal_scope` is `None` when `grants()` is empty.
+    /// Build on `register_handler(spec, body)`, and `.detach()` the handle for a peer-lifetime
+    /// install.
+    pub fn install_handler(&self, handler: Arc<dyn Handler>) -> Result<(), RegisterError> {
+        let spec = HandlerSpec {
+            pattern: handler.pattern().to_string(),
+            name: handler.name().to_string(),
+            description: None,
+            operations: handler.operations(),
+            internal_scope: Some(handler.grants()).filter(|g| !g.is_empty()),
+            types: vec![],
+        };
+        let body = move |ctx: &HandlerContext<'_>| handler.handle(ctx);
+        self.register_spec(spec, Arc::new(body)).map(|_| ())
+    }
+
+    /// The §11.6.1 install both surfaces share. Returns the registration's generation.
+    fn register_spec(
+        &self,
+        spec: HandlerSpec,
+        body: Arc<super::handler::BodyFn>,
+    ) -> Result<u64, RegisterError> {
+        let pattern = spec.pattern.clone();
         if !is_concrete_pattern(&pattern) {
-            return Err(RegisterError::InvalidPattern(pattern));
+            return Err(RegisterError::InvalidHandlerSpec(format!(
+                "pattern '{pattern}' is not a concrete peer-relative path"
+            )));
         }
-        let (name, operations, grants) = (
-            handler.name().to_string(),
-            OperationSpec::operations_value(&handler.operations()),
-            handler.grants(),
-        );
+        if spec.operations.is_empty() {
+            return Err(RegisterError::InvalidHandlerSpec(format!(
+                "'{pattern}' declares no operations"
+            )));
+        }
+        let name = spec.name.clone();
+        let operations = OperationSpec::operations_value(&spec.operations);
+        let grants = spec.internal_scope.clone().unwrap_or_default();
+        let internal_scope = spec.internal_scope.clone().map(Value::Array);
+        let types = if spec.types.is_empty() {
+            None
+        } else {
+            Some(Value::Map(
+                spec.types
+                    .iter()
+                    .map(|(k, v)| (Key::Text(k.clone()), v.clone()))
+                    .collect(),
+            ))
+        };
+        let generation = self.registration_generation.fetch_add(1, Ordering::SeqCst) + 1;
         {
             // Check and claim under the lock; bind after releasing it, because a bind
             // fires emit consumers and a consumer may itself ask about handlers. Until
@@ -504,17 +574,43 @@ impl Peer {
             if container.contains_key(&pattern)
                 || bound.is_some_and(|e| e.typ == "system/handler")
             {
-                return Err(RegisterError::AlreadyRegistered(pattern));
+                return Err(RegisterError::PatternCollision(pattern));
             }
-            container.insert(pattern.clone(), handler);
+            let handler: Arc<dyn Handler> = Arc::new(SpecHandler { spec, body });
+            container.insert(pattern.clone(), (generation, handler));
         }
-        self.bind_handler_entities(&pattern, &name, operations, None, None, None, grants);
-        Ok(())
+        self.bind_handler_entities(
+            &pattern,
+            &name,
+            operations,
+            None,
+            internal_scope.as_ref(),
+            types.as_ref(),
+            grants,
+        );
+        Ok(generation)
     }
 
-    /// Remove a handler installed with [`Peer::register_handler`], unbinding the
-    /// entities it bound. Returns `false` when no native handler was installed at the
-    /// pattern (a wire-registered handler is left to the wire `unregister` op).
+    /// §11.6.2 close: dispatch index first, tree second — only if the live registration
+    /// at `pattern` is still the one `generation` names.
+    pub(crate) fn close_registration(&self, pattern: &str, generation: u64) -> bool {
+        let removed = {
+            let mut container = self.native_handlers.write().unwrap();
+            match container.get(pattern) {
+                Some((g, _)) if *g == generation => container.remove(pattern).is_some(),
+                _ => false,
+            }
+        };
+        if removed {
+            self.unbind_handler_entities(pattern);
+        }
+        removed
+    }
+
+    /// Remove whatever native handler is installed at `pattern`, unbinding the entities it
+    /// bound, regardless of which handle installed it. Prefer [`HandlerHandle::close`].
+    /// Returns `false` when no native handler was installed there (a wire-registered
+    /// handler is left to the wire `unregister` op).
     pub fn unregister_handler(&self, pattern: &str) -> bool {
         let removed = self.native_handlers.write().unwrap().remove(pattern).is_some();
         if removed {
@@ -798,7 +894,12 @@ impl Peer {
                 // H1 — THE READ SITE. A language-native body installed for the resolved
                 // pattern answers first. The Arc is cloned out so the container lock is
                 // not held while third-party code runs (a body may itself register).
-                let native = self.native_handlers.read().unwrap().get(&stripped).cloned();
+                let native = self
+                    .native_handlers
+                    .read()
+                    .unwrap()
+                    .get(&stripped)
+                    .map(|(_, h)| h.clone());
                 if let Some(h) = native {
                     return guarded(|| h.handle(&ctx));
                 }

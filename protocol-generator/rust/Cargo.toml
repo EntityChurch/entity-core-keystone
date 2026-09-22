@@ -33,6 +33,7 @@ rust-version = "1.96"
 exclude = [
     "output/",
     "target/",
+    "contract/",
     "status/",
     "arch/",
     "profile.toml",

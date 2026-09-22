@@ -909,6 +909,35 @@ pub fn multi_granter_value(signers: &[Vec<u8>], threshold: u64) -> Value {
 #[cfg(test)]
 mod tests;
 
+/// `SDK-OPERATIONS` §11.3 SEC-3 — whether `identity_hash` appears as a GRANTER in the
+/// authority chain of the capability whose content hash is `cap_hash` (in the chain, not
+/// merely at its root — core §5.5), and that chain verifies for this peer. A handler that
+/// embeds a caller-supplied capability in an entity it creates asks this before persisting.
+///
+/// `false` for a capability that cannot be resolved (from the envelope's `included` or the
+/// store), whose chain is unreachable or too deep, or which does not verify.
+pub fn identity_in_authority_chain(
+    env: &Envelope,
+    st: &Store,
+    local_peer: &str,
+    cap_hash: &[u8],
+    identity_hash: &[u8],
+) -> bool {
+    let cap = match resolve(env, st, cap_hash) {
+        Some(c) if c.typ == "system/capability/token" => c,
+        _ => return false,
+    };
+    if !matches!(verify_capability_chain(env, st, local_peer, &cap), Ok(Verdict::Allow)) {
+        return false;
+    }
+    match collect_chain(env, st, &cap) {
+        ChainResult::Chain(links) => links
+            .iter()
+            .any(|l| l.bytes_field("granter") == Some(identity_hash)),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn verify_capability_chain_for_test(
     env: &Envelope,

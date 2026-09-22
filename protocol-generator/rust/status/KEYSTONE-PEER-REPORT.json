@@ -1,0 +1,1002 @@
+{
+  "contract": "keystone-peer-contract",
+  "contract_version": "2.0-draft.1",
+  "contract_digest": "b5162f20d1e378381006ceefccb037d7b3548acbb6928021a7efdb2c35fe5306",
+  "peer": "rust",
+  "generated_by": "tools/peer-contract/report.py",
+  "measured_at": "2026-09-13T20:25:34Z",
+  "verdict": "certified",
+  "core_conformance": {
+    "report": "protocol-generator/rust/status/CONFORMANCE-REPORT.json",
+    "report_sha256": "b9c2bfbf29ad4953c57a1a9289be04cb405cade89d44df3d8c3d5743feaad4bc",
+    "executed_check_set_digest": "7aa6f3de0c672ff674f35694737ddcf338a677adb6972f28f95d1dc522d9f4fe",
+    "pinned_check_set_digest": "7aa6f3de0c672ff674f35694737ddcf338a677adb6972f28f95d1dc522d9f4fe",
+    "total": 778,
+    "passed": 335,
+    "warned": 336,
+    "failed": 0,
+    "skipped": 107,
+    "skips_note": "core-profile carve-out skips; every one is explained by tools/skip-provenance-gate.py",
+    "starved_categories": [],
+    "ok": true
+  },
+  "requirements": [
+    {
+      "name": "run.cli",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [],
+      "cases": [
+        {
+          "id": "run.cli/all-flags-start",
+          "pass": true,
+          "control": false,
+          "observed": "started with --port --bind --name --seed-policy --max-frame-bytes --ready-file"
+        },
+        {
+          "id": "run.cli/unknown-flag-refused",
+          "pass": true,
+          "control": true,
+          "observed": "no readiness record; exit 2"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "entity_core_protocol::peer::host::parse_args; bin entity-peer-host"
+    },
+    {
+      "name": "run.identity",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [],
+      "cases": [
+        {
+          "id": "run.identity/peer-id-from-keypair",
+          "pass": true,
+          "control": false,
+          "observed": "peer_id=2KJZJp4wsMbzG7gY1awx936n4er96oRnNfo7gByACopWAg"
+        },
+        {
+          "id": "run.identity/handshake-peer-id-matches",
+          "pass": true,
+          "control": true,
+          "observed": "hello peer_id=2KJZJp4wsMbzG7gY1awx936n4er96oRnNfo7gByACopWAg"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "entity_core_protocol::peer::host::load_named_seed"
+    },
+    {
+      "name": "run.ready",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [],
+      "cases": [
+        {
+          "id": "run.ready/line-is-record",
+          "pass": true,
+          "control": false,
+          "observed": "record=keystone-peer-ready/1 missing=[]"
+        },
+        {
+          "id": "run.ready/ready-file-matches-line",
+          "pass": true,
+          "control": true,
+          "observed": "file read err=<nil> equal=true"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "entity_core_protocol::peer::host::ready_record (READY_RECORD = keystone-peer-ready/1)"
+    },
+    {
+      "name": "run.serve",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [],
+      "cases": [
+        {
+          "id": "run.serve/bind-flag-honored",
+          "pass": true,
+          "control": true,
+          "observed": "addr=0.0.0.0:45107"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "--bind ADDR (run_host binds TcpListener on it)"
+    },
+    {
+      "name": "run.posture",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [],
+      "cases": [
+        {
+          "id": "run.posture/digest-is-file-sha256",
+          "pass": true,
+          "control": false,
+          "observed": "posture=file digest=fc5e916ff6a17f981ae57c8bb75d3a7454b764f8de1b195695177df6b6b54ae7"
+        },
+        {
+          "id": "run.posture/narrow-identity-reaches-its-handler",
+          "pass": true,
+          "control": false,
+          "observed": "200 "
+        },
+        {
+          "id": "run.posture/narrow-identity-refused-elsewhere",
+          "pass": true,
+          "control": true,
+          "observed": "403 capability_denied"
+        },
+        {
+          "id": "run.posture/stranger-refused",
+          "pass": true,
+          "control": true,
+          "observed": "403 capability_denied"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "PeerConfig::seed_policy(SeedPolicy); SeedPolicy::{standard, debug_open, of, from_json, from_file}"
+    },
+    {
+      "name": "run.limits",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [],
+      "cases": [
+        {
+          "id": "run.limits/echoed",
+          "pass": true,
+          "control": false,
+          "observed": "max_frame_bytes=262144"
+        },
+        {
+          "id": "run.limits/under-budget-accepted",
+          "pass": true,
+          "control": false,
+          "observed": "200 "
+        },
+        {
+          "id": "run.limits/over-budget-refused",
+          "pass": true,
+          "control": true,
+          "observed": "0 error: write: write tcp 127.0.0.1:58932->127.0.0.1:45107: write: connection reset by peer"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "PeerConfig::max_frame_bytes(usize); Peer::max_frame_bytes()"
+    },
+    {
+      "name": "run.stop",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [],
+      "cases": [
+        {
+          "id": "run.stop/sigterm-releases-port",
+          "pass": true,
+          "control": true,
+          "observed": "exited within 5s=true port refuses=true"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "process ends by signal on SIGTERM (crate forbids unsafe; no handler)"
+    },
+    {
+      "name": "embed.host_main",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [],
+      "cases": [
+        {
+          "id": "embed.host_main/composed-host-serves-fixtures",
+          "pass": true,
+          "control": false,
+          "observed": "witness=true contract_host=true"
+        },
+        {
+          "id": "embed.host_main/bare-host-record-matches",
+          "pass": true,
+          "control": true,
+          "observed": "same fields=true contract_host=false witness=404 handler_not_found"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "entity_core_protocol::peer::{run_host(argv, configure), run_host_with(argv, extra_record_fields, configure)}"
+    },
+    {
+      "name": "embed.package",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [
+        "H4"
+      ],
+      "cases": [
+        {
+          "id": "embed.package/contract-host-is-a-separate-package",
+          "pass": true,
+          "control": true,
+          "observed": "package=\"entity-core-protocol-rust-contract-host\" depends_on=\"entity-core-protocol-rust\""
+        }
+      ],
+      "verdict": "pass",
+      "binding": "separate package: protocol-generator/rust/contract/host (entity-core-protocol-rust-contract-host)"
+    },
+    {
+      "name": "embed.create",
+      "level": "REQUIRED",
+      "evidence": "local",
+      "supersedes": [],
+      "tests": [
+        "embed_create__two_peers_in_one_process_and_a_listenerless_peer"
+      ],
+      "tests_run": 1,
+      "min_tests": 1,
+      "verdict": "pass",
+      "binding": "Peer::create_with(CreateOptions, PeerConfig) -> Peer (wrap in Arc to install handlers)"
+    },
+    {
+      "name": "embed.data",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [],
+      "cases": [
+        {
+          "id": "embed.data/put-hash-is-content-hash",
+          "pass": true,
+          "control": false,
+          "observed": "200  hash=00554d01dfbee87eb7c9dccf0c79c0dcc65dfb9ddac3bda4332edeff91709a80c3 accepted=true"
+        },
+        {
+          "id": "embed.data/get-by-hash",
+          "pass": true,
+          "control": false,
+          "observed": "200  found=true type=contract/data-item marker=put-n2745bd2fe503"
+        },
+        {
+          "id": "embed.data/get-absent-not-found",
+          "pass": true,
+          "control": true,
+          "observed": "200  found=false"
+        },
+        {
+          "id": "embed.data/bind-visible-on-wire",
+          "pass": true,
+          "control": false,
+          "observed": "bind 200  accepted=true; wire get 200  type=contract/data-item marker=bind-n2745bd2fe503"
+        },
+        {
+          "id": "embed.data/wire-write-visible-in-process",
+          "pass": true,
+          "control": false,
+          "observed": "put err=<nil>; get_at 200  found=true hash=0002f1815e64ea0febc53d339b30bd7ba44a160d9adc2ce975c886ceb2d15a072c marker=wire-n2745bd2fe503"
+        },
+        {
+          "id": "embed.data/bind-carries-context",
+          "pass": true,
+          "control": false,
+          "observed": "entries=1 last=\"A|tree|/2KJZJp4wsMbzG7gY1awx936n4er96oRnNfo7gByACopWAg/app/contract/events/data|0051597e219d45e342a998a89b241f34e0b06e2f16e089989dc9ee15ef74185a97\""
+        },
+        {
+          "id": "embed.data/unbind-removes",
+          "pass": true,
+          "control": true,
+          "observed": "unbind 200 ; wire get 404 not_found; get_at 200  found=false"
+        },
+        {
+          "id": "embed.data/unbind-carries-context",
+          "pass": true,
+          "control": false,
+          "observed": "entries=2 last=\"A|tree|/2KJZJp4wsMbzG7gY1awx936n4er96oRnNfo7gByACopWAg/app/contract/events/data|0051597e219d45e342a998a89b241f34e0b06e2f16e089989dc9ee15ef74185a97\""
+        },
+        {
+          "id": "embed.data/forged-hash-not-filed",
+          "pass": true,
+          "control": true,
+          "observed": "forge 200  constructible=true put_accepted=false bind_accepted=false; get(victim) 200  found=false; wire get 404 not_found"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "Peer::store: Store::{put_entity -> bool, get_by_hash, bind_with_context -> bool, get_at, unbind_with_context}; Store::{bind, unbind} are the autonomous (no-context) forms; a write whose Entity::content_hash_holds() is false returns false and stores nothing"
+    },
+    {
+      "name": "install.handler",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [
+        "H1",
+        "H3"
+      ],
+      "cases": [
+        {
+          "id": "install.handler/witness",
+          "pass": true,
+          "control": false,
+          "observed": "200  witness=n2745bd2fe503:app/contract/witness:e-n2745bd2fe503"
+        },
+        {
+          "id": "install.handler/uninstalled-404",
+          "pass": true,
+          "control": true,
+          "observed": "404 handler_not_found"
+        },
+        {
+          "id": "install.handler/interface-bound",
+          "pass": true,
+          "control": false,
+          "observed": "200  type=system/handler/interface echo.output_type=contract/witness-result"
+        },
+        {
+          "id": "install.handler/collision-409",
+          "pass": true,
+          "control": false,
+          "observed": "200  \u2192 409 pattern_collision"
+        },
+        {
+          "id": "install.handler/builtin-collision-409",
+          "pass": true,
+          "control": false,
+          "observed": "409 pattern_collision"
+        },
+        {
+          "id": "install.handler/invalid-spec-400",
+          "pass": true,
+          "control": false,
+          "observed": "400 invalid_handler_spec"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "Peer::register_handler(self: &Arc<Peer>, HandlerSpec, Fn(&HandlerContext) -> HandlerResult) -> Result<HandlerHandle, RegisterError>; Peer::install_handler(Arc<dyn Handler>) is NOT this binding and is not certified"
+    },
+    {
+      "name": "install.remove",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [],
+      "cases": [
+        {
+          "id": "install.remove/close-idempotent",
+          "pass": true,
+          "control": false,
+          "observed": "before=200 first=true second=false (200 )"
+        },
+        {
+          "id": "install.remove/closed-404",
+          "pass": true,
+          "control": true,
+          "observed": "404 handler_not_found"
+        },
+        {
+          "id": "install.remove/artifacts-gone",
+          "pass": true,
+          "control": false,
+          "observed": "still bound: []"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "HandlerHandle::close() -> bool (idempotent); Drop closes; HandlerHandle::detach() keeps it for the peer's life"
+    },
+    {
+      "name": "install.grant",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [],
+      "cases": [
+        {
+          "id": "install.grant/inside-scope-allowed",
+          "pass": true,
+          "control": false,
+          "observed": "200  inner=200 "
+        },
+        {
+          "id": "install.grant/outside-scope-refused",
+          "pass": true,
+          "control": true,
+          "observed": "200 capability_denied inner=403 capability_denied"
+        },
+        {
+          "id": "install.grant/null-scope-refused",
+          "pass": true,
+          "control": false,
+          "observed": "200 capability_denied inner=403 capability_denied"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "HandlerSpec::internal_scope(Vec<Value>); None mints an empty-scope grant"
+    },
+    {
+      "name": "install.types",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [],
+      "cases": [
+        {
+          "id": "install.types/bound",
+          "pass": true,
+          "control": false,
+          "observed": "200  type=system/type name=contract/witness-result"
+        },
+        {
+          "id": "install.types/survive-close",
+          "pass": true,
+          "control": true,
+          "observed": "200 "
+        }
+      ],
+      "verdict": "pass",
+      "binding": "HandlerSpec::with_type(name, definition)"
+    },
+    {
+      "name": "install.consumer",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [
+        "H2"
+      ],
+      "cases": [
+        {
+          "id": "install.consumer/registration-order",
+          "pass": true,
+          "control": false,
+          "observed": "put=200  A@1 B@2 log=[C|content|000adee826f258e228d3f06c02d21cef201355da8cef9535024e4c92569ab71ea4| A|tree|/2KJZJp4wsMbzG7gY1awx936n4er96oRnNfo7gByACopWAg/app/contract/events/1|0051597e219d45e342a998a89b241f34e0b06e2f16e089989dc9ee15ef74185a97 B|tree|/2KJZJp4wsMbzG7gY1awx936n4er96oRnNfo7gByACopWAg/app/contract/events/1|0051597e219d45e342a998a89b241f34e0b06e2f16e089989dc9ee15ef74185a97]"
+        },
+        {
+          "id": "install.consumer/content-before-tree",
+          "pass": true,
+          "control": false,
+          "observed": "C@0 A@1"
+        },
+        {
+          "id": "install.consumer/unregister-stops-delivery",
+          "pass": true,
+          "control": true,
+          "observed": "removed=true A@4 B@-1"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "Store::{register_tree_consumer, register_content_consumer} -> ConsumerId; Store::unregister_consumer(ConsumerId) -> bool"
+    },
+    {
+      "name": "install.evaluator",
+      "level": "MODULE",
+      "evidence": "driver",
+      "supersedes": [
+        "H7"
+      ],
+      "cases": [
+        {
+          "id": "install.evaluator/fallback-answers",
+          "pass": true,
+          "control": false,
+          "observed": "200  evaluated_by=\"contract-evaluator\" value=\"v-n2745bd2fe503\""
+        },
+        {
+          "id": "install.evaluator/literal-floor-first",
+          "pass": true,
+          "control": true,
+          "observed": "200  evaluated_by=\"\""
+        }
+      ],
+      "verdict": "pass",
+      "binding": "Peer::set_expression_evaluator(Option<Arc<dyn ExpressionEvaluator>>)"
+    },
+    {
+      "name": "context.contents",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [],
+      "cases": [
+        {
+          "id": "context.contents/fields",
+          "pass": true,
+          "control": true,
+          "observed": "200  mismatches=[]"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "HandlerContext::{operation, params, resource, pattern, suffix, author, caller_capability, handler_grant, envelope, exec_context}"
+    },
+    {
+      "name": "context.unforgeable",
+      "level": "REQUIRED",
+      "evidence": "local",
+      "supersedes": [],
+      "tests": [
+        "context_unforgeable__a_consumer_cannot_construct_a_context",
+        "context_unforgeable__control_the_type_is_usable_outside_the_peer"
+      ],
+      "tests_run": 2,
+      "min_tests": 2,
+      "verdict": "pass",
+      "binding": "HandlerContext fields are pub(crate); no public constructor (compile-time, E0451)"
+    },
+    {
+      "name": "context.dispatch",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [],
+      "cases": [
+        {
+          "id": "context.dispatch/caller-authority-allowed",
+          "pass": true,
+          "control": false,
+          "observed": "200  inner=200 "
+        },
+        {
+          "id": "context.dispatch/no-escalation-refused",
+          "pass": true,
+          "control": true,
+          "observed": "outer 200 capability_denied inner=403 capability_denied"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "HandlerContext::dispatch_execute(LocalExecute) -> HandlerResult"
+    },
+    {
+      "name": "context.frame_budget",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [
+        "H6"
+      ],
+      "cases": [
+        {
+          "id": "context.frame_budget/by-value",
+          "pass": true,
+          "control": true,
+          "observed": "200  frame_budget=262144"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "HandlerContext::frame_budget() -> usize"
+    },
+    {
+      "name": "context.authority_chain",
+      "level": "REQUIRED",
+      "evidence": "local",
+      "supersedes": [],
+      "tests": [
+        "context_authority_chain__in_chain_accepts_and_not_in_chain_denies"
+      ],
+      "tests_run": 1,
+      "min_tests": 1,
+      "verdict": "pass",
+      "binding": "HandlerContext::identity_in_authority_chain(&[u8]) -> bool; capability::identity_in_authority_chain"
+    },
+    {
+      "name": "event.context",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [
+        "H8"
+      ],
+      "cases": [
+        {
+          "id": "event.context/author-is-remote-caller",
+          "pass": true,
+          "control": true,
+          "observed": "A entry=\"A|tree|/2KJZJp4wsMbzG7gY1awx936n4er96oRnNfo7gByACopWAg/app/contract/events/1|0051597e219d45e342a998a89b241f34e0b06e2f16e089989dc9ee15ef74185a97\""
+        },
+        {
+          "id": "event.context/sub-dispatch-write-attributed-to-caller",
+          "pass": true,
+          "control": false,
+          "observed": "entry=\"A|tree|/2KJZJp4wsMbzG7gY1awx936n4er96oRnNfo7gByACopWAg/app/contract/events/sub|0051597e219d45e342a998a89b241f34e0b06e2f16e089989dc9ee15ef74185a97\""
+        }
+      ],
+      "verdict": "pass",
+      "binding": "TreeChangeEvent::context: Option<ExecContext>; Store::bind_with_context"
+    },
+    {
+      "name": "authority.path_permission",
+      "level": "REQUIRED",
+      "evidence": "driver",
+      "supersedes": [
+        "H9"
+      ],
+      "cases": [
+        {
+          "id": "authority.path_permission/accept",
+          "pass": true,
+          "control": false,
+          "observed": "200  allowed=true"
+        },
+        {
+          "id": "authority.path_permission/deny-operation",
+          "pass": true,
+          "control": true,
+          "observed": "200  allowed=false"
+        },
+        {
+          "id": "authority.path_permission/deny-path",
+          "pass": true,
+          "control": false,
+          "observed": "200  allowed=false"
+        },
+        {
+          "id": "authority.path_permission/deny-handler",
+          "pass": true,
+          "control": false,
+          "observed": "200  allowed=false"
+        }
+      ],
+      "verdict": "pass",
+      "binding": "capability::check_path_permission(operation, path, token, handler_pattern, local_peer) -> bool"
+    }
+  ],
+  "summary": {
+    "required": 23,
+    "required_pass": 23,
+    "modules": {
+      "install.evaluator": "pass"
+    },
+    "driver_cases": 56,
+    "driver_cases_pass": 56
+  },
+  "driver": {
+    "version": "kpc-driver/1",
+    "setup_error": null,
+    "ready_record": {
+      "addr": "0.0.0.0:45107",
+      "contract_host": {
+        "depends_on": "entity-core-protocol-rust",
+        "package": "entity-core-protocol-rust-contract-host"
+      },
+      "limits": {
+        "max_chain_depth": 64,
+        "max_frame_bytes": 262144
+      },
+      "peer_id": "2KJZJp4wsMbzG7gY1awx936n4er96oRnNfo7gByACopWAg",
+      "posture": "file",
+      "posture_digest": "fc5e916ff6a17f981ae57c8bb75d3a7454b764f8de1b195695177df6b6b54ae7",
+      "record": "keystone-peer-ready/1",
+      "transport": "tcp",
+      "validate": false
+    }
+  },
+  "delivery": {
+    "commit": "93f6f65fdc30721537a0d94edc8e1584330c13cb",
+    "tree_dirty": false,
+    "artifacts": {
+      "bare_host": {
+        "path": "protocol-generator/rust/target/release/entity-peer-host",
+        "sha256": "057f358392e884090e3d78d38aae55c318419a442fa5ce949634d17def4eb0c2"
+      },
+      "contract_host": {
+        "path": "protocol-generator/rust/contract/host/target/release/kpc-host",
+        "sha256": "ea1c477ff7dca148fce88d25d0a12319052f1159efc7cc041d0e79b69173b984"
+      }
+    },
+    "toolchain_image": {
+      "name": "entity-core-keystone/rust-toolchain:latest",
+      "id": "ebccc3017a4abac13e4494edf0e9cbc3f4b38d29e2760d945e9db2e3315fe781"
+    },
+    "oracle_provenance_sha256": "6a80bbf58dafe0990227dfa879af76a1b93be4e536e886724f5bcb57b33e2ba3"
+  },
+  "plants": {
+    "generated_by": "tools/peer-contract/plant.py",
+    "peer": "rust",
+    "baseline_green": true,
+    "plants": [
+      {
+        "name": "read-site-dead",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "embed.host_main/composed-host-serves-fixtures",
+          "install.handler/witness"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "authority.path_permission/accept",
+          "authority.path_permission/deny-handler",
+          "authority.path_permission/deny-operation",
+          "authority.path_permission/deny-path",
+          "context.contents/fields",
+          "context.dispatch/caller-authority-allowed",
+          "context.dispatch/no-escalation-refused",
+          "context.frame_budget/by-value",
+          "embed.data/bind-carries-context",
+          "embed.data/bind-visible-on-wire",
+          "embed.data/forged-hash-not-filed",
+          "embed.data/get-absent-not-found",
+          "embed.data/get-by-hash",
+          "embed.data/put-hash-is-content-hash",
+          "embed.data/unbind-carries-context",
+          "embed.data/unbind-removes",
+          "embed.data/wire-write-visible-in-process",
+          "embed.host_main/composed-host-serves-fixtures",
+          "event.context/author-is-remote-caller",
+          "event.context/sub-dispatch-write-attributed-to-caller",
+          "install.consumer/content-before-tree",
+          "install.consumer/registration-order",
+          "install.consumer/unregister-stops-delivery",
+          "install.grant/inside-scope-allowed",
+          "install.grant/null-scope-refused",
+          "install.grant/outside-scope-refused",
+          "install.handler/builtin-collision-409",
+          "install.handler/collision-409",
+          "install.handler/invalid-spec-400",
+          "install.handler/witness",
+          "install.remove/artifacts-gone",
+          "install.remove/close-idempotent",
+          "install.remove/closed-404",
+          "run.posture/narrow-identity-reaches-its-handler"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "collision-unchecked",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "install.handler/builtin-collision-409",
+          "install.handler/collision-409"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "embed.host_main/composed-host-serves-fixtures",
+          "install.handler/builtin-collision-409",
+          "install.handler/collision-409",
+          "install.handler/interface-bound",
+          "install.handler/witness"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "close-leaves-tree",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "install.remove/artifacts-gone"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "install.remove/artifacts-gone",
+          "install.remove/closed-404"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "internal-scope-ignored",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "install.grant/null-scope-refused",
+          "install.grant/outside-scope-refused"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "install.grant/null-scope-refused",
+          "install.grant/outside-scope-refused"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "consumer-order-reversed",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "install.consumer/registration-order"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "install.consumer/registration-order"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "content-consumer-silent",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "install.consumer/content-before-tree"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "install.consumer/content-before-tree"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "budget-is-a-literal",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "context.frame_budget/by-value"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "context.frame_budget/by-value"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "event-author-is-local-peer",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "event.context/author-is-remote-caller",
+          "event.context/sub-dispatch-write-attributed-to-caller"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "embed.data/bind-carries-context",
+          "embed.data/unbind-carries-context",
+          "event.context/author-is-remote-caller",
+          "event.context/sub-dispatch-write-attributed-to-caller"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "path-permission-ignores-operation",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "authority.path_permission/deny-operation"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "authority.path_permission/deny-operation"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "evaluator-before-literal-floor",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "install.evaluator/literal-floor-first"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "install.evaluator/literal-floor-first"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "ready-file-drifts",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "run.ready/ready-file-matches-line"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "run.ready/ready-file-matches-line"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "unknown-flag-accepted",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "run.cli/unknown-flag-refused"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "run.cli/unknown-flag-refused"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "context-constructible-outside-the-peer",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [],
+        "expect_local_fail": [
+          "context_unforgeable__a_consumer_cannot_construct_a_context"
+        ],
+        "red_cases": [],
+        "red_local_tests": [
+          "context_unforgeable__a_consumer_cannot_construct_a_context"
+        ],
+        "run_exit": 0
+      },
+      {
+        "name": "data-put-stores-nothing",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "embed.data/get-by-hash"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "embed.data/get-by-hash"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "data-get-answers-absent",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "embed.data/get-absent-not-found"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "embed.data/forged-hash-not-filed",
+          "embed.data/get-absent-not-found"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "data-hash-trusted",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "embed.data/forged-hash-not-filed"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "embed.data/forged-hash-not-filed"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "data-unbind-leaves-binding",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "embed.data/unbind-removes"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "embed.data/unbind-removes",
+          "install.remove/artifacts-gone",
+          "install.remove/closed-404"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "data-bind-drops-context",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "embed.data/bind-carries-context",
+          "event.context/author-is-remote-caller"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "embed.data/bind-carries-context",
+          "event.context/author-is-remote-caller",
+          "event.context/sub-dispatch-write-attributed-to-caller"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      },
+      {
+        "name": "data-unbind-drops-context",
+        "applied": true,
+        "caught": true,
+        "expect_fail": [
+          "embed.data/unbind-carries-context"
+        ],
+        "expect_local_fail": [],
+        "red_cases": [
+          "embed.data/unbind-carries-context"
+        ],
+        "red_local_tests": [],
+        "run_exit": 0
+      }
+    ],
+    "caught": 19,
+    "total": 19
+  }
+}

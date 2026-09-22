@@ -111,11 +111,13 @@ without it, requiring it would make conformance harder for zero interop gain, an
 is observable on the wire. But the extension generator cannot install into a peer that does not
 expose a seam, so the requirement has to exist *somewhere*. That somewhere is here.
 
-This is the **peer host contract** — H1–H6: handler installation after construction through a public
-registration surface that is reachable by dispatch; emit-consumer registration; the composition
-surface as the only public mutation path; both consumption modes (library, not only binary)
-reachable across the packaging boundary; the platform bindings declared per language in the profile;
-and the connection's frame budget readable by a handler body.
+This is the **peer host contract** — `docs/spec/SPEC-KEYSTONE-PEER.md`, H1–H9 at v1.0: handler
+installation after construction through a public registration surface that is reachable by dispatch;
+emit-consumer registration; the composition surface as the only public mutation path; both consumption
+modes reachable across the packaging boundary; the platform bindings declared per language; the
+connection's frame budget readable by a handler body; a delegable evaluator; execution context on
+events; a public path predicate. Its provisional successor — run · embed · extend, certified per peer by
+one shared driver — is `protocol-generator/shared/peer-contract/CONTRACT-DRAFT.md`.
 
 **Ownership is settled** (operator, 2026-09-02): the contract is keystone's, negotiated directly
 with `entity-system-generator` as the consumer. Architecture is not a party to it. What stays
@@ -126,9 +128,9 @@ those bind everyone, not only us.
 **Supersession: none. Nothing upstream can retire this, which is exactly why it carries the
 highest rot risk in the repo** — see the rule below.
 
-**Status: not yet taken into this tree.** The contract is drafted in the generator's repo and moves
-here when we take it. Its content is in flux and one peer of 46 is measured. When it lands, each
-peer's `profile.toml` declares its bindings in an **`[extension_host]`** block — `declined` is a
+**Status: taken, and executable.** v1.0 is pinned by digest and gated; the v2 draft ships with its
+suite (`tools/peer-contract/`), and one peer of 46 is certified against it. Each peer's `profile.toml`
+declares its v1.0 bindings in an **`[extension_host]`** block — `declined` is a
 value and silence is not, because a substrate that legitimately cannot host an extension is stating
 a fact about itself, exactly as `codec_strategy` does. *(The key is `[extension_host]` and not
 `[host]` because `[host]` already means something else in this tree — the language hosting an FFI

@@ -41,6 +41,20 @@ impl Entity {
         }
     }
 
+    /// Whether `hash` is the content hash of `{typ, data}` under the format code it carries.
+    ///
+    /// The fields are public, so an `Entity` can carry a hash it does not have — by a literal, or
+    /// by editing `data` after [`Entity::make`]. [`crate::peer::Store`] refuses such an entity:
+    /// the content store is an address space the authority path reads (a grantee resolved by
+    /// hash), so filing an entity under someone else's hash is the `included`-map forgery moved
+    /// in-process.
+    pub fn content_hash_holds(&self) -> bool {
+        match crate::varint::decode(&self.hash) {
+            Ok((format_code, _)) => content_hash(&self.typ, self.data.clone(), format_code) == self.hash,
+            Err(_) => false,
+        }
+    }
+
     /// Field accessor: the raw value at `key` (data must be a map).
     pub fn field(&self, key: &str) -> Option<&Value> {
         map_get(&self.data, key)

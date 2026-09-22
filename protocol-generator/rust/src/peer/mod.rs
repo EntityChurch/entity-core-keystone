@@ -14,6 +14,8 @@
 //! - [`transport`]  — TCP listener/dialer, the §6.11 reader-demux, two-peer loopback.
 //! - [`handler`]    — the extension-host surface: native handler install (H1/H3), the
 //!   frame budget (H6), the entity-native evaluator seam (H7), local dispatch.
+//! - [`host`]       — the peer's own host as a library function (`run_host`), and the
+//!   readiness record.
 //! - [`seed_policy`] — the §6.9a seed policy as a value, and its keystone file format.
 //!
 //! Idiom: `std::thread` + `std::sync` (no async runtime — A-RUST-003), `Result`/
@@ -24,6 +26,7 @@
 pub mod capability;
 pub mod core;
 pub mod handler;
+pub mod host;
 pub mod identity;
 mod json;
 pub mod model;
@@ -35,8 +38,10 @@ pub mod wire;
 
 pub use core::{Conn, CreateOptions, Peer, PeerConfig};
 pub use handler::{
-    ExpressionEvaluator, ExpressionRequest, FnHandler, Handler, HandlerContext, HandlerResult,
-    LocalExecute, OperationSpec, RegisterError,
+    ExpressionEvaluator, ExpressionRequest, FnHandler, Handler, HandlerContext, HandlerHandle,
+    HandlerResult, HandlerSpec, LocalExecute, OperationSpec, RegisterError,
 };
+pub use host::{run_host, run_host_announcing, run_host_with};
+pub use store::{ConsumerId, ContentStoreEvent, TreeChangeEvent};
 pub use model::{Entity, Envelope};
 pub use seed_policy::{SeedPolicy, SeedPolicyEntry};

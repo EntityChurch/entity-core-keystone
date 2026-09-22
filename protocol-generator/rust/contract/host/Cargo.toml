@@ -1,0 +1,24 @@
+# The keystone peer contract host for the rust peer — a SEPARATE PACKAGE.
+#
+# It depends on the peer ONLY through the peer's published package surface (a path dependency
+# standing in for the registry until the peer is published), so compiling it is the
+# `embed.package` observation: anything it reaches, a third party can reach. It is
+# `run_host(argv, install_fixtures)` and nothing else; the fixtures are specified exactly in
+# protocol-generator/shared/peer-contract/FIXTURE-HOST.md, and tools/peer-contract drives them.
+[package]
+name         = "entity-core-protocol-rust-contract-host"
+version      = "0.1.0"
+edition      = "2021"
+license      = "Apache-2.0"
+publish      = false
+rust-version = "1.96"
+
+# Its own workspace root, so the peer crate never mistakes it for a member.
+[workspace]
+
+[dependencies]
+entity-core-protocol-rust = { path = "../.." }
+
+[[bin]]
+name = "kpc-host"
+path = "src/main.rs"

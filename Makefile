@@ -316,6 +316,17 @@ lint:
 	@# 2026-09-12 this line exited 1 on any checkout without those reports.
 	@# Regression: plant a removed field, a corrupted verdict, or a deleted block.
 	@python3 tools/author-extension-host.py --check
+	@echo "lint: gating the keystone peer contract draft and its committed reports (read-only)…"
+	@# The fourteenth gate. protocol-generator/shared/peer-contract/ is the provisional v2 contract
+	@# (run · embed · extend · certify): requirements.toml is the machine truth and CONTRACT-DRAFT.md
+	@# the prose, and the two must name the same requirements, each with a normative statement, an
+	@# observation and — for a driver requirement — at least one CONTROL case, or its pass could be
+	@# vacuous. Every committed status/KEYSTONE-PEER-REPORT.json must have been written by
+	@# report.py and its verdict must recompute from its own rows. The run itself needs podman and is
+	@# tools/peer-contract/run.sh <peer>; this only checks what is committed.
+	@# Regression suite: `python3 tools/peer-contract/report.py --self-test`.
+	@python3 tools/peer-contract/report.py --check --quiet
+	@python3 tools/peer-contract/report.py --self-test >/dev/null 2>&1
 
 # fmt = autoformat (writes). Intentionally a no-op: generated source is formatted
 # by its own toolchain, and spec-data/<version>/ is a SHA-256-pinned immutable

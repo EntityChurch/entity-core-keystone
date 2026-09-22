@@ -244,7 +244,47 @@ authority model.
    point. This is that input for §5, and its exit condition — *a new suite that finds
    nothing* — is a real predicate over a stated denominator.
 
-### 5a. ⛔ The frame question — asked, and the answer is NO. Withdrawn 2026-09-12.
+### 5a. ⛔ The frame question — withdrawn 2026-09-12, and the withdrawal is SUPERSEDED. Read this box first.
+
+> ⛔ **This section's conclusion is wrong and its table has one wrong row. Do not read it as
+> closing the question.** Architecture reopened it in
+> `ROUTING-2026-09-12-f-entity-core-keystone-the-census-is-adopted-your-falsifier-already-fired-and-the-frame-withdrawal-is-reopened-on-one-wrong-row`,
+> and the design is now **RULED** (`entity-core-protocol`
+> `PROPOSAL-THE-FRAME-IS-A-CONSTANT-AND-WE-RECOMPUTE-IT-ON-EVERY-EVALUATION`, `acf9378`) with the
+> change **HELD** behind a trigger: tranches A/B/D driven green plus cohort convergence on
+> `0.8.2.22`. Two corrections, both re-derived here at the line rather than conceded:
+>
+> - **The K-of-N row below is wrong, and it failed toward the status quo.** §5.5 *Root trust*
+>   (`ENTITY-CORE-PROTOCOL.md:3019`) makes a K-of-N cap **non-portable by construction** — the
+>   local peer MUST be in `signers` and MUST have signed (M6), *"subsequent use is locally
+>   rooted"*, and *"cross-peer use of another participant's cap is not a model this primitive
+>   supports."* The only peer that ever evaluates such a cap is a signer holding its own copy, and
+>   it frames against **itself** — which is exactly what match-time does. No assembler ever picks
+>   one of the N. **Mint frame == match frame. Seven of seven.**
+> - **The conclusion did not follow from the table either way.** Having proved extensional
+>   equivalence, the withdrawal decided the residual on migration cost across 46 peers and three
+>   implementations. **That is a cost argument standing in for a design argument**, and cost does
+>   not decide this one. The design argument, which was never made here: the frame is a pure
+>   function of `(pattern, granter)` and `granter` is a content hash, so match-time recomputes on
+>   every evaluation a value constant since signing — and every §5.5a defect is a defect in
+>   recomputing that constant with the wrong input. Mint-time does not gate that class; it makes
+>   it unrepresentable.
+>
+> **And the case offered below as the reason to keep match-time framing is an open gap IN
+> match-time framing.** §5.5a canonicalizes against *"the granter's `peer_id`"*
+> (`:3081`) and a `system/capability/multi-granter` is `{signers, threshold}` inline in the cap's
+> data (`:1043`) — **no `peer_id` field and no separate entity to read one off.** So §5.5a is
+> undefined for a multi-granter root in the shipped text; the *"local"* in the row below is our
+> inference from §5.5's root-trust language, not a reading of §5.5a. **Measured, not assumed: all
+> 46 peers implement that inference** — e.g. `python/src/entity_core/peer/capability.py:407`
+> `_link_granter_peer`, whose docstring states it as a fallback. Forty-six peers implementing an
+> unstated rule and agreeing is cohort-consistency, not evidence the rule is written down.
+>
+> **What survives unchanged:** the extensional-equivalence result itself (now 7/7 rather than
+> 6/7), and the durable lesson at the end of this section, which is about recommendations and not
+> about frames.
+
+**Original record, kept for the argument it makes and NOT for its verdict:**
 
 ~~One design question, asked once rather than discovered cell by cell: the largest single
 multiplier in the space is frame-relative canonicalization at match time. Could
@@ -265,18 +305,25 @@ than the objection claimed**:
 | B delegates its `/{A}/*` onward as `*` | `/{B}/*`, refused by subset | `/{B}/*`, refused | no |
 | already-absolute and `/*/interior` | pass through | pass through | no |
 | `peers`, `operations` (id-scope) | never canonicalized | never canonicalized | no |
-| **K-of-N multi-granter root** | **local** (§5.5 *"subsequent use is locally rooted"*; M6 puts the verifier in the signer set) | **no single granter exists to freeze** | **YES — and mint-time is strictly worse** |
+| **K-of-N multi-granter root** | ~~**local**~~ | ~~**no single granter exists to freeze**~~ | ~~**YES — and mint-time is strictly worse**~~ **⛔ WRONG — see the box above. The evaluator is always a signer holding its own copy and frames against itself; mint frame == match frame.** |
 
-Extensionally equivalent in every single-granter case, which is every case that occurs; the
-one place they differ is the one place mint-time would need a special case it does not have.
+~~Extensionally equivalent in every single-granter case, which is every case that occurs; the
+one place they differ is the one place mint-time would need a special case it does not have.~~
+**Corrected: extensionally equivalent in all seven cases.**
 The ergonomic benefit — a human not typing a peer id — is authoring-time and survives either way.
 
 **And the bug class it was meant to delete is already gated.** Frame appears at four layers
 and **only L3 takes a non-local frame**; §5.5a pins it and ships three vectors
 (`authz_attenuation_foreign_granter_{1,deep,wildcard_leaf}`), which is what caught `swift` and
-`sql`. So the residual value is an algorithm simplification bought with a wire-affecting
+`sql`. ~~So the residual value is an algorithm simplification bought with a wire-affecting
 migration across 46 peers and three ground-up implementations, to remove a degree of freedom
-with one non-obvious answer and three vectors on it.
+with one non-obvious answer and three vectors on it.~~ **⛔ This is the cost argument the box
+above rejects. It is also incomplete on its own terms: gating a class is not the same as
+removing it, and arch's inspection found a case §5.5a does not define at all.** One clause
+does survive and is worth keeping, because it is what makes the deferral safe: **`frame` is a
+derived attribute of `(layer, dimension)` in this table, not a free axis in the `640 → 146`
+product — the change removes a hazard class, not cells, and the L3 vectors are owed either
+way.** Nothing in the coverage programme waits on it.
 
 **The durable half is about the recommendation, not the frame.** This repo's standing rule is
 that *the exculpation most likely to be wrong is the one WE wrote, because nothing routes it

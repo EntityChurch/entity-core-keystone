@@ -199,29 +199,198 @@ impl Handler for FnHandler {
 }
 
 /// Why [`Peer::register_handler`] refused an installation. The registration surface
-/// owns this refusal (H3); reaching the container any other way is the defect.
+/// owns this refusal (H3); reaching the container any other way is the defect. The
+/// statuses and code strings are `SDK-OPERATIONS` §12.5's, which every SDK spells alike.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RegisterError {
-    /// The pattern is empty, absolute, or carries an empty / `.` / `..` / wildcard
-    /// segment. A handler pattern is a concrete peer-relative path.
-    InvalidPattern(String),
-    /// A handler — native or wire-registered — already resolves at this pattern.
-    /// Unregister it first; silently replacing a live handler is not an install.
-    AlreadyRegistered(String),
+    /// `400 invalid_handler_spec` — the pattern is empty, absolute, or carries an empty /
+    /// `.` / `..` / wildcard segment, or the spec declares no operations.
+    InvalidHandlerSpec(String),
+    /// `409 pattern_collision` — a handler (built-in, native or wire-registered) is already
+    /// bound at this pattern. Close its handle first; silent replacement is not an install.
+    PatternCollision(String),
+}
+
+impl RegisterError {
+    /// The §12.5 status.
+    pub fn status(&self) -> u64 {
+        match self {
+            RegisterError::InvalidHandlerSpec(_) => 400,
+            RegisterError::PatternCollision(_) => 409,
+        }
+    }
+
+    /// The §12.5 code string.
+    pub fn code(&self) -> &'static str {
+        match self {
+            RegisterError::InvalidHandlerSpec(_) => "invalid_handler_spec",
+            RegisterError::PatternCollision(_) => "pattern_collision",
+        }
+    }
 }
 
 impl std::fmt::Display for RegisterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RegisterError::InvalidPattern(p) => write!(f, "invalid handler pattern '{p}'"),
-            RegisterError::AlreadyRegistered(p) => {
-                write!(f, "a handler is already registered at '{p}'")
+            RegisterError::InvalidHandlerSpec(p) => {
+                write!(f, "{} {}: {p}", self.status(), self.code())
             }
+            RegisterError::PatternCollision(p) => write!(
+                f,
+                "{} {}: a handler is already registered at '{p}'",
+                self.status(),
+                self.code()
+            ),
         }
     }
 }
 
 impl std::error::Error for RegisterError {}
+
+/// What [`Peer::register_handler`] installs (`SDK-OPERATIONS` §11.6 `HandlerSpec`).
+///
+/// Built with [`HandlerSpec::new`] and the builder methods, so a field added later never
+/// breaks a caller's struct literal.
+#[derive(Clone, Debug, Default)]
+pub struct HandlerSpec {
+    /// Bare peer-relative pattern (`app/greeter`, `system/content`). A leading `/` is an
+    /// error. `system/*` is installable (§11.6 v1.13).
+    pub pattern: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub operations: Vec<OperationSpec>,
+    /// The handler's own grant scope (§11.6 `internal_scope`). `None` = the handler holds
+    /// no authority of its own: its grant is minted with an EMPTY scope, which covers
+    /// nothing — never a wildcard (§11.6.3).
+    pub internal_scope: Option<Vec<Value>>,
+    /// Type definitions installed at `system/type/{name}` before anything else, and NOT
+    /// removed when the handle closes (§11.6.1, §11.6.2).
+    pub types: Vec<(String, Value)>,
+}
+
+impl HandlerSpec {
+    pub fn new(pattern: &str, name: &str) -> HandlerSpec {
+        HandlerSpec {
+            pattern: pattern.to_string(),
+            name: name.to_string(),
+            ..HandlerSpec::default()
+        }
+    }
+
+    pub fn operation(mut self, op: OperationSpec) -> HandlerSpec {
+        self.operations.push(op);
+        self
+    }
+
+    pub fn operations(mut self, ops: Vec<OperationSpec>) -> HandlerSpec {
+        self.operations.extend(ops);
+        self
+    }
+
+    pub fn description(mut self, d: &str) -> HandlerSpec {
+        self.description = Some(d.to_string());
+        self
+    }
+
+    pub fn internal_scope(mut self, grants: Vec<Value>) -> HandlerSpec {
+        self.internal_scope = Some(grants);
+        self
+    }
+
+    /// Install a type definition (the `data` of a `system/type` entity) at
+    /// `system/type/{name}`.
+    pub fn with_type(mut self, name: &str, definition: Value) -> HandlerSpec {
+        self.types.push((name.to_string(), definition));
+        self
+    }
+}
+
+/// The handle [`Peer::register_handler`] returns (`SDK-OPERATIONS` §11.6.2).
+///
+/// **Dropping it unregisters the handler** — dispatch index first, tree entries second —
+/// which is the scoped construct §11.6.2 requires of Rust. Keep it alive for as long as
+/// the handler should be installed, or call [`HandlerHandle::detach`] to leave the handler
+/// installed for the life of the peer. `close` is idempotent, and a handle whose pattern
+/// has since been replaced (a wire `register`, or a close-then-reinstall) closes nothing.
+#[must_use = "dropping a HandlerHandle unregisters the handler; call .detach() to keep it for the peer's lifetime"]
+pub struct HandlerHandle {
+    pub(crate) peer: std::sync::Weak<Peer>,
+    pub(crate) pattern: String,
+    pub(crate) generation: u64,
+    pub(crate) closed: std::sync::atomic::AtomicBool,
+}
+
+impl HandlerHandle {
+    /// The pattern this handle installed.
+    pub fn pattern(&self) -> &str {
+        &self.pattern
+    }
+
+    /// Unregister: dispatch index first, then the tree entries (handler, interface, grant,
+    /// grant signature). Types stay. Returns `true` only on the call that actually removed
+    /// this registration.
+    pub fn close(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        match self.peer.upgrade() {
+            Some(peer) => peer.close_registration(&self.pattern, self.generation),
+            None => false,
+        }
+    }
+
+    /// Whether `close` has run (or the handle was detached).
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Keep the handler installed for the life of the peer and give up the handle.
+    pub fn detach(self) {
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Drop for HandlerHandle {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+impl std::fmt::Debug for HandlerHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HandlerHandle")
+            .field("pattern", &self.pattern)
+            .field("closed", &self.is_closed())
+            .finish()
+    }
+}
+
+/// A [`HandlerSpec`] paired with its body, as the container stores it.
+pub(crate) type BodyFn = dyn Fn(&HandlerContext<'_>) -> HandlerResult + Send + Sync;
+
+pub(crate) struct SpecHandler {
+    pub(crate) spec: HandlerSpec,
+    pub(crate) body: Arc<BodyFn>,
+}
+
+impl Handler for SpecHandler {
+    fn pattern(&self) -> &str {
+        &self.spec.pattern
+    }
+    fn name(&self) -> &str {
+        &self.spec.name
+    }
+    fn operations(&self) -> Vec<OperationSpec> {
+        self.spec.operations.clone()
+    }
+    fn grants(&self) -> Vec<Value> {
+        self.spec.internal_scope.clone().unwrap_or_default()
+    }
+    fn handle(&self, ctx: &HandlerContext<'_>) -> HandlerResult {
+        (self.body)(ctx)
+    }
+}
 
 /// The body an entity-native handler was registered with (§6.13(a)), handed to an
 /// installed [`ExpressionEvaluator`].
@@ -375,6 +544,22 @@ impl<'a> HandlerContext<'a> {
         self.handler_grant.as_ref()
     }
 
+    /// `SDK-OPERATIONS` §11.3 SEC-3 — whether this request's AUTHOR appears as a granter
+    /// in the authority chain of the capability `cap_hash` names, and that chain verifies.
+    /// Ask before persisting an entity that embeds a caller-supplied capability reference.
+    pub fn identity_in_authority_chain(&self, cap_hash: &[u8]) -> bool {
+        match self.author() {
+            Some(author) => super::capability::identity_in_authority_chain(
+                self.envelope,
+                &self.peer.store,
+                &self.peer.local_peer,
+                cap_hash,
+                author,
+            ),
+            None => false,
+        }
+    }
+
     /// Current wall-clock time in ms since the epoch — the clock temporal checks use.
     pub fn now_ms(&self) -> u64 {
         super::core::now_ms()
@@ -429,6 +614,37 @@ impl<'a> HandlerContext<'a> {
     pub fn dispatch_execute(&self, request: LocalExecute) -> HandlerResult {
         self.peer.dispatch_local(self, request)
     }
+}
+
+/// Keystone peer contract evidence the wire cannot observe. These doctests are the peer's
+/// `context.unforgeable` local tests (named with that requirement's prefix, which is how
+/// `tools/peer-contract/report.py` finds them); nothing here is API.
+// `non_snake_case`: the double underscore is the requirement-prefix convention report.py matches,
+// and without the allow every downstream build that depends on this crate by path prints it.
+#[allow(dead_code, non_snake_case)]
+mod contract_evidence {
+    /// A consumer of the peer package cannot build a [`HandlerContext`] — only the dispatcher
+    /// does, after `check_permission` allowed the request. Pinned to `E0451` (private field) so
+    /// the test cannot pass on an unrelated compile error, which is the vacuous-control trap a
+    /// compile-fail count falls into.
+    ///
+    /// ```compile_fail,E0451
+    /// use entity_core_protocol::peer::HandlerContext;
+    /// fn forge<'a>(peer: &'a entity_core_protocol::peer::Peer) -> HandlerContext<'a> {
+    ///     HandlerContext { peer, ..todo!() }
+    /// }
+    /// ```
+    fn context_unforgeable__a_consumer_cannot_construct_a_context() {}
+
+    /// The control for the test above: the type IS nameable and usable outside the peer, so
+    /// what refuses is the constructor, not an import or a typo.
+    ///
+    /// ```
+    /// use entity_core_protocol::peer::HandlerContext;
+    /// fn read(ctx: &HandlerContext<'_>) -> String { ctx.operation().to_string() }
+    /// let _ = read;
+    /// ```
+    fn context_unforgeable__control_the_type_is_usable_outside_the_peer() {}
 }
 
 /// Maximum nesting of [`HandlerContext::dispatch_execute`] calls within one wire

@@ -25,7 +25,8 @@
 //! when no consumer is set, so a future extension can attach without a rebuild.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 use super::model::Entity;
 
@@ -72,14 +73,31 @@ pub struct TreeChangeEvent {
     pub context: Option<ExecContext>,
 }
 
-type TreeConsumer = Box<dyn Fn(&TreeChangeEvent) + Send + Sync>;
+type TreeConsumer = Arc<dyn Fn(&TreeChangeEvent) + Send + Sync>;
+type ContentConsumer = Arc<dyn Fn(&ContentStoreEvent) + Send + Sync>;
+
+/// A content-store event (§6.10 Store step): an entity whose content hash the store did
+/// not hold before. Fired before the tree-change event of the bind that stored it, so a
+/// consumer sees content before it sees a path naming it (`SYSTEM-COMPOSITION` §2.2).
+#[derive(Clone, Debug)]
+pub struct ContentStoreEvent {
+    pub content_hash: Vec<u8>,
+    pub entity_type: String,
+}
+
+/// Identifies one registered consumer, for [`Store::unregister_consumer`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ConsumerId(u64);
 
 /// The two-layer content/tree store, guarded for concurrent dispatch (§4.8).
 pub struct Store {
     inner: RwLock<Inner>,
-    /// Emit consumers (§6.10). Registration is a separate lock so the hot path
-    /// never contends on it.
-    consumers: RwLock<Vec<TreeConsumer>>,
+    /// Emit consumers (§6.10), in registration order. Registration is a separate lock so
+    /// the hot path never contends on it, and `fire` copies the list out before calling
+    /// any consumer — so a consumer may itself register or unregister one.
+    consumers: RwLock<Vec<(ConsumerId, TreeConsumer)>>,
+    content_consumers: RwLock<Vec<(ConsumerId, ContentConsumer)>>,
+    next_consumer: AtomicU64,
 }
 
 struct Inner {
@@ -103,20 +121,76 @@ impl Store {
                 tree: HashMap::new(),
             }),
             consumers: RwLock::new(Vec::new()),
+            content_consumers: RwLock::new(Vec::new()),
+            next_consumer: AtomicU64::new(1),
         }
     }
 
-    /// Register an emit consumer (§6.10 / §6.13(c)). Live seam, no core consumers.
-    pub fn register_tree_consumer<F>(&self, f: F)
+    /// Register a tree-change emit consumer (§6.10 / §6.13(c)), after construction.
+    /// Consumers are invoked synchronously, in registration order (`SYSTEM-COMPOSITION`
+    /// §1.2). Returns the id [`Store::unregister_consumer`] takes.
+    pub fn register_tree_consumer<F>(&self, f: F) -> ConsumerId
     where
         F: Fn(&TreeChangeEvent) + Send + Sync + 'static,
     {
-        self.consumers.write().unwrap().push(Box::new(f));
+        let id = ConsumerId(self.next_consumer.fetch_add(1, Ordering::SeqCst));
+        self.consumers.write().unwrap().push((id, Arc::new(f)));
+        id
+    }
+
+    /// Register a content-store emit consumer (§6.10 Store step), after construction, in
+    /// registration order.
+    pub fn register_content_consumer<F>(&self, f: F) -> ConsumerId
+    where
+        F: Fn(&ContentStoreEvent) + Send + Sync + 'static,
+    {
+        let id = ConsumerId(self.next_consumer.fetch_add(1, Ordering::SeqCst));
+        self.content_consumers.write().unwrap().push((id, Arc::new(f)));
+        id
+    }
+
+    /// Stop delivering events to a consumer. Idempotent: `false` when `id` is not
+    /// registered (already removed, or never was).
+    pub fn unregister_consumer(&self, id: ConsumerId) -> bool {
+        let mut tree = self.consumers.write().unwrap();
+        if let Some(i) = tree.iter().position(|(c, _)| *c == id) {
+            tree.remove(i);
+            return true;
+        }
+        drop(tree);
+        let mut content = self.content_consumers.write().unwrap();
+        if let Some(i) = content.iter().position(|(c, _)| *c == id) {
+            content.remove(i);
+            return true;
+        }
+        false
     }
 
     fn fire(&self, ev: &TreeChangeEvent) {
-        for c in self.consumers.read().unwrap().iter() {
+        let consumers: Vec<TreeConsumer> =
+            self.consumers.read().unwrap().iter().map(|(_, c)| c.clone()).collect();
+        for c in consumers {
             c(ev);
+        }
+    }
+
+    fn fire_content(&self, e: &Entity) {
+        let consumers: Vec<ContentConsumer> = self
+            .content_consumers
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        if consumers.is_empty() {
+            return;
+        }
+        let ev = ContentStoreEvent {
+            content_hash: e.hash.clone(),
+            entity_type: e.typ.clone(),
+        };
+        for c in consumers {
+            c(&ev);
         }
     }
 
@@ -124,18 +198,33 @@ impl Store {
 
     /// Store a copy of `e` keyed by its content_hash. A re-put of an existing
     /// hash fires nothing (§6.10 Store step).
-    pub fn put_entity(&self, e: &Entity) {
+    ///
+    /// Returns `false`, storing nothing and firing nothing, when `e.hash` is not the content hash
+    /// of `{e.typ, e.data}` ([`Entity::content_hash_holds`]): the store never files an entity
+    /// under an address it does not have. Otherwise `true`, including for a re-put.
+    pub fn put_entity(&self, e: &Entity) -> bool {
+        if !e.content_hash_holds() {
+            return false;
+        }
         {
             let inner = self.inner.read().unwrap();
             if inner.content.contains_key(&e.hash) {
-                return;
+                return true;
             }
         }
-        let mut inner = self.inner.write().unwrap();
-        inner
-            .content
-            .entry(e.hash.clone())
-            .or_insert_with(|| e.clone());
+        let inserted = {
+            let mut inner = self.inner.write().unwrap();
+            if inner.content.contains_key(&e.hash) {
+                false
+            } else {
+                inner.content.insert(e.hash.clone(), e.clone());
+                true
+            }
+        };
+        if inserted {
+            self.fire_content(e);
+        }
+        true
     }
 
     pub fn get_by_hash(&self, h: &[u8]) -> Option<Entity> {
@@ -148,8 +237,11 @@ impl Store {
     /// at the path changes. Stores a copy of `e`.
     /// Autonomous bind — the peer's own bootstrap and seeding. Delivers NO execution
     /// context, which is what distinguishes such a write from a dispatched one.
-    pub fn bind(&self, path: &str, e: &Entity) {
-        self.bind_with_context(path, e, None);
+    ///
+    /// Returns `false` and binds nothing for an entity whose hash does not hold, as
+    /// [`Store::put_entity`].
+    pub fn bind(&self, path: &str, e: &Entity) -> bool {
+        self.bind_with_context(path, e, None)
     }
 
     /// Bind carrying the §6.8a execution context of the dispatch that caused it.
@@ -157,18 +249,24 @@ impl Store {
     /// Split from [`Store::bind`] rather than adding a parameter to it: Rust has no
     /// default arguments, and every EXISTING caller is genuinely autonomous, so this
     /// keeps them correct by construction instead of by remembering to pass `None`.
-    pub fn bind_with_context(&self, path: &str, e: &Entity, context: Option<ExecContext>) {
-        let (changed, prev) = {
+    pub fn bind_with_context(&self, path: &str, e: &Entity, context: Option<ExecContext>) -> bool {
+        if !e.content_hash_holds() {
+            return false;
+        }
+        let (inserted, changed, prev) = {
             let mut inner = self.inner.write().unwrap();
-            inner
-                .content
-                .entry(e.hash.clone())
-                .or_insert_with(|| e.clone());
+            let inserted = !inner.content.contains_key(&e.hash);
+            if inserted {
+                inner.content.insert(e.hash.clone(), e.clone());
+            }
             let prev = inner.tree.get(path).cloned();
             let changed = prev.as_deref() != Some(e.hash.as_slice());
             inner.tree.insert(path.to_string(), e.hash.clone());
-            (changed, prev)
+            (inserted, changed, prev)
         };
+        if inserted {
+            self.fire_content(e);
+        }
         if changed {
             self.fire(&TreeChangeEvent {
                 event_type: if prev.is_none() {
@@ -182,6 +280,7 @@ impl Store {
                 context,
             });
         }
+        true
     }
 
     /// Autonomous unbind. See [`Store::bind`].

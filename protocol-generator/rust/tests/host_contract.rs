@@ -167,7 +167,7 @@ fn h1_installed_body_is_reached_from_a_second_peer() {
     assert_eq!((status(&before), code(&before).as_str()), (404, "handler_not_found"));
 
     responder
-        .register_handler(witness_handler("app/witness", calls.clone()))
+        .install_handler(witness_handler("app/witness", calls.clone()))
         .expect("install through the public surface");
 
     // The measurement: a value no compute/literal body can produce.
@@ -231,7 +231,7 @@ fn h1_native_body_writes_carry_the_remote_caller_context() {
         }
     });
     responder
-        .register_handler(Arc::new(FnHandler::new(
+        .install_handler(Arc::new(FnHandler::new(
             "app/rec",
             "rec",
             vec![OperationSpec::named("write")],
@@ -257,7 +257,7 @@ fn h1_native_body_writes_carry_the_remote_caller_context() {
 fn h1_a_panicking_body_is_a_status_and_the_connection_survives() {
     let responder = open_peer(35);
     responder
-        .register_handler(Arc::new(FnHandler::new(
+        .install_handler(Arc::new(FnHandler::new(
             "app/boom",
             "boom",
             vec![OperationSpec::named("go")],
@@ -265,7 +265,7 @@ fn h1_a_panicking_body_is_a_status_and_the_connection_survives() {
         )))
         .unwrap();
     responder
-        .register_handler(witness_handler("app/witness", Arc::new(AtomicUsize::new(0))))
+        .install_handler(witness_handler("app/witness", Arc::new(AtomicUsize::new(0))))
         .unwrap();
     let mut rig = connect(responder, 36);
     let r = rig.exec("app/boom", "go", any(vec![]), None);
@@ -283,24 +283,24 @@ fn h3_the_registration_surface_owns_the_refusals() {
     // A built-in is bound, so it cannot be replaced...
     for builtin in ["system/tree", "system/capability", "system/handler", "system/protocol/connect"] {
         assert_eq!(
-            peer.register_handler(h(builtin)),
-            Err(RegisterError::AlreadyRegistered(builtin.into())),
+            peer.install_handler(h(builtin)),
+            Err(RegisterError::PatternCollision(builtin.into())),
             "{builtin} must not be replaceable in-process"
         );
     }
     // ...but a standard extension's own namespace is installable: §6.2's reservation was
     // withdrawn at 0.8.2.13, and refusing here would make CONTENT/COMPUTE uninstallable.
-    peer.register_handler(h("system/content")).expect("system/content is installable");
+    peer.install_handler(h("system/content")).expect("system/content is installable");
     for bad in ["", "/abs/path", "app//x", "app/*", "app/../x"] {
         assert!(
-            matches!(peer.register_handler(h(bad)), Err(RegisterError::InvalidPattern(_))),
+            matches!(peer.install_handler(h(bad)), Err(RegisterError::InvalidHandlerSpec(_))),
             "{bad:?} must be refused"
         );
     }
-    peer.register_handler(h("app/one")).unwrap();
+    peer.install_handler(h("app/one")).unwrap();
     assert_eq!(
-        peer.register_handler(h("app/one")),
-        Err(RegisterError::AlreadyRegistered("app/one".into()))
+        peer.install_handler(h("app/one")),
+        Err(RegisterError::PatternCollision("app/one".into()))
     );
     assert!(!peer.unregister_handler("app/never"), "nothing installed there");
 }
@@ -316,12 +316,12 @@ fn h3_a_wire_registered_pattern_is_not_silently_replaced() {
     let r = rig.exec("system/handler", "register", req, Some(target("system/handler/app/wired")));
     assert_eq!(status(&r), 200, "{:?}", r.root);
     assert_eq!(
-        responder.register_handler(witness_handler("app/wired", Arc::new(AtomicUsize::new(0)))),
-        Err(RegisterError::AlreadyRegistered("app/wired".into()))
+        responder.install_handler(witness_handler("app/wired", Arc::new(AtomicUsize::new(0)))),
+        Err(RegisterError::PatternCollision("app/wired".into()))
     );
     // And the reverse: a wire unregister removes a native body with its entities.
     responder
-        .register_handler(witness_handler("app/native", Arc::new(AtomicUsize::new(0))))
+        .install_handler(witness_handler("app/native", Arc::new(AtomicUsize::new(0))))
         .unwrap();
     let u = rig.exec(
         "system/handler",
@@ -357,7 +357,7 @@ fn h6_a_body_reads_the_configured_budget_by_value() {
             .seed_policy(SeedPolicy::debug_open())
             .max_frame_bytes(CONFIGURED),
     );
-    configured.register_handler(budget_reader()).unwrap();
+    configured.install_handler(budget_reader()).unwrap();
     let mut rig = connect(configured, 41);
     let r = rig.exec("app/budget", "read", any(vec![]), None);
     assert_eq!(result(&r).uint_field("budget"), Some(CONFIGURED as u64));
@@ -365,7 +365,7 @@ fn h6_a_body_reads_the_configured_budget_by_value() {
     // The negative arm: an unconfigured peer reads the 16 MiB default, so the value
     // above is the configuration arriving and not a constant that happens to match.
     let default = open_peer(42);
-    default.register_handler(budget_reader()).unwrap();
+    default.install_handler(budget_reader()).unwrap();
     let mut rig2 = connect(default, 43);
     let d = rig2.exec("app/budget", "read", any(vec![]), None);
     assert_eq!(result(&d).uint_field("budget"), Some(16 * 1024 * 1024));
@@ -552,7 +552,7 @@ fn local_dispatch_runs_the_normal_path_under_the_callers_capability() {
             sink.lock().unwrap().push(ev.context.as_ref().and_then(|c| c.author.clone()));
         }
     });
-    responder.register_handler(tree_put_handler(|_| None)).unwrap();
+    responder.install_handler(tree_put_handler(|_| None)).unwrap();
     let mut rig = connect(responder.clone(), 51);
     let r = rig.exec("app/apply", "store", any(vec![]), None);
     assert_eq!(status(&r), 200);
@@ -581,7 +581,7 @@ fn local_dispatch_does_not_escalate_past_the_callers_grant() {
     });
     let policy = SeedPolicy::of(seed_policy::discovery_floor(), vec![named(&initiator_identity)]);
     let responder = peer_with(52, PeerConfig::default().seed_policy(policy));
-    responder.register_handler(tree_put_handler(|_| None)).unwrap();
+    responder.install_handler(tree_put_handler(|_| None)).unwrap();
     let mut rig = connect(responder.clone(), 53);
     let r = rig.exec("app/apply", "store", any(vec![]), None);
     assert_eq!(status(&r), 200, "the caller may reach the handler: {:?}", r.root);
@@ -598,7 +598,7 @@ fn local_dispatch_refuses_a_capability_the_request_did_not_carry() {
     // authority here — even though its grants would cover the put.
     let responder = open_peer(54);
     responder
-        .register_handler(tree_put_handler(|_ctx| {
+        .install_handler(tree_put_handler(|_ctx| {
             let other = Peer::create(CreateOptions {
                 seed: [99u8; 32],
                 ..Default::default()
@@ -623,7 +623,7 @@ fn local_dispatch_bounds_depth_and_refuses_foreign_and_connect() {
     let depth_seen = Arc::new(AtomicUsize::new(0));
     let d = depth_seen.clone();
     responder
-        .register_handler(Arc::new(FnHandler::new(
+        .install_handler(Arc::new(FnHandler::new(
             "app/loop",
             "loop",
             vec![OperationSpec::named("go")],
@@ -635,7 +635,7 @@ fn local_dispatch_bounds_depth_and_refuses_foreign_and_connect() {
         .unwrap();
     let foreign_tree = format!("/{}/system/tree", other_peer_id(58));
     responder
-        .register_handler(Arc::new(FnHandler::new(
+        .install_handler(Arc::new(FnHandler::new(
             "app/edges",
             "edges",
             vec![OperationSpec::named("go")],
@@ -682,7 +682,7 @@ fn a_policy_between_the_floor_and_open_is_enforced_per_identity() {
     );
     let responder = peer_with(60, PeerConfig::default().seed_policy(policy));
     responder
-        .register_handler(witness_handler("app/witness", Arc::new(AtomicUsize::new(0))))
+        .install_handler(witness_handler("app/witness", Arc::new(AtomicUsize::new(0))))
         .unwrap();
     let p = |e: &str| any(vec![("echo", model::text(e))]);
 
@@ -747,8 +747,17 @@ fn host_binary_accepts_a_seed_policy_file_and_refuses_a_bad_one() {
     let examples = concat!(env!("CARGO_MANIFEST_DIR"), "/../shared/seed-policy/examples");
     let (listening, err, _) =
         run_host(&["--port", "0", "--seed-policy", &format!("{examples}/default-floor.json")]);
-    assert!(listening.is_some_and(|l| l.starts_with("LISTENING ")), "stderr: {err}");
-    assert!(err.contains("seed-policy:"), "the policy in force is reported: {err}");
+    let line = listening.expect(&format!("no readiness record; stderr: {err}"));
+    assert!(line.starts_with("LISTENING {"), "{line}");
+    // The policy in force is reported in the readiness record (run.ready / run.posture),
+    // by the digest of the file's bytes.
+    assert!(line.contains("\"posture\":\"file\""), "{line}");
+    let digest = {
+        use sha2::{Digest, Sha256};
+        let bytes = std::fs::read(format!("{examples}/default-floor.json")).unwrap();
+        Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    assert!(line.contains(&format!("\"posture_digest\":\"{digest}\"")), "{line}");
 
     let (listening, err, _) = run_host(&[
         "--port",
