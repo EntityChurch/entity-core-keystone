@@ -18,7 +18,7 @@ from __future__ import annotations
 from .identity import Identity, peer_id_of_public_key, verify_signature
 from .model import Entity, Envelope, Included
 from .peer import GrantSpec, Peer
-from .store import ContentEvent, Store, TreeEvent
+from .store import ContentEvent, ExecContext, Store, TreeEvent
 from .transport import (
     ClientConnection,
     HandshakeError,
@@ -48,6 +48,7 @@ __all__ = [
     "Included",
     "Store",
     "TreeEvent",
+    "ExecContext",
     "ContentEvent",
     "Listener",
     "ClientConnection",

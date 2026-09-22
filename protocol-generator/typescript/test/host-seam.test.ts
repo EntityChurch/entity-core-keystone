@@ -406,3 +406,113 @@ test("§3.1: a response view built from a bare entity has an empty included map"
   assert.equal(resp.included.size, 0);
   assert.equal(resp.includedByHash(new Uint8Array(33)), undefined);
 });
+
+// ----- H8 — the tree-change event carries the execution context -----------------
+
+/**
+ * H8, routed by `entity-system-generator` out of building HISTORY v1.7.
+ *
+ * The defect was not a missing type. `EmitContext` existed with almost exactly
+ * SYSTEM-COMPOSITION §1.4's inventory and was **constructed at zero sites** —
+ * `EntityTree.put`/`remove` defaulted it to null, `compareAndPut` (the path
+ * `system/tree:put` actually takes) hardcoded null. So every tree-change event
+ * reached a consumer contextless.
+ *
+ * That is not a neutral absence, which is why this test asserts on `author`
+ * specifically rather than on "a context object is present". EXTENSION-HISTORY §2.1
+ * defines the AUTONOMOUS case exactly — author is the local peer's identity hash —
+ * so a contextless event is indistinguishable from an autonomous write, and a
+ * conforming recorder attributes a REMOTE caller's write to the local peer. The four
+ * `history` oracle checks over these fields are PRESENCE checks, so a peer scores
+ * 33/34 with an audit trail that says it did everything itself.
+ *
+ * The control is the whole point of the two-peer setup: `author` must be the
+ * INITIATOR's identity hash and must NOT be the responder's. A single-peer test
+ * would pass against the fabricated autonomous value.
+ */
+test("H8: a remote tree:put delivers an execution context attributing the REMOTE caller", async () => {
+  const responder = new Peer({ seedPolicy: SeedPolicy.debugOpen() });
+  const initiator = new Peer();
+  const seen: Array<{ path: string; context: unknown }> = [];
+  responder.emit.registerConsumer({
+    name: "h8-probe",
+    onContentStore: () => {},
+    onTreeChange: (ev) => seen.push({ path: ev.path, context: ev.context }),
+  });
+  try {
+    const port = await responder.listen(0);
+    const session = await initiator.connect("127.0.0.1", port, TIMEOUT);
+    const target = "/" + responder.localPeerId + "/app/h8/probe";
+    const body = Entity.create(TypeNames.PrimitiveAny, Ecf.map(["v", Ecf.uint(1n)]));
+    assert.equal((await treePut(session, target, body)).statusCode, Status.Ok);
+
+    const ev = seen.find((e) => e.path === target);
+    assert.ok(ev, "the tree:put fired no tree-change event at the target path");
+    const ctx = ev.context as {
+      author?: Uint8Array;
+      callerCapability?: Uint8Array;
+      handlerGrant?: Uint8Array;
+      handlerPattern?: string;
+      operation?: string;
+      requestId?: string;
+    } | null;
+    assert.ok(ctx !== null, "tree-change event carried a null context (the H8 defect)");
+
+    // The load-bearing assertion. Before the fix this field was absent, and a recorder
+    // filling it from §2.1's autonomous rule would write the RESPONDER's hash here.
+    assert.ok(ctx.author, "context carried no author");
+    assert.deepEqual(
+      Buffer.from(ctx.author),
+      Buffer.from(initiator.localIdentity.identityHash),
+      "author must be the REMOTE caller's identity",
+    );
+    assert.notDeepEqual(
+      Buffer.from(ctx.author),
+      Buffer.from(responder.localIdentity.identityHash),
+      "author is the local peer's own hash — this is the autonomous-fallback reading, not the caller",
+    );
+
+    // "Under what authority?" (§7.2) — both authorities a write runs under.
+    assert.ok(ctx.callerCapability, "context carried no callerCapability");
+    assert.ok(ctx.handlerGrant, "context carried no handlerGrant");
+    assert.equal(ctx.handlerPattern, "system/tree");
+    assert.equal(ctx.operation, "put");
+    assert.ok(ctx.requestId, "context carried no requestId");
+  } finally {
+    await initiator.dispose();
+    await responder.dispose();
+  }
+});
+
+/**
+ * The other half, and it is a real case rather than symmetry for its own sake: a peer's
+ * OWN writes are autonomous, and must stay distinguishable from a dispatched one. If the
+ * default started fabricating a caller context, a recorder could not tell a peer's own
+ * seeding from a remote write — which is the H8 defect in the opposite direction.
+ *
+ * Driven through `tree.put` with the argument omitted rather than through bootstrap:
+ * bootstrap runs in the constructor, so a consumer registered afterwards observes none of
+ * it. The first draft of this control asserted over those events and examined ZERO — its
+ * own vacuity guard caught it, which is why that guard is here.
+ */
+test("H8 control: an autonomous write carries NO caller context", async () => {
+  const peer = new Peer();
+  const seen: Array<unknown> = [];
+  peer.emit.registerConsumer({
+    name: "h8-autonomous-probe",
+    onContentStore: () => {},
+    onTreeChange: (ev) => seen.push(ev.context),
+  });
+  try {
+    const path = "/" + peer.localPeerId + "/app/h8/autonomous";
+    peer.tree.put(path, Entity.create(TypeNames.PrimitiveAny, Ecf.map(["v", Ecf.uint(2n)])));
+    peer.tree.remove(path);
+    assert.equal(seen.length, 2, "expected one created + one deleted event");
+    assert.ok(
+      seen.every((c) => c === null),
+      "an autonomous write carried a caller context; autonomous and dispatched writes are no longer distinguishable",
+    );
+  } finally {
+    await peer.dispose();
+  }
+});

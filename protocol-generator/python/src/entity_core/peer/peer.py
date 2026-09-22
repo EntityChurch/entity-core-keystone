@@ -351,9 +351,15 @@ class Peer:
         stripped = self._strip_local(pattern)
         inst = self.handlers.get(stripped)
         if inst is not None:
+            # The handler's own grant (§6.8a): the second authority a write runs
+            # under, distinct from the caller's. Bound at bootstrap/registration.
+            handler_grant = self.store.get_at(
+                "/" + self.local_peer + "/system/capability/grants/" + stripped
+            )
             return inst.handle_op(operation, DispatchCtx(
                 exec=exec_e, conn=c, included=env.included,
                 caller_cap=caller_cap, has_cap=True,
+                handler_pattern=stripped, handler_grant=handler_grant,
                 peer_max_frame=self.max_frame_bytes,
             ))
         return self._entity_native_dispatch(pattern)

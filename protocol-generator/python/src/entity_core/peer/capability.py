@@ -635,6 +635,42 @@ def check_permission(
     return False
 
 
+def check_path_permission(
+    operation: str, path: str, token: Entity, handler_pattern: str, local_peer: str
+) -> bool:
+    """Core §6.3's path check: may the caller access ``path`` AS A TREE PATH, under
+    ``handler_pattern``, with ``token``?
+
+    Distinct from :func:`check_permission`, which authorizes a dispatch against the
+    EXECUTE's own ``resource`` field.  This one takes the path as an argument, which is
+    what an extension whose target lives in ``params`` needs — the dispatcher's resource
+    scoping never sees such a target, so the handler has to ask itself.
+
+    PUBLIC ON PURPOSE.  ``EXTENSION-HISTORY`` §4.2's dual capability model names this
+    primitive by name, and every scope helper it is built from here is
+    leading-underscore — a correct statement of this module's boundary that left an
+    extension author with no way to satisfy §4.2 except by re-transcribing part of core
+    §5.2's authorization logic inside the extension, which is a security divergence
+    waiting to happen.  Routed by ``entity-system-generator`` (H9) after they wrote that
+    grant walk, watched it deny 23 of 34 oracle checks, and deleted it.  The signature
+    mirrors the sibling ``typescript`` peer's ``checkPathPermission`` so a spec-literal
+    implementation ports between our peers unchanged.
+
+    NOTE the frame: resources are matched against the LOCAL peer here, not against a
+    granter frame.  This is the §6.3 defense-in-depth check on a path the local peer
+    owns, not the §5.5a chain-attenuation surface — do not add a granter frame to it.
+    """
+    for g in _grants_of_token(token):
+        if not _matches_scope(local_peer, handler_pattern, g.handlers, "path"):
+            continue
+        if not _matches_scope(local_peer, operation, g.operations, "id"):
+            continue
+        if not _matches_scope(local_peer, path, g.resources, "path"):
+            continue
+        return True
+    return False
+
+
 # ── §5.2 verify-request (3-way verdict + carve-outs) ──────────────────────────
 def verify_request(local_peer: str, store: Store, env) -> Verdict:
     """§5.2 verdict over the request envelope."""

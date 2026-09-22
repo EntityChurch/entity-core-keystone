@@ -129,7 +129,7 @@ export class TreeHandler implements Handler {
           return errorResult(Status.Conflict, "hash_mismatch", "expected_hash does not match current binding");
         }
       }
-      ctx.peer.tree.remove(path);
+      ctx.peer.tree.remove(path, ctx.emitContext());
       return HandlerResult.ok(emptyAck());
     }
 
@@ -137,7 +137,7 @@ export class TreeHandler implements Handler {
     if (admitted instanceof HandlerResult) {
       return admitted;
     }
-    if (!ctx.peer.tree.compareAndPut(path, admitted, expectedHash)) {
+    if (!ctx.peer.tree.compareAndPut(path, admitted, expectedHash, ctx.emitContext())) {
       return errorResult(Status.Conflict, "hash_mismatch", "conditional write failed");
     }
     return HandlerResult.ok(emptyAck());

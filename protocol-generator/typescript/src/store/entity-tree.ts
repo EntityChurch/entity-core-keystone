@@ -69,7 +69,12 @@ export class EntityTree {
    * create-only (must be unbound); non-zero = must match the current binding.
    * Returns false on a CAS miss.
    */
-  compareAndPut(path: string, entity: Entity, expectedHash: Uint8Array | null): boolean {
+  compareAndPut(
+    path: string,
+    entity: Entity,
+    expectedHash: Uint8Array | null,
+    context: EmitContext | null = null,
+  ): boolean {
     if (expectedHash !== null) {
       const current = this.#index.get(path);
       if (isZeroHash(expectedHash)) {
@@ -85,7 +90,7 @@ export class EntityTree {
     const changed = previous === null || !hashEqual(previous, entity.contentHash);
     this.#index.set(path, entity.contentHash);
     if (changed) {
-      this.#emit?.emitTreeChange(path, previous, entity.contentHash, null);
+      this.#emit?.emitTreeChange(path, previous, entity.contentHash, context);
     }
     return true;
   }

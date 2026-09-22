@@ -23,6 +23,7 @@ from .._varint import decode_varint
 from ..content_hash import content_hash
 from .identity import verify_signature
 from .model import Entity
+from .store import ExecContext
 from .wire import (
     MAX_FRAME,
     empty_params,
@@ -62,9 +63,45 @@ class DispatchCtx:
     included: dict
     caller_cap: Entity | None = None
     has_cap: bool = False
+    #: The resolved peer-relative handler pattern for this dispatch (e.g.
+    #: ``"system/tree"``), and the grant the handler itself runs under.  Both are
+    #: §6.8a execution-context fields; see :meth:`exec_context`.
+    handler_pattern: str = ""
+    handler_grant: Entity | None = None
     #: The peer's configured frame bound, used only when this context carries no
     #: connection.  Never read it directly — call :meth:`frame_budget`.
     peer_max_frame: int = MAX_FRAME
+
+    def exec_context(self) -> ExecContext:
+        """The §6.8a execution context for a §6.10 tree-change event.
+
+        Built from what this dispatch actually holds (SYSTEM-COMPOSITION §1.4 field
+        inventory).  Slots a core request does not carry stay ``None`` — they are read
+        from the wire, never invented.
+
+        WHY IT EXISTS.  ``TreeEvent`` had no context field at all, so every tree-change
+        event reached a consumer contextless.  That is not a neutral absence:
+        EXTENSION-HISTORY §2.1 defines the AUTONOMOUS case exactly, so a contextless
+        event is indistinguishable from an autonomous write and a conforming recorder
+        attributes a REMOTE caller's write to the local peer.  §7.2 calls ``capability``
+        the answer to "under what authority?", and the answer was always "its own".
+        Routed by ``entity-system-generator`` (H8) out of building HISTORY v1.7; the
+        four ``history`` oracle checks over these fields are PRESENCE checks, so a peer
+        scores on them either way.
+        """
+        e = self.exec
+        return ExecContext(
+            request_id=e.text("request_id") or "",
+            handler_pattern=self.handler_pattern,
+            operation=e.text("operation") or "",
+            author=e.bytes_("author"),
+            caller_capability=e.bytes_("capability"),
+            handler_grant=bytes(self.handler_grant.hash) if self.handler_grant is not None else None,
+            chain_id=e.text("chain_id"),
+            parent_chain_id=e.text("parent_chain_id"),
+            cascade_depth=e.uint("cascade_depth"),
+            bounds=e.field("bounds"),
+        )
 
     def frame_budget(self) -> int:
         """The §4.10(a) inbound frame bound IN FORCE for this request, in bytes.
@@ -432,7 +469,7 @@ class TreeHandler:
         if isinstance(admitted, Outcome):
             return admitted
         entity = admitted
-        p.store.bind(path, entity)
+        p.store.bind(path, entity, ctx.exec_context())
         return Outcome.ok(Entity.make("system/hash", {"hash": bytes(entity.hash)}))
 
 

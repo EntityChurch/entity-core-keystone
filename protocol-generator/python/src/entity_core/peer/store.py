@@ -34,13 +34,51 @@ from .model import Entity
 
 
 @dataclass(frozen=True, slots=True)
+class ExecContext:
+    """The §6.8a execution-context core fields (SYSTEM-COMPOSITION §1.4) carried on a
+    tree-change event.
+
+    The RESERVED field *names* are the collision contract; the representation is
+    impl-defined (§9.4) and this is the Python idiom.  On a core peer most slots are
+    inert, and every one of them is read from the wire rather than synthesized — a slot
+    the request did not carry stays ``None``.
+
+    ``capability`` is deliberately absent as its own slot: it is redundant with
+    ``caller_capability`` / ``handler_grant``, which distinguish the two authorities a
+    write runs under.  Capability slots carry the token's CONTENT HASH, which is the
+    reference an event consumer can resolve against the store.
+    """
+
+    request_id: str
+    handler_pattern: str
+    operation: str
+    author: bytes | None = None
+    caller_capability: bytes | None = None
+    handler_grant: bytes | None = None
+    chain_id: str | None = None
+    parent_chain_id: str | None = None
+    cascade_depth: int | None = None
+    bounds: object | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class TreeEvent:
-    """A tree-change event (§6.10)."""
+    """A tree-change event (§6.10).
+
+    ``context`` is the §6.8a execution context of the dispatch that caused the write,
+    or ``None`` for an AUTONOMOUS write (the peer's own bootstrap and seeding).  That
+    distinction is load-bearing rather than cosmetic: EXTENSION-HISTORY §2.1 defines the
+    autonomous case exactly (author = the local peer's identity hash), so an event with
+    no context is INDISTINGUISHABLE from an autonomous write, and a conforming recorder
+    fills in the autonomous reading and attributes a remote caller's write to the local
+    peer.  Defaulted so an existing consumer keeps working.
+    """
 
     event_type: str  # created / modified / deleted
     path: str
     new_hash: str  # hex, empty on delete
     previous_hash: str  # hex, empty on create
+    context: ExecContext | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,8 +145,13 @@ class Store:
             return self._content.get(bytes(h).hex())
 
     # ── tree ─────────────────────────────────────────────────────────────────
-    def bind(self, path: str, e: Entity) -> None:
-        """Bind ``path`` to entity ``e`` (putting ``e`` in the content store)."""
+    def bind(self, path: str, e: Entity, context: ExecContext | None = None) -> None:
+        """Bind ``path`` to entity ``e`` (putting ``e`` in the content store).
+
+        ``context`` is the §6.8a execution context of the dispatch that caused this
+        write; omit it for an AUTONOMOUS write (bootstrap, seeding).  See
+        :class:`TreeEvent` for why the distinction matters to a recorder.
+        """
         self.put_entity(e)
         nxt = e.hash.hex()
         with self._lock:
@@ -117,17 +160,17 @@ class Store:
             changed = prev != nxt
             consumers = list(self._tree_consumers)
         if changed:
-            ev = TreeEvent(_derive_event_type(prev, nxt), path, nxt, prev)
+            ev = TreeEvent(_derive_event_type(prev, nxt), path, nxt, prev, context)
             for fn in consumers:
                 fn(ev)
 
-    def unbind(self, path: str) -> None:
+    def unbind(self, path: str, context: ExecContext | None = None) -> None:
         with self._lock:
             prev = self._tree.pop(path, "")
             had = prev != ""
             consumers = list(self._tree_consumers)
         if had:
-            ev = TreeEvent("deleted", path, "", prev)
+            ev = TreeEvent("deleted", path, "", prev, context)
             for fn in consumers:
                 fn(ev)
 

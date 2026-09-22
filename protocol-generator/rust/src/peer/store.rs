@@ -29,6 +29,31 @@ use std::sync::RwLock;
 
 use super::model::Entity;
 
+/// The §6.8a execution-context core fields (SYSTEM-COMPOSITION §1.4) carried on a
+/// tree-change event.
+///
+/// The RESERVED field *names* are the collision contract; the representation is
+/// impl-defined (§9.4). On a core peer most slots are inert, and every one is read
+/// from the wire rather than synthesized — a slot the request did not carry stays
+/// `None`.
+///
+/// `capability` is deliberately not its own slot: it is redundant with
+/// `caller_capability` / `handler_grant`, which distinguish the two authorities a
+/// write runs under. Capability slots carry the token's CONTENT HASH, the reference
+/// an event consumer can resolve against the store.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExecContext {
+    pub request_id: String,
+    pub handler_pattern: String,
+    pub operation: String,
+    pub author: Option<Vec<u8>>,
+    pub caller_capability: Option<Vec<u8>>,
+    pub handler_grant: Option<Vec<u8>>,
+    pub chain_id: Option<String>,
+    pub parent_chain_id: Option<String>,
+    pub cascade_depth: Option<u64>,
+}
+
 /// A tree-change event (§6.10). `new_hash == None` denotes a delete.
 #[derive(Clone, Debug)]
 pub struct TreeChangeEvent {
@@ -36,6 +61,15 @@ pub struct TreeChangeEvent {
     pub path: String,
     pub new_hash: Option<Vec<u8>>,
     pub previous_hash: Option<Vec<u8>>,
+    /// The execution context of the dispatch that caused this write, or `None` for an
+    /// AUTONOMOUS write (the peer's own bootstrap and seeding).
+    ///
+    /// The distinction is load-bearing rather than cosmetic: `EXTENSION-HISTORY` §2.1
+    /// defines the autonomous case exactly (author = the local peer's identity hash),
+    /// so an event with NO context is indistinguishable from an autonomous write, and
+    /// a conforming recorder fills in the autonomous reading and attributes a remote
+    /// caller's write to the local peer.
+    pub context: Option<ExecContext>,
 }
 
 type TreeConsumer = Box<dyn Fn(&TreeChangeEvent) + Send + Sync>;
@@ -112,7 +146,18 @@ impl Store {
 
     /// bind = Store then Bind (§6.10). Fires a tree-change event when the binding
     /// at the path changes. Stores a copy of `e`.
+    /// Autonomous bind — the peer's own bootstrap and seeding. Delivers NO execution
+    /// context, which is what distinguishes such a write from a dispatched one.
     pub fn bind(&self, path: &str, e: &Entity) {
+        self.bind_with_context(path, e, None);
+    }
+
+    /// Bind carrying the §6.8a execution context of the dispatch that caused it.
+    ///
+    /// Split from [`Store::bind`] rather than adding a parameter to it: Rust has no
+    /// default arguments, and every EXISTING caller is genuinely autonomous, so this
+    /// keeps them correct by construction instead of by remembering to pass `None`.
+    pub fn bind_with_context(&self, path: &str, e: &Entity, context: Option<ExecContext>) {
         let (changed, prev) = {
             let mut inner = self.inner.write().unwrap();
             inner
@@ -134,11 +179,17 @@ impl Store {
                 path: path.to_string(),
                 new_hash: Some(e.hash.clone()),
                 previous_hash: prev,
+                context,
             });
         }
     }
 
+    /// Autonomous unbind. See [`Store::bind`].
     pub fn unbind(&self, path: &str) {
+        self.unbind_with_context(path, None);
+    }
+
+    pub fn unbind_with_context(&self, path: &str, context: Option<ExecContext>) {
         let prev = {
             let mut inner = self.inner.write().unwrap();
             inner.tree.remove(path)
@@ -149,6 +200,7 @@ impl Store {
                 path: path.to_string(),
                 new_hash: None,
                 previous_hash: Some(prev_hash),
+                context,
             });
         }
     }

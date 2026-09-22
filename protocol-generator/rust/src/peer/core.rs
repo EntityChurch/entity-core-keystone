@@ -19,7 +19,7 @@ use crate::value::{Key, Value};
 use super::capability as cap;
 use super::identity::{self, Identity};
 use super::model::{self, hex, Entity, Envelope};
-use super::store::Store;
+use super::store::{ExecContext, Store};
 use super::type_defs;
 use super::wire;
 
@@ -801,6 +801,43 @@ impl Peer {
 
     // ── tree handler (§6.3) ─────────────────────────────────────────────────────
 
+    /// The §6.8a execution context for a §6.10 tree-change event, built from what this
+    /// dispatch holds (SYSTEM-COMPOSITION §1.4 inventory).
+    ///
+    /// WHY IT EXISTS. `TreeChangeEvent` had no context field, so every tree-change event
+    /// reached a consumer contextless — and that is not a neutral absence.
+    /// `EXTENSION-HISTORY` §2.1 defines the AUTONOMOUS case exactly, so a contextless
+    /// event is indistinguishable from an autonomous write and a conforming recorder
+    /// attributes a REMOTE caller's write to the local peer. §7.2 calls `capability` the
+    /// answer to "under what authority?", and the answer was always "its own". Routed by
+    /// `entity-system-generator` (H8); the four `history` oracle checks over these fields
+    /// are PRESENCE checks, so a peer scores on them either way.
+    ///
+    /// Slots a core request does not carry are READ FROM THE WIRE and left `None`, never
+    /// invented.
+    fn exec_context(&self, exec: &Entity, handler_pattern: &str) -> ExecContext {
+        // The handler's own grant — the second authority a write runs under, distinct
+        // from the caller's. Bound at bootstrap/registration.
+        let handler_grant = self
+            .store
+            .get_at(&format!(
+                "/{}/system/capability/grants/{}",
+                self.local_peer, handler_pattern
+            ))
+            .map(|e| e.hash.clone());
+        ExecContext {
+            request_id: exec.text_field("request_id").unwrap_or("").to_string(),
+            handler_pattern: handler_pattern.to_string(),
+            operation: exec.text_field("operation").unwrap_or("").to_string(),
+            author: exec.bytes_field("author").map(|b| b.to_vec()),
+            caller_capability: exec.bytes_field("capability").map(|b| b.to_vec()),
+            handler_grant,
+            chain_id: exec.text_field("chain_id").map(str::to_string),
+            parent_chain_id: exec.text_field("parent_chain_id").map(str::to_string),
+            cascade_depth: exec.uint_field("cascade_depth"),
+        }
+    }
+
     fn tree_handler(&self, exec: &Entity) -> Outcome {
         let op = exec.text_field("operation").unwrap_or("");
         let target = resource_target(exec);
@@ -868,7 +905,11 @@ impl Peer {
                 match entity {
                     Some(raw) => match admit_put(&raw) {
                         Ok(e) => {
-                            self.store.bind(&path, &e);
+                            self.store.bind_with_context(
+                                &path,
+                                &e,
+                                Some(self.exec_context(exec, "system/tree")),
+                            );
                             ok(Entity::make("system/hash", model::bytes(&e.hash)))
                         }
                         Err(refusal) => refusal,

@@ -9,7 +9,7 @@ import {
 import { type PeerIdentity } from "../identity/index.js";
 import { type CapabilityToken } from "../capability/index.js";
 import { type ContentStore, type EntityTree } from "../store/index.js";
-import { type EmitBus } from "../emit/index.js";
+import { type EmitBus, type EmitContext } from "../emit/index.js";
 import { type ConnectionState } from "./connection-state.js";
 
 /**
@@ -146,6 +146,44 @@ export class HandlerContext {
 
   get params(): Entity {
     return this.execute.params;
+  }
+
+  /**
+   * The §6.8a execution context for a §6.10 tree-change event, built from what this
+   * dispatch actually holds (SYSTEM-COMPOSITION §1.4 field inventory).
+   *
+   * WHY THIS EXISTS. `EmitContext` was declared with the full inventory and **never
+   * constructed** — `EntityTree.put`/`remove` defaulted it to null and `compareAndPut`
+   * hardcoded null — so every tree-change event reached a consumer with no context.
+   * That is not a neutral absence: an event with no context is indistinguishable from
+   * an AUTONOMOUS write, so a recorder implementing `EXTENSION-HISTORY` §2.1 (where
+   * `author` and `capability` are non-optional and §9.1 makes recording them a MUST)
+   * correctly falls back to the autonomous reading and then attributes a REMOTE
+   * caller's write to the local peer. §7.2 calls `capability` the answer to "under what
+   * authority?", and the answer was always "its own". Routed by `entity-system-generator`
+   * (H8) out of building HISTORY v1.7; the four `history` oracle checks that cover these
+   * fields are PRESENCE checks, so a peer scores on them either way.
+   *
+   * `capability` is deliberately not a separate slot: it is redundant with
+   * `callerCapability` / `handlerGrant`, which distinguish the two authorities a write
+   * runs under. Capability-shaped slots carry the token's CONTENT HASH, which is the
+   * reference an event consumer can resolve against the store. The four §1.4 slots a
+   * core request does not carry are read from the wire (see `Execute`) and are
+   * `undefined` when absent rather than invented.
+   */
+  emitContext(): EmitContext {
+    return {
+      ...(this.execute.chainId !== null ? { chainId: this.execute.chainId } : {}),
+      ...(this.execute.parentChainId !== null ? { parentChainId: this.execute.parentChainId } : {}),
+      ...(this.author !== null ? { author: this.author } : {}),
+      ...(this.callerCapability !== null ? { callerCapability: this.callerCapability.contentHash } : {}),
+      requestId: this.execute.requestId,
+      ...(this.execute.bounds !== null ? { bounds: this.execute.bounds } : {}),
+      ...(this.execute.cascadeDepth !== null ? { cascadeDepth: this.execute.cascadeDepth } : {}),
+      ...(this.handlerGrant !== null ? { handlerGrant: this.handlerGrant.contentHash } : {}),
+      handlerPattern: this.pattern,
+      operation: this.execute.operation,
+    };
   }
 
   get resource(): ResourceTarget | null {

@@ -57,6 +57,28 @@ export class Execute {
   }
 
   /**
+   * The optional §6.8a execution-context fields. All four are declared optional on
+   * `system/protocol/execute` in the core type registry and are absent on an ordinary
+   * core request; they are read here rather than synthesized, so a consumer of the
+   * §6.10 tree-change event sees what the wire carried and nothing else.
+   */
+  get bounds(): EcfValue | null {
+    return Ecf.field(this.entity.data, "bounds");
+  }
+
+  get chainId(): string | null {
+    return Ecf.optText(this.entity.data, "chain_id");
+  }
+
+  get parentChainId(): string | null {
+    return Ecf.optText(this.entity.data, "parent_chain_id");
+  }
+
+  get cascadeDepth(): bigint | null {
+    return Ecf.optUint(this.entity.data, "cascade_depth");
+  }
+
+  /**
    * Build a `system/protocol/execute` entity. `paramsEntity` is spliced verbatim
    * (fidelity). `author` / `capability` are omitted for connect-path requests
    * (§4.2).
