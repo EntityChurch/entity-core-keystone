@@ -387,6 +387,41 @@ Two conformance **oracles** are ground truth (built from `entity-core-go`, see B
   probe directory as a cohort picture, either re-run the whole roster or compare mtimes** — and
   prefer the roster run, because a mixed-age table is the one artifact that reads as a measurement
   and is not one.
+  **RATIFIED 2026-09-16 — THIRD OCCURRENCE, AND THE NEW HALF IS THAT THE MISSING PEER IS MISSING
+  FROM THE *WORK*, NOT ONLY FROM THE DIRECTORY: A SWEEP RUN TRANCHE-BY-TRANCHE CANNOT SEE A PEER NO
+  TRANCHE TOUCHED, AND EVERY TRANCHE REPORTS HONESTLY WHILE IT HAPPENS.** The `0.8.2.25` sweep ran as
+  nine tranches over two days; each measured its own peers, each truthfully reported them at
+  `0 of 15` on `arc-probe`, and the closing act re-measured all 46 tracked reports. **`fortran` and
+  `unison` were never swept at all** — no tranche and no vanguard commit touches either — and
+  `CONFORMANCE-MATRIX.md` published both at `0.8.2.25` while `docs/STATUS.md` headlined *"46 of
+  46"*. Measured on a single-age roster run: **six `arc-probe` rows owed each** (`A1`–`A4` and
+  `G2`/`G4`, i.e. they are the two peers keeping **`F84`** open) and **5 of 6 §4.11 arms**, the
+  pre-sweep baseline exactly.
+  **Three things generalize, and the first is the cheap one.**
+  (a) **THE CONTROL IS A SET DIFFERENCE, NOT A MEASUREMENT.** Diff the roster against the peers the
+  sweep's own commits modified — `git show --name-only` over the tranche commits, `comm -23` against
+  `tools/peer-tiers.tsv`. It answered in one command (**44 swept, 46 on the roster**) and no amount
+  of re-running probes would have asked it, because **a per-peer instrument ranges over the peers you
+  hand it.** This is the H4 packaging rule — *derive a cohort survey from the tree's own
+  declarations, never from an inventory you wrote down* — reaching a WORK LIST instead of a feature
+  survey.
+  (b) **A PER-TRANCHE GREEN IS NOT A COHORT GREEN, AND N TRUE STATEMENTS DO NOT SUM TO ONE.** Every
+  tranche commit's `0 of 15` was correct about its own peers. The cohort claim was assembled by
+  addition, and addition cannot see an absent term — the arithmetic half of the false-negative
+  family, in a work plan rather than in a count.
+  (c) **THE PROBE DIRECTORY CONFIRMED THE ERROR RATHER THAN CATCHING IT.** `output/scratch/arc/`
+  spanned **29.5 h** with **seven** peers' reports older than their own sweep commit, and the two
+  unswept peers' reports were from the pre-sweep census — so reading it showed them failing and that
+  read as staleness. **A mixed-age directory does not merely fail to answer; it supplies a
+  plausible wrong answer in whichever direction its oldest files point.** The single-age re-run
+  (span **0.04 h**) is what separated *stale report* from *unswept peer*, and they are indistinguishable
+  without it.
+  **And the disclosure rule this cost: a hand-maintained per-peer revision column drifted within
+  ONE DAY of being corrected** — footnote ¹² was written that morning, ends *"a value that is
+  correct today and ungated is a value that is correct today,"* and was false on two rows before the
+  day was out. That is `entity-system-conformance`'s `K-ASK-1` / our `Y-2` earning itself: the
+  `spec_pin` column in `tools/peer-tiers.tsv`, **written by the sweep and gated so a sweep that does
+  not update it fails**, would have failed the sweep that skipped these two.
 - **TWO SITES FOR ONE REFUSAL, AND ONLY THE ONE THAT RUNS FIRST IS OBSERVABLE — so correcting the
   other is a measurable NO-OP that reads as "the fix did not work."** RATIFIED 2026-09-08 (`sql`),
   and it is the `ec_content_hash` link-order lesson moved INSIDE a single peer: there two

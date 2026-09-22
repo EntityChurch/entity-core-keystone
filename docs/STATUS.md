@@ -2,13 +2,37 @@
 
 _Updated: 2026-09-16 · oracle pin: the 778-check set `7aa6f3de…` · spec snapshot **`v0.8.2.25`** (vendored 2026-09-15)_
 
-## ⭐ CLOSED: the `0.8.2.25` sweep — **46 of 46 peers**, and every tracked report re-measured
+## ⛔ CORRECTED 2026-09-16: the `0.8.2.25` sweep is **44 of 46**, not 46 of 46 — `fortran` and `unison` were never swept
 
-**The cohort is at a single spec revision again.** The spec had moved fourteen revisions under a
+**This section headlined *"46 of 46"* for one day and it was wrong.** A **single-age** roster run of
+`tools/arc-probe` (46 of 46 reported, report-age span **0.04 h**) plus `tools/pa-probe` measured both
+peers at the **pre-sweep state on both axes**: six `arc-probe` rows owed each — `A1`/`A2`/`A3`/`A4`
+(the §3.3 effective-targets ladder) and `G2`/`G4` (§6.3's `check_path_permission` and the listing
+filter, i.e. **`F84`**) — where the other 44 conform, and **5 of 6 §4.11 arms each**. Their last
+substantive commit is the `0.8.2.21` sentinel transcription; **no `sweep tranche` or vanguard commit
+touches either of them**, verified as a set difference: **44 peers swept, 46 on the roster.**
+
+**Why nothing caught it, and this is the part worth carrying: a sweep run tranche-by-tranche measures
+each peer as its tranche lands, so a peer that NO tranche touched is measured by nothing and appears
+in no tranche's report as anything.** Every tranche truthfully reported its own peers at `0 of 15`;
+none of them ranged over the roster. `output/scratch/arc/` then read as a cohort picture while
+spanning **29.5 hours**, with seven peers' reports older than their own sweep commit and these two
+peers' reports dating from the pre-sweep census. **The control is a set difference, not a
+measurement** — diff the roster against the peers the sweep commits actually modified — and it costs
+one command. `CONFORMANCE-MATRIX.md` footnote ¹³ carries the detail; the two rows now publish
+`0.8.2.21`.
+
+**Sweeping them is owed and is named as the next work item**, not folded into this correction: it is
+RULE A (the §3.3 ladder + the `G` family) and RULE C (the `hash_mismatch` code) and RULE D (§4.11),
+which is a tranche of real work rather than an edit.
+
+**What IS true, and it is 44 peers rather than 46.** The spec had moved fourteen revisions under a
 cohort pinned at `v0.8.2.11`; the peers were brought forward a tranche at a time and the last nine
 — `asm-arm64` `asm-x86_64` `riscv64` `wasm-wat` `cobol` `forth` `oz` `pd` `smalltalk` — landed on
 2026-09-15. **The oracle pin did NOT move**: every row is still measured on the 778-check set
-`7aa6f3de…`, so the numbers stay comparable with each other and with the pre-sweep tree.
+`7aa6f3de…`, so the numbers stay comparable with each other and with the pre-sweep tree. **All 46
+peers remain `778 · 0F`** — the two unswept peers are 0-FAIL on the executed check set exactly like
+the other 44, which is the whole point of the section below.
 
 **What the whole sweep moved at this check set: ONE check.** All 46 tracked reports were re-measured
 (`run-cohort-census.sh --to-status`, serially — a measurement, never a copy), and a per-check diff
@@ -45,14 +69,22 @@ to requests the peer *admits* and reaches none of those inputs, which is why §4
 `tools/pa-probe` — six arms, two controls, per-peer JSON, and it never enters a published number.
 Baseline when the nine were measured: **5 or 6 of 6 arms owed on every one of them.**
 
-**A note for anyone measuring this cohort:** the cohort is uniform at `v0.8.2.25` as of 2026-09-16,
-so a run taken today does **not** cross a mixed-pin cohort — but that is a fact about today, not a
-property of the tree, and it will stop being true the next time the spec moves under us. **A verdict
-is only a measurement if it records the peer's spec revision per row, and that field still does not
-exist**; it is being designed with `entity-system-conformance`
-(`docs/status/TRACKER-entity-system-conformance.md`, `Y-2`). Until it does, the git log is
-authoritative for which peer is at which revision — which is exactly the gap `Y-2` closes, and the
-reason this ask does not go away now that the count happens to be 46.
+**A note for anyone measuring this cohort:** ⚠ **the cohort is NOT uniform — `fortran` and `unison`
+are at `0.8.2.21`**, and the sentence that stood here said it was, which is the correction this file
+carries above. A run taken today crosses a two-revision cohort.
+
+✅ **And the field that says so per row now exists.** `tools/peer-tiers.tsv` carries a **`spec_pin`**
+column — the spec revision each peer was last swept to, `unknown` spellable and a blank cell an
+error — gated by `tools/spec-pin-gate.py` in `make lint` against `CONFORMANCE-MATRIX.md` §1, so the
+two copies cannot drift silently. It answers `entity-system-conformance`'s `Y-2` /
+their `K-ASK-1` in the shape they asked for, and their census consumes it rather than re-deriving
+it. **A verdict is only a measurement if it records the peer's spec revision per row**; until today
+the git log was the only authority for that and this is what replaces it.
+**Read the limit too:** `make lint` gates that the column is complete, well-formed and consistent
+with what we publish. It does **not** and cannot check that a pin is *true* — that a peer really was
+swept to the revision its row claims. The check for that is
+`tools/spec-pin-gate.py --since <ref>`, a **set difference** over the sweep's own commits, run when
+a sweep closes; against this sweep's start it names `fortran` and `unison` and nothing else.
 
 > **For where this is going — the seats keystone sits between, the state of every verification
 > axis, the measured size of the queued work and what freeze looks like — see

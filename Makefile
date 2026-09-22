@@ -293,7 +293,8 @@ lint:
 	@python3 tools/skip-provenance-gate.py --self-test >/dev/null 2>&1
 	@python3 tools/keystone-spec-gate.py --self-test >/dev/null 2>&1
 	@python3 tools/ascii-wire-gate.py --self-test >/dev/null 2>&1
-	@echo "lint: 6 gate self-tests OK (harness, coherence, kind-c, skip-provenance, keystone-spec, ascii-wire)"
+	@python3 tools/spec-pin-gate.py --self-test >/dev/null 2>&1
+	@echo "lint: 7 gate self-tests OK (harness, coherence, kind-c, skip-provenance, keystone-spec, ascii-wire, spec-pin)"
 	@echo "lint: gating the Kind C publication boundary (read-only)…"
 	@# The tenth gate, and the newest kind of thing in the tree. Kind C is a check
 	@# THIS repo authors, from the spec, at the same normative target as the oracle
@@ -340,6 +341,21 @@ lint:
 	@# 2026-09-12 this line exited 1 on any checkout without those reports.
 	@# Regression: plant a removed field, a corrupted verdict, or a deleted block.
 	@python3 tools/author-extension-host.py --check
+	@echo "lint: gating the per-peer SPEC pin (read-only)…"
+	@# The fifteenth gate. §1's `Spec` column published `v0.8.0` on all 46 rows while the
+	@# cohort was at 0.8.2.25, and nothing objected: the column was hand-maintained and no
+	@# gate watched it. Corrected 2026-09-16 under a footnote ending "a value that is
+	@# correct today and ungated is a value that is correct today" — which was FALSE ON TWO
+	@# ROWS the same day, because `fortran` and `unison` had never been swept at all.
+	@# tools/peer-tiers.tsv now carries `spec_pin`, requested in exactly this shape by
+	@# entity-system-conformance, whose census consumes it. This checks the column is
+	@# complete and well-formed (`unknown` is spellable, blank is an ERROR — the two read
+	@# as different claims) and that §1 agrees with it; peers behind the cohort are
+	@# REPORTED with a count, never failed, so tracked backlog cannot hold it red.
+	@# THE SWEEP RECONCILIATION IS NOT HERE: `--since <ref>` is the set difference that
+	@# catches a peer no tranche touched, and it needs a range only the sweep can name.
+	@# Run it when a sweep closes. Regression: `python3 tools/spec-pin-gate.py --self-test`.
+	@python3 tools/spec-pin-gate.py --quiet
 	@echo "lint: gating the keystone peer contract draft and its committed reports (read-only)…"
 	@# The fourteenth gate. protocol-generator/shared/peer-contract/ is the provisional v2 contract
 	@# (run · embed · extend · certify): requirements.toml is the machine truth and CONTRACT-DRAFT.md

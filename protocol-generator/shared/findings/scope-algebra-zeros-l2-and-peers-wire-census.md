@@ -10,6 +10,43 @@ snapshot `v0.8.2.11`, all 46 peers `778 · 0F` on executed check set `7aa6f3de�
 
 ---
 
+> ## ✅ UPDATE 2026-09-16 — **`F84` AND `F85` ARE REPAIRED; THE EMPTY CELL IS NOW POPULATED AT 44**
+>
+> Everything below is the measurement **as taken on 2026-09-14** and is left standing — a dated
+> measurement that gets back-edited stops being evidence of anything. This box says what has moved.
+>
+> Re-measured on a **single-age** roster run of `tools/arc-probe` (**46 of 46** reported, report-age
+> span **0.04 h**) plus `run-mint-floor.sh` for the five peers the §6.9a discovery floor voids.
+> Controls green on every counted row.
+>
+> | row | as taken (2026-09-14) | 2026-09-16 |
+> |---|---|---|
+> | `G2` — dispatch vacated by a caller exclude | 33 of 43 served an uncovered path | **44 of 46 conform** |
+> | `G4` — listing filter | 35 of 40 named an excluded entry | **44 of 46 conform** |
+> | `A3` — selection from the effective set | **`no` on 45 of 45** | **44 of 46 conform** |
+> | `F1` — Dimension 4 inbound (**`F85`**) | 4 do not evaluate it | **45 of 46** — `sql` alone |
+> | `E2` — matchable grant exclude (**`F83`**) | 4 never read the field | **46 of 46 conform** |
+>
+> ⭐ **The cross-tabulation is the part that matters, because the count never was.** This document's
+> §3 argued that the finding is *a layer with zero working instances* rather than *33 peers with a
+> bug*, on the evidence that the cell *`A3` conforms × `G2` conforms* was **EMPTY** — nobody had a
+> wrong selection caught by the path check. **That cell now holds 44 peers.**
+>
+> ⛔ **The residual is two peers and it is a different finding: `fortran` and `unison` were never
+> swept at all.** They are the whole of the `no` column on `A1`–`A4`, `G2` and `G4`, and they owe
+> **5 of 6 §4.11 arms** besides. No `sweep tranche` or vanguard commit touches either — verified as
+> a set difference, **44 swept against a 46-peer roster**. `CONFORMANCE-MATRIX.md` footnote ¹³ and
+> `docs/STATUS.md` carry it; the two rows published `0.8.2.25` for one day and now publish
+> `0.8.2.21`.
+>
+> **And the reading that is NOT licensed: none of this moved a conformance number.** The 46 tracked
+> reports were re-measured across the sweep and **3 of 35 788 severities** differed. The check set
+> cannot distinguish the cohort described below from the cohort described in this box — which is
+> `F73` stated as a measurement rather than an argument, and it is why the `arc-probe` families
+> retire on a vector and not on a green row.
+
+---
+
 ## 0. Why this was taken
 
 `scope-algebra-cell-census.md` enumerated the §5 scope algebra as **146 live decision cells, 37

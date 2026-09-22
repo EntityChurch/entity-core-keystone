@@ -45,8 +45,13 @@ def read_roster():
         if not line.strip() or line.startswith("#") or line.startswith("peer\t"):
             continue
         f = line.split("\t")
+        # Columns: peer, tier, last_measured_pin, spec_pin, note. `spec_pin` was inserted
+        # at index 3 on 2026-09-16, which MOVED `note` from 3 to 4 — this reader indexed
+        # `note` positionally and would have silently displayed the spec pin as the note.
+        # Five tools parse this file; the roster header enumerates them for that reason.
         rows.append({"peer": f[0], "tier": f[1], "pin": f[2],
-                     "note": f[3] if len(f) > 3 else ""})
+                     "spec_pin": f[3] if len(f) > 3 else "",
+                     "note": f[4] if len(f) > 4 else ""})
     return rows
 
 

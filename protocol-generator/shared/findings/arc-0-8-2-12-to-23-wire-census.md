@@ -50,6 +50,36 @@ denominator of every count here.**
 
 ---
 
+> ## ✅ SECOND UPDATE 2026-09-16 — **THE LADDER IS NO LONGER OWED, AND THE BOX ABOVE IS SUPERSEDED ON THAT ONE POINT**
+>
+> The 2026-09-14 box above says *"**§2 the ladder — UNCHANGED and still owed.** Held behind vectors
+> on purpose."* **That was true when written and is false at HEAD**: the `0.8.2.25` sweep landed the
+> §3.3 effective-targets ladder across the cohort. Both boxes are left standing, dated, rather than
+> reconciled into one.
+>
+> Re-measured on a **single-age** roster run (`tools/arc-probe`, **46 of 46**, report-age span
+> **0.04 h**) plus `run-mint-floor.sh` for the five peers the §6.9a floor voids:
+>
+> - **§2 the ladder** — `A1`/`A2`/`A3`/`A4`: **44 of 46 conform**, against **0 of 45** on three of
+>   the four rows when this document was written.
+> - **§3 `K1`** — `B1`/`B2`: **46 of 46**, unchanged from the first update box.
+> - **§4 the sentinel** — `A5`: **46 of 46**.
+> - **§7 the grant exclude** (`E2`, the control this document's §7 added): **46 of 46** — the four
+>   peers §7 names now read the field.
+>
+> ⛔ **The entire residual is `fortran` and `unison`, and they are a different finding: no
+> `sweep tranche` or vanguard commit ever touched them** — **44 swept against a 46-peer roster**,
+> verified as a set difference. They owe six `arc-probe` rows each and **5 of 6 §4.11 arms**, which
+> is the pre-sweep baseline exactly. `CONFORMANCE-MATRIX.md` footnote ¹³ carries it.
+>
+> **The mechanism is worth more than the two peers.** *A sweep run tranche-by-tranche measures each
+> peer as its tranche lands, so a peer that no tranche touched is measured by nothing and appears in
+> no tranche's report as anything.* Every tranche truthfully reported `0 of 15` about its own peers.
+> `output/scratch/arc/` then read as a cohort picture while spanning **29.5 h**, with seven peers'
+> reports older than their own sweep commit. **The control is a set difference, not a measurement.**
+
+---
+
 ## 0. Why this was taken, and what it is not
 
 Twelve spec revisions landed while this seat reviewed them, and none had been measured. The
